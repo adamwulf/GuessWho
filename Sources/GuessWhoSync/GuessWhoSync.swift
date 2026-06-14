@@ -18,6 +18,53 @@ public final class GuessWhoSync {
         self.deviceID = deviceID
     }
 
+    public func reconcileSidecars() throws -> SidecarReconcileReport {
+        var reasonsByKey: [SidecarKey: [String]] = [:]
+
+        let outcomes = try sidecars.reconcileConflicts { key, versions in
+            var parsed: [SidecarEnvelope] = []
+            var skipped: [Data] = []
+            var reasons: [String] = []
+
+            for bytes in versions {
+                switch parseEnvelope(bytes) {
+                case .ok(let envelope):
+                    parsed.append(envelope)
+                case .skip(let reason):
+                    skipped.append(bytes)
+                    reasons.append(reason)
+                }
+            }
+
+            reasonsByKey[key] = reasons
+
+            guard var folded = parsed.first else {
+                return .leave
+            }
+            for next in parsed.dropFirst() {
+                switch merge(folded, next) {
+                case .success(let combined):
+                    folded = combined
+                case .failure(let err):
+                    reasons.append("merge failed: \(err)")
+                    reasonsByKey[key] = reasons
+                    return .leave
+                }
+            }
+            return .write(merged: folded, skip: skipped)
+        }
+
+        let stamped = outcomes.map { outcome -> SidecarReconcileReport.FileOutcome in
+            let extra = reasonsByKey[outcome.key] ?? []
+            return SidecarReconcileReport.FileOutcome(
+                key: outcome.key,
+                mergedVersionCount: outcome.mergedVersionCount,
+                skippedReasons: outcome.skippedReasons + extra
+            )
+        }
+        return SidecarReconcileReport(fileOutcomes: stamped)
+    }
+
     public func reconcileContactIdentities() throws -> IdentityReconcileReport {
         var outcomes: [IdentityReconcileReport.ContactOutcome] = []
         var carriedUUIDs: Set<String> = []
@@ -180,4 +227,22 @@ public final class GuessWhoSync {
             carriedUUIDs: [winner]
         )
     }
+}
+
+private enum ParseOutcome {
+    case ok(SidecarEnvelope)
+    case skip(String)
+}
+
+private func parseEnvelope(_ data: Data) -> ParseOutcome {
+    let envelope: SidecarEnvelope
+    do {
+        envelope = try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+    } catch {
+        return .skip("bad JSON: \(error)")
+    }
+    guard envelope.schemaVersion == 1 else {
+        return .skip("schemaVersion=\(envelope.schemaVersion)")
+    }
+    return .ok(envelope)
 }
