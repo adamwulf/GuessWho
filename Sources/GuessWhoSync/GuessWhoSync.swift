@@ -1,0 +1,183 @@
+import Foundation
+
+public final class GuessWhoSync {
+    private let contacts: ContactStoreProtocol
+    private let events: EventStoreProtocol
+    private let sidecars: SidecarStoreProtocol
+    private let deviceID: String
+
+    public init(
+        contacts: ContactStoreProtocol,
+        events: EventStoreProtocol,
+        sidecars: SidecarStoreProtocol,
+        deviceID: String
+    ) {
+        self.contacts = contacts
+        self.events = events
+        self.sidecars = sidecars
+        self.deviceID = deviceID
+    }
+
+    public func reconcileContactIdentities() throws -> IdentityReconcileReport {
+        var outcomes: [IdentityReconcileReport.ContactOutcome] = []
+        var carriedUUIDs: Set<String> = []
+
+        for contact in try contacts.fetchAll() {
+            let outcome = try reconcile(contact: contact)
+            outcomes.append(outcome.report)
+            carriedUUIDs.formUnion(outcome.carriedUUIDs)
+        }
+
+        let orphans = try sidecars.allKeys()
+            .filter { $0.kind == .contact && !carriedUUIDs.contains($0.id) }
+            .sorted { $0.id < $1.id }
+
+        return IdentityReconcileReport(contactOutcomes: outcomes, orphanSidecars: orphans)
+    }
+
+    private struct ContactReconcileResult {
+        let report: IdentityReconcileReport.ContactOutcome
+        let carriedUUIDs: [String]
+    }
+
+    private func reconcile(contact original: Contact) throws -> ContactReconcileResult {
+        var contact = original
+        var validUUIDs: [String] = []
+        var malformedURLs: [String] = []
+
+        for url in contact.urlAddresses {
+            guard url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) else { continue }
+            if let uuid = SidecarKey.parseGuessWhoContactURL(url.value) {
+                validUUIDs.append(uuid)
+            } else {
+                malformedURLs.append(url.value)
+            }
+        }
+
+        switch validUUIDs.count {
+        case 0:
+            return try handleCaseA(contact: &contact, malformedURLs: malformedURLs)
+        case 1 where malformedURLs.isEmpty:
+            return ContactReconcileResult(
+                report: IdentityReconcileReport.ContactOutcome(
+                    localID: contact.localID,
+                    assignedUUID: nil,
+                    mergedLoserUUIDs: [],
+                    removedMalformedURLs: [],
+                    errors: []
+                ),
+                carriedUUIDs: validUUIDs
+            )
+        case 1:
+            return try handleCaseC(contact: &contact, validUUID: validUUIDs[0], malformedURLs: malformedURLs)
+        default:
+            return try handleCaseD(contact: &contact, validUUIDs: validUUIDs, malformedURLs: malformedURLs)
+        }
+    }
+
+    private func handleCaseA(
+        contact: inout Contact,
+        malformedURLs: [String]
+    ) throws -> ContactReconcileResult {
+        contact.urlAddresses.removeAll { url in
+            url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+                && SidecarKey.parseGuessWhoContactURL(url.value) == nil
+        }
+        let newUUID = UUID().uuidString.lowercased()
+        contact.urlAddresses.append(
+            LabeledValue(label: "GuessWho", value: SidecarKey.guessWhoContactURLPrefix + newUUID)
+        )
+        try contacts.save(contact)
+
+        return ContactReconcileResult(
+            report: IdentityReconcileReport.ContactOutcome(
+                localID: contact.localID,
+                assignedUUID: newUUID,
+                mergedLoserUUIDs: [],
+                removedMalformedURLs: malformedURLs,
+                errors: []
+            ),
+            carriedUUIDs: [newUUID]
+        )
+    }
+
+    private func handleCaseC(
+        contact: inout Contact,
+        validUUID: String,
+        malformedURLs: [String]
+    ) throws -> ContactReconcileResult {
+        contact.urlAddresses.removeAll { url in
+            url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+                && SidecarKey.parseGuessWhoContactURL(url.value) == nil
+        }
+        try contacts.save(contact)
+
+        return ContactReconcileResult(
+            report: IdentityReconcileReport.ContactOutcome(
+                localID: contact.localID,
+                assignedUUID: nil,
+                mergedLoserUUIDs: [],
+                removedMalformedURLs: malformedURLs,
+                errors: []
+            ),
+            carriedUUIDs: [validUUID]
+        )
+    }
+
+    private func handleCaseD(
+        contact: inout Contact,
+        validUUIDs: [String],
+        malformedURLs: [String]
+    ) throws -> ContactReconcileResult {
+        let sortedUUIDs = validUUIDs.sorted()
+        let winner = sortedUUIDs[0]
+        let losers = Array(sortedUUIDs.dropFirst())
+
+        let winnerKey = SidecarKey(kind: .contact, id: winner)
+        var merged = try sidecars.read(winnerKey)
+            ?? SidecarEnvelope(entityID: winner, fields: [:])
+
+        var mergedLoserUUIDs: [String] = []
+        var errors: [String] = []
+        for loser in losers {
+            let loserKey = SidecarKey(kind: .contact, id: loser)
+            guard let loserEnvelope = try sidecars.read(loserKey) else { continue }
+            let rebased = SidecarEnvelope(
+                schemaVersion: loserEnvelope.schemaVersion,
+                entityID: winner,
+                fields: loserEnvelope.fields
+            )
+            switch merge(merged, rebased) {
+            case .success(let next):
+                merged = next
+                mergedLoserUUIDs.append(loser)
+            case .failure(let err):
+                errors.append("merge failed for loser \(loser): \(err)")
+            }
+        }
+
+        try sidecars.write(merged, at: winnerKey)
+        for loser in losers {
+            try sidecars.delete(SidecarKey(kind: .contact, id: loser))
+        }
+
+        let loserURLs = Set(losers.map { SidecarKey.guessWhoContactURLPrefix + $0 })
+        contact.urlAddresses.removeAll { url in
+            if loserURLs.contains(url.value) { return true }
+            return url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+                && SidecarKey.parseGuessWhoContactURL(url.value) == nil
+        }
+        try contacts.save(contact)
+
+        return ContactReconcileResult(
+            report: IdentityReconcileReport.ContactOutcome(
+                localID: contact.localID,
+                assignedUUID: nil,
+                mergedLoserUUIDs: mergedLoserUUIDs,
+                removedMalformedURLs: malformedURLs,
+                errors: errors
+            ),
+            carriedUUIDs: [winner]
+        )
+    }
+}
