@@ -2,7 +2,7 @@
 
 A Swift package that treats the system Contacts store and EventKit as the canonical data sources, and uses iCloud-synced JSON sidecar files only for fields that don't fit there.
 
-This document is the spec. It records the decisions that have been made, the open questions that have been deliberately deferred, and the design that the first implementation will follow.
+This document is the spec.
 
 ---
 
@@ -10,59 +10,74 @@ This document is the spec. It records the decisions that have been made, the ope
 
 1. **Canonical data in Contacts.** Anything the Contacts framework can represent is stored there.
 2. **Canonical data in EventKit.** Anything the EventKit framework can represent is stored there.
-3. **Sidecars for the rest.** Custom GuessWho-specific fields live in per-entity JSON files synced through an iCloud folder.
-4. **Stable cross-device identity.** Every contact GuessWhoSync touches gets a stable GuessWho UUID, embedded as a `guesswho://contact/<uuid>?t=<iso8601>&d=<deviceID>` URL in the contact's `urlAddresses`. The UUID is the same on every device after sync converges.
+3. **Sidecars for the rest.** GuessWho-specific fields live in per-entity JSON files synced through an iCloud folder.
+4. **Stable cross-device identity.** Every contact GuessWhoSync touches gets a stable UUID, embedded as a `guesswho://contact/<uuid>` URL in `urlAddresses`. The UUID is the same on every device after sync converges.
 5. **Deterministic conflict resolution.** When multiple devices independently assigned a UUID to the same contact, every device picks the same winner without coordination.
-6. **Test-first.** All semantics — identity, sidecar IO, conflict resolution — are exercised by unit tests against in-memory mocks that satisfy the same protocols as the real stores.
+6. **Per-field LWW sidecars.** Concurrent edits to *different* fields both survive. Concurrent edits to the *same* field collapse via Last-Writer-Wins.
+7. **Test-first.** All semantics are exercised by unit tests against in-memory mocks that satisfy the same protocols as the real stores.
 
 ## 2. Non-goals (v1)
 
-- Writing to EventKit events. Events are **read-only** from the package's perspective; only their sidecar files are mutable.
-- Per-field LWW timestamps. The sidecar is the unit of LWW in v1. Field-level merge is a v2 consideration.
-- Auto-installing a CloudKit container, an `NSFilePresenter`, or any background sync infrastructure. The host app drives reconcile cycles by calling into the package.
+- Writing to EventKit events. Events are **read-only**; only their sidecars are mutable.
+- Background sync (`NSFilePresenter` wiring). The host calls `reconcile…()` explicitly.
+- Tombstone garbage collection.
+- Non-iCloud Contacts sources (Exchange, Google CardDAV). v1 makes no guarantees; behavior is "best effort, may drift."
 - Cross-iCloud-account sync. Single user, single iCloud account.
-- Handling Contacts that live in non-iCloud sources (Exchange, Google CardDAV). v1 documents this as out of scope and does not actively prevent it; behavior is "best effort, may drift."
 
-## 3. Identity & URLs
+## 3. Identity
 
 ### 3.1 Why we need our own UUID
 
 `CNContact.identifier` is **device-local**. The same logical contact has a different `identifier` on each device after iCloud sync. We cannot use it as a stable cross-device key.
 
-EventKit is different: `EKEvent.calendarItemExternalIdentifier` is documented as stable across the same iCloud account, so events can use it directly without a GuessWho-assigned UUID.
+EventKit is different: `EKEvent.calendarItemExternalIdentifier` is documented as stable across the same iCloud account, so events use it directly without a GuessWho-assigned UUID.
 
 ### 3.2 The GuessWho URL
 
-For every contact GuessWhoSync touches, we add an entry to `CNContact.urlAddresses` with:
+For every contact GuessWhoSync touches, we add an entry to `CNContact.urlAddresses`:
 
-- **label:** `"GuessWho"` (custom label, will display as "guesswho" in the system Contacts UI; acceptable)
-- **value:** `guesswho://contact/<uuid>`
-  - `uuid` — random v4 UUID assigned on first touch
+- **label:** `"GuessWho"` (custom; displays as "guesswho" in the system Contacts UI)
+- **value:** `guesswho://contact/<uuid>` — no query parameters
 
-No timestamp or device ID is embedded — see §3.5 for why.
+The URL is the only field we add to the contact. It syncs via CardDAV without loss and is visible in the system Contacts app.
 
-### 3.3 Why a URL and not a custom field
+### 3.3 Why a URL and not a clock-embedded URL
 
-`CNContact` exposes a fixed set of fields. URLs are one of the few free-form-string lists. They sync via CardDAV without loss and are visible/editable in the system Contacts app (a feature, not a bug — users can see what we did). No private API, no postprocessor on import/export.
+`urlAddresses` is an `Array`, but neither Apple's documentation nor the underlying vCard/CardDAV spec promises array order corresponds to write order after sync. An earlier draft of this spec embedded a write timestamp into the URL itself; we dropped that because for convergence we don't need "first wins" — we need every device to pick the same winner from the same input. UUID-alphabetical does that, with no clock involved.
 
-### 3.4 Why we don't embed a clock
+### 3.4 Reconciliation rules
 
-The earlier design embedded a write timestamp in the URL so we could pick "first write wins" deterministically. We dropped that because:
+When the package reconciles a contact's identity, it inspects every `urlAddresses` entry whose value starts with `guesswho://contact/` and applies the following rules.
 
-- It made every URL depend on the device clock, which is unreliable across devices.
-- For convergence, we don't actually need "first wins" — we need *every device to pick the same winner from the same input*. UUID-alphabetical does that, with no clock involved.
+**Candidate extraction.**
+- A *valid* candidate has the form `guesswho://contact/<uuid>` where `<uuid>` is a parseable UUID v4 string. Any other shape is *malformed*.
 
-The trade-off: the winning UUID is effectively random per concurrent-assignment pair, rather than "the one created first." Since UUIDs are random anyway, this is invisible to the user.
+**Case A — no valid candidate (none present, or only malformed entries):**
+1. Look up any orphan sidecar referenced by the contact's malformed URLs (e.g., `guesswho://contact/garbage` — strip the prefix and try as an ID). If a matching sidecar exists, adopt it under the new UUID assigned in step 3.
+2. Remove all malformed `guesswho://contact/…` URLs.
+3. Assign a fresh UUID, append `guesswho://contact/<new>` to `urlAddresses`, save the contact.
 
-### 3.5 Reconciliation when multiple GuessWho URLs are present
+**Case B — exactly one valid candidate, no malformed siblings:**
+- Untouched.
 
-If a contact's `urlAddresses` contains more than one `guesswho://contact/…` entry (which happens when two devices independently assigned a UUID before iCloud merged them):
+**Case C — exactly one valid candidate plus one or more malformed siblings:**
+- Keep the valid one. Remove the malformed entries. Save.
 
-1. **Pick a winner.** Sort the candidate UUIDs as strings (ASCII lexicographic) and pick the first. Deterministic across devices — every device reaches the same conclusion from the same merged contact.
-2. **Merge sidecars.** For each losing UUID, merge its sidecar into the winning UUID's sidecar with LWW semantics (see §5.3), then delete the loser sidecar file.
-3. **Rewrite the contact.** Remove the losing URLs from `urlAddresses` and save.
+**Case D — N valid candidates (N ≥ 2), with or without malformed siblings:**
+1. Sort the valid UUIDs as ASCII strings; the smallest is the **winner**.
+2. For each *loser* UUID: if a sidecar exists at that ID, merge it into the winner's sidecar with the per-field LWW rule in §5.3, then delete the loser sidecar file.
+3. Remove every losing `guesswho://contact/…` URL and every malformed `guesswho://contact/…` URL from `urlAddresses`. Keep the winner.
+4. Save the contact.
 
-This converges: once every device has reconciled the same contact, every device's `urlAddresses` contains exactly one GuessWho URL, and that UUID points at one merged sidecar.
+Convergence: once every device has reconciled the same merged contact, every device's `urlAddresses` contains exactly one GuessWho URL pointing at one merged sidecar.
+
+### 3.5 Orphan sidecars
+
+A sidecar file is *orphan* if no contact carries its UUID in `urlAddresses` after a full identity reconcile pass.
+
+**v1 policy:** orphan sidecars are **kept**, not deleted. A user deleting a contact on one device while another device writes to the same sidecar is the canonical case; we don't want a delete to silently destroy data. Orphans surface in `IdentityReconcileReport` so a host UI can prompt or batch-delete.
+
+A v2 policy could auto-GC orphans older than a threshold. Deferred — see §10.
 
 ## 4. Storage Boundary
 
@@ -70,35 +85,30 @@ This converges: once every device has reconciled the same contact, every device'
 |---|---|
 | **Contacts store (canonical, writable)** | Name, phone, email, postal address, birthday, organization, `urlAddresses` (including our GuessWho URL) |
 | **EventKit (canonical, read-only)** | Calendar events, attendees, location, recurrence — read but never written by this package |
-| **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships with the storage primitive and an empty schema; the host app defines the field set. |
-
-The package does **not** define what business fields go in the sidecar. It defines the *envelope* and the merge semantics; the caller passes opaque field data.
+| **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. |
 
 ## 5. Sidecar Format
 
 ### 5.1 Filesystem layout
 
-The package is given a **root `URL`** at init. The host decides whether that root is in a ubiquity container, a Documents folder, or a temp directory (tests use the last). Layout:
+The package takes a **root `URL`** at init. The host decides whether that root is in a ubiquity container, a Documents folder, or a temp directory (tests use the last). Layout:
 
 ```
 <root>/
-  contacts/
-    <uuid>.json
-  events/
-    <eventExternalID>.json
+  contacts/<uuid>.json
+  events/<eventExternalID-safe>.json
 ```
 
-One file per entity. This matters because `NSFileVersion` reports conflicts per-file — keeping contacts in separate files means a conflict on contact A never blocks contact B.
+One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict on contact A never blocks contact B.
+
+**Filename safety.** Contact UUIDs are safe as-is. Event external identifiers are opaque strings that may contain `/`, `:`, or other unsafe characters. The package transforms them with **percent-encoding** of every character outside `[A-Za-z0-9._-]` before using them as filenames. The inverse transform is applied on read. The stored `entityID` field inside the envelope is always the original (untransformed) string.
 
 ### 5.2 File schema
 
 ```json
 {
   "schemaVersion": 1,
-  "kind": "contact",                          // or "event"
-  "entityID": "<uuid or external id>",
-  "modifiedAt": "2026-06-14T22:00:00.000Z",   // = max of any field's modifiedAt
-  "modifiedBy": "<deviceID>",                 // device that wrote the most-recent field
+  "entityID": "<contact UUID or event externalID, untransformed>",
   "fields": {
     "nickname": {
       "value": "Bear",
@@ -119,197 +129,304 @@ One file per entity. This matters because `NSFileVersion` reports conflicts per-
 }
 ```
 
-- `schemaVersion` — bumped on breaking envelope changes; readers reject unknown versions rather than guessing.
-- `kind` + `entityID` — self-describes which entity it belongs to (defense against accidental moves).
-- Envelope-level `modifiedAt` / `modifiedBy` — derived from the fields. Equals `max((field.modifiedAt, field.modifiedBy))` across all fields. Used as a fast comparison key without parsing the whole `fields` map.
-- Each field is either a value cell `{value, modifiedAt, modifiedBy}` or a tombstone `{deleted: true, modifiedAt, modifiedBy}`. Field deletion writes a tombstone rather than removing the key, so a stale "I still have this value" write from another device can't resurrect it.
+**`schemaVersion`** — bumped on breaking envelope changes; readers refuse to merge or write unknown versions (see §6).
 
-### 5.3 LWW rule (v1: per-field)
+**`entityID`** — the canonical UUID string (contacts) or the raw `calendarItemExternalIdentifier` (events). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/`) disambiguates kind; there is no `kind` field.
 
-When two envelopes for the same entity must be merged, the merged envelope's `fields` map is computed by:
+**`fields`** — map of field name to *cell*. Each cell is either a **value cell** or a **tombstone cell**:
+- Value cell: `{ "value": <JSONValue>, "modifiedAt": <ISO8601 UTC>, "modifiedBy": <string> }`
+- Tombstone cell: `{ "deleted": true, "modifiedAt": <ISO8601 UTC>, "modifiedBy": <string> }`
+
+Exactly one of `value` and `deleted` must be present. Both is invalid; the cell is treated as malformed.
+
+`<JSONValue>` is any JSON value: `null`, `bool`, `number`, `string`, `array<JSONValue>`, `object<string, JSONValue>`. The package treats it opaquely.
+
+**No envelope-level timestamps.** The "latest" timestamp is derivable from the fields when needed.
+
+### 5.3 Per-field LWW merge
+
+To merge two envelopes `a` and `b` for the same entity:
 
 ```
-for each field name in (a.fields ∪ b.fields):
-    pick the entry whose (modifiedAt, modifiedBy) tuple is lexicographically larger
-    (ISO8601 timestamp first, deviceID as tiebreak)
+merged.entityID      = a.entityID  // must equal b.entityID; else fail
+merged.schemaVersion = 1
+merged.fields[k] for each k in (a.fields ∪ b.fields):
+    if only a has k: use a.fields[k]
+    if only b has k: use b.fields[k]
+    if both have k:  use the cell with larger (modifiedAt, modifiedBy)
+                     (ISO8601 lexicographic, then string lexicographic)
 ```
 
-If the winning entry for a field is a tombstone, the field stays deleted in the merged envelope (tombstone is kept, not stripped, so it can continue to suppress stale writes from devices that haven't seen the delete).
+A tombstone is a valid cell. Tombstones survive merges; they are not stripped, so a tombstone keeps suppressing a stale value-write from a device that hasn't seen the delete yet.
 
-After merging the `fields` map, the envelope-level `modifiedAt` / `modifiedBy` are recomputed as the max across all surviving entries.
+**Properties.** This merge is **commutative** (`merge(a, b) == merge(b, a)`) and **associative** (`merge(merge(a, b), c) == merge(a, merge(b, c))`). Both are required for convergence when ≥3 devices merge in different orders. §9 asserts both.
 
-Concurrent edits to *different* fields both survive. Concurrent edits to the *same* field collapse to whichever device's clock was later (with `modifiedBy` as a deterministic tiebreak).
+**Malformed input handling.**
+
+| Condition | Behavior |
+|---|---|
+| `modifiedAt` not ISO8601 | The cell is malformed → treated as absent. The other side's cell wins (or the field is absent from the merge if both sides are malformed). |
+| `modifiedBy` missing or empty | Treated as empty string `""` for the tiebreak. Not malformed. |
+| Cell has neither `value` nor `deleted` | Malformed → treated as absent. |
+| Cell has both `value` and `deleted` | Malformed → treated as absent. |
+| `modifiedAt` is in the future | Accepted as-is. The package does **not** clamp to wall-clock. Future timestamps will dominate; this is the user-acknowledged cost of clock skew (§5.4). |
+| `entityID` mismatch between `a` and `b` | Merge fails; reported in `ReconcileReport`. No write. |
+| `schemaVersion` ≠ 1 on either side | Merge refuses. The non-v1 envelope is left intact. Reported. |
+
+Malformed cells from a single side propagate as absent into the merge result; the merge does not preserve the malformed cell.
 
 ### 5.4 Clock skew is acknowledged, not solved
 
-Device clocks can disagree. A device with a fast clock can "win" LWW for a particular field by virtue of skew. We accept this because:
-- The sidecar holds non-critical auxiliary data.
-- Canonical data lives in the system stores.
-- Per-field granularity already eliminates the bigger failure mode (whole-file clobber of disjoint edits).
-
-The package logs `modifiedBy` on every write so a debugging human can see who wrote what.
+Device clocks can disagree. A device with a fast clock can "win" LWW for a field. We accept this because the sidecar holds non-critical data and per-field granularity already removes the bigger failure mode (whole-file clobber of disjoint edits). The package logs `modifiedBy` on every write.
 
 ### 5.5 Tombstone lifecycle
 
-Tombstones are cheap (one small JSON object per deleted field) and v1 never garbage-collects them. A v2 cleanup pass could remove tombstones older than some threshold (e.g., 90 days) once we're confident no live device is still holding a stale value from before the delete. Deferred — see §10.
+Tombstones live forever in v1. GC is deferred (§10).
 
 ## 6. iCloud Conflict Handling
 
-When two devices write the same sidecar concurrently, iCloud presents one as the current version and the others through `NSFileVersion.unresolvedConflictVersionsOfItem(at:)`. Each `NSFileVersion` exposes:
+When iCloud presents multiple versions of the same sidecar (current + `NSFileVersion.unresolvedConflictVersionsOfItem(at:)`), the package's `reconcileSidecars()`:
 
-- `url` — readable bytes of that version
-- `modificationDate` — wall-clock from the device that wrote it
-- `localizedNameOfSavingComputer` — informational
-- `persistentIdentifier` — opaque handle
-
-The package's `reconcile()` entry point:
-
-1. Lists conflict versions for each sidecar.
-2. Parses each version's bytes as a sidecar envelope.
-3. Applies the §5.3 LWW rule using the envelope's `modifiedAt`/`modifiedBy` (not `NSFileVersion.modificationDate` — the envelope is the source of truth and survives copy/move).
-4. Writes the winner to the current version, calls `replaceItem(at:options:)` if needed, marks losers `isResolved = true` and `remove()`s them.
-
-The package does **not** install an `NSFilePresenter` in v1. The host app calls `reconcile()` on a schedule it chooses (app launch, foreground, manual). v2 may add presenter wiring.
+1. **Collect.** For each conflicted file: gather the bytes of the current version and each conflict version.
+2. **Parse.** Decode each version into an envelope. A version whose bytes fail to parse, or whose `schemaVersion` ≠ 1, is **skipped** — not used in the merge and not deleted. It is reported in `ReconcileReport` so a human can investigate. (Skipping is conservative: never silently destroy data we can't read.)
+3. **N-way fold.** If at least two parseable v1 envelopes survive, fold them with §5.3 merge from left to right. Because merge is associative, the fold order does not matter.
+4. **Deletion conflict.** If one of the conflict versions represents a deletion (the file was removed on that device), it does **not** beat a live envelope. A delete that loses to a live envelope is silently dropped (the file remains). If *all* surviving versions are deletions, the file stays deleted.
+5. **Write back.** Write the merged envelope as the current version. Mark each conflict version `isResolved = true` and call `remove()`. Skipped versions (step 2) are left in conflict and reported; they are not marked resolved.
+6. **No conflict** on a file is a no-op.
 
 ## 7. Public API Surface
 
-### 7.1 Protocols (the DI seams)
+### 7.1 Models
+
+The package owns its own plain-Swift models — not `CNContact`/`EKEvent` — so mocks don't have to forge framework types. Adapters convert at the boundary.
+
+```swift
+public struct Contact: Hashable, Sendable {
+    public var localID: String                  // device-local CNContact.identifier
+    public var givenName: String
+    public var familyName: String
+    public var organization: String
+    public var phoneNumbers: [LabeledValue]
+    public var emailAddresses: [LabeledValue]
+    public var postalAddresses: [LabeledValue]
+    public var birthday: DateComponents?
+    public var urlAddresses: [LabeledValue]     // includes the GuessWho URL when assigned
+}
+
+public struct Event: Hashable, Sendable {
+    public var externalID: String               // calendarItemExternalIdentifier
+    public var title: String
+    public var startDate: Date
+    public var endDate: Date
+    public var isAllDay: Bool
+    public var location: String?
+    public var notes: String?
+}
+
+public struct LabeledValue: Hashable, Sendable {
+    public var label: String                    // e.g. "home", "work", "GuessWho"
+    public var value: String
+}
+
+public enum JSONValue: Hashable, Sendable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+}
+
+public enum SidecarKind: String, Sendable { case contact, event }
+
+public struct SidecarKey: Hashable, Sendable {
+    public let kind: SidecarKind
+    public let id: String                       // contact UUID or event externalID
+}
+
+public struct SidecarEnvelope: Sendable {
+    public let entityID: String
+    public let fields: [String: SidecarCell]
+}
+
+public enum SidecarCell: Sendable {
+    case value(JSONValue, modifiedAt: Date, modifiedBy: String)
+    case tombstone(modifiedAt: Date, modifiedBy: String)
+}
+```
+
+(Additional Contact/Event fields will be added when callers need them. v1 covers the field families listed in §4.)
+
+### 7.2 Protocols
 
 ```swift
 public protocol ContactStoreProtocol {
     func fetchAll() throws -> [Contact]
     func fetch(localID: String) throws -> Contact?
     func save(_ contact: Contact) throws
-    // (focused set; mirrors the slice of CNContactStore we actually use)
 }
 
 public protocol EventStoreProtocol {
     func fetchEvents(in: DateInterval) throws -> [Event]
     func fetch(externalID: String) throws -> Event?
-    // read-only — no save
+    // No save: events are read-only.
 }
 
 public protocol SidecarStoreProtocol {
-    func read(kind: SidecarKind, id: String) throws -> SidecarEnvelope?
-    func write(_ envelope: SidecarEnvelope) throws
-    func delete(kind: SidecarKind, id: String) throws
-    func reconcile() throws -> ReconcileReport
+    func read(_ key: SidecarKey) throws -> SidecarEnvelope?
+    func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws
+    func delete(_ key: SidecarKey) throws
+    func allKeys() throws -> [SidecarKey]
+    // Conflict iteration is on the file-system store only:
+    func conflictedKeys() throws -> [SidecarKey]
+    func conflictVersions(at key: SidecarKey) throws -> [Data]
+    func resolveConflicts(at key: SidecarKey, writing merged: SidecarEnvelope, skip: [Data]) throws
 }
 ```
 
-`Contact` and `Event` are plain Swift structs the package owns — *not* `CNContact`/`EKEvent` — so the mocks don't need to forge framework types. The real adapter maps `CNContact <-> Contact` and `EKEvent -> Event` at the boundary.
+Reconciliation lives in the orchestrator (§7.3), not the store. The store is just IO.
 
-### 7.2 The orchestrator
+### 7.3 Orchestrator
 
 ```swift
 public final class GuessWhoSync {
     public init(contacts: ContactStoreProtocol,
                 events: EventStoreProtocol,
                 sidecars: SidecarStoreProtocol,
-                deviceID: String,
-                clock: @escaping () -> Date = Date.init)
+                deviceID: String)
 
-    // Ensure every contact has exactly one canonical GuessWho URL.
-    // Performs the §3.5 reconciliation.
+    // Identity reconciliation (§3.4). Idempotent.
     public func reconcileContactIdentities() throws -> IdentityReconcileReport
 
-    // Resolve iCloud sidecar conflicts (§6).
-    public func reconcileSidecars() throws -> ReconcileReport
+    // iCloud conflict resolution for sidecars (§6). Idempotent.
+    public func reconcileSidecars() throws -> SidecarReconcileReport
 
-    // Look up the sidecar for a given contact/event by its canonical key.
+    // Read.
     public func sidecar(for contact: Contact) throws -> SidecarEnvelope?
     public func sidecar(for event: Event) throws -> SidecarEnvelope?
 
-    // Set one field on a contact's or event's sidecar. Stamps the current clock and deviceID.
-    public func setField(_ name: String, value: JSONValue, for contact: Contact) throws
-    public func setField(_ name: String, value: JSONValue, for event: Event) throws
+    // Write a single field. Read-modify-write on the current envelope.
+    // If contact has no GuessWho UUID, auto-assigns one and saves the contact.
+    public func setField(_ name: String, value: JSONValue, on key: SidecarKey) throws
 
-    // Delete a field — writes a tombstone rather than removing the key.
-    public func deleteField(_ name: String, for contact: Contact) throws
-    public func deleteField(_ name: String, for event: Event) throws
+    // Delete a single field — writes a tombstone, does not remove the key.
+    public func deleteField(_ name: String, on key: SidecarKey) throws
+
+    // Convenience: derive the SidecarKey for an entity. Returns nil for a contact
+    // with no GuessWho UUID — caller must reconcile identity or pass setField the
+    // result of a future call.
+    public func key(for contact: Contact) -> SidecarKey?
+    public func key(for event: Event) -> SidecarKey
+}
+
+public struct IdentityReconcileReport: Sendable {
+    public struct ContactOutcome: Sendable {
+        public let localID: String
+        public let assignedUUID: String?              // newly assigned, if any
+        public let mergedLoserUUIDs: [String]         // sidecars merged into the winner
+        public let removedMalformedURLs: [String]
+        public let errors: [String]
+    }
+    public let contactOutcomes: [ContactOutcome]
+    public let orphanSidecars: [SidecarKey]            // present but no contact carries the UUID
+}
+
+public struct SidecarReconcileReport: Sendable {
+    public struct FileOutcome: Sendable {
+        public let key: SidecarKey
+        public let mergedVersionCount: Int
+        public let skippedReasons: [String]            // bad JSON, unknown schemaVersion, etc.
+    }
+    public let fileOutcomes: [FileOutcome]
 }
 ```
 
-`clock` is injected so tests can drive time deterministically.
+**`setField` semantics.** Read the current envelope (or start with an empty one), set or replace the named cell with a fresh `(value, now, deviceID)`, write the whole envelope back. Single-process; the file-system store serializes writes per file (a brief in-memory lock keyed by `SidecarKey`). Cross-process concurrency on the same device is out of scope (§10).
 
-### 7.3 Mocks
+### 7.4 Mocks
 
-`InMemoryContactStore` and `InMemoryEventStore` ship in a test-support module. They are full implementations of the protocols backed by `[String: Contact]` / `[String: Event]` dictionaries. The same orchestrator code runs against mocks in tests and against real `CNContactStore`/`EKEventStore` adapters in production.
+`InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore` ship in a `GuessWhoSyncTesting` module. Each is a full implementation backed by a dictionary. The orchestrator runs unchanged against mocks (unit tests) and the real adapters (production).
 
-`InMemorySidecarStore` and `FileSystemSidecarStore` both implement `SidecarStoreProtocol`. The in-memory one is the fast path for unit tests; the filesystem one is used for integration tests and production (pointed at a ubiquity container or a temp dir).
+`FileSystemSidecarStore` is the real `SidecarStoreProtocol` implementation, wrapping a directory `URL` plus `NSFileVersion`.
 
-## 8. Module / Platform Decisions
+## 8. Modules / Platforms
 
 - **Package name:** `GuessWhoSync`
 - **Modules:**
-  - `GuessWhoSync` — protocols, models, orchestrator, file-system sidecar store, real Contacts/EventKit adapters
-  - `GuessWhoSyncTesting` — in-memory mocks, test helpers, time-control utilities. Importable by host apps for their own tests.
-- **Platforms:** iOS 17+, macOS 14+. Catalyst inherits from iOS. (Aligns with what GuessWho itself targets; can lower later if needed.)
+  - `GuessWhoSync` — protocols, models, orchestrator, `FileSystemSidecarStore`, real Contacts/EventKit adapters
+  - `GuessWhoSyncTesting` — in-memory mocks. Importable by host apps' tests too.
+- **Platforms:** iOS 17+, macOS 14+. Catalyst inherits from iOS.
 - **No external dependencies.** Foundation, Contacts, EventKit only.
 
 ## 9. Test Matrix
 
-### 9.1 Contact field edits (via mock)
-- create / read / update / delete name, phone, email, postal address, birthday
-- adding/removing URLs preserves GuessWho URL
-- saving a contact roundtrips unchanged
+### 9.1 Contact field edits (mocks)
+- create / read / update / delete name, phone, email, postal address, birthday, organization
+- adding/removing URLs preserves the GuessWho URL when present
+- save→fetch roundtrip is identity
 
-### 9.2 Sidecar edits (in-memory and filesystem stores)
+### 9.2 Sidecar IO (in-memory and filesystem)
 - write then read returns the same envelope
-- overwriting bumps `modifiedAt` and sets `modifiedBy` to the configured device ID
-- delete removes the file (and removes nothing else)
-- read of a missing entity returns nil, not throws
+- overwriting a field stamps `modifiedAt = now()` and `modifiedBy = deviceID`
+- delete writes a tombstone, not a key removal
+- read of a missing key returns nil
+- filename encoding: an event with an externalID containing `/` round-trips through write→read
 
-### 9.3 GuessWho URL assignment
-- a contact with no GuessWho URL gets one on first reconcile
-- a contact with one GuessWho URL is untouched
-- a contact with two GuessWho URLs: ASCII-lexicographically-smaller UUID wins; loser URL removed; sidecars merged
-- a contact with three or more GuessWho URLs reconciles to the smallest, merging all loser sidecars
-- a contact whose only GuessWho URL is malformed (not a valid UUID) is treated as missing and reassigned
+### 9.3 Identity reconciliation (§3.4)
+- Case A (no valid candidate): UUID assigned, URL appended
+- Case A with a malformed URL that names an existing sidecar ID: sidecar is adopted under the new UUID
+- Case B (one valid, no malformed): no-op
+- Case C (one valid + malformed siblings): malformed removed, valid kept
+- Case D, two valid candidates: lex-smallest wins; loser URL removed; loser sidecar merged
+- Case D, three valid candidates: still lex-smallest of all three wins; both losers merged into it
+- repeated reconcile on a stable contact is a no-op (idempotence)
 
-### 9.4 Sidecar LWW conflict resolution (per-field)
-- two envelopes editing disjoint fields: merged envelope contains the union, each field keeps its own timestamps
-- two envelopes editing the same field at different times: later `modifiedAt` wins
-- tie on a field's `modifiedAt`: lexicographically larger `modifiedBy` wins
-- envelope-level `modifiedAt` / `modifiedBy` after merge equal the max across all surviving field entries
-- tombstone vs. value on the same field: whichever has the later `modifiedAt` wins; if the tombstone wins, the field stays deleted and the tombstone survives the merge
-- two tombstones for the same field: later tombstone is kept
-- value-then-tombstone on one device merged with a stale value-only on another: tombstone wins iff its `modifiedAt` is later (expected behavior)
-- entity with no conflicts is untouched
-- envelope with unknown `schemaVersion` is left alone and reported in the reconcile report (no destructive write)
-- merging an envelope with itself is a no-op (idempotence)
-- merge is commutative: `merge(a, b)` equals `merge(b, a)` for any pair
+### 9.4 Per-field LWW merge (§5.3)
+- disjoint fields: both survive
+- same field, different times: later wins
+- same field, same `modifiedAt`: lex-larger `modifiedBy` wins
+- tombstone vs. live value: later `modifiedAt` wins; tombstone, if it wins, survives the merge
+- tombstone-then-recreate: a tombstone followed by a value-write with later `modifiedAt` produces a live field
+- **associativity:** for three envelopes `a`, `b`, `c`: `merge(merge(a, b), c)` equals `merge(a, merge(b, c))`
+- malformed `modifiedAt` on a cell: cell treated as absent; other side wins
+- missing `modifiedBy`: treated as `""` for tiebreak
+- both `value` and `deleted` set: cell treated as absent
+- entityID mismatch: merge fails with an error
+- schemaVersion ≠ 1 on either side: merge refuses; neither envelope is written
 
-### 9.5 Combined identity + sidecar reconciliation
-- two devices independently assign UUIDs A and B, each with a populated sidecar; after reconcile the contact has one URL (oldest), one sidecar at that UUID, containing the LWW merge of A and B's `fields`
-- repeated reconcile is idempotent (no churn on a stable state)
+### 9.5 Sidecar reconciliation under conflict (§6)
+- two conflict versions, both parseable v1: merged result written, both losers `remove()`d
+- three conflict versions: N-way fold produces the right merged envelope
+- one version has unparseable bytes: it is skipped (left in conflict, reported); the others merge normally
+- one version has `schemaVersion = 99`: same — skipped, reported, left intact
+- deletion conflict where one version is a deletion and another is a live envelope: live envelope wins; file remains
+- deletion conflict where every version is a deletion: file stays deleted
 
-### 9.6 Event sidecar
-- event lookup by `calendarItemExternalIdentifier` works
-- writing a sidecar for an event does not mutate the event itself in the mock
-- reading an event with no sidecar returns nil
-- LWW rules apply identically to event sidecars
+### 9.6 Combined identity + sidecar
+- two devices independently assign UUIDs A and B to the same contact, each with a populated sidecar; after `reconcileContactIdentities()` the contact has exactly one GuessWho URL (lex-smaller of A and B), one sidecar at that UUID, containing the per-field merge of A's and B's fields
+- contact deleted on device X while device Y writes a sidecar for its UUID: after reconcile on device X (which sees the deletion), the sidecar appears in `IdentityReconcileReport.orphanSidecars` and is **not** deleted
 
-### 9.7 Filesystem sidecar store (integration)
-- run §9.2 against `FileSystemSidecarStore` pointed at a `tmpDir`
-- conflict resolution: inject two files with the same name into a synthetic "conflict" state (using `NSFileVersion.add(of:withContentsOf:)` if practical, or by simulating the conflict-version array via a protocol seam — see §10)
+### 9.7 Event sidecars
+- event lookup by `externalID` works
+- writing a sidecar for an event does not mutate the event in the mock
+- per-field LWW rules apply identically to event sidecars
 
 ## 10. Open Questions Deliberately Deferred
 
-These are recorded so we don't re-discover them later. None block v1.
-
-1. **`NSFileVersion` in tests.** Real iCloud conflicts are hard to fabricate in unit tests. Plan: hide `NSFileVersion` behind a small protocol (`FileVersionListing`) so the conflict-resolution algorithm is testable with fakes. The filesystem store uses the real `NSFileVersion` implementation; tests use a fake that returns scripted conflict versions. To revisit during implementation.
-2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter` and expose a stream of "sidecar changed" events.
-3. **Tombstone garbage collection.** Tombstones live forever in v1. A v2 pass could remove tombstones older than a threshold (e.g., 90 days) once we're confident no live device is holding a pre-delete value. Deferred.
-4. **Non-iCloud Contacts sources.** Documented out of scope. May need a filter at the boundary in v2 (e.g., skip contacts whose `containerIdentifier` isn't iCloud).
-5. **Migration of `schemaVersion`.** v1 envelopes are v1. Writing a forward-compat migration is deferred until we ship a v2 schema.
-6. **Concurrent writers within a single device.** The filesystem store assumes single-process access; cross-process coordination on a phone is uncommon but possible (e.g., Share Extension). Deferred.
+1. **`NSFileVersion` in tests.** Hard to fabricate real iCloud conflicts in unit tests. Plan: hide `NSFileVersion` behind the `SidecarStoreProtocol.conflictedKeys` / `conflictVersions` / `resolveConflicts` methods (§7.2). Tests use the in-memory store's scripted conflict support; the file-system store uses real `NSFileVersion`. To refine during implementation.
+2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
+3. **Tombstone GC.** Tombstones live forever in v1.
+4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
 
 ## 11. Implementation Order
 
-1. Models (`Contact`, `Event`, `SidecarEnvelope`, `JSONValue`) and protocols.
-2. `InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore` with full test coverage of §9.1–9.4 against the mocks.
-3. Identity reconciler + sidecar merge logic + tests for §9.5–9.6.
-4. `FileSystemSidecarStore` + integration tests for §9.7.
-5. Real `CNContactStore` / `EKEventStore` adapters. Smoke-tested against a development device; not unit-tested.
-6. Documentation pass.
+Each phase ends with passing tests for the listed sections.
+
+1. **Models + protocols.** §7.1, §7.2 type declarations. No logic. (No tests yet.)
+2. **In-memory stores.** `InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore`. Tests: §9.1, §9.2 (in-memory rows only).
+3. **Per-field LWW merge function.** A pure function `merge(_ a: SidecarEnvelope, _ b: SidecarEnvelope) -> Result<SidecarEnvelope, MergeError>`. Tests: §9.4.
+4. **Identity reconciler.** `GuessWhoSync.reconcileContactIdentities()` against in-memory stores. Tests: §9.3, §9.6.
+5. **Sidecar conflict reconciler.** `GuessWhoSync.reconcileSidecars()` against in-memory stores with a scripted-conflict mode. Tests: §9.5.
+6. **Event sidecars.** Tests: §9.7.
+7. **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`.
+8. **Real `CNContactStore` / `EKEventStore` adapters.** Smoke-tested on device; not unit-tested.
