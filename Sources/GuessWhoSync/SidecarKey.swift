@@ -11,13 +11,20 @@ public struct SidecarKey: Hashable, Sendable {
 }
 
 extension SidecarKey {
+    public static let guessWhoContactURLPrefix = "guesswho://contact/"
+
+    public static func parseGuessWhoContactURL(_ value: String) -> String? {
+        guard value.hasPrefix(guessWhoContactURLPrefix) else { return nil }
+        let suffix = String(value.dropFirst(guessWhoContactURLPrefix.count))
+        guard UUID(uuidString: suffix) != nil else { return nil }
+        return suffix
+    }
+
     public static func forContact(_ contact: Contact) -> SidecarKey? {
-        let prefix = "guesswho://contact/"
         for url in contact.urlAddresses {
-            guard url.value.hasPrefix(prefix) else { continue }
-            let suffix = String(url.value.dropFirst(prefix.count))
-            guard UUID(uuidString: suffix) != nil else { continue }
-            return SidecarKey(kind: .contact, id: suffix)
+            if let uuid = parseGuessWhoContactURL(url.value) {
+                return SidecarKey(kind: .contact, id: uuid)
+            }
         }
         return nil
     }
