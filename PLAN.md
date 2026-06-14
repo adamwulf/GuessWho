@@ -60,9 +60,11 @@ When the package reconciles a contact's identity, it inspects every `urlAddresse
 
 **Case D — N valid candidates (N ≥ 2), with or without malformed siblings:**
 1. Sort the valid UUIDs as ASCII strings; the smallest is the **winner**.
-2. Start with the winner's existing sidecar if present (else empty). For each *loser* UUID with an existing sidecar, set `merged = merge(merged, loser)` per §5.3. Write `merged` at the winner UUID. Delete each loser sidecar file.
+2. Build the merge target: start with the winner's existing sidecar if present, otherwise an empty envelope with `entityID = winner UUID` and `fields = [:]`. For each *loser* UUID with an existing sidecar, rebase that sidecar onto the winner UUID (copy of the loser envelope with `entityID` set to the winner UUID; `fields` unchanged), then set `merged = merge(merged, rebased)` per §5.3. Write `merged` at the winner UUID. Delete each loser sidecar file.
 3. Remove every losing `guesswho://contact/…` URL and every malformed `guesswho://contact/…` URL from `urlAddresses`. Keep the winner.
 4. Save the contact.
+
+(The rebase step is the only place the package deliberately changes a sidecar's `entityID`. It's safe because identity reconciliation owns both the URLs and the sidecar IDs; no other caller observes the loser sidecar after this step.)
 
 Convergence: once every device has reconciled the same merged contact, every device's `urlAddresses` contains exactly one GuessWho URL pointing at one merged sidecar.
 
@@ -276,6 +278,9 @@ public protocol SidecarStoreProtocol {
 public enum ConflictResolution: Sendable {
     /// Write `merged` as current; mark every conflict version isResolved=true,
     /// remove(). Versions whose bytes appear in `skip` are left in conflict.
+    /// Matching is byte-equality on the version bytes; if two conflict versions
+    /// are byte-identical, they are treated as the same outcome (all matching
+    /// versions skipped together, or all marked resolved together).
     case write(merged: SidecarEnvelope, skip: [Data])
     /// Write `merged` to a sibling file; leave original current and all
     /// conflict versions intact. Used when current is unparseable (§6).
@@ -287,6 +292,8 @@ public enum ConflictResolution: Sendable {
 
 The orchestrator (§7.3) calls `reconcileConflicts` and supplies the merge logic via the closure. The store owns the `NSFileVersion` calls; the closure owns the policy (§6).
 
+**Closure error handling.** If `resolve` throws for a given file, the store records a failure outcome for that file (`mergedVersionCount = 0`, `skippedReasons` containing the thrown error description) and continues with the next file. `reconcileConflicts` itself never throws on a single-file failure; it only throws on store-level IO errors (e.g., can't enumerate the directory).
+
 ### 7.3 Orchestrator
 
 ```swift
@@ -296,7 +303,7 @@ public final class GuessWhoSync {
                 sidecars: SidecarStoreProtocol,
                 deviceID: String)
 
-    // Identity reconciliation (§3.4). Idempotent.
+    // Identity reconciliation (§3.3). Idempotent.
     public func reconcileContactIdentities() throws -> IdentityReconcileReport
 
     // iCloud conflict resolution for sidecars (§6). Idempotent.
@@ -337,6 +344,17 @@ public struct SidecarReconcileReport: Sendable {
 **`setField` semantics.** Read the current envelope (or start with an empty one), set or replace the named cell with a fresh `(value, now, deviceID)`, write the whole envelope back. Single-process; the file-system store serializes writes per file (a brief in-memory lock keyed by `SidecarKey`). Cross-process concurrency on the same device is out of scope (§10).
 
 **Identity is the caller's responsibility.** `SidecarKey` requires an ID, so writing to a contact's sidecar presumes the contact already has a GuessWho UUID. Callers must run `reconcileContactIdentities()` first (e.g., at app launch) to ensure every contact has a UUID; the resulting `IdentityReconcileReport.contactOutcomes` exposes the assigned UUID per contact.
+
+**Deriving a `SidecarKey` from a `Contact`.** Find the `LabeledValue` in `urlAddresses` whose `value` starts with `guesswho://contact/`, parse the suffix as a UUID, and build `SidecarKey(kind: .contact, id: uuid)`. After `reconcileContactIdentities()` returns, exactly one such URL is present per touched contact. The package exposes this as a static helper on `SidecarKey`:
+
+```swift
+extension SidecarKey {
+    public static func forContact(_ contact: Contact) -> SidecarKey?
+    public static func forEvent(_ event: Event) -> SidecarKey
+}
+```
+
+`forContact` returns nil if no GuessWho URL is present (caller forgot to reconcile, or contact is brand-new). `forEvent` is total because the event's `externalID` is the canonical key.
 
 ### 7.4 Mocks
 
