@@ -41,38 +41,32 @@ struct SidecarEnvelopeTests {
               "modifiedBy": "device-B"
             },
             "petName": {
-              "deleted": true,
+              "value": "Snuggles",
               "modifiedAt": "2026-06-13T10:00:00.000Z",
-              "modifiedBy": "device-A"
+              "modifiedBy": "device-A",
+              "deletedAt": "2026-06-13T10:00:00.000Z"
             }
           }
         }
         """#
-        let data = json.data(using: .utf8)!
-        let env = try decoder.decode(SidecarEnvelope.self, from: data)
+        let env = try decoder.decode(SidecarEnvelope.self, from: json.data(using: .utf8)!)
         #expect(env.schemaVersion == 1)
         #expect(env.entityID == "550e8400-e29b-41d4-a716-446655440000")
         #expect(env.fields.count == 3)
 
-        guard case .value(let nick, _, let nickBy) = env.fields["nickname"] else {
-            Issue.record("nickname should be a value cell")
-            return
-        }
-        #expect(nick == .string("Bear"))
-        #expect(nickBy == "device-A")
+        let nick = try #require(env.fields["nickname"])
+        #expect(nick.value == .string("Bear"))
+        #expect(nick.modifiedBy == "device-A")
+        #expect(nick.deletedAt == nil)
 
-        guard case .value(let notes, _, let notesBy) = env.fields["notes"] else {
-            Issue.record("notes should be a value cell")
-            return
-        }
-        #expect(notes == .string("Met at WWDC"))
-        #expect(notesBy == "device-B")
+        let notes = try #require(env.fields["notes"])
+        #expect(notes.value == .string("Met at WWDC"))
+        #expect(notes.modifiedBy == "device-B")
+        #expect(notes.deletedAt == nil)
 
-        guard case .tombstone(_, let petBy) = env.fields["petName"] else {
-            Issue.record("petName should be a tombstone")
-            return
-        }
-        #expect(petBy == "device-A")
+        let pet = try #require(env.fields["petName"])
+        #expect(pet.deletedAt != nil)
+        #expect(pet.value == .string("Snuggles"))
     }
 
     @Test
@@ -81,9 +75,9 @@ struct SidecarEnvelopeTests {
         let env = SidecarEnvelope(
             entityID: "abc",
             fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A"),
-                "petName": .tombstone(modifiedAt: when, modifiedBy: "device-A"),
-                "age": .value(.number(7), modifiedAt: when, modifiedBy: "device-B"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A"),
+                "petName": SidecarCell(value: .string("old"), modifiedAt: when, modifiedBy: "device-A", deletedAt: when),
+                "age": SidecarCell(value: .number(7), modifiedAt: when, modifiedBy: "device-B"),
             ]
         )
         let data = try encoder.encode(env)
@@ -92,21 +86,15 @@ struct SidecarEnvelopeTests {
         #expect(decoded.fields.count == 3)
         #expect(decoded.schemaVersion == 1)
 
-        if case .value(let v, _, _) = decoded.fields["nickname"] {
-            #expect(v == .string("Bear"))
-        } else {
-            Issue.record("nickname missing or wrong shape")
-        }
-        if case .value(let v, _, _) = decoded.fields["age"] {
-            #expect(v == .number(7))
-        } else {
-            Issue.record("age missing or wrong shape")
-        }
-        if case .tombstone = decoded.fields["petName"] {
-            // expected
-        } else {
-            Issue.record("petName missing or wrong shape")
-        }
+        let nick = try #require(decoded.fields["nickname"])
+        #expect(nick.value == .string("Bear"))
+        #expect(nick.deletedAt == nil)
+
+        let age = try #require(decoded.fields["age"])
+        #expect(age.value == .number(7))
+
+        let pet = try #require(decoded.fields["petName"])
+        #expect(pet.deletedAt != nil)
     }
 
     @Test
