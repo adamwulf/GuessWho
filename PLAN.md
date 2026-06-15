@@ -807,3 +807,169 @@ Promote ahead of existing 🔴 items — notes are the first user-visible sideca
 3. **NEW 🔴 (high)** — Two-device notes convergence smoke.
 4. Existing 🔴 §3.3 Case C and Case D smokes — unchanged priority; Case D extended per §12.6.
 5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium and add it to the medium-priority list in §11.1, reframed as "partial-update preserves untouched native fields, witnessed by `note`." We're no longer in the contacts-notes business, but the partial-update path still has to be proven to leave native fields alone — `note` remains the convenient canary.
+
+## 13. Entity Links (Sidecar-Only Feature)
+
+A `Link` connects two entities (contact or event) with an optional free-text note. Same shape works for person↔person, person↔event, person↔organization (organizations are contacts with `contactType == .organization`), org↔event, event↔event. `CNContactRelation` continues to round-trip via §7.1; `Link` is the orthogonal hard-reference path with a stable ID and a note attached.
+
+### 13.1 Data model
+
+A new Codable type in `Sources/GuessWhoSync/Link.swift`:
+
+```swift
+public struct Link: Hashable, Sendable, Codable {
+    public var id: UUID                // minted at create; stable across edits and merges
+    public var endpointA: SidecarKey   // canonicalized via SidecarKey.init (lowercased for .contact)
+    public var endpointB: SidecarKey
+    public var note: String            // free text; "" when absent
+    public var createdAt: Date         // immutable after creation
+    public var modifiedAt: Date        // bumped on note edit and on delete
+    public var modifiedBy: String      // device ID — same source as SidecarCell.modifiedBy
+    public var deleted: Bool           // soft-delete tombstone; survives merges
+}
+```
+
+**Endpoint canonicalization.** `SidecarKey.init` already lowercases contact UUIDs and leaves event externalIDs untouched (see `SidecarKey.swift`). `Link` inherits that — two devices constructing a link between the same pair always produce equal endpoint values regardless of input casing.
+
+**Endpoint ordering is not normalized.** A link from A→B and a link from B→A are two distinct `Link`s (different `id`s). The UI decides whether to render them as one bidirectional edge or two; the package treats them independently. This avoids a "which side is canonical" rule that would otherwise leak through every API.
+
+**Self-links are allowed at the data layer** (`endpointA == endpointB`). The package does not reject them; UI may.
+
+**Clock source.** Same as §12.1 — `Date()` at mutation time, no injectable clock.
+
+### 13.2 Storage layout — write to both endpoints' sidecars
+
+Each link is written to **both** `endpointA`'s and `endpointB`'s sidecars under the well-known field key `"links"`. The same `Link` value (same `id`, same endpoints, same note, same stamps) lands in both files. This is deliberate redundancy:
+
+- Loading "all links for this contact" or "all links for this event" reads one sidecar — no fan-out, no index file.
+- Per-link LWW (§13.3) converges both copies independently; a divergence between A's copy and B's copy of the same `id` resolves to the larger `(modifiedAt, modifiedBy)` on each device's next merge of *that* envelope. Both sides re-converge once both files have been merged.
+- A single-sided write (one envelope written, the other not yet) is self-healing: the next `addLink`/`removeLink`/reconcile that touches the missing side re-writes the link there. No two-phase commit.
+
+**`"links"` cell value shape.** Identical pattern to §12.2's `"notes"` cell — a `JSONValue.array` of link objects. Empty list ⇒ key omitted from envelope (per §12.2's "empty ⇒ absent" rule). Date encoding rules from §12.2 apply verbatim (ISO8601 with millisecond precision on output, permissive on input).
+
+```json
+"links": {
+  "value": [
+    {
+      "id": "…",
+      "endpointA": { "kind": "contact", "id": "…" },
+      "endpointB": { "kind": "event",   "id": "…" },
+      "note": "Met at WWDC.",
+      "createdAt": "2026-06-14T20:15:00.000Z",
+      "modifiedAt": "2026-06-14T20:15:00.000Z",
+      "modifiedBy": "device-A",
+      "deleted": false
+    }
+  ],
+  "modifiedAt": "2026-06-14T20:15:00.000Z",
+  "modifiedBy": "device-A"
+}
+```
+
+Outer cell `(modifiedAt, modifiedBy)` is the max across inner links (including tombstones), enforced by `encodeCell` — same invariant and enforcement as §12.2.
+
+### 13.3 Merge semantics — per-link LWW
+
+Identical structure to §12.3, with `Link` substituted for `ContactNote` and matching on `id`. `SidecarMerge.swift` grows a `mergeLinksCell(_:_:)` free function, dispatched from `merge(_:_:)` when `key == "links"` and both sides contain the key. Same §5.3 override semantics:
+
+- Both-sided malformed → both `[]`; the other side's valid links survive the union.
+- One-sided cell passes through verbatim (next reader normalizes via the lenient decoder).
+- Lenient element-level decode: a malformed array entry is dropped, valid ones kept.
+- Per-id LWW: larger `(modifiedAt, modifiedBy)` wins, applies symmetrically to live and tombstoned links.
+- Tombstones survive merges; UI filters them out.
+- Empty merged list ⇒ key omitted from result envelope.
+
+**Endpoints are immutable after creation.** Edit only changes `note` (and bumps `modifiedAt`); the same `id` always describes the same `(endpointA, endpointB)` pair. If a peer somehow ships a link with the same `id` but different endpoints, the lenient decoder treats it as a separate entry only if `id` differs; same `id` with different endpoints is a corrupt write — the LWW pick wins by stamp, and the loser's bytes are discarded. We do not detect or report this.
+
+**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deleted = false`. Edit mutates `note`, bumps `modifiedAt`, leaves everything else unchanged. Delete sets `deleted = true`, clears `note` to `""`, bumps `modifiedAt`.
+
+### 13.4 Interaction with the iCloud conflict reconciler
+
+`reconcileSidecars()` is unchanged. The N-fold via `merge(_:_:)` now also dispatches to `mergeLinksCell` for `"links"`. Per-envelope convergence is automatic. Cross-envelope convergence (A's sidecar vs B's sidecar holding "the same" link) is **not** a reconcile-time concern — they are independent envelopes with the same logical content; they converge when the orchestrator re-writes through `addLink`/`removeLink`, or never (the per-side copies stay correct because LWW within each envelope is correct).
+
+### 13.5 Interaction with identity reconciliation
+
+§3.3 Case D rebases a loser-UUID's sidecar into the winner via `merge(_:_:)`, so any link in the loser's `"links"` cell folds into the winner's by per-link LWW. **But** any link whose `endpointA` or `endpointB` *refers to* the loser UUID — including links living in *other* sidecars — still points at the dead UUID after the rebase.
+
+Resolution: when Case D collapses loser UUID `L` into winner UUID `W`, the orchestrator additionally walks every sidecar that has a `"links"` cell and rewrites occurrences of `SidecarKey(kind: .contact, id: L)` to `SidecarKey(kind: .contact, id: W)` in `endpointA`/`endpointB`. Each rewrite bumps `modifiedAt` and `modifiedBy = deviceID` so peers' next merge picks up the corrected endpoint via standard LWW. Two devices independently performing the rebase produce the same rewrite (same `W` from §3.3's lex-min rule), so the converged value is stable.
+
+The rewrite scan is O(N sidecars) and runs only when Case D fires for at least one contact. Implementation hook: a new private step at the end of `reconcileContactIdentities()` and `reconcileContactIdentity(localID:)` that consumes the per-contact `mergedLoserUUIDs` list and applies the rewrite. The single-contact entry point performs the same rewrite — single-contact reconcile must leave links pointing at the rebased contact in a consistent state.
+
+`IdentityReconcileReport.ContactOutcome` gains an integer `rewrittenLinkEndpointCount` so callers can observe the rewrite happened.
+
+Orphan sidecars (§3.4) are still not auto-deleted; any link pointing at an orphan endpoint is also left intact. Same v1 stance as §3.4.
+
+### 13.6 Public API
+
+Added to `GuessWhoSync` (§7.3). All four operations are thin wrappers over `setField` on the two endpoint sidecars; the orchestrator handles the dual-write.
+
+```swift
+extension GuessWhoSync {
+    /// Creates a link between two entities. Idempotent at the call site —
+    /// callers checking for an existing live link with the same (endpointA,
+    /// endpointB) pair should do so before calling. Returns the minted Link.
+    public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link
+
+    /// Mutates the note on an existing link in both endpoint sidecars.
+    /// Bumps modifiedAt/modifiedBy. No-op if `id` is unknown in both sidecars.
+    public func setLinkNote(id: UUID, note: String) throws
+
+    /// Tombstones the link in both endpoint sidecars.
+    public func removeLink(id: UUID) throws
+
+    /// Returns all live (non-tombstoned) links present in the given entity's
+    /// sidecar. Tombstones are filtered out before return.
+    public func links(at key: SidecarKey) throws -> [Link]
+}
+```
+
+**`setLinkNote` / `removeLink` need the endpoints to know which two files to write.** They first read one occurrence of the link (either endpoint's sidecar will do — caller may have come from `links(at:)` and knows one side already) to recover `endpointA`/`endpointB`, then write to both. The signature takes only `id` because v1 expects callers to have read the link via `links(at:)` first; if neither endpoint sidecar has the id, the call is a silent no-op (returns normally). Internally, the orchestrator resolves the endpoints by reading one sidecar — start with the contact/event the caller most recently touched is a UI concern, not a package one; the package just tries both. If the link is missing from one sidecar but present in the other (the single-sided self-healing case from §13.2), the write fixes it.
+
+**No `linksFromContact(localID:)` convenience.** Callers go through `SidecarKey.forContact(_:)` → `links(at:)`. Keeps the API surface to the four primitives above.
+
+### 13.7 Test plan
+
+**Unit tests (new module `LinkTests`):**
+- `LinksCellCodecTests`: round-trip `[Link]` ↔ `SidecarCell` (empty, mixed live/tombstone); absent cell decodes to `[]`; §5.2 tombstone cell decodes to `[]`; partially-malformed array drops the bad element and keeps the rest; permissive ISO8601 decoder accepts `Z`/`+00:00` and fractional/no-fractional variants (mirroring §12.2 strictness).
+- `LinkMergeTests` (§9.4 addition):
+  - Same `id`, both sides, larger `(modifiedAt, modifiedBy)` wins.
+  - Parallel creates (different `id`s): both survive.
+  - Edit vs. delete on same `id`, different stamps: newer wins.
+  - Edit vs. delete on same `id`, identical `modifiedAt`: `modifiedBy` lex tiebreak.
+  - Tombstone vs. older edit: tombstone wins. Two tombstones: larger stamp wins.
+  - Only-one-side has `"links"`: result equals that side's cell verbatim.
+  - Empty merged list: result envelope omits `"links"`.
+  - Both sides malformed: result envelope omits `"links"`.
+  - Outer-cell stamp equals max across all merged links (including tombstones).
+  - Same `id`, conflicting endpoints: LWW pick wins, no panic.
+  - Commutativity and associativity across randomized 3-link lists.
+- `LinkEnvelopeTests` (§9.5 addition):
+  - 3-way N-fold via `reconcileSidecars()` with three disjoint links — all three appear in the result.
+  - 3-way N-fold where two of the three carry a tombstone for the same `id` at different stamps — later tombstone wins; no resurrection.
+- `LinkIdentityRewriteTests` (§9.3/§9.8 addition):
+  - Case D rebases `L` → `W`. A link in a third contact's sidecar with `endpointB = (.contact, L)` is rewritten to `(.contact, W)` after reconcile; stamp is bumped. `rewrittenLinkEndpointCount == 1`.
+  - Single-contact `reconcileContactIdentity(localID:)` for a Case-D target performs the same rewrite.
+  - No Case D ⇒ no rewrite (counter stays zero).
+- `LinkAPITests` (orchestrator-level, against in-memory stores):
+  - `addLink` writes to both endpoint sidecars; both contain the same `Link`.
+  - `setLinkNote` updates both sides; stamps converge.
+  - `removeLink` tombstones in both sides; `links(at:)` filters tombstones.
+  - `removeLink` on unknown `id`: silent no-op, no throw.
+  - Single-sided self-heal: pre-seed `endpointA`'s sidecar with a live link missing from `endpointB`; call `setLinkNote`; both sides now carry the link.
+  - Event↔event link round-trips. Org↔contact link (a contact with `contactType == .organization`) round-trips — package is type-agnostic at the link layer.
+
+### 13.8 Slot in §11.1
+
+Slots after §12 (notes), before existing Case-C/Case-D smokes — links build on the notes pattern and the Case-D smoke gets extended.
+
+1. **NEW 🔴 (high)** — `Link` model, `LinksCellCodec`, per-link merge branch in `SidecarMerge.swift`, and the four orchestrator methods.
+2. **NEW 🔴 (high)** — Case-D link-endpoint rewrite step in `reconcileContactIdentities()` and `reconcileContactIdentity(localID:)`; `rewrittenLinkEndpointCount` on `ContactOutcome`.
+3. **NEW 🔴 (medium)** — Two-device convergence smoke: device A adds a person↔event link with a note, device B independently adds a different link between the same two entities. After sync, both devices show both links.
+4. Existing 🔴 §3.3 Case D smoke is extended: include one link in each pre-merge sidecar pointing at a third contact; after reconcile, the third contact's sidecar shows both links with the winner UUID as endpoint.
+
+### 13.9 Deferred
+
+- **No link query index.** v1 finds links only by reading the endpoint sidecars. A global "all links" sweep requires `allKeys()` + per-file decode. Acceptable for v1; v2 may add a cache.
+- **No bidirectional dedup.** A→B and B→A remain distinct links. UI may render them as one edge.
+- **No link-typed schema** (e.g. "met at", "works with"). The `note` field carries semantics for v1. Adding a typed enum later is purely additive — old links decode with the default type.
+- **No orphan-link GC.** Links pointing at deleted or unknown endpoints survive. Same stance as §3.4 orphan sidecars.
