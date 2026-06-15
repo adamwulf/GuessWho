@@ -100,111 +100,116 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
-    public func reconcileConflicts(
-        _ resolve: (_ key: SidecarKey, _ versions: [Data]) throws -> ConflictResolution
-    ) throws -> [SidecarReconcileReport.FileOutcome] {
-        var outcomes: [SidecarReconcileReport.FileOutcome] = []
-
+    public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
+        var result: [SidecarKey] = []
         for key in try allKeys() {
             let url = fileURL(for: key)
-            guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
-                  !conflicts.isEmpty else {
-                continue
+            if let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+               !conflicts.isEmpty {
+                result.append(key)
             }
+        }
+        return result
+    }
 
-            // Current is NOT in `conflicts`; gather it explicitly so the closure sees every version.
-            var allBytes: [Data] = []
-            if let current = NSFileVersion.currentVersionOfItem(at: url),
-               let bytes = try? Data(contentsOf: current.url) {
+    public func reconcileConflict(
+        at key: SidecarKey,
+        resolve: (_ versions: [Data]) throws -> ConflictResolution
+    ) throws -> SidecarReconcileReport.FileOutcome? {
+        let url = fileURL(for: key)
+        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+              !conflicts.isEmpty else {
+            return nil
+        }
+
+        // Cache the bytes from the first read pass so the skip-matching pass
+        // below never re-reads from disk. A second read can fail (e.g.
+        // NSFileVersion's underlying file got swept) and would otherwise
+        // produce an empty Data() that fails to match any entry in `skip`,
+        // silently deleting a version the resolver explicitly asked to keep.
+        var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
+        var allBytes: [Data] = []
+        if let current = NSFileVersion.currentVersionOfItem(at: url),
+           let bytes = try? Data(contentsOf: current.url) {
+            allBytes.append(bytes)
+        }
+        for version in conflicts {
+            let bytes = try? Data(contentsOf: version.url)
+            conflictBytesByVersionID.append((version, bytes))
+            if let bytes {
                 allBytes.append(bytes)
-            }
-            for version in conflicts {
-                if let bytes = try? Data(contentsOf: version.url) {
-                    allBytes.append(bytes)
-                }
-            }
-
-            let resolution: ConflictResolution
-            do {
-                resolution = try resolve(key, allBytes)
-            } catch {
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: 0,
-                        skippedReasons: [String(describing: error)]
-                    )
-                )
-                continue
-            }
-
-            switch resolution {
-            case .write(let merged, let skip):
-                let mergedData = try JSONEncoder().encode(merged)
-                try withWriteLock {
-                    var mergedWriteError: Error?
-                    try coordinatedWrite(at: url) { safeURL in
-                        do {
-                            try mergedData.write(to: safeURL, options: [.atomic])
-                        } catch {
-                            mergedWriteError = error
-                        }
-                    }
-                    if let mergedWriteError { throw mergedWriteError }
-                }
-
-                var skippedCount = 0
-                for version in conflicts {
-                    let bytes = (try? Data(contentsOf: version.url)) ?? Data()
-                    if skip.contains(bytes) {
-                        skippedCount += 1
-                    } else {
-                        version.isResolved = true
-                        try? version.remove()
-                    }
-                }
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: allBytes.count - skippedCount,
-                        skippedReasons: []
-                    )
-                )
-
-            case .writeRecoverySibling(let merged, let suffix):
-                let mergedData = try JSONEncoder().encode(merged)
-                let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-                try withWriteLock {
-                    var siblingWriteError: Error?
-                    try coordinatedWrite(at: siblingURL) { safeURL in
-                        do {
-                            try mergedData.write(to: safeURL, options: [.atomic])
-                        } catch {
-                            siblingWriteError = error
-                        }
-                    }
-                    if let siblingWriteError { throw siblingWriteError }
-                }
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: 0,
-                        skippedReasons: ["wrote recovery sibling: \(suffix)"]
-                    )
-                )
-
-            case .leave:
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: 0,
-                        skippedReasons: []
-                    )
-                )
             }
         }
 
-        return outcomes
+        let resolution: ConflictResolution
+        do {
+            resolution = try resolve(allBytes)
+        } catch {
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                mergedVersionCount: 0,
+                skippedReasons: [String(describing: error)]
+            )
+        }
+
+        switch resolution {
+        case .write(let merged, let skip):
+            let mergedData = try JSONEncoder().encode(merged)
+            var mergedWriteError: Error?
+            try coordinatedWrite(at: url) { safeURL in
+                do {
+                    try mergedData.write(to: safeURL, options: [.atomic])
+                } catch {
+                    mergedWriteError = error
+                }
+            }
+            if let mergedWriteError { throw mergedWriteError }
+
+            var skippedCount = 0
+            for (version, cachedBytes) in conflictBytesByVersionID {
+                // If the first read failed, this version was never a
+                // parseable candidate. Treat it as "not in skip" so the
+                // default removal still applies; the resolver had no way to
+                // request it kept.
+                let bytes = cachedBytes ?? Data()
+                if cachedBytes != nil, skip.contains(bytes) {
+                    skippedCount += 1
+                } else {
+                    version.isResolved = true
+                    try? version.remove()
+                }
+            }
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                mergedVersionCount: allBytes.count - skippedCount,
+                skippedReasons: []
+            )
+
+        case .writeRecoverySibling(let merged, let suffix):
+            let mergedData = try JSONEncoder().encode(merged)
+            let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
+            var siblingWriteError: Error?
+            try coordinatedWrite(at: siblingURL) { safeURL in
+                do {
+                    try mergedData.write(to: safeURL, options: [.atomic])
+                } catch {
+                    siblingWriteError = error
+                }
+            }
+            if let siblingWriteError { throw siblingWriteError }
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                mergedVersionCount: 0,
+                skippedReasons: ["wrote recovery sibling: \(suffix)"]
+            )
+
+        case .leave:
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                mergedVersionCount: 0,
+                skippedReasons: []
+            )
+        }
     }
 
     // MARK: - Helpers
