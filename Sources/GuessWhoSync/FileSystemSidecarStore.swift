@@ -11,8 +11,32 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // redundant but correct.
     private let fileLocks = PerKeyLockTable<SidecarKey>()
 
-    public init(root: URL) {
+    // Closure consulted when a coordinated read/write/delete doesn't finish
+    // within `perAttemptTimeout`. See `SidecarBusyHandler` docs for the
+    // contract. Default: `defaultSidecarBusyHandler` (3 retries, exponential
+    // backoff from 250ms, then fail).
+    public var busyHandler: SidecarBusyHandler
+
+    // Per-attempt budget for a coordinated read/write/delete. If the
+    // coordinator hasn't returned by this point, the busy handler is
+    // consulted. Defaults to 1 second.
+    public var perAttemptTimeout: TimeInterval
+
+    // Background queue the coordinator runs on so the calling thread can
+    // wait with a timeout. One serial queue per store instance — coordinator
+    // calls are coarse-grained and don't need parallel dispatch.
+    private let coordinatorQueue = DispatchQueue(
+        label: "GuessWhoSync.FileSystemSidecarStore.coordinator"
+    )
+
+    public init(
+        root: URL,
+        busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
+        perAttemptTimeout: TimeInterval = 1.0
+    ) {
         self.root = root
+        self.busyHandler = busyHandler
+        self.perAttemptTimeout = perAttemptTimeout
     }
 
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
@@ -32,14 +56,14 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             case failed(Error)
         }
         var outcome: Outcome = .missing
-        try coordinatedRead(at: url) { safeURL in
+        try coordinatedRead(key: key, at: url) { safeURL in
             if fm.fileExists(atPath: safeURL.path) {
                 do {
                     outcome = .bytes(try Data(contentsOf: safeURL))
                 } catch {
                     outcome = .failed(error)
                 }
-            } else if fm.fileExists(atPath: placeholderURL(for: safeURL).path) {
+            } else if fm.fileExists(atPath: self.placeholderURL(for: safeURL).path) {
                 outcome = .placeholderPresent
             } else {
                 outcome = .missing
@@ -70,7 +94,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             let data = try JSONEncoder().encode(envelope)
 
             var writeError: Error?
-            try coordinatedWrite(at: url) { safeURL in
+            try coordinatedWrite(key: key, at: url) { safeURL in
                 do {
                     try data.write(to: safeURL, options: [.atomic])
                 } catch {
@@ -87,7 +111,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             guard FileManager.default.fileExists(atPath: url.path) else { return }
 
             var deleteError: Error?
-            try coordinatedDelete(at: url) { safeURL in
+            try coordinatedDelete(key: key, at: url) { safeURL in
                 do {
                     try FileManager.default.removeItem(at: safeURL)
                 } catch {
@@ -186,7 +210,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         at key: SidecarKey,
         resolve: (_ versions: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome? {
-        try fileLocks.withLock(forKey: key) {
+        try fileLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
             let url = fileURL(for: key)
             guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
                   !conflicts.isEmpty else {
@@ -228,7 +252,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             case .write(let merged, let skip):
                 let mergedData = try JSONEncoder().encode(merged)
                 var mergedWriteError: Error?
-                try coordinatedWrite(at: url) { safeURL in
+                try coordinatedWrite(key: key, at: url) { safeURL in
                     do {
                         try mergedData.write(to: safeURL, options: [.atomic])
                     } catch {
@@ -261,7 +285,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 let mergedData = try JSONEncoder().encode(merged)
                 let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
                 var siblingWriteError: Error?
-                try coordinatedWrite(at: siblingURL) { safeURL in
+                try coordinatedWrite(key: key, at: siblingURL) { safeURL in
                     do {
                         try mergedData.write(to: safeURL, options: [.atomic])
                     } catch {
@@ -388,30 +412,124 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // mid-write or race deletes. NSFileCoordinator serializes our access
     // against cloudd; the closure receives the URL it should actually use
     // (the coordinator may substitute, e.g., a temporary).
-    private func coordinatedRead(at url: URL, _ body: (URL) -> Void) throws {
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
-            body(safeURL)
+    //
+    // The coordinator call runs on `coordinatorQueue` so the caller can wait
+    // with a per-attempt timeout. If the wait expires, the busy handler
+    // decides whether to retry, sleep+retry, or fail with `.timedOut(key)`.
+    // A coordinator call that eventually finishes after we've moved on is
+    // left to run to completion in the background — see `runWithBusyHandling`
+    // for the leak discussion.
+    private func coordinatedRead(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        try runWithBusyHandling(key: key) {
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordError: NSError?
+            coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
+                body(safeURL)
+            }
+            if let coordError { throw coordError }
         }
-        if let coordError { throw coordError }
     }
 
-    private func coordinatedWrite(at url: URL, _ body: (URL) -> Void) throws {
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
-            body(safeURL)
+    private func coordinatedWrite(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        try runWithBusyHandling(key: key) {
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordError: NSError?
+            coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
+                body(safeURL)
+            }
+            if let coordError { throw coordError }
         }
-        if let coordError { throw coordError }
     }
 
-    private func coordinatedDelete(at url: URL, _ body: (URL) -> Void) throws {
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordError) { safeURL in
-            body(safeURL)
+    private func coordinatedDelete(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        try runWithBusyHandling(key: key) {
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordError: NSError?
+            coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordError) { safeURL in
+                body(safeURL)
+            }
+            if let coordError { throw coordError }
         }
-        if let coordError { throw coordError }
+    }
+
+    // Run `operation` on `coordinatorQueue` with a per-attempt wait of
+    // `perAttemptTimeout`. The operation is dispatched ONCE; we never
+    // re-issue. On wait-timeout we consult the busy handler:
+    //   .retry          → keep waiting (next per-attempt slice).
+    //   .retryAfter(t)  → sleep, then keep waiting.
+    //   .fail           → throw `.timedOut(key)` and abandon the operation.
+    //
+    // Re-issuing was rejected as a design: NSFileCoordinator has no
+    // cancellation, so a stuck coordinator call sits there forever, and
+    // launching parallel attempts just multiplies stuck calls without
+    // freeing the resource. "Block forever" still works (install a handler
+    // that returns `.retry` forever); "best effort, eventually fail" still
+    // works (default handler).
+    //
+    // If the operation eventually completes after we threw `.timedOut`, its
+    // body still runs on the background queue — captures live in
+    // `ResultBox` (heap) so a late completion never writes to a dead
+    // stack frame. The captured box is then garbage-collected; the
+    // coordinator queue is reused for the next call.
+    // Internal (not private) so @testable imports can probe the busy-handling
+    // behavior without going through the coordinator wrappers.
+    func runWithBusyHandling(
+        key: SidecarKey,
+        operation: @escaping () throws -> Void
+    ) throws {
+        let started = SidecarMonotonicClock.now()
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = ResultBox()
+        coordinatorQueue.async {
+            do {
+                try operation()
+                resultBox.error = nil
+            } catch {
+                resultBox.error = error
+            }
+            resultBox.didComplete = true
+            semaphore.signal()
+        }
+
+        var attempt = 0
+        while true {
+            let outcome = semaphore.wait(timeout: .now() + perAttemptTimeout)
+            switch outcome {
+            case .success:
+                if let error = resultBox.error { throw error }
+                return
+            case .timedOut:
+                let elapsed = SidecarMonotonicClock.now() - started
+                switch busyHandler(key, attempt, elapsed) {
+                case .retry:
+                    attempt += 1
+                    continue
+                case .retryAfter(let delay):
+                    if delay > 0 {
+                        Thread.sleep(forTimeInterval: delay)
+                    }
+                    attempt += 1
+                    continue
+                case .fail:
+                    throw SidecarStoreError.timedOut(key)
+                }
+            }
+        }
+    }
+}
+
+// Box for the bg worker to write its outcome; read by the waiter after the
+// semaphore signals. Heap-allocated so a late completion can write to it
+// even after the waiter threw `.timedOut` and returned.
+private final class ResultBox {
+    var error: Error?
+    var didComplete: Bool = false
+}
+
+// Monotonic clock for elapsed-time measurement. Avoids wall-clock skew if
+// the system time jumps mid-operation.
+private enum SidecarMonotonicClock {
+    static func now() -> TimeInterval {
+        TimeInterval(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 }
