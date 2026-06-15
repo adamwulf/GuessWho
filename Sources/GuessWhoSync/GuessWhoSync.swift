@@ -18,6 +18,36 @@ public final class GuessWhoSync {
         self.deviceID = deviceID
     }
 
+    public func sidecar(at key: SidecarKey) throws -> SidecarEnvelope? {
+        try sidecars.read(key)
+    }
+
+    public func setField(_ name: String, value: JSONValue, at key: SidecarKey) throws {
+        let existing = try sidecars.read(key)
+        let cell = SidecarCell.value(value, modifiedAt: Date(), modifiedBy: deviceID)
+        var fields = existing?.fields ?? [:]
+        fields[name] = cell
+        let envelope = SidecarEnvelope(
+            schemaVersion: 1,
+            entityID: existing?.entityID ?? key.id,
+            fields: fields
+        )
+        try sidecars.write(envelope, at: key)
+    }
+
+    public func deleteField(_ name: String, at key: SidecarKey) throws {
+        let existing = try sidecars.read(key)
+        let tombstone = SidecarCell.tombstone(modifiedAt: Date(), modifiedBy: deviceID)
+        var fields = existing?.fields ?? [:]
+        fields[name] = tombstone
+        let envelope = SidecarEnvelope(
+            schemaVersion: 1,
+            entityID: existing?.entityID ?? key.id,
+            fields: fields
+        )
+        try sidecars.write(envelope, at: key)
+    }
+
     public func reconcileSidecars() throws -> SidecarReconcileReport {
         var reasonsByKey: [SidecarKey: [String]] = [:]
 
