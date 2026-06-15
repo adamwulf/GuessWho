@@ -356,6 +356,45 @@ struct IdentityReconcilerTests {
         #expect(try sidecars.read(SidecarKey(kind: .contact, id: beta)) == nil)
     }
 
+    // MARK: - Duplicate-UUID and case-canonicalization
+
+    @Test
+    func caseB_duplicateSameUUIDCollapsesToSingleURL() throws {
+        let url = "guesswho://contact/" + alpha
+        let contact = Contact(
+            localID: "C1",
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: url),
+                LabeledValue(label: "GuessWho", value: url),
+            ]
+        )
+        let contacts = InMemoryContactStore(contacts: [contact])
+        let sidecars = InMemorySidecarStore()
+        try sidecars.write(
+            SidecarEnvelope(entityID: alpha, fields: [
+                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+            ]),
+            at: SidecarKey(kind: .contact, id: alpha)
+        )
+
+        let sync = makeSync(contacts: contacts, sidecars: sidecars)
+        let report = try sync.reconcileContactIdentities()
+
+        let outcome = report.contactOutcomes[0]
+        #expect(outcome.assignedUUID == nil)
+        #expect(outcome.mergedLoserUUIDs.isEmpty)
+        #expect(outcome.removedMalformedURLs.isEmpty)
+        #expect(outcome.errors.isEmpty)
+
+        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let gwURLs = guessWhoURLs(in: saved)
+        #expect(gwURLs == [url])
+
+        let kept = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
+        #expect(kept.fields.keys.contains("nickname"))
+        #expect(!report.orphanSidecars.contains(SidecarKey(kind: .contact, id: alpha)))
+    }
+
     @Test
     func combined_deletedContactLeavesOrphanSidecarUntouched() throws {
         let contacts = InMemoryContactStore()

@@ -124,22 +124,40 @@ public final class GuessWhoSync {
 
     private func reconcile(contact original: Contact) throws -> ContactReconcileResult {
         var contact = original
-        var validUUIDs: [String] = []
+        var uniqueValidUUIDs: [String] = []
+        var seenUUIDs: Set<String> = []
+        var hadDuplicateUUID = false
         var malformedURLs: [String] = []
 
         for url in contact.urlAddresses {
             guard url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) else { continue }
             if let uuid = SidecarKey.parseGuessWhoContactURL(url.value) {
-                validUUIDs.append(uuid)
+                if seenUUIDs.insert(uuid).inserted {
+                    uniqueValidUUIDs.append(uuid)
+                } else {
+                    hadDuplicateUUID = true
+                }
             } else {
                 malformedURLs.append(url.value)
             }
         }
 
-        switch validUUIDs.count {
+        // Collapse repeat occurrences of the SAME canonical UUID down to one URL entry,
+        // so only DIFFERENT canonical UUIDs reach Case D's keep-smaller-delete-larger logic.
+        if hadDuplicateUUID {
+            var keptUUIDs: Set<String> = []
+            contact.urlAddresses.removeAll { url in
+                guard url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix),
+                      let uuid = SidecarKey.parseGuessWhoContactURL(url.value)
+                else { return false }
+                return !keptUUIDs.insert(uuid).inserted
+            }
+        }
+
+        switch uniqueValidUUIDs.count {
         case 0:
             return try handleCaseA(contact: &contact, malformedURLs: malformedURLs)
-        case 1 where malformedURLs.isEmpty:
+        case 1 where malformedURLs.isEmpty && !hadDuplicateUUID:
             return ContactReconcileResult(
                 report: IdentityReconcileReport.ContactOutcome(
                     localID: contact.localID,
@@ -148,12 +166,25 @@ public final class GuessWhoSync {
                     removedMalformedURLs: [],
                     errors: []
                 ),
-                carriedUUIDs: validUUIDs
+                carriedUUIDs: uniqueValidUUIDs
+            )
+        case 1 where malformedURLs.isEmpty:
+            // Duplicate URL entries collapsed; persist the trimmed contact, no other changes.
+            try contacts.save(contact)
+            return ContactReconcileResult(
+                report: IdentityReconcileReport.ContactOutcome(
+                    localID: contact.localID,
+                    assignedUUID: nil,
+                    mergedLoserUUIDs: [],
+                    removedMalformedURLs: [],
+                    errors: []
+                ),
+                carriedUUIDs: uniqueValidUUIDs
             )
         case 1:
-            return try handleCaseC(contact: &contact, validUUID: validUUIDs[0], malformedURLs: malformedURLs)
+            return try handleCaseC(contact: &contact, validUUID: uniqueValidUUIDs[0], malformedURLs: malformedURLs)
         default:
-            return try handleCaseD(contact: &contact, validUUIDs: validUUIDs, malformedURLs: malformedURLs)
+            return try handleCaseD(contact: &contact, validUUIDs: uniqueValidUUIDs, malformedURLs: malformedURLs)
         }
     }
 
