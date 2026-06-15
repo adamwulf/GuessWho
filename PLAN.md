@@ -60,7 +60,7 @@ When the package reconciles a contact's identity, it inspects every `urlAddresse
 
 **Case D — N valid candidates (N ≥ 2), with or without malformed siblings:**
 1. Sort the valid UUIDs as ASCII strings; the smallest is the **winner**.
-2. Build the merge target: start with the winner's existing sidecar if present, otherwise an empty envelope with `entityID = winner UUID` and `fields = [:]`. For each *loser* UUID with an existing sidecar, rebase that sidecar onto the winner UUID (copy of the loser envelope with `entityID` set to the winner UUID; `fields` unchanged), then set `merged = merge(merged, rebased)` per §5.3. Write `merged` at the winner UUID. Delete each loser sidecar file.
+2. Build the merge target: start with the winner's existing sidecar if present, otherwise an empty envelope with `entityID = winner UUID` and `fields = [:]`. For each *loser* UUID with an existing sidecar, rebase that sidecar onto the winner UUID (copy of the loser envelope with `entityID` set to the winner UUID; `fields` unchanged), then set `merged = merge(merged, rebased)` per §5.3. Write `merged` at the winner UUID. Delete each loser sidecar file. Because `fields` is keyed by per-instance UUIDs (§5.2), the loser's and winner's keys cannot collide; the rebased merge is effectively a union, with §5.3 LWW running only on the (astronomically improbable) UUID-equal cells.
 3. Remove every losing `guesswho://contact/…` URL and every malformed `guesswho://contact/…` URL from `urlAddresses`. Keep the winner.
 4. Save the contact.
 
@@ -148,7 +148,17 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
 
 **`entityID`** — the canonical UUID string (contacts, links) or the raw `calendarItemExternalIdentifier` (events). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/` vs `links/`) disambiguates kind; there is no `kind` field.
 
-**`fields`** — map from **field-instance UUID** to *cell*. Every contact/event/link cell uses the same shape. There are no singleton "well-known" field names — every field is multi-instance from the start (a contact can carry two `"general notes"` instances, three checkboxes, etc.). Field-instance UUIDs are minted at create and never reused.
+**`fields`** — the map's keys and inner-value shape depend on the sidecar's `kind`:
+
+| `SidecarKind` | `fields` key      | Inner cell `value` shape         | Where spec'd |
+|---------------|-------------------|----------------------------------|--------------|
+| `.contact`    | field-instance UUID string | `{ field, type, value, [createdAt, ...extensions] }` (this section) | §5.2 below |
+| `.event`      | field-instance UUID string | same as `.contact`               | §5.2 below |
+| `.link`       | well-known cell name (e.g. `endpointA`, `note`) | primitive `JSONValue` per the cell's role | §13.2 |
+
+The rest of §5.2 specifies the contact/event shape. Link sidecars predate the field-instance pivot — see §13.2 for their cell layout. Everything else in §5 (envelope structure, cell stamps, `deletedAt`, §5.3 merge mechanics) applies uniformly to all three kinds; only the inner-value-object rule below is contact/event-only.
+
+For contact and event sidecars: there are no singleton "well-known" field names — every field is multi-instance from the start (a contact can carry two `"general notes"` instances, three checkboxes, etc.). Field-instance UUIDs are minted at create and never reused.
 
 Every cell has the same envelope shape:
 
@@ -163,13 +173,14 @@ Every cell has the same envelope shape:
 
 A cell with `deletedAt` absent (or null) is **live**. A cell with `deletedAt` present is a **soft-deleted cell**: the field has been removed by the user. `value` is allowed to remain alongside `deletedAt` (a record of what was deleted) but readers MUST treat the field as absent — UI does not render it, and follow-up writes on this field bump `(modifiedAt, modifiedBy)` and clear `deletedAt` to undelete.
 
-**Cell `value` shape.** Every cell `value` is a JSON object with three required keys:
+**Cell `value` shape (contact and event sidecars).** Every cell `value` is a JSON object with three required keys plus one optional:
 
-| Key     | Type            | Mutability       | Meaning |
-|---------|-----------------|------------------|---------|
-| `field` | string          | mutable          | Caller-supplied human-readable field name (e.g. `"general notes"`, `"anniversary"`, `"sister"`). Opaque to the package — UI groups, sorts, or labels by it. |
-| `type`  | enum string     | **immutable**    | Discriminator for the value's payload shape. v1 enum: `"note"` (payload is JSON string), `"date"` (payload is ISO8601 date string), `"checkbox"` (payload is JSON bool). More types land additively. |
-| `value` | `<JSONValue>`   | mutable          | The typed payload. Shape constrained by `type`. |
+| Key         | Type            | Mutability       | Meaning |
+|-------------|-----------------|------------------|---------|
+| `field`     | string          | mutable          | Caller-supplied human-readable field name (e.g. `"general notes"`, `"anniversary"`, `"sister"`). Opaque to the package — UI groups, sorts, or labels by it. |
+| `type`      | enum string     | **immutable**    | Discriminator for the value's payload shape. v1 enum: `"note"` (payload is JSON string), `"date"` (payload is ISO8601 date string), `"checkbox"` (payload is JSON bool). More types land additively. |
+| `value`     | `<JSONValue>`   | mutable          | The typed payload. Shape constrained by `type`. |
+| `createdAt` | ISO8601 string  | **write-once**   | Optional. Stamped at `addField` time from the cell's first `modifiedAt`; preserved verbatim by every subsequent `setField`. Surfaces on `SidecarField.createdAt` (§7.1). Optional because a peer running an older package version may omit it; readers fall back to `cell.modifiedAt` when absent. |
 
 Callers may extend the inner object with additional keys (e.g. `"label"`, `"icon"`); the package preserves them on round-trip but does not interpret them.
 
@@ -201,11 +212,17 @@ LWW operates on the whole cell. The winning cell brings its `value`, `modifiedAt
 | `deletedAt` present but not ISO8601 | The cell is malformed → treated as absent. |
 | `value` missing entirely (no `value` key at all) | Malformed → treated as absent. (`value: null` is valid; missing the key is not.) |
 | Inner `value` object missing `field` or `type` keys | Malformed → cell treated as absent. (§5.2 mandates both keys; either being absent makes the cell uninterpretable.) |
-| Inner `value` object has `type` set to an unknown enum string | Cell is kept (forward-compatible); merge proceeds normally. Decoders that don't know the type return the raw `JSONValue` to the caller, which decides how to surface it. |
+| Inner `value` object has `type` set to an unknown enum string | Cell is kept on disk (forward-compatible); merge proceeds normally. The §7.3 `field`/`fields` decoded API omits unknown-type cells from its results. Callers who need the raw payload read it via `sidecar(at:)` and inspect the envelope directly. |
 | `entityID` mismatch between `a` and `b` | Merge fails; reported in `ReconcileReport`. No write. |
 | `schemaVersion` ≠ 1 on either side | Merge refuses. The non-v1 envelope is left intact. Reported. |
 
 Malformed cells from a single side propagate as absent into the merge result; the merge does not preserve the malformed cell.
+
+**Footnotes on cell-level LWW.**
+
+- *Whole-cell LWW.* The winning cell brings its `value`, `modifiedAt`, `modifiedBy`, `deletedAt`, *and the entire inner-value object* (including the caller-supplied `field` label and any extension keys) as one atomic unit. A UI that concurrently renames the `field` label on one device while another device edits the `value` will see one cell win — the winner's `field` and `value` survive together. Per-key-within-cell convergence is not provided.
+- *Field-instance UUID uniqueness.* Instance UUIDs are minted from `UUID()` (122 bits of entropy). The spec assumes collisions across devices never occur in practice. A hypothetical collision (two devices independently mint the same UUID for two different field definitions) would resolve via whole-cell LWW above — the loser's `type` is silently lost. The §7.3 type-immutability rule is enforced *per device on write*, not across the merge boundary.
+- *Cross-process minting.* `addField`'s per-`SidecarKey` lock serializes in-process writers. Cross-process writers (e.g. main app + share extension on the same device) rely entirely on `UUID()` randomness for non-collision — the same astronomical-improbability stance as cross-device.
 
 ### 5.4 Clock skew is acknowledged, not solved
 
@@ -380,15 +397,18 @@ public enum SidecarFieldType: String, Sendable, Codable {
     case checkbox  // payload is a JSON bool
 }
 
-/// A decoded view of one field-instance cell from a SidecarEnvelope.
-/// Returned by the orchestrator's field-instance accessors (§7.3).
+/// A decoded view of one field-instance cell from a contact or event
+/// SidecarEnvelope. Returned by the orchestrator's field-instance accessors
+/// (§7.3). Not used for link sidecars (§13 — those have their own shape).
 /// `modifiedAt` / `modifiedBy` / `deletedAt` come from the cell stamps;
-/// `field` / `type` / `value` come from the cell's inner `value` object.
+/// `field` / `type` / `value` / `createdAt` come from the cell's inner
+/// `value` object (§5.2).
 public struct SidecarField: Sendable {
     public let id: UUID            // the cell's field-instance UUID (envelope key)
     public let field: String       // caller-supplied name (mutable)
     public let type: SidecarFieldType  // immutable after create
     public let value: JSONValue    // payload, shape constrained by `type`
+    public let createdAt: Date?    // §5.2 "createdAt" inner-value key; nil if a peer omitted it
     public let modifiedAt: Date
     public let modifiedBy: String
     public let deletedAt: Date?
@@ -532,8 +552,10 @@ public final class GuessWhoSync {
     /// as a record of what was deleted. Silent no-op if already soft-deleted.
     public func deleteField(at key: SidecarKey, id: UUID) throws
 
-    /// Returns one decoded field by id, or nil if the cell is missing.
+    /// Returns one decoded field by id, or nil if the cell is missing,
+    /// has an unknown `type`, or has the link-sidecar shape (§13.2).
     /// Soft-deleted fields are returned (callers filter on `deletedAt`).
+    /// Precondition: `key.kind == .contact || key.kind == .event`.
     public func field(at key: SidecarKey, id: UUID) throws -> SidecarField?
 
     /// Returns every decoded field in the entity's sidecar, in unspecified
@@ -542,6 +564,8 @@ public final class GuessWhoSync {
     /// from the decoded list (the raw envelope still carries them; see
     /// `sidecar(at:)` for the unfiltered view). This keeps forward-compatibility
     /// with future types added by newer peers.
+    /// Precondition: `key.kind == .contact || key.kind == .event`. On a
+    /// `.link` key the result is unspecified — use the §13.6 link API instead.
     public func fields(at key: SidecarKey) throws -> [SidecarField]
 }
 
@@ -667,7 +691,7 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 
 ### 9.2 Sidecar IO (in-memory and filesystem)
 - write then read returns the same envelope
-- overwriting a field stamps `modifiedAt = now()` and `modifiedBy = deviceID`
+- overwriting a field-instance cell (same instance UUID key) stamps `modifiedAt = now()` and `modifiedBy = deviceID`
 - delete writes a soft-deleted cell (`deletedAt` set), not a key removal
 - read of a missing key returns nil
 - filename encoding: an event with an externalID containing `/` round-trips through write→read
@@ -678,14 +702,14 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - Case B (one valid, no malformed): no-op
 - Case C (one valid + malformed siblings): malformed removed, valid kept
 - Case D, two valid candidates: lex-smallest wins; loser URL removed; loser sidecar merged
-- Case D, two valid candidates, both UUIDs already have sidecars with overlapping and disjoint fields: winner UUID ends up with the per-field LWW merge of both; loser file deleted
+- Case D, two valid candidates, both UUIDs already have sidecars with overlapping and disjoint field-instance UUIDs: winner UUID ends up with the per-cell LWW merge of both; loser file deleted
 - Case D, three valid candidates: still lex-smallest of all three wins; both losers merged into it
 - repeated reconcile on a stable contact is a no-op (idempotence)
 
 ### 9.4 Per-field LWW merge (§5.3)
-- disjoint fields: both survive
-- same field, different times: later wins
-- same field, same `modifiedAt`: lex-larger `modifiedBy` wins
+- disjoint field-instance UUIDs: both cells survive
+- same field-instance UUID, different times: later wins
+- same field-instance UUID, same `modifiedAt`: lex-larger `modifiedBy` wins
 - soft-deleted cell vs. live value: later `modifiedAt` wins; soft-deleted cell, if it wins, survives the merge (`deletedAt` is preserved)
 - **associativity:** for three envelopes `a`, `b`, `c`: `merge(merge(a, b), c)` equals `merge(a, merge(b, c))`
 - malformed `modifiedAt` on a cell: cell treated as absent; other side wins
@@ -750,15 +774,15 @@ Each phase ends with passing tests for the listed sections. Status markers:
 The items below are load-bearing for v1 but not yet demonstrated in production. They should be the next agent's prioritized hit list before any new features land.
 
 **High priority (correctness-of-design risks):**
-- 🔴 **§12 timestamped notes — single-device CRUD.** Add three notes via the sample app's bottom input, inline-edit one, swipe-delete one. Re-launch. Confirm the two live notes appear in `(createdAt, id)` ascending order. (See §12 for the full feature spec.)
-- 🔴 **§12 timestamped notes — two-device convergence.** Device A creates note X, device B creates note Y, both offline. After both come online and reconcile, both devices show `[X, Y]`.
+- 🔴 **§7.3 field-instance API + §12 notes — single-device CRUD.** Add three notes via the sample app's bottom input, inline-edit one, swipe-delete one. Re-launch. Confirm the two live notes appear in `(createdAt, id)` ascending order. Exercises `addField` / `setField` / `deleteField` / `fields(at:)` (the foundation API for every future typed field — dates, checkboxes, etc.).
+- 🔴 **§7.3 field-instance API + §12 notes — two-device convergence.** Device A creates note X, device B creates note Y, both offline. After both come online and reconcile, both devices show `[X, Y]`. Witnesses that two `addField` calls on the same contact, from different devices, land at two different UUID keys with no codec involved.
 - 🔴 **§3.3 Case D in production.** Tonight only exercised Case A. Construct a contact with two `guesswho://contact/<uuid>` URLs (each pointing at a populated sidecar, each with one note per §12 for a richer test), reconcile, and confirm: loser URL gone from the contact, winner sidecar carries the union of fields *including both notes*, loser sidecar file deleted from iCloud.
 - 🔴 **§3.3 Case C in production.** Construct a contact with one valid GuessWho URL plus one malformed sibling, reconcile, confirm the malformed URL is removed.
 - 🔴 **§9.6 multi-device convergence in production.** Two real iCloud-signed-in devices, each reconciling the same contact independently. Observe that after both devices reconcile, both end up at the lex-smaller UUID with merged sidecar fields.
 
 **Medium priority (sync-mechanism risks):**
 - 🔴 **§10.5 partial-update preserves untouched native fields.** The partial-update save path is still load-bearing for any `CNContact` field we don't model. Pick a contact that already has a Notes-app `note` value (the convenient canary), reconcile it through the sample app, confirm `note` survives byte-for-byte. Downgraded from high since we're no longer in the contacts-notes business — but the partial-update contract itself is unchanged.
-- 🔴 **§12 timestamped notes — two-device edit/delete race.** Device A edits note X; device B deletes note X. Confirm both devices converge to the same state (newer stamp wins). Medium priority because §12.6 unit tests exercise this case exhaustively; the production smoke is confirmation, not discovery.
+- 🔴 **§7.3 field-instance API + §12 notes — two-device edit/delete race.** Device A edits note X; device B deletes note X. Confirm both devices converge to the same state (newer stamp wins). Medium priority because §12.6 unit tests exercise this case exhaustively; the production smoke is confirmation, not discovery.
 - 🔴 **§6 `NSFileVersion` conflict resolution on real iCloud.** Force two devices to write the same sidecar offline, bring them online, watch `reconcileSidecars()` resolve the conflict per §6 rules.
 - 🔴 **§3.4 orphan sidecar detection in production.** Reconcile a contact, delete it from Contacts on the same device, run `reconcileContactIdentities()` (all-contacts sweep), confirm the sidecar appears in `IdentityReconcileReport.orphanSidecars` and is **not** auto-deleted.
 
@@ -797,9 +821,7 @@ struct ContactNote {
 }
 ```
 
-**Note creation.** A new note is `addField(at: contactKey, field: "<user-supplied label>", type: .note, value: .string(body))`. The orchestrator mints the instance UUID and stamps `modifiedAt = now` / `modifiedBy = deviceID` on the cell. `SidecarField.createdAt` is sourced from the cell's first-stamp — see below.
-
-**`SidecarField.createdAt`.** The package preserves the *initial* `modifiedAt` of a cell as its `createdAt` by writing it once into the inner value object's `"createdAt"` key at `addField` time. Subsequent `setField` calls preserve that key verbatim. `SidecarField` exposes it as an optional `Date?` (nil if a peer wrote the cell without `createdAt`, which is possible for non-note types that don't care). For notes, the sample-app `ContactNote` convenience above falls back to `modifiedAt` if `createdAt` is nil.
+**Note creation.** A new note is `addField(at: contactKey, field: "<user-supplied label>", type: .note, value: .string(body))`. The orchestrator mints the instance UUID, stamps `modifiedAt = now` / `modifiedBy = deviceID` on the cell, and writes the §5.2 `createdAt` key inside the inner value object (stamped from the same `now`). Subsequent `setField` calls preserve `createdAt` verbatim, so `SidecarField.createdAt` is stable across edits. The sample-app `ContactNote` convenience above falls back to `modifiedAt` if `createdAt` is nil (i.e., the cell was written by a peer running an older package version that didn't stamp `createdAt`).
 
 So the inner value object for a note is:
 
