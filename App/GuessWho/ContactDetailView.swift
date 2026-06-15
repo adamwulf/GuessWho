@@ -286,14 +286,20 @@ private struct NotesSection: View {
     @ViewBuilder
     private func row(for note: ContactNote) -> some View {
         if editingID == note.id {
-            TextEditor(text: $draftBody)
-                .frame(minHeight: 44)
-                .focused($editFocus, equals: .row(note.id))
-                .onChange(of: editFocus) { _, newValue in
-                    if newValue != .row(note.id), editingID == note.id {
-                        commitEditIfChanged()
+            HStack(alignment: .top) {
+                TextEditor(text: $draftBody)
+                    .frame(minHeight: 44)
+                    .focused($editFocus, equals: .row(note.id))
+                    .onChange(of: editFocus) { _, newValue in
+                        if newValue != .row(note.id), editingID == note.id {
+                            commitEditIfChanged()
+                        }
                     }
+                Button("Done") {
+                    commitEditIfChanged()
                 }
+                .buttonStyle(.borderless)
+            }
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(note.body)
