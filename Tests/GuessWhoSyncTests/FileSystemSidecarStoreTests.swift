@@ -220,6 +220,164 @@ struct FileSystemSidecarStoreTests {
         #expect(keys.count == 1)
     }
 
+    // MARK: - Busy handler
+
+    @Test
+    func busyHandlerHappyPathReturnsValueWithoutInvokingHandler() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        var handlerCalled = 0
+        let store = FileSystemSidecarStore(
+            root: root,
+            busyHandler: { _, _, _ in
+                handlerCalled += 1
+                return .fail
+            },
+            perAttemptTimeout: 1.0
+        )
+
+        let key = SidecarKey(kind: .contact, id: "abc")
+        try store.write(envelope(id: "abc"), at: key)
+        #expect(handlerCalled == 0)
+        let fetched = try #require(try store.read(key))
+        #expect(fetched.entityID == "abc")
+        #expect(handlerCalled == 0)
+    }
+
+    @Test
+    func busyHandlerFailingImmediatelyThrowsTimedOut() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        var receivedAttempt: Int = -1
+        var receivedElapsed: TimeInterval = -1
+        let store = FileSystemSidecarStore(
+            root: root,
+            busyHandler: { _, attempt, elapsed in
+                receivedAttempt = attempt
+                receivedElapsed = elapsed
+                return .fail
+            },
+            perAttemptTimeout: 0.05
+        )
+        let key = SidecarKey(kind: .contact, id: "busy-fail-key")
+        #expect(throws: SidecarStoreError.timedOut(key)) {
+            try store.runWithBusyHandling(key: key) {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
+        #expect(receivedAttempt == 0)
+        #expect(receivedElapsed >= 0.04)
+    }
+
+    @Test
+    func busyHandlerRetryDecisionRespectsHandlerSequence() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        var decisions: [SidecarBusyDecision] = [.retry, .retryAfter(0.0), .fail]
+        var receivedAttempts: [Int] = []
+        let store = FileSystemSidecarStore(
+            root: root,
+            busyHandler: { _, attempt, _ in
+                receivedAttempts.append(attempt)
+                return decisions.removeFirst()
+            },
+            perAttemptTimeout: 0.05
+        )
+        let key = SidecarKey(kind: .contact, id: "busy-retry-key")
+        #expect(throws: SidecarStoreError.timedOut(key)) {
+            try store.runWithBusyHandling(key: key) {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
+        // attempt 0 -> .retry, attempt 1 -> .retryAfter, attempt 2 -> .fail
+        #expect(receivedAttempts == [0, 1, 2])
+    }
+
+    @Test
+    func defaultBusyHandlerRetriesThreeTimesBeforeFailing() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        // Default handler: 3 attempts of .retryAfter, then .fail on attempt 3.
+        var seenAttempts: [Int] = []
+        let store = FileSystemSidecarStore(
+            root: root,
+            busyHandler: { key, attempt, elapsed in
+                seenAttempts.append(attempt)
+                // Delegate to default but with negligible delay to keep
+                // the test fast — the test verifies the count, not the
+                // absolute timing.
+                let decision = defaultSidecarBusyHandler(
+                    key: key,
+                    attempt: attempt,
+                    elapsed: elapsed
+                )
+                switch decision {
+                case .retryAfter:
+                    return .retry
+                default:
+                    return decision
+                }
+            },
+            perAttemptTimeout: 0.02
+        )
+        let key = SidecarKey(kind: .contact, id: "default-handler")
+        #expect(throws: SidecarStoreError.timedOut(key)) {
+            try store.runWithBusyHandling(key: key) {
+                Thread.sleep(forTimeInterval: 1.0)
+            }
+        }
+        // attempts 0, 1, 2 → .retry; attempt 3 → .fail (default fails at >= 3).
+        #expect(seenAttempts == [0, 1, 2, 3])
+    }
+
+    @Test
+    func downloadStatusReportsDownloadedForMaterializedFile() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let key = SidecarKey(kind: .contact, id: "abc")
+        try store.write(envelope(id: "abc"), at: key)
+        #expect(store.downloadStatus(key) == .downloaded)
+    }
+
+    @Test
+    func downloadStatusReportsNotFoundForMissingFile() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        #expect(store.downloadStatus(SidecarKey(kind: .contact, id: "absent")) == .notFound)
+    }
+
+    @Test
+    func downloadStatusReportsNotStartedForPlaceholder() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let uuid = "550e8400-e29b-41d4-a716-446655440000"
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
+
+        // The planted placeholder is an ordinary empty file (not a real
+        // iCloud placeholder), so the OS won't report a downloading status.
+        // The implementation falls back to .notStarted in that case.
+        #expect(store.downloadStatus(SidecarKey(kind: .contact, id: uuid)) == .notStarted)
+    }
+
+    @Test
+    func requestDownloadOnNonUbiquityURLThrows() throws {
+        // Outside a ubiquity container, startDownloadingUbiquitousItem
+        // errors. The store surfaces the error so app devs notice they're
+        // pointed at a non-iCloud root.
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        let key = SidecarKey(kind: .contact, id: "needs-download")
+        #expect(throws: (any Error).self) {
+            try store.requestDownload(key)
+        }
+    }
+
     // Implementation chose approach (a) from the spec: read() of a placeholder
     // requests a download (via startDownloadingUbiquitousItem, best-effort)
     // and throws SidecarStoreError.notYetDownloaded so the orchestrator's

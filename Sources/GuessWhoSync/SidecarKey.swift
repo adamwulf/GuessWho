@@ -21,13 +21,15 @@ public struct SidecarKey: Hashable, Sendable {
 extension SidecarKey {
     public static let guessWhoContactURLPrefix = "guesswho://contact/"
 
-    // Canonicalize UUIDs to lowercase everywhere they cross a boundary
-    // (parse, format, compare, on-disk filename). iCloud Drive's default
-    // APFS volumes treat filenames as case-insensitive for collisions but
-    // case-sensitive when reading back, AND UUID(uuidString:) accepts any
-    // case on input — without a single canonical form, two devices can
-    // disagree about whose sidecar file is on disk.
+    // Canonicalize UUIDs to lowercase at every boundary (parse, format,
+    // compare, on-disk filename).
     public static func parseGuessWhoContactURL(_ value: String) -> String? {
+        // NOTE: case-insensitive-but-case-preserving filesystems (e.g. the
+        // default APFS volume for iCloud Drive) treat filenames as
+        // case-insensitive for collisions but case-sensitive when reading
+        // back, AND UUID(uuidString:) accepts any case on input. Without a
+        // single canonical form, two devices can disagree about whose
+        // sidecar file is on disk.
         guard value.hasPrefix(guessWhoContactURLPrefix) else { return nil }
         let suffix = String(value.dropFirst(guessWhoContactURLPrefix.count))
         guard UUID(uuidString: suffix) != nil else { return nil }

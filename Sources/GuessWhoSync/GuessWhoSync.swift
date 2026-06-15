@@ -54,49 +54,56 @@ public final class GuessWhoSync {
     }
 
     public func reconcileSidecars() throws -> SidecarReconcileReport {
-        var reasonsByKey: [SidecarKey: [String]] = [:]
+        var stamped: [SidecarReconcileReport.FileOutcome] = []
 
-        let outcomes = try sidecars.reconcileConflicts { key, versions in
-            var parsed: [SidecarEnvelope] = []
-            var skipped: [Data] = []
+        // Iterate keys ourselves and hold the per-key sidecarLock for the full
+        // resolver + write window. Without holding the lock for the WHOLE
+        // window (resolver invocation through the store's merged-write), a
+        // concurrent setField on the same key would slip a write between
+        // the store's read-versions and its merged-write and be silently
+        // clobbered.
+        for key in try sidecars.keysWithUnresolvedConflicts() {
             var reasons: [String] = []
+            let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
+                try sidecars.reconcileConflict(at: key) { versions in
+                    var parsed: [SidecarEnvelope] = []
+                    var skipped: [Data] = []
+                    for bytes in versions {
+                        switch parseEnvelope(bytes) {
+                        case .ok(let envelope):
+                            parsed.append(envelope)
+                        case .skip(let reason):
+                            skipped.append(bytes)
+                            reasons.append(reason)
+                        }
+                    }
 
-            for bytes in versions {
-                switch parseEnvelope(bytes) {
-                case .ok(let envelope):
-                    parsed.append(envelope)
-                case .skip(let reason):
-                    skipped.append(bytes)
-                    reasons.append(reason)
+                    guard var folded = parsed.first else {
+                        return .leave
+                    }
+                    for next in parsed.dropFirst() {
+                        switch merge(folded, next) {
+                        case .success(let combined):
+                            folded = combined
+                        case .failure(let err):
+                            reasons.append("merge failed: \(err)")
+                            return .leave
+                        }
+                    }
+                    return .write(merged: folded, skip: skipped)
                 }
             }
-
-            reasonsByKey[key] = reasons
-
-            guard var folded = parsed.first else {
-                return .leave
+            if let outcome {
+                stamped.append(
+                    SidecarReconcileReport.FileOutcome(
+                        key: outcome.key,
+                        mergedVersionCount: outcome.mergedVersionCount,
+                        skippedReasons: outcome.skippedReasons + reasons
+                    )
+                )
             }
-            for next in parsed.dropFirst() {
-                switch merge(folded, next) {
-                case .success(let combined):
-                    folded = combined
-                case .failure(let err):
-                    reasons.append("merge failed: \(err)")
-                    reasonsByKey[key] = reasons
-                    return .leave
-                }
-            }
-            return .write(merged: folded, skip: skipped)
         }
 
-        let stamped = outcomes.map { outcome -> SidecarReconcileReport.FileOutcome in
-            let extra = reasonsByKey[outcome.key] ?? []
-            return SidecarReconcileReport.FileOutcome(
-                key: outcome.key,
-                mergedVersionCount: outcome.mergedVersionCount,
-                skippedReasons: outcome.skippedReasons + extra
-            )
-        }
         return SidecarReconcileReport(fileOutcomes: stamped)
     }
 
@@ -247,32 +254,43 @@ public final class GuessWhoSync {
         let losers = Array(sortedUUIDs.dropFirst())
 
         let winnerKey = SidecarKey(kind: .contact, id: winner)
-        var merged = try sidecars.read(winnerKey)
-            ?? SidecarEnvelope(entityID: winner, fields: [:])
 
+        // Acquire per-key sidecar locks for the winner and every loser in
+        // deterministic sorted UUID order. Without this, a concurrent setField
+        // could land on a loser between our read and delete and be silently
+        // lost. Sorted-order acquisition is the deadlock-avoidance contract
+        // shared with setField/deleteField (which only ever take one lock) and
+        // with other reconcile passes.
         var mergedLoserUUIDs: [String] = []
         var errors: [String] = []
-        for loser in losers {
-            let loserKey = SidecarKey(kind: .contact, id: loser)
-            guard let loserEnvelope = try sidecars.read(loserKey) else { continue }
-            let rebased = SidecarEnvelope(
-                schemaVersion: loserEnvelope.schemaVersion,
-                entityID: winner,
-                fields: loserEnvelope.fields
-            )
-            switch merge(merged, rebased) {
-            case .success(let next):
-                merged = next
-                mergedLoserUUIDs.append(loser)
-            case .failure(let err):
-                errors.append("merge failed for loser \(loser): \(err)")
-            }
-        }
+        let merged = try withCaseDLocks(uuidsInSortedOrder: sortedUUIDs) { () throws -> SidecarEnvelope in
+            var folded = try sidecars.read(winnerKey)
+                ?? SidecarEnvelope(entityID: winner, fields: [:])
 
-        try sidecars.write(merged, at: winnerKey)
-        for loser in losers {
-            try sidecars.delete(SidecarKey(kind: .contact, id: loser))
+            for loser in losers {
+                let loserKey = SidecarKey(kind: .contact, id: loser)
+                guard let loserEnvelope = try sidecars.read(loserKey) else { continue }
+                let rebased = SidecarEnvelope(
+                    schemaVersion: loserEnvelope.schemaVersion,
+                    entityID: winner,
+                    fields: loserEnvelope.fields
+                )
+                switch merge(folded, rebased) {
+                case .success(let next):
+                    folded = next
+                    mergedLoserUUIDs.append(loser)
+                case .failure(let err):
+                    errors.append("merge failed for loser \(loser): \(err)")
+                }
+            }
+
+            try sidecars.write(folded, at: winnerKey)
+            for loser in losers {
+                try sidecars.delete(SidecarKey(kind: .contact, id: loser))
+            }
+            return folded
         }
+        _ = merged
 
         // Remove loser URLs by comparing their parsed CANONICAL UUID — string
         // comparison alone misses mixed-case copies of the same UUID. Malformed
@@ -295,6 +313,31 @@ public final class GuessWhoSync {
             ),
             carriedUUIDs: [winner]
         )
+    }
+
+    // Recursively acquire per-key locks in sorted UUID order, then execute
+    // body() inside the innermost lock. Sorted-order acquisition is what
+    // prevents deadlock between concurrent reconcile passes (or against
+    // setField, which only takes one lock).
+    private func withCaseDLocks<T>(
+        uuidsInSortedOrder uuids: [String],
+        _ body: () throws -> T
+    ) throws -> T {
+        try acquireLocks(uuidsInSortedOrder: uuids, index: 0, body: body)
+    }
+
+    private func acquireLocks<T>(
+        uuidsInSortedOrder uuids: [String],
+        index: Int,
+        body: () throws -> T
+    ) throws -> T {
+        if index == uuids.count {
+            return try body()
+        }
+        let key = SidecarKey(kind: .contact, id: uuids[index])
+        return try sidecarLocks.withLock(forKey: key) {
+            try acquireLocks(uuidsInSortedOrder: uuids, index: index + 1, body: body)
+        }
     }
 }
 

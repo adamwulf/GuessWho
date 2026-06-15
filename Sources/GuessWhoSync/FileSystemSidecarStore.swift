@@ -2,10 +2,48 @@ import Foundation
 
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
-    private let writeLock = NSLock()
 
-    public init(root: URL) {
+    // Per-key locks for write/delete/reconcile. Direct users of this store
+    // (without going through GuessWhoSync) get correctness on writes/deletes
+    // to distinct keys running independently and concurrent operations on the
+    // SAME key serializing. GuessWhoSync layers its own per-key lock on top
+    // for read-modify-write atomicity; both layers locking per-key is
+    // redundant but correct.
+    private let fileLocks = PerKeyLockTable<SidecarKey>()
+
+    // Closure consulted when a sidecar operation exceeds `perAttemptTimeout`.
+    // Default: 3 retries, exponential backoff from 250ms, then fail. See
+    // `SidecarBusyHandler` for the contract.
+    public var busyHandler: SidecarBusyHandler
+
+    // Per-attempt budget for a single sidecar read/write/delete. If the
+    // operation hasn't returned by this point, `busyHandler` is consulted.
+    // Defaults to 1 second.
+    public var perAttemptTimeout: TimeInterval
+
+    // Background queue the coordinator runs on so the calling thread can
+    // wait with a timeout. One serial queue per store instance — coordinator
+    // calls are coarse-grained and don't need parallel dispatch.
+    //
+    // NOTE: the queue is shared across keys, which means a single stuck
+    // operation (e.g. a key whose backing file is still syncing) can delay
+    // siblings dispatched after it. Per-attempt wait time accumulates from
+    // the moment the operation is queued, not when it begins executing, so
+    // siblings can see `.timedOut` while waiting in line behind a stuck
+    // operation. A per-key dispatch queue would compose with the per-key
+    // `fileLocks` if this becomes a problem in practice.
+    private let coordinatorQueue = DispatchQueue(
+        label: "GuessWhoSync.FileSystemSidecarStore.coordinator"
+    )
+
+    public init(
+        root: URL,
+        busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
+        perAttemptTimeout: TimeInterval = 1.0
+    ) {
         self.root = root
+        self.busyHandler = busyHandler
+        self.perAttemptTimeout = perAttemptTimeout
     }
 
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
@@ -25,14 +63,14 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             case failed(Error)
         }
         var outcome: Outcome = .missing
-        try coordinatedRead(at: url) { safeURL in
+        try coordinatedRead(key: key, at: url) { safeURL in
             if fm.fileExists(atPath: safeURL.path) {
                 do {
                     outcome = .bytes(try Data(contentsOf: safeURL))
                 } catch {
                     outcome = .failed(error)
                 }
-            } else if fm.fileExists(atPath: placeholderURL(for: safeURL).path) {
+            } else if fm.fileExists(atPath: self.placeholderURL(for: safeURL).path) {
                 outcome = .placeholderPresent
             } else {
                 outcome = .missing
@@ -54,43 +92,41 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 
     public func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
-        writeLock.lock()
-        defer { writeLock.unlock() }
+        try fileLocks.withLock(forKey: key) {
+            let url = fileURL(for: key)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(envelope)
 
-        let url = fileURL(for: key)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let data = try JSONEncoder().encode(envelope)
-
-        var writeError: Error?
-        try coordinatedWrite(at: url) { safeURL in
-            do {
-                try data.write(to: safeURL, options: [.atomic])
-            } catch {
-                writeError = error
+            var writeError: Error?
+            try coordinatedWrite(key: key, at: url) { safeURL in
+                do {
+                    try data.write(to: safeURL, options: [.atomic])
+                } catch {
+                    writeError = error
+                }
             }
+            if let writeError { throw writeError }
         }
-        if let writeError { throw writeError }
     }
 
     public func delete(_ key: SidecarKey) throws {
-        writeLock.lock()
-        defer { writeLock.unlock() }
+        try fileLocks.withLock(forKey: key) {
+            let url = fileURL(for: key)
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
 
-        let url = fileURL(for: key)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        var deleteError: Error?
-        try coordinatedDelete(at: url) { safeURL in
-            do {
-                try FileManager.default.removeItem(at: safeURL)
-            } catch {
-                deleteError = error
+            var deleteError: Error?
+            try coordinatedDelete(key: key, at: url) { safeURL in
+                do {
+                    try FileManager.default.removeItem(at: safeURL)
+                } catch {
+                    deleteError = error
+                }
             }
+            if let deleteError { throw deleteError }
         }
-        if let deleteError { throw deleteError }
     }
 
     public func allKeys() throws -> [SidecarKey] {
@@ -100,111 +136,189 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
-    public func reconcileConflicts(
-        _ resolve: (_ key: SidecarKey, _ versions: [Data]) throws -> ConflictResolution
-    ) throws -> [SidecarReconcileReport.FileOutcome] {
-        var outcomes: [SidecarReconcileReport.FileOutcome] = []
-
+    public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
+        var result: [SidecarKey] = []
         for key in try allKeys() {
+            let url = fileURL(for: key)
+            if let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+               !conflicts.isEmpty {
+                result.append(key)
+            }
+        }
+        return result
+    }
+
+    public func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
+        let url = fileURL(for: key)
+        let fm = FileManager.default
+
+        // If the materialized file exists, ask URLResourceValues whether it
+        // is "current" (fully downloaded) or still downloading. For non-
+        // ubiquity files those keys return nil; treat that as downloaded.
+        if fm.fileExists(atPath: url.path) {
+            if let (status, percent) = downloadingResourceValues(for: url) {
+                switch status {
+                case .current, .downloaded:
+                    return .downloaded
+                case .notDownloaded:
+                    return .notStarted
+                default:
+                    return .downloading(fractionComplete: percent.map { $0 / 100.0 })
+                }
+            }
+            return .downloaded
+        }
+
+        // No materialized file. A `.icloud` placeholder sibling signals "exists
+        // remotely, not yet downloaded." Inspect that placeholder for any
+        // downloading-in-progress signal.
+        let placeholder = placeholderURL(for: url)
+        if fm.fileExists(atPath: placeholder.path) {
+            if let (status, percent) = downloadingResourceValues(for: placeholder),
+               status != .notDownloaded {
+                return .downloading(fractionComplete: percent.map { $0 / 100.0 })
+            }
+            return .notStarted
+        }
+
+        return .notFound
+    }
+
+    public func requestDownload(_ key: SidecarKey) throws {
+        let url = fileURL(for: key)
+        try FileManager.default.startDownloadingUbiquitousItem(at: url)
+    }
+
+    // Read the ubiquity downloading-status for a URL. Returns nil if the
+    // URL isn't a ubiquity item (e.g. a temp file in tests).
+    //
+    // Percent-downloaded is reported as nil: the URLResourceKey form
+    // (`ubiquitousItemPercentDownloadedKey`) was deprecated in macOS 10.8,
+    // and the supported replacement requires an NSMetadataQuery on the
+    // ubiquity container — heavier than warrants for a one-off status
+    // probe. Callers that need a progress bar can run their own
+    // NSMetadataQuery; the enum case is `Double?` so this layer staying
+    // coarse is fine.
+    private func downloadingResourceValues(
+        for url: URL
+    ) -> (URLUbiquitousItemDownloadingStatus, Double?)? {
+        let keys: Set<URLResourceKey> = [.ubiquitousItemDownloadingStatusKey]
+        guard let raw = try? url.resourceValues(forKeys: keys).allValues else {
+            return nil
+        }
+        guard let rawStatus = raw[.ubiquitousItemDownloadingStatusKey] as? String else {
+            return nil
+        }
+        let status = URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
+        return (status, nil)
+    }
+
+    public func reconcileConflict(
+        at key: SidecarKey,
+        resolve: (_ versions: [Data]) throws -> ConflictResolution
+    ) throws -> SidecarReconcileReport.FileOutcome? {
+        try fileLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
             let url = fileURL(for: key)
             guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
                   !conflicts.isEmpty else {
-                continue
+                return nil
             }
 
-            // Current is NOT in `conflicts`; gather it explicitly so the closure sees every version.
+            // Cache the bytes from the first read pass so the skip-matching
+            // pass below never re-reads from disk. A second read can fail
+            // (e.g. NSFileVersion's underlying file got swept) and would
+            // otherwise produce an empty Data() that fails to match any
+            // entry in `skip`, silently deleting a version the resolver
+            // explicitly asked to keep.
+            //
+            // The cache deliberately excludes the CURRENT version: the
+            // merged write below replaces the current contents regardless,
+            // so even if the resolver returned current bytes in `skip`
+            // (e.g. by mistake) the skip pass has nothing to do for them.
+            var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
             var allBytes: [Data] = []
             if let current = NSFileVersion.currentVersionOfItem(at: url),
                let bytes = try? Data(contentsOf: current.url) {
                 allBytes.append(bytes)
             }
             for version in conflicts {
-                if let bytes = try? Data(contentsOf: version.url) {
+                let bytes = try? Data(contentsOf: version.url)
+                conflictBytesByVersionID.append((version, bytes))
+                if let bytes {
                     allBytes.append(bytes)
                 }
             }
 
             let resolution: ConflictResolution
             do {
-                resolution = try resolve(key, allBytes)
+                resolution = try resolve(allBytes)
             } catch {
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: 0,
-                        skippedReasons: [String(describing: error)]
-                    )
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: [String(describing: error)]
                 )
-                continue
             }
 
             switch resolution {
             case .write(let merged, let skip):
                 let mergedData = try JSONEncoder().encode(merged)
-                try withWriteLock {
-                    var mergedWriteError: Error?
-                    try coordinatedWrite(at: url) { safeURL in
-                        do {
-                            try mergedData.write(to: safeURL, options: [.atomic])
-                        } catch {
-                            mergedWriteError = error
-                        }
+                var mergedWriteError: Error?
+                try coordinatedWrite(key: key, at: url) { safeURL in
+                    do {
+                        try mergedData.write(to: safeURL, options: [.atomic])
+                    } catch {
+                        mergedWriteError = error
                     }
-                    if let mergedWriteError { throw mergedWriteError }
                 }
+                if let mergedWriteError { throw mergedWriteError }
 
                 var skippedCount = 0
-                for version in conflicts {
-                    let bytes = (try? Data(contentsOf: version.url)) ?? Data()
-                    if skip.contains(bytes) {
+                for (version, cachedBytes) in conflictBytesByVersionID {
+                    // If the first read failed, this version was never a
+                    // parseable candidate. Treat it as "not in skip" so the
+                    // default removal still applies; the resolver had no way
+                    // to request it kept.
+                    let bytes = cachedBytes ?? Data()
+                    if cachedBytes != nil, skip.contains(bytes) {
                         skippedCount += 1
                     } else {
                         version.isResolved = true
                         try? version.remove()
                     }
                 }
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: allBytes.count - skippedCount,
-                        skippedReasons: []
-                    )
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: allBytes.count - skippedCount,
+                    skippedReasons: []
                 )
 
             case .writeRecoverySibling(let merged, let suffix):
                 let mergedData = try JSONEncoder().encode(merged)
                 let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-                try withWriteLock {
-                    var siblingWriteError: Error?
-                    try coordinatedWrite(at: siblingURL) { safeURL in
-                        do {
-                            try mergedData.write(to: safeURL, options: [.atomic])
-                        } catch {
-                            siblingWriteError = error
-                        }
+                var siblingWriteError: Error?
+                try coordinatedWrite(key: key, at: siblingURL) { safeURL in
+                    do {
+                        try mergedData.write(to: safeURL, options: [.atomic])
+                    } catch {
+                        siblingWriteError = error
                     }
-                    if let siblingWriteError { throw siblingWriteError }
                 }
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: 0,
-                        skippedReasons: ["wrote recovery sibling: \(suffix)"]
-                    )
+                if let siblingWriteError { throw siblingWriteError }
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: ["wrote recovery sibling: \(suffix)"]
                 )
 
             case .leave:
-                outcomes.append(
-                    SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        mergedVersionCount: 0,
-                        skippedReasons: []
-                    )
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: []
                 )
             }
         }
-
-        return outcomes
     }
 
     // MARK: - Helpers
@@ -303,16 +417,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return directory.appendingPathComponent("\(stem).recovered.\(suffix).json")
     }
 
-    // Acquire writeLock for the duration of `body`. Using `defer` to unlock
-    // means a throw from inside the coordinated-write block still releases
-    // the lock — without this, an iCloud coordinator error would leak the
-    // lock and deadlock every subsequent write/delete/reconcile.
-    private func withWriteLock(_ body: () throws -> Void) rethrows {
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        try body()
-    }
-
     // MARK: - NSFileCoordinator wrappers
 
     // On Apple platforms cloudd reads and writes ubiquity-container files in
@@ -320,30 +424,124 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // mid-write or race deletes. NSFileCoordinator serializes our access
     // against cloudd; the closure receives the URL it should actually use
     // (the coordinator may substitute, e.g., a temporary).
-    private func coordinatedRead(at url: URL, _ body: (URL) -> Void) throws {
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
-            body(safeURL)
+    //
+    // The coordinator call runs on `coordinatorQueue` so the caller can wait
+    // with a per-attempt timeout. If the wait expires, the busy handler
+    // decides whether to retry, sleep+retry, or fail with `.timedOut(key)`.
+    // A coordinator call that eventually finishes after we've moved on is
+    // left to run to completion in the background — see `runWithBusyHandling`
+    // for the leak discussion.
+    private func coordinatedRead(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        try runWithBusyHandling(key: key) {
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordError: NSError?
+            coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
+                body(safeURL)
+            }
+            if let coordError { throw coordError }
         }
-        if let coordError { throw coordError }
     }
 
-    private func coordinatedWrite(at url: URL, _ body: (URL) -> Void) throws {
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
-            body(safeURL)
+    private func coordinatedWrite(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        try runWithBusyHandling(key: key) {
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordError: NSError?
+            coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
+                body(safeURL)
+            }
+            if let coordError { throw coordError }
         }
-        if let coordError { throw coordError }
     }
 
-    private func coordinatedDelete(at url: URL, _ body: (URL) -> Void) throws {
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var coordError: NSError?
-        coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordError) { safeURL in
-            body(safeURL)
+    private func coordinatedDelete(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        try runWithBusyHandling(key: key) {
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordError: NSError?
+            coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordError) { safeURL in
+                body(safeURL)
+            }
+            if let coordError { throw coordError }
         }
-        if let coordError { throw coordError }
+    }
+
+    // Run `operation` on `coordinatorQueue` with a per-attempt wait of
+    // `perAttemptTimeout`. The operation is dispatched ONCE; we never
+    // re-issue. On wait-timeout we consult the busy handler:
+    //   .retry          → keep waiting (next per-attempt slice).
+    //   .retryAfter(t)  → sleep, then keep waiting.
+    //   .fail           → throw `.timedOut(key)` and abandon the operation.
+    //
+    // Re-issuing was rejected as a design: NSFileCoordinator has no
+    // cancellation, so a stuck coordinator call sits there forever, and
+    // launching parallel attempts just multiplies stuck calls without
+    // freeing the resource. "Block forever" still works (install a handler
+    // that returns `.retry` forever); "best effort, eventually fail" still
+    // works (default handler).
+    //
+    // If the operation eventually completes after we threw `.timedOut`, its
+    // body still runs on the background queue — captures live in
+    // `ResultBox` (heap) so a late completion never writes to a dead
+    // stack frame. The captured box is then released by ARC; the
+    // coordinator queue is reused for the next call.
+    // Internal (not private) so @testable imports can probe the busy-handling
+    // behavior without going through the coordinator wrappers.
+    func runWithBusyHandling(
+        key: SidecarKey,
+        operation: @escaping () throws -> Void
+    ) throws {
+        let started = SidecarMonotonicClock.now()
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = ResultBox()
+        coordinatorQueue.async {
+            do {
+                try operation()
+                resultBox.error = nil
+            } catch {
+                resultBox.error = error
+            }
+            resultBox.didComplete = true
+            semaphore.signal()
+        }
+
+        var attempt = 0
+        while true {
+            let outcome = semaphore.wait(timeout: .now() + perAttemptTimeout)
+            switch outcome {
+            case .success:
+                if let error = resultBox.error { throw error }
+                return
+            case .timedOut:
+                let elapsed = SidecarMonotonicClock.now() - started
+                switch busyHandler(key, attempt, elapsed) {
+                case .retry:
+                    attempt += 1
+                    continue
+                case .retryAfter(let delay):
+                    if delay > 0 {
+                        Thread.sleep(forTimeInterval: delay)
+                    }
+                    attempt += 1
+                    continue
+                case .fail:
+                    throw SidecarStoreError.timedOut(key)
+                }
+            }
+        }
+    }
+}
+
+// Box for the bg worker to write its outcome; read by the waiter after the
+// semaphore signals. Heap-allocated so a late completion can write to it
+// even after the waiter threw `.timedOut` and returned.
+private final class ResultBox {
+    var error: Error?
+    var didComplete: Bool = false
+}
+
+// Monotonic clock for elapsed-time measurement. Avoids wall-clock skew if
+// the system time jumps mid-operation.
+private enum SidecarMonotonicClock {
+    static func now() -> TimeInterval {
+        TimeInterval(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 }
