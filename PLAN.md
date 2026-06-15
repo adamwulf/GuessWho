@@ -622,13 +622,34 @@ Tests mirror §9.3 through `reconcileContactIdentity(localID:)`:
 
 ## 11. Implementation Order
 
-Each phase ends with passing tests for the listed sections.
+Each phase ends with passing tests for the listed sections. Status markers:
+✅ verified by unit test, 🟡 verified by production smoke (2026-06-14), 🔴 unverified.
 
-1. **Models + protocols.** §7.1, §7.2 type declarations. No logic. (No tests yet.)
-2. **In-memory stores.** `InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore`. Tests: §9.1, §9.2 (in-memory rows only).
-3. **Per-field LWW merge function.** A pure function `merge(_ a: SidecarEnvelope, _ b: SidecarEnvelope) -> Result<SidecarEnvelope, MergeError>`. Tests: §9.4.
-4. **Identity reconciler.** `GuessWhoSync.reconcileContactIdentities()` against in-memory stores. Tests: §9.3, §9.6.
-5. **Sidecar conflict reconciler.** `GuessWhoSync.reconcileSidecars()` against in-memory stores with a scripted-conflict mode. Tests: §9.5.
-6. **Event sidecars.** Tests: §9.7.
-7. **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`.
-8. **Real `CNContactStore` / `EKEventStore` adapters.** Smoke-tested on device; not unit-tested.
+1. ✅ **Models + protocols.** §7.1, §7.2 type declarations. No logic. (No tests yet.)
+2. ✅ **In-memory stores.** `InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore`. Tests: §9.1, §9.2 (in-memory rows only).
+3. ✅ **Per-field LWW merge function.** A pure function `merge(_ a: SidecarEnvelope, _ b: SidecarEnvelope) -> Result<SidecarEnvelope, MergeError>`. Tests: §9.4.
+4. ✅ **Identity reconciler.** `GuessWhoSync.reconcileContactIdentities()` and `reconcileContactIdentity(localID:)` against in-memory stores. Tests: §9.3, §9.6, §9.8.
+5. ✅ **Sidecar conflict reconciler.** `GuessWhoSync.reconcileSidecars()` against in-memory stores with a scripted-conflict mode. Tests: §9.5.
+6. ✅ **Event sidecars.** Tests: §9.7.
+7. ✅🟡 **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`. ✅ unit-tested; 🟡 production-smoked on 2026-06-14 against the real iCloud ubiquity container `iCloud.com.milestonemade.guesswho` — a `setField` call from the sample app produced a valid v1 envelope at `Documents/contacts/<uuid>.json` with correct `schemaVersion`, `entityID`, and a LWW cell carrying the device-ID tiebreaker. Real two-device `NSFileVersion` conflict path is still 🔴.
+8. 🟡🔴 **Real `CNContactStore` / `EKEventStore` adapters.** Smoke-tested on device; not unit-tested. `CNContactStoreAdapter`: 🟡 Case A reconcile + `save(_:)` partial-update verified on 2026-06-14 (Mac Catalyst) — wrote `guesswho://contact/<uuid>` to a real `CNContact` and macOS Contacts.app showed the URL. `EKEventStoreAdapter`: 🔴 untouched by the sample app, no smoke yet.
+
+### 11.1 Verification gaps for the next agent
+
+The items below are load-bearing for v1 but not yet demonstrated in production. They should be the next agent's prioritized hit list before any new features land.
+
+**High priority (correctness-of-design risks):**
+- 🔴 **§10.5 `CNContact.note` partial-update preservation.** The single most contact-destroying risk in the design. Pick a contact that already has a Notes-app `note` value, reconcile it through the sample app, and confirm `note` survives byte-for-byte. Without this smoke, we cannot claim "no contact data is destroyed" with confidence.
+- 🔴 **§3.3 Case D in production.** Tonight only exercised Case A. Construct a contact with two `guesswho://contact/<uuid>` URLs (each pointing at a populated sidecar), reconcile, and confirm: loser URL gone from the contact, winner sidecar carries the union of fields, loser sidecar file deleted from iCloud.
+- 🔴 **§3.3 Case C in production.** Construct a contact with one valid GuessWho URL plus one malformed sibling, reconcile, confirm the malformed URL is removed.
+- 🔴 **§9.6 multi-device convergence in production.** Two real iCloud-signed-in devices, each reconciling the same contact independently. Observe that after both devices reconcile, both end up at the lex-smaller UUID with merged sidecar fields.
+
+**Medium priority (sync-mechanism risks):**
+- 🔴 **§6 `NSFileVersion` conflict resolution on real iCloud.** Force two devices to write the same sidecar offline, bring them online, watch `reconcileSidecars()` resolve the conflict per §6 rules.
+- 🔴 **§3.4 orphan sidecar detection in production.** Reconcile a contact, delete it from Contacts on the same device, run `reconcileContactIdentities()` (all-contacts sweep), confirm the sidecar appears in `IdentityReconcileReport.orphanSidecars` and is **not** auto-deleted.
+
+**Low priority (out of scope for v1 sample, but blocks v2):**
+- 🔴 **`EKEventStoreAdapter` minimum smoke.** Fetch one event, write a sidecar, fetch by externalID. Establishes the event path is viable before any event UI lands.
+- 🔴 **Filesystem-layout safety on iCloud Drive case-insensitivity (§5.1).** Two events whose `externalID` differs only in ASCII case would collide. v1 assumes this does not happen for iCloud-source calendars (where externalIDs are UUIDs). Worth a one-shot check once event smoke is up.
+
+When any item above flips from 🔴 to 🟡, update its status here AND note the smoke procedure in a short paragraph below it so the next reader can re-run the check.
