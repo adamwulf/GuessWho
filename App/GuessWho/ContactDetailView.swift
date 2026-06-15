@@ -35,6 +35,10 @@ struct ContactDetailView: View {
                     LabeledContent("localID", value: contact.localID)
                     if let uuid = service.guessWhoUUID(in: contact) {
                         LabeledContent("GuessWho UUID", value: uuid)
+                    } else if isSidecarStorageUnavailable {
+                        Text("No GuessWho UUID. Reconcile is unavailable because sidecar storage is offline (see banner).")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     } else {
                         Text("No GuessWho UUID. Tap Reconcile to assign one on this device.")
                             .font(.callout)

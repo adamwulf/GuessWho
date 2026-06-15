@@ -36,6 +36,14 @@ final class SyncService {
     private let contactsAdapter: CNContactStoreAdapter
     private let sync: GuessWhoSync?
 
+    // Known v1 limitation: sidecarLocation and sync are resolved once
+    // in init() and never refreshed. If the app launches while iCloud
+    // Drive is offline and the user signs in mid-session, the app
+    // remains in .localFallback (or .unavailable) until relaunch.
+    // A future refreshSidecarLocation() could rebuild `sync` on
+    // ScenePhase.active transitions, but rebuilding the sidecar root
+    // mid-session has implications (in-flight ops, cache state) that
+    // are out of scope for the v1 sample.
     init() {
         // Single CNContactStore instance shared between this service and
         // the adapter, so contact-store state (auth prompt cache, etc.)
