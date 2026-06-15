@@ -653,3 +653,116 @@ The items below are load-bearing for v1 but not yet demonstrated in production. 
 - 🔴 **Filesystem-layout safety on iCloud Drive case-insensitivity (§5.1).** Two events whose `externalID` differs only in ASCII case would collide. v1 assumes this does not happen for iCloud-source calendars (where externalIDs are UUIDs). Worth a one-shot check once event smoke is up.
 
 When any item above flips from 🔴 to 🟡, update its status here AND note the smoke procedure in a short paragraph below it so the next reader can re-run the check.
+
+## 12. Timestamped Notes (Sidecar-Only Feature)
+
+Every contact carries a list of timestamped notes, stored in the sidecar. `CNContact.note` is never read or written — the entitlement gate is out of scope (§10.5).
+
+### 12.1 Data model
+
+A new Codable type in `Sources/GuessWhoSync/ContactNote.swift`:
+
+```swift
+public struct ContactNote: Hashable, Sendable, Codable {
+    public var id: UUID            // minted at create; stable across edits and merges
+    public var createdAt: Date     // immutable after creation
+    public var modifiedAt: Date    // bumped on body edit and on delete
+    public var modifiedBy: String  // device ID — same source as SidecarCell.modifiedBy
+    public var body: String        // plain text
+    public var deleted: Bool       // soft-delete tombstone; survives merges
+}
+```
+
+`Contact` does **not** gain a notes property. `Contact` is the `CNContact` mirror; `ContactNote` is sidecar-only.
+
+ID is a UUID, not a content hash — two devices typing the same body simultaneously are two distinct notes.
+
+### 12.2 JSON shape
+
+The sidecar envelope (§5.2) is unchanged. A well-known field key `"notes"` holds the list as the cell's `JSONValue`:
+
+```json
+"notes": {
+  "value": [
+    {
+      "id": "9F4A-…",
+      "createdAt": "2026-06-14T20:15:00.000Z",
+      "modifiedAt": "2026-06-14T20:15:00.000Z",
+      "modifiedBy": "device-A",
+      "body": "Met at WWDC.",
+      "deleted": false
+    }
+  ],
+  "modifiedAt": "2026-06-14T20:15:00.000Z",
+  "modifiedBy": "device-A"
+}
+```
+
+The outer cell's `modifiedAt`/`modifiedBy` are the max `(modifiedAt, modifiedBy)` across the inner notes. An empty list is `"value": []`. An absent `"notes"` field is equivalent to an empty list.
+
+### 12.3 Merge semantics — per-note LWW
+
+The generic per-field LWW (§5.3) is wrong for notes: it would clobber a sibling note another device added concurrently. When `merge(a, b)` encounters key `"notes"` on both sides:
+
+1. Decode each side's cell into `[ContactNote]`. A malformed cell is treated as the empty list.
+2. For each note ID in the union of both lists:
+   - If only one side has the note: keep it.
+   - If both have it: keep the one with the larger `(modifiedAt, modifiedBy)` (ISO8601 lex, then string lex). Applies symmetrically to live, edited, and tombstoned notes.
+3. Tombstoned notes are kept in the list (they suppress earlier-stamped resurrection — same lifecycle as §5.5). UI filters them out.
+4. The outer cell's `modifiedAt`/`modifiedBy` is the max across merged notes' stamps.
+
+There is no outer-cell tombstone path — "delete all" is N per-note tombstones.
+
+**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`. Edit mutates `body`, bumps `modifiedAt`, leaves `id`/`createdAt` unchanged. Delete sets `deleted = true`, bumps `modifiedAt`. `createdAt` is never bumped post-creation.
+
+`SidecarMerge.swift` grows a `mergeNotesCell(_:_:)` free function invoked from `merge(_:_:)` when `key == "notes"`.
+
+### 12.4 Interaction with the iCloud conflict reconciler
+
+`reconcileSidecars()` (§6) is unchanged. It folds N envelopes via `merge(_:_:)`, which now dispatches to per-note merge for `"notes"`. The N-way iCloud conflict path converges per-note automatically.
+
+Identity reconciliation (§3.3) is orthogonal — Case D's rebase step calls `merge(_:_:)`, so notes from a loser sidecar are folded into the winner without new code.
+
+### 12.5 Sample-app UI
+
+The sample app gains its first user-facing edit surface.
+
+**ContactDetailView additions:**
+- **Notes section** below the existing contact info.
+- **List rows** sorted by `createdAt` **ascending** (oldest at top, newest at bottom — chat-log feel). Each row shows body, relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Tombstoned notes are filtered out.
+- **Always-visible empty `TextEditor` pinned below the list.** Submit (Return on hardware keyboard / send button on touch) mints a new `ContactNote`, appends to the bottom, clears the input. No separate "+" button, no modal sheet.
+- **Tap an existing note → inline edit.** The row swaps to an editable `TextEditor`; commit bumps `modifiedAt`/`modifiedBy` and writes. Tap-outside cancels.
+- **Swipe-to-delete** sets `deleted = true`, bumps `modifiedAt`. The row disappears immediately; the tombstone persists.
+
+A small `NotesCellCodec` in the sample app converts between `SidecarCell` ↔ `[ContactNote]`. A `NotesStore` view-model reads the current cell, applies the mutation, re-encodes, writes. `modifiedBy` reuses the package's existing per-install device-ID source verbatim. Concurrent writes are serialized by the existing `PerKeyLockTable`.
+
+The DEBUG "Write debug field" button is retained — unrelated.
+
+### 12.6 Test plan
+
+**Unit tests (new):**
+- `NotesCellCodecTests`: round-trip `[ContactNote]` ↔ `SidecarCell`, including empty list.
+- `NotesMergeTests` (§9.4 addition):
+  - Same ID, both sides, larger stamp wins.
+  - Parallel creates (different IDs) both survive.
+  - Edit vs. delete on same ID: newer stamp wins.
+  - Tombstone vs. older edit on same ID: tombstone wins.
+  - Commutativity and associativity across randomized 3-note lists.
+- `NotesEnvelopeTests` (§9.5 addition): 3-way N-fold via `reconcileSidecars()` with three disjoint notes — all three appear.
+
+**Sample-app smoke tests (§11.1 additions, all 🔴):**
+- 🔴 **Single-device notes CRUD.** Add three via bottom input, inline-edit one, swipe-delete one. Re-launch. List shows two live notes in `createdAt` ascending order.
+- 🔴 **Two-device convergence.** A creates X, B creates Y, both offline. After sync + reconcile, both devices show `[X, Y]`.
+- 🔴 **Two-device edit/delete race.** A edits X; B deletes X. Newer-timestamp wins, both devices converge.
+
+**Case A/B/C** smokes — unchanged. **Case D** — extend so each pre-merge contact's sidecar carries one note; after reconcile, the winner holds both. No new code path; the per-note merge runs automatically.
+
+### 12.7 Slot in §11.1
+
+Promote ahead of existing 🔴 items — notes are the first user-visible sidecar feature.
+
+1. **NEW 🔴 (high)** — `ContactNote` model, codec, per-note merge branch in `SidecarMerge.swift`.
+2. **NEW 🔴 (high)** — Sample-app notes UI.
+3. **NEW 🔴 (high)** — Two-device notes convergence smoke.
+4. Existing 🔴 §3.3 Case C and Case D smokes — unchanged priority; Case D extended per §12.6.
+5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium, reframed as "partial-update preserves untouched native fields, witnessed by `note`." We're no longer in the contacts-notes business.
