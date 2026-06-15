@@ -5,6 +5,7 @@ public final class GuessWhoSync {
     private let events: EventStoreProtocol
     private let sidecars: SidecarStoreProtocol
     private let deviceID: String
+    private let sidecarLocks = PerKeyLockTable<SidecarKey>()
 
     public init(
         contacts: ContactStoreProtocol,
@@ -23,29 +24,33 @@ public final class GuessWhoSync {
     }
 
     public func setField(_ name: String, value: JSONValue, at key: SidecarKey) throws {
-        let existing = try sidecars.read(key)
-        let cell = SidecarCell.value(value, modifiedAt: Date(), modifiedBy: deviceID)
-        var fields = existing?.fields ?? [:]
-        fields[name] = cell
-        let envelope = SidecarEnvelope(
-            schemaVersion: 1,
-            entityID: existing?.entityID ?? key.id,
-            fields: fields
-        )
-        try sidecars.write(envelope, at: key)
+        try sidecarLocks.withLock(forKey: key) {
+            let existing = try sidecars.read(key)
+            let cell = SidecarCell.value(value, modifiedAt: Date(), modifiedBy: deviceID)
+            var fields = existing?.fields ?? [:]
+            fields[name] = cell
+            let envelope = SidecarEnvelope(
+                schemaVersion: 1,
+                entityID: existing?.entityID ?? key.id,
+                fields: fields
+            )
+            try sidecars.write(envelope, at: key)
+        }
     }
 
     public func deleteField(_ name: String, at key: SidecarKey) throws {
-        let existing = try sidecars.read(key)
-        let tombstone = SidecarCell.tombstone(modifiedAt: Date(), modifiedBy: deviceID)
-        var fields = existing?.fields ?? [:]
-        fields[name] = tombstone
-        let envelope = SidecarEnvelope(
-            schemaVersion: 1,
-            entityID: existing?.entityID ?? key.id,
-            fields: fields
-        )
-        try sidecars.write(envelope, at: key)
+        try sidecarLocks.withLock(forKey: key) {
+            let existing = try sidecars.read(key)
+            let tombstone = SidecarCell.tombstone(modifiedAt: Date(), modifiedBy: deviceID)
+            var fields = existing?.fields ?? [:]
+            fields[name] = tombstone
+            let envelope = SidecarEnvelope(
+                schemaVersion: 1,
+                entityID: existing?.entityID ?? key.id,
+                fields: fields
+            )
+            try sidecars.write(envelope, at: key)
+        }
     }
 
     public func reconcileSidecars() throws -> SidecarReconcileReport {
