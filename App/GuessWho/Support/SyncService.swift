@@ -1,0 +1,214 @@
+import Foundation
+import Contacts
+import GuessWhoSync
+
+// A no-op EventStoreProtocol so v0 of the app does not need EventKit
+// permission or even a calendar at all.
+final class NoopEventStore: EventStoreProtocol {
+    func fetchEvents(in interval: DateInterval) throws -> [Event] { [] }
+    func fetch(externalID: String) throws -> Event? { nil }
+}
+
+@MainActor
+@Observable
+final class SyncService {
+    enum SidecarLocation: Equatable {
+        case iCloud(URL)
+        case localFallback(URL, reason: String)
+        // Fail-closed: no writable sidecar root could be resolved. Reads
+        // return safe defaults, writes are refused with this reason.
+        // Better than silently writing to a purgeable tmp dir.
+        case unavailable(reason: String)
+    }
+
+    enum ContactsAuthorization: Equatable {
+        case notRequested
+        case denied
+        case restricted
+        case authorized
+    }
+
+    private(set) var sidecarLocation: SidecarLocation
+    private(set) var contactsAuthorization: ContactsAuthorization
+    private(set) var lastError: String?
+
+    private let contactStore: CNContactStore
+    private let contactsAdapter: CNContactStoreAdapter
+    private let sync: GuessWhoSync?
+
+    // Known v1 limitation: sidecarLocation and sync are resolved once
+    // in init() and never refreshed. If the app launches while iCloud
+    // Drive is offline and the user signs in mid-session, the app
+    // remains in .localFallback (or .unavailable) until relaunch.
+    // A future refreshSidecarLocation() could rebuild `sync` on
+    // ScenePhase.active transitions, but rebuilding the sidecar root
+    // mid-session has implications (in-flight ops, cache state) that
+    // are out of scope for the v1 sample.
+    init() {
+        // Single CNContactStore instance shared between this service and
+        // the adapter, so contact-store state (auth prompt cache, etc.)
+        // is consistent across the app.
+        let store = CNContactStore()
+        self.contactStore = store
+        let adapter = CNContactStoreAdapter(store: store)
+        self.contactsAdapter = adapter
+
+        let location = Self.resolveSidecarLocation()
+        self.sidecarLocation = location
+
+        switch location {
+        case .iCloud(let url), .localFallback(let url, _):
+            let sidecarStore = FileSystemSidecarStore(root: url)
+            self.sync = GuessWhoSync(
+                contacts: adapter,
+                events: NoopEventStore(),
+                sidecars: sidecarStore,
+                deviceID: Self.stableDeviceID()
+            )
+        case .unavailable:
+            self.sync = nil
+        }
+
+        self.contactsAuthorization = Self.readAuthorization()
+    }
+
+    func requestContactsAccessIfNeeded() async {
+        switch CNContactStore.authorizationStatus(for: .contacts) {
+        case .authorized, .limited:
+            contactsAuthorization = .authorized
+        case .notDetermined:
+            do {
+                let granted = try await contactStore.requestAccess(for: .contacts)
+                contactsAuthorization = granted ? .authorized : .denied
+            } catch {
+                contactsAuthorization = .denied
+                lastError = "Contacts access request failed: \(error.localizedDescription)"
+            }
+        case .denied:
+            contactsAuthorization = .denied
+        case .restricted:
+            contactsAuthorization = .restricted
+        @unknown default:
+            contactsAuthorization = .denied
+        }
+    }
+
+    func fetchAll() -> [Contact] {
+        guard contactsAuthorization == .authorized else { return [] }
+        do {
+            return try contactsAdapter.fetchAll()
+        } catch {
+            lastError = "fetchAll failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    func sidecar(for contact: Contact) -> SidecarEnvelope? {
+        guard let uuid = guessWhoUUID(in: contact) else { return nil }
+        guard let sync else { return nil }
+        do {
+            return try sync.sidecar(at: SidecarKey(kind: .contact, id: uuid))
+        } catch {
+            lastError = "sidecar read failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func guessWhoUUID(in contact: Contact) -> String? {
+        for url in contact.urlAddresses {
+            if let uuid = SidecarKey.parseGuessWhoContactURL(url.value) {
+                return uuid
+            }
+        }
+        return nil
+    }
+
+    func reconcile(localID: String) throws -> IdentityReconcileReport.ContactOutcome {
+        guard let sync else {
+            throw SidecarUnavailableError()
+        }
+        return try sync.reconcileContactIdentity(localID: localID)
+    }
+
+    func setField(_ name: String, value: JSONValue, forContactUUID uuid: String) throws {
+        guard let sync else {
+            throw SidecarUnavailableError()
+        }
+        try sync.setField(name, value: value, at: SidecarKey(kind: .contact, id: uuid))
+    }
+
+    // MARK: - Private
+
+    private static func resolveSidecarLocation() -> SidecarLocation {
+        let fm = FileManager.default
+        if let ubiquity = fm.url(forUbiquityContainerIdentifier: "iCloud.com.milestonemade.guesswho") {
+            let documents = ubiquity.appendingPathComponent("Documents", isDirectory: true)
+            do {
+                try fm.createDirectory(at: documents, withIntermediateDirectories: true)
+                return .iCloud(documents)
+            } catch {
+                // iCloud container exists but is unwritable — try local
+                // fallback before giving up.
+                if let local = try? localFallbackURL() {
+                    return .localFallback(
+                        local,
+                        reason: "iCloud container found but its Documents folder is unwritable: \(error.localizedDescription)"
+                    )
+                }
+                return .unavailable(
+                    reason: "iCloud container is unwritable and no local fallback directory is available."
+                )
+            }
+        }
+
+        if let local = try? localFallbackURL() {
+            return .localFallback(
+                local,
+                reason: "iCloud Drive is unavailable. Sign in to iCloud and enable iCloud Drive to sync across devices."
+            )
+        }
+        return .unavailable(
+            reason: "No writable storage location is available. Application Support is unavailable on this device."
+        )
+    }
+
+    private static func localFallbackURL() throws -> URL {
+        let fm = FileManager.default
+        let support = try fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let dir = support.appendingPathComponent("GuessWhoSidecars", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static func stableDeviceID() -> String {
+        let defaults = UserDefaults.standard
+        let key = "com.milestonemade.guesswho.deviceID"
+        if let existing = defaults.string(forKey: key) {
+            return existing
+        }
+        let fresh = UUID().uuidString.lowercased()
+        defaults.set(fresh, forKey: key)
+        return fresh
+    }
+
+    private static func readAuthorization() -> ContactsAuthorization {
+        switch CNContactStore.authorizationStatus(for: .contacts) {
+        case .authorized, .limited: return .authorized
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notRequested
+        @unknown default: return .denied
+        }
+    }
+}
+
+struct SidecarUnavailableError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+    }
+}
