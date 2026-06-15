@@ -14,12 +14,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // Closure consulted when a sidecar operation exceeds `perAttemptTimeout`.
     // Default: 3 retries, exponential backoff from 250ms, then fail. See
     // `SidecarBusyHandler` for the contract.
-    public var busyHandler: SidecarBusyHandler
+    public let busyHandler: SidecarBusyHandler
 
     // Per-attempt budget for a single sidecar read/write/delete. If the
     // operation hasn't returned by this point, `busyHandler` is consulted.
     // Defaults to 1 second.
-    public var perAttemptTimeout: TimeInterval
+    public let perAttemptTimeout: TimeInterval
 
     // Background queue the coordinator runs on so the calling thread can
     // wait with a timeout. One serial queue per store instance — coordinator
@@ -449,8 +449,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // `ResultBox` (heap) so a late completion never writes to a dead
     // stack frame. The captured box is then released by ARC; the
     // coordinator queue is reused for the next call.
-    // Internal (not private) so @testable imports can probe the busy-handling
-    // behavior without going through the coordinator wrappers.
+    // Internal so @testable tests can drive busy handling directly,
+    // bypassing the coordinator wrappers.
     func runWithBusyHandling(
         key: SidecarKey,
         operation: @escaping () throws -> Void

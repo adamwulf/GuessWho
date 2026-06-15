@@ -30,10 +30,4 @@ public final class InMemoryContactStore: ContactStoreProtocol {
         defer { lock.unlock() }
         contactsByID[contact.localID] = contact
     }
-
-    public func delete(localID: String) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        contactsByID.removeValue(forKey: localID)
-    }
 }
