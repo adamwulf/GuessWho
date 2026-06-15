@@ -158,27 +158,6 @@ struct InMemorySidecarStoreTests {
     }
 
     @Test
-    func scriptedConflictResolveRecoverySiblingLeavesConflictAndReportsSuffix() throws {
-        let store = InMemorySidecarStore()
-        let key = contactKey()
-        store.scriptConflict(at: key, versions: [Data([0x01])])
-
-        let outcomes = try store.reconcileConflicts { _, _ in
-            .writeRecoverySibling(merged: self.envelope(), suffix: "recovered.20260614")
-        }
-        #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 0)
-        #expect(outcomes[0].skippedReasons == ["wrote recovery sibling: recovered.20260614"])
-
-        var sawConflictAgain = false
-        _ = try store.reconcileConflicts { _, _ in
-            sawConflictAgain = true
-            return .leave
-        }
-        #expect(sawConflictAgain)
-    }
-
-    @Test
     func scriptedConflictResolverThrowingRecordsErrorAndDoesNotRethrow() throws {
         struct ResolveBoom: Error, CustomStringConvertible {
             var description: String { "kaboom" }

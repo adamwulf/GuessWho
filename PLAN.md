@@ -282,9 +282,6 @@ public enum ConflictResolution: Sendable {
     /// are byte-identical, they are treated as the same outcome (all matching
     /// versions skipped together, or all marked resolved together).
     case write(merged: SidecarEnvelope, skip: [Data])
-    /// Write `merged` to a sibling file; leave original current and all
-    /// conflict versions intact. Used when current is unparseable (§6).
-    case writeRecoverySibling(merged: SidecarEnvelope, suffix: String)
     /// Leave everything in conflict.
     case leave
 }
@@ -425,10 +422,11 @@ extension SidecarKey {
 
 ## 10. Open Questions Deliberately Deferred
 
-1. **`NSFileVersion` in tests.** Hard to fabricate real iCloud conflicts in unit tests. Plan: hide `NSFileVersion` behind `SidecarStoreProtocol.reconcileConflicts` (§7.2). The in-memory store ships a scripted-conflict mode (the test injects `[(SidecarKey, [Data])]`); the file-system store uses real `NSFileVersion`.
+1. **`NSFileVersion` in tests.** Hard to fabricate real iCloud conflicts in unit tests. Plan: hide `NSFileVersion` behind `SidecarStoreProtocol.reconcileConflict(at:resolve:)` (§7.2). The in-memory store ships a scripted-conflict mode (the test injects `[(SidecarKey, [Data])]`); the file-system store uses real `NSFileVersion`.
 2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
 3. **Tombstone GC.** Tombstones live forever in v1.
 4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
+5. **Recovery-sibling writes for unparseable current versions — removed pending real demand.** The orchestrator never emits this resolution today: when every version of a conflict is unparseable it falls back to `.leave`, and a parseable merge result is written directly via `.write(merged:skip:)`. The enum case + FileSystemSidecarStore code path were carrying weight for a use case nothing in the codebase exercises. If a real call site needs to quarantine an unparseable current to a sibling file rather than leave it in conflict, add the resolution back then.
 
 ## 11. Implementation Order
 

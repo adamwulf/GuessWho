@@ -293,24 +293,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                     skippedReasons: []
                 )
 
-            case .writeRecoverySibling(let merged, let suffix):
-                let mergedData = try JSONEncoder().encode(merged)
-                let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-                var siblingWriteError: Error?
-                try coordinatedWrite(key: key, at: siblingURL) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        siblingWriteError = error
-                    }
-                }
-                if let siblingWriteError { throw siblingWriteError }
-                return SidecarReconcileReport.FileOutcome(
-                    key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: ["wrote recovery sibling: \(suffix)"]
-                )
-
             case .leave:
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
@@ -408,13 +390,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         let directory = url.deletingLastPathComponent()
         let placeholderName = ".\(url.lastPathComponent).icloud"
         return directory.appendingPathComponent(placeholderName)
-    }
-
-    // Original `abc.json` → sibling `abc.recovered.<suffix>.json` (same directory).
-    private func recoverySiblingURL(for original: URL, suffix: String) -> URL {
-        let directory = original.deletingLastPathComponent()
-        let stem = original.deletingPathExtension().lastPathComponent
-        return directory.appendingPathComponent("\(stem).recovered.\(suffix).json")
     }
 
     // MARK: - NSFileCoordinator wrappers
