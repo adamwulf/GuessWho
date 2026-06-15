@@ -439,6 +439,17 @@ public struct SidecarCell: Sendable, Codable {
 public protocol ContactStoreProtocol {
     func fetchAll() throws -> [Contact]
     func fetch(localID: String) throws -> Contact?
+
+    /// Find the contact whose `urlAddresses` includes the GuessWho URL for
+    /// the given UUID (i.e. a URL `guesswho://contact/<uuid>` where the
+    /// suffix UUID matches `guessWhoUUID` per `SidecarKey.parseGuessWhoContactURL`).
+    /// Returns nil if no contact carries that UUID. v1's default implementation
+    /// is `fetchAll().first { SidecarKey.forContact($0)?.id == guessWhoUUID }`
+    /// — O(N). `CNContactStoreAdapter` may override with a faster
+    /// `CNContact.predicateForContacts(matchingURLString:)` query if one
+    /// exists; otherwise it inherits the default scan.
+    func fetch(guessWhoUUID: String) throws -> Contact?
+
     func save(_ contact: Contact) throws
 
     // Image bytes are loaded on demand so bulk fetches don't pay the cost.
@@ -541,7 +552,9 @@ public final class GuessWhoSync {
     /// Mutates an existing field instance's caller-supplied name and/or value.
     /// Reads the existing cell to learn its immutable `type`; throws
     /// `SidecarStoreError.typeValueMismatch` if the new `value` doesn't match.
-    /// Silent no-op if the cell is missing or soft-deleted (no resurrection).
+    /// Bumps `modifiedAt` / `modifiedBy` and clears `deletedAt` (undelete:
+    /// writing to a soft-deleted cell brings it back as live). Silent no-op
+    /// if the cell is missing.
     public func setField(at key: SidecarKey,
                          id: UUID,
                          field: String,
@@ -575,12 +588,14 @@ public struct IdentityReconcileReport: Sendable {
         public let assignedUUID: String?              // newly assigned, if any
         public let mergedLoserUUIDs: [String]         // sidecars merged into the winner
         public let removedMalformedURLs: [String]
-        public let rewrittenLinkEndpointCount: Int    // §13.5 — count of endpoint
-                                                      // rewrites attributable to this
-                                                      // contact's Case-D collapse. Per
-                                                      // endpoint, not per link: a link
-                                                      // with both endpoints rewritten
-                                                      // by the same Case-D contributes 2.
+        public let rewrittenLinkIDs: [UUID]           // §13.5 — link UUIDs whose
+                                                      // endpoints were rewritten by
+                                                      // this contact's Case-D collapse.
+                                                      // Each link appears at most once,
+                                                      // even if both its endpoints were
+                                                      // rewritten in one pass. Lets an
+                                                      // app-side graph cache (§14) re-read
+                                                      // exactly the affected envelopes.
         public let errors: [String]
     }
     public let contactOutcomes: [ContactOutcome]
@@ -747,6 +762,11 @@ Tests mirror §9.3 through `reconcileContactIdentity(localID:)`:
 
 1. **`NSFileVersion` in tests.** Hard to fabricate real iCloud conflicts in unit tests. Plan: hide `NSFileVersion` behind `SidecarStoreProtocol.reconcileConflict(at:resolve:)` (§7.2). The in-memory store ships a scripted-conflict mode (the test injects `[(SidecarKey, [Data])]`); the file-system store uses real `NSFileVersion`.
 2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
+
+   **When v1 hosts should call reconcile.** Until §10.2's background-sync wiring lands, hosts get stale data between iCloud landing a new envelope and the next reconcile call. Minimum-viable trigger set:
+   - `reconcileContactIdentities()` at app launch (so every contact has a GuessWho UUID before any read goes to the sidecar layer) and on app foreground (so contacts added on another device get a UUID locally).
+   - `reconcileSidecars()` at app launch, on app foreground, and after any direct sidecar write the host performs (so any NSFileVersion conflicts the OS surfaced get folded before the next read).
+   Hosts may layer additional triggers — periodic polling, post-CardDAV-sync notifications, scene activation events — but the launch + foreground + post-write set is the minimum that keeps the visible state from drifting.
 3. **Soft-delete GC.** `deletedAt`-set cells, notes, and links live forever in v1. GC may land in v2.
 4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
 5. **`CNContact.note`.** Apple gates `CNContactNoteKey` behind the `com.apple.developer.contacts.notes` entitlement. We don't have it yet, and `Contact` carries no `note` property — the field is the single deliberate gap vs. `CNContact`. To avoid silently clobbering pre-existing notes when a host app reads, modifies, and writes a contact back through `CNContactStoreAdapter`, the adapter **omits `CNContactNoteKey` from every fetch descriptor** AND uses a partial-update save path: `save(_:)` reads the existing contact for the localID, mutates only the keys `Contact` represents, and submits the resulting `CNMutableContact` via `CNSaveRequest.update(_:)` so untouched keys (including `note`) remain in place.
@@ -949,7 +969,7 @@ Each link is one sidecar envelope. `SidecarKey(.link, link.id.uuidString)` resol
 | `endpointB`    | object: `{ "kind": "...", "id": "..." }`             | Endpoint B of the link |
 | `note`         | string                                               | Free-text note |
 | `createdAt`    | string (ISO8601)                                     | Immutable creation timestamp; written once, never rewritten |
-| `linkDeletedAt`| string (ISO8601) — cell present iff soft-deleted; cell absent when live | Entity-level soft-delete marker |
+| `linkDeletedAt`| string (ISO8601) when soft-deleted; JSON `null` when live | Entity-level soft-delete marker. Cell is always present once created; only its `value` changes between `null` and an ISO8601 timestamp. |
 
 **Public `Link` properties are derived from cells**, not stored as separate cells:
 - `Link.id` is the envelope's `entityID`.
@@ -958,7 +978,7 @@ Each link is one sidecar envelope. `SidecarKey(.link, link.id.uuidString)` resol
 - `Link.modifiedBy` is the `modifiedBy` of the cell that contributed `Link.modifiedAt` (lex tiebreak on equal stamps).
 - `Link.deletedAt` is the `value` of the `linkDeletedAt` cell parsed as `Date`, or `nil` if that cell is absent.
 
-This keeps stamps single-sourced: the underlying §5.3 cell stamps are the ground truth for LWW; the public-facing `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections of that ground truth. No double-nesting — `linkDeletedAt` is a normal cell carrying a timestamp `value`, and its own cell-level `deletedAt` is unused (the link API offers no undelete, so a `linkDeletedAt` cell is never itself soft-deleted).
+This keeps stamps single-sourced: the underlying §5.3 cell stamps are the ground truth for LWW; the public-facing `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections of that ground truth. No double-nesting — `linkDeletedAt` is a normal cell whose `value` is either `null` (link is live) or an ISO8601 timestamp string (link is soft-deleted). Soft-delete flips the value to a timestamp; undelete (via `setLinkNote`) flips it back to `null`. Both operations are normal cell writes that compete in LWW like any other write.
 
 **Codec.** Conversion between `Link` and `SidecarEnvelope` lives in `Sources/GuessWhoSync/Link.swift` alongside the model. (Links pre-date the field-instance pivot in §7.3/§12; they keep their own envelope shape because a link is one *entity*, not a field instance on another entity.) The two operations:
 
@@ -980,7 +1000,8 @@ This keeps stamps single-sourced: the underlying §5.3 cell stamps are the groun
 **Edit-vs-create-vs-delete (one envelope write each):**
 - **Create.** Mint a new UUID. Write the envelope with cells `endpointA`, `endpointB`, `note`, `createdAt`, all with `modifiedAt = now`, `modifiedBy = deviceID`, `deletedAt = nil` (cell-level). No `linkDeletedAt` cell.
 - **Edit note.** Rewrite the `note` cell with a fresh `(value, now, deviceID)`. All other cells untouched.
-- **Delete.** Add a `linkDeletedAt` cell with `value = now` (ISO8601 string), `modifiedAt = now`, `modifiedBy = deviceID`. Rewrite the `note` cell with `value = ""` and a fresh stamp. The `endpointA` / `endpointB` / `createdAt` cells are untouched.
+- **Delete.** Write the `linkDeletedAt` cell with `value = now` (ISO8601 string), `modifiedAt = now`, `modifiedBy = deviceID`. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are untouched — the body bytes are preserved on disk so a subsequent `setLinkNote` can undelete cleanly without losing what the user wrote.
+- **Undelete.** Write the `linkDeletedAt` cell with `value = null`, fresh stamps. Other cells untouched. (Performed by `setLinkNote` when called on a soft-deleted link — see §13.6.)
 - **Case-D endpoint rewrite (§13.5).** Rewrite only the affected endpoint cell(s) with the new endpoint value and fresh `modifiedAt`/`modifiedBy`. All other cells untouched.
 
 ### 13.4 Interaction with the iCloud conflict reconciler
@@ -1005,7 +1026,7 @@ A link envelope under iCloud conflict resolves per §5.3 cell-by-cell LWW. Two d
 
 **Concurrent note-edit vs rewrite.** A note edit on a link runs against a different cell (`note`) than the rewrite (`endpointA`/`endpointB`). §5.3 LWW resolves each cell independently — no clobber.
 
-**Ordering.** Rewrite runs *after* §3.3's merge step has produced the winner envelope and deleted the loser file, but *before* `reconcileContactIdentities()` returns. The per-contact `IdentityReconcileReport.ContactOutcome` gains an integer `rewrittenLinkEndpointCount` so callers can observe the rewrite happened.
+**Ordering.** Rewrite runs *after* §3.3's merge step has produced the winner envelope and deleted the loser file, but *before* `reconcileContactIdentities()` returns. The per-contact `IdentityReconcileReport.ContactOutcome` gains `rewrittenLinkIDs: [UUID]` listing exactly which link envelopes the rewrite touched — so an app-side cache (§14) can re-read precisely those, not dump and rebuild.
 
 **Single-contact entry point.** `reconcileContactIdentity(localID:)` performs the same rewrite scoped to the same single Case-D collapse — same O(N links) scan. Acknowledged cost; the per-contact call must leave links consistent.
 
@@ -1021,16 +1042,17 @@ extension GuessWhoSync {
     /// minted Link. Does NOT dedup — see "Dedup" below.
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link
 
-    /// Mutates the note on an existing link. One envelope read + write.
-    /// Silent no-op if the envelope is missing or already soft-deleted.
-    /// At the link layer, soft-delete is sticky for setLinkNote — there is
-    /// no undelete API. Callers wanting to "re-link" the same entities
-    /// after a removeLink call addLink to mint a fresh link.
+    /// Mutates the note on an existing link, and undeletes it if it was
+    /// soft-deleted (writes `linkDeletedAt` cell with `value: null` to clear
+    /// the soft-delete marker, alongside the note write). One envelope read +
+    /// write. Silent no-op if the envelope is missing.
     public func setLinkNote(id: UUID, note: String) throws
 
-    /// Soft-deletes the link by setting deletedAt = now, clearing note, bumping
-    /// modifiedAt/modifiedBy. One envelope write. Silent no-op if already
-    /// soft-deleted (no stamp churn).
+    /// Soft-deletes the link by writing the `linkDeletedAt` cell with
+    /// `value: <ISO8601 of now>`. All other cells (note, endpointA, endpointB,
+    /// createdAt) are untouched — the bytes are preserved so a future
+    /// `setLinkNote` can undelete without losing the note. One envelope write.
+    /// Silent no-op if already soft-deleted (no stamp churn).
     public func removeLink(id: UUID) throws
 
     /// Returns a single link by id, or nil if the envelope is missing.
@@ -1066,19 +1088,19 @@ extension GuessWhoSync {
   - `removeLink(X)` then `addLink(same endpoints, fresh note)`: two distinct envelopes, two distinct ids; X is soft-deleted, the new one is live; both surface via `links(at:)` (callers filter on `deletedAt`).
   - `setLinkNote` updates `note` cell, bumps `modifiedAt`/`modifiedBy`.
   - `setLinkNote` on missing envelope: silent no-op, no throw.
-  - `setLinkNote` on already-soft-deleted envelope: silent no-op, no resurrection.
-  - `removeLink` sets `deletedAt`, clears `note`, bumps stamps.
+  - `setLinkNote` on a soft-deleted envelope undeletes it: `linkDeletedAt` cell's `value` flips to `null`, `note` cell takes the new value, both cells stamped fresh; `link(id:).deletedAt == nil` after.
+  - `removeLink` writes `linkDeletedAt` (timestamp value) and bumps its stamps. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are byte-identical before and after.
   - `removeLink` on already-soft-deleted envelope: silent no-op, no stamp churn.
   - `links(at:)` returns soft-deleted links; callers must filter — assert by querying with and without a `.deletedAt == nil` filter.
   - `link(id:)` returns soft-deleted links unchanged.
   - Event↔event, org↔contact, person↔person, person↔event, person↔org links all round-trip — package is type-agnostic at the link layer.
 - `LinkCaseDRewriteTests` (§9.3/§9.8 addition):
-  - Pre-seed a link with `endpointB = (.contact, L)`. Run Case D collapsing `L → W`. Assert the link envelope now carries `endpointB = (.contact, W)`; `modifiedAt`/`modifiedBy` on the rewritten cell are bumped; `note` cell untouched. `IdentityReconcileReport.ContactOutcome.rewrittenLinkEndpointCount == 1`.
-  - Single-contact `reconcileContactIdentity(localID:)` performs the same rewrite, and the returned `ContactOutcome.rewrittenLinkEndpointCount` is populated identically to the all-contacts path.
+  - Pre-seed a link with `endpointB = (.contact, L)`. Run Case D collapsing `L → W`. Assert the link envelope now carries `endpointB = (.contact, W)`; `modifiedAt`/`modifiedBy` on the rewritten cell are bumped; `note` cell untouched. `IdentityReconcileReport.ContactOutcome.rewrittenLinkIDs == [link.id]`.
+  - Single-contact `reconcileContactIdentity(localID:)` performs the same rewrite, and the returned `ContactOutcome.rewrittenLinkIDs` carries the same link UUID(s) as the all-contacts path.
   - No Case D ⇒ no rewrite (counter stays zero).
-  - Multi-Case-D in one pass (two contacts): link with `endpointA = L1, endpointB = L2`, where `L1` and `L2` are losers belonging to two *different* contacts. After reconcile, link carries `(W1, W2)` in **exactly one** envelope write (assert via a counting wrapper around the in-memory sidecar store's `write`). Each contact's `ContactOutcome.rewrittenLinkEndpointCount == 1`.
-  - Multi-loser one contact: a single contact has two valid GuessWho URLs `L1` and `L2` collapsing to the same winner `W`; a link carries `endpointA = L1, endpointB = L2`. After reconcile, the link carries `(W, W)` in one envelope write; that one contact's `rewrittenLinkEndpointCount == 2` (two endpoints attributed to one Case-D collapse).
-  - Orphan endpoint untouched: pre-seed a link with `endpointA = (.contact, ORPHAN_UUID)` where no contact carries that UUID. Run Case D on an unrelated contact. The orphan-endpoint link is left byte-identical — not rewritten, not counted in `rewrittenLinkEndpointCount`.
+  - Multi-Case-D in one pass (two contacts): link with `endpointA = L1, endpointB = L2`, where `L1` and `L2` are losers belonging to two *different* contacts. After reconcile, link carries `(W1, W2)` in **exactly one** envelope write (assert via a counting wrapper around the in-memory sidecar store's `write`). Each contact's `ContactOutcome.rewrittenLinkIDs == [link.id]` (the same link appears in both outcomes — it was touched by both Case-Ds).
+  - Multi-loser one contact: a single contact has two valid GuessWho URLs `L1` and `L2` collapsing to the same winner `W`; a link carries `endpointA = L1, endpointB = L2`. After reconcile, the link carries `(W, W)` in one envelope write; that one contact's `rewrittenLinkIDs == [link.id]` (the link appears once even though both its endpoints were rewritten).
+  - Orphan endpoint untouched: pre-seed a link with `endpointA = (.contact, ORPHAN_UUID)` where no contact carries that UUID. Run Case D on an unrelated contact. The orphan-endpoint link is left byte-identical — not rewritten, not present in any `rewrittenLinkIDs` list.
   - Two devices independently rewrite the same link's endpoint: post-sync, LWW resolves to one stamp; endpoint value is identical on both devices.
   - Concurrent note-edit on device A and endpoint-rewrite on device B for the same link: after sync, both cells survive (disjoint cell LWW).
 
@@ -1087,7 +1109,7 @@ extension GuessWhoSync {
 Slots after §12 (notes).
 
 1. **NEW 🔴 (high)** — `SidecarKind.link` case, `Documents/links/` directory in `FileSystemSidecarStore`, `Link` model, five orchestrator methods (`addLink`, `setLinkNote`, `removeLink`, `link(id:)`, `links(at:)`).
-2. **NEW 🔴 (high)** — Case-D endpoint-rewrite step in `reconcileContactIdentities()` and `reconcileContactIdentity(localID:)`; `rewrittenLinkEndpointCount` on `ContactOutcome`.
+2. **NEW 🔴 (high)** — Case-D endpoint-rewrite step in `reconcileContactIdentities()` and `reconcileContactIdentity(localID:)`; `rewrittenLinkIDs` on `ContactOutcome`.
 3. **NEW 🔴 (medium)** — Two-device convergence smoke: device A adds a person↔event link, device B independently adds a *different* link between the same two entities. After sync, both devices show both links (two distinct ids, no implicit dedup).
 4. **NEW 🔴 (medium)** — Two-device Case-D + endpoint-rewrite smoke: each device independently mints a UUID for the same contact, each writes a link to a third party. After sync + Case D, both devices show one merged contact and the link's endpoint pointing at the winner UUID.
 5. Existing 🔴 §3.3 Case D smoke is extended: include one link whose endpoint references the merging contact; after reconcile, the link envelope's endpoint is rewritten to the winner UUID.
