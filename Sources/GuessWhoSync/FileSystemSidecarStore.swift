@@ -2,7 +2,14 @@ import Foundation
 
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
-    private let writeLock = NSLock()
+
+    // Per-key locks for write/delete/reconcile. Direct users of this store
+    // (without going through GuessWhoSync) get correctness on writes/deletes
+    // to distinct keys running independently and concurrent operations on the
+    // SAME key serializing. GuessWhoSync layers its own per-key lock on top
+    // for read-modify-write atomicity; both layers locking per-key is
+    // redundant but correct.
+    private let fileLocks = PerKeyLockTable<SidecarKey>()
 
     public init(root: URL) {
         self.root = root
@@ -54,43 +61,41 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 
     public func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
-        writeLock.lock()
-        defer { writeLock.unlock() }
+        try fileLocks.withLock(forKey: key) {
+            let url = fileURL(for: key)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(envelope)
 
-        let url = fileURL(for: key)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let data = try JSONEncoder().encode(envelope)
-
-        var writeError: Error?
-        try coordinatedWrite(at: url) { safeURL in
-            do {
-                try data.write(to: safeURL, options: [.atomic])
-            } catch {
-                writeError = error
+            var writeError: Error?
+            try coordinatedWrite(at: url) { safeURL in
+                do {
+                    try data.write(to: safeURL, options: [.atomic])
+                } catch {
+                    writeError = error
+                }
             }
+            if let writeError { throw writeError }
         }
-        if let writeError { throw writeError }
     }
 
     public func delete(_ key: SidecarKey) throws {
-        writeLock.lock()
-        defer { writeLock.unlock() }
+        try fileLocks.withLock(forKey: key) {
+            let url = fileURL(for: key)
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
 
-        let url = fileURL(for: key)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        var deleteError: Error?
-        try coordinatedDelete(at: url) { safeURL in
-            do {
-                try FileManager.default.removeItem(at: safeURL)
-            } catch {
-                deleteError = error
+            var deleteError: Error?
+            try coordinatedDelete(at: url) { safeURL in
+                do {
+                    try FileManager.default.removeItem(at: safeURL)
+                } catch {
+                    deleteError = error
+                }
             }
+            if let deleteError { throw deleteError }
         }
-        if let deleteError { throw deleteError }
     }
 
     public func allKeys() throws -> [SidecarKey] {
@@ -116,99 +121,102 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         at key: SidecarKey,
         resolve: (_ versions: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome? {
-        let url = fileURL(for: key)
-        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
-              !conflicts.isEmpty else {
-            return nil
-        }
+        try fileLocks.withLock(forKey: key) {
+            let url = fileURL(for: key)
+            guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+                  !conflicts.isEmpty else {
+                return nil
+            }
 
-        // Cache the bytes from the first read pass so the skip-matching pass
-        // below never re-reads from disk. A second read can fail (e.g.
-        // NSFileVersion's underlying file got swept) and would otherwise
-        // produce an empty Data() that fails to match any entry in `skip`,
-        // silently deleting a version the resolver explicitly asked to keep.
-        var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
-        var allBytes: [Data] = []
-        if let current = NSFileVersion.currentVersionOfItem(at: url),
-           let bytes = try? Data(contentsOf: current.url) {
-            allBytes.append(bytes)
-        }
-        for version in conflicts {
-            let bytes = try? Data(contentsOf: version.url)
-            conflictBytesByVersionID.append((version, bytes))
-            if let bytes {
+            // Cache the bytes from the first read pass so the skip-matching
+            // pass below never re-reads from disk. A second read can fail
+            // (e.g. NSFileVersion's underlying file got swept) and would
+            // otherwise produce an empty Data() that fails to match any
+            // entry in `skip`, silently deleting a version the resolver
+            // explicitly asked to keep.
+            var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
+            var allBytes: [Data] = []
+            if let current = NSFileVersion.currentVersionOfItem(at: url),
+               let bytes = try? Data(contentsOf: current.url) {
                 allBytes.append(bytes)
             }
-        }
-
-        let resolution: ConflictResolution
-        do {
-            resolution = try resolve(allBytes)
-        } catch {
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: [String(describing: error)]
-            )
-        }
-
-        switch resolution {
-        case .write(let merged, let skip):
-            let mergedData = try JSONEncoder().encode(merged)
-            var mergedWriteError: Error?
-            try coordinatedWrite(at: url) { safeURL in
-                do {
-                    try mergedData.write(to: safeURL, options: [.atomic])
-                } catch {
-                    mergedWriteError = error
+            for version in conflicts {
+                let bytes = try? Data(contentsOf: version.url)
+                conflictBytesByVersionID.append((version, bytes))
+                if let bytes {
+                    allBytes.append(bytes)
                 }
             }
-            if let mergedWriteError { throw mergedWriteError }
 
-            var skippedCount = 0
-            for (version, cachedBytes) in conflictBytesByVersionID {
-                // If the first read failed, this version was never a
-                // parseable candidate. Treat it as "not in skip" so the
-                // default removal still applies; the resolver had no way to
-                // request it kept.
-                let bytes = cachedBytes ?? Data()
-                if cachedBytes != nil, skip.contains(bytes) {
-                    skippedCount += 1
-                } else {
-                    version.isResolved = true
-                    try? version.remove()
-                }
+            let resolution: ConflictResolution
+            do {
+                resolution = try resolve(allBytes)
+            } catch {
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: [String(describing: error)]
+                )
             }
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: allBytes.count - skippedCount,
-                skippedReasons: []
-            )
 
-        case .writeRecoverySibling(let merged, let suffix):
-            let mergedData = try JSONEncoder().encode(merged)
-            let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-            var siblingWriteError: Error?
-            try coordinatedWrite(at: siblingURL) { safeURL in
-                do {
-                    try mergedData.write(to: safeURL, options: [.atomic])
-                } catch {
-                    siblingWriteError = error
+            switch resolution {
+            case .write(let merged, let skip):
+                let mergedData = try JSONEncoder().encode(merged)
+                var mergedWriteError: Error?
+                try coordinatedWrite(at: url) { safeURL in
+                    do {
+                        try mergedData.write(to: safeURL, options: [.atomic])
+                    } catch {
+                        mergedWriteError = error
+                    }
                 }
-            }
-            if let siblingWriteError { throw siblingWriteError }
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: ["wrote recovery sibling: \(suffix)"]
-            )
+                if let mergedWriteError { throw mergedWriteError }
 
-        case .leave:
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: []
-            )
+                var skippedCount = 0
+                for (version, cachedBytes) in conflictBytesByVersionID {
+                    // If the first read failed, this version was never a
+                    // parseable candidate. Treat it as "not in skip" so the
+                    // default removal still applies; the resolver had no way
+                    // to request it kept.
+                    let bytes = cachedBytes ?? Data()
+                    if cachedBytes != nil, skip.contains(bytes) {
+                        skippedCount += 1
+                    } else {
+                        version.isResolved = true
+                        try? version.remove()
+                    }
+                }
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: allBytes.count - skippedCount,
+                    skippedReasons: []
+                )
+
+            case .writeRecoverySibling(let merged, let suffix):
+                let mergedData = try JSONEncoder().encode(merged)
+                let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
+                var siblingWriteError: Error?
+                try coordinatedWrite(at: siblingURL) { safeURL in
+                    do {
+                        try mergedData.write(to: safeURL, options: [.atomic])
+                    } catch {
+                        siblingWriteError = error
+                    }
+                }
+                if let siblingWriteError { throw siblingWriteError }
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: ["wrote recovery sibling: \(suffix)"]
+                )
+
+            case .leave:
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: []
+                )
+            }
         }
     }
 
@@ -306,16 +314,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         let directory = original.deletingLastPathComponent()
         let stem = original.deletingPathExtension().lastPathComponent
         return directory.appendingPathComponent("\(stem).recovered.\(suffix).json")
-    }
-
-    // Acquire writeLock for the duration of `body`. Using `defer` to unlock
-    // means a throw from inside the coordinated-write block still releases
-    // the lock — without this, an iCloud coordinator error would leak the
-    // lock and deadlock every subsequent write/delete/reconcile.
-    private func withWriteLock(_ body: () throws -> Void) rethrows {
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        try body()
     }
 
     // MARK: - NSFileCoordinator wrappers
