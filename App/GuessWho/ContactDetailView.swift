@@ -35,8 +35,8 @@ struct ContactDetailView: View {
                     LabeledContent("localID", value: contact.localID)
                     if let uuid = service.guessWhoUUID(in: contact) {
                         LabeledContent("GuessWho UUID", value: uuid)
-                    } else if isSidecarStorageUnavailable {
-                        Text("No GuessWho UUID. Reconcile is unavailable because sidecar storage is offline (see banner).")
+                    } else if let reason = sidecarUnavailableReason {
+                        Text("No GuessWho UUID. Reconcile is unavailable: \(reason)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else {
@@ -123,6 +123,11 @@ struct ContactDetailView: View {
     private var isSidecarStorageUnavailable: Bool {
         if case .unavailable = service.sidecarLocation { return true }
         return false
+    }
+
+    private var sidecarUnavailableReason: String? {
+        if case .unavailable(let reason) = service.sidecarLocation { return reason }
+        return nil
     }
 
     private func loadContact() async {
