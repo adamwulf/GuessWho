@@ -274,11 +274,14 @@ public final class GuessWhoSync {
             try sidecars.delete(SidecarKey(kind: .contact, id: loser))
         }
 
-        let loserURLs = Set(losers.map { SidecarKey.guessWhoContactURLPrefix + $0 })
+        // Remove loser URLs by comparing their parsed CANONICAL UUID — string
+        // comparison alone misses mixed-case copies of the same UUID. Malformed
+        // GuessWho URLs are also dropped per spec.
+        let loserUUIDs = Set(losers)
         contact.urlAddresses.removeAll { url in
-            if loserURLs.contains(url.value) { return true }
-            return url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
-                && SidecarKey.parseGuessWhoContactURL(url.value) == nil
+            guard url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) else { return false }
+            guard let parsed = SidecarKey.parseGuessWhoContactURL(url.value) else { return true }
+            return loserUUIDs.contains(parsed)
         }
         try contacts.save(contact)
 
