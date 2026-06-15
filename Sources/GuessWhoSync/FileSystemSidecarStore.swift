@@ -117,6 +117,71 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
+    public func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
+        let url = fileURL(for: key)
+        let fm = FileManager.default
+
+        // If the materialized file exists, ask URLResourceValues whether it
+        // is "current" (fully downloaded) or still downloading. For non-
+        // ubiquity files those keys return nil; treat that as downloaded.
+        if fm.fileExists(atPath: url.path) {
+            if let (status, percent) = downloadingResourceValues(for: url) {
+                switch status {
+                case .current, .downloaded:
+                    return .downloaded
+                case .notDownloaded:
+                    return .notStarted
+                default:
+                    return .downloading(fractionComplete: percent.map { $0 / 100.0 })
+                }
+            }
+            return .downloaded
+        }
+
+        // No materialized file. A `.icloud` placeholder sibling signals "exists
+        // remotely, not yet downloaded." Inspect that placeholder for any
+        // downloading-in-progress signal.
+        let placeholder = placeholderURL(for: url)
+        if fm.fileExists(atPath: placeholder.path) {
+            if let (status, percent) = downloadingResourceValues(for: placeholder),
+               status != .notDownloaded {
+                return .downloading(fractionComplete: percent.map { $0 / 100.0 })
+            }
+            return .notStarted
+        }
+
+        return .notFound
+    }
+
+    public func requestDownload(_ key: SidecarKey) throws {
+        let url = fileURL(for: key)
+        try FileManager.default.startDownloadingUbiquitousItem(at: url)
+    }
+
+    // Read the ubiquity downloading-status for a URL. Returns nil if the
+    // URL isn't a ubiquity item (e.g. a temp file in tests).
+    //
+    // Percent-downloaded is reported as nil: the URLResourceKey form
+    // (`ubiquitousItemPercentDownloadedKey`) was deprecated in macOS 10.8,
+    // and the supported replacement requires an NSMetadataQuery on the
+    // ubiquity container — heavier than warrants for a one-off status
+    // probe. Callers that need a progress bar can run their own
+    // NSMetadataQuery; the enum case is `Double?` so this layer staying
+    // coarse is fine.
+    private func downloadingResourceValues(
+        for url: URL
+    ) -> (URLUbiquitousItemDownloadingStatus, Double?)? {
+        let keys: Set<URLResourceKey> = [.ubiquitousItemDownloadingStatusKey]
+        guard let raw = try? url.resourceValues(forKeys: keys).allValues else {
+            return nil
+        }
+        guard let rawStatus = raw[.ubiquitousItemDownloadingStatusKey] as? String else {
+            return nil
+        }
+        let status = URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
+        return (status, nil)
+    }
+
     public func reconcileConflict(
         at key: SidecarKey,
         resolve: (_ versions: [Data]) throws -> ConflictResolution

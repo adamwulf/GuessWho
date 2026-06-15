@@ -234,4 +234,12 @@ private final class ResolveDelayingSidecarStore: SidecarStoreProtocol, @unchecke
             return try resolve(versions)
         }
     }
+
+    func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
+        underlying.downloadStatus(key)
+    }
+
+    func requestDownload(_ key: SidecarKey) throws {
+        try underlying.requestDownload(key)
+    }
 }

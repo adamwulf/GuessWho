@@ -45,6 +45,18 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         return Array(scriptedConflicts.keys)
     }
 
+    // In-memory storage always has every byte locally, so download status
+    // reduces to "do I have an envelope here?" `requestDownload` is a no-op.
+    public func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        return envelopes[key] != nil ? .downloaded : .notFound
+    }
+
+    public func requestDownload(_ key: SidecarKey) throws {
+        // No-op: in-memory storage has all bytes locally already.
+    }
+
     public func reconcileConflict(
         at key: SidecarKey,
         resolve: (_ versions: [Data]) throws -> ConflictResolution

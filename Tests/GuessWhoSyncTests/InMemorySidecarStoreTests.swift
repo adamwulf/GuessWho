@@ -226,4 +226,24 @@ struct InMemorySidecarStoreTests {
         }
         #expect(outcomes.isEmpty)
     }
+
+    @Test
+    func downloadStatusReportsDownloadedForKnownKey() throws {
+        let store = InMemorySidecarStore()
+        let key = contactKey()
+        try store.write(envelope(), at: key)
+        #expect(store.downloadStatus(key) == .downloaded)
+    }
+
+    @Test
+    func downloadStatusReportsNotFoundForUnknownKey() throws {
+        let store = InMemorySidecarStore()
+        #expect(store.downloadStatus(contactKey("absent-id")) == .notFound)
+    }
+
+    @Test
+    func requestDownloadIsNoOp() throws {
+        let store = InMemorySidecarStore()
+        try store.requestDownload(contactKey())
+    }
 }

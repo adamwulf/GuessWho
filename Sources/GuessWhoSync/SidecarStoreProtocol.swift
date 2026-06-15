@@ -30,6 +30,20 @@ public protocol SidecarStoreProtocol {
         at key: SidecarKey,
         resolve: (_ versions: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome?
+
+    // Storage backends that may not have all data locally (e.g. iCloud
+    // Drive) throw `.notYetDownloaded` from `read()`. Call
+    // `requestDownload(_:)` to initiate a fetch, then poll
+    // `downloadStatus(_:)` to observe progress.
+    //
+    // Backends that always have data locally return `.downloaded` for any
+    // known key and `.notFound` otherwise.
+    func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus
+
+    // Initiate a fetch of `key`'s bytes onto local storage. No-op for
+    // backends that always have data locally (e.g. in-memory or strictly
+    // local filesystems).
+    func requestDownload(_ key: SidecarKey) throws
 }
 
 // Default `reconcileConflicts` implemented in terms of the per-key API so

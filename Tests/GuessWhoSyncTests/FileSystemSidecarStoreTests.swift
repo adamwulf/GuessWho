@@ -220,6 +220,54 @@ struct FileSystemSidecarStoreTests {
         #expect(keys.count == 1)
     }
 
+    @Test
+    func downloadStatusReportsDownloadedForMaterializedFile() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let key = SidecarKey(kind: .contact, id: "abc")
+        try store.write(envelope(id: "abc"), at: key)
+        #expect(store.downloadStatus(key) == .downloaded)
+    }
+
+    @Test
+    func downloadStatusReportsNotFoundForMissingFile() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        #expect(store.downloadStatus(SidecarKey(kind: .contact, id: "absent")) == .notFound)
+    }
+
+    @Test
+    func downloadStatusReportsNotStartedForPlaceholder() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let uuid = "550e8400-e29b-41d4-a716-446655440000"
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
+
+        // The planted placeholder is an ordinary empty file (not a real
+        // iCloud placeholder), so the OS won't report a downloading status.
+        // The implementation falls back to .notStarted in that case.
+        #expect(store.downloadStatus(SidecarKey(kind: .contact, id: uuid)) == .notStarted)
+    }
+
+    @Test
+    func requestDownloadOnNonUbiquityURLThrows() throws {
+        // Outside a ubiquity container, startDownloadingUbiquitousItem
+        // errors. The store surfaces the error so app devs notice they're
+        // pointed at a non-iCloud root.
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        let key = SidecarKey(kind: .contact, id: "needs-download")
+        #expect(throws: (any Error).self) {
+            try store.requestDownload(key)
+        }
+    }
+
     // Implementation chose approach (a) from the spec: read() of a placeholder
     // requests a download (via startDownloadingUbiquitousItem, best-effort)
     // and throws SidecarStoreError.notYetDownloaded so the orchestrator's
