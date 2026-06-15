@@ -20,7 +20,7 @@ This document is the spec.
 
 - Writing to EventKit events. Events are **read-only**; only their sidecars are mutable.
 - Background sync (`NSFilePresenter` wiring). The host calls `reconcile…()` explicitly.
-- Tombstone garbage collection.
+- Soft-delete garbage collection. `deletedAt`-set cells, notes, and links live forever in v1 (§5.5, §12.3, §13.6).
 - Non-iCloud Contacts sources (Exchange, Google CardDAV). v1 makes no guarantees; behavior is "best effort, may drift."
 - Cross-iCloud-account sync. Single user, single iCloud account.
 
@@ -86,7 +86,7 @@ A v2 policy could auto-GC orphans older than a threshold (long enough for any re
 |---|---|
 | **Contacts store (canonical, writable)** | Every `CNContact` field the framework exposes except `note` (gated by `com.apple.developer.contacts.notes` entitlement; deferred until we obtain it). Specifically: `identifier` (carried as `Contact.localID` for store reads/writes); `contactType`; the full name family (`namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, plus phonetic given/middle/family); the full work family (`jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`); `phoneNumbers`, `emailAddresses`, `postalAddresses`, `urlAddresses` (including our GuessWho URL); `birthday`, `nonGregorianBirthday`, and labeled `dates` (anniversary, custom); `socialProfiles`; `instantMessageAddresses`; `contactRelations`; `imageDataAvailable` (raw `imageData`/`thumbnailImageData` are loaded on demand, not carried on `Contact`). |
 | **EventKit (canonical, read-only)** | Calendar events, attendees, location, recurrence — read but never written by this package |
-| **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. |
+| **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. Three sidecar kinds: per-contact (keyed by GuessWho UUID), per-event (keyed by `calendarItemExternalIdentifier`), per-link (keyed by link UUID — see §13). |
 
 ## 5. Sidecar Format
 
@@ -98,18 +98,19 @@ The package takes a **root `URL`** at init. The host decides whether that root i
 <root>/
   contacts/<uuid>.json
   events/<eventExternalID-safe>.json
+  links/<uuid>.json
 ```
 
-One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict on contact A never blocks contact B.
+One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict on contact A never blocks contact B. Links live as independent files (§13) — a link is one atomic on-disk record, never split across multiple files.
 
-**Filename safety.** Contact UUIDs are lowercase hex + dashes, safe as-is. Event external identifiers are opaque strings that may contain `/`, `:`, or other characters illegal in filenames. The package percent-encodes every character outside `[A-Za-z0-9._-]` before using them as filenames; the inverse transform is applied on read. iCloud Drive volumes are case-**insensitive** by default, so two `calendarItemExternalIdentifier`s differing only in ASCII case would collide. v1 assumes this does not happen in practice for iCloud-source calendars (where the external ID is a UUID); the assumption is documented and will be revisited if violated. The stored `entityID` field inside the envelope is always the original (untransformed) string.
+**Filename safety.** Contact and link UUIDs are lowercase hex + dashes, safe as-is. Event external identifiers are opaque strings that may contain `/`, `:`, or other characters illegal in filenames. The package percent-encodes every character outside `[A-Za-z0-9._-]` before using them as filenames; the inverse transform is applied on read. The stored `entityID` field inside the envelope is always the original (untransformed) string.
 
 ### 5.2 File schema
 
 ```json
 {
   "schemaVersion": 1,
-  "entityID": "<contact UUID or event externalID, untransformed>",
+  "entityID": "<contact UUID, event externalID, or link UUID — untransformed>",
   "fields": {
     "nickname": {
       "value": "Bear",
@@ -122,9 +123,10 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
       "modifiedBy": "device-B"
     },
     "petName": {
-      "deleted": true,
+      "value": "Bear",
       "modifiedAt": "2026-06-13T10:00:00.000Z",
-      "modifiedBy": "device-A"
+      "modifiedBy": "device-A",
+      "deletedAt": "2026-06-13T10:00:00.000Z"
     }
   }
 }
@@ -132,13 +134,20 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
 
 **`schemaVersion`** — bumped on breaking envelope changes; readers refuse to merge or write unknown versions (see §6).
 
-**`entityID`** — the canonical UUID string (contacts) or the raw `calendarItemExternalIdentifier` (events). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/`) disambiguates kind; there is no `kind` field.
+**`entityID`** — the canonical UUID string (contacts, links) or the raw `calendarItemExternalIdentifier` (events). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/` vs `links/`) disambiguates kind; there is no `kind` field.
 
-**`fields`** — map of field name to *cell*. Each cell is either a **value cell** or a **tombstone cell**:
-- Value cell: `{ "value": <JSONValue>, "modifiedAt": <ISO8601 UTC>, "modifiedBy": <string> }`
-- Tombstone cell: `{ "deleted": true, "modifiedAt": <ISO8601 UTC>, "modifiedBy": <string> }`
+**`fields`** — map of field name to *cell*. Every cell has the same shape:
 
-Exactly one of `value` and `deleted` must be present. Both is invalid; the cell is treated as malformed.
+```
+{
+  "value":      <JSONValue>,        // may be null; the package treats it opaquely
+  "modifiedAt": <ISO8601 UTC>,      // required
+  "modifiedBy": <string>,           // required
+  "deletedAt":  <ISO8601 UTC>       // optional — present iff the field is soft-deleted
+}
+```
+
+A cell with `deletedAt` absent (or null) is **live**. A cell with `deletedAt` present is a **soft-deleted cell**: the field has been removed by the user. `value` is allowed to remain alongside `deletedAt` (a record of what was deleted) but readers MUST treat the field as absent — UI does not render it, and follow-up writes on this field bump `(modifiedAt, modifiedBy)` and clear `deletedAt` to undelete.
 
 `<JSONValue>` is any JSON value: `null`, `bool`, `number`, `string`, `array<JSONValue>`, `object<string, JSONValue>`. The package treats it opaquely.
 
@@ -156,7 +165,7 @@ merged.fields[k] for each k in (a.fields ∪ b.fields):
                      (ISO8601 lexicographic, then string lexicographic)
 ```
 
-A tombstone is a valid cell. Tombstones survive merges; they are not stripped, so a tombstone keeps suppressing a stale value-write from a device that hasn't seen the delete yet.
+LWW operates on the whole cell. The winning cell brings its `value`, `modifiedAt`, `modifiedBy`, and `deletedAt` (live or soft-deleted) as one atomic unit. A soft-deleted cell that wins LWW keeps the field deleted; a live cell that wins LWW resurrects it. Deletion is not stickier than any other field state — it competes on `(modifiedAt, modifiedBy)` like every other write.
 
 **Properties.** This merge is **commutative** (`merge(a, b) == merge(b, a)`) and **associative** (`merge(merge(a, b), c) == merge(a, merge(b, c))`). Both are required for convergence when ≥3 devices merge in different orders. §9 asserts both.
 
@@ -165,8 +174,8 @@ A tombstone is a valid cell. Tombstones survive merges; they are not stripped, s
 | Condition | Behavior |
 |---|---|
 | `modifiedAt` not ISO8601 | The cell is malformed → treated as absent. The other side's cell wins (or the field is absent from the merge if both sides are malformed). |
-| Cell has neither `value` nor `deleted` | Malformed → treated as absent. |
-| Cell has both `value` and `deleted` | Malformed → treated as absent. |
+| `deletedAt` present but not ISO8601 | The cell is malformed → treated as absent. |
+| `value` missing entirely (no `value` key at all) | Malformed → treated as absent. (`value: null` is valid; missing the key is not.) |
 | `entityID` mismatch between `a` and `b` | Merge fails; reported in `ReconcileReport`. No write. |
 | `schemaVersion` ≠ 1 on either side | Merge refuses. The non-v1 envelope is left intact. Reported. |
 
@@ -176,9 +185,9 @@ Malformed cells from a single side propagate as absent into the merge result; th
 
 Device clocks can disagree. A device with a fast clock can "win" LWW for a field. We accept this because the sidecar holds non-critical data and per-field granularity already removes the bigger failure mode (whole-file clobber of disjoint edits). The package logs `modifiedBy` on every write.
 
-### 5.5 Tombstone lifecycle
+### 5.5 Soft-delete lifecycle
 
-Tombstones live forever in v1. GC is deferred (§10).
+A soft-deleted cell (one with `deletedAt` set) survives forever in v1 — it is the only thing that prevents a stale value-write from a device that hasn't seen the delete from silently resurrecting a deleted field on the next merge. GC is deferred (§10). The same `deletedAt: Date?` shape is reused for entity-level soft-delete in higher-level types: `ContactNote.deletedAt` (§12), `Link.deletedAt` (§13). One concept, three layers (cell / note / link), identical semantics.
 
 ## 6. iCloud Conflict Handling
 
@@ -203,7 +212,7 @@ The package owns its own plain-Swift models — not `CNContact`/`EKEvent` — so
 
 `Contact` is a faithful mirror of `CNContact`: every property the framework exposes is represented, **except `note`**, which Apple gates behind the `com.apple.developer.contacts.notes` entitlement (deferred until the app has it). `Event` is a plain-Swift mirror of the §4 canonical event fields.
 
-**Codable.** Every model type below conforms to `Codable` so the value graph composes for sidecar emission, on-disk caching, and test fixtures (a `Contact` snapshot may be embedded inside a sidecar field as a `JSONValue.object`). The sidecar types (`SidecarEnvelope`, `SidecarCell`, `JSONValue`, `SidecarKey`, `SidecarKind`) are the literal payload of the JSON files in §5.2; `JSONValue` and `SidecarCell` use hand-rolled `Codable` because the JSON layout (dynamic value shapes and a present-or-absent `deleted: true` discriminator) does not match the compiler-synthesized form.
+**Codable.** Every model type below conforms to `Codable` so the value graph composes for sidecar emission, on-disk caching, and test fixtures (a `Contact` snapshot may be embedded inside a sidecar field as a `JSONValue.object`). The sidecar types (`SidecarEnvelope`, `SidecarCell`, `JSONValue`, `SidecarKey`, `SidecarKind`) are the literal payload of the JSON files in §5.2. `JSONValue` uses hand-rolled `Codable` because the JSON layout (dynamic value shapes) does not match the compiler-synthesized form. `SidecarCell` is a plain struct (§5.2's one-shape-per-cell rule), so its `Codable` is compiler-synthesized; `deletedAt: Date?` rides through naturally as an optional ISO8601 string.
 
 ```swift
 public struct Contact: Hashable, Sendable, Codable {
@@ -332,11 +341,11 @@ public enum JSONValue: Hashable, Sendable, Codable {
     // dynamic so the compiler-synthesized form would not match §5.2.
 }
 
-public enum SidecarKind: String, Sendable, Codable { case contact, event }
+public enum SidecarKind: String, Sendable, Codable { case contact, event, link }
 
 public struct SidecarKey: Hashable, Sendable, Codable {
     public let kind: SidecarKind
-    public let id: String                       // contact UUID or event externalID
+    public let id: String                       // contact UUID, event externalID, or link UUID
 }
 
 public struct SidecarEnvelope: Sendable, Codable {
@@ -345,11 +354,11 @@ public struct SidecarEnvelope: Sendable, Codable {
     public let fields: [String: SidecarCell]
 }
 
-public enum SidecarCell: Sendable, Codable {
-    case value(JSONValue, modifiedAt: Date, modifiedBy: String)
-    case tombstone(modifiedAt: Date, modifiedBy: String)
-    // Hand-rolled Codable — the value/tombstone discriminator in §5.2 is a
-    // present-or-absent `deleted: true` flag, not the compiler default.
+public struct SidecarCell: Sendable, Codable {
+    public var value: JSONValue                 // may be .null; treated opaquely
+    public var modifiedAt: Date
+    public var modifiedBy: String
+    public var deletedAt: Date?                 // nil = live; non-nil = soft-deleted (§5.5)
 }
 ```
 
@@ -447,7 +456,7 @@ public final class GuessWhoSync {
     // Write a single field. Read-modify-write on the current envelope.
     public func setField(_ name: String, value: JSONValue, at key: SidecarKey) throws
 
-    // Delete a single field — writes a tombstone, does not remove the key.
+    // Delete a single field — writes a soft-deleted cell (deletedAt set), does not remove the key.
     public func deleteField(_ name: String, at key: SidecarKey) throws
 }
 
@@ -473,7 +482,7 @@ public struct SidecarReconcileReport: Sendable {
 }
 ```
 
-**`setField` semantics.** Read the current envelope (or start with an empty one), set or replace the named cell with a fresh `(value, now, deviceID)`, write the whole envelope back. Single-process; the file-system store serializes writes per file (a brief in-memory lock keyed by `SidecarKey`). Cross-process concurrency on the same device is out of scope (§10).
+**`setField` semantics.** Read the current envelope (or start with an empty one), set or replace the named cell with a fresh `(value, now, deviceID)`, write the whole envelope back. The file-system store serializes writes per file (a brief in-memory lock keyed by `SidecarKey`). Writes from other processes on the same device surface as `NSFileVersion` conflicts and are handled by `reconcileSidecars()` (§6) — same code path as cross-device sync, no special-case needed.
 
 **Identity is the caller's responsibility.** `SidecarKey` requires an ID, so writing to a contact's sidecar presumes the contact already has a GuessWho UUID. Callers must run `reconcileContactIdentities()` first (e.g., at app launch) to ensure every contact has a UUID; the resulting `IdentityReconcileReport.contactOutcomes` exposes the assigned UUID per contact.
 
@@ -483,10 +492,11 @@ public struct SidecarReconcileReport: Sendable {
 extension SidecarKey {
     public static func forContact(_ contact: Contact) -> SidecarKey?
     public static func forEvent(_ event: Event) -> SidecarKey
+    public static func forLink(_ link: Link) -> SidecarKey
 }
 ```
 
-`forContact` returns nil if no GuessWho URL is present (caller forgot to reconcile, or contact is brand-new). `forEvent` is total because the event's `externalID` is the canonical key.
+`forContact` returns nil if no GuessWho URL is present (caller forgot to reconcile, or contact is brand-new). `forEvent` is total because the event's `externalID` is the canonical key. `forLink` is total because the link's `id` is the canonical key.
 
 ### 7.4 Mocks
 
@@ -558,7 +568,7 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 ### 9.2 Sidecar IO (in-memory and filesystem)
 - write then read returns the same envelope
 - overwriting a field stamps `modifiedAt = now()` and `modifiedBy = deviceID`
-- delete writes a tombstone, not a key removal
+- delete writes a soft-deleted cell (`deletedAt` set), not a key removal
 - read of a missing key returns nil
 - filename encoding: an event with an externalID containing `/` round-trips through write→read
 
@@ -576,7 +586,7 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - disjoint fields: both survive
 - same field, different times: later wins
 - same field, same `modifiedAt`: lex-larger `modifiedBy` wins
-- tombstone vs. live value: later `modifiedAt` wins; tombstone, if it wins, survives the merge
+- soft-deleted cell vs. live value: later `modifiedAt` wins; soft-deleted cell, if it wins, survives the merge (`deletedAt` is preserved)
 - **associativity:** for three envelopes `a`, `b`, `c`: `merge(merge(a, b), c)` equals `merge(a, merge(b, c))`
 - malformed `modifiedAt` on a cell: cell treated as absent; other side wins
 - both `value` and `deleted` set: cell treated as absent
@@ -612,7 +622,7 @@ Tests mirror §9.3 through `reconcileContactIdentity(localID:)`:
 
 1. **`NSFileVersion` in tests.** Hard to fabricate real iCloud conflicts in unit tests. Plan: hide `NSFileVersion` behind `SidecarStoreProtocol.reconcileConflict(at:resolve:)` (§7.2). The in-memory store ships a scripted-conflict mode (the test injects `[(SidecarKey, [Data])]`); the file-system store uses real `NSFileVersion`.
 2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
-3. **Tombstone GC.** Tombstones live forever in v1.
+3. **Soft-delete GC.** `deletedAt`-set cells, notes, and links live forever in v1. GC may land in v2.
 4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
 5. **`CNContact.note`.** Apple gates `CNContactNoteKey` behind the `com.apple.developer.contacts.notes` entitlement. We don't have it yet, and `Contact` carries no `note` property — the field is the single deliberate gap vs. `CNContact`. To avoid silently clobbering pre-existing notes when a host app reads, modifies, and writes a contact back through `CNContactStoreAdapter`, the adapter **omits `CNContactNoteKey` from every fetch descriptor** AND uses a partial-update save path: `save(_:)` reads the existing contact for the localID, mutates only the keys `Contact` represents, and submits the resulting `CNMutableContact` via `CNSaveRequest.update(_:)` so untouched keys (including `note`) remain in place.
 
@@ -653,7 +663,6 @@ The items below are load-bearing for v1 but not yet demonstrated in production. 
 
 **Low priority (out of scope for v1 sample, but blocks v2):**
 - 🔴 **`EKEventStoreAdapter` minimum smoke.** Fetch one event, write a sidecar, fetch by externalID. Establishes the event path is viable before any event UI lands.
-- 🔴 **Filesystem-layout safety on iCloud Drive case-insensitivity (§5.1).** Two events whose `externalID` differs only in ASCII case would collide. v1 assumes this does not happen for iCloud-source calendars (where externalIDs are UUIDs). Worth a one-shot check once event smoke is up.
 
 When any item above flips from 🔴 to 🟡, update its status here AND note the smoke procedure in a short paragraph below it so the next reader can re-run the check.
 
@@ -672,7 +681,7 @@ public struct ContactNote: Hashable, Sendable, Codable {
     public var modifiedAt: Date    // bumped on body edit and on delete
     public var modifiedBy: String  // device ID — same source as SidecarCell.modifiedBy
     public var body: String        // plain text; cleared to "" on delete
-    public var deleted: Bool       // soft-delete tombstone; survives merges
+    public var deletedAt: Date?    // nil = live; non-nil = soft-deleted (§5.5); survives merges
 }
 ```
 
@@ -694,8 +703,7 @@ The sidecar envelope (§5.2) is unchanged. A well-known field key `"notes"` hold
       "createdAt": "2026-06-14T20:15:00.000Z",
       "modifiedAt": "2026-06-14T20:15:00.000Z",
       "modifiedBy": "device-A",
-      "body": "Met at WWDC.",
-      "deleted": false
+      "body": "Met at WWDC."
     }
   ],
   "modifiedAt": "2026-06-14T20:15:00.000Z",
@@ -703,7 +711,9 @@ The sidecar envelope (§5.2) is unchanged. A well-known field key `"notes"` hold
 }
 ```
 
-The outer cell's `modifiedAt`/`modifiedBy` are the max `(modifiedAt, modifiedBy)` across the inner notes — including tombstoned notes — under §5.3's lex ordering. **The codec enforces this invariant on every encode** (see `encodeCell` in §12.5), so the on-disk envelope always satisfies it regardless of whether the cell was last written by a local `setField` or by `mergeNotesCell`.
+(A soft-deleted note would carry `"deletedAt": "<ISO8601>"` alongside the other fields and an empty `body`.)
+
+The outer cell's `modifiedAt`/`modifiedBy` are the max `(modifiedAt, modifiedBy)` across the inner notes — including soft-deleted notes — under §5.3's lex ordering. **The codec enforces this invariant on every encode** (see `encodeCell` in §12.5), so the on-disk envelope always satisfies it regardless of whether the cell was last written by a local `setField` or by `mergeNotesCell`.
 
 **Empty list ⇒ absent.** A merged list of zero notes is encoded by *omitting* the `"notes"` field from the envelope. There is no "empty cell" representation. Equivalently: an absent `"notes"` field decodes to `[]`. This removes the only case where the outer-cell stamp would be undefined.
 
@@ -718,19 +728,19 @@ The generic per-field LWW (§5.3) is wrong for notes: it would clobber a sibling
 When both sides have `"notes"`:
 
 1. Decode each side's cell into `[ContactNote]`.
-   - A cell that fails to decode as a list of `ContactNote` — including a §5.2 tombstone cell (`{deleted: true, …}`), which is well-formed at the §5.2 level but is not a notes-list shape — is treated as `[]`.
+   - A cell whose `value` is not an array of objects — or that fails to decode at the cell envelope level (bad `modifiedAt`, missing `value`, etc.) — is treated as `[]`.
    - The decoder is **lenient at the element level**: a single malformed array entry (missing `id`, bad `createdAt`, extra junk) is dropped; the remaining valid entries are kept. A completely undecodable cell is `[]`.
 2. For each note ID in the union of both lists:
    - If only one side has the note: keep it.
-   - If both have it: keep the one with the larger `(modifiedAt, modifiedBy)` (ISO8601 lex on `modifiedAt`, then string lex on `modifiedBy`). Applies symmetrically to live and tombstoned notes — same rule §5.3 uses on cells.
-3. Tombstoned notes are kept in the list (they suppress earlier-stamped resurrection — same lifecycle as §5.5). UI filters them out.
-4. If the merged list is empty, omit the `"notes"` key from the result envelope entirely (per §12.2). Otherwise the outer cell's `modifiedAt`/`modifiedBy` is the max across all merged notes' stamps, including tombstones.
+   - If both have it: keep the one with the larger `(modifiedAt, modifiedBy)` (ISO8601 lex on `modifiedAt`, then string lex on `modifiedBy`). Applies symmetrically to live and soft-deleted notes — same rule §5.3 uses on cells.
+3. Soft-deleted notes (`deletedAt != nil`) are kept in the list — they suppress earlier-stamped resurrection per §5.5. UI filters them out.
+4. If the merged list is empty, omit the `"notes"` key from the result envelope entirely (per §12.2). Otherwise the outer cell's `modifiedAt`/`modifiedBy` is the max across all merged notes' stamps, including soft-deleted ones.
 
 A **malformed one-sided cell** (one side has `"notes"` but it doesn't decode) passes through verbatim under the "only one side has it" rule of §12.3's dispatch paragraph. The next reader normalizes it via the lenient decoder; no rewrite is forced.
 
-There is no outer-cell tombstone path — "delete all" is N per-note tombstones. The merge function never produces an outer-cell tombstone for `"notes"`.
+There is no "delete the whole notes cell" path — "delete all" is N per-note soft-deletes. The merge function never marks `"notes"` itself as soft-deleted at the cell level.
 
-**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deleted = false`. Edit mutates `body`, bumps `modifiedAt`, leaves `id`/`createdAt`/`deleted` unchanged. Delete sets `deleted = true`, **clears `body` to `""`**, bumps `modifiedAt`. `createdAt` is never bumped post-creation.
+**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deletedAt = nil`. Edit mutates `body`, bumps `modifiedAt`, leaves `id`/`createdAt`/`deletedAt` unchanged. Delete sets `deletedAt = now`, **clears `body` to `""`**, bumps `modifiedAt`. `createdAt` is never bumped post-creation.
 
 `SidecarMerge.swift` grows a `mergeNotesCell(_:_:)` free function invoked from `merge(_:_:)` when (a) `key == "notes"` and (b) both `a.fields` and `b.fields` contain the key.
 
@@ -746,18 +756,18 @@ The sample app gains its first user-facing edit surface.
 
 **ContactDetailView additions:**
 - **Notes section** below the existing contact info.
-- **List rows** sorted by `(createdAt, id)` **ascending** — `createdAt` primary, `id` (UUID string lex) tiebreak. Deterministic across devices even when two notes share a `createdAt`. Each row shows body (multi-line bodies render with their embedded newlines preserved — this is SwiftUI `Text` default behavior, no custom rendering required), relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Tombstoned notes are filtered out.
+- **List rows** sorted by `(createdAt, id)` **ascending** — `createdAt` primary, `id` (UUID string lex) tiebreak. Deterministic across devices even when two notes share a `createdAt`. Each row shows body (multi-line bodies render with their embedded newlines preserved — this is SwiftUI `Text` default behavior, no custom rendering required), relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Soft-deleted notes (`deletedAt != nil`) are filtered out.
 - **Always-visible empty `TextEditor` pinned below the list.** Return always inserts a newline; the **Send button** beside the input is the only way to commit. The button is disabled when the body is empty or whitespace-only. On submit, mints a new `ContactNote`, appends to the bottom, clears the input. No separate "+" button, no modal sheet.
 - **Tap an existing note → inline edit.** The row swaps to an editable `TextEditor`; Return inserts a newline. The edit commits via two equivalent paths: **(a) Done button** on the row (discoverable, especially on Mac Catalyst), or **(b) any tap outside the editing row** (the existing focus-loss path). Both bump `modifiedAt`/`modifiedBy` and write the updated cell. **If `body` is unchanged from the value captured into the editor at edit-start, commit is a no-op** — no stamp bump, no write. (The "edit-start" snapshot, not the current on-disk value: this matters when a reconcile lands mid-edit and rewrites the on-disk body — a user who only inspected must not silently win LWW against the reconciled-in change.) Done is **not** disabled on an empty `body` — committing a cleared body is a deliberate "this note is now blank" edit, distinct from "delete the note." Users who want to remove the note entirely use swipe-delete or the context-menu Delete. No separate cancel gesture — discard requires deleting the note.
-- **Swipe-to-delete** sets `deleted = true`, clears `body`, bumps `modifiedAt`. The row disappears immediately; the tombstone persists.
+- **Swipe-to-delete** sets `deletedAt = now`, clears `body`, bumps `modifiedAt`. The row disappears immediately; the soft-deleted note persists in the cell.
 
 **Mid-edit vs `reconcileSidecars()`.** If a reconcile lands while the user is editing note X (rewriting the cell with a newer copy of X from another device), the in-progress edit is **not aborted**. On commit, the NotesStore re-reads, replaces X by ID with its locally-edited copy, writes. LWW resolves which version survives on the next merge. No UI prompt, no merge dialog.
 
 **Codec and store.** `NotesCellCodec` lives **in the package** (`Sources/GuessWhoSync/`) alongside `ContactNote`, because the package's `mergeNotesCell` needs it. The codec exposes three operations:
 
-- `decode(SidecarCell?) -> [ContactNote]` — lenient per §12.3 step 1; an absent cell, a malformed cell, or a §5.2 tombstone cell all return `[]`; malformed array elements are dropped.
+- `decode(SidecarCell?) -> [ContactNote]` — lenient per §12.3 step 1; an absent cell, a malformed cell, or a cell whose `value` is not a JSON array all return `[]`; malformed array elements are dropped.
 - `encodeValue([ContactNote]) -> JSONValue` — used by `NotesStore` to pass the list into `GuessWhoSync.setField` (which takes a `JSONValue`, and stamps its own outer `modifiedAt`/`modifiedBy` from `Date()` / deviceID).
-- `encodeCell([ContactNote]) -> SidecarCell?` — used by `mergeNotesCell`; recomputes the outer `(modifiedAt, modifiedBy)` as the max across inner notes per §12.2; returns `nil` when the list is empty so the merge can omit the key per §12.3 step 4.
+- `encodeCell([ContactNote]) -> SidecarCell?` — used by `mergeNotesCell`; recomputes the outer `(modifiedAt, modifiedBy)` as the max across inner notes per §12.2; returns `nil` when the list is empty so the merge can omit the key per §12.3 step 4. The outer cell is always live (`deletedAt == nil`) — soft-delete is per-note, never per-cell.
 
 A sample-app-side `NotesStore` view-model reads the current cell via `decode`, applies the mutation in memory, calls `encodeValue` to get a `JSONValue`, and writes via `GuessWhoSync.setField`. `modifiedBy` reuses the package's existing per-install device-ID source verbatim. The outer cell stamp `setField` writes is `Date()` / deviceID — equal to the just-mutated note's stamp because they share the same clock and writer — so the §12.2 outer-stamp invariant holds. The next merge re-derives it via `encodeCell` regardless.
 
@@ -773,23 +783,23 @@ The DEBUG "Write debug field" button is retained — unrelated.
 ### 12.6 Test plan
 
 **Unit tests (new):**
-- `NotesCellCodecTests`: round-trip `[ContactNote]` ↔ `SidecarCell` (including empty list and all-tombstones); decode of an absent field returns `[]`; decode of a §5.2-shape tombstone cell returns `[]`; decode of a partially-malformed array drops the bad element and keeps the good ones.
+- `NotesCellCodecTests`: round-trip `[ContactNote]` ↔ `SidecarCell` (including empty list and all-soft-deleted); decode of an absent field returns `[]`; decode of a non-array `value` returns `[]`; decode of a partially-malformed array drops the bad element and keeps the good ones.
 - `NotesMergeTests` (§9.4 addition):
   - Same ID, both sides, larger `(modifiedAt, modifiedBy)` wins.
   - Parallel creates (different IDs) both survive.
   - Edit vs. delete on same ID, different stamps: newer stamp wins.
   - Edit vs. delete on same ID, **identical `modifiedAt`**: `modifiedBy` lex tiebreak determines winner.
-  - Tombstone vs. older edit on same ID: tombstone wins.
-  - Two tombstones for the same ID with different stamps: larger-stamp tombstone wins.
+  - Soft-delete vs. older edit on same ID: soft-delete wins.
+  - Two soft-deletes for the same ID with different stamps: larger-stamp soft-delete wins.
   - Only-one-side has `"notes"`: result equals that side's cell verbatim (no codec round-trip).
   - Empty merged list: result envelope has no `"notes"` key.
   - Both sides have malformed `"notes"` cells: result envelope has no `"notes"` key.
-  - Outer-cell `modifiedAt`/`modifiedBy` equals the max across all merged notes (including tombstones).
-  - `encodeCell([])` returns `nil`; `encodeCell([...non-empty...])` returns a `.value` cell whose stamp is the max across the inner notes.
+  - Outer-cell `modifiedAt`/`modifiedBy` equals the max across all merged notes (including soft-deleted ones).
+  - `encodeCell([])` returns `nil`; `encodeCell([...non-empty...])` returns a live cell whose stamp is the max across the inner notes.
   - Commutativity and associativity across randomized 3-note lists.
 - `NotesEnvelopeTests` (§9.5 addition):
   - 3-way N-fold via `reconcileSidecars()` with three disjoint notes — all three appear in the result.
-  - 3-way N-fold where two of the three carry a tombstone for the same ID at different stamps — the later tombstone wins; no live note resurrects.
+  - 3-way N-fold where two of the three carry a soft-delete for the same ID at different stamps — the later soft-delete wins; no live note resurrects.
 
 **Sample-app smoke tests (§11.1 additions, all 🔴):**
 - 🔴 **Single-device notes CRUD.** Add three via bottom input, inline-edit one, swipe-delete one. Re-launch. List shows two live notes in `(createdAt, id)` ascending order.
@@ -810,7 +820,9 @@ Promote ahead of existing 🔴 items — notes are the first user-visible sideca
 
 ## 13. Entity Links (Sidecar-Only Feature)
 
-A `Link` connects two entities (contact or event) with an optional free-text note. Same shape works for person↔person, person↔event, person↔organization (organizations are contacts with `contactType == .organization`), org↔event, event↔event. `CNContactRelation` continues to round-trip via §7.1; `Link` is the orthogonal hard-reference path with a stable ID and a note attached.
+A `Link` connects two entities (contact or event) with a free-text note. Same shape works for person↔person, person↔event, person↔organization (organizations are contacts with `contactType == .organization`), org↔event, event↔event. `CNContactRelation` continues to round-trip via §7.1; `Link` is the orthogonal hard-reference path with a stable ID and a note attached.
+
+**A link is one atomic on-disk record.** Each link lives in its own sidecar envelope at `SidecarKey(kind: .link, id: link.id.uuidString)` under `Documents/links/<uuid>.json`. No dual-write, no split-across-files state, no "canonical side" rule. A single mutation = a single envelope write.
 
 ### 13.1 Data model
 
@@ -823,13 +835,13 @@ public struct Link: Hashable, Sendable, Codable {
     public var endpointB: SidecarKey
     public var note: String            // free text; "" when absent
     public var createdAt: Date         // immutable after creation
-    public var modifiedAt: Date        // bumped on note edit and on delete
+    public var modifiedAt: Date        // bumped on note edit, endpoint rewrite, and delete
     public var modifiedBy: String      // device ID — same source as SidecarCell.modifiedBy
-    public var deleted: Bool           // soft-delete tombstone; survives merges
+    public var deletedAt: Date?        // nil = live; non-nil = soft-deleted per §5.5
 }
 ```
 
-**Endpoint canonicalization.** `SidecarKey.init` already lowercases contact UUIDs and leaves event externalIDs untouched (see `SidecarKey.swift`). `Link` inherits that — two devices constructing a link between the same pair always produce equal endpoint values regardless of input casing.
+**Endpoint canonicalization.** `SidecarKey.init` already lowercases contact UUIDs and leaves event externalIDs untouched. `Link` inherits that — two devices constructing a link between the same pair always produce equal endpoint values regardless of input casing.
 
 **Endpoint ordering is not normalized.** A link from A→B and a link from B→A are two distinct `Link`s (different `id`s). The UI decides whether to render them as one bidirectional edge or two; the package treats them independently. This avoids a "which side is canonical" rule that would otherwise leak through every API.
 
@@ -837,157 +849,141 @@ public struct Link: Hashable, Sendable, Codable {
 
 **Clock source.** Same as §12.1 — `Date()` at mutation time, no injectable clock.
 
-### 13.2 Storage layout — write to both endpoints' sidecars
+### 13.2 Storage layout — one file per link
 
-Each link is written to **both** `endpointA`'s and `endpointB`'s sidecars under the well-known field key `"links"`. The same `Link` value (same `id`, same endpoints, same note, same stamps) lands in both files. This is deliberate redundancy:
+Each link is one sidecar envelope. `SidecarKey(.link, link.id.uuidString)` resolves to `Documents/links/<uuid>.json`. The envelope's `entityID` is the link UUID; the envelope's `fields` carry one cell per `Link` property: `endpointA`, `endpointB`, `note`, `createdAt`, `modifiedAt`, `modifiedBy`, `deletedAt`. Same §5.2 schema as any other sidecar — no per-link special-case file format.
 
-- Loading "all links for this contact" or "all links for this event" reads one sidecar — no fan-out, no index file. The UI primitive `links(at:)` becomes a one-file read.
-- Per-link LWW (§13.3) converges both copies independently; a divergence between A's copy and B's copy of the same `id` resolves to the larger `(modifiedAt, modifiedBy)` on each device's next merge of *that* envelope. Both sides re-converge once both files have been merged.
-- A single-sided write (one envelope written, the other not yet) is self-healing: the next `addLink`/`setLinkNote`/`removeLink` that touches that link re-writes both sides. No two-phase commit. (Reconcile does **not** re-fan-out, per §13.4.)
+**Atomicity is structural.** Every mutation (create, edit, delete, endpoint rewrite) is one envelope write of one file. There is no scenario where a link is "half-written" across two files. NSFileVersion conflict reporting per-file works exactly as it does for contact/event sidecars.
 
-**Why not a single canonical sidecar (e.g. write to lex-smaller endpoint)?** That would halve write cost, but every `links(at:)` call on the non-canonical side becomes a fan-out: open every sidecar that *might* link to me, decode, filter. With dual-write, "what links does this entity have?" is one file read, which is the primitive the UI reaches for most. v1 accepts 2× write traffic for O(1) reads.
+**Read pattern.** `links(at: SidecarKey) -> [Link]` lists all link envelopes (via `allKeys()` filtered to `.link`), decodes each, and returns those whose `endpointA` or `endpointB` matches the queried key. This is O(N links) at the package layer. The app builds its own in-memory graph for fast queries (§14); the package stays disk-centric.
 
-**`"links"` cell value shape.** Identical pattern to §12.2's `"notes"` cell — a `JSONValue.array` of link objects. Empty list ⇒ key omitted from envelope (per §12.2's "empty ⇒ absent" rule). Date encoding rules from §12.2 apply verbatim (ISO8601 with millisecond precision on output, permissive on input).
+`link(id: UUID) -> Link?` is a single-envelope read — O(1).
 
-```json
-"links": {
-  "value": [
-    {
-      "id": "…",
-      "endpointA": { "kind": "contact", "id": "…" },
-      "endpointB": { "kind": "event",   "id": "…" },
-      "note": "Met at WWDC.",
-      "createdAt": "2026-06-14T20:15:00.000Z",
-      "modifiedAt": "2026-06-14T20:15:00.000Z",
-      "modifiedBy": "device-A",
-      "deleted": false
-    }
-  ],
-  "modifiedAt": "2026-06-14T20:15:00.000Z",
-  "modifiedBy": "device-A"
-}
-```
+### 13.3 Merge semantics
 
-Outer cell `(modifiedAt, modifiedBy)` is the max across inner links (including tombstones), enforced by `encodeCell` — same invariant and enforcement as §12.2.
+**No per-link branching in `merge(_:_:)`.** A link envelope is a normal sidecar envelope; §5.3 per-cell LWW resolves it. Each field (`endpointA`, `endpointB`, `note`, `modifiedAt`, `modifiedBy`, `deletedAt`) is one cell, LWW-merged independently.
 
-### 13.3 Merge semantics — per-link LWW
+**Endpoints are mutable** — only by the Case-D endpoint rewrite step (§13.5). User-driven edits change only `note` (and bump `modifiedAt`/`modifiedBy` on the relevant cells). `createdAt` is immutable after creation. `id` is the envelope's `entityID` and never changes.
 
-Identical structure to §12.3, with `Link` substituted for `ContactNote` and matching on `id`. `SidecarMerge.swift` grows a `mergeLinksCell(_:_:)` free function, dispatched from `merge(_:_:)` when `key == "links"` and both sides contain the key. Same §5.3 override semantics:
-
-- Both-sided malformed → both `[]`; the other side's valid links survive the union.
-- One-sided cell passes through verbatim (next reader normalizes via the lenient decoder).
-- Lenient element-level decode: a malformed array entry is dropped, valid ones kept.
-- Per-id LWW: larger `(modifiedAt, modifiedBy)` wins, applies symmetrically to live and tombstoned links.
-- Tombstones survive merges; UI filters them out.
-- Empty merged list ⇒ key omitted from result envelope.
-
-**Endpoints are immutable after creation.** Edit only changes `note` (and bumps `modifiedAt`); the same `id` always describes the same `(endpointA, endpointB)` pair. If a peer somehow ships a link with the same `id` but different endpoints, the lenient decoder treats it as a separate entry only if `id` differs; same `id` with different endpoints is a corrupt write — the LWW pick wins by stamp, and the loser's bytes are discarded. We do not detect or report this.
-
-**No outer-cell tombstone path.** "Delete all links" is N per-link tombstones. The merge function never produces an outer-cell tombstone for `"links"`. Same rule as §12.3.
-
-**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deleted = false`. Edit mutates `note`, bumps `modifiedAt`, leaves everything else unchanged. Delete sets `deleted = true`, clears `note` to `""`, bumps `modifiedAt`.
-
-**Codec.** `LinksCellCodec` mirrors `NotesCellCodec` (§12.5) verbatim, with `[Link]` substituted for `[ContactNote]`: `decode(SidecarCell?) -> [Link]` (lenient), `encodeValue([Link]) -> JSONValue` (used by orchestrator writes), `encodeCell([Link]) -> SidecarCell?` (used by `mergeLinksCell`; recomputes the outer stamp; returns `nil` for an empty list).
+**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deletedAt = nil`, then writes the envelope. Edit mutates `note`, bumps `modifiedAt`/`modifiedBy` cells, writes. Delete sets `deletedAt = now`, clears `note` to `""`, bumps `modifiedAt`/`modifiedBy`, writes. Same file, one write per mutation.
 
 ### 13.4 Interaction with the iCloud conflict reconciler
 
-`reconcileSidecars()` is unchanged. The N-fold via `merge(_:_:)` now also dispatches to `mergeLinksCell` for `"links"`. Per-envelope convergence is automatic. Cross-envelope convergence (A's sidecar vs B's sidecar holding "the same" link) is **not** a reconcile-time concern — they are independent envelopes with the same logical content; they converge when the orchestrator re-writes through `addLink`/`setLinkNote`/`removeLink`, or never. The UI primitive `links(at:)` reads exactly one envelope, and LWW within that envelope is correct, so each entity's link list is always self-consistent. A transient `links(at: A) != links(at: B)` for the same logical link is possible until the next mutation triggers self-heal; v1 accepts this.
+`reconcileSidecars()` (§6) enumerates *all* `SidecarKey`s, which now includes `.link` keys. Link envelopes go through the same merge path as contact and event envelopes. No new code in the reconciler.
 
-### 13.5 Interaction with identity reconciliation
+A link envelope under iCloud conflict resolves per §5.3 cell-by-cell LWW. Two devices concurrently editing the note converge to the later-stamped value. A note-edit racing against a delete converges to the later-stamped state (live note or soft-deleted, whichever wins LWW).
 
-§3.3 Case D rebases a loser-UUID `L` sidecar into the winner UUID `W` via `merge(_:_:)`, so any link in the loser's `"links"` cell folds into the winner's by per-link LWW. Those links survive the rebase intact.
+### 13.5 Interaction with identity reconciliation — Case-D endpoint rewrite
 
-**Links whose `endpointA`/`endpointB` *refers to* `L`** (symmetric — wherever the link lives: `L`'s former sidecar after its rows fold into `W`, `W`'s own sidecar, any third party's sidecar, or the *other* endpoint of any dual-write peer of the above) keep pointing at `L` after Case D. v1 does **not** rewrite them. They become **stale-endpoint links**, analogous to the orphan sidecars §3.4 already accepts: the UI resolves them lazily (treat `(.contact, L)` as "look up the contact carrying that GuessWho UUID — if none, render as a stale-endpoint link") or ignores them.
+§3.3 Case D collapses loser UUID `L` into winner UUID `W` on the contact side. Link envelopes whose `endpointA` or `endpointB` points at `(.contact, L)` must be rewritten to point at `(.contact, W)`. v1 does this — it is **not** deferred.
 
-Rationale for deferring rewrite to v2: (a) Case D in the wild is rare — it requires two devices to independently mint UUIDs for the same contact before either syncs, which the smoke tests in §11.1 have not yet witnessed in production; (b) automatic rewrite is an O(N sidecars) scan with its own multi-device convergence headaches (stamp-bump ordering, double-bumps under concurrent Case-Ds, interaction with concurrent note edits); (c) §3.4 already establishes the precedent that v1 leaves stale references intact. v2 can add a sweep when there's signal it's needed.
+**Rewrite procedure.** After §3.3 has merged `L`'s sidecar into `W`'s and deleted `L`'s file, the orchestrator walks all `.link` envelopes (via `allKeys()` filtered to `.link`), decodes each, and for any link whose `endpointA` and/or `endpointB` cell value equals `(.contact, L)`, writes a new envelope with the endpoint cell value rewritten to `(.contact, W)`. The rewrite bumps `modifiedAt`/`modifiedBy` on the rewritten cell only; other cells are untouched.
 
-UI implication: a stale-endpoint link should render with a UI path to either drop the link or relink to a candidate contact. Out of scope for the package.
+**Convergence under concurrent Case-D.** Two devices independently running Case D produce identical rewrites: same `W` (per §3.3 lex-min rule), same endpoint payload. The cells differ only in `modifiedAt`/`modifiedBy` stamps. §5.3 LWW picks one stamp; the resulting envelope is the same on both devices regardless of order.
+
+**Concurrent multi-Case-D.** If one reconcile pass collapses `L1→W1` and `L2→W2`, and a link has `endpointA = L1`, `endpointB = L2`, the rewrite applies *both* transformations in one envelope write: the new envelope carries `endpointA = W1`, `endpointB = W2`. One stamp bump per cell, not two per link.
+
+**Concurrent note-edit vs rewrite.** A note edit on a link runs against a different cell (`note`) than the rewrite (`endpointA`/`endpointB`). §5.3 LWW resolves each cell independently — no clobber.
+
+**Ordering.** Rewrite runs *after* §3.3's merge step has produced the winner envelope and deleted the loser file, but *before* `reconcileContactIdentities()` returns. The per-contact `IdentityReconcileReport.ContactOutcome` gains an integer `rewrittenLinkEndpointCount` so callers can observe the rewrite happened.
+
+**Single-contact entry point.** `reconcileContactIdentity(localID:)` performs the same rewrite scoped to the same single Case-D collapse — same O(N links) scan. Acknowledged cost; the per-contact call must leave links consistent.
+
+**Orphan endpoints.** A link whose endpoint points at a contact UUID that no live contact carries (because the contact was deleted in Contacts.app, or the sidecar is orphaned per §3.4) is **not** rewritten and is **not** considered stale at the package layer. UI may choose to render it differently; out of scope here.
 
 ### 13.6 Public API
 
-Added to `GuessWhoSync` (§7.3). All four operations are thin wrappers over `setField` on the two endpoint sidecars; the orchestrator handles the dual-write.
+Added to `GuessWhoSync` (§7.3). Each method is one envelope read or write.
 
 ```swift
 extension GuessWhoSync {
-    /// Creates a link between two entities and writes it to both endpoint
-    /// sidecars. Returns the minted Link. Does NOT dedup — see "Dedup" below.
+    /// Creates a link between two entities. Writes one envelope; returns the
+    /// minted Link. Does NOT dedup — see "Dedup" below.
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link
 
-    /// Mutates the note on an existing link in both endpoint sidecars.
-    /// `oneEndpoint` is any sidecar the caller knows contains (or should
-    /// contain) this link — typically the one they read it from via
-    /// `links(at:)`. The orchestrator reads `oneEndpoint`'s sidecar to
-    /// recover the other endpoint, then writes to both. Silent no-op if the
-    /// link is tombstoned on the resolving side (does not resurrect) or if
-    /// it is absent from `oneEndpoint`'s sidecar.
-    public func setLinkNote(id: UUID, oneEndpoint: SidecarKey, note: String) throws
+    /// Mutates the note on an existing link. One envelope read + write.
+    /// Silent no-op if the envelope is missing or already soft-deleted.
+    public func setLinkNote(id: UUID, note: String) throws
 
-    /// Tombstones the link in both endpoint sidecars. `oneEndpoint` resolves
-    /// the other side as in `setLinkNote`. Silent no-op if the link is
-    /// already tombstoned on the resolving side or absent from it.
-    public func removeLink(id: UUID, oneEndpoint: SidecarKey) throws
+    /// Soft-deletes the link by setting deletedAt = now, clearing note, bumping
+    /// modifiedAt/modifiedBy. One envelope write. Silent no-op if already
+    /// soft-deleted (no stamp churn).
+    public func removeLink(id: UUID) throws
 
-    /// Returns all live (non-tombstoned) links present in the given entity's
-    /// sidecar. Tombstones are filtered out before return.
+    /// Returns a single link by id, or nil if the envelope is missing.
+    /// Soft-deleted links are returned (deletedAt is populated); callers filter.
+    public func link(id: UUID) throws -> Link?
+
+    /// Returns every link whose endpointA or endpointB equals `key`. Soft-deleted
+    /// links are returned. Callers filter on `deletedAt`. O(N links) at the
+    /// package layer; apps may cache (§14).
     public func links(at key: SidecarKey) throws -> [Link]
 }
 ```
 
-**Endpoint resolution is honest.** `setLinkNote` / `removeLink` take `oneEndpoint` because the package has no index from `id` to endpoints — it can't find a link without a hint. Callers always have one: they came from `links(at:)` and know at least one side. The orchestrator reads `oneEndpoint`'s sidecar, finds the `Link` with the matching `id`, and discovers the other endpoint from the link's own `endpointA`/`endpointB` (the side that isn't `oneEndpoint`). Then writes to both. This keeps v1 free of `allKeys()`-fanout scans (§13.9 defers a query index).
+**Soft-deleted links are returned.** `links(at:)` and `link(id:)` return links with `deletedAt != nil`. The package does not filter — that is the caller's decision. UI that wants only live links calls `.filter { $0.deletedAt == nil }`; UI that wants to surface deletions (recovery view, audit log) reads everything.
 
-**Tombstone-encounter rule.** A `setLinkNote` or `removeLink` whose `oneEndpoint` sidecar carries a tombstone for `id` is a silent no-op. Editing a tombstoned link does not resurrect it (resurrection would silently undo a delete). Re-deleting a tombstoned link does not write a fresh tombstone (the existing one is fine; a fresh write would only churn stamps). The user must explicitly create a new link if they want one.
-
-**Self-heal.** If `oneEndpoint`'s sidecar has the link live and the other endpoint's sidecar is missing it (or vice versa: the caller passes `oneEndpoint = otherEndpoint`), the write fixes the gap by writing both sides. This is the §13.2 self-heal mechanism.
+**No `oneEndpoint` hint.** `setLinkNote` and `removeLink` find the link by `SidecarKey(.link, id)` — one envelope, no fan-out, no caller-supplied hint needed.
 
 **Dedup is the caller's choice.** `addLink` never dedups. §13.1 explicitly allows multiple `Link`s between the same `(endpointA, endpointB)` pair (different IDs, possibly different notes). UI that wants "edit existing if one exists, else create" calls `links(at:)`, filters, and decides. UI that wants "always create a new connection" calls `addLink` directly.
-
-**No `linksFromContact(localID:)` convenience.** Callers go through `SidecarKey.forContact(_:)` → `links(at:)`. Keeps the API surface to the four primitives above.
 
 ### 13.7 Test plan
 
 **Unit tests (new module `LinkTests`):**
-- `LinksCellCodecTests`: round-trip `[Link]` ↔ `SidecarCell` (empty, mixed live/tombstone); absent cell decodes to `[]`; §5.2 tombstone cell decodes to `[]`; partially-malformed array drops the bad element and keeps the rest; permissive ISO8601 decoder accepts `Z`/`+00:00` and fractional/no-fractional variants (mirroring §12.2 strictness).
-- `LinkMergeTests` (§9.4 addition):
-  - Same `id`, both sides, larger `(modifiedAt, modifiedBy)` wins.
-  - Parallel creates (different `id`s): both survive.
-  - Edit vs. delete on same `id`, different stamps: newer wins.
-  - Edit vs. delete on same `id`, identical `modifiedAt`: `modifiedBy` lex tiebreak.
-  - Tombstone vs. older edit: tombstone wins. Two tombstones: larger stamp wins.
-  - Only-one-side has `"links"`: result equals that side's cell verbatim.
-  - Empty merged list: result envelope omits `"links"`.
-  - Both sides malformed: result envelope omits `"links"`.
-  - Outer-cell stamp equals max across all merged links (including tombstones).
-  - Same `id`, conflicting endpoints: LWW pick wins, no panic.
-  - Commutativity and associativity across randomized 3-link lists.
-- `LinkEnvelopeTests` (§9.5 addition):
-  - 3-way N-fold via `reconcileSidecars()` with three disjoint links — all three appear in the result.
-  - 3-way N-fold where two of the three carry a tombstone for the same `id` at different stamps — later tombstone wins; no resurrection.
-- `LinkIdentityTests` (§9.3/§9.8 addition):
-  - Case D rebases `L` → `W`: links carried in `L`'s own sidecar fold into `W`'s sidecar via the normal merge. No endpoint rewrite — pre-existing links pointing at `L` from other sidecars remain pointing at `L` (v1 stance, §13.5). Witnessing test: pre-seed a third contact's sidecar with a link to `(.contact, L)`; after `reconcileContactIdentities()`, that link still points at `(.contact, L)` byte-for-byte.
+- `LinkEnvelopeRoundTripTests`: encode a `Link` to a `SidecarEnvelope`, decode it back, assert all fields including `deletedAt` survive byte-for-byte.
+- `LinkMergeTests` (§9.4 addition — exercises the existing §5.3 merge against link envelopes, no new merge code):
+  - Two devices edit `note` concurrently: later `(modifiedAt, modifiedBy)` wins.
+  - Edit vs. delete: later stamp wins.
+  - Soft-delete vs. older edit: soft-delete wins (its `(modifiedAt, modifiedBy)` cell beats the older edit's).
+  - Two soft-deletes with different stamps: larger stamp wins; `deletedAt` carries the winner's timestamp.
+  - Disjoint cell edits (one device edits `note`, another rewrites `endpointA`): both survive.
 - `LinkAPITests` (orchestrator-level, against in-memory stores):
-  - `addLink` writes to both endpoint sidecars; both contain the same `Link`.
-  - `addLink` twice with the same endpoints + note: two distinct links survive (different `id`s) — witnesses the "no implicit dedup" policy from §13.6.
-  - `setLinkNote` updates both sides; stamps converge.
-  - `removeLink` tombstones in both sides; `links(at:)` filters tombstones.
-  - `setLinkNote` and `removeLink` on unknown `id`: silent no-op, no throw.
-  - `setLinkNote` on a tombstoned link: silent no-op; tombstone is preserved, no resurrection, no stamp churn.
-  - `removeLink` on an already-tombstoned link: silent no-op; tombstone preserved, no stamp churn.
-  - Single-sided self-heal via `setLinkNote`: pre-seed `endpointA`'s sidecar with a live link missing from `endpointB`; call `setLinkNote(id:, oneEndpoint: endpointA, note: …)`; both sides now carry the link with the new note.
-  - Single-sided self-heal via `removeLink`: pre-seed `endpointA`'s sidecar with a live link missing from `endpointB`; call `removeLink(id:, oneEndpoint: endpointA)`; both sides now carry a tombstone.
-  - Event↔event link round-trips. Org↔contact link (a contact with `contactType == .organization`) round-trips — package is type-agnostic at the link layer.
+  - `addLink` writes one envelope; `link(id:)` returns it; `links(at: endpointA)` returns it; `links(at: endpointB)` returns it.
+  - `addLink` twice with same endpoints + note: two distinct envelopes, two distinct ids — witnesses the no-dedup policy.
+  - `setLinkNote` updates `note` cell, bumps `modifiedAt`/`modifiedBy`.
+  - `setLinkNote` on missing envelope: silent no-op, no throw.
+  - `setLinkNote` on already-soft-deleted envelope: silent no-op, no resurrection.
+  - `removeLink` sets `deletedAt`, clears `note`, bumps stamps.
+  - `removeLink` on already-soft-deleted envelope: silent no-op, no stamp churn.
+  - `links(at:)` returns soft-deleted links; callers must filter — assert by querying with and without a `.deletedAt == nil` filter.
+  - `link(id:)` returns soft-deleted links unchanged.
+  - Event↔event, org↔contact, person↔person, person↔event, person↔org links all round-trip — package is type-agnostic at the link layer.
+- `LinkCaseDRewriteTests` (§9.3/§9.8 addition):
+  - Pre-seed a link with `endpointB = (.contact, L)`. Run Case D collapsing `L → W`. Assert the link envelope now carries `endpointB = (.contact, W)`; `modifiedAt`/`modifiedBy` on the rewritten cell are bumped; `note` cell untouched. `IdentityReconcileReport.ContactOutcome.rewrittenLinkEndpointCount == 1`.
+  - Single-contact `reconcileContactIdentity(localID:)` performs the same rewrite.
+  - No Case D ⇒ no rewrite (counter stays zero).
+  - Multi-Case-D in one pass: link with `endpointA = L1, endpointB = L2`, Case D collapses both. After reconcile, link carries `(W1, W2)` in one envelope write.
+  - Two devices independently rewrite the same link's endpoint: post-sync, LWW resolves to one stamp; endpoint value is identical on both devices.
+  - Concurrent note-edit on device A and endpoint-rewrite on device B for the same link: after sync, both cells survive (disjoint cell LWW).
 
 ### 13.8 Slot in §11.1
 
 Slots after §12 (notes).
 
-1. **NEW 🔴 (high)** — `Link` model, `LinksCellCodec`, per-link merge branch in `SidecarMerge.swift`, and the four orchestrator methods.
-2. **NEW 🔴 (medium)** — Two-device convergence smoke: device A adds a person↔event link with note "X", device B independently adds a *different* link between the same two entities with note "Y". After sync, both devices show both links (two distinct IDs, both visible, no implicit dedup — witnesses the §13.6 policy).
-3. Existing 🔴 §3.3 Case D smoke is extended: include one link in each pre-merge sidecar (whose endpoints reference fourth/fifth parties, not the merging contacts); after reconcile, the winner's sidecar carries both links unchanged.
+1. **NEW 🔴 (high)** — `SidecarKind.link` case, `Documents/links/` directory in `FileSystemSidecarStore`, `Link` model, four orchestrator methods (`addLink`, `setLinkNote`, `removeLink`, `link(id:)`, `links(at:)`).
+2. **NEW 🔴 (high)** — Case-D endpoint-rewrite step in `reconcileContactIdentities()` and `reconcileContactIdentity(localID:)`; `rewrittenLinkEndpointCount` on `ContactOutcome`.
+3. **NEW 🔴 (medium)** — Two-device convergence smoke: device A adds a person↔event link, device B independently adds a *different* link between the same two entities. After sync, both devices show both links (two distinct ids, no implicit dedup).
+4. **NEW 🔴 (medium)** — Two-device Case-D + endpoint-rewrite smoke: each device independently mints a UUID for the same contact, each writes a link to a third party. After sync + Case D, both devices show one merged contact and the link's endpoint pointing at the winner UUID.
+5. Existing 🔴 §3.3 Case D smoke is extended: include one link whose endpoint references the merging contact; after reconcile, the link envelope's endpoint is rewritten to the winner UUID.
 
-### 13.9 Deferred
+### 13.9 Out of scope (spec choices, not deferrals)
 
-- **No link query index.** v1 finds links only by reading the endpoint sidecars. A global "all links" sweep requires `allKeys()` + per-file decode. Acceptable for v1; v2 may add a cache.
-- **No Case-D endpoint rewrite.** §13.5 covers the rationale: links pointing at a collapsed loser UUID render as stale-endpoint until UI either drops them or relinks them. v2 may add an opt-in sweep.
-- **No tombstone observation API.** `links(at:)` filters tombstones unconditionally; there is no way to enumerate them for a "recover deleted link" UI. v2 may add `links(at: includeTombstones: Bool = false)`.
-- **No link-typed schema** (e.g. "met at", "works with"). The `note` field carries semantics for v1. Adding a typed enum later is purely additive — old links decode with the default type.
-- **No orphan-link GC.** Links pointing at deleted or unknown endpoints survive. Same stance as §3.4 orphan sidecars.
+These are deliberate omissions, not "we'll add later" items:
+
+- **No link-typed schema** (e.g. `LinkType.metAt`, `.worksWith`). A link is two entities and a free-text note. If a richer taxonomy is wanted, the app encodes it inside `note` (or builds a UI that picks predefined notes).
+- **No bidirectional dedup.** A→B and B→A are two distinct links. UI may render them as one edge.
+
+### 13.10 Deferred
+
+- **No link query index.** v1 reads `allKeys()` filtered to `.link` and decodes each link to answer `links(at:)`. For personal-scale data this is fine; v2 may add a cache. The app's in-memory graph (§14) is the v1 mitigation.
+- **No orphan-link GC.** A link whose endpoint points at a deleted or unknown contact/event survives. Same stance as §3.4 orphan sidecars. v2 may add a sweep.
+
+## 14. Future Performance Considerations
+
+The package is intentionally disk-centric in v1. Every read goes to disk; every write is one atomic file operation. This keeps the package simple, makes correctness easy to reason about, and gives `NSFileVersion` a tight grip on conflict resolution. The cost is that operations like `links(at:)` scan all `.link` envelopes per call — O(N) on the link count.
+
+For apps where read latency matters, the recommended pattern is an **app-side in-memory graph** that loads the full sidecar set at launch (`allKeys()` + `read(_:)` for each), serves reads from memory, and invalidates by re-reading changed envelopes after `reconcileSidecars()` returns. A personal address book's sidecar bytes fit in single-digit MB easily; the full hydration is fast.
+
+This is intentionally an app concern, not a package concern. The package's job is "the disk is consistent and atomic"; the app's job is "the in-memory view is fast." Splitting it this way lets the package stay small and testable while leaving room for the app to choose its own caching strategy.
+
+v2 of the package may grow opt-in caching primitives (e.g. an `InMemorySidecarCache` that wraps `SidecarStoreProtocol` and exposes change notifications) if the same caching code keeps getting written across apps.
