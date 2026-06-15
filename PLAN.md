@@ -112,18 +112,30 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
   "schemaVersion": 1,
   "entityID": "<contact UUID, event externalID, or link UUID — untransformed>",
   "fields": {
-    "nickname": {
-      "value": "Bear",
+    "9F4A1B6E-...": {
+      "value": {
+        "field": "general notes",
+        "type":  "note",
+        "value": "Met at WWDC"
+      },
       "modifiedAt": "2026-06-14T20:15:00.000Z",
       "modifiedBy": "device-A"
     },
-    "notes": {
-      "value": "Met at WWDC",
+    "C2D88F03-...": {
+      "value": {
+        "field": "anniversary",
+        "type":  "date",
+        "value": "2024-09-15"
+      },
       "modifiedAt": "2026-06-14T22:00:00.000Z",
       "modifiedBy": "device-B"
     },
-    "petName": {
-      "value": "Bear",
+    "7B2C0901-...": {
+      "value": {
+        "field": "sent thank you note",
+        "type":  "checkbox",
+        "value": true
+      },
       "modifiedAt": "2026-06-13T10:00:00.000Z",
       "modifiedBy": "device-A",
       "deletedAt": "2026-06-13T10:00:00.000Z"
@@ -136,11 +148,13 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
 
 **`entityID`** — the canonical UUID string (contacts, links) or the raw `calendarItemExternalIdentifier` (events). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/` vs `links/`) disambiguates kind; there is no `kind` field.
 
-**`fields`** — map of field name to *cell*. Every cell has the same shape:
+**`fields`** — map from **field-instance UUID** to *cell*. Every contact/event/link cell uses the same shape. There are no singleton "well-known" field names — every field is multi-instance from the start (a contact can carry two `"general notes"` instances, three checkboxes, etc.). Field-instance UUIDs are minted at create and never reused.
+
+Every cell has the same envelope shape:
 
 ```
 {
-  "value":      <JSONValue>,        // may be null; the package treats it opaquely
+  "value":      <JSONValue>,        // see "Cell value shape" below
   "modifiedAt": <ISO8601 UTC>,      // required
   "modifiedBy": <string>,           // required
   "deletedAt":  <ISO8601 UTC>       // optional — present iff the field is soft-deleted
@@ -148,6 +162,16 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
 ```
 
 A cell with `deletedAt` absent (or null) is **live**. A cell with `deletedAt` present is a **soft-deleted cell**: the field has been removed by the user. `value` is allowed to remain alongside `deletedAt` (a record of what was deleted) but readers MUST treat the field as absent — UI does not render it, and follow-up writes on this field bump `(modifiedAt, modifiedBy)` and clear `deletedAt` to undelete.
+
+**Cell `value` shape.** Every cell `value` is a JSON object with three required keys:
+
+| Key     | Type            | Mutability       | Meaning |
+|---------|-----------------|------------------|---------|
+| `field` | string          | mutable          | Caller-supplied human-readable field name (e.g. `"general notes"`, `"anniversary"`, `"sister"`). Opaque to the package — UI groups, sorts, or labels by it. |
+| `type`  | enum string     | **immutable**    | Discriminator for the value's payload shape. v1 enum: `"note"` (payload is JSON string), `"date"` (payload is ISO8601 date string), `"checkbox"` (payload is JSON bool). More types land additively. |
+| `value` | `<JSONValue>`   | mutable          | The typed payload. Shape constrained by `type`. |
+
+Callers may extend the inner object with additional keys (e.g. `"label"`, `"icon"`); the package preserves them on round-trip but does not interpret them.
 
 `<JSONValue>` is any JSON value: `null`, `bool`, `number`, `string`, `array<JSONValue>`, `object<string, JSONValue>`. The package treats it opaquely.
 
@@ -176,6 +200,8 @@ LWW operates on the whole cell. The winning cell brings its `value`, `modifiedAt
 | `modifiedAt` not ISO8601 | The cell is malformed → treated as absent. The other side's cell wins (or the field is absent from the merge if both sides are malformed). |
 | `deletedAt` present but not ISO8601 | The cell is malformed → treated as absent. |
 | `value` missing entirely (no `value` key at all) | Malformed → treated as absent. (`value: null` is valid; missing the key is not.) |
+| Inner `value` object missing `field` or `type` keys | Malformed → cell treated as absent. (§5.2 mandates both keys; either being absent makes the cell uninterpretable.) |
+| Inner `value` object has `type` set to an unknown enum string | Cell is kept (forward-compatible); merge proceeds normally. Decoders that don't know the type return the raw `JSONValue` to the caller, which decides how to surface it. |
 | `entityID` mismatch between `a` and `b` | Merge fails; reported in `ReconcileReport`. No write. |
 | `schemaVersion` ≠ 1 on either side | Merge refuses. The non-v1 envelope is left intact. Reported. |
 
@@ -187,7 +213,7 @@ Device clocks can disagree. A device with a fast clock can "win" LWW for a field
 
 ### 5.5 Soft-delete lifecycle
 
-A soft-deleted cell (one with `deletedAt` set) survives forever in v1 — it is the only thing that prevents a stale value-write from a device that hasn't seen the delete from silently resurrecting a deleted field on the next merge. GC is deferred (§10). The same `deletedAt: Date?` shape is reused for entity-level soft-delete in higher-level types: `ContactNote.deletedAt` (§12), `Link.deletedAt` (§13). One concept, three layers (cell / note / link), identical semantics.
+A soft-deleted cell (one with `deletedAt` set) survives forever in v1 — it is the only thing that prevents a stale value-write from a device that hasn't seen the delete from silently resurrecting a deleted field on the next merge. GC is deferred (§10). The same `deletedAt: Date?` shape is reused for entity-level soft-delete on links (`Link.deletedAt`, §13). Notes are just field instances (§12), so their soft-delete is the cell's own `deletedAt` directly — no separate concept.
 
 ## 6. iCloud Conflict Handling
 
@@ -345,6 +371,29 @@ public enum JSONValue: Hashable, Sendable, Codable {
 
 public enum SidecarKind: String, Sendable, Codable { case contact, event, link }
 
+/// Discriminator for the payload shape of a SidecarField's value.
+/// Encodes/decodes to/from a string per the §5.2 inner `type` key.
+/// Immutable after a field is created (§7.3).
+public enum SidecarFieldType: String, Sendable, Codable {
+    case note      // payload is a JSON string (free text)
+    case date      // payload is a JSON string (ISO8601)
+    case checkbox  // payload is a JSON bool
+}
+
+/// A decoded view of one field-instance cell from a SidecarEnvelope.
+/// Returned by the orchestrator's field-instance accessors (§7.3).
+/// `modifiedAt` / `modifiedBy` / `deletedAt` come from the cell stamps;
+/// `field` / `type` / `value` come from the cell's inner `value` object.
+public struct SidecarField: Sendable {
+    public let id: UUID            // the cell's field-instance UUID (envelope key)
+    public let field: String       // caller-supplied name (mutable)
+    public let type: SidecarFieldType  // immutable after create
+    public let value: JSONValue    // payload, shape constrained by `type`
+    public let modifiedAt: Date
+    public let modifiedBy: String
+    public let deletedAt: Date?
+}
+
 public struct SidecarKey: Hashable, Sendable, Codable {
     public let kind: SidecarKind
     public let id: String                       // contact UUID, event externalID, or link UUID
@@ -452,14 +501,48 @@ public final class GuessWhoSync {
     // iCloud conflict resolution for sidecars (§6). Idempotent.
     public func reconcileSidecars() throws -> SidecarReconcileReport
 
-    // Read.
+    // Read the raw envelope (debug / advanced).
     public func sidecar(at key: SidecarKey) throws -> SidecarEnvelope?
 
-    // Write a single field. Read-modify-write on the current envelope.
-    public func setField(_ name: String, value: JSONValue, at key: SidecarKey) throws
+    // ---------- Field-instance API ----------
+    // The sidecar's `fields` map is keyed by per-instance UUIDs. Every field is
+    // multi-instance — a contact may carry two "general notes" or three
+    // checkboxes. The orchestrator owns instance UUIDs (mints them on add).
 
-    // Delete a single field — writes a soft-deleted cell (deletedAt set), does not remove the key.
-    public func deleteField(_ name: String, at key: SidecarKey) throws
+    /// Adds a new field instance. Mints a UUID, writes a cell whose inner value
+    /// object is { field, type, value }. Returns the minted UUID.
+    /// Throws `SidecarStoreError.typeValueMismatch` if `value` doesn't match
+    /// the JSON shape `type` requires (e.g. `.checkbox` requires `.bool`).
+    public func addField(at key: SidecarKey,
+                         field: String,
+                         type: SidecarFieldType,
+                         value: JSONValue) throws -> UUID
+
+    /// Mutates an existing field instance's caller-supplied name and/or value.
+    /// Reads the existing cell to learn its immutable `type`; throws
+    /// `SidecarStoreError.typeValueMismatch` if the new `value` doesn't match.
+    /// Silent no-op if the cell is missing or soft-deleted (no resurrection).
+    public func setField(at key: SidecarKey,
+                         id: UUID,
+                         field: String,
+                         value: JSONValue) throws
+
+    /// Soft-deletes a field instance by setting cell `deletedAt = now`,
+    /// bumping `modifiedAt`/`modifiedBy`. The inner value object is preserved
+    /// as a record of what was deleted. Silent no-op if already soft-deleted.
+    public func deleteField(at key: SidecarKey, id: UUID) throws
+
+    /// Returns one decoded field by id, or nil if the cell is missing.
+    /// Soft-deleted fields are returned (callers filter on `deletedAt`).
+    public func field(at key: SidecarKey, id: UUID) throws -> SidecarField?
+
+    /// Returns every decoded field in the entity's sidecar, in unspecified
+    /// order. Soft-deleted fields are returned. Callers filter / sort.
+    /// Cells whose `type` is unknown to this package version are omitted
+    /// from the decoded list (the raw envelope still carries them; see
+    /// `sidecar(at:)` for the unfiltered view). This keeps forward-compatibility
+    /// with future types added by newer peers.
+    public func fields(at key: SidecarKey) throws -> [SidecarField]
 }
 
 public struct IdentityReconcileReport: Sendable {
@@ -490,7 +573,16 @@ public struct SidecarReconcileReport: Sendable {
 }
 ```
 
-**`setField` semantics.** Read the current envelope (or start with an empty one), set or replace the named cell with a fresh `(value, now, deviceID)`, write the whole envelope back. The file-system store serializes writes per file (a brief in-memory lock keyed by `SidecarKey`). Writes from other processes on the same device surface as `NSFileVersion` conflicts and are handled by `reconcileSidecars()` (§6) — same code path as cross-device sync, no special-case needed.
+**Field-instance write semantics.** Every mutation (`addField`, `setField`, `deleteField`) is one read-modify-write on the entity's sidecar envelope. The file-system store serializes writes per file (a brief in-memory lock keyed by `SidecarKey`), so two concurrent `addField` calls for the same contact land at two different UUID keys with both new cells preserved in the resulting envelope — never a lost write. Writes from other processes on the same device surface as `NSFileVersion` conflicts and are handled by `reconcileSidecars()` (§6) — same code path as cross-device sync, no special-case needed.
+
+**Type immutability.** `type` is fixed at create time. `setField(at:id:field:value:)` does not take a `type` parameter — it reads the existing cell to recover the immutable type, validates the new `value` against it, and writes. Callers who want to "change the type" of a field instance must call `deleteField` and then `addField` with a fresh instance UUID.
+
+**`SidecarStoreError.typeValueMismatch`** — thrown by `addField` / `setField` when the JSON shape of `value` does not match the cell's `type`:
+| `type`      | Required `JSONValue` shape |
+|-------------|----------------------------|
+| `.note`     | `.string`                  |
+| `.date`     | `.string` (must be ISO8601-parseable; the orchestrator validates) |
+| `.checkbox` | `.bool`                    |
 
 **Identity is the caller's responsibility.** `SidecarKey` requires an ID, so writing to a contact's sidecar presumes the contact already has a GuessWho UUID. Callers must run `reconcileContactIdentities()` first (e.g., at app launch) to ensure every contact has a UUID; the resulting `IdentityReconcileReport.contactOutcomes` exposes the assigned UUID per contact.
 
@@ -650,7 +742,7 @@ Each phase ends with passing tests for the listed sections. Status markers:
 4. ✅ **Identity reconciler.** `GuessWhoSync.reconcileContactIdentities()` and `reconcileContactIdentity(localID:)` against in-memory stores. Tests: §9.3, §9.6, §9.8.
 5. ✅ **Sidecar conflict reconciler.** `GuessWhoSync.reconcileSidecars()` against in-memory stores with a scripted-conflict mode. Tests: §9.5.
 6. ✅ **Event sidecars.** Tests: §9.7.
-7. ✅🟡 **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`. ✅ unit-tested; 🟡 production-smoked on 2026-06-14 against the real iCloud ubiquity container `iCloud.com.milestonemade.guesswho` — a `setField` call from the sample app produced a valid v1 envelope at `Documents/contacts/<uuid>.json` with correct `schemaVersion`, `entityID`, and a LWW cell carrying the device-ID tiebreaker. Real two-device `NSFileVersion` conflict path is still 🔴.
+7. ✅🟡 **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`. ✅ unit-tested; 🟡 production-smoked on 2026-06-14 against the real iCloud ubiquity container `iCloud.com.milestonemade.guesswho` using the pre-pivot singleton `setField` API — produced a valid v1 envelope at `Documents/contacts/<uuid>.json` with correct `schemaVersion`, `entityID`, and a LWW cell carrying the device-ID tiebreaker. The 🟡 smoke is preserved as a historical waypoint; the API has since shifted to the field-instance shape (§7.3), so a fresh smoke against `addField` / `setField(at:id:field:value:)` / `deleteField(at:id:)` is on the §11.1 hit list. Real two-device `NSFileVersion` conflict path is still 🔴.
 8. 🟡🔴 **Real `CNContactStore` / `EKEventStore` adapters.** Smoke-tested on device; not unit-tested. `CNContactStoreAdapter`: 🟡 Case A reconcile + `save(_:)` partial-update verified on 2026-06-14 (Mac Catalyst) — wrote `guesswho://contact/<uuid>` to a real `CNContact` and macOS Contacts.app showed the URL. `EKEventStoreAdapter`: 🔴 untouched by the sample app, no smoke yet.
 
 ### 11.1 Verification gaps for the next agent
@@ -677,87 +769,74 @@ When any item above flips from 🔴 to 🟡, update its status here AND note the
 
 ## 12. Timestamped Notes (Sidecar-Only Feature)
 
-Every contact carries a list of timestamped notes, stored in the sidecar. `CNContact.note` is never read or written — the entitlement gate is out of scope (§10.5).
+Notes are the first user-visible exercise of the generic field-instance API (§7.3). A "note" is just a field instance whose `type` is `.note`. Every contact may carry zero or more notes, mixed freely with any other field types (dates, checkboxes, future types). `CNContact.note` is never read or written — the entitlement gate is out of scope (§10.5).
 
-### 12.1 Data model
+### 12.1 No new package type — notes ride on `SidecarField`
 
-A new Codable type in `Sources/GuessWhoSync/ContactNote.swift`:
+The package does **not** ship a dedicated `ContactNote` Swift type. A note is a `SidecarField` (§7.1) whose `type == .note` and whose `value` is a `.string` carrying the body. Sample-app code that wants a typed convenience can build a thin `ContactNote` wrapper locally:
 
 ```swift
-public struct ContactNote: Hashable, Sendable, Codable {
-    public var id: UUID            // minted at create; stable across edits and merges
-    public var createdAt: Date     // immutable after creation
-    public var modifiedAt: Date    // bumped on body edit and on delete
-    public var modifiedBy: String  // device ID — same source as SidecarCell.modifiedBy
-    public var body: String        // plain text; cleared to "" on delete
-    public var deletedAt: Date?    // nil = live; non-nil = soft-deleted (§5.5); survives merges
+// Sample-app convenience (NOT in the package).
+struct ContactNote {
+    let id: UUID
+    let body: String
+    let createdAt: Date
+    let modifiedAt: Date
+    let modifiedBy: String
+    let deletedAt: Date?
+
+    init?(_ f: SidecarField) {
+        guard f.type == .note, case .string(let body) = f.value else { return nil }
+        self.id = f.id
+        self.body = body
+        self.createdAt = f.createdAt ?? f.modifiedAt   // see Note creation below
+        self.modifiedAt = f.modifiedAt
+        self.modifiedBy = f.modifiedBy
+        self.deletedAt = f.deletedAt
+    }
 }
 ```
 
-`Contact` does **not** gain a notes property. `Contact` is the `CNContact` mirror; `ContactNote` is sidecar-only.
+**Note creation.** A new note is `addField(at: contactKey, field: "<user-supplied label>", type: .note, value: .string(body))`. The orchestrator mints the instance UUID and stamps `modifiedAt = now` / `modifiedBy = deviceID` on the cell. `SidecarField.createdAt` is sourced from the cell's first-stamp — see below.
 
-ID is a UUID, not a content hash — two devices typing the same body simultaneously are two distinct notes.
+**`SidecarField.createdAt`.** The package preserves the *initial* `modifiedAt` of a cell as its `createdAt` by writing it once into the inner value object's `"createdAt"` key at `addField` time. Subsequent `setField` calls preserve that key verbatim. `SidecarField` exposes it as an optional `Date?` (nil if a peer wrote the cell without `createdAt`, which is possible for non-note types that don't care). For notes, the sample-app `ContactNote` convenience above falls back to `modifiedAt` if `createdAt` is nil.
 
-**Clock source.** `createdAt`/`modifiedAt` are `Date()` at the moment of mutation, the same source the package uses for `SidecarCell.modifiedAt`. No injectable clock.
-
-### 12.2 JSON shape
-
-The sidecar envelope (§5.2) is unchanged. A well-known field key `"notes"` holds the list as the cell's `JSONValue`:
+So the inner value object for a note is:
 
 ```json
-"notes": {
-  "value": [
-    {
-      "id": "9F4A-…",
-      "createdAt": "2026-06-14T20:15:00.000Z",
-      "modifiedAt": "2026-06-14T20:15:00.000Z",
-      "modifiedBy": "device-A",
-      "body": "Met at WWDC."
-    }
-  ],
-  "modifiedAt": "2026-06-14T20:15:00.000Z",
-  "modifiedBy": "device-A"
+{
+  "field": "general notes",
+  "type":  "note",
+  "value": "Met at WWDC",
+  "createdAt": "2026-06-14T20:15:00.000Z"
 }
 ```
 
-(A soft-deleted note would carry `"deletedAt": "<ISO8601>"` alongside the other fields and an empty `body`.)
+`createdAt` lives inside the inner value (not as a cell stamp) because it's *content*, not LWW state — it should never change on edit or delete. Including it via the inner value makes that property structural.
 
-The outer cell's `modifiedAt`/`modifiedBy` are the max `(modifiedAt, modifiedBy)` across the inner notes — including soft-deleted notes — under §5.3's lex ordering. **The codec enforces this invariant on every encode** (see `encodeCell` in §12.5), so the on-disk envelope always satisfies it regardless of whether the cell was last written by a local `setField` or by `mergeNotesCell`.
+### 12.2 Reading and writing — all the work happens at §7.3
 
-**Empty list ⇒ absent.** A merged list of zero notes is encoded by *omitting* the `"notes"` field from the envelope. There is no "empty cell" representation. Equivalently: an absent `"notes"` field decodes to `[]`. This removes the only case where the outer-cell stamp would be undefined.
+The orchestrator API in §7.3 covers every note operation:
 
-**Date encoding.** `createdAt` / `modifiedAt` are encoded as ISO8601 strings with fixed millisecond precision and a `Z` suffix (e.g. `"2026-06-14T20:15:00.000Z"`). The codec pins this strategy so that §5.3's "ISO8601 lex on `modifiedAt`" rule produces the same ordering whether the implementation compares re-serialized strings or in-memory `Date` values. **The decoder is permissive**: it accepts any form parseable by `ISO8601DateFormatter` with `[.withInternetDateTime, .withFractionalSeconds]`, with a fallback to the same formatter without `.withFractionalSeconds`. This covers `Z`/`+00:00` and millisecond/no-fraction variants, so a note written by a peer with a slightly different encoder does not get silently dropped by the lenient element-level decoder in §12.3. Be permissive on input, strict on output.
+- **Add a note.** `addField(at: contactKey, field: label, type: .note, value: .string(body))`. Returns the instance UUID.
+- **Edit a note.** `setField(at: contactKey, id: noteID, field: label, value: .string(newBody))`. One envelope read + write.
+- **Delete a note.** `deleteField(at: contactKey, id: noteID)`. Sets cell `deletedAt = now`.
+- **Fetch one.** `field(at: contactKey, id: noteID)` returns a `SidecarField?`.
+- **Fetch all notes.** `fields(at: contactKey).filter { $0.type == .note }`. Sample-app sorts however it wants.
 
-### 12.3 Merge semantics — per-note LWW
+**No package-side codec, no `mergeNotesCell`, no `"notes"`-cell-with-array.** Each note is its own cell, keyed by its instance UUID. §5.3 generic LWW handles every concurrent-edit case (parallel creates land at different UUIDs and both survive; edits and deletes on the same note race per-cell on `(modifiedAt, modifiedBy)`). The §12 feature contributes zero new merge code to `SidecarMerge.swift`.
 
-The generic per-field LWW (§5.3) is wrong for notes: it would clobber a sibling note another device added concurrently. The per-note branch dispatches **only when both sides of `merge(a, b)` have the key `"notes"`**. If only one side has it, that side's cell is kept verbatim (the generic merge path, unchanged from §5.3). If neither side has it, the key is absent from the result.
+### 12.3 Concurrency
 
-**§5.3 override.** The per-note rules in §12.3 intentionally override §5.3's "malformed → absent" rule for the `"notes"` key — in two places. First, the both-sided merge (steps 1–4 below): a malformed side decodes to `[]`, the other side's valid notes survive the union. Second, the one-sided pass-through (paragraph below the steps): a malformed cell on the only side that has the key is kept verbatim, not dropped — the next reader normalizes it via the lenient decoder. Both overrides are safe: we lose no data we could have kept.
+Two `addNote` calls on the same contact serialize at the per-`SidecarKey` lock (§7.3), but they target different instance UUIDs — both new cells land in the envelope, no lost note. This is the load-bearing improvement over the prior "list-in-a-cell" design: parallel additions used to require codec-level merge logic; now they're trivially independent cells.
 
-When both sides have `"notes"`:
+Concurrent edits to the *same* note's body race against the per-key lock. Whichever lands last wins; the loser sees the winner's body on next read. v1 accepts the race; LWW on the next sync converges across devices.
 
-1. Decode each side's cell into `[ContactNote]`.
-   - A cell whose `value` is not an array of objects — or that fails to decode at the cell envelope level (bad `modifiedAt`, missing `value`, etc.) — is treated as `[]`.
-   - The decoder is **lenient at the element level**: a single malformed array entry (missing `id`, bad `createdAt`, extra junk) is dropped; the remaining valid entries are kept. A completely undecodable cell is `[]`.
-2. For each note ID in the union of both lists:
-   - If only one side has the note: keep it.
-   - If both have it: keep the one with the larger `(modifiedAt, modifiedBy)` (ISO8601 lex on `modifiedAt`, then string lex on `modifiedBy`). Applies symmetrically to live and soft-deleted notes — same rule §5.3 uses on cells.
-3. Soft-deleted notes (`deletedAt != nil`) are kept in the list — they suppress earlier-stamped resurrection per §5.5. UI filters them out.
-4. If the merged list is empty, omit the `"notes"` key from the result envelope entirely (per §12.2). Otherwise the outer cell's `modifiedAt`/`modifiedBy` is the max across all merged notes' stamps, including soft-deleted ones.
+### 12.4 Interaction with reconciliation
 
-A **malformed one-sided cell** (one side has `"notes"` but it doesn't decode) passes through verbatim under the "only one side has it" rule of §12.3's dispatch paragraph. The next reader normalizes it via the lenient decoder; no rewrite is forced.
+`reconcileSidecars()` (§6) is unchanged. The N-way fold via `merge(_:_:)` resolves each note cell independently per §5.3. No new code path.
 
-There is no "delete the whole notes cell" path — "delete all" is N per-note soft-deletes. The merge function never marks `"notes"` itself as soft-deleted at the cell level.
-
-**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deletedAt = nil`. Edit mutates `body`, bumps `modifiedAt`, leaves `id`/`createdAt`/`deletedAt` unchanged. Delete sets `deletedAt = now`, **clears `body` to `""`**, bumps `modifiedAt`. `createdAt` is never bumped post-creation.
-
-`SidecarMerge.swift` grows a `mergeNotesCell(_:_:)` free function invoked from `merge(_:_:)` when (a) `key == "notes"` and (b) both `a.fields` and `b.fields` contain the key.
-
-### 12.4 Interaction with the iCloud conflict reconciler
-
-`reconcileSidecars()` (§6) is unchanged. It folds N envelopes via `merge(_:_:)`, which now dispatches to per-note merge for `"notes"`. The N-way iCloud conflict path converges per-note automatically.
-
-Identity reconciliation (§3.3) is orthogonal — Case D's rebase step calls `merge(_:_:)`, so notes from a loser sidecar are folded into the winner without new code.
+Identity reconciliation (§3.3 Case D) rebases a loser sidecar's fields into the winner via the same `merge(_:_:)`. Notes from the loser's sidecar land in the winner's `fields` map; instance UUIDs are unique, so no collisions. Case D extends one line: the loser's notes appear in the winner's `fields(at:)` after reconcile.
 
 ### 12.5 Sample-app UI
 
@@ -765,67 +844,45 @@ The sample app gains its first user-facing edit surface.
 
 **ContactDetailView additions:**
 - **Notes section** below the existing contact info.
-- **List rows** sorted by `(createdAt, id)` **ascending** — `createdAt` primary, `id` (UUID string lex) tiebreak. Deterministic across devices even when two notes share a `createdAt`. Each row shows body (multi-line bodies render with their embedded newlines preserved — this is SwiftUI `Text` default behavior, no custom rendering required), relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Soft-deleted notes (`deletedAt != nil`) are filtered out.
-- **Always-visible empty `TextEditor` pinned below the list.** Return always inserts a newline; the **Send button** beside the input is the only way to commit. The button is disabled when the body is empty or whitespace-only. On submit, mints a new `ContactNote`, appends to the bottom, clears the input. No separate "+" button, no modal sheet.
-- **Tap an existing note → inline edit.** The row swaps to an editable `TextEditor`; Return inserts a newline. The edit commits via two equivalent paths: **(a) Done button** on the row (discoverable, especially on Mac Catalyst), or **(b) any tap outside the editing row** (the existing focus-loss path). Both bump `modifiedAt`/`modifiedBy` and write the updated cell. **If `body` is unchanged from the value captured into the editor at edit-start, commit is a no-op** — no stamp bump, no write. (The "edit-start" snapshot, not the current on-disk value: this matters when a reconcile lands mid-edit and rewrites the on-disk body — a user who only inspected must not silently win LWW against the reconciled-in change.) Done is **not** disabled on an empty `body` — committing a cleared body is a deliberate "this note is now blank" edit, distinct from "delete the note." Users who want to remove the note entirely use swipe-delete or the context-menu Delete. No separate cancel gesture — discard requires deleting the note.
-- **Swipe-to-delete** sets `deletedAt = now`, clears `body`, bumps `modifiedAt`. The row disappears immediately; the soft-deleted note persists in the cell.
+- **List rows** sorted by `(createdAt, id)` **ascending** — `createdAt` primary, `id` (UUID string lex) tiebreak. Deterministic across devices even when two notes share a `createdAt`. Each row shows body (multi-line bodies render with embedded newlines preserved — SwiftUI `Text` default), relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Soft-deleted notes (`deletedAt != nil`) are filtered out by the sample-app code, not the package — `fields(at:)` returns them.
+- **Always-visible empty `TextEditor` pinned below the list.** Return always inserts a newline; the **Send button** beside the input is the only way to commit. The button is disabled when the body is empty or whitespace-only. On submit, calls `addField(at: contactKey, field: "general notes", type: .note, value: .string(body))`, clears the input. No separate "+" button, no modal sheet.
+- **Tap an existing note → inline edit.** The row swaps to an editable `TextEditor`; Return inserts a newline. The edit commits via two equivalent paths: **(a) Done button** on the row (discoverable, especially on Mac Catalyst), or **(b) any tap outside the editing row** (the existing focus-loss path). Both call `setField(at: contactKey, id: noteID, field: label, value: .string(newBody))`. **If `body` is unchanged from the value captured into the editor at edit-start, commit is a no-op** — no API call, no stamp bump. (The "edit-start" snapshot, not the current on-disk value: this matters when a reconcile lands mid-edit and rewrites the on-disk body — a user who only inspected must not silently win LWW against the reconciled-in change.) Done is **not** disabled on an empty `body` — committing a cleared body is a deliberate "this note is now blank" edit, distinct from "delete the note." Users who want to remove the note entirely use swipe-delete. No separate cancel gesture — discard requires deleting the note.
+- **Swipe-to-delete** calls `deleteField(at: contactKey, id: noteID)`. The row disappears immediately; the soft-deleted note persists in the cell.
 
-**Mid-edit vs `reconcileSidecars()`.** If a reconcile lands while the user is editing note X (rewriting the cell with a newer copy of X from another device), the in-progress edit is **not aborted**. On commit, the NotesStore re-reads, replaces X by ID with its locally-edited copy, writes. LWW resolves which version survives on the next merge. No UI prompt, no merge dialog.
+**Mid-edit vs `reconcileSidecars()`.** If a reconcile lands while the user is editing note X (rewriting X's cell with a newer copy from another device), the in-progress edit is **not aborted**. On commit, the sample-app code calls `setField` — the package's per-key lock serializes against the reconcile's write — and LWW resolves which version survives on the next merge. No UI prompt, no merge dialog.
 
-**Codec and store.** `NotesCellCodec` lives **in the package** (`Sources/GuessWhoSync/`) alongside `ContactNote`, because the package's `mergeNotesCell` needs it. The codec exposes three operations:
-
-- `decode(SidecarCell?) -> [ContactNote]` — lenient per §12.3 step 1; an absent cell, a malformed cell, or a cell whose `value` is not a JSON array all return `[]`; malformed array elements are dropped.
-- `encodeValue([ContactNote]) -> JSONValue` — used by `NotesStore` to pass the list into `GuessWhoSync.setField` (which takes a `JSONValue`, and stamps its own outer `modifiedAt`/`modifiedBy` from `Date()` / deviceID).
-- `encodeCell([ContactNote]) -> SidecarCell?` — used by `mergeNotesCell`; recomputes the outer `(modifiedAt, modifiedBy)` as the max across inner notes per §12.2; returns `nil` when the list is empty so the merge can omit the key per §12.3 step 4. The outer cell is always live (`deletedAt == nil`) — soft-delete is per-note, never per-cell.
-
-A sample-app-side `NotesStore` view-model reads the current cell via `decode`, applies the mutation in memory, calls `encodeValue` to get a `JSONValue`, and writes via `GuessWhoSync.setField`. `modifiedBy` reuses the package's existing per-install device-ID source verbatim. The outer cell stamp `setField` writes is `Date()` / deviceID — equal to the just-mutated note's stamp because they share the same clock and writer — so the §12.2 outer-stamp invariant holds. The next merge re-derives it via `encodeCell` regardless.
-
-**Concurrency model.** `GuessWhoSync.setField` already takes the `sidecarLocks` per-key lock around its read-merge-write, so two concurrent `setField` calls on the same key serialize. The sample-app NotesStore does its own read-decode-mutate-encode in memory *before* calling `setField`, which means a second `setField` between the read and the write loses the in-memory mutation against the on-disk state. We accept this race: every write is timestamped, LWW on the next merge converges the result.
-
-- For a **body edit** that loses the race, the worst case is a single dropped edit the user sees in the next refresh and can retype.
-- For a **swipe-delete** that loses the race against a concurrent edit, the deletion may briefly appear successful (the row vanishes from the UI) before the racing edit re-resurrects the note on the next reconcile if its stamp is newer. v1 accepts this; the user re-issues the delete.
-
-No `mutateField` primitive in v1.
-
-The DEBUG "Write debug field" button is retained — unrelated.
+The DEBUG button in the sample app calls `addField` with a synthesized `.note` value — retained as a smoke-test trigger.
 
 ### 12.6 Test plan
 
-**Unit tests (new):**
-- `NotesCellCodecTests`: round-trip `[ContactNote]` ↔ `SidecarCell` (including empty list and all-soft-deleted); decode of an absent field returns `[]`; decode of a non-array `value` returns `[]`; decode of a partially-malformed array drops the bad element and keeps the good ones.
-- `NotesMergeTests` (§9.4 addition):
-  - Same ID, both sides, larger `(modifiedAt, modifiedBy)` wins.
-  - Parallel creates (different IDs) both survive.
-  - Edit vs. delete on same ID, different stamps: newer stamp wins.
-  - Edit vs. delete on same ID, **identical `modifiedAt`**: `modifiedBy` lex tiebreak determines winner.
-  - Soft-delete vs. older edit on same ID: soft-delete wins.
-  - Two soft-deletes for the same ID with different stamps: larger-stamp soft-delete wins.
-  - Only-one-side has `"notes"`: result equals that side's cell verbatim (no codec round-trip).
-  - Empty merged list: result envelope has no `"notes"` key.
-  - Both sides have malformed `"notes"` cells: result envelope has no `"notes"` key.
-  - Outer-cell `modifiedAt`/`modifiedBy` equals the max across all merged notes (including soft-deleted ones).
-  - `encodeCell([])` returns `nil`; `encodeCell([...non-empty...])` returns a live cell whose stamp is the max across the inner notes.
-  - Commutativity and associativity across randomized 3-note lists.
-- `NotesEnvelopeTests` (§9.5 addition):
-  - 3-way N-fold via `reconcileSidecars()` with three disjoint notes — all three appear in the result.
-  - 3-way N-fold where two of the three carry a soft-delete for the same ID at different stamps — the later soft-delete wins; no live note resurrects.
+The note feature ships no new package code, so most of its testing is exercising the §7.3 field-instance API specifically with `.note` typed fields:
+
+**Unit tests (in `GuessWhoSyncTests`, against `InMemorySidecarStore`):**
+- `NoteAddRoundTrip`: `addField(type: .note, value: .string("body"))` then `field(at:id:)` returns a `SidecarField` with `type == .note`, `value == .string("body")`, populated `modifiedAt`/`modifiedBy`, `deletedAt == nil`, `createdAt != nil`.
+- `NoteEditPreservesCreatedAt`: edit a note via `setField`. The new `SidecarField.modifiedAt` is later than before; `createdAt` is unchanged (still in the inner value object).
+- `NoteDeleteSetsDeletedAt`: `deleteField`. `field(at:id:)` returns a `SidecarField` with `deletedAt != nil`. `fields(at:).filter { $0.type == .note && $0.deletedAt == nil }` excludes it.
+- `NoteTypeMismatchThrows`: `addField(type: .note, value: .bool(true))` throws `typeValueMismatch`. `setField` on an existing `.note` cell with a `.number(42)` value throws the same.
+- `NoteParallelCreates`: two `addField(type: .note)` calls on the same contact land at two different instance UUIDs; both survive in `fields(at:)`.
+- `NoteParallelCreateMerge` (§9.4 addition): device A and device B each call `addField` for the same contact while offline. After `merge(envelopeA, envelopeB)`, both notes are present in the merged envelope.
+- `NoteEditVsDelete` (§9.4 addition): device A edits note X; device B deletes note X. Later `(modifiedAt, modifiedBy)` wins on the cell. Same generic §5.3 rule, no new merge code.
+- `NoteEnvelopeMultiNote3WayFold` (§9.5 addition): three devices each add one note; 3-way N-fold via `reconcileSidecars()` results in all three notes present.
 
 **Sample-app smoke tests (§11.1 additions, all 🔴):**
 - 🔴 **Single-device notes CRUD.** Add three via bottom input, inline-edit one, swipe-delete one. Re-launch. List shows two live notes in `(createdAt, id)` ascending order.
 - 🔴 **Two-device convergence.** A creates X, B creates Y, both offline. After sync + reconcile, both devices show `[X, Y]`.
 - 🔴 **Two-device edit/delete race.** A edits X; B deletes X. Newer-timestamp wins, both devices converge to the same state.
 
-**Case A/B/C** smokes — unchanged. **Case D** — extend so each pre-merge contact's sidecar carries one note; after reconcile, the winner holds both. No new code path; the per-note merge runs automatically.
+**Case A/B/C** smokes — unchanged. **Case D** — extend so each pre-merge contact's sidecar carries one note; after reconcile, the winner sidecar holds both notes. No new code path; the §3.3 rebase uses `merge(_:_:)`, which handles per-cell LWW automatically.
 
 ### 12.7 Slot in §11.1
 
-Promote ahead of existing 🔴 items — notes are the first user-visible sidecar feature.
+Notes are now a feature *of* the §7.3 field-instance API, so the implementation order is:
 
-1. **NEW 🔴 (high)** — `ContactNote` model, `NotesCellCodec`, and per-note merge branch in `SidecarMerge.swift`.
-2. **NEW 🔴 (high)** — Sample-app notes UI.
+1. **NEW 🔴 (high)** — §7.3 field-instance API (`addField`, `setField(at:id:field:value:)`, `deleteField(at:id:)`, `field(at:id:)`, `fields(at:)`); `SidecarFieldType` enum; `SidecarField` decoded struct; `typeValueMismatch` validation. This is the foundation — notes, dates, checkboxes all ride on it.
+2. **NEW 🔴 (high)** — Sample-app notes UI built on top of §7.3.
 3. **NEW 🔴 (high)** — Two-device notes convergence smoke.
-4. Existing 🔴 §3.3 Case C and Case D smokes — unchanged priority; Case D extended per §12.6.
-5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium and add it to the medium-priority list in §11.1, reframed as "partial-update preserves untouched native fields, witnessed by `note`." We're no longer in the contacts-notes business, but the partial-update path still has to be proven to leave native fields alone — `note` remains the convenient canary.
+4. Existing 🔴 §3.3 Case C and Case D smokes — Case D extended per §12.6.
+5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium, reframed as "partial-update preserves untouched native fields, witnessed by `note`." Partial-update path is still load-bearing for any `CNContact` field we don't model.
 
 ## 13. Entity Links (Sidecar-Only Feature)
 
@@ -881,7 +938,7 @@ Each link is one sidecar envelope. `SidecarKey(.link, link.id.uuidString)` resol
 
 This keeps stamps single-sourced: the underlying §5.3 cell stamps are the ground truth for LWW; the public-facing `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections of that ground truth. No double-nesting — `linkDeletedAt` is a normal cell carrying a timestamp `value`, and its own cell-level `deletedAt` is unused (the link API offers no undelete, so a `linkDeletedAt` cell is never itself soft-deleted).
 
-**Codec.** Conversion between `Link` and `SidecarEnvelope` lives in `Sources/GuessWhoSync/Link.swift` alongside the model — analogous to §12.5's `NotesCellCodec` but simpler (no nested-cell list). The two operations:
+**Codec.** Conversion between `Link` and `SidecarEnvelope` lives in `Sources/GuessWhoSync/Link.swift` alongside the model. (Links pre-date the field-instance pivot in §7.3/§12; they keep their own envelope shape because a link is one *entity*, not a field instance on another entity.) The two operations:
 
 - `Link.init?(from envelope: SidecarEnvelope)` — decode the five cells per the table above into a `Link`; returns `nil` if the envelope is missing required cells (`endpointA`, `endpointB`, `note`, `createdAt`) or carries unparseable values. `modifiedAt`/`modifiedBy`/`deletedAt` are computed from the cell stamps per the derivation rules.
 - `SidecarEnvelope` is *not* built from a `Link` directly. The orchestrator never round-trips through a `Link` value on write — mutations (`addLink`, `setLinkNote`, `removeLink`, Case-D rewrite) emit the specific cells they change (§13.3), preserving the existing cell stamps for cells they don't touch. This avoids the trap of "round-trip rewrites cells the caller didn't intend to change" and means the on-disk stamps always reflect actual writes.
