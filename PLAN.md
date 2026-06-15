@@ -429,8 +429,6 @@ extension SidecarKey {
 2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
 3. **Tombstone GC.** Tombstones live forever in v1.
 4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
-5. **Recovery-sibling writes for unparseable current versions — removed pending real demand.** The orchestrator never emits this resolution today: when every version of a conflict is unparseable it falls back to `.leave`, and a parseable merge result is written directly via `.write(merged:skip:)`. The enum case + FileSystemSidecarStore code path were carrying weight for a use case nothing in the codebase exercises. If a real call site needs to quarantine an unparseable current to a sibling file rather than leave it in conflict, add the resolution back then.
-6. **Bulk `reconcileConflicts(_:)` on `SidecarStoreProtocol` — removed pending real demand.** §7.2 lists `reconcileConflicts(_:)` as the reconcile entrypoint, but the orchestrator drives reconcile per-key (calling `keysWithUnresolvedConflicts()` + `reconcileConflict(at:resolve:)`) so it can hold its per-key lock across the resolver+write window. No production code calls the bulk method. The protocol requirement was deleted; the per-key methods are the actual conformance surface. Restore the bulk default if a second caller materializes that genuinely wants the "walk every conflict, no per-key control" shape.
 
 ## 11. Implementation Order
 
