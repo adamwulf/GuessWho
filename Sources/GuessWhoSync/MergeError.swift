@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MergeError: Error, Sendable {
+enum MergeError: Error, Sendable {
     case entityIDMismatch
     case schemaVersionMismatch
 }

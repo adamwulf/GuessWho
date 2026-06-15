@@ -1,6 +1,6 @@
 import Foundation
 
-public func merge(
+func merge(
     _ a: SidecarEnvelope,
     _ b: SidecarEnvelope
 ) -> Result<SidecarEnvelope, MergeError> {
