@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Event: Hashable, Sendable {
+public struct Event: Hashable, Sendable, Codable {
     public var externalID: String
     public var title: String
     public var startDate: Date
