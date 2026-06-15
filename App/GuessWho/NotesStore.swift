@@ -5,7 +5,7 @@ import GuessWhoSync
 @Observable
 final class NotesStore {
     private let service: SyncService
-    private let contactUUID: String
+    let contactUUID: String
 
     private var allNotes: [ContactNote] = []
 

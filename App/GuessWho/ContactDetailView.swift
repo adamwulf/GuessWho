@@ -140,12 +140,19 @@ struct ContactDetailView: View {
         contact = loaded
         if let loaded {
             sidecar = service.sidecar(for: loaded)
-            if let uuid = service.guessWhoUUID(in: loaded) {
-                if notesStore == nil {
+            let uuid = service.guessWhoUUID(in: loaded)
+            if let uuid {
+                // Rebuild the store if the contact's GuessWho UUID changed
+                // since last load — a Case D reconcile picks a winner UUID
+                // and deletes the loser's sidecar, so a store still bound
+                // to the loser would read/write a dead file.
+                if notesStore?.contactUUID != uuid {
                     notesStore = NotesStore(service: service, contactUUID: uuid)
                 } else {
                     notesStore?.reload()
                 }
+            } else {
+                notesStore = nil
             }
         }
     }
