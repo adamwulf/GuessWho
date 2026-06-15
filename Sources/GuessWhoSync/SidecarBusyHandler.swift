@@ -1,21 +1,17 @@
 import Foundation
 
-// A closure the host app installs on a sidecar store to decide what should
-// happen when a coordinated read/write/delete doesn't finish within the
-// store's per-attempt budget (1 second, internal to the store). This is
-// modeled on SQLite's busy handler: the store calls the closure when it
-// would otherwise be stuck waiting, and the closure decides whether to
-// keep trying, back off, or give up.
+// Closure invoked when a sidecar read/write/delete is taking longer than
+// the store's per-attempt budget. Modeled on SQLite's busy handler: the
+// store calls this closure when it would otherwise be stuck, and the
+// closure decides whether to keep waiting, back off, or give up.
 //
-// - `key` is the sidecar the slow operation is targeting.
-// - `attempt` is 0-indexed (0 = the operation has already failed once).
-// - `elapsed` is the total time since the first coordinator call started.
+// - `key`: the sidecar the slow operation is targeting.
+// - `attempt`: 0-indexed (0 = the first wait window already timed out).
+// - `elapsed`: total time since the operation started.
 //
-// Default handler: retry up to 3 times with exponential backoff starting at
-// 250ms, then fail. App devs who want "best effort, eventually fail" do
-// nothing; app devs who want "block forever" install a handler that returns
-// `.retry` forever; app devs who want their own backoff write a custom
-// closure. No cloudd vocabulary is exposed by any of this.
+// Default: retry up to 3 times with exponential backoff from 250ms, then
+// fail. Install `{ _, _, _ in .retry }` to block forever; write a custom
+// closure for app-specific backoff.
 public typealias SidecarBusyHandler = (
     _ key: SidecarKey,
     _ attempt: Int,
@@ -23,10 +19,10 @@ public typealias SidecarBusyHandler = (
 ) -> SidecarBusyDecision
 
 public enum SidecarBusyDecision: Equatable {
-    // Try the coordinated operation again immediately.
+    // Keep waiting for the in-flight operation.
     case retry
 
-    // Sleep for the given interval, then try again. Negative or zero
+    // Sleep for the given interval, then keep waiting. Negative or zero
     // intervals are treated as `.retry`.
     case retryAfter(TimeInterval)
 
@@ -34,9 +30,8 @@ public enum SidecarBusyDecision: Equatable {
     case fail
 }
 
-// The default handler used by FileSystemSidecarStore when no handler is
-// installed: 3 retries, exponential backoff starting at 250ms (250, 500,
-// 1000), then fail.
+// The default handler: 3 retries with exponential backoff (250ms, 500ms,
+// 1000ms), then fail.
 //
 // Exposed publicly so a custom handler can fall back to the default after
 // applying its own rules (e.g. "log first, then default").

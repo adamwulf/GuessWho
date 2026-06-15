@@ -67,6 +67,11 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         // together. Without including the current envelope, writes that
         // landed before reconcile acquired the lock would be silently
         // overwritten by the merged-conflicts result.
+        //
+        // mergedVersionCount accounting: includes the current envelope
+        // when present, matching the FS store's `allBytes.count` accounting.
+        // Tests that seed a current envelope and inspect mergedVersionCount
+        // will see N+1 rather than N (N = number of scripted versions).
         lock.lock()
         guard let scripted = scriptedConflicts[key] else {
             lock.unlock()

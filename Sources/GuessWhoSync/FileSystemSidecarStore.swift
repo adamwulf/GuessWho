@@ -11,20 +11,27 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // redundant but correct.
     private let fileLocks = PerKeyLockTable<SidecarKey>()
 
-    // Closure consulted when a coordinated read/write/delete doesn't finish
-    // within `perAttemptTimeout`. See `SidecarBusyHandler` docs for the
-    // contract. Default: `defaultSidecarBusyHandler` (3 retries, exponential
-    // backoff from 250ms, then fail).
+    // Closure consulted when a sidecar operation exceeds `perAttemptTimeout`.
+    // Default: 3 retries, exponential backoff from 250ms, then fail. See
+    // `SidecarBusyHandler` for the contract.
     public var busyHandler: SidecarBusyHandler
 
-    // Per-attempt budget for a coordinated read/write/delete. If the
-    // coordinator hasn't returned by this point, the busy handler is
-    // consulted. Defaults to 1 second.
+    // Per-attempt budget for a single sidecar read/write/delete. If the
+    // operation hasn't returned by this point, `busyHandler` is consulted.
+    // Defaults to 1 second.
     public var perAttemptTimeout: TimeInterval
 
     // Background queue the coordinator runs on so the calling thread can
     // wait with a timeout. One serial queue per store instance — coordinator
     // calls are coarse-grained and don't need parallel dispatch.
+    //
+    // NOTE: the queue is shared across keys, which means a single stuck
+    // operation (e.g. a key whose backing file is still syncing) can delay
+    // siblings dispatched after it. Per-attempt wait time accumulates from
+    // the moment the operation is queued, not when it begins executing, so
+    // siblings can see `.timedOut` while waiting in line behind a stuck
+    // operation. A per-key dispatch queue would compose with the per-key
+    // `fileLocks` if this becomes a problem in practice.
     private let coordinatorQueue = DispatchQueue(
         label: "GuessWhoSync.FileSystemSidecarStore.coordinator"
     )
@@ -223,6 +230,11 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             // otherwise produce an empty Data() that fails to match any
             // entry in `skip`, silently deleting a version the resolver
             // explicitly asked to keep.
+            //
+            // The cache deliberately excludes the CURRENT version: the
+            // merged write below replaces the current contents regardless,
+            // so even if the resolver returned current bytes in `skip`
+            // (e.g. by mistake) the skip pass has nothing to do for them.
             var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
             var allBytes: [Data] = []
             if let current = NSFileVersion.currentVersionOfItem(at: url),
@@ -469,7 +481,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // If the operation eventually completes after we threw `.timedOut`, its
     // body still runs on the background queue — captures live in
     // `ResultBox` (heap) so a late completion never writes to a dead
-    // stack frame. The captured box is then garbage-collected; the
+    // stack frame. The captured box is then released by ARC; the
     // coordinator queue is reused for the next call.
     // Internal (not private) so @testable imports can probe the busy-handling
     // behavior without going through the coordinator wrappers.

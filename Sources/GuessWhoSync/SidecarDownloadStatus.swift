@@ -1,9 +1,9 @@
 import Foundation
 
 // Reports the local-availability state of a sidecar for storage backends
-// that may not have all bytes resident on this device (e.g. iCloud Drive).
-// Storage that always has data locally returns `.downloaded` for any key
-// it knows about and `.notFound` otherwise.
+// that may not have all bytes resident on this device. Backends that
+// always have data locally return `.downloaded` for any known key and
+// `.notFound` otherwise.
 public enum SidecarDownloadStatus: Equatable {
     // Bytes are present locally; `read()` will succeed (subject to ordinary
     // I/O errors).
@@ -19,6 +19,7 @@ public enum SidecarDownloadStatus: Equatable {
     case notStarted
 
     // No sidecar exists at this key, either locally or in remote storage
-    // (as far as the backend can tell).
+    // (as far as the backend can tell). For purely local stores this
+    // matches `read(_:)` returning `nil`.
     case notFound
 }
