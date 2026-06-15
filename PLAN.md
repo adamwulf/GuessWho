@@ -203,9 +203,10 @@ The package owns its own plain-Swift models — not `CNContact`/`EKEvent` — so
 
 ```swift
 public struct Contact: Hashable, Sendable {
-    public var localID: String                  // device-local CNContact.identifier
-    public var urlAddresses: [LabeledValue]     // includes the GuessWho URL when assigned
-    // plus name, phone, email, postal, birthday, organization — see §4
+    public var localID: String                       // device-local CNContact.identifier
+    public var urlAddresses: [LabeledValue]          // includes the GuessWho URL when assigned
+    public var postalAddresses: [LabeledPostalAddress] // structured, component-for-component (see below)
+    // plus name, phone, email, birthday, organization — see §4
 }
 
 public struct Event: Hashable, Sendable {
@@ -216,6 +217,25 @@ public struct Event: Hashable, Sendable {
 public struct LabeledValue: Hashable, Sendable {
     public var label: String                    // e.g. "home", "work", "GuessWho"
     public var value: String
+}
+
+// Postal addresses are structured, not a single-line string, so callers can
+// edit components (street/city/zip/…) independently and round-trip them
+// losslessly through CNPostalAddress.
+public struct PostalAddress: Hashable, Sendable, Codable {
+    public var street: String
+    public var subLocality: String
+    public var city: String
+    public var subAdministrativeArea: String
+    public var state: String
+    public var postalCode: String
+    public var country: String
+    public var isoCountryCode: String
+}
+
+public struct LabeledPostalAddress: Hashable, Sendable, Codable {
+    public var label: String                    // e.g. "home", "work"
+    public var value: PostalAddress
 }
 
 public enum JSONValue: Hashable, Sendable {
