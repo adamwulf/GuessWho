@@ -10,9 +10,47 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
         let url = fileURL(for: key)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+        let fm = FileManager.default
+
+        // Coordinated existence + read in one pass: NSFileCoordinator
+        // serializes us against cloudd, which may otherwise be mid-rename
+        // between `.<name>.icloud` and the materialized `<name>` when we
+        // probe. Inside the coordinated block, the filesystem state is
+        // stable enough to decide between materialized / placeholder /
+        // truly-absent.
+        enum Outcome {
+            case bytes(Data)
+            case placeholderPresent
+            case missing
+            case failed(Error)
+        }
+        var outcome: Outcome = .missing
+        try coordinatedRead(at: url) { safeURL in
+            if fm.fileExists(atPath: safeURL.path) {
+                do {
+                    outcome = .bytes(try Data(contentsOf: safeURL))
+                } catch {
+                    outcome = .failed(error)
+                }
+            } else if fm.fileExists(atPath: placeholderURL(for: safeURL).path) {
+                outcome = .placeholderPresent
+            } else {
+                outcome = .missing
+            }
+        }
+
+        switch outcome {
+        case .bytes(let data):
+            return try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+        case .placeholderPresent:
+            // Request the download and tell the caller to retry later.
+            try? fm.startDownloadingUbiquitousItem(at: url)
+            throw SidecarStoreError.notYetDownloaded(key)
+        case .missing:
+            return nil
+        case .failed(let error):
+            throw error
+        }
     }
 
     public func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
@@ -25,7 +63,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             withIntermediateDirectories: true
         )
         let data = try JSONEncoder().encode(envelope)
-        try data.write(to: url, options: [.atomic])
+
+        var writeError: Error?
+        try coordinatedWrite(at: url) { safeURL in
+            do {
+                try data.write(to: safeURL, options: [.atomic])
+            } catch {
+                writeError = error
+            }
+        }
+        if let writeError { throw writeError }
     }
 
     public func delete(_ key: SidecarKey) throws {
@@ -34,7 +81,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
         let url = fileURL(for: key)
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+
+        var deleteError: Error?
+        try coordinatedDelete(at: url) { safeURL in
+            do {
+                try FileManager.default.removeItem(at: safeURL)
+            } catch {
+                deleteError = error
+            }
+        }
+        if let deleteError { throw deleteError }
     }
 
     public func allKeys() throws -> [SidecarKey] {
@@ -85,9 +141,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             switch resolution {
             case .write(let merged, let skip):
                 let mergedData = try JSONEncoder().encode(merged)
-                writeLock.lock()
-                try mergedData.write(to: url, options: [.atomic])
-                writeLock.unlock()
+                try withWriteLock {
+                    var mergedWriteError: Error?
+                    try coordinatedWrite(at: url) { safeURL in
+                        do {
+                            try mergedData.write(to: safeURL, options: [.atomic])
+                        } catch {
+                            mergedWriteError = error
+                        }
+                    }
+                    if let mergedWriteError { throw mergedWriteError }
+                }
 
                 var skippedCount = 0
                 for version in conflicts {
@@ -110,9 +174,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             case .writeRecoverySibling(let merged, let suffix):
                 let mergedData = try JSONEncoder().encode(merged)
                 let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-                writeLock.lock()
-                try mergedData.write(to: siblingURL, options: [.atomic])
-                writeLock.unlock()
+                try withWriteLock {
+                    var siblingWriteError: Error?
+                    try coordinatedWrite(at: siblingURL) { safeURL in
+                        do {
+                            try mergedData.write(to: safeURL, options: [.atomic])
+                        } catch {
+                            siblingWriteError = error
+                        }
+                    }
+                    if let siblingWriteError { throw siblingWriteError }
+                }
                 outcomes.append(
                     SidecarReconcileReport.FileOutcome(
                         key: key,
@@ -171,9 +243,28 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         guard fm.fileExists(atPath: directory.path) else { return [] }
         let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         var result: [SidecarKey] = []
+        var seen = Set<String>()
         for entry in entries {
-            guard entry.pathExtension == "json" else { continue }
-            let basename = entry.deletingPathExtension().lastPathComponent
+            let fullName = entry.lastPathComponent
+            let realName: String
+            if entry.pathExtension == "json" {
+                realName = fullName
+            } else if let placeholderName = realNameFromPlaceholder(fullName) {
+                // iCloud has not yet downloaded this sidecar. Kick off a
+                // download so subsequent reads can succeed; surface the key
+                // now so the orchestrator knows the sidecar exists.
+                let realURL = directory.appendingPathComponent(placeholderName)
+                try? fm.startDownloadingUbiquitousItem(at: realURL)
+                realName = placeholderName
+            } else {
+                continue
+            }
+            // If both a real .json and its placeholder are present (rare
+            // transitional state), de-dup so we only emit one key.
+            guard !seen.contains(realName) else { continue }
+            seen.insert(realName)
+
+            let basename = (realName as NSString).deletingPathExtension
             switch kind {
             case .contact:
                 result.append(SidecarKey(kind: .contact, id: basename.lowercased()))
@@ -185,10 +276,74 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
+    // iCloud Drive represents a not-yet-downloaded item at `name.ext` as a
+    // sibling stub at `.name.ext.icloud` (leading dot, trailing `.icloud`).
+    // Recover the real filename from such a stub; return nil if the entry
+    // is not a placeholder.
+    private func realNameFromPlaceholder(_ fullName: String) -> String? {
+        guard fullName.hasPrefix("."), fullName.hasSuffix(".icloud") else { return nil }
+        let withoutDot = fullName.dropFirst()
+        let withoutSuffix = withoutDot.dropLast(".icloud".count)
+        guard withoutSuffix.hasSuffix(".json") else { return nil }
+        return String(withoutSuffix)
+    }
+
+    // The placeholder sibling URL for a sidecar file URL. Used to detect
+    // not-yet-downloaded files at read time.
+    private func placeholderURL(for url: URL) -> URL {
+        let directory = url.deletingLastPathComponent()
+        let placeholderName = ".\(url.lastPathComponent).icloud"
+        return directory.appendingPathComponent(placeholderName)
+    }
+
     // Original `abc.json` → sibling `abc.recovered.<suffix>.json` (same directory).
     private func recoverySiblingURL(for original: URL, suffix: String) -> URL {
         let directory = original.deletingLastPathComponent()
         let stem = original.deletingPathExtension().lastPathComponent
         return directory.appendingPathComponent("\(stem).recovered.\(suffix).json")
+    }
+
+    // Acquire writeLock for the duration of `body`. Using `defer` to unlock
+    // means a throw from inside the coordinated-write block still releases
+    // the lock — without this, an iCloud coordinator error would leak the
+    // lock and deadlock every subsequent write/delete/reconcile.
+    private func withWriteLock(_ body: () throws -> Void) rethrows {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        try body()
+    }
+
+    // MARK: - NSFileCoordinator wrappers
+
+    // On Apple platforms cloudd reads and writes ubiquity-container files in
+    // a separate process. Without coordination it can observe partial state
+    // mid-write or race deletes. NSFileCoordinator serializes our access
+    // against cloudd; the closure receives the URL it should actually use
+    // (the coordinator may substitute, e.g., a temporary).
+    private func coordinatedRead(at url: URL, _ body: (URL) -> Void) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordError: NSError?
+        coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
+            body(safeURL)
+        }
+        if let coordError { throw coordError }
+    }
+
+    private func coordinatedWrite(at url: URL, _ body: (URL) -> Void) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
+            body(safeURL)
+        }
+        if let coordError { throw coordError }
+    }
+
+    private func coordinatedDelete(at url: URL, _ body: (URL) -> Void) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordError) { safeURL in
+            body(safeURL)
+        }
+        if let coordError { throw coordError }
     }
 }

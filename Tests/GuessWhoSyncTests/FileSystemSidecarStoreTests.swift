@@ -159,6 +159,106 @@ struct FileSystemSidecarStoreTests {
         #expect(outcomes.isEmpty)
     }
 
+    // MARK: - iCloud placeholder handling
+    //
+    // iCloud Drive represents a not-yet-downloaded sidecar `note.json` as a
+    // sibling stub `.note.json.icloud`. We can't trigger a real iCloud download
+    // in tests, but we can plant the placeholder file with the documented
+    // naming and exercise the listKeys + read code paths.
+
+    private func plantPlaceholder(in root: URL, kindDir: String, basename: String) throws {
+        let dir = root.appendingPathComponent(kindDir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let placeholderName = ".\(basename).json.icloud"
+        let url = dir.appendingPathComponent(placeholderName)
+        try Data().write(to: url)
+    }
+
+    @Test
+    func listKeysIncludesContactPlaceholderStubs() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let uuid = "550e8400-e29b-41d4-a716-446655440000"
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
+
+        let keys = try store.allKeys()
+        #expect(keys.contains(SidecarKey(kind: .contact, id: uuid)))
+    }
+
+    @Test
+    func listKeysIncludesEventPlaceholderStubs() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        // Use an externalID with no characters that need percent-encoding
+        // (so the basename and id match 1:1) and verify the event surfaces
+        // from a placeholder stub.
+        let basename = "evt-only"
+        try plantPlaceholder(in: root, kindDir: "events", basename: basename)
+
+        let keys = try store.allKeys()
+        #expect(keys.contains(SidecarKey(kind: .event, id: "evt-only")))
+    }
+
+    @Test
+    func listKeysDeduplicatesPlaceholderAndRealFile() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let key = SidecarKey(kind: .contact, id: "abc")
+        try store.write(envelope(id: "abc"), at: key)
+        // Plant a leftover placeholder alongside the real file (rare
+        // transitional state on iCloud Drive). Only one key should surface.
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: "abc")
+
+        let keys = try store.allKeys()
+        #expect(keys == [key])
+        #expect(keys.count == 1)
+    }
+
+    // Implementation chose approach (a) from the spec: read() of a placeholder
+    // requests a download (via startDownloadingUbiquitousItem, best-effort)
+    // and throws SidecarStoreError.notYetDownloaded so the orchestrator's
+    // reconcile path can re-queue the read on a later pass.
+    @Test
+    func readOfPlaceholderThrowsNotYetDownloaded() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let uuid = "550e8400-e29b-41d4-a716-446655440000"
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
+
+        let key = SidecarKey(kind: .contact, id: uuid)
+        #expect(throws: SidecarStoreError.notYetDownloaded(key)) {
+            _ = try store.read(key)
+        }
+    }
+
+    // Regression: NSFileCoordinator-wrapped read/write of a normal .json
+    // round-trips identically to the pre-coordinator behavior.
+    @Test
+    func coordinatedReadWriteOfRegularFileRoundTrips() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let key = SidecarKey(kind: .contact, id: "round-trip-uuid")
+        let env = envelope(id: "round-trip-uuid", fields: [
+            "nickname": .value(.string("Coord"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+        try store.write(env, at: key)
+        let fetched = try #require(try store.read(key))
+        expectEqual(fetched, env)
+
+        try store.delete(key)
+        #expect(try store.read(key) == nil)
+    }
+
     // NSFileVersion.addOfItem(at:withContentsOf:options:) is macOS-only. On macOS in a sandbox-free
     // dev shell, adding a version yields an "other version" (isConflict=false) — not an unresolved
     // conflict. Unresolved conflicts in practice come from iCloud Drive sync. The tests below
