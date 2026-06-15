@@ -639,12 +639,15 @@ Each phase ends with passing tests for the listed sections. Status markers:
 The items below are load-bearing for v1 but not yet demonstrated in production. They should be the next agent's prioritized hit list before any new features land.
 
 **High priority (correctness-of-design risks):**
-- 🔴 **§10.5 `CNContact.note` partial-update preservation.** The single most contact-destroying risk in the design. Pick a contact that already has a Notes-app `note` value, reconcile it through the sample app, and confirm `note` survives byte-for-byte. Without this smoke, we cannot claim "no contact data is destroyed" with confidence.
-- 🔴 **§3.3 Case D in production.** Tonight only exercised Case A. Construct a contact with two `guesswho://contact/<uuid>` URLs (each pointing at a populated sidecar), reconcile, and confirm: loser URL gone from the contact, winner sidecar carries the union of fields, loser sidecar file deleted from iCloud.
+- 🔴 **§12 timestamped notes — single-device CRUD.** Add three notes via the sample app's bottom input, inline-edit one, swipe-delete one. Re-launch. Confirm the two live notes appear in `(createdAt, id)` ascending order. (See §12 for the full feature spec.)
+- 🔴 **§12 timestamped notes — two-device convergence.** Device A creates note X, device B creates note Y, both offline. After both come online and reconcile, both devices show `[X, Y]`.
+- 🔴 **§12 timestamped notes — two-device edit/delete race.** Device A edits note X; device B deletes note X. Confirm both devices converge to the same state (newer stamp wins).
+- 🔴 **§3.3 Case D in production.** Tonight only exercised Case A. Construct a contact with two `guesswho://contact/<uuid>` URLs (each pointing at a populated sidecar, each with one note per §12 for a richer test), reconcile, and confirm: loser URL gone from the contact, winner sidecar carries the union of fields *including both notes*, loser sidecar file deleted from iCloud.
 - 🔴 **§3.3 Case C in production.** Construct a contact with one valid GuessWho URL plus one malformed sibling, reconcile, confirm the malformed URL is removed.
 - 🔴 **§9.6 multi-device convergence in production.** Two real iCloud-signed-in devices, each reconciling the same contact independently. Observe that after both devices reconcile, both end up at the lex-smaller UUID with merged sidecar fields.
 
 **Medium priority (sync-mechanism risks):**
+- 🔴 **§10.5 partial-update preserves untouched native fields.** The partial-update save path is still load-bearing for any `CNContact` field we don't model. Pick a contact that already has a Notes-app `note` value (the convenient canary), reconcile it through the sample app, confirm `note` survives byte-for-byte. Downgraded from high since we're no longer in the contacts-notes business — but the partial-update contract itself is unchanged.
 - 🔴 **§6 `NSFileVersion` conflict resolution on real iCloud.** Force two devices to write the same sidecar offline, bring them online, watch `reconcileSidecars()` resolve the conflict per §6 rules.
 - 🔴 **§3.4 orphan sidecar detection in production.** Reconcile a contact, delete it from Contacts on the same device, run `reconcileContactIdentities()` (all-contacts sweep), confirm the sidecar appears in `IdentityReconcileReport.orphanSidecars` and is **not** auto-deleted.
 
@@ -668,7 +671,7 @@ public struct ContactNote: Hashable, Sendable, Codable {
     public var createdAt: Date     // immutable after creation
     public var modifiedAt: Date    // bumped on body edit and on delete
     public var modifiedBy: String  // device ID — same source as SidecarCell.modifiedBy
-    public var body: String        // plain text
+    public var body: String        // plain text; cleared to "" on delete
     public var deleted: Bool       // soft-delete tombstone; survives merges
 }
 ```
@@ -676,6 +679,8 @@ public struct ContactNote: Hashable, Sendable, Codable {
 `Contact` does **not** gain a notes property. `Contact` is the `CNContact` mirror; `ContactNote` is sidecar-only.
 
 ID is a UUID, not a content hash — two devices typing the same body simultaneously are two distinct notes.
+
+**Clock source.** `createdAt`/`modifiedAt` are `Date()` at the moment of mutation, the same source the package uses for `SidecarCell.modifiedAt`. No injectable clock.
 
 ### 12.2 JSON shape
 
@@ -698,24 +703,30 @@ The sidecar envelope (§5.2) is unchanged. A well-known field key `"notes"` hold
 }
 ```
 
-The outer cell's `modifiedAt`/`modifiedBy` are the max `(modifiedAt, modifiedBy)` across the inner notes. An empty list is `"value": []`. An absent `"notes"` field is equivalent to an empty list.
+The outer cell's `modifiedAt`/`modifiedBy` are the max `(modifiedAt, modifiedBy)` across the inner notes — including tombstoned notes — under §5.3's lex ordering.
+
+**Empty list ⇒ absent.** A merged list of zero notes is encoded by *omitting* the `"notes"` field from the envelope. There is no "empty cell" representation. Equivalently: an absent `"notes"` field decodes to `[]`. This removes the only case where the outer-cell stamp would be undefined.
 
 ### 12.3 Merge semantics — per-note LWW
 
-The generic per-field LWW (§5.3) is wrong for notes: it would clobber a sibling note another device added concurrently. When `merge(a, b)` encounters key `"notes"` on both sides:
+The generic per-field LWW (§5.3) is wrong for notes: it would clobber a sibling note another device added concurrently. The per-note branch dispatches **only when both sides of `merge(a, b)` have the key `"notes"`**. If only one side has it, that side's cell is kept verbatim (the generic merge path, unchanged from §5.3). If neither side has it, the key is absent from the result.
 
-1. Decode each side's cell into `[ContactNote]`. A malformed cell is treated as the empty list.
+When both sides have `"notes"`:
+
+1. Decode each side's cell into `[ContactNote]`.
+   - A malformed cell — including a §5.2 tombstone cell (`{deleted: true, …}`) or any cell that fails to decode as a list of `ContactNote` — is treated as `[]`. This **overrides §5.3's "malformed → absent" rule for the notes key**, since the outer stamp is re-derived from the survivors regardless.
+   - The decoder is **lenient at the element level**: a single malformed array entry (missing `id`, bad `createdAt`, extra junk) is dropped; the remaining valid entries are kept. A completely undecodable cell is `[]`.
 2. For each note ID in the union of both lists:
    - If only one side has the note: keep it.
-   - If both have it: keep the one with the larger `(modifiedAt, modifiedBy)` (ISO8601 lex, then string lex). Applies symmetrically to live, edited, and tombstoned notes.
+   - If both have it: keep the one with the larger `(modifiedAt, modifiedBy)` (ISO8601 lex on `modifiedAt`, then string lex on `modifiedBy`). Applies symmetrically to live, edited, and tombstoned notes — same rule §5.3 uses on cells.
 3. Tombstoned notes are kept in the list (they suppress earlier-stamped resurrection — same lifecycle as §5.5). UI filters them out.
-4. The outer cell's `modifiedAt`/`modifiedBy` is the max across merged notes' stamps.
+4. If the merged list is empty, omit the `"notes"` key from the result envelope entirely (per §12.2). Otherwise the outer cell's `modifiedAt`/`modifiedBy` is the max across all merged notes' stamps, including tombstones.
 
-There is no outer-cell tombstone path — "delete all" is N per-note tombstones.
+There is no outer-cell tombstone path — "delete all" is N per-note tombstones. The merge function never produces an outer-cell tombstone for `"notes"`.
 
-**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`. Edit mutates `body`, bumps `modifiedAt`, leaves `id`/`createdAt` unchanged. Delete sets `deleted = true`, bumps `modifiedAt`. `createdAt` is never bumped post-creation.
+**Edit-vs-create.** Create mints a new UUID + `createdAt = modifiedAt = now`, `deleted = false`. Edit mutates `body`, bumps `modifiedAt`, leaves `id`/`createdAt`/`deleted` unchanged. Delete sets `deleted = true`, **clears `body` to `""`**, bumps `modifiedAt`. `createdAt` is never bumped post-creation.
 
-`SidecarMerge.swift` grows a `mergeNotesCell(_:_:)` free function invoked from `merge(_:_:)` when `key == "notes"`.
+`SidecarMerge.swift` grows a `mergeNotesCell(_:_:)` free function invoked from `merge(_:_:)` when (a) `key == "notes"` and (b) both `a.fields` and `b.fields` contain the key.
 
 ### 12.4 Interaction with the iCloud conflict reconciler
 
@@ -729,31 +740,42 @@ The sample app gains its first user-facing edit surface.
 
 **ContactDetailView additions:**
 - **Notes section** below the existing contact info.
-- **List rows** sorted by `createdAt` **ascending** (oldest at top, newest at bottom — chat-log feel). Each row shows body, relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Tombstoned notes are filtered out.
+- **List rows** sorted by `(createdAt, id)` **ascending** — `createdAt` primary, `id` (UUID string lex) tiebreak. Deterministic across devices even when two notes share a `createdAt`. Each row shows body, relative time of `createdAt`, and an "edited" badge if `modifiedAt > createdAt`. Tombstoned notes are filtered out.
 - **Always-visible empty `TextEditor` pinned below the list.** Submit (Return on hardware keyboard / send button on touch) mints a new `ContactNote`, appends to the bottom, clears the input. No separate "+" button, no modal sheet.
-- **Tap an existing note → inline edit.** The row swaps to an editable `TextEditor`; commit bumps `modifiedAt`/`modifiedBy` and writes. Tap-outside cancels.
-- **Swipe-to-delete** sets `deleted = true`, bumps `modifiedAt`. The row disappears immediately; the tombstone persists.
+- **Tap an existing note → inline edit.** The row swaps to an editable `TextEditor`. **Any tap outside the editing row commits the edit** (bumps `modifiedAt`/`modifiedBy`, writes the updated cell, reverts to read mode). No separate cancel gesture — discard requires deleting the note via swipe.
+- **Swipe-to-delete** sets `deleted = true`, clears `body`, bumps `modifiedAt`. The row disappears immediately; the tombstone persists.
 
-A small `NotesCellCodec` in the sample app converts between `SidecarCell` ↔ `[ContactNote]`. A `NotesStore` view-model reads the current cell, applies the mutation, re-encodes, writes. `modifiedBy` reuses the package's existing per-install device-ID source verbatim. Concurrent writes are serialized by the existing `PerKeyLockTable`.
+**Mid-edit vs `reconcileSidecars()`.** If a reconcile lands while the user is editing note X (rewriting the cell with a newer copy of X from another device), the in-progress edit is **not aborted**. On commit, the NotesStore re-reads, replaces X by ID with its locally-edited copy, writes. LWW resolves which version survives on the next merge. No UI prompt, no merge dialog.
+
+**Codec and store.** `NotesCellCodec` lives **in the package** (`Sources/GuessWhoSync/`) alongside `ContactNote`, because the package's `mergeNotesCell` needs it. A sample-app-side `NotesStore` view-model reads the current cell, applies the mutation in memory, re-encodes via the codec, and writes via `GuessWhoSync.setField`. `modifiedBy` reuses the package's existing per-install device-ID source verbatim.
+
+**Concurrency model.** `GuessWhoSync.setField` already takes the `sidecarLocks` per-key lock around its read-merge-write, so two concurrent `setField` calls on the same key serialize. The sample-app NotesStore does its own read-decode-mutate-encode in memory *before* calling `setField`, which means a second `setField` between the read and the write loses the in-memory mutation against the on-disk state. We accept this race: every write is timestamped, LWW on the next merge converges the result, and the worst-case user-visible artifact is a single dropped edit which the user sees and can retype. No `mutateField` primitive in v1.
 
 The DEBUG "Write debug field" button is retained — unrelated.
 
 ### 12.6 Test plan
 
 **Unit tests (new):**
-- `NotesCellCodecTests`: round-trip `[ContactNote]` ↔ `SidecarCell`, including empty list.
+- `NotesCellCodecTests`: round-trip `[ContactNote]` ↔ `SidecarCell` (including empty list and all-tombstones); decode of an absent field returns `[]`; decode of a §5.2-shape tombstone cell returns `[]`; decode of a partially-malformed array drops the bad element and keeps the good ones.
 - `NotesMergeTests` (§9.4 addition):
-  - Same ID, both sides, larger stamp wins.
+  - Same ID, both sides, larger `(modifiedAt, modifiedBy)` wins.
   - Parallel creates (different IDs) both survive.
-  - Edit vs. delete on same ID: newer stamp wins.
+  - Edit vs. delete on same ID, different stamps: newer stamp wins.
+  - Edit vs. delete on same ID, **identical `modifiedAt`**: `modifiedBy` lex tiebreak determines winner.
   - Tombstone vs. older edit on same ID: tombstone wins.
+  - Two tombstones for the same ID with different stamps: larger-stamp tombstone wins.
+  - Only-one-side has `"notes"`: result equals that side's cell verbatim (no codec round-trip).
+  - Empty merged list: result envelope has no `"notes"` key.
+  - Outer-cell `modifiedAt`/`modifiedBy` equals the max across all merged notes (including tombstones).
   - Commutativity and associativity across randomized 3-note lists.
-- `NotesEnvelopeTests` (§9.5 addition): 3-way N-fold via `reconcileSidecars()` with three disjoint notes — all three appear.
+- `NotesEnvelopeTests` (§9.5 addition):
+  - 3-way N-fold via `reconcileSidecars()` with three disjoint notes — all three appear in the result.
+  - 3-way N-fold where two of the three carry a tombstone for the same ID at different stamps — the later tombstone wins; no live note resurrects.
 
 **Sample-app smoke tests (§11.1 additions, all 🔴):**
-- 🔴 **Single-device notes CRUD.** Add three via bottom input, inline-edit one, swipe-delete one. Re-launch. List shows two live notes in `createdAt` ascending order.
+- 🔴 **Single-device notes CRUD.** Add three via bottom input, inline-edit one, swipe-delete one. Re-launch. List shows two live notes in `(createdAt, id)` ascending order.
 - 🔴 **Two-device convergence.** A creates X, B creates Y, both offline. After sync + reconcile, both devices show `[X, Y]`.
-- 🔴 **Two-device edit/delete race.** A edits X; B deletes X. Newer-timestamp wins, both devices converge.
+- 🔴 **Two-device edit/delete race.** A edits X; B deletes X. Newer-timestamp wins, both devices converge to the same state.
 
 **Case A/B/C** smokes — unchanged. **Case D** — extend so each pre-merge contact's sidecar carries one note; after reconcile, the winner holds both. No new code path; the per-note merge runs automatically.
 
@@ -761,8 +783,8 @@ The DEBUG "Write debug field" button is retained — unrelated.
 
 Promote ahead of existing 🔴 items — notes are the first user-visible sidecar feature.
 
-1. **NEW 🔴 (high)** — `ContactNote` model, codec, per-note merge branch in `SidecarMerge.swift`.
+1. **NEW 🔴 (high)** — `ContactNote` model, `NotesCellCodec`, and per-note merge branch in `SidecarMerge.swift`.
 2. **NEW 🔴 (high)** — Sample-app notes UI.
 3. **NEW 🔴 (high)** — Two-device notes convergence smoke.
 4. Existing 🔴 §3.3 Case C and Case D smokes — unchanged priority; Case D extended per §12.6.
-5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium, reframed as "partial-update preserves untouched native fields, witnessed by `note`." We're no longer in the contacts-notes business.
+5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium and add it to the medium-priority list in §11.1, reframed as "partial-update preserves untouched native fields, witnessed by `note`." We're no longer in the contacts-notes business, but the partial-update path still has to be proven to leave native fields alone — `note` remains the convenient canary.
