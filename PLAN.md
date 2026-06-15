@@ -66,6 +66,8 @@ When the package reconciles a contact's identity, it inspects every `urlAddresse
 
 (The rebase step is the only place the package deliberately changes a sidecar's `entityID`. It's safe because identity reconciliation owns both the URLs and the sidecar IDs; no other caller observes the loser sidecar after this step.)
 
+**Per-contact reconcile.** Hosts that want explicit per-contact control (a "Reconcile this contact" button on a detail page) call `reconcileContactIdentity(localID:)` (§7.3) instead of the all-contacts sweep. The per-contact entry point runs the same Case A/B/C/D logic above for one localID and returns the same `ContactOutcome`. It intentionally does **not** populate `orphanSidecars` — orphan detection requires the global set of carried UUIDs across every contact (§3.4), which a per-contact call cannot see.
+
 Convergence: once every device has reconciled the same merged contact, every device's `urlAddresses` contains exactly one GuessWho URL pointing at one merged sidecar.
 
 ### 3.4 Orphan sidecars
@@ -430,6 +432,12 @@ public final class GuessWhoSync {
     // Identity reconciliation (§3.3). Idempotent.
     public func reconcileContactIdentities() throws -> IdentityReconcileReport
 
+    // Single-contact identity reconciliation (§3.3). Same per-contact logic
+    // as reconcileContactIdentities(), but scoped to one localID. Throws
+    // ContactStoreError.contactNotFound if the localID is unknown. Does NOT
+    // detect orphan sidecars — that requires the global set of carried UUIDs.
+    public func reconcileContactIdentity(localID: String) throws -> IdentityReconcileReport.ContactOutcome
+
     // iCloud conflict resolution for sidecars (§6). Idempotent.
     public func reconcileSidecars() throws -> SidecarReconcileReport
 
@@ -591,6 +599,14 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - event lookup by `externalID` works
 - writing a sidecar for an event does not mutate the event in the mock
 - per-field LWW rules apply identically to event sidecars
+
+### 9.8 Single-contact reconciliation (§3.3, per-contact)
+Tests mirror §9.3 through `reconcileContactIdentity(localID:)`:
+- Case A scoped to one contact: target gets a fresh UUID; a bystander contact in the same store is untouched (no URL added, no save)
+- Case D scoped to one contact: loser sidecars merged into the winner, loser URLs removed from the target only; winner sidecar carries the union of loser fields
+- idempotence: a second call on a stable contact returns an outcome with `assignedUUID == nil`, `mergedLoserUUIDs == []`, `errors == []`, and the stored contact is byte-identical
+- unknown `localID` throws `ContactStoreError.contactNotFound(localID:)` (no silent no-op)
+- unrelated sidecars (for UUIDs not carried by the target) are left in place — single-contact reconcile never sweeps orphans
 
 ## 10. Open Questions Deliberately Deferred
 
