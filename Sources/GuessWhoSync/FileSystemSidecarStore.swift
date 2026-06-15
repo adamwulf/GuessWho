@@ -152,7 +152,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
         case .contact:
-            return "\(key.id).json"
+            // Contact UUIDs are canonicalized to lowercase at every boundary so
+            // case-folding filesystems (iCloud Drive on APFS) can't desync the
+            // on-disk name from the in-memory key.
+            return "\(key.id.lowercased()).json"
         case .event:
             var allowed = CharacterSet(charactersIn: "._-")
             allowed.insert(charactersIn: "A"..."Z")
@@ -173,7 +176,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             let basename = entry.deletingPathExtension().lastPathComponent
             switch kind {
             case .contact:
-                result.append(SidecarKey(kind: .contact, id: basename))
+                result.append(SidecarKey(kind: .contact, id: basename.lowercased()))
             case .event:
                 let decoded = basename.removingPercentEncoding ?? basename
                 result.append(SidecarKey(kind: .event, id: decoded))
