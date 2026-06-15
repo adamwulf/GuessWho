@@ -6,11 +6,12 @@ import Foundation
 /// Used internally by GuessWhoSync to make per-sidecar read-modify-write
 /// (e.g. setField/deleteField) safe against concurrent callers while still
 /// allowing parallel work on disjoint keys.
+///
+/// Locks are retained for the lifetime of the table; eviction isn't needed at
+/// the expected key cardinality (per-contact / per-event sidecars).
 final class PerKeyLockTable<Key: Hashable> {
     private let registryLock = NSLock()
     private var locks: [Key: NSLock] = [:]
-
-    init() {}
 
     func withLock<T>(forKey key: Key, _ body: () throws -> T) rethrows -> T {
         let lock = self.lock(forKey: key)

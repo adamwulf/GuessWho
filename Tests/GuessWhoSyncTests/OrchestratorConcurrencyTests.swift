@@ -26,7 +26,7 @@ struct OrchestratorConcurrencyTests {
     @Test
     func concurrentSetFieldOnSameKeyPreservesAllWrites() throws {
         let (sync, sidecars) = makeSync()
-        let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440100")
+        let key = SidecarKey(kind: .contact, id: "key-same-A")
         let count = 100
 
         DispatchQueue.concurrentPerform(iterations: count) { i in
@@ -78,7 +78,7 @@ struct OrchestratorConcurrencyTests {
     @Test
     func concurrentSetAndDeleteOnSameKeyPreservesAllCells() throws {
         let (sync, sidecars) = makeSync()
-        let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440200")
+        let key = SidecarKey(kind: .contact, id: "key-same-B")
         let count = 100
 
         DispatchQueue.concurrentPerform(iterations: count) { i in
