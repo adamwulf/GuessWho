@@ -269,10 +269,9 @@ private struct NotesSection: View {
             }
 
             HStack(alignment: .top) {
-                TextField("Add a note", text: $newNoteText, axis: .vertical)
+                TextEditor(text: $newNoteText)
+                    .frame(minHeight: 32)
                     .focused($newNoteFocused)
-                    .submitLabel(.send)
-                    .onSubmit(submitNewNote)
                 Button {
                     submitNewNote()
                 } label: {
