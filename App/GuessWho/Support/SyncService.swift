@@ -114,6 +114,10 @@ final class SyncService {
         try sync.reconcileContactIdentity(localID: localID)
     }
 
+    func setField(_ name: String, value: JSONValue, forContactUUID uuid: String) throws {
+        try sync.setField(name, value: value, at: SidecarKey(kind: .contact, id: uuid))
+    }
+
     // MARK: - Private
 
     private static func resolveSidecarLocation() -> SidecarLocation {
