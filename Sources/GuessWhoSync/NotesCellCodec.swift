@@ -8,8 +8,14 @@ enum NotesCellCodec {
         return elements.compactMap(decodeNote(_:))
     }
 
+    // Element order is canonicalized by `id.uuidString` ascending so two
+    // devices that merged the same set of notes in different orders produce
+    // byte-identical JSON. Without this, merge would converge on note *set*
+    // but not on on-disk bytes, which breaks the commutativity/associativity
+    // tests in §9.4 (and any byte-level diff a human runs against a sidecar).
     static func encodeValue(_ notes: [ContactNote]) -> JSONValue {
-        .array(notes.map(encodeNote(_:)))
+        let sorted = notes.sorted { $0.id.uuidString < $1.id.uuidString }
+        return .array(sorted.map(encodeNote(_:)))
     }
 
     static func encodeCell(_ notes: [ContactNote]) -> SidecarCell? {
