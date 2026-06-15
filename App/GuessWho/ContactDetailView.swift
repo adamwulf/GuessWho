@@ -316,6 +316,14 @@ private struct NotesSection: View {
             .onTapGesture {
                 beginEdit(note)
             }
+            .contextMenu {
+                Button("Delete", role: .destructive) {
+                    if editingID == note.id {
+                        cancelEdit()
+                    }
+                    store.deleteNote(note.id)
+                }
+            }
         }
     }
 
