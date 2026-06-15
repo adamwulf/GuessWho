@@ -1,7 +1,7 @@
 import Foundation
 
-enum NotesCellCodec {
-    static func decode(_ cell: SidecarCell?) -> [ContactNote] {
+public enum NotesCellCodec {
+    public static func decode(_ cell: SidecarCell?) -> [ContactNote] {
         guard let cell else { return [] }
         guard case .value(let json, _, _) = cell else { return [] }
         guard case .array(let elements) = json else { return [] }
@@ -13,12 +13,12 @@ enum NotesCellCodec {
     // byte-identical JSON. Without this, merge would converge on note *set*
     // but not on on-disk bytes, which breaks the commutativity/associativity
     // tests in §9.4 (and any byte-level diff a human runs against a sidecar).
-    static func encodeValue(_ notes: [ContactNote]) -> JSONValue {
+    public static func encodeValue(_ notes: [ContactNote]) -> JSONValue {
         let sorted = notes.sorted { $0.id.uuidString < $1.id.uuidString }
         return .array(sorted.map(encodeNote(_:)))
     }
 
-    static func encodeCell(_ notes: [ContactNote]) -> SidecarCell? {
+    public static func encodeCell(_ notes: [ContactNote]) -> SidecarCell? {
         guard let stamp = outerStamp(for: notes) else { return nil }
         return .value(encodeValue(notes), modifiedAt: stamp.modifiedAt, modifiedBy: stamp.modifiedBy)
     }
