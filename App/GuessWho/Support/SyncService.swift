@@ -15,6 +15,10 @@ final class SyncService {
     enum SidecarLocation: Equatable {
         case iCloud(URL)
         case localFallback(URL, reason: String)
+        // Fail-closed: no writable sidecar root could be resolved. Reads
+        // return safe defaults, writes are refused with this reason.
+        // Better than silently writing to a purgeable tmp dir.
+        case unavailable(reason: String)
     }
 
     enum ContactsAuthorization: Equatable {
@@ -28,34 +32,34 @@ final class SyncService {
     private(set) var contactsAuthorization: ContactsAuthorization
     private(set) var lastError: String?
 
-    private let contactStore = CNContactStore()
+    private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
-    private let sidecarStore: FileSystemSidecarStore
-    private let sync: GuessWhoSync
+    private let sync: GuessWhoSync?
 
     init() {
+        // Single CNContactStore instance shared between this service and
+        // the adapter, so contact-store state (auth prompt cache, etc.)
+        // is consistent across the app.
+        let store = CNContactStore()
+        self.contactStore = store
+        let adapter = CNContactStoreAdapter(store: store)
+        self.contactsAdapter = adapter
+
         let location = Self.resolveSidecarLocation()
         self.sidecarLocation = location
 
-        let rootURL: URL = {
-            switch location {
-            case .iCloud(let url): return url
-            case .localFallback(let url, _): return url
-            }
-        }()
-
-        let adapter = CNContactStoreAdapter()
-        self.contactsAdapter = adapter
-
-        let store = FileSystemSidecarStore(root: rootURL)
-        self.sidecarStore = store
-
-        self.sync = GuessWhoSync(
-            contacts: adapter,
-            events: NoopEventStore(),
-            sidecars: store,
-            deviceID: Self.stableDeviceID()
-        )
+        switch location {
+        case .iCloud(let url), .localFallback(let url, _):
+            let sidecarStore = FileSystemSidecarStore(root: url)
+            self.sync = GuessWhoSync(
+                contacts: adapter,
+                events: NoopEventStore(),
+                sidecars: sidecarStore,
+                deviceID: Self.stableDeviceID()
+            )
+        case .unavailable:
+            self.sync = nil
+        }
 
         self.contactsAuthorization = Self.readAuthorization()
     }
@@ -93,6 +97,7 @@ final class SyncService {
 
     func sidecar(for contact: Contact) -> SidecarEnvelope? {
         guard let uuid = guessWhoUUID(in: contact) else { return nil }
+        guard let sync else { return nil }
         do {
             return try sync.sidecar(at: SidecarKey(kind: .contact, id: uuid))
         } catch {
@@ -111,10 +116,16 @@ final class SyncService {
     }
 
     func reconcile(localID: String) throws -> IdentityReconcileReport.ContactOutcome {
-        try sync.reconcileContactIdentity(localID: localID)
+        guard let sync else {
+            throw SidecarUnavailableError()
+        }
+        return try sync.reconcileContactIdentity(localID: localID)
     }
 
     func setField(_ name: String, value: JSONValue, forContactUUID uuid: String) throws {
+        guard let sync else {
+            throw SidecarUnavailableError()
+        }
         try sync.setField(name, value: value, at: SidecarKey(kind: .contact, id: uuid))
     }
 
@@ -128,31 +139,41 @@ final class SyncService {
                 try fm.createDirectory(at: documents, withIntermediateDirectories: true)
                 return .iCloud(documents)
             } catch {
-                let fallback = localFallbackURL()
-                return .localFallback(
-                    fallback,
-                    reason: "iCloud container found but its Documents folder is unwritable: \(error.localizedDescription)"
+                // iCloud container exists but is unwritable — try local
+                // fallback before giving up.
+                if let local = try? localFallbackURL() {
+                    return .localFallback(
+                        local,
+                        reason: "iCloud container found but its Documents folder is unwritable: \(error.localizedDescription)"
+                    )
+                }
+                return .unavailable(
+                    reason: "iCloud container is unwritable and no local fallback directory is available."
                 )
             }
         }
 
-        let fallback = localFallbackURL()
-        return .localFallback(
-            fallback,
-            reason: "iCloud Drive is unavailable. Sign in to iCloud and enable iCloud Drive to sync across devices."
+        if let local = try? localFallbackURL() {
+            return .localFallback(
+                local,
+                reason: "iCloud Drive is unavailable. Sign in to iCloud and enable iCloud Drive to sync across devices."
+            )
+        }
+        return .unavailable(
+            reason: "No writable storage location is available. Application Support is unavailable on this device."
         )
     }
 
-    private static func localFallbackURL() -> URL {
+    private static func localFallbackURL() throws -> URL {
         let fm = FileManager.default
-        let support = (try? fm.url(
+        let support = try fm.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
-        )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        )
         let dir = support.appendingPathComponent("GuessWhoSidecars", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
@@ -175,5 +196,11 @@ final class SyncService {
         case .notDetermined: return .notRequested
         @unknown default: return .denied
         }
+    }
+}
+
+struct SidecarUnavailableError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Sidecar storage is unavailable. Cannot read or write GuessWho data."
     }
 }

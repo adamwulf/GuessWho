@@ -89,6 +89,16 @@ struct ContactListView: View {
             }
             .padding(8)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        case .unavailable(let reason):
+            Label {
+                Text("Sidecar storage unavailable. Reconcile and sidecar reads are disabled. \(reason)")
+                    .font(.footnote)
+            } icon: {
+                Image(systemName: "xmark.octagon.fill")
+                    .foregroundStyle(.red)
+            }
+            .padding(8)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 

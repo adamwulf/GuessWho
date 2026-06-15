@@ -121,10 +121,6 @@ struct SingleContactReconcilerTests {
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        #expect(throws: ContactStoreError.self) {
-            _ = try sync.reconcileContactIdentity(localID: "DOES-NOT-EXIST")
-        }
-
         do {
             _ = try sync.reconcileContactIdentity(localID: "DOES-NOT-EXIST")
             Issue.record("expected throw")

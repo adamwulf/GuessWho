@@ -67,7 +67,7 @@ struct ContactDetailView: View {
                             Text("Reconcile this contact")
                         }
                     }
-                    .disabled(isReconciling)
+                    .disabled(isReconciling || isSidecarStorageUnavailable)
                 } footer: {
                     Text("Reconcile assigns a GuessWho UUID if missing, merges duplicate UUIDs, and removes malformed GuessWho URLs. Other contacts are untouched.")
                 }
@@ -77,7 +77,7 @@ struct ContactDetailView: View {
                     Button("Write debug field") {
                         writeDebugField()
                     }
-                    .disabled(service.guessWhoUUID(in: contact) == nil)
+                    .disabled(service.guessWhoUUID(in: contact) == nil || isSidecarStorageUnavailable)
                     if let debugError {
                         Text(debugError)
                             .font(.caption)
@@ -107,13 +107,18 @@ struct ContactDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This may add or remove a single hidden URL on this contact. Other fields are not modified.")
+            Text("This may add or remove GuessWho URLs on this contact and merge any duplicate GuessWho sidecars. No other contact fields are modified.")
         }
         .sheet(item: $outcome) { wrapper in
             ReconcileOutcomeView(outcome: wrapper.outcome) {
                 outcome = nil
             }
         }
+    }
+
+    private var isSidecarStorageUnavailable: Bool {
+        if case .unavailable = service.sidecarLocation { return true }
+        return false
     }
 
     private func loadContact() async {
