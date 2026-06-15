@@ -439,17 +439,6 @@ public struct SidecarCell: Sendable, Codable {
 public protocol ContactStoreProtocol {
     func fetchAll() throws -> [Contact]
     func fetch(localID: String) throws -> Contact?
-
-    /// Find the contact whose `urlAddresses` includes the GuessWho URL for
-    /// the given UUID (i.e. a URL `guesswho://contact/<uuid>` where the
-    /// suffix UUID matches `guessWhoUUID` per `SidecarKey.parseGuessWhoContactURL`).
-    /// Returns nil if no contact carries that UUID. v1's default implementation
-    /// is `fetchAll().first { SidecarKey.forContact($0)?.id == guessWhoUUID }`
-    /// — O(N). `CNContactStoreAdapter` may override with a faster
-    /// `CNContact.predicateForContacts(matchingURLString:)` query if one
-    /// exists; otherwise it inherits the default scan.
-    func fetch(guessWhoUUID: String) throws -> Contact?
-
     func save(_ contact: Contact) throws
 
     // Image bytes are loaded on demand so bulk fetches don't pay the cost.
@@ -969,20 +958,20 @@ Each link is one sidecar envelope. `SidecarKey(.link, link.id.uuidString)` resol
 | `endpointB`    | object: `{ "kind": "...", "id": "..." }`             | Endpoint B of the link |
 | `note`         | string                                               | Free-text note |
 | `createdAt`    | string (ISO8601)                                     | Immutable creation timestamp; written once, never rewritten |
-| `linkDeletedAt`| string (ISO8601) when soft-deleted; JSON `null` when live | Entity-level soft-delete marker. Cell is always present once created; only its `value` changes between `null` and an ISO8601 timestamp. |
+| `deletedAt`    | string (ISO8601) or JSON `null` | Entity-level soft-delete marker. Live when the cell is absent OR present with `value: null`. Soft-deleted when present with an ISO8601 string `value`. |
 
 **Public `Link` properties are derived from cells**, not stored as separate cells:
 - `Link.id` is the envelope's `entityID`.
 - `Link.endpointA` / `Link.endpointB` / `Link.note` / `Link.createdAt` come from their cell `value`s.
-- `Link.modifiedAt` is the max `modifiedAt` across the four mutable cells (`endpointA`, `endpointB`, `note`, `linkDeletedAt`). `createdAt`'s cell stamp is ignored — it can never be the most recent change.
+- `Link.modifiedAt` is the max `modifiedAt` across the four mutable cells (`endpointA`, `endpointB`, `note`, `deletedAt`). `createdAt`'s cell stamp is ignored — it can never be the most recent change.
 - `Link.modifiedBy` is the `modifiedBy` of the cell that contributed `Link.modifiedAt` (lex tiebreak on equal stamps).
-- `Link.deletedAt` is the `value` of the `linkDeletedAt` cell parsed as `Date`, or `nil` if that cell is absent.
+- `Link.deletedAt` is the `value` of the `deletedAt` cell parsed as `Date`, or `nil` if that cell is absent or has `value: null`.
 
-This keeps stamps single-sourced: the underlying §5.3 cell stamps are the ground truth for LWW; the public-facing `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections of that ground truth. No double-nesting — `linkDeletedAt` is a normal cell whose `value` is either `null` (link is live) or an ISO8601 timestamp string (link is soft-deleted). Soft-delete flips the value to a timestamp; undelete (via `setLinkNote`) flips it back to `null`. Both operations are normal cell writes that compete in LWW like any other write.
+This keeps stamps single-sourced: the underlying §5.3 cell stamps are the ground truth for LWW; the public-facing `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections of that ground truth. The `deletedAt` cell is a normal cell whose `value` is either `null` (link is live) or an ISO8601 timestamp string (link is soft-deleted). Soft-delete flips the value to a timestamp; undelete (via `setLinkNote`) flips it back to `null`. Both operations are normal cell writes that compete in LWW like any other write.
 
 **Codec.** Conversion between `Link` and `SidecarEnvelope` lives in `Sources/GuessWhoSync/Link.swift` alongside the model. (Links pre-date the field-instance pivot in §7.3/§12; they keep their own envelope shape because a link is one *entity*, not a field instance on another entity.) The two operations:
 
-- `Link.init?(from envelope: SidecarEnvelope)` — decode the five cells per the table above into a `Link`; returns `nil` if the envelope is missing required cells (`endpointA`, `endpointB`, `note`, `createdAt`) or carries unparseable values. `modifiedAt`/`modifiedBy`/`deletedAt` are computed from the cell stamps per the derivation rules.
+- `Link.init?(from envelope: SidecarEnvelope)` — decode the envelope's cells per the table above into a `Link`. Required cells: `endpointA`, `endpointB`, `note`, `createdAt`. Optional cell: `deletedAt`. Returns `nil` if any required cell is missing or any cell carries an unparseable value. `Link.modifiedAt` / `modifiedBy` / `deletedAt` are computed from the cell stamps and values per the derivation rules.
 - `SidecarEnvelope` is *not* built from a `Link` directly. The orchestrator never round-trips through a `Link` value on write — mutations (`addLink`, `setLinkNote`, `removeLink`, Case-D rewrite) emit the specific cells they change (§13.3), preserving the existing cell stamps for cells they don't touch. This avoids the trap of "round-trip rewrites cells the caller didn't intend to change" and means the on-disk stamps always reflect actual writes.
 
 **Atomicity is structural.** Every mutation (create, edit, delete, endpoint rewrite) is one envelope write of one file. There is no scenario where a link is "half-written" across two files. NSFileVersion conflict reporting per-file works exactly as it does for contact/event sidecars.
@@ -998,10 +987,10 @@ This keeps stamps single-sourced: the underlying §5.3 cell stamps are the groun
 **Endpoints are mutable** — only by the Case-D endpoint rewrite step (§13.5). User-driven edits change only `note`. `createdAt`'s cell is immutable after creation. `id` is the envelope's `entityID` and never changes.
 
 **Edit-vs-create-vs-delete (one envelope write each):**
-- **Create.** Mint a new UUID. Write the envelope with cells `endpointA`, `endpointB`, `note`, `createdAt`, all with `modifiedAt = now`, `modifiedBy = deviceID`, `deletedAt = nil` (cell-level). No `linkDeletedAt` cell.
+- **Create.** Mint a new UUID. Write the envelope with four cells: `endpointA`, `endpointB`, `note`, `createdAt`, all with `modifiedAt = now`, `modifiedBy = deviceID`. A fresh link has no `deletedAt` cell — its absence means live.
 - **Edit note.** Rewrite the `note` cell with a fresh `(value, now, deviceID)`. All other cells untouched.
-- **Delete.** Write the `linkDeletedAt` cell with `value = now` (ISO8601 string), `modifiedAt = now`, `modifiedBy = deviceID`. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are untouched — the body bytes are preserved on disk so a subsequent `setLinkNote` can undelete cleanly without losing what the user wrote.
-- **Undelete.** Write the `linkDeletedAt` cell with `value = null`, fresh stamps. Other cells untouched. (Performed by `setLinkNote` when called on a soft-deleted link — see §13.6.)
+- **Delete.** Add (or rewrite) the `deletedAt` cell with `value = now` (ISO8601 string), `modifiedAt = now`, `modifiedBy = deviceID`. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are untouched — their bytes are preserved on disk so a subsequent `setLinkNote` can undelete cleanly without losing what the user wrote.
+- **Undelete.** Rewrite the `deletedAt` cell with `value = null`, fresh stamps. Other cells untouched. (Performed by `setLinkNote` when called on a soft-deleted link — see §13.6.)
 - **Case-D endpoint rewrite (§13.5).** Rewrite only the affected endpoint cell(s) with the new endpoint value and fresh `modifiedAt`/`modifiedBy`. All other cells untouched.
 
 ### 13.4 Interaction with the iCloud conflict reconciler
@@ -1043,16 +1032,16 @@ extension GuessWhoSync {
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link
 
     /// Mutates the note on an existing link, and undeletes it if it was
-    /// soft-deleted (writes `linkDeletedAt` cell with `value: null` to clear
+    /// soft-deleted (writes the `deletedAt` cell with `value: null` to clear
     /// the soft-delete marker, alongside the note write). One envelope read +
     /// write. Silent no-op if the envelope is missing.
     public func setLinkNote(id: UUID, note: String) throws
 
-    /// Soft-deletes the link by writing the `linkDeletedAt` cell with
-    /// `value: <ISO8601 of now>`. All other cells (note, endpointA, endpointB,
-    /// createdAt) are untouched — the bytes are preserved so a future
-    /// `setLinkNote` can undelete without losing the note. One envelope write.
-    /// Silent no-op if already soft-deleted (no stamp churn).
+    /// Soft-deletes the link by adding (or rewriting) the `deletedAt` cell
+    /// with `value: <ISO8601 of now>`. All other cells (note, endpointA,
+    /// endpointB, createdAt) are untouched — their bytes are preserved so a
+    /// future `setLinkNote` can undelete without losing the note. One envelope
+    /// write. Silent no-op if already soft-deleted (no stamp churn).
     public func removeLink(id: UUID) throws
 
     /// Returns a single link by id, or nil if the envelope is missing.
@@ -1075,7 +1064,7 @@ extension GuessWhoSync {
 ### 13.7 Test plan
 
 **Unit tests (new module `LinkTests`):**
-- `LinkEnvelopeRoundTripTests`: build a `SidecarEnvelope` with the five cells of §13.2 (live and soft-deleted variants), decode via `Link.init?(from:)`, and assert the resulting `Link` matches expected `id`, `endpointA`, `endpointB`, `note`, `createdAt`, `deletedAt`, and derived `modifiedAt`/`modifiedBy`. Also assert that `Link.init?` returns `nil` for envelopes missing any required cell (`endpointA`, `endpointB`, `note`, `createdAt`).
+- `LinkEnvelopeRoundTripTests`: build a `SidecarEnvelope` with the cells of §13.2 (live variant: four required cells; soft-deleted variant: those plus a `deletedAt` cell with ISO8601 value), decode via `Link.init?(from:)`, and assert the resulting `Link` matches expected `id`, `endpointA`, `endpointB`, `note`, `createdAt`, `deletedAt`, and derived `modifiedAt`/`modifiedBy`. Also assert that `Link.init?` returns `nil` for envelopes missing any required cell (`endpointA`, `endpointB`, `note`, `createdAt`).
 - `LinkMergeTests` (§9.4 addition — exercises the existing §5.3 merge against link envelopes, no new merge code):
   - Two devices edit `note` concurrently: later `(modifiedAt, modifiedBy)` wins.
   - Edit vs. delete: later stamp wins.
@@ -1088,8 +1077,8 @@ extension GuessWhoSync {
   - `removeLink(X)` then `addLink(same endpoints, fresh note)`: two distinct envelopes, two distinct ids; X is soft-deleted, the new one is live; both surface via `links(at:)` (callers filter on `deletedAt`).
   - `setLinkNote` updates `note` cell, bumps `modifiedAt`/`modifiedBy`.
   - `setLinkNote` on missing envelope: silent no-op, no throw.
-  - `setLinkNote` on a soft-deleted envelope undeletes it: `linkDeletedAt` cell's `value` flips to `null`, `note` cell takes the new value, both cells stamped fresh; `link(id:).deletedAt == nil` after.
-  - `removeLink` writes `linkDeletedAt` (timestamp value) and bumps its stamps. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are byte-identical before and after.
+  - `setLinkNote` on a soft-deleted envelope undeletes it: `deletedAt` cell's `value` flips to `null`, `note` cell takes the new value, both cells stamped fresh; `link(id:).deletedAt == nil` after.
+  - `removeLink` writes the `deletedAt` cell (timestamp value) and bumps its stamps. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are byte-identical before and after.
   - `removeLink` on already-soft-deleted envelope: silent no-op, no stamp churn.
   - `links(at:)` returns soft-deleted links; callers must filter — assert by querying with and without a `.deletedAt == nil` filter.
   - `link(id:)` returns soft-deleted links unchanged.
