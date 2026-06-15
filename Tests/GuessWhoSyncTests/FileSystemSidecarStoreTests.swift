@@ -193,8 +193,9 @@ struct FileSystemSidecarStoreTests {
         defer { cleanup(root) }
         let store = FileSystemSidecarStore(root: root)
 
-        // Pre-encoded basename, matching how write() would name a slash-
-        // bearing externalID on disk. listKeys percent-decodes the basename.
+        // Use an externalID with no characters that need percent-encoding
+        // (so the basename and id match 1:1) and verify the event surfaces
+        // from a placeholder stub.
         let basename = "evt-only"
         try plantPlaceholder(in: root, kindDir: "events", basename: basename)
 

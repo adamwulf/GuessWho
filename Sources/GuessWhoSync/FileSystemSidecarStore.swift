@@ -10,31 +10,47 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
         let url = fileURL(for: key)
-        let placeholder = placeholderURL(for: url)
         let fm = FileManager.default
 
-        // If only the placeholder is present, request download and signal
-        // the caller that the bytes aren't here yet. The orchestrator can
-        // retry on the next reconcile pass.
-        if !fm.fileExists(atPath: url.path) && fm.fileExists(atPath: placeholder.path) {
-            try? fm.startDownloadingUbiquitousItem(at: url)
-            throw SidecarStoreError.notYetDownloaded(key)
+        // Coordinated existence + read in one pass: NSFileCoordinator
+        // serializes us against cloudd, which may otherwise be mid-rename
+        // between `.<name>.icloud` and the materialized `<name>` when we
+        // probe. Inside the coordinated block, the filesystem state is
+        // stable enough to decide between materialized / placeholder /
+        // truly-absent.
+        enum Outcome {
+            case bytes(Data)
+            case placeholderPresent
+            case missing
+            case failed(Error)
         }
-
-        guard fm.fileExists(atPath: url.path) else { return nil }
-
-        var data: Data?
-        var readError: Error?
+        var outcome: Outcome = .missing
         try coordinatedRead(at: url) { safeURL in
-            do {
-                data = try Data(contentsOf: safeURL)
-            } catch {
-                readError = error
+            if fm.fileExists(atPath: safeURL.path) {
+                do {
+                    outcome = .bytes(try Data(contentsOf: safeURL))
+                } catch {
+                    outcome = .failed(error)
+                }
+            } else if fm.fileExists(atPath: placeholderURL(for: safeURL).path) {
+                outcome = .placeholderPresent
+            } else {
+                outcome = .missing
             }
         }
-        if let readError { throw readError }
-        guard let data else { return nil }
-        return try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+
+        switch outcome {
+        case .bytes(let data):
+            return try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+        case .placeholderPresent:
+            // Request the download and tell the caller to retry later.
+            try? fm.startDownloadingUbiquitousItem(at: url)
+            throw SidecarStoreError.notYetDownloaded(key)
+        case .missing:
+            return nil
+        case .failed(let error):
+            throw error
+        }
     }
 
     public func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
@@ -125,17 +141,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             switch resolution {
             case .write(let merged, let skip):
                 let mergedData = try JSONEncoder().encode(merged)
-                writeLock.lock()
-                var mergedWriteError: Error?
-                try coordinatedWrite(at: url) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        mergedWriteError = error
+                try withWriteLock {
+                    var mergedWriteError: Error?
+                    try coordinatedWrite(at: url) { safeURL in
+                        do {
+                            try mergedData.write(to: safeURL, options: [.atomic])
+                        } catch {
+                            mergedWriteError = error
+                        }
                     }
+                    if let mergedWriteError { throw mergedWriteError }
                 }
-                writeLock.unlock()
-                if let mergedWriteError { throw mergedWriteError }
 
                 var skippedCount = 0
                 for version in conflicts {
@@ -158,17 +174,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             case .writeRecoverySibling(let merged, let suffix):
                 let mergedData = try JSONEncoder().encode(merged)
                 let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-                writeLock.lock()
-                var siblingWriteError: Error?
-                try coordinatedWrite(at: siblingURL) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        siblingWriteError = error
+                try withWriteLock {
+                    var siblingWriteError: Error?
+                    try coordinatedWrite(at: siblingURL) { safeURL in
+                        do {
+                            try mergedData.write(to: safeURL, options: [.atomic])
+                        } catch {
+                            siblingWriteError = error
+                        }
                     }
+                    if let siblingWriteError { throw siblingWriteError }
                 }
-                writeLock.unlock()
-                if let siblingWriteError { throw siblingWriteError }
                 outcomes.append(
                     SidecarReconcileReport.FileOutcome(
                         key: key,
@@ -285,6 +301,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         let directory = original.deletingLastPathComponent()
         let stem = original.deletingPathExtension().lastPathComponent
         return directory.appendingPathComponent("\(stem).recovered.\(suffix).json")
+    }
+
+    // Acquire writeLock for the duration of `body`. Using `defer` to unlock
+    // means a throw from inside the coordinated-write block still releases
+    // the lock — without this, an iCloud coordinator error would leak the
+    // lock and deadlock every subsequent write/delete/reconcile.
+    private func withWriteLock(_ body: () throws -> Void) rethrows {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        try body()
     }
 
     // MARK: - NSFileCoordinator wrappers
