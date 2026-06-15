@@ -1,0 +1,35 @@
+// GuessWho-Shared.xcconfig
+// TARGET-level settings for the GuessWho app target.
+
+#include "SharedVersion.xcconfig"
+
+// Identity
+PRODUCT_NAME = $(TARGET_NAME)
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
+
+// Signing
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho.entitlements
+
+// Swift
+SWIFT_VERSION = 6.0
+SWIFT_EMIT_LOC_STRINGS = YES
+ENABLE_PREVIEWS = YES
+
+// Platforms / devices (iPhone + iPad + Mac via Catalyst)
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+MACOSX_DEPLOYMENT_TARGET = 14.0
+TARGETED_DEVICE_FAMILY = 1,2
+SUPPORTS_MACCATALYST = YES
+SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO
+DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO
+
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../Frameworks
+LD_RUNPATH_SEARCH_PATHS[sdk=macosx*] = $(inherited) @executable_path/../Frameworks @loader_path/../Frameworks
+
+// Info.plist
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = GuessWho/Info.plist

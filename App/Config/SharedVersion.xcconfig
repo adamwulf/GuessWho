@@ -1,0 +1,6 @@
+// SharedVersion.xcconfig
+// Single source of truth for app version numbers.
+
+VERSIONING_SYSTEM = apple-generic
+MARKETING_VERSION = 0.1
+CURRENT_PROJECT_VERSION = 1

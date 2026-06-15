@@ -1,0 +1,257 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D2 /* GuessWhoSync */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A100000000000000000000C0 /* GuessWho.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GuessWho.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A100000000000000000000E1 /* SharedVersion.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = SharedVersion.xcconfig; sourceTree = "<group>"; };
+		A100000000000000000000E2 /* Project-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Shared.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E3 /* Project-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Debug.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E4 /* Project-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Release.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E5 /* GuessWho-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Shared.xcconfig"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A100000000000000000000A4 /* Exceptions for "GuessWho" folder in "GuessWho" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				GuessWho.entitlements,
+			);
+			target = A100000000000000000000B1 /* GuessWho */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A100000000000000000000A3 /* GuessWho */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A100000000000000000000A4 /* Exceptions for "GuessWho" folder in "GuessWho" target */,
+			);
+			path = GuessWho;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A100000000000000000000B4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000000000000000000D3 /* GuessWhoSync in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A100000000000000000000A1 = {
+			isa = PBXGroup;
+			children = (
+				A100000000000000000000A7 /* Config */,
+				A100000000000000000000A3 /* GuessWho */,
+				A100000000000000000000A5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A100000000000000000000A5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A100000000000000000000C0 /* GuessWho.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A100000000000000000000A7 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A100000000000000000000E1 /* SharedVersion.xcconfig */,
+				A100000000000000000000E2 /* Project-Shared.xcconfig */,
+				A100000000000000000000E3 /* Project-Debug.xcconfig */,
+				A100000000000000000000E4 /* Project-Release.xcconfig */,
+				A100000000000000000000E5 /* GuessWho-Shared.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A100000000000000000000B1 /* GuessWho */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A100000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWho" */;
+			buildPhases = (
+				A100000000000000000000B2 /* Sources */,
+				A100000000000000000000B4 /* Frameworks */,
+				A100000000000000000000B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A100000000000000000000A3 /* GuessWho */,
+			);
+			name = GuessWho;
+			packageProductDependencies = (
+				A100000000000000000000D2 /* GuessWhoSync */,
+			);
+			productName = GuessWho;
+			productReference = A100000000000000000000C0 /* GuessWho.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A100000000000000000000A0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					A100000000000000000000B1 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+				};
+			};
+			buildConfigurationList = A100000000000000000000C1 /* Build configuration list for PBXProject "GuessWho" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A100000000000000000000A1;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A100000000000000000000D1 /* XCLocalSwiftPackageReference ".." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A100000000000000000000A5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A100000000000000000000B1 /* GuessWho */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A100000000000000000000B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A100000000000000000000B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A100000000000000000000C11 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E3 /* Project-Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		A100000000000000000000C12 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E4 /* Project-Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		A100000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E5 /* GuessWho-Shared.xcconfig */;
+			buildSettings = {
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = YES;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+			};
+			name = Debug;
+		};
+		A100000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E5 /* GuessWho-Shared.xcconfig */;
+			buildSettings = {
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = YES;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A100000000000000000000C1 /* Build configuration list for PBXProject "GuessWho" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A100000000000000000000C11 /* Debug */,
+				A100000000000000000000C12 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A100000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWho" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A100000000000000000000C21 /* Debug */,
+				A100000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A100000000000000000000D1 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A100000000000000000000D2 /* GuessWhoSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoSync;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A100000000000000000000A0 /* Project object */;
+}
