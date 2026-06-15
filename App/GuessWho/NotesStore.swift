@@ -8,7 +8,6 @@ final class NotesStore {
     private let contactUUID: String
 
     private var allNotes: [ContactNote] = []
-    private(set) var lastError: String?
 
     init(service: SyncService, contactUUID: String) {
         self.service = service
@@ -75,7 +74,6 @@ final class NotesStore {
             let envelope = try service.sidecarEnvelope(forContactUUID: contactUUID)
             return envelope?.fields["notes"]
         } catch {
-            lastError = "notes read failed: \(error.localizedDescription)"
             return nil
         }
     }
@@ -86,7 +84,9 @@ final class NotesStore {
             try service.setField("notes", value: value, forContactUUID: contactUUID)
             reload()
         } catch {
-            lastError = "notes write failed: \(error.localizedDescription)"
+            // Optimistic in-memory state is now ahead of disk. Re-read so the
+            // UI reflects the truth; the user re-issues if they still want it.
+            reload()
         }
     }
 }
