@@ -33,3 +33,6 @@ LD_RUNPATH_SEARCH_PATHS[sdk=macosx*] = $(inherited) @executable_path/../Framewor
 // Info.plist
 GENERATE_INFOPLIST_FILE = NO
 INFOPLIST_FILE = GuessWho/Info.plist
+
+// App icon (Xcode 26 Icon Composer .icon at GuessWho/AppIcon.icon)
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
