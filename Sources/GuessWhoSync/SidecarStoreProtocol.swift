@@ -45,10 +45,22 @@ public protocol SidecarStoreProtocol {
     func requestDownload(_ key: SidecarKey) throws
 }
 
-// Default implementations. New protocol requirements default to behavior
-// that's correct for backends with no remote tier and no notion of
-// conflicts — so a host-app implementer who only conformed to v1's surface
-// keeps compiling and behaving sensibly on this branch.
+// Default implementations.
+//
+// Conflict methods (`keysWithUnresolvedConflicts`, `reconcileConflict`) are
+// intentionally NOT defaulted: the orchestrator drives reconcile via the
+// per-key API now, and a default that returns `[]` / `nil` would cause
+// existing conformers who only implement the bulk `reconcileConflicts(_:)`
+// to silently no-op on reconcile. A hard compile error is a better signal
+// than a quiet behavior change. The bulk `reconcileConflicts(_:)` still has
+// a default routing to the per-key API so implementers only need to
+// override the per-key methods.
+//
+// Download methods (`downloadStatus`, `requestDownload`) ARE defaulted —
+// the defaults are correct for any backend without a remote tier (the
+// common case), and the `downloadStatus` default explicitly maps
+// `.notYetDownloaded` to `.notStarted` so a backend that adds a remote
+// tier later still gets sensible status reporting without overriding.
 public extension SidecarStoreProtocol {
     // Default `reconcileConflicts` implemented in terms of the per-key API
     // so implementers can opt into per-key locking by only overriding the
@@ -67,24 +79,19 @@ public extension SidecarStoreProtocol {
         return outcomes
     }
 
-    // Default: backends with no notion of conflicts report no keys.
-    func keysWithUnresolvedConflicts() throws -> [SidecarKey] { [] }
-
-    // Default: backends with no notion of conflicts return nil so the
-    // orchestrator skips this key. Override on backends that DO surface
-    // conflicts (e.g. file-system-backed stores with cross-device sync).
-    func reconcileConflict(
-        at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
-    ) throws -> SidecarReconcileReport.FileOutcome? { nil }
-
     // Default: backends that always have bytes locally report known keys
-    // as `.downloaded` and everything else as `.notFound`. Errors from
-    // `read()` map to `.notFound` — this default is intentionally
-    // best-effort.
+    // as `.downloaded` and everything else as `.notFound`. A backend that
+    // surfaces remote-pending bytes via `.notYetDownloaded` from `read()`
+    // gets that mapped to `.notStarted` here, so a partial implementation
+    // (override `read()` but not `downloadStatus`) still reports correctly.
+    //
+    // Override on backends where `read()` is expensive (e.g. requires a
+    // coordinated I/O hop) and `downloadStatus` is called in a hot loop.
     func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
         do {
             return try read(key) != nil ? .downloaded : .notFound
+        } catch SidecarStoreError.notYetDownloaded {
+            return .notStarted
         } catch {
             return .notFound
         }

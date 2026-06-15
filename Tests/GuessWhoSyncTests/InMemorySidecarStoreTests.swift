@@ -247,3 +247,95 @@ struct InMemorySidecarStoreTests {
         try store.requestDownload(contactKey())
     }
 }
+
+// A minimal SidecarStoreProtocol conformer that only implements the v1
+// surface plus the per-key conflict methods (which are NOT defaulted in
+// the protocol — see SidecarStoreProtocol.swift's comment for the
+// rationale). It deliberately does NOT implement downloadStatus /
+// requestDownload so the protocol-extension defaults are exercised.
+//
+// Reviewer A asked for this kind of minimal conformer to confirm the
+// compatibility story holds: the download API defaults work for backends
+// with no remote tier, and a backend that throws `.notYetDownloaded`
+// from `read()` is still reported as `.notStarted` by the default
+// `downloadStatus`.
+private final class MinimalSidecarStore: SidecarStoreProtocol {
+    var envelopes: [SidecarKey: SidecarEnvelope] = [:]
+    var throwNotYetDownloadedFor: Set<SidecarKey> = []
+
+    func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
+        if throwNotYetDownloadedFor.contains(key) {
+            throw SidecarStoreError.notYetDownloaded(key)
+        }
+        return envelopes[key]
+    }
+
+    func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
+        envelopes[key] = envelope
+    }
+
+    func delete(_ key: SidecarKey) throws {
+        envelopes.removeValue(forKey: key)
+    }
+
+    func allKeys() throws -> [SidecarKey] {
+        Array(envelopes.keys)
+    }
+
+    func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
+        []
+    }
+
+    func reconcileConflict(
+        at key: SidecarKey,
+        resolve: (_ versions: [Data]) throws -> ConflictResolution
+    ) throws -> SidecarReconcileReport.FileOutcome? {
+        nil
+    }
+}
+
+@Suite("ProtocolDefaults")
+struct ProtocolDefaultsTests {
+    @Test
+    func defaultDownloadStatusReportsDownloadedForKnownKey() throws {
+        let store = MinimalSidecarStore()
+        let key = SidecarKey(kind: .contact, id: "known")
+        try store.write(SidecarEnvelope(entityID: "known", fields: [:]), at: key)
+        #expect(store.downloadStatus(key) == .downloaded)
+    }
+
+    @Test
+    func defaultDownloadStatusReportsNotFoundForUnknownKey() throws {
+        let store = MinimalSidecarStore()
+        #expect(store.downloadStatus(SidecarKey(kind: .contact, id: "unknown")) == .notFound)
+    }
+
+    @Test
+    func defaultDownloadStatusMapsNotYetDownloadedToNotStarted() throws {
+        let store = MinimalSidecarStore()
+        let key = SidecarKey(kind: .contact, id: "remote-pending")
+        store.throwNotYetDownloadedFor.insert(key)
+        #expect(store.downloadStatus(key) == .notStarted)
+    }
+
+    @Test
+    func defaultRequestDownloadIsNoOp() throws {
+        let store = MinimalSidecarStore()
+        try store.requestDownload(SidecarKey(kind: .contact, id: "x"))
+    }
+
+    @Test
+    func defaultReconcileConflictsRoutesThroughPerKeyAPI() throws {
+        // MinimalSidecarStore returns [] from keysWithUnresolvedConflicts,
+        // so the default bulk implementation should produce an empty
+        // outcomes list without invoking the resolver.
+        let store = MinimalSidecarStore()
+        var resolverCalled = false
+        let outcomes = try store.reconcileConflicts { _, _ in
+            resolverCalled = true
+            return .leave
+        }
+        #expect(outcomes.isEmpty)
+        #expect(!resolverCalled)
+    }
+}
