@@ -31,7 +31,7 @@ func merge(
     return .success(SidecarEnvelope(schemaVersion: 1, entityID: a.entityID, fields: merged))
 }
 
-let notesFieldKey = "notes"
+private let notesFieldKey = "notes"
 
 // §12.3: per-note LWW for the "notes" field. Called only when BOTH sides
 // have the key — the one-sided pass-through is handled by the generic merge
