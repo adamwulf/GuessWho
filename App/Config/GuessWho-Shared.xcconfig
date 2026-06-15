@@ -19,7 +19,7 @@ ENABLE_PREVIEWS = YES
 
 // Platforms / devices (iPhone + iPad + Mac via Catalyst)
 SDKROOT = iphoneos
-SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx
 IPHONEOS_DEPLOYMENT_TARGET = 17.0
 MACOSX_DEPLOYMENT_TARGET = 14.0
 TARGETED_DEVICE_FAMILY = 1,2
