@@ -82,7 +82,7 @@ A v2 policy could auto-GC orphans older than a threshold (long enough for any re
 
 | Data lives where? | Examples |
 |---|---|
-| **Contacts store (canonical, writable)** | Every `CNContact` field the framework exposes except `note` (gated by `com.apple.developer.contacts.notes` entitlement; deferred until we obtain it). Specifically: `contactType`; the full name family (`namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, plus phonetic given/middle/family); the full work family (`jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`); `phoneNumbers`, `emailAddresses`, `postalAddresses`, `urlAddresses` (including our GuessWho URL); `birthday`, `nonGregorianBirthday`, and labeled `dates` (anniversary, custom); `socialProfiles`; `instantMessageAddresses`; `contactRelations`; `imageDataAvailable` (raw `imageData`/`thumbnailImageData` are loaded on demand, not carried on `Contact`). |
+| **Contacts store (canonical, writable)** | Every `CNContact` field the framework exposes except `note` (gated by `com.apple.developer.contacts.notes` entitlement; deferred until we obtain it). Specifically: `identifier` (carried as `Contact.localID` for store reads/writes); `contactType`; the full name family (`namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, plus phonetic given/middle/family); the full work family (`jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`); `phoneNumbers`, `emailAddresses`, `postalAddresses`, `urlAddresses` (including our GuessWho URL); `birthday`, `nonGregorianBirthday`, and labeled `dates` (anniversary, custom); `socialProfiles`; `instantMessageAddresses`; `contactRelations`; `imageDataAvailable` (raw `imageData`/`thumbnailImageData` are loaded on demand, not carried on `Contact`). |
 | **EventKit (canonical, read-only)** | Calendar events, attendees, location, recurrence — read but never written by this package |
 | **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. |
 
@@ -201,8 +201,10 @@ The package owns its own plain-Swift models — not `CNContact`/`EKEvent` — so
 
 `Contact` is a faithful mirror of `CNContact`: every property the framework exposes is represented, **except `note`**, which Apple gates behind the `com.apple.developer.contacts.notes` entitlement (deferred until the app has it). `Event` is a plain-Swift mirror of the §4 canonical event fields.
 
+**Codable.** Every model type below conforms to `Codable` so the value graph composes for sidecar emission, on-disk caching, and test fixtures (a `Contact` snapshot may be embedded inside a sidecar field as a `JSONValue.object`). The sidecar types (`SidecarEnvelope`, `SidecarCell`, `JSONValue`, `SidecarKey`, `SidecarKind`) are the literal payload of the JSON files in §5.2; `JSONValue` and `SidecarCell` use hand-rolled `Codable` because the JSON layout (dynamic value shapes and a present-or-absent `deleted: true` discriminator) does not match the compiler-synthesized form.
+
 ```swift
-public struct Contact: Hashable, Sendable {
+public struct Contact: Hashable, Sendable, Codable {
     public var localID: String                              // device-local CNContact.identifier
     public var contactType: ContactType                     // .person or .organization
 
@@ -248,12 +250,12 @@ public enum ContactType: String, Sendable, Codable {
     case person, organization
 }
 
-public struct Event: Hashable, Sendable {
+public struct Event: Hashable, Sendable, Codable {
     public var externalID: String               // calendarItemExternalIdentifier
     // plus title, dates, location, notes — see §4
 }
 
-public struct LabeledValue: Hashable, Sendable {
+public struct LabeledValue: Hashable, Sendable, Codable {
     public var label: String                    // e.g. "home", "work", "GuessWho"
     public var value: String
 }
@@ -308,35 +310,44 @@ public struct LabeledInstantMessageAddress: Hashable, Sendable, Codable {
     public var value: InstantMessageAddress
 }
 
-public struct LabeledContactRelation: Hashable, Sendable, Codable {
-    public var label: String                    // e.g. "mother", "father", custom
+public struct ContactRelation: Hashable, Sendable, Codable {
     public var name: String                     // CNContactRelation.name
 }
 
-public enum JSONValue: Hashable, Sendable {
+public struct LabeledContactRelation: Hashable, Sendable, Codable {
+    public var label: String                    // e.g. "mother", "father", custom
+    public var value: ContactRelation
+}
+
+public enum JSONValue: Hashable, Sendable, Codable {
     case null
     case bool(Bool)
     case number(Double)
     case string(String)
     case array([JSONValue])
     case object([String: JSONValue])
+    // Hand-rolled Codable (init(from:)/encode(to:)) — the JSON layout is
+    // dynamic so the compiler-synthesized form would not match §5.2.
 }
 
-public enum SidecarKind: String, Sendable { case contact, event }
+public enum SidecarKind: String, Sendable, Codable { case contact, event }
 
-public struct SidecarKey: Hashable, Sendable {
+public struct SidecarKey: Hashable, Sendable, Codable {
     public let kind: SidecarKind
     public let id: String                       // contact UUID or event externalID
 }
 
-public struct SidecarEnvelope: Sendable {
+public struct SidecarEnvelope: Sendable, Codable {
+    public let schemaVersion: Int               // §5.2 — must equal 1 on write
     public let entityID: String
     public let fields: [String: SidecarCell]
 }
 
-public enum SidecarCell: Sendable {
+public enum SidecarCell: Sendable, Codable {
     case value(JSONValue, modifiedAt: Date, modifiedBy: String)
     case tombstone(modifiedAt: Date, modifiedBy: String)
+    // Hand-rolled Codable — the value/tombstone discriminator in §5.2 is a
+    // present-or-absent `deleted: true` flag, not the compiler default.
 }
 ```
 
@@ -349,9 +360,21 @@ public protocol ContactStoreProtocol {
     func save(_ contact: Contact) throws
 
     // Image bytes are loaded on demand so bulk fetches don't pay the cost.
-    // Returns nil if the contact has no image or does not exist.
+    // Distinguish three outcomes:
+    //   • Contact does not exist                → throws ContactStoreError.contactNotFound(localID)
+    //   • Contact exists, no image is attached  → returns nil
+    //   • Contact exists, image bytes available → returns the bytes
+    // The `imageDataAvailable` flag on Contact reflects the store's last-seen
+    // truth; it can fall out of sync if another process mutates the contact
+    // between fetch and load. In that race, `loadImageData` returns the
+    // currently truthful answer (nil if no image now, bytes if newly attached),
+    // and a follow-up fetch corrects `imageDataAvailable`.
     func loadImageData(localID: String) throws -> Data?
     func loadThumbnailImageData(localID: String) throws -> Data?
+}
+
+public enum ContactStoreError: Error, Sendable {
+    case contactNotFound(localID: String)
 }
 
 public protocol EventStoreProtocol {
@@ -460,6 +483,16 @@ extension SidecarKey {
 
 `InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore` ship in a `GuessWhoSyncTesting` module. Each is a full implementation backed by a dictionary. The orchestrator runs unchanged against mocks (unit tests) and the real adapters (production).
 
+**Image data in `InMemoryContactStore`.** Because `Contact` does not carry image bytes, the in-memory store keeps a parallel `[localID: (image: Data?, thumbnail: Data?)]` sideband. It exposes a test-only setter so test fixtures can attach bytes:
+
+```swift
+extension InMemoryContactStore {
+    public func setImageData(_ image: Data?, thumbnail: Data?, for localID: String)
+}
+```
+
+`save(_:)` clears the sideband entry whenever the saved `Contact.imageDataAvailable` is false; setting `imageDataAvailable = true` without calling `setImageData(...)` leaves the sideband empty (matching the "available flag is stale" race described in §7.2). `loadImageData` / `loadThumbnailImageData` honor the §7.2 contract — throw `ContactStoreError.contactNotFound` when the contact is absent; otherwise return the sideband bytes or nil.
+
 `FileSystemSidecarStore` is the real `SidecarStoreProtocol` implementation, wrapping a directory `URL` plus `NSFileVersion`.
 
 ## 8. Modules / Platforms
@@ -474,18 +507,39 @@ extension SidecarKey {
 ## 9. Test Matrix
 
 ### 9.1 Contact field edits (mocks)
-- create / read / update / delete name, phone, email, postal address, birthday, organization
-- adding/removing URLs preserves the GuessWho URL when present
-- save→fetch roundtrip is identity for the full `Contact` model — every field carried on `Contact` survives a write/read cycle byte-for-byte. Specifically:
-  - `contactType` round-trips (`.person`, `.organization`)
-  - name family round-trips: `namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, `phoneticGivenName`, `phoneticMiddleName`, `phoneticFamilyName`
-  - work family round-trips: `jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`
-  - `nonGregorianBirthday` round-trips independently of `birthday`
-  - `dates` (labeled `DateComponents`) round-trip with label preserved
-  - `socialProfiles` round-trip (all four components: `urlString`, `username`, `userIdentifier`, `service`) with label preserved
-  - `instantMessageAddresses` round-trip (`username`, `service`) with label preserved
-  - `contactRelations` round-trip with label and `name`
-  - `imageDataAvailable` round-trips as a Bool; `loadImageData(localID:)` and `loadThumbnailImageData(localID:)` return what was stored, or `nil` when not available
+
+Each bullet below names one test. The full `Contact` model is exercised — every field carried on `Contact` survives a write/read cycle byte-for-byte, and every structured-array field is exercised with create / read / update / delete.
+
+**Identity URL handling.**
+- `testAddingAndRemovingURLsPreservesGuessWhoURL` — adding / removing other `urlAddresses` entries leaves any `guesswho://contact/…` URL intact.
+
+**Scalar round-trips.**
+- `testRoundtripContactTypePersonAndOrganization` — both enum cases survive write→fetch.
+- `testRoundtripNameFamilyPreservesEveryField` — all ten name fields (`namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, plus phonetic given/middle/family) round-trip identically.
+- `testRoundtripWorkFamilyPreservesEveryField` — `jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`.
+
+**Date round-trips. `DateComponents` equality alone is not enough — the test must assert the calendar identifier.**
+- `testRoundtripBirthdayPreservesCalendarIdentifier` — a Gregorian `birthday` round-trips with `value.calendar?.identifier == .gregorian`.
+- `testRoundtripNonGregorianBirthdayPreservesCalendarIdentifier` — a non-Gregorian `nonGregorianBirthday` (e.g., `.hebrew`, `.chinese`) round-trips with its calendar identifier preserved, independently of `birthday`.
+- `testRoundtripLabeledDatesPreserveLabelAndCalendarIdentifier` — entries in `dates` round-trip with both label and per-entry calendar identifier preserved (a custom-label `DateComponents` carrying a non-Gregorian calendar must survive).
+
+**Structured-array round-trips + CRUD.** For each array field below, the test exercises create (add an entry), read (fetch matches), update (mutate one entry, fetch matches), and delete (remove an entry, fetch reflects the removal). Round-trip is asserted on every component, not just one.
+- `testCRUDPhoneNumbers` — labeled string, label preserved.
+- `testCRUDEmailAddresses` — labeled string, label preserved.
+- `testCRUDPostalAddresses` — every component of `PostalAddress` (street, subLocality, city, subAdministrativeArea, state, postalCode, country, isoCountryCode) plus label.
+- `testCRUDURLAddresses` — labeled string, label preserved, GuessWho URL untouched.
+- `testCRUDSocialProfiles` — all four components of `SocialProfile` (`urlString`, `username`, `userIdentifier`, `service`) plus label.
+- `testCRUDInstantMessageAddresses` — both components of `InstantMessageAddress` (`username`, `service`) plus label.
+- `testCRUDContactRelations` — `ContactRelation.name` plus label.
+
+**Image data — flag + on-demand bytes invariants (§7.2 / §7.4).**
+- `testFetchAllDoesNotTouchImageBytes` — `fetchAll()` returns `Contact`s with `imageDataAvailable` populated but does not call into the image sideband (assert via a counting wrapper around the in-memory store).
+- `testLoadImageDataReturnsBytesWhenAttached` — after `setImageData(image, thumbnail: nil, for: localID)`, a subsequent `fetch(localID:)` reports `imageDataAvailable == true` and `loadImageData(localID:)` returns the same bytes.
+- `testLoadThumbnailDataIsIndependentOfImage` — attaching only a thumbnail leaves `loadImageData` returning nil while `loadThumbnailImageData` returns the bytes.
+- `testLoadImageDataReturnsNilWhenNotAvailable` — for a contact with `imageDataAvailable == false`, `loadImageData` returns nil (no throw).
+- `testLoadImageDataThrowsContactNotFoundForUnknownLocalID` — looking up an unknown localID throws `ContactStoreError.contactNotFound(localID:)`.
+- `testLoadImageDataReturnsNilWhenAvailableFlagIsStale` — if `imageDataAvailable == true` is persisted but the sideband bytes are absent (race / external mutation), `loadImageData` returns nil and a follow-up `fetch` resets `imageDataAvailable` to false.
+- `testSaveWithImageDataAvailableFalseClearsSideband` — saving a `Contact` with `imageDataAvailable = false` drops any sideband bytes for that localID.
 
 ### 9.2 Sidecar IO (in-memory and filesystem)
 - write then read returns the same envelope
@@ -538,7 +592,7 @@ extension SidecarKey {
 2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
 3. **Tombstone GC.** Tombstones live forever in v1.
 4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
-5. **`CNContact.note`.** Apple gates `CNContactNoteKey` behind the `com.apple.developer.contacts.notes` entitlement. We don't have it yet. When granted, add `note: String` to `Contact`, route through `CNContactStoreAdapter`, and extend §9.1 with a round-trip test. Until then `Contact` has no `note` property — the field is the single deliberate gap vs. `CNContact`.
+5. **`CNContact.note`.** Apple gates `CNContactNoteKey` behind the `com.apple.developer.contacts.notes` entitlement. We don't have it yet, and `Contact` carries no `note` property — the field is the single deliberate gap vs. `CNContact`. To avoid silently clobbering pre-existing notes when a host app reads, modifies, and writes a contact back through `CNContactStoreAdapter`, the adapter **omits `CNContactNoteKey` from every fetch descriptor** AND uses a partial-update save path: `save(_:)` reads the existing contact for the localID, mutates only the keys `Contact` represents, and submits the resulting `CNMutableContact` via `CNSaveRequest.update(_:)` so untouched keys (including `note`) remain in place. `save(_:)` for a brand-new contact (no existing localID) cannot carry a `note` value and never will until the entitlement lands. When the entitlement is granted: add `note: String` to `Contact`, include `CNContactNoteKey` in the fetch descriptor, drop this caveat, and add a `testRoundtripNotePreservesContent` row to §9.1.
 
 ## 11. Implementation Order
 
