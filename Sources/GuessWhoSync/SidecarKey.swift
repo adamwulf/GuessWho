@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SidecarKey: Hashable, Sendable {
+public struct SidecarKey: Hashable, Sendable, Codable {
     public let kind: SidecarKind
     public let id: String
 
@@ -15,6 +15,24 @@ public struct SidecarKey: Hashable, Sendable {
         case .event:
             self.id = id
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(SidecarKind.self, forKey: .kind)
+        let id = try container.decode(String.self, forKey: .id)
+        self.init(kind: kind, id: id)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(id, forKey: .id)
     }
 }
 
