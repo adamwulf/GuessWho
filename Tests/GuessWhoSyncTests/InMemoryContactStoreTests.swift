@@ -13,7 +13,12 @@ struct InMemoryContactStoreTests {
             organizationName: "Analytical Engines Ltd.",
             phoneNumbers: [LabeledValue(label: "mobile", value: "+15555550101")],
             emailAddresses: [LabeledValue(label: "home", value: "ada@example.com")],
-            postalAddresses: [LabeledValue(label: "home", value: "1 Babbage Way")],
+            postalAddresses: [
+                LabeledPostalAddress(
+                    label: "home",
+                    value: PostalAddress(street: "1 Babbage Way", city: "London", country: "United Kingdom")
+                )
+            ],
             urlAddresses: [LabeledValue(label: "home", value: "https://example.com")],
             birthday: DateComponents(year: 1815, month: 12, day: 10)
         )
@@ -92,6 +97,27 @@ struct InMemoryContactStoreTests {
 
         let fetched = try #require(try store.fetch(localID: contact.localID))
         #expect(fetched.urlAddresses == [guessWho])
+    }
+
+    @Test
+    func postalAddressStructuredComponentsRoundtrip() throws {
+        let store = InMemoryContactStore()
+        let postal = PostalAddress(
+            street: "1 Infinite Loop",
+            subLocality: "Mariani",
+            city: "Cupertino",
+            subAdministrativeArea: "Santa Clara",
+            state: "CA",
+            postalCode: "95014",
+            country: "United States",
+            isoCountryCode: "US"
+        )
+        var contact = sampleContact()
+        contact.postalAddresses = [LabeledPostalAddress(label: "work", value: postal)]
+        try store.save(contact)
+
+        let fetched = try #require(try store.fetch(localID: contact.localID))
+        #expect(fetched.postalAddresses == [LabeledPostalAddress(label: "work", value: postal)])
     }
 
     @Test
