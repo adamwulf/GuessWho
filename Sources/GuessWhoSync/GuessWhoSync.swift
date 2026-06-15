@@ -124,6 +124,18 @@ public final class GuessWhoSync {
         return IdentityReconcileReport(contactOutcomes: outcomes, orphanSidecars: orphans)
     }
 
+    // Single-contact entry point used by host apps that want explicit,
+    // per-contact control. Orphan-sidecar detection is intentionally NOT
+    // performed here: it requires the complete set of carried UUIDs across
+    // every contact to be meaningful. Use reconcileContactIdentities() when
+    // that information is needed.
+    public func reconcileContactIdentity(localID: String) throws -> IdentityReconcileReport.ContactOutcome {
+        guard let contact = try contacts.fetch(localID: localID) else {
+            throw ContactStoreError.contactNotFound(localID: localID)
+        }
+        return try reconcile(contact: contact).report
+    }
+
     private struct ContactReconcileResult {
         let report: IdentityReconcileReport.ContactOutcome
         let carriedUUIDs: [String]
