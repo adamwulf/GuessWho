@@ -396,6 +396,45 @@ struct IdentityReconcilerTests {
     }
 
     @Test
+    func caseB_duplicateMixedCaseSameUUIDCollapsesToSingleURL() throws {
+        // [<UUID-X-upper>, <uuid-x-lower>] — same canonical UUID in two cases.
+        // Must collapse to ONE URL via the duplicate path, NOT trigger Case D.
+        let lower = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        let upper = lower.uppercased()
+        let contact = Contact(
+            localID: "C1",
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/" + upper),
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/" + lower),
+            ]
+        )
+        let contacts = InMemoryContactStore(contacts: [contact])
+        let sidecars = InMemorySidecarStore()
+        try sidecars.write(
+            SidecarEnvelope(entityID: lower, fields: [
+                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+            ]),
+            at: SidecarKey(kind: .contact, id: lower)
+        )
+
+        let sync = makeSync(contacts: contacts, sidecars: sidecars)
+        let report = try sync.reconcileContactIdentities()
+
+        let outcome = report.contactOutcomes[0]
+        #expect(outcome.assignedUUID == nil)
+        #expect(outcome.mergedLoserUUIDs.isEmpty)
+        #expect(outcome.errors.isEmpty)
+
+        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let gwURLs = guessWhoURLs(in: saved)
+        #expect(gwURLs.count == 1)
+        #expect(SidecarKey.parseGuessWhoContactURL(gwURLs[0]) == lower)
+
+        let kept = try #require(try sidecars.read(SidecarKey(kind: .contact, id: lower)))
+        #expect(kept.fields.keys.contains("nickname"))
+    }
+
+    @Test
     func sidecarStoreIsCaseInsensitiveOnUUIDKeys() throws {
         let sidecars = InMemorySidecarStore()
         // A UUID with hex letters so uppercased != lowercased.
