@@ -3,6 +3,26 @@ import Testing
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
 
+// Test convenience: iterate keysWithUnresolvedConflicts then call
+// reconcileConflict for each. The orchestrator (production code) drives
+// the same loop inline while holding its per-key lock; tests don't need
+// the lock and can use this shorthand.
+private extension SidecarStoreProtocol {
+    func reconcileAllConflicts(
+        _ resolve: (_ key: SidecarKey, _ versions: [Data]) throws -> ConflictResolution
+    ) throws -> [SidecarReconcileReport.FileOutcome] {
+        var outcomes: [SidecarReconcileReport.FileOutcome] = []
+        for key in try keysWithUnresolvedConflicts() {
+            if let outcome = try reconcileConflict(at: key, resolve: { versions in
+                try resolve(key, versions)
+            }) {
+                outcomes.append(outcome)
+            }
+        }
+        return outcomes
+    }
+}
+
 @Suite("InMemorySidecarStore")
 struct InMemorySidecarStoreTests {
     private let when = Date(timeIntervalSince1970: 1_700_000_000)
@@ -111,7 +131,7 @@ struct InMemorySidecarStoreTests {
         let merged = envelope(fields: [
             "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
-        let outcomes = try store.reconcileConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)
             #expect(versions == [v1, v2])
             return .write(merged: merged, skip: [])
@@ -124,7 +144,7 @@ struct InMemorySidecarStoreTests {
         let fetched = try #require(try store.read(key))
         expectEqual(fetched, merged)
 
-        let secondPass = try store.reconcileConflicts { _, _ in
+        let secondPass = try store.reconcileAllConflicts { _, _ in
             Issue.record("conflict should have been cleared")
             return .leave
         }
@@ -141,7 +161,7 @@ struct InMemorySidecarStoreTests {
         try store.write(existing, at: key)
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileConflicts { _, _ in .leave }
+        let outcomes = try store.reconcileAllConflicts { _, _ in .leave }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].mergedVersionCount == 0)
         #expect(outcomes[0].skippedReasons.isEmpty)
@@ -150,7 +170,7 @@ struct InMemorySidecarStoreTests {
         expectEqual(fetched, existing)
 
         var sawConflictAgain = false
-        _ = try store.reconcileConflicts { _, _ in
+        _ = try store.reconcileAllConflicts { _, _ in
             sawConflictAgain = true
             return .leave
         }
@@ -166,7 +186,7 @@ struct InMemorySidecarStoreTests {
         let key = contactKey()
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)
@@ -185,7 +205,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [v1, v2, v3])
 
         let merged = envelope()
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             .write(merged: merged, skip: [Data([0x03, 0x04])])
         }
         #expect(outcomes.count == 1)
@@ -199,7 +219,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [Data([0x01])])
         try store.delete(key)
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             Issue.record("delete should have cleared the scripted conflict")
             return .leave
         }
@@ -301,20 +321,5 @@ struct ProtocolDefaultsTests {
     func defaultRequestDownloadIsNoOp() throws {
         let store = MinimalSidecarStore()
         try store.requestDownload(SidecarKey(kind: .contact, id: "x"))
-    }
-
-    @Test
-    func defaultReconcileConflictsRoutesThroughPerKeyAPI() throws {
-        // MinimalSidecarStore returns [] from keysWithUnresolvedConflicts,
-        // so the default bulk implementation should produce an empty
-        // outcomes list without invoking the resolver.
-        let store = MinimalSidecarStore()
-        var resolverCalled = false
-        let outcomes = try store.reconcileConflicts { _, _ in
-            resolverCalled = true
-            return .leave
-        }
-        #expect(outcomes.isEmpty)
-        #expect(!resolverCalled)
     }
 }

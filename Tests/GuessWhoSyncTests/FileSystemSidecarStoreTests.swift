@@ -2,6 +2,26 @@ import Foundation
 import Testing
 @testable import GuessWhoSync
 
+// Test convenience: iterate keysWithUnresolvedConflicts then call
+// reconcileConflict for each. The orchestrator (production code) drives
+// the same loop inline while holding its per-key lock; tests don't need
+// the lock and can use this shorthand.
+private extension SidecarStoreProtocol {
+    func reconcileAllConflicts(
+        _ resolve: (_ key: SidecarKey, _ versions: [Data]) throws -> ConflictResolution
+    ) throws -> [SidecarReconcileReport.FileOutcome] {
+        var outcomes: [SidecarReconcileReport.FileOutcome] = []
+        for key in try keysWithUnresolvedConflicts() {
+            if let outcome = try reconcileConflict(at: key, resolve: { versions in
+                try resolve(key, versions)
+            }) {
+                outcomes.append(outcome)
+            }
+        }
+        return outcomes
+    }
+}
+
 @Suite("FileSystemSidecarStore")
 struct FileSystemSidecarStoreTests {
     private let when = Date(timeIntervalSince1970: 1_700_000_000)
@@ -152,7 +172,7 @@ struct FileSystemSidecarStoreTests {
         let store = FileSystemSidecarStore(root: root)
         try store.write(envelope(id: "abc"), at: SidecarKey(kind: .contact, id: "abc"))
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             Issue.record("closure should not be called when no conflicts exist")
             return .leave
         }
@@ -456,7 +476,7 @@ struct FileSystemSidecarStoreTests {
         let merged = envelope(id: "abc", fields: [
             "nickname": .value(.string("Merged"), modifiedAt: when, modifiedBy: "device-C")
         ])
-        let outcomes = try store.reconcileConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)
             #expect(versions.count >= 2)
             return .write(merged: merged, skip: [])
@@ -489,7 +509,7 @@ struct FileSystemSidecarStoreTests {
         let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         guard !conflicts.isEmpty else { return }
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)
