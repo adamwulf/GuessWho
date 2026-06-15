@@ -42,12 +42,14 @@ func mergeNotesCell(_ a: SidecarCell, _ b: SidecarCell) -> SidecarCell? {
     let aNotes = NotesCellCodec.decode(a)
     let bNotes = NotesCellCodec.decode(b)
 
+    // Resolve duplicates within a single side via perNoteWinner so the merge
+    // stays commutative/associative even on malformed inputs where one side
+    // carries two notes with the same id. A well-formed sidecar never does
+    // this, but the lenient decoder doesn't enforce uniqueness — apply LWW
+    // uniformly and the merge's algebraic properties hold regardless.
     var byID: [UUID: ContactNote] = [:]
     byID.reserveCapacity(aNotes.count + bNotes.count)
-    for note in aNotes {
-        byID[note.id] = note
-    }
-    for note in bNotes {
+    for note in aNotes + bNotes {
         if let existing = byID[note.id] {
             byID[note.id] = perNoteWinner(existing, note)
         } else {
