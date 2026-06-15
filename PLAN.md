@@ -891,17 +891,17 @@ Identical structure to §12.3, with `Link` substituted for `ContactNote` and mat
 
 ### 13.4 Interaction with the iCloud conflict reconciler
 
-`reconcileSidecars()` is unchanged. The N-fold via `merge(_:_:)` now also dispatches to `mergeLinksCell` for `"links"`. Per-envelope convergence is automatic. Cross-envelope convergence (A's sidecar vs B's sidecar holding "the same" link) is **not** a reconcile-time concern — they are independent envelopes with the same logical content; they converge when the orchestrator re-writes through `addLink`/`removeLink`, or never (the per-side copies stay correct because LWW within each envelope is correct).
+`reconcileSidecars()` is unchanged. The N-fold via `merge(_:_:)` now also dispatches to `mergeLinksCell` for `"links"`. Per-envelope convergence is automatic. Cross-envelope convergence (A's sidecar vs B's sidecar holding "the same" link) is **not** a reconcile-time concern — they are independent envelopes with the same logical content; they converge when the orchestrator re-writes through `addLink`/`setLinkNote`/`removeLink`, or never (the per-side copies stay correct because LWW within each envelope is correct).
 
 ### 13.5 Interaction with identity reconciliation
 
 §3.3 Case D rebases a loser-UUID `L` sidecar into the winner UUID `W` via `merge(_:_:)`, so any link in the loser's `"links"` cell folds into the winner's by per-link LWW. Those links survive the rebase intact.
 
-**Links whose `endpointA`/`endpointB` *refers to* `L`** (from any sidecar — `L`'s own, `W`'s, or any third party's) keep pointing at `L` after Case D. v1 does **not** rewrite them. They become "stale-endpoint links," analogous to the orphan sidecars §3.4 already accepts: the UI either resolves them lazily (treat `(.contact, L)` as "look up the contact carrying that URL — if none, render as broken") or ignores them.
+**Links whose `endpointA`/`endpointB` *refers to* `L`** (from any sidecar — `L`'s own, `W`'s, or any third party's) keep pointing at `L` after Case D. v1 does **not** rewrite them. They become **stale-endpoint links**, analogous to the orphan sidecars §3.4 already accepts: the UI resolves them lazily (treat `(.contact, L)` as "look up the contact carrying that GuessWho UUID — if none, render as a stale-endpoint link") or ignores them.
 
 Rationale for deferring rewrite to v2: (a) Case D in the wild is rare — it requires two devices to independently mint UUIDs for the same contact before either syncs, which the smoke tests in §11.1 have not yet witnessed in production; (b) automatic rewrite is an O(N sidecars) scan with its own multi-device convergence headaches (stamp-bump ordering, double-bumps under concurrent Case-Ds, interaction with concurrent note edits); (c) §3.4 already establishes the precedent that v1 leaves stale references intact. v2 can add a sweep when there's signal it's needed.
 
-UI implication: a link to a contact whose GuessWho UUID no longer matches any live contact should render as "unknown contact" (same treatment as a deleted endpoint), with a UI path to either drop the link or relink to a candidate contact. Out of scope for the package.
+UI implication: a stale-endpoint link should render with a UI path to either drop the link or relink to a candidate contact. Out of scope for the package.
 
 ### 13.6 Public API
 
