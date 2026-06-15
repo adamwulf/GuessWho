@@ -82,7 +82,7 @@ A v2 policy could auto-GC orphans older than a threshold (long enough for any re
 
 | Data lives where? | Examples |
 |---|---|
-| **Contacts store (canonical, writable)** | Name, phone, email, postal address, birthday, organization, `urlAddresses` (including our GuessWho URL) |
+| **Contacts store (canonical, writable)** | Every `CNContact` field the framework exposes except `note` (gated by `com.apple.developer.contacts.notes` entitlement; deferred until we obtain it). Specifically: `contactType`; the full name family (`namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, plus phonetic given/middle/family); the full work family (`jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`); `phoneNumbers`, `emailAddresses`, `postalAddresses`, `urlAddresses` (including our GuessWho URL); `birthday`, `nonGregorianBirthday`, and labeled `dates` (anniversary, custom); `socialProfiles`; `instantMessageAddresses`; `contactRelations`; `imageDataAvailable` (raw `imageData`/`thumbnailImageData` are loaded on demand, not carried on `Contact`). |
 | **EventKit (canonical, read-only)** | Calendar events, attendees, location, recurrence — read but never written by this package |
 | **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. |
 
@@ -199,14 +199,53 @@ When iCloud presents multiple versions of the same sidecar (current + `NSFileVer
 
 The package owns its own plain-Swift models — not `CNContact`/`EKEvent` — so mocks don't have to forge framework types. Adapters convert at the boundary.
 
-`Contact` and `Event` are plain-Swift mirrors of the §4 canonical field families. The two fields the identity reconciler depends on are spelled out; the rest are finalized during implementation as callers ask for them.
+`Contact` is a faithful mirror of `CNContact`: every property the framework exposes is represented, **except `note`**, which Apple gates behind the `com.apple.developer.contacts.notes` entitlement (deferred until the app has it). `Event` is a plain-Swift mirror of the §4 canonical event fields.
 
 ```swift
 public struct Contact: Hashable, Sendable {
-    public var localID: String                       // device-local CNContact.identifier
-    public var urlAddresses: [LabeledValue]          // includes the GuessWho URL when assigned
-    public var postalAddresses: [LabeledPostalAddress] // structured, component-for-component (see below)
-    // plus name, phone, email, birthday, organization — see §4
+    public var localID: String                              // device-local CNContact.identifier
+    public var contactType: ContactType                     // .person or .organization
+
+    // Names — full CNContact name family
+    public var namePrefix: String
+    public var givenName: String
+    public var middleName: String
+    public var familyName: String
+    public var previousFamilyName: String
+    public var nameSuffix: String
+    public var nickname: String
+    public var phoneticGivenName: String
+    public var phoneticMiddleName: String
+    public var phoneticFamilyName: String
+
+    // Work
+    public var jobTitle: String
+    public var departmentName: String
+    public var organizationName: String
+    public var phoneticOrganizationName: String
+
+    // Addresses & contact channels
+    public var phoneNumbers: [LabeledValue]
+    public var emailAddresses: [LabeledValue]
+    public var postalAddresses: [LabeledPostalAddress]
+    public var urlAddresses: [LabeledValue]                 // includes the GuessWho URL when assigned
+
+    // Dates
+    public var birthday: DateComponents?
+    public var nonGregorianBirthday: DateComponents?
+    public var dates: [LabeledDate]                         // anniversary, custom
+
+    // Social / messaging / relations
+    public var socialProfiles: [LabeledSocialProfile]
+    public var instantMessageAddresses: [LabeledInstantMessageAddress]
+    public var contactRelations: [LabeledContactRelation]
+
+    // Image presence flag only — image bytes are loaded on demand (see below)
+    public var imageDataAvailable: Bool
+}
+
+public enum ContactType: String, Sendable, Codable {
+    case person, organization
 }
 
 public struct Event: Hashable, Sendable {
@@ -236,6 +275,42 @@ public struct PostalAddress: Hashable, Sendable, Codable {
 public struct LabeledPostalAddress: Hashable, Sendable, Codable {
     public var label: String                    // e.g. "home", "work"
     public var value: PostalAddress
+}
+
+// Parallel labeled wrappers for the structured CNContact arrays. The labeled
+// pattern matches LabeledPostalAddress — no generic LabeledValue<T>, so existing
+// String-valued LabeledValue consumers don't break.
+
+public struct LabeledDate: Hashable, Sendable, Codable {
+    public var label: String                    // e.g. "anniversary", custom
+    public var value: DateComponents
+}
+
+public struct SocialProfile: Hashable, Sendable, Codable {
+    public var urlString: String
+    public var username: String
+    public var userIdentifier: String
+    public var service: String                  // e.g. "Twitter", "Facebook"
+}
+
+public struct LabeledSocialProfile: Hashable, Sendable, Codable {
+    public var label: String
+    public var value: SocialProfile
+}
+
+public struct InstantMessageAddress: Hashable, Sendable, Codable {
+    public var username: String
+    public var service: String                  // e.g. "Skype", "Jabber"
+}
+
+public struct LabeledInstantMessageAddress: Hashable, Sendable, Codable {
+    public var label: String
+    public var value: InstantMessageAddress
+}
+
+public struct LabeledContactRelation: Hashable, Sendable, Codable {
+    public var label: String                    // e.g. "mother", "father", custom
+    public var name: String                     // CNContactRelation.name
 }
 
 public enum JSONValue: Hashable, Sendable {
@@ -272,6 +347,11 @@ public protocol ContactStoreProtocol {
     func fetchAll() throws -> [Contact]
     func fetch(localID: String) throws -> Contact?
     func save(_ contact: Contact) throws
+
+    // Image bytes are loaded on demand so bulk fetches don't pay the cost.
+    // Returns nil if the contact has no image or does not exist.
+    func loadImageData(localID: String) throws -> Data?
+    func loadThumbnailImageData(localID: String) throws -> Data?
 }
 
 public protocol EventStoreProtocol {
@@ -396,7 +476,16 @@ extension SidecarKey {
 ### 9.1 Contact field edits (mocks)
 - create / read / update / delete name, phone, email, postal address, birthday, organization
 - adding/removing URLs preserves the GuessWho URL when present
-- save→fetch roundtrip is identity
+- save→fetch roundtrip is identity for the full `Contact` model — every field carried on `Contact` survives a write/read cycle byte-for-byte. Specifically:
+  - `contactType` round-trips (`.person`, `.organization`)
+  - name family round-trips: `namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, `phoneticGivenName`, `phoneticMiddleName`, `phoneticFamilyName`
+  - work family round-trips: `jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`
+  - `nonGregorianBirthday` round-trips independently of `birthday`
+  - `dates` (labeled `DateComponents`) round-trip with label preserved
+  - `socialProfiles` round-trip (all four components: `urlString`, `username`, `userIdentifier`, `service`) with label preserved
+  - `instantMessageAddresses` round-trip (`username`, `service`) with label preserved
+  - `contactRelations` round-trip with label and `name`
+  - `imageDataAvailable` round-trips as a Bool; `loadImageData(localID:)` and `loadThumbnailImageData(localID:)` return what was stored, or `nil` when not available
 
 ### 9.2 Sidecar IO (in-memory and filesystem)
 - write then read returns the same envelope
@@ -449,6 +538,7 @@ extension SidecarKey {
 2. **Background sync.** v1 requires the host to call `reconcile…()` explicitly. v2 may register an `NSFilePresenter`.
 3. **Tombstone GC.** Tombstones live forever in v1.
 4. **Orphan-sidecar auto-GC.** v1 keeps orphans. v2 may add a policy.
+5. **`CNContact.note`.** Apple gates `CNContactNoteKey` behind the `com.apple.developer.contacts.notes` entitlement. We don't have it yet. When granted, add `note: String` to `Contact`, route through `CNContactStoreAdapter`, and extend §9.1 with a round-trip test. Until then `Contact` has no `note` property — the field is the single deliberate gap vs. `CNContact`.
 
 ## 11. Implementation Order
 
