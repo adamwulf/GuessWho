@@ -13,4 +13,9 @@ public enum SidecarStoreError: Error, Equatable {
     // exponential backoff before failing; install a custom handler if you
     // want different semantics.
     case timedOut(SidecarKey)
+
+    // The JSON shape of `value` does not match the cell's `type`
+    // (e.g. `.checkbox` requires `.bool`). Thrown by `addField` /
+    // `setField(at:id:field:value:)`.
+    case typeValueMismatch(expected: SidecarFieldType, got: JSONValue)
 }

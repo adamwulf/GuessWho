@@ -133,6 +133,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         var result: [SidecarKey] = []
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("contacts"), kind: .contact))
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("events"), kind: .event))
+        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("links"), kind: .link))
         return result
     }
 
@@ -305,15 +306,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         switch kind {
         case .contact: return "contacts"
         case .event: return "events"
+        case .link: return "links"
         }
     }
 
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
-        case .contact:
-            // Contact UUIDs are canonicalized to lowercase at every boundary so
-            // case-folding filesystems (iCloud Drive on APFS) can't desync the
-            // on-disk name from the in-memory key.
+        case .contact, .link:
+            // Contact and link UUIDs are canonicalized to lowercase at every
+            // boundary so case-folding filesystems (iCloud Drive on APFS) can't
+            // desync the on-disk name from the in-memory key.
             return "\(key.id.lowercased()).json"
         case .event:
             var allowed = CharacterSet(charactersIn: "._-")
@@ -353,8 +355,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
-            case .contact:
-                result.append(SidecarKey(kind: .contact, id: basename.lowercased()))
+            case .contact, .link:
+                result.append(SidecarKey(kind: kind, id: basename.lowercased()))
             case .event:
                 let decoded = basename.removingPercentEncoding ?? basename
                 result.append(SidecarKey(kind: .event, id: decoded))

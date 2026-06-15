@@ -23,34 +23,258 @@ public final class GuessWhoSync {
         try sidecars.read(key)
     }
 
-    public func setField(_ name: String, value: JSONValue, at key: SidecarKey) throws {
-        try sidecarLocks.withLock(forKey: key) {
+    // MARK: - Field-instance API (§7.3)
+    //
+    // Every cell is keyed by a per-instance UUID and carries an inner
+    // value object { field, type, value, createdAt } per §5.2. A contact
+    // or event may carry zero-to-many instances of any type.
+
+    /// Adds a new field instance. Mints a UUID, writes a cell whose inner
+    /// value object is { field, type, value, createdAt }. Returns the
+    /// minted UUID.
+    @discardableResult
+    public func addField(
+        at key: SidecarKey,
+        field: String,
+        type: SidecarFieldType,
+        value: JSONValue
+    ) throws -> UUID {
+        try SidecarField.validate(value: value, against: type)
+        return try sidecarLocks.withLock(forKey: key) {
             let existing = try sidecars.read(key)
-            let cell = SidecarCell.value(value, modifiedAt: Date(), modifiedBy: deviceID)
+            let id = UUID()
+            let now = Date()
+            let inner = SidecarField.makeInnerValue(
+                field: field,
+                type: type,
+                value: value,
+                createdAt: now
+            )
+            let cell = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
             var fields = existing?.fields ?? [:]
-            fields[name] = cell
+            fields[id.uuidString] = cell
             let envelope = SidecarEnvelope(
                 schemaVersion: 1,
                 entityID: existing?.entityID ?? key.id,
+                fields: fields
+            )
+            try sidecars.write(envelope, at: key)
+            return id
+        }
+    }
+
+    /// Mutates an existing field instance's caller-supplied name and/or
+    /// value. Reads the existing cell to recover the immutable `type`;
+    /// throws `typeValueMismatch` if the new value doesn't match. Bumps
+    /// `modifiedAt`/`modifiedBy` and clears `deletedAt` (undelete: writing
+    /// to a soft-deleted cell brings it back as live). Silent no-op if the
+    /// cell is missing.
+    public func setField(
+        at key: SidecarKey,
+        id: UUID,
+        field: String,
+        value: JSONValue
+    ) throws {
+        try sidecarLocks.withLock(forKey: key) {
+            guard let existing = try sidecars.read(key),
+                  let existingCell = existing.fields[id.uuidString]
+            else { return }
+            guard let type = SidecarField.type(of: existingCell) else { return }
+            try SidecarField.validate(value: value, against: type)
+
+            guard let inner = SidecarField.makeInnerValueForEdit(
+                existingCell: existingCell,
+                newField: field,
+                newValue: value
+            ) else { return }
+
+            let cell = SidecarCell(
+                value: inner,
+                modifiedAt: Date(),
+                modifiedBy: deviceID,
+                deletedAt: nil
+            )
+            var fields = existing.fields
+            fields[id.uuidString] = cell
+            let envelope = SidecarEnvelope(
+                schemaVersion: 1,
+                entityID: existing.entityID,
                 fields: fields
             )
             try sidecars.write(envelope, at: key)
         }
     }
 
-    public func deleteField(_ name: String, at key: SidecarKey) throws {
+    /// Soft-deletes a field instance by setting cell `deletedAt = now`,
+    /// bumping `modifiedAt`/`modifiedBy`. The inner value object is
+    /// preserved as a record of what was deleted. Silent no-op if the
+    /// cell is missing or already soft-deleted.
+    public func deleteField(at key: SidecarKey, id: UUID) throws {
         try sidecarLocks.withLock(forKey: key) {
-            let existing = try sidecars.read(key)
-            let tombstone = SidecarCell.tombstone(modifiedAt: Date(), modifiedBy: deviceID)
-            var fields = existing?.fields ?? [:]
-            fields[name] = tombstone
+            guard let existing = try sidecars.read(key),
+                  let existingCell = existing.fields[id.uuidString]
+            else { return }
+            if existingCell.deletedAt != nil { return }
+
+            let now = Date()
+            let cell = SidecarCell(
+                value: existingCell.value,
+                modifiedAt: now,
+                modifiedBy: deviceID,
+                deletedAt: now
+            )
+            var fields = existing.fields
+            fields[id.uuidString] = cell
             let envelope = SidecarEnvelope(
                 schemaVersion: 1,
-                entityID: existing?.entityID ?? key.id,
+                entityID: existing.entityID,
                 fields: fields
             )
             try sidecars.write(envelope, at: key)
         }
+    }
+
+    /// Returns one decoded field by id, or nil if the cell is missing or
+    /// has an unknown/malformed `type`. Soft-deleted fields are returned
+    /// (callers filter on `deletedAt`).
+    public func field(at key: SidecarKey, id: UUID) throws -> SidecarField? {
+        guard let envelope = try sidecars.read(key),
+              let cell = envelope.fields[id.uuidString]
+        else { return nil }
+        return SidecarField.decode(id: id, from: cell)
+    }
+
+    /// Returns every decoded field in the entity's sidecar, in unspecified
+    /// order. Soft-deleted fields are returned. Cells whose `type` is
+    /// unknown to this package version are omitted (forward-compatibility).
+    public func fields(at key: SidecarKey) throws -> [SidecarField] {
+        guard let envelope = try sidecars.read(key) else { return [] }
+        var result: [SidecarField] = []
+        result.reserveCapacity(envelope.fields.count)
+        for (rawID, cell) in envelope.fields {
+            guard let id = UUID(uuidString: rawID) else { continue }
+            if let decoded = SidecarField.decode(id: id, from: cell) {
+                result.append(decoded)
+            }
+        }
+        return result
+    }
+
+    // MARK: - Link API (§13)
+
+    /// Creates a link between two entities. Writes one envelope and
+    /// returns the minted Link. Never dedups — multiple links between
+    /// the same endpoints are allowed.
+    @discardableResult
+    public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link {
+        let id = UUID()
+        let key = SidecarKey(kind: .link, id: id.uuidString)
+        let now = Date()
+        let envelope = SidecarEnvelope(
+            schemaVersion: 1,
+            entityID: key.id,
+            fields: [
+                Link.endpointAKey: SidecarCell(value: Link.encodeEndpoint(a), modifiedAt: now, modifiedBy: deviceID),
+                Link.endpointBKey: SidecarCell(value: Link.encodeEndpoint(b), modifiedAt: now, modifiedBy: deviceID),
+                Link.noteKey: SidecarCell(value: .string(note), modifiedAt: now, modifiedBy: deviceID),
+                Link.createdAtKey: SidecarCell(
+                    value: .string(SidecarISO8601.string(from: now)),
+                    modifiedAt: now,
+                    modifiedBy: deviceID
+                ),
+            ]
+        )
+        try sidecarLocks.withLock(forKey: key) {
+            try sidecars.write(envelope, at: key)
+        }
+        return Link(
+            id: id,
+            endpointA: a,
+            endpointB: b,
+            note: note,
+            createdAt: now,
+            modifiedAt: now,
+            modifiedBy: deviceID
+        )
+    }
+
+    /// Mutates the note on an existing link. If the link is soft-deleted,
+    /// also clears the deletedAt cell (undelete: writes deletedAt cell
+    /// with value: null alongside the note write). Silent no-op if the
+    /// envelope is missing.
+    public func setLinkNote(id: UUID, note: String) throws {
+        let key = SidecarKey(kind: .link, id: id.uuidString)
+        try sidecarLocks.withLock(forKey: key) {
+            guard let existing = try sidecars.read(key) else { return }
+            let now = Date()
+            var fields = existing.fields
+            fields[Link.noteKey] = SidecarCell(
+                value: .string(note),
+                modifiedAt: now,
+                modifiedBy: deviceID
+            )
+            // Undelete: write deletedAt cell with value: null so LWW recognises
+            // this as a fresh live-state write.
+            if fields[Link.deletedAtKey] != nil {
+                fields[Link.deletedAtKey] = SidecarCell(
+                    value: .null,
+                    modifiedAt: now,
+                    modifiedBy: deviceID
+                )
+            }
+            try sidecars.write(
+                SidecarEnvelope(schemaVersion: 1, entityID: existing.entityID, fields: fields),
+                at: key
+            )
+        }
+    }
+
+    /// Soft-deletes the link by writing the deletedAt cell with an ISO8601
+    /// timestamp value. All other cells are preserved so a future
+    /// setLinkNote can undelete without losing the note. Silent no-op if
+    /// the link is missing or already soft-deleted.
+    public func removeLink(id: UUID) throws {
+        let key = SidecarKey(kind: .link, id: id.uuidString)
+        try sidecarLocks.withLock(forKey: key) {
+            guard let existing = try sidecars.read(key) else { return }
+            // Already soft-deleted: silent no-op (no stamp churn).
+            if let cell = existing.fields[Link.deletedAtKey], case .string = cell.value {
+                return
+            }
+            let now = Date()
+            var fields = existing.fields
+            fields[Link.deletedAtKey] = SidecarCell(
+                value: .string(SidecarISO8601.string(from: now)),
+                modifiedAt: now,
+                modifiedBy: deviceID
+            )
+            try sidecars.write(
+                SidecarEnvelope(schemaVersion: 1, entityID: existing.entityID, fields: fields),
+                at: key
+            )
+        }
+    }
+
+    /// Returns a single link by id, or nil if the envelope is missing or
+    /// malformed. Soft-deleted links are returned; callers filter.
+    public func link(id: UUID) throws -> Link? {
+        let key = SidecarKey(kind: .link, id: id.uuidString)
+        guard let envelope = try sidecars.read(key) else { return nil }
+        return Link(from: envelope)
+    }
+
+    /// Returns every link whose endpointA or endpointB equals `key`.
+    /// Soft-deleted links are returned. O(N links).
+    public func links(at endpoint: SidecarKey) throws -> [Link] {
+        var result: [Link] = []
+        for key in try sidecars.allKeys() where key.kind == .link {
+            guard let envelope = try sidecars.read(key) else { continue }
+            guard let link = Link(from: envelope) else { continue }
+            if link.endpointA == endpoint || link.endpointB == endpoint {
+                result.append(link)
+            }
+        }
+        return result
     }
 
     public func reconcileSidecars() throws -> SidecarReconcileReport {
@@ -315,16 +539,70 @@ public final class GuessWhoSync {
         }
         try contacts.save(contact)
 
+        // §13.4 — rewrite any link endpoints pointing at a loser UUID to the
+        // winner UUID. Runs after winner/loser sidecars are reconciled and
+        // saved so the link graph reflects the merged state on return.
+        let rewrittenLinkIDs = try rewriteLinkEndpoints(losers: losers, winner: winner)
+
         return ContactReconcileResult(
             report: IdentityReconcileReport.ContactOutcome(
                 localID: contact.localID,
                 assignedUUID: nil,
                 mergedLoserUUIDs: mergedLoserUUIDs,
                 removedMalformedURLs: malformedURLs,
+                rewrittenLinkIDs: rewrittenLinkIDs,
                 errors: errors
             ),
             carriedUUIDs: [winner]
         )
+    }
+
+    // §13.4 endpoint rewrite. For every `.link` envelope whose endpointA
+    // and/or endpointB cell points at `(.contact, L)` for any `L` in
+    // `losers`, write a new envelope with the affected endpoint cell(s)
+    // rewritten to `(.contact, winner)`. One envelope write per affected
+    // link, even when both endpoints change.
+    private func rewriteLinkEndpoints(losers: [String], winner: String) throws -> [UUID] {
+        guard !losers.isEmpty else { return [] }
+        let loserSet = Set(losers)
+
+        var rewritten: [UUID] = []
+        for key in try sidecars.allKeys() where key.kind == .link {
+            guard let envelope = try sidecars.read(key) else { continue }
+            guard let aCell = envelope.fields[Link.endpointAKey],
+                  let bCell = envelope.fields[Link.endpointBKey] else { continue }
+            let aEndpoint = Link.decodeEndpoint(aCell.value)
+            let bEndpoint = Link.decodeEndpoint(bCell.value)
+
+            let aMatches = aEndpoint.map { $0.kind == .contact && loserSet.contains($0.id) } ?? false
+            let bMatches = bEndpoint.map { $0.kind == .contact && loserSet.contains($0.id) } ?? false
+            guard aMatches || bMatches else { continue }
+
+            let now = Date()
+            var fields = envelope.fields
+            if aMatches {
+                fields[Link.endpointAKey] = SidecarCell(
+                    value: Link.encodeEndpoint(SidecarKey(kind: .contact, id: winner)),
+                    modifiedAt: now,
+                    modifiedBy: deviceID
+                )
+            }
+            if bMatches {
+                fields[Link.endpointBKey] = SidecarCell(
+                    value: Link.encodeEndpoint(SidecarKey(kind: .contact, id: winner)),
+                    modifiedAt: now,
+                    modifiedBy: deviceID
+                )
+            }
+            try sidecars.write(
+                SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
+                at: key
+            )
+            if let linkID = UUID(uuidString: key.id) {
+                rewritten.append(linkID)
+            }
+        }
+        return rewritten
     }
 
     // Recursively acquire per-key locks in sorted UUID order, then execute

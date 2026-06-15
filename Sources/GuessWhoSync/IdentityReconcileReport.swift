@@ -6,6 +6,10 @@ public struct IdentityReconcileReport: Sendable {
         public let assignedUUID: String?
         public let mergedLoserUUIDs: [String]
         public let removedMalformedURLs: [String]
+        // §13.4 — link UUIDs whose endpoints were rewritten by this contact's
+        // Case-D collapse. Each link appears at most once even if both its
+        // endpoints were rewritten in one pass.
+        public let rewrittenLinkIDs: [UUID]
         public let errors: [String]
 
         public init(
@@ -13,12 +17,14 @@ public struct IdentityReconcileReport: Sendable {
             assignedUUID: String?,
             mergedLoserUUIDs: [String],
             removedMalformedURLs: [String],
+            rewrittenLinkIDs: [UUID] = [],
             errors: [String]
         ) {
             self.localID = localID
             self.assignedUUID = assignedUUID
             self.mergedLoserUUIDs = mergedLoserUUIDs
             self.removedMalformedURLs = removedMalformedURLs
+            self.rewrittenLinkIDs = rewrittenLinkIDs
             self.errors = errors
         }
     }

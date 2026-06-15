@@ -1,16 +1,30 @@
 import Foundation
 
-public enum SidecarCell: Sendable {
-    case value(JSONValue, modifiedAt: Date, modifiedBy: String)
-    case tombstone(modifiedAt: Date, modifiedBy: String)
+public struct SidecarCell: Sendable {
+    public var value: JSONValue
+    public var modifiedAt: Date
+    public var modifiedBy: String
+    public var deletedAt: Date?
+
+    public init(
+        value: JSONValue,
+        modifiedAt: Date,
+        modifiedBy: String,
+        deletedAt: Date? = nil
+    ) {
+        self.value = value
+        self.modifiedAt = modifiedAt
+        self.modifiedBy = modifiedBy
+        self.deletedAt = deletedAt
+    }
 }
 
 extension SidecarCell: Codable {
     private enum CodingKeys: String, CodingKey {
         case value
-        case deleted
         case modifiedAt
         case modifiedBy
+        case deletedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -24,43 +38,30 @@ extension SidecarCell: Codable {
             )
         }
         let modifiedBy = try container.decode(String.self, forKey: .modifiedBy)
+        let value = try container.decode(JSONValue.self, forKey: .value)
 
-        let hasValue = container.contains(.value)
-        let deletedFlag = try container.decodeIfPresent(Bool.self, forKey: .deleted)
-        let isTombstone = deletedFlag == true
-
-        switch (hasValue, isTombstone) {
-        case (true, true):
-            throw DecodingError.dataCorruptedError(
-                forKey: .deleted,
-                in: container,
-                debugDescription: "Cell has both 'value' and 'deleted'; exactly one must be present"
-            )
-        case (false, false):
-            throw DecodingError.dataCorruptedError(
-                forKey: .value,
-                in: container,
-                debugDescription: "Cell has neither 'value' nor 'deleted: true'; exactly one must be present"
-            )
-        case (true, false):
-            let v = try container.decode(JSONValue.self, forKey: .value)
-            self = .value(v, modifiedAt: modifiedAt, modifiedBy: modifiedBy)
-        case (false, true):
-            self = .tombstone(modifiedAt: modifiedAt, modifiedBy: modifiedBy)
+        var deletedAt: Date? = nil
+        if let raw = try container.decodeIfPresent(String.self, forKey: .deletedAt) {
+            guard let parsed = SidecarISO8601.date(from: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .deletedAt,
+                    in: container,
+                    debugDescription: "deletedAt is not a valid ISO8601 UTC timestamp"
+                )
+            }
+            deletedAt = parsed
         }
+
+        self.init(value: value, modifiedAt: modifiedAt, modifiedBy: modifiedBy, deletedAt: deletedAt)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .value(let v, let modifiedAt, let modifiedBy):
-            try container.encode(v, forKey: .value)
-            try container.encode(SidecarISO8601.string(from: modifiedAt), forKey: .modifiedAt)
-            try container.encode(modifiedBy, forKey: .modifiedBy)
-        case .tombstone(let modifiedAt, let modifiedBy):
-            try container.encode(true, forKey: .deleted)
-            try container.encode(SidecarISO8601.string(from: modifiedAt), forKey: .modifiedAt)
-            try container.encode(modifiedBy, forKey: .modifiedBy)
+        try container.encode(value, forKey: .value)
+        try container.encode(SidecarISO8601.string(from: modifiedAt), forKey: .modifiedAt)
+        try container.encode(modifiedBy, forKey: .modifiedBy)
+        if let deletedAt {
+            try container.encode(SidecarISO8601.string(from: deletedAt), forKey: .deletedAt)
         }
     }
 }
