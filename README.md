@@ -51,6 +51,16 @@ and (DEBUG-only) "Write debug field" buttons.
    for that UUID. A JSON file will appear in
    `~/Library/Mobile Documents/iCloud~com~milestonemade~guesswho/Documents/contacts/<uuid>.json`.
 
+## Sidecar storage fallback
+
+If iCloud Drive is unavailable (signed out, container not yet provisioned,
+network down at launch), the app falls back to local-only storage under
+`Application Support/GuessWhoSidecars/` and shows an orange banner
+explaining the situation. If even that is unwritable, the app refuses to
+read or write sidecars rather than degrade silently — the banner turns
+red and Reconcile + sidecar reads are disabled. The fallback location is
+resolved once at launch (relaunch the app after signing in to iCloud).
+
 ## What v1 does not do
 
 Tracked in PLAN §10: background sync (host calls `reconcile…()`
