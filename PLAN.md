@@ -282,6 +282,9 @@ public enum ConflictResolution: Sendable {
     /// are byte-identical, they are treated as the same outcome (all matching
     /// versions skipped together, or all marked resolved together).
     case write(merged: SidecarEnvelope, skip: [Data])
+    /// Write `merged` to a sibling file; leave original current and all
+    /// conflict versions intact. Used when current is unparseable (§6).
+    case writeRecoverySibling(merged: SidecarEnvelope, suffix: String)
     /// Leave everything in conflict.
     case leave
 }
