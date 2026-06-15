@@ -32,6 +32,12 @@ final class SyncService {
     private(set) var contactsAuthorization: ContactsAuthorization
     private(set) var lastError: String?
 
+    // Exposed so view-models that mint records carrying a writer ID
+    // (e.g. NotesStore stamping ContactNote.modifiedBy) stamp with the
+    // same identifier the package's setField will stamp the outer cell
+    // with. Same source, same value — avoids drifting writer-ID schemes.
+    let deviceID: String
+
     private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
     private let sync: GuessWhoSync?
@@ -56,6 +62,9 @@ final class SyncService {
         let location = Self.resolveSidecarLocation()
         self.sidecarLocation = location
 
+        let id = Self.stableDeviceID()
+        self.deviceID = id
+
         switch location {
         case .iCloud(let url), .localFallback(let url, _):
             let sidecarStore = FileSystemSidecarStore(root: url)
@@ -63,7 +72,7 @@ final class SyncService {
                 contacts: adapter,
                 events: NoopEventStore(),
                 sidecars: sidecarStore,
-                deviceID: Self.stableDeviceID()
+                deviceID: id
             )
         case .unavailable:
             self.sync = nil
@@ -135,6 +144,13 @@ final class SyncService {
             throw SidecarUnavailableError()
         }
         try sync.setField(name, value: value, at: SidecarKey(kind: .contact, id: uuid))
+    }
+
+    func sidecarEnvelope(forContactUUID uuid: String) throws -> SidecarEnvelope? {
+        guard let sync else {
+            throw SidecarUnavailableError()
+        }
+        return try sync.sidecar(at: SidecarKey(kind: .contact, id: uuid))
     }
 
     // MARK: - Private
