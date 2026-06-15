@@ -14,12 +14,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // Closure consulted when a sidecar operation exceeds `perAttemptTimeout`.
     // Default: 3 retries, exponential backoff from 250ms, then fail. See
     // `SidecarBusyHandler` for the contract.
-    public var busyHandler: SidecarBusyHandler
+    public let busyHandler: SidecarBusyHandler
 
     // Per-attempt budget for a single sidecar read/write/delete. If the
     // operation hasn't returned by this point, `busyHandler` is consulted.
     // Defaults to 1 second.
-    public var perAttemptTimeout: TimeInterval
+    public let perAttemptTimeout: TimeInterval
 
     // Background queue the coordinator runs on so the calling thread can
     // wait with a timeout. One serial queue per store instance — coordinator
@@ -156,14 +156,14 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         // is "current" (fully downloaded) or still downloading. For non-
         // ubiquity files those keys return nil; treat that as downloaded.
         if fm.fileExists(atPath: url.path) {
-            if let (status, percent) = downloadingResourceValues(for: url) {
+            if let status = ubiquityDownloadingStatus(for: url) {
                 switch status {
                 case .current, .downloaded:
                     return .downloaded
                 case .notDownloaded:
                     return .notStarted
                 default:
-                    return .downloading(fractionComplete: percent.map { $0 / 100.0 })
+                    return .downloading
                 }
             }
             return .downloaded
@@ -174,9 +174,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         // downloading-in-progress signal.
         let placeholder = placeholderURL(for: url)
         if fm.fileExists(atPath: placeholder.path) {
-            if let (status, percent) = downloadingResourceValues(for: placeholder),
+            if let status = ubiquityDownloadingStatus(for: placeholder),
                status != .notDownloaded {
-                return .downloading(fractionComplete: percent.map { $0 / 100.0 })
+                return .downloading
             }
             return .notStarted
         }
@@ -191,17 +191,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     // Read the ubiquity downloading-status for a URL. Returns nil if the
     // URL isn't a ubiquity item (e.g. a temp file in tests).
-    //
-    // Percent-downloaded is reported as nil: the URLResourceKey form
-    // (`ubiquitousItemPercentDownloadedKey`) was deprecated in macOS 10.8,
-    // and the supported replacement requires an NSMetadataQuery on the
-    // ubiquity container — heavier than warrants for a one-off status
-    // probe. Callers that need a progress bar can run their own
-    // NSMetadataQuery; the enum case is `Double?` so this layer staying
-    // coarse is fine.
-    private func downloadingResourceValues(
+    private func ubiquityDownloadingStatus(
         for url: URL
-    ) -> (URLUbiquitousItemDownloadingStatus, Double?)? {
+    ) -> URLUbiquitousItemDownloadingStatus? {
         let keys: Set<URLResourceKey> = [.ubiquitousItemDownloadingStatusKey]
         guard let raw = try? url.resourceValues(forKeys: keys).allValues else {
             return nil
@@ -209,8 +201,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         guard let rawStatus = raw[.ubiquitousItemDownloadingStatusKey] as? String else {
             return nil
         }
-        let status = URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
-        return (status, nil)
+        return URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
     }
 
     public func reconcileConflict(
@@ -291,24 +282,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                     key: key,
                     mergedVersionCount: allBytes.count - skippedCount,
                     skippedReasons: []
-                )
-
-            case .writeRecoverySibling(let merged, let suffix):
-                let mergedData = try JSONEncoder().encode(merged)
-                let siblingURL = recoverySiblingURL(for: url, suffix: suffix)
-                var siblingWriteError: Error?
-                try coordinatedWrite(key: key, at: siblingURL) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        siblingWriteError = error
-                    }
-                }
-                if let siblingWriteError { throw siblingWriteError }
-                return SidecarReconcileReport.FileOutcome(
-                    key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: ["wrote recovery sibling: \(suffix)"]
                 )
 
             case .leave:
@@ -410,13 +383,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return directory.appendingPathComponent(placeholderName)
     }
 
-    // Original `abc.json` → sibling `abc.recovered.<suffix>.json` (same directory).
-    private func recoverySiblingURL(for original: URL, suffix: String) -> URL {
-        let directory = original.deletingLastPathComponent()
-        let stem = original.deletingPathExtension().lastPathComponent
-        return directory.appendingPathComponent("\(stem).recovered.\(suffix).json")
-    }
-
     // MARK: - NSFileCoordinator wrappers
 
     // On Apple platforms cloudd reads and writes ubiquity-container files in
@@ -483,8 +449,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // `ResultBox` (heap) so a late completion never writes to a dead
     // stack frame. The captured box is then released by ARC; the
     // coordinator queue is reused for the next call.
-    // Internal (not private) so @testable imports can probe the busy-handling
-    // behavior without going through the coordinator wrappers.
+    // Internal so @testable tests can drive busy handling directly,
+    // bypassing the coordinator wrappers.
     func runWithBusyHandling(
         key: SidecarKey,
         operation: @escaping () throws -> Void

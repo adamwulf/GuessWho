@@ -152,7 +152,7 @@ struct FileSystemSidecarStoreTests {
         let store = FileSystemSidecarStore(root: root)
         try store.write(envelope(id: "abc"), at: SidecarKey(kind: .contact, id: "abc"))
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             Issue.record("closure should not be called when no conflicts exist")
             return .leave
         }
@@ -456,7 +456,7 @@ struct FileSystemSidecarStoreTests {
         let merged = envelope(id: "abc", fields: [
             "nickname": .value(.string("Merged"), modifiedAt: when, modifiedBy: "device-C")
         ])
-        let outcomes = try store.reconcileConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)
             #expect(versions.count >= 2)
             return .write(merged: merged, skip: [])
@@ -470,51 +470,6 @@ struct FileSystemSidecarStoreTests {
 
         let after = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         #expect(after.isEmpty)
-    }
-
-    @Test
-    func recoverySiblingWriteLeavesOriginalAndConflictIntact() throws {
-        let root = makeRoot()
-        defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
-        let key = SidecarKey(kind: .contact, id: "abc")
-
-        let currentEnv = envelope(id: "abc", fields: [
-            "nickname": .value(.string("Original"), modifiedAt: when, modifiedBy: "device-A")
-        ])
-        try store.write(currentEnv, at: key)
-        let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
-        let originalBytes = try Data(contentsOf: url)
-
-        try injectConflict(at: url, root: root, envelope: envelope(id: "abc", fields: [
-            "nickname": .value(.string("FromOther"), modifiedAt: when, modifiedBy: "device-B")
-        ]))
-
-        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        guard !conflicts.isEmpty else { return }
-
-        let merged = envelope(id: "abc", fields: [
-            "nickname": .value(.string("Recovered"), modifiedAt: when, modifiedBy: "device-C")
-        ])
-        let suffix = "test"
-        let outcomes = try store.reconcileConflicts { _, _ in
-            .writeRecoverySibling(merged: merged, suffix: suffix)
-        }
-        #expect(outcomes.count == 1)
-        #expect(outcomes.first?.mergedVersionCount == 0)
-        #expect(outcomes.first?.skippedReasons.contains { $0.contains(suffix) } == true)
-
-        let siblingURL = root.appendingPathComponent("contacts/abc.recovered.test.json")
-        #expect(FileManager.default.fileExists(atPath: siblingURL.path))
-        let siblingData = try Data(contentsOf: siblingURL)
-        let siblingEnv = try JSONDecoder().decode(SidecarEnvelope.self, from: siblingData)
-        expectEqual(siblingEnv, merged)
-
-        let originalNow = try Data(contentsOf: url)
-        #expect(originalNow == originalBytes)
-
-        let stillConflict = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        #expect(!stillConflict.isEmpty)
     }
 
     @Test
@@ -534,7 +489,7 @@ struct FileSystemSidecarStoreTests {
         let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         guard !conflicts.isEmpty else { return }
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)

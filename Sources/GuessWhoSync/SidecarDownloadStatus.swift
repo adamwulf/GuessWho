@@ -9,9 +9,8 @@ public enum SidecarDownloadStatus: Equatable {
     // I/O errors).
     case downloaded
 
-    // A fetch is in progress. `fractionComplete` is between 0 and 1 when
-    // known, or `nil` when the backend can't report progress.
-    case downloading(fractionComplete: Double?)
+    // A fetch is in progress.
+    case downloading
 
     // The backend knows the sidecar exists in remote storage but no fetch
     // has been initiated yet. Callers should call `requestDownload(_:)`

@@ -111,12 +111,6 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
                 mergedVersionCount: versions.count - skippedCount,
                 skippedReasons: []
             )
-        case .writeRecoverySibling(_, let suffix):
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: ["wrote recovery sibling: \(suffix)"]
-            )
         case .leave:
             return SidecarReconcileReport.FileOutcome(
                 key: key,

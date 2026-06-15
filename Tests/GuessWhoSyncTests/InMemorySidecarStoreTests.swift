@@ -111,7 +111,7 @@ struct InMemorySidecarStoreTests {
         let merged = envelope(fields: [
             "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
-        let outcomes = try store.reconcileConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)
             #expect(versions == [v1, v2])
             return .write(merged: merged, skip: [])
@@ -124,7 +124,7 @@ struct InMemorySidecarStoreTests {
         let fetched = try #require(try store.read(key))
         expectEqual(fetched, merged)
 
-        let secondPass = try store.reconcileConflicts { _, _ in
+        let secondPass = try store.reconcileAllConflicts { _, _ in
             Issue.record("conflict should have been cleared")
             return .leave
         }
@@ -141,7 +141,7 @@ struct InMemorySidecarStoreTests {
         try store.write(existing, at: key)
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileConflicts { _, _ in .leave }
+        let outcomes = try store.reconcileAllConflicts { _, _ in .leave }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].mergedVersionCount == 0)
         #expect(outcomes[0].skippedReasons.isEmpty)
@@ -150,28 +150,7 @@ struct InMemorySidecarStoreTests {
         expectEqual(fetched, existing)
 
         var sawConflictAgain = false
-        _ = try store.reconcileConflicts { _, _ in
-            sawConflictAgain = true
-            return .leave
-        }
-        #expect(sawConflictAgain)
-    }
-
-    @Test
-    func scriptedConflictResolveRecoverySiblingLeavesConflictAndReportsSuffix() throws {
-        let store = InMemorySidecarStore()
-        let key = contactKey()
-        store.scriptConflict(at: key, versions: [Data([0x01])])
-
-        let outcomes = try store.reconcileConflicts { _, _ in
-            .writeRecoverySibling(merged: self.envelope(), suffix: "recovered.20260614")
-        }
-        #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 0)
-        #expect(outcomes[0].skippedReasons == ["wrote recovery sibling: recovered.20260614"])
-
-        var sawConflictAgain = false
-        _ = try store.reconcileConflicts { _, _ in
+        _ = try store.reconcileAllConflicts { _, _ in
             sawConflictAgain = true
             return .leave
         }
@@ -187,7 +166,7 @@ struct InMemorySidecarStoreTests {
         let key = contactKey()
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)
@@ -206,7 +185,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [v1, v2, v3])
 
         let merged = envelope()
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             .write(merged: merged, skip: [Data([0x03, 0x04])])
         }
         #expect(outcomes.count == 1)
@@ -220,7 +199,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [Data([0x01])])
         try store.delete(key)
 
-        let outcomes = try store.reconcileConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _ in
             Issue.record("delete should have cleared the scripted conflict")
             return .leave
         }
@@ -322,20 +301,5 @@ struct ProtocolDefaultsTests {
     func defaultRequestDownloadIsNoOp() throws {
         let store = MinimalSidecarStore()
         try store.requestDownload(SidecarKey(kind: .contact, id: "x"))
-    }
-
-    @Test
-    func defaultReconcileConflictsRoutesThroughPerKeyAPI() throws {
-        // MinimalSidecarStore returns [] from keysWithUnresolvedConflicts,
-        // so the default bulk implementation should produce an empty
-        // outcomes list without invoking the resolver.
-        let store = MinimalSidecarStore()
-        var resolverCalled = false
-        let outcomes = try store.reconcileConflicts { _, _ in
-            resolverCalled = true
-            return .leave
-        }
-        #expect(outcomes.isEmpty)
-        #expect(!resolverCalled)
     }
 }

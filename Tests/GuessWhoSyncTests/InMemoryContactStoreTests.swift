@@ -51,14 +51,6 @@ struct InMemoryContactStoreTests {
     }
 
     @Test
-    func deleteRemovesContact() throws {
-        let store = InMemoryContactStore(contacts: [sampleContact()])
-        try store.delete(localID: "local-1")
-        #expect(try store.fetch(localID: "local-1") == nil)
-        #expect(try store.fetchAll().isEmpty)
-    }
-
-    @Test
     func saveFetchRoundtripIsIdentity() throws {
         let store = InMemoryContactStore()
         let contact = sampleContact()

@@ -206,18 +206,6 @@ private final class ResolveDelayingSidecarStore: SidecarStoreProtocol, @unchecke
         try underlying.allKeys()
     }
 
-    func reconcileConflicts(
-        _ resolve: (_ key: SidecarKey, _ versions: [Data]) throws -> ConflictResolution
-    ) throws -> [SidecarReconcileReport.FileOutcome] {
-        let delay = delayBeforeResolve
-        return try underlying.reconcileConflicts { key, versions in
-            if delay > 0 {
-                Thread.sleep(forTimeInterval: delay)
-            }
-            return try resolve(key, versions)
-        }
-    }
-
     func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
         try underlying.keysWithUnresolvedConflicts()
     }
