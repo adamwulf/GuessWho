@@ -62,9 +62,18 @@ public final class CNContactStoreAdapter: ContactStoreProtocol {
             phoneNumbers: c.phoneNumbers.map { LabeledValue(label: $0.label ?? "", value: $0.value.stringValue) },
             emailAddresses: c.emailAddresses.map { LabeledValue(label: $0.label ?? "", value: $0.value as String) },
             postalAddresses: c.postalAddresses.map {
-                LabeledValue(
+                LabeledPostalAddress(
                     label: $0.label ?? "",
-                    value: CNPostalAddressFormatter.string(from: $0.value, style: .mailingAddress)
+                    value: PostalAddress(
+                        street: $0.value.street,
+                        subLocality: $0.value.subLocality,
+                        city: $0.value.city,
+                        subAdministrativeArea: $0.value.subAdministrativeArea,
+                        state: $0.value.state,
+                        postalCode: $0.value.postalCode,
+                        country: $0.value.country,
+                        isoCountryCode: $0.value.isoCountryCode
+                    )
                 )
             },
             urlAddresses: c.urlAddresses.map { LabeledValue(label: $0.label ?? "", value: $0.value as String) },
@@ -82,11 +91,16 @@ public final class CNContactStoreAdapter: ContactStoreProtocol {
         mutable.emailAddresses = contact.emailAddresses.map {
             CNLabeledValue(label: $0.label.isEmpty ? nil : $0.label, value: $0.value as NSString)
         }
-        // Postal addresses round-trip as a formatted single-line string in our model;
-        // on write we put the whole thing in `street` rather than parsing it back into components.
         mutable.postalAddresses = contact.postalAddresses.map { lv -> CNLabeledValue<CNPostalAddress> in
             let addr = CNMutablePostalAddress()
-            addr.street = lv.value
+            addr.street = lv.value.street
+            addr.subLocality = lv.value.subLocality
+            addr.city = lv.value.city
+            addr.subAdministrativeArea = lv.value.subAdministrativeArea
+            addr.state = lv.value.state
+            addr.postalCode = lv.value.postalCode
+            addr.country = lv.value.country
+            addr.isoCountryCode = lv.value.isoCountryCode
             return CNLabeledValue(label: lv.label.isEmpty ? nil : lv.label, value: addr)
         }
         mutable.urlAddresses = contact.urlAddresses.map {

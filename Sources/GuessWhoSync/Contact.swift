@@ -7,7 +7,7 @@ public struct Contact: Hashable, Sendable {
     public var organizationName: String
     public var phoneNumbers: [LabeledValue]
     public var emailAddresses: [LabeledValue]
-    public var postalAddresses: [LabeledValue]
+    public var postalAddresses: [LabeledPostalAddress]
     public var urlAddresses: [LabeledValue]
     public var birthday: DateComponents?
 
@@ -18,7 +18,7 @@ public struct Contact: Hashable, Sendable {
         organizationName: String = "",
         phoneNumbers: [LabeledValue] = [],
         emailAddresses: [LabeledValue] = [],
-        postalAddresses: [LabeledValue] = [],
+        postalAddresses: [LabeledPostalAddress] = [],
         urlAddresses: [LabeledValue] = [],
         birthday: DateComponents? = nil
     ) {
