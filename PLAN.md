@@ -250,8 +250,8 @@ The pass for one conflicted file:
 2. **Read conflict bytes.** Same rule: a single conflict-version read failure aborts the pass for this key. We won't converge without considering every version's actual contents.
 3. **Parse.** Decode each successfully-read version into an envelope. A version whose JSON / envelope decode fails, or whose `schemaVersion` ≠ 1, is dropped from the fold and reported in `skippedReasons`. Those bytes were garbage; we don't preserve garbage. An envelope whose `entityID` ≠ the file's key id is also dropped (it's wrong-routed data; folding it would propagate corruption).
 4. **Fold.** Fold every parseable v1 envelope with §5.3 merge. Order doesn't matter (merge is associative + commutative).
-5. **Write.** Overwrite the current with the folded envelope. Mark every conflict version `isResolved = true` and `remove()` it; surface any `remove()` failure in `skippedReasons` and leave `isResolved = false` for that version so the next pass retries. If no version parsed (all garbage), write an empty envelope at this key — every device still converges.
-6. **Resolver throws.** The resolver SHOULD not throw (the orchestrator's resolver doesn't), but if it does, the store marks every conflict version resolved without writing — the contract is "no stuck conflicts." The error surfaces in `skippedReasons`.
+5. **Write.** Overwrite the current with the folded envelope. The store first checks `merged.entityID == key.id` (defense-in-depth against a buggy resolver); a mismatch aborts the pass the same way a resolver throw does. Then `remove()` each conflict version FIRST and only set `version.isResolved = true` on success; surface any `remove()` failure in `skippedReasons` and leave `isResolved = false` for that version so the next pass retries. If no version parsed (all garbage), write an empty envelope at this key — every device still converges.
+6. **Resolver throws.** The orchestrator's resolver doesn't throw. A third-party resolver that does produces no merged envelope; the store treats it the same as a read-failure abort: no write, no `remove()`, the throw surfaces in `skippedReasons`, conflict stays on disk for the next pass to retry. (Earlier we considered "always mark resolved on throw" but rejected it: destroying conflict bytes when we have no merged result to write is exactly the irreversible data loss this design is meant to avoid.)
 7. **No conflict** on a file is a no-op.
 
 The split is the safety/convergence balance: **parseable garbage is dropped (data was already gone); unreadable bytes abort (data might be fine — don't clobber it).**
@@ -737,10 +737,12 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - current + two conflict versions, all parseable: N-way fold produces the right merged envelope, both conflicts removed
 - one conflict version has unparseable bytes: it is dropped from the fold and reported in `skippedReasons`; the others merge normally; conflict is still cleared
 - one conflict version has `schemaVersion = 99`: same — dropped from fold, reported, conflict cleared
-- a parseable envelope's `entityID` doesn't match the file's key id: dropped from the fold and reported; the others merge normally
+- a parseable conflict envelope's `entityID` doesn't match the file's key id: dropped from the fold and reported; the others merge normally
+- a parseable CURRENT envelope with mismatched entityID is also dropped (handles rename / restore-from-backup / buggy peer write)
 - current absent, one conflict version is valid: merged result (the conflict envelope) becomes the new current
 - no version parses: empty envelope written at this key; every device converges to the same byte state on next reconcile; all skipped versions reported
-- meta-property: after **one** `reconcileSidecars()` call, `keysWithUnresolvedConflicts()` is empty (no stuck conflicts under any input mix)
+- meta-property: after **one** `reconcileSidecars()` call, `keysWithUnresolvedConflicts()` is empty for every key whose bytes were readable
+- resolver throws: pass aborts for this key — no write, no `version.remove()`, error reported in `skippedReasons`, conflict stays for retry
 - (host backend that conforms to `SidecarStoreProtocol` only — not `SidecarConflictReconciling` — `reconcileSidecars()` returns an empty report and does NOT throw)
 
 ### 9.6 Combined identity + sidecar

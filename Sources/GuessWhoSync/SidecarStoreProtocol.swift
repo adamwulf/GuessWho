@@ -40,10 +40,27 @@ public protocol SidecarConflictReconciling: SidecarStoreProtocol {
     // overwrites the current with that envelope and marks every conflict
     // version resolved.
     //
-    // The resolver is expected to ALWAYS converge — it returns a valid
-    // envelope even if no input bytes parsed (e.g. an empty envelope at
-    // the right entityID). The store never writes recovery siblings and
-    // never refuses to write — every conflict is resolved in one pass.
+    // **Resolver contract.** The resolver:
+    //   - MUST return an envelope whose `entityID == key.id`. The store
+    //     MAY assert this (defense-in-depth against a buggy resolver).
+    //     A returned envelope with a mismatched entityID would otherwise
+    //     write wrong-routed data under this key.
+    //   - SHOULD always converge — return a valid envelope even if no input
+    //     bytes parsed (e.g. an empty envelope at `entityID = key.id`).
+    //     The store does not write recovery siblings.
+    //   - MAY throw, in which case the store treats this key as "abort the
+    //     pass": no write, no version.remove(). The next reconcile retries
+    //     with the same inputs. The throw is surfaced in `skippedReasons`.
+    //
+    // **Read-failure abort.** If the store cannot read the current bytes
+    // or any conflict bytes off disk (transient I/O, not-yet-downloaded,
+    // sandbox), it aborts the pass for this key the same way: no write,
+    // no remove(), surface the error. Next reconcile retries.
+    //
+    // **isResolved / remove() ordering on success.** The store calls
+    // version.remove() FIRST and only sets version.isResolved = true on
+    // success. If remove() throws, isResolved stays false so the next
+    // pass retries.
     //
     // Implementations MUST execute the resolver and the resulting write
     // atomically with respect to other operations the caller may serialize

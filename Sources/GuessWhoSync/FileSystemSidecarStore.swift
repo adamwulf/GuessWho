@@ -260,28 +260,34 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 }
             }
 
-            // The "always converge" contract means the resolver SHOULD not
-            // throw. If it does anyway, treat the throw as "I have no
-            // envelope to write" but still mark the conflicts resolved —
-            // otherwise the same conflict reappears every pass.
+            // The orchestrator's resolver does not throw. A third-party
+            // resolver that does throw produces no merged envelope to write
+            // — so we leave the conflict surface intact (no write, no
+            // remove) and surface the failure. The next pass retries with
+            // the same inputs. This is the same shape as the read-failure
+            // abort above: when in doubt, don't clobber.
             let merged: SidecarEnvelope
             do {
                 merged = try resolve(currentBytes, conflictBytes)
             } catch {
                 skipped.append("resolver threw: \(error)")
-                // Mark conflicts resolved without writing; the contract is
-                // "no stuck conflicts."
-                for version in conflicts {
-                    version.isResolved = true
-                    do {
-                        try version.remove()
-                    } catch {
-                        skipped.append("version.remove failed: \(error)")
-                    }
-                }
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
-                    versionsConsidered: (currentBytes != nil ? 1 : 0) + conflictBytes.count,
+                    versionsConsidered: 0,
+                    skippedReasons: skipped
+                )
+            }
+
+            // Defense-in-depth against a buggy resolver: refuse to write an
+            // envelope whose entityID doesn't match this key. The
+            // orchestrator's resolver enforces this in the fold, but a
+            // third-party resolver could violate the contract and produce
+            // wrong-routed data. Abort the pass and surface the violation.
+            guard merged.entityID == key.id else {
+                skipped.append("resolver returned mismatched entityID: \(merged.entityID) ≠ key \(key.id)")
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    versionsConsidered: 0,
                     skippedReasons: skipped
                 )
             }

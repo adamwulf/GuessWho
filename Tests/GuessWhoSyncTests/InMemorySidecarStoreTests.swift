@@ -163,7 +163,7 @@ struct InMemorySidecarStoreTests {
     }
 
     @Test
-    func scriptedConflictResolverThrowingRecordsErrorAndDoesNotRethrow() throws {
+    func scriptedConflictResolverThrowingRecordsErrorAndPreservesConflictForRetry() throws {
         struct ResolveBoom: Error, CustomStringConvertible {
             var description: String { "kaboom" }
         }
@@ -178,6 +178,10 @@ struct InMemorySidecarStoreTests {
         #expect(outcomes[0].key == key)
         #expect(outcomes[0].versionsConsidered == 0)
         #expect(outcomes[0].skippedReasons.contains { $0.contains("kaboom") })
+
+        // The conflict is preserved for the next pass to retry — the
+        // resolver-throws contract is "abort the pass," not "claim resolved."
+        #expect(try store.keysWithUnresolvedConflicts().contains(key))
     }
 
     @Test

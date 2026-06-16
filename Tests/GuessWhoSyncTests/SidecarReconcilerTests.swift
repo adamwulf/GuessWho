@@ -296,14 +296,16 @@ struct SidecarReconcilerTests {
         #expect(secondPass.fileOutcomes.isEmpty)
     }
 
-    // MARK: - Meta-property: always converge in one pass
+    // MARK: - Meta-property: converges in one pass when bytes are readable
 
     @Test
-    func reconcileAlwaysConvergesInOnePass() throws {
-        // PLAN §6 contract: "always converges in one pass." After ONE
-        // reconcileSidecars() call, NO key should still have unresolved
-        // conflicts — regardless of the mix of inputs (parseable, garbage,
-        // schemaVersion mismatch, no current).
+    func reconcileConvergesInOnePassWhenBytesAreReadable() throws {
+        // PLAN §6 contract: when every conflict version's bytes can be
+        // read off disk, ONE reconcileSidecars() call converges every key
+        // regardless of input shape (parseable, garbage, schemaVersion
+        // mismatch, no current). Read-failure is a different case — §6 step
+        // 1-2 says read-failure aborts the pass for that key (see
+        // resolverThrowingLeavesConflictForRetry for the parallel case).
         let store = InMemorySidecarStore()
 
         let entityB = "11111111-1111-1111-1111-111111111111"
@@ -337,5 +339,66 @@ struct SidecarReconcilerTests {
         let secondPass = try sync.reconcileSidecars()
         #expect(secondPass.fileOutcomes.isEmpty, "all keys should have converged in one pass")
         #expect(try store.keysWithUnresolvedConflicts().isEmpty)
+    }
+
+    // MARK: - Resolver-throws aborts the pass for this key
+
+    @Test
+    func resolverThrowingLeavesConflictForRetry() throws {
+        // The orchestrator's resolver doesn't throw, but a third-party
+        // resolver might. The store's contract: don't clobber, don't remove,
+        // surface the throw. Next reconcile retries.
+        let store = InMemorySidecarStore()
+        let existing = envelope(fields: [
+            "x": SidecarCell(value: .string("kept"), modifiedAt: t1, modifiedBy: "device-A")
+        ])
+        try store.write(existing, at: key())
+        store.scriptConflict(at: key(), versions: [Data([0x01])])
+
+        struct Boom: Error {}
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in throw Boom() }
+        #expect(outcomes.count == 1)
+        #expect(outcomes[0].versionsConsidered == 0)
+        #expect(outcomes[0].skippedReasons.first?.contains("Boom") == true)
+
+        // Existing envelope at the key is UNCHANGED (no clobber).
+        let after = try #require(try store.read(key()))
+        #expect(after.fields.keys.sorted() == ["x"])
+
+        // Conflict is STILL THERE for retry (no premature resolve).
+        #expect(try store.keysWithUnresolvedConflicts().contains(key()))
+    }
+
+    // MARK: - Current-side entityID mismatch
+
+    @Test
+    func currentWithMismatchedEntityIDIsDropped() throws {
+        // A bug-via-rename or restore-from-backup could leave a file at
+        // <key>.json whose envelope's entityID points elsewhere. The
+        // orchestrator's resolver MUST drop it from the fold (it's
+        // wrong-routed data) just like a conflict envelope. If only
+        // conflicts (or nothing) remain to fold, we converge to that.
+        let store = InMemorySidecarStore()
+        // "Current" with wrong entityID seeded directly.
+        let wrongCurrent = SidecarEnvelope(entityID: "SOMEONE-ELSES-KEY", fields: [
+            "stale": SidecarCell(value: .string("from-wrong-entity"), modifiedAt: t1, modifiedBy: "X")
+        ])
+        try store.write(wrongCurrent, at: key())
+
+        // One parseable conflict with the RIGHT entityID.
+        let rightConflict = envelope(fields: [
+            "right": SidecarCell(value: .string("from-right-entity"), modifiedAt: t2, modifiedBy: "Y")
+        ])
+        store.scriptConflict(at: key(), versions: [try encode(rightConflict)])
+
+        let report = try makeSync(sidecars: store).reconcileSidecars()
+        let outcome = try #require(report.fileOutcomes.first)
+        #expect(outcome.skippedReasons.contains { $0.contains("entityID") })
+
+        // Only the right-entityID conflict participates; current's bad
+        // cells are dropped.
+        let merged = try #require(try store.read(key()))
+        #expect(merged.fields.keys.sorted() == ["right"])
+        #expect(merged.entityID == entityID)
     }
 }
