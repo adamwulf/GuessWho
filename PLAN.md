@@ -740,7 +740,7 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - three conflict versions: N-way fold produces the right merged envelope
 - one conflict version has unparseable bytes: it is skipped (left in conflict, reported); the others merge normally
 - one conflict version has `schemaVersion = 99`: same — skipped, reported, left intact
-- *current* version is unparseable, one conflict version is valid: merged result written to `<name>.recovered.<timestamp>.json`; original current and all conflict versions left intact
+- *current* version is unparseable, one conflict version is valid: merged result written under `<kind>/.recovered/<name>.recovered.<deviceID>.<timestamp>.json`; original current and all conflict versions left intact
 - no version parses: every version left in conflict, all reported, nothing written
 
 ### 9.6 Combined identity + sidecar
