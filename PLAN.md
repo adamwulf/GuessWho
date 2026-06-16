@@ -242,17 +242,23 @@ Soft-deleted cells must survive forever in v1 because they're the only thing pre
 
 ## 6. iCloud Conflict Handling
 
-When iCloud presents multiple versions of the same sidecar (current + `NSFileVersion.unresolvedConflictVersionsOfItem(at:)`), `reconcileSidecars()` **always converges in one pass** — there is no recovery-sibling escape hatch and no "leave in conflict" branch. Per Core Semantics: LWW always wins; disk is Truth; we never refuse to write.
+When iCloud presents multiple versions of the same sidecar (current + `NSFileVersion.unresolvedConflictVersionsOfItem(at:)`), `reconcileSidecars()` converges in one pass for every key whose bytes it can read. Per Core Semantics: LWW always wins; disk is Truth; we never refuse to write when we have the data.
 
 The pass for one conflicted file:
 
-1. **Collect.** Gather the bytes of the current version (may be nil if no materialized current exists) and each conflict version.
-2. **Parse.** Decode each version into an envelope. A version whose bytes fail to parse, or whose `schemaVersion` ≠ 1, is dropped from the fold and reported in `SidecarReconcileReport.FileOutcome.skippedReasons` so a peer shipping broken bytes is observable.
-3. **Fold.** Fold every parseable v1 envelope with §5.3 merge. Order doesn't matter (merge is associative + commutative).
-4. **Write.** Overwrite the current with the folded envelope. Mark every conflict version `isResolved = true` and `remove()` it. If no version parsed, write an empty envelope at this key — every device still converges to the same byte state.
-5. **No conflict** on a file is a no-op.
+1. **Read current bytes.** If `currentVersionOfItem` is nil → pass `nil` to the resolver. If it exists but `Data(contentsOf:)` throws → **abort this pass for this key**: no write, no `remove()`, surface the error in `skippedReasons`. The bytes may be fine; we just can't access them right now (sandbox, transient I/O, iCloud not-yet-downloaded). Next reconcile retries.
+2. **Read conflict bytes.** Same rule: a single conflict-version read failure aborts the pass for this key. We won't converge without considering every version's actual contents.
+3. **Parse.** Decode each successfully-read version into an envelope. A version whose JSON / envelope decode fails, or whose `schemaVersion` ≠ 1, is dropped from the fold and reported in `skippedReasons`. Those bytes were garbage; we don't preserve garbage. An envelope whose `entityID` ≠ the file's key id is also dropped (it's wrong-routed data; folding it would propagate corruption).
+4. **Fold.** Fold every parseable v1 envelope with §5.3 merge. Order doesn't matter (merge is associative + commutative).
+5. **Write.** Overwrite the current with the folded envelope. Mark every conflict version `isResolved = true` and `remove()` it; surface any `remove()` failure in `skippedReasons` and leave `isResolved = false` for that version so the next pass retries. If no version parsed (all garbage), write an empty envelope at this key — every device still converges.
+6. **Resolver throws.** The resolver SHOULD not throw (the orchestrator's resolver doesn't), but if it does, the store marks every conflict version resolved without writing — the contract is "no stuck conflicts." The error surfaces in `skippedReasons`.
+7. **No conflict** on a file is a no-op.
 
-The pre-pivot design tried to preserve unparseable bytes for human triage (a recovery-sibling file). That added a §6-step-4 branch, a `.recovered/` subdirectory, a deviceID parameter on the store, and a stuck-conflict failure mode. With one schemaVersion, atomic writes, and iCloud's transport, the "unparseable current" case is effectively impossible in practice; if it does happen, the report's `skippedReasons` is the record, and convergence wins over preservation.
+The split is the safety/convergence balance: **parseable garbage is dropped (data was already gone); unreadable bytes abort (data might be fine — don't clobber it).**
+
+The pre-pivot design tried to preserve unparseable bytes via a recovery-sibling file. That added a §6-step-4 branch, a `.recovered/` subdirectory, a deviceID parameter on the store, and a stuck-conflict failure mode. With one schemaVersion, atomic writes, and iCloud's transport, the "unparseable current" case is rare enough that converging beats preserving.
+
+**`SidecarReconcileReport.FileOutcome.versionsConsidered`** counts how many version slots the resolver examined (current + conflict bytes that successfully read off disk). It includes unparseable ones — they contribute a `skippedReasons` entry but still counted as "considered." A non-zero `skippedReasons` with `versionsConsidered > 0` means some inputs participated and others were dropped.
 
 **Deletion is not a conflict.** `NSFileVersion.unresolvedConflictVersionsOfItem(at:)` never returns a "deletion version" — versions always have bytes. A delete done on another device reaches this device as a file removal handled outside this API (orphan policy §3.4; future `NSFilePresenter` wiring §10).
 
@@ -731,8 +737,11 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - current + two conflict versions, all parseable: N-way fold produces the right merged envelope, both conflicts removed
 - one conflict version has unparseable bytes: it is dropped from the fold and reported in `skippedReasons`; the others merge normally; conflict is still cleared
 - one conflict version has `schemaVersion = 99`: same — dropped from fold, reported, conflict cleared
+- a parseable envelope's `entityID` doesn't match the file's key id: dropped from the fold and reported; the others merge normally
 - current absent, one conflict version is valid: merged result (the conflict envelope) becomes the new current
 - no version parses: empty envelope written at this key; every device converges to the same byte state on next reconcile; all skipped versions reported
+- meta-property: after **one** `reconcileSidecars()` call, `keysWithUnresolvedConflicts()` is empty (no stuck conflicts under any input mix)
+- (host backend that conforms to `SidecarStoreProtocol` only — not `SidecarConflictReconciling` — `reconcileSidecars()` returns an empty report and does NOT throw)
 
 ### 9.6 Combined identity + sidecar
 - two devices independently assign UUIDs A and B to the same contact, each with a populated sidecar; after `reconcileContactIdentities()` the contact has exactly one GuessWho URL (lex-smaller of A and B), one sidecar at that UUID, containing the per-field merge of A's and B's fields

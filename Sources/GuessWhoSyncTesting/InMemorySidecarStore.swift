@@ -94,7 +94,7 @@ extension InMemorySidecarStore: SidecarConflictReconciling {
         } catch {
             return SidecarReconcileReport.FileOutcome(
                 key: key,
-                mergedVersionCount: 0,
+                versionsConsidered: 0,
                 skippedReasons: [String(describing: error)]
             )
         }
@@ -104,10 +104,10 @@ extension InMemorySidecarStore: SidecarConflictReconciling {
         scriptedConflicts.removeValue(forKey: key)
         lock.unlock()
 
-        let mergedVersionCount = (currentBytes != nil ? 1 : 0) + scripted.count
+        let versionsConsidered = (currentBytes != nil ? 1 : 0) + scripted.count
         return SidecarReconcileReport.FileOutcome(
             key: key,
-            mergedVersionCount: mergedVersionCount,
+            versionsConsidered: versionsConsidered,
             skippedReasons: []
         )
     }

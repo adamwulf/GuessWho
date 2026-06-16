@@ -122,7 +122,7 @@ struct InMemorySidecarStoreTests {
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
         // Both scripted conflict versions participated; no current.
-        #expect(outcomes[0].mergedVersionCount == 2)
+        #expect(outcomes[0].versionsConsidered == 2)
         #expect(outcomes[0].skippedReasons.isEmpty)
 
         let fetched = try #require(try store.read(key))
@@ -147,7 +147,7 @@ struct InMemorySidecarStoreTests {
 
         let outcomes = try store.reconcileAllConflicts { _, _, _ in existing }
         #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 2) // current + 1 conflict
+        #expect(outcomes[0].versionsConsidered == 2) // current + 1 conflict
         #expect(outcomes[0].skippedReasons.isEmpty)
 
         // Conflict is cleared; envelope unchanged.
@@ -176,7 +176,7 @@ struct InMemorySidecarStoreTests {
         }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
-        #expect(outcomes[0].mergedVersionCount == 0)
+        #expect(outcomes[0].versionsConsidered == 0)
         #expect(outcomes[0].skippedReasons.contains { $0.contains("kaboom") })
     }
 
@@ -275,5 +275,21 @@ struct ProtocolDefaultsTests {
     func defaultRequestDownloadIsNoOp() throws {
         let store = MinimalSidecarStore()
         try store.requestDownload(SidecarKey(kind: .contact, id: "x"))
+    }
+
+    @Test
+    func reconcileSidecarsOnStoreWithoutConflictReconcilingReturnsEmptyReport() throws {
+        // A third-party SidecarStoreProtocol conformer with no concept of
+        // multi-version conflicts won't implement SidecarConflictReconciling.
+        // The orchestrator's as? cast fails; reconcileSidecars() returns an
+        // empty report (it's still safe to call).
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: MinimalSidecarStore(),
+            deviceID: "device-A"
+        )
+        let report = try sync.reconcileSidecars()
+        #expect(report.fileOutcomes.isEmpty)
     }
 }

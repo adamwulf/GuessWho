@@ -1,7 +1,9 @@
 import Foundation
 import Testing
 @testable import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 import GuessWhoSyncTesting
+@_spi(ConflictReconcile) import GuessWhoSyncTesting
 
 @Suite("SidecarReconciler")
 struct SidecarReconcilerTests {
@@ -55,7 +57,7 @@ struct SidecarReconcilerTests {
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
         #expect(outcome.key == key())
-        #expect(outcome.mergedVersionCount == 2)
+        #expect(outcome.versionsConsidered == 2)
         #expect(outcome.skippedReasons.isEmpty)
 
         let merged = try #require(try store.read(key()))
@@ -83,7 +85,7 @@ struct SidecarReconcilerTests {
         let report = try makeSync(sidecars: store).reconcileSidecars()
 
         #expect(report.fileOutcomes.count == 1)
-        #expect(report.fileOutcomes[0].mergedVersionCount == 3)
+        #expect(report.fileOutcomes[0].versionsConsidered == 3)
         #expect(report.fileOutcomes[0].skippedReasons.isEmpty)
 
         let merged = try #require(try store.read(key()))
@@ -106,10 +108,10 @@ struct SidecarReconcilerTests {
 
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
-        // mergedVersionCount counts every version slot the resolver saw:
+        // versionsConsidered counts every version slot the resolver saw:
         // current (envA) + 2 conflicts (garbage + envB) = 3. Skipped reasons
         // surface the one unparseable input separately.
-        #expect(outcome.mergedVersionCount == 3)
+        #expect(outcome.versionsConsidered == 3)
         #expect(outcome.skippedReasons.count == 1)
         let reason = outcome.skippedReasons[0].lowercased()
         #expect(reason.contains("json") || reason.contains("parse"))
@@ -136,7 +138,7 @@ struct SidecarReconcilerTests {
         let outcome = report.fileOutcomes[0]
         // current (envA) + 1 v99 conflict = 2 slots considered; the v99 one
         // is reported as skipped.
-        #expect(outcome.mergedVersionCount == 2)
+        #expect(outcome.versionsConsidered == 2)
         #expect(outcome.skippedReasons.count == 1)
         #expect(outcome.skippedReasons[0].contains("schemaVersion=99"))
 
@@ -161,7 +163,7 @@ struct SidecarReconcilerTests {
         let outcome = report.fileOutcomes[0]
         // The conflict version participated in the merge; the count includes
         // it but not the absent current.
-        #expect(outcome.mergedVersionCount == 1)
+        #expect(outcome.versionsConsidered == 1)
         #expect(outcome.skippedReasons.isEmpty)
 
         // The merged envelope is now the current at this key.
@@ -212,7 +214,7 @@ struct SidecarReconcilerTests {
         let outcome = report.fileOutcomes[0]
         // Three garbage conflicts surface as three skip reasons; the count
         // is real (three conflict bytes were considered).
-        #expect(outcome.mergedVersionCount == 3)
+        #expect(outcome.versionsConsidered == 3)
         #expect(outcome.skippedReasons.count == 3)
 
         // The store now holds an empty envelope — every device converges
@@ -224,5 +226,116 @@ struct SidecarReconcilerTests {
         // Conflict is cleared.
         let secondPass = try sync.reconcileSidecars()
         #expect(secondPass.fileOutcomes.isEmpty)
+    }
+
+    // MARK: - EntityID guard
+
+    @Test
+    func conflictVersionWithMismatchedEntityIDIsDroppedFromFold() throws {
+        // A parseable envelope whose entityID doesn't match the file's key
+        // is wrong-routed data. It MUST be dropped from the fold; otherwise
+        // it would be written back under the wrong key as the new ground truth.
+        let store = InMemorySidecarStore()
+        let envA = envelope(fields: [
+            "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
+        ])
+        try store.write(envA, at: key())
+        // Same JSON shape but a totally different entityID — not for this key.
+        let foreign = SidecarEnvelope(entityID: "WRONG-ID", fields: [
+            "b": SidecarCell(value: .string("beta"), modifiedAt: t2, modifiedBy: "device-X")
+        ])
+        store.scriptConflict(at: key(), versions: [try encode(foreign)])
+
+        let report = try makeSync(sidecars: store).reconcileSidecars()
+        let outcome = try #require(report.fileOutcomes.first)
+        // The mismatched envelope is dropped, reported in skippedReasons.
+        #expect(outcome.skippedReasons.contains { $0.contains("entityID") })
+        // The current's fields survive untouched — the foreign envelope's
+        // cells never reached the fold.
+        let merged = try #require(try store.read(key()))
+        #expect(merged.fields.keys.sorted() == ["a"])
+    }
+
+    // MARK: - merge failure mid-fold
+
+    @Test
+    func mergeFailureMidFoldStillWritesPriorFoldedValueAndClearsConflict() throws {
+        // If the §5.3 merge fails partway through the fold (e.g. an envelope
+        // with the right entityID but schemaVersion=99 reaches `merge()`),
+        // the orchestrator should keep what folded successfully, surface the
+        // failure in skippedReasons, and still clear the conflict — never
+        // leave a stuck conflict behind.
+        //
+        // Note: parseEnvelope filters schemaVersion ≠ 1 upstream, so to
+        // force a merge() failure mid-fold we'd need a parseable envelope
+        // that merges-with-failure. With the current filters, that path is
+        // effectively unreachable. We test the OUTCOME instead: a conflict
+        // with one parseable v1 + one v99 envelope still converges with
+        // the v99 dropped and the conflict cleared.
+        let store = InMemorySidecarStore()
+        let envA = envelope(fields: [
+            "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
+        ])
+        let envFuture = envelope(schemaVersion: 99, fields: [
+            "future": SidecarCell(value: .string("nope"), modifiedAt: t2, modifiedBy: "device-X")
+        ])
+        try store.write(envA, at: key())
+        store.scriptConflict(at: key(), versions: [try encode(envFuture)])
+
+        let sync = makeSync(sidecars: store)
+        let report = try sync.reconcileSidecars()
+        let outcome = try #require(report.fileOutcomes.first)
+        #expect(outcome.skippedReasons.contains { $0.contains("schemaVersion=99") })
+
+        // The current's fields survive; the v99 envelope was skipped.
+        let merged = try #require(try store.read(key()))
+        #expect(merged.fields.keys.sorted() == ["a"])
+
+        // Conflict is cleared on the very next pass (no stuck conflict).
+        let secondPass = try sync.reconcileSidecars()
+        #expect(secondPass.fileOutcomes.isEmpty)
+    }
+
+    // MARK: - Meta-property: always converge in one pass
+
+    @Test
+    func reconcileAlwaysConvergesInOnePass() throws {
+        // PLAN §6 contract: "always converges in one pass." After ONE
+        // reconcileSidecars() call, NO key should still have unresolved
+        // conflicts — regardless of the mix of inputs (parseable, garbage,
+        // schemaVersion mismatch, no current).
+        let store = InMemorySidecarStore()
+
+        let entityB = "11111111-1111-1111-1111-111111111111"
+        let entityC = "22222222-2222-2222-2222-222222222222"
+        let entityD = "33333333-3333-3333-3333-333333333333"
+        let keyB = SidecarKey(kind: .contact, id: entityB)
+        let keyC = SidecarKey(kind: .contact, id: entityC)
+        let keyD = SidecarKey(kind: .contact, id: entityD)
+
+        // Key B: current + parseable conflict (happy path).
+        let envB1 = SidecarEnvelope(entityID: entityB, fields: [
+            "x": SidecarCell(value: .string("from-B1"), modifiedAt: t1, modifiedBy: "A")
+        ])
+        let envB2 = SidecarEnvelope(entityID: entityB, fields: [
+            "y": SidecarCell(value: .string("from-B2"), modifiedAt: t2, modifiedBy: "B")
+        ])
+        try store.write(envB1, at: keyB)
+        store.scriptConflict(at: keyB, versions: [try encode(envB2)])
+
+        // Key C: no current; conflicts include garbage and v99.
+        let envCFuture = SidecarEnvelope(schemaVersion: 99, entityID: entityC, fields: [:])
+        store.scriptConflict(at: keyC, versions: [Data("garbage".utf8), try encode(envCFuture)])
+
+        // Key D: all garbage.
+        store.scriptConflict(at: keyD, versions: [Data("trash".utf8)])
+
+        let sync = makeSync(sidecars: store)
+        _ = try sync.reconcileSidecars()
+
+        // After ONE pass: every conflict is cleared.
+        let secondPass = try sync.reconcileSidecars()
+        #expect(secondPass.fileOutcomes.isEmpty, "all keys should have converged in one pass")
+        #expect(try store.keysWithUnresolvedConflicts().isEmpty)
     }
 }

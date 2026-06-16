@@ -305,11 +305,23 @@ public final class GuessWhoSync {
                     // envelope going into the fold. Surface in skippedReasons
                     // so a peer shipping broken cells is observable.
                     var totalCellsDropped = 0
+                    // EntityID guard: a parseable envelope whose entityID
+                    // doesn't match the key's id is corrupt routing — it
+                    // belongs to some other entity. Drop it from the fold
+                    // and report; never let it propagate as the new ground
+                    // truth at this key.
+                    func ingest(_ env: SidecarEnvelope, label: String) {
+                        guard env.entityID == key.id else {
+                            reasons.append("\(label): entityID \(env.entityID) ≠ key \(key.id); dropped")
+                            return
+                        }
+                        parseable.append(env)
+                        totalCellsDropped += env.cellsDroppedOnDecode
+                    }
                     if let currentBytes {
                         switch parseEnvelope(currentBytes) {
                         case .ok(let env):
-                            parseable.append(env)
-                            totalCellsDropped += env.cellsDroppedOnDecode
+                            ingest(env, label: "current")
                         case .skip(let reason):
                             reasons.append("current: \(reason)")
                         }
@@ -317,8 +329,7 @@ public final class GuessWhoSync {
                     for bytes in conflictBytes {
                         switch parseEnvelope(bytes) {
                         case .ok(let env):
-                            parseable.append(env)
-                            totalCellsDropped += env.cellsDroppedOnDecode
+                            ingest(env, label: "conflict")
                         case .skip(let reason):
                             reasons.append(reason)
                         }
@@ -348,7 +359,7 @@ public final class GuessWhoSync {
                 stamped.append(
                     SidecarReconcileReport.FileOutcome(
                         key: outcome.key,
-                        mergedVersionCount: outcome.mergedVersionCount,
+                        versionsConsidered: outcome.versionsConsidered,
                         skippedReasons: outcome.skippedReasons + reasons
                     )
                 )

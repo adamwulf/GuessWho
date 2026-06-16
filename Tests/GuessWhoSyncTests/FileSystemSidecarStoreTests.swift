@@ -494,7 +494,7 @@ struct FileSystemSidecarStoreTests {
         }
         #expect(outcomes.count == 1)
         #expect(outcomes.first?.key == key)
-        #expect(outcomes.first?.mergedVersionCount == 0)
+        #expect(outcomes.first?.versionsConsidered == 0)
         #expect(outcomes.first?.skippedReasons.contains { $0.contains("kaboom") } == true)
     }
     #endif

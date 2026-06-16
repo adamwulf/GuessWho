@@ -218,29 +218,71 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 return nil
             }
 
-            // Read current's bytes — nil when no materialized current exists.
+            var skipped: [String] = []
+
+            // Read current's bytes:
+            //   - currentVersionOfItem == nil          → no materialized current; pass nil.
+            //   - currentVersionOfItem exists, read OK → pass the bytes.
+            //   - currentVersionOfItem exists, read FAILS → abort this pass.
+            //     We can't tell what was on disk and we MUST NOT clobber it
+            //     with a fold of conflict-only inputs. Surface the error in
+            //     skippedReasons; next reconcile retries.
             let currentBytes: Data?
             if let current = NSFileVersion.currentVersionOfItem(at: url) {
-                currentBytes = try? Data(contentsOf: current.url)
+                do {
+                    currentBytes = try Data(contentsOf: current.url)
+                } catch {
+                    return SidecarReconcileReport.FileOutcome(
+                        key: key,
+                        versionsConsidered: 0,
+                        skippedReasons: ["current: read failed: \(error)"]
+                    )
+                }
             } else {
                 currentBytes = nil
             }
 
+            // Conflict-version reads: a read failure (I/O, file not yet
+            // downloaded, sandbox, etc.) is NOT the same as "unparseable
+            // bytes." We don't know what's in those bytes; we MUST NOT
+            // converge without considering them. Abort the pass; next
+            // reconcile retries.
             var conflictBytes: [Data] = []
             for version in conflicts {
-                if let bytes = try? Data(contentsOf: version.url) {
-                    conflictBytes.append(bytes)
+                do {
+                    conflictBytes.append(try Data(contentsOf: version.url))
+                } catch {
+                    return SidecarReconcileReport.FileOutcome(
+                        key: key,
+                        versionsConsidered: 0,
+                        skippedReasons: ["conflict: read failed: \(error)"]
+                    )
                 }
             }
 
+            // The "always converge" contract means the resolver SHOULD not
+            // throw. If it does anyway, treat the throw as "I have no
+            // envelope to write" but still mark the conflicts resolved —
+            // otherwise the same conflict reappears every pass.
             let merged: SidecarEnvelope
             do {
                 merged = try resolve(currentBytes, conflictBytes)
             } catch {
+                skipped.append("resolver threw: \(error)")
+                // Mark conflicts resolved without writing; the contract is
+                // "no stuck conflicts."
+                for version in conflicts {
+                    version.isResolved = true
+                    do {
+                        try version.remove()
+                    } catch {
+                        skipped.append("version.remove failed: \(error)")
+                    }
+                }
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: [String(describing: error)]
+                    versionsConsidered: (currentBytes != nil ? 1 : 0) + conflictBytes.count,
+                    skippedReasons: skipped
                 )
             }
 
@@ -255,18 +297,23 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             }
             if let mergedWriteError { throw mergedWriteError }
 
-            // Always mark every conflict version resolved — the merged write
-            // is the new ground truth.
+            // Mark every conflict version resolved — the merged write is the
+            // new ground truth. If a remove() fails, leave isResolved=false
+            // and surface the failure so the next pass retries this key
+            // (rather than silently claiming we converged).
             for version in conflicts {
-                version.isResolved = true
-                try? version.remove()
+                do {
+                    try version.remove()
+                    version.isResolved = true
+                } catch {
+                    skipped.append("version.remove failed: \(error)")
+                }
             }
 
-            let mergedVersionCount = (currentBytes != nil ? 1 : 0) + conflictBytes.count
             return SidecarReconcileReport.FileOutcome(
                 key: key,
-                mergedVersionCount: mergedVersionCount,
-                skippedReasons: []
+                versionsConsidered: (currentBytes != nil ? 1 : 0) + conflictBytes.count,
+                skippedReasons: skipped
             )
         }
     }
