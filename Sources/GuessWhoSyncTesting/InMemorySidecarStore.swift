@@ -62,7 +62,7 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
 
     public func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome? {
         // Capture both the CURRENT envelope and the scripted conflict
         // versions atomically — the FS-store's reconcileConflict equivalent
@@ -83,25 +83,18 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         let currentEnvelope = envelopes[key]
         lock.unlock()
 
-        // Convention with the resolver: versions[0] is always the current
-        // version's bytes, even when there's no current envelope (in which
-        // case it's empty / unparseable). This lets the resolver branch on
-        // §6 step 4 cleanly: current parsed → overwrite; current unparseable
-        // but ≥1 conflict parsed → write recovery sibling.
-        var versions: [Data] = []
-        let currentSlotIsReal: Bool
-        if let currentEnvelope, let bytes = try? JSONEncoder().encode(currentEnvelope) {
-            versions.append(bytes)
-            currentSlotIsReal = true
+        // Encode the current envelope (when present) to a Data so the
+        // resolver receives it the same way it would from the FS store.
+        let currentBytes: Data?
+        if let currentEnvelope {
+            currentBytes = try? JSONEncoder().encode(currentEnvelope)
         } else {
-            versions.append(Data())
-            currentSlotIsReal = false
+            currentBytes = nil
         }
-        versions.append(contentsOf: scripted)
 
         let resolution: ConflictResolution
         do {
-            resolution = try resolve(versions)
+            resolution = try resolve(currentBytes, scripted)
         } catch {
             return SidecarReconcileReport.FileOutcome(
                 key: key,
@@ -112,19 +105,22 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
 
         switch resolution {
         case .write(let merged, let skip):
-            let skippedCount = versions.reduce(0) { count, bytes in
+            // Skip-matching considers both current and conflict bytes for
+            // symmetry with the FS store (which materializes both before
+            // running the resolver).
+            var allBytes: [Data] = []
+            if let currentBytes { allBytes.append(currentBytes) }
+            allBytes.append(contentsOf: scripted)
+            let skippedCount = allBytes.reduce(0) { count, bytes in
                 skip.contains(bytes) ? count + 1 : count
             }
             lock.lock()
             envelopes[key] = merged
             scriptedConflicts.removeValue(forKey: key)
             lock.unlock()
-            // Don't credit the placeholder for a missing current toward the
-            // merged-version count; only real bytes participated.
-            let realVersionCount = versions.count - (currentSlotIsReal ? 0 : 1)
             return SidecarReconcileReport.FileOutcome(
                 key: key,
-                mergedVersionCount: realVersionCount - skippedCount,
+                mergedVersionCount: allBytes.count - skippedCount,
                 skippedReasons: []
             )
         case .writeRecoverySibling(let merged, let suffix):

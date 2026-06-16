@@ -43,15 +43,29 @@ public struct SidecarEnvelope: Sendable, Codable {
 
         // Decode `fields` as a [String: JSON-blob] first, then attempt each
         // cell individually. Cells that fail to decode are dropped (§5.3).
+        //
+        // The `fields` key absence vs. malformed-shape distinction matters:
+        //   - Key absent: legitimately zero-fields envelope; dropped = 0.
+        //   - Key present but not a JSON object (null, scalar, array): the
+        //     envelope is structurally broken at the top level. Treat as a
+        //     "fields wrapper dropped" (count as 1 drop) so the orchestrator
+        //     surfaces it in skippedReasons — otherwise this case is
+        //     indistinguishable from a legitimate empty envelope and the
+        //     merge silently overwrites it with a clean shape, losing the
+        //     evidence a peer is shipping broken envelopes.
         var fields: [String: SidecarCell] = [:]
         var dropped = 0
-        if let fieldsContainer = try? container.nestedContainer(keyedBy: DynamicKey.self, forKey: .fields) {
-            for key in fieldsContainer.allKeys {
-                if let cell = try? fieldsContainer.decode(SidecarCell.self, forKey: key) {
-                    fields[key.stringValue] = cell
-                } else {
-                    dropped += 1
+        if container.contains(.fields) {
+            if let fieldsContainer = try? container.nestedContainer(keyedBy: DynamicKey.self, forKey: .fields) {
+                for key in fieldsContainer.allKeys {
+                    if let cell = try? fieldsContainer.decode(SidecarCell.self, forKey: key) {
+                        fields[key.stringValue] = cell
+                    } else {
+                        dropped += 1
+                    }
                 }
+            } else {
+                dropped += 1
             }
         }
 

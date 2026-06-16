@@ -230,14 +230,14 @@ private final class ResolveDelayingSidecarStore: SidecarStoreProtocol, @unchecke
 
     func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome? {
         let delay = delayBeforeResolve
-        return try underlying.reconcileConflict(at: key) { versions in
+        return try underlying.reconcileConflict(at: key) { currentBytes, conflictBytes in
             if delay > 0 {
                 Thread.sleep(forTimeInterval: delay)
             }
-            return try resolve(versions)
+            return try resolve(currentBytes, conflictBytes)
         }
     }
 

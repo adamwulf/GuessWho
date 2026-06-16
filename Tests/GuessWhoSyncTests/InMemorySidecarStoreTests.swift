@@ -108,12 +108,13 @@ struct InMemorySidecarStoreTests {
         let merged = envelope(fields: [
             "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
-        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, current, conflicts in
             #expect(receivedKey == key)
-            // versions[0] is the current placeholder (empty here because we
-            // never wrote a current envelope); v1/v2 follow per §6 step 4
-            // convention.
-            #expect(versions == [Data(), v1, v2])
+            // No current envelope was written for this key, so the store
+            // passes nil as the current bytes. The two scripted versions
+            // are the conflicts.
+            #expect(current == nil)
+            #expect(conflicts == [v1, v2])
             return .write(merged: merged, skip: [])
         }
         #expect(outcomes.count == 1)
@@ -126,7 +127,7 @@ struct InMemorySidecarStoreTests {
         let fetched = try #require(try store.read(key))
         expectEqual(fetched, merged)
 
-        let secondPass = try store.reconcileAllConflicts { _, _ in
+        let secondPass = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("conflict should have been cleared")
             return .leave
         }
@@ -143,7 +144,7 @@ struct InMemorySidecarStoreTests {
         try store.write(existing, at: key)
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in .leave }
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in .leave }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].mergedVersionCount == 0)
         #expect(outcomes[0].skippedReasons.isEmpty)
@@ -152,7 +153,7 @@ struct InMemorySidecarStoreTests {
         expectEqual(fetched, existing)
 
         var sawConflictAgain = false
-        _ = try store.reconcileAllConflicts { _, _ in
+        _ = try store.reconcileAllConflicts { _, _, _ in
             sawConflictAgain = true
             return .leave
         }
@@ -168,7 +169,7 @@ struct InMemorySidecarStoreTests {
         let key = contactKey()
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)
@@ -187,7 +188,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [v1, v2, v3])
 
         let merged = envelope()
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             .write(merged: merged, skip: [Data([0x03, 0x04])])
         }
         #expect(outcomes.count == 1)
@@ -203,7 +204,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [Data([0x01])])
         try store.delete(key)
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("delete should have cleared the scripted conflict")
             return .leave
         }
@@ -271,7 +272,7 @@ private final class MinimalSidecarStore: SidecarStoreProtocol {
 
     func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome? {
         nil
     }

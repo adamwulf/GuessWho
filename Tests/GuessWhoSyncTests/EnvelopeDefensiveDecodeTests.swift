@@ -120,6 +120,46 @@ struct EnvelopeDefensiveDecodeTests {
     }
 
     @Test
+    func envelopeWithMalformedFieldsKeyCountsAsOneDrop() throws {
+        // `fields` is present but not a JSON object — a structurally broken
+        // envelope at the top level. The decoder must NOT silently treat this
+        // as a legitimate zero-fields envelope (would let merge() overwrite
+        // it with a clean shape and lose the evidence of corruption).
+        let nullFields = #"""
+        {
+          "schemaVersion": 1,
+          "entityID": "550e8400-e29b-41d4-a716-446655440000",
+          "fields": null
+        }
+        """#
+        let envNull = try decoder.decode(SidecarEnvelope.self, from: nullFields.data(using: .utf8)!)
+        #expect(envNull.fields.isEmpty)
+        #expect(envNull.cellsDroppedOnDecode == 1)
+
+        let scalarFields = #"""
+        {
+          "schemaVersion": 1,
+          "entityID": "550e8400-e29b-41d4-a716-446655440000",
+          "fields": 42
+        }
+        """#
+        let envScalar = try decoder.decode(SidecarEnvelope.self, from: scalarFields.data(using: .utf8)!)
+        #expect(envScalar.fields.isEmpty)
+        #expect(envScalar.cellsDroppedOnDecode == 1)
+
+        // An absent `fields` key is a legitimate zero-fields envelope.
+        let noFields = #"""
+        {
+          "schemaVersion": 1,
+          "entityID": "550e8400-e29b-41d4-a716-446655440000"
+        }
+        """#
+        let envNone = try decoder.decode(SidecarEnvelope.self, from: noFields.data(using: .utf8)!)
+        #expect(envNone.fields.isEmpty)
+        #expect(envNone.cellsDroppedOnDecode == 0)
+    }
+
+    @Test
     func envelopeWithAllCellsMalformedDecodesAsEmptyFields() throws {
         let json = #"""
         {

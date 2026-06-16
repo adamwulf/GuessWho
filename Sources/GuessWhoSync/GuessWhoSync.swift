@@ -293,34 +293,26 @@ public final class GuessWhoSync {
         for key in try sidecars.keysWithUnresolvedConflicts() {
             var reasons: [String] = []
             let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
-                try sidecars.reconcileConflict(at: key) { versions in
-                    // Convention with the store: `versions[0]` is the current
-                    // version's bytes when versions is non-empty; the rest are
-                    // conflict versions. This is required so §6 step 4 can
-                    // distinguish "current parsed → overwrite" from "current
-                    // didn't parse but a conflict did → write recovery
-                    // sibling, leave originals intact."
-                    guard let firstBytes = versions.first else {
-                        return .leave
-                    }
-                    let currentResult = parseEnvelope(firstBytes)
+                try sidecars.reconcileConflict(at: key) { currentBytes, conflictBytes in
                     var currentEnvelope: SidecarEnvelope? = nil
                     var skipped: [Data] = []
                     // §5.3 silent cell drops — sum across every parseable
                     // envelope going into the fold. Surface in skippedReasons
                     // so a peer shipping broken cells is observable.
                     var totalCellsDropped = 0
-                    switch currentResult {
-                    case .ok(let env):
-                        currentEnvelope = env
-                        totalCellsDropped += env.cellsDroppedOnDecode
-                    case .skip(let reason):
-                        skipped.append(firstBytes)
-                        reasons.append("current: \(reason)")
+                    if let currentBytes {
+                        switch parseEnvelope(currentBytes) {
+                        case .ok(let env):
+                            currentEnvelope = env
+                            totalCellsDropped += env.cellsDroppedOnDecode
+                        case .skip(let reason):
+                            skipped.append(currentBytes)
+                            reasons.append("current: \(reason)")
+                        }
                     }
 
                     var parsedConflicts: [SidecarEnvelope] = []
-                    for bytes in versions.dropFirst() {
+                    for bytes in conflictBytes {
                         switch parseEnvelope(bytes) {
                         case .ok(let env):
                             parsedConflicts.append(env)

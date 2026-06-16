@@ -208,8 +208,8 @@ struct SidecarReconcilerTests {
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
         #expect(outcome.mergedVersionCount == 0)
-        // 1 "current: …" reason + 3 garbage-conflict reasons = 4.
-        #expect(outcome.skippedReasons.count == 4)
+        // No current envelope to skip; one reason per garbage conflict.
+        #expect(outcome.skippedReasons.count == 3)
 
         #expect(try store.read(key()) == nil)
 

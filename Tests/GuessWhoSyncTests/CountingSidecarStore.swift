@@ -28,7 +28,7 @@ final class CountingSidecarStore: SidecarStoreProtocol {
     func keysWithUnresolvedConflicts() throws -> [SidecarKey] { try inner.keysWithUnresolvedConflicts() }
     func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome? {
         try inner.reconcileConflict(at: key, resolve: resolve)
     }

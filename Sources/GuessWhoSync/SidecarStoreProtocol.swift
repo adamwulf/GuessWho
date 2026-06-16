@@ -13,25 +13,21 @@ public protocol SidecarStoreProtocol {
     // doubles) may return any keys for which the resolver should be invoked.
     func keysWithUnresolvedConflicts() throws -> [SidecarKey]
 
-    // Reconcile a single key. The resolver is invoked with every version's
-    // bytes. Implementations MUST execute the resolver and its resulting
+    // Reconcile a single key. The resolver receives the current version's
+    // bytes (nil when no materialized current exists) and an array of every
+    // unresolved conflict version's bytes. Distinguishing current from
+    // conflict is load-bearing for PLAN §6 step 4: the orchestrator routes
+    // "current parsed → overwrite" vs. "current unparseable but a conflict
+    // parsed → write recovery sibling" based on this split.
+    //
+    // Implementations MUST execute the resolver and its resulting
     // write/delete atomically with respect to other operations the caller
     // may serialize against this key.
-    //
-    // **Versions ordering — load-bearing for §6 step 4.** `versions[0]` is
-    // always the current version's bytes, and `versions[1...]` are the
-    // conflict versions in any order. When there is no materialized current
-    // version (read failed, file missing), `versions[0]` MUST be empty
-    // `Data()`. This convention is what lets the orchestrator distinguish
-    // "current parsed → overwrite" from "current unparseable but a conflict
-    // parsed → write recovery sibling" per PLAN §6 step 4. Implementers that
-    // omit `versions[0]` will cause the orchestrator to mis-classify the
-    // first conflict bytes as the current version.
     //
     // Returns nil if the key has no conflicts (the caller can ignore it).
     func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
     ) throws -> SidecarReconcileReport.FileOutcome?
 
     // Storage backends that may not have all bytes resident on this device

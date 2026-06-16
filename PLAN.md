@@ -249,7 +249,7 @@ When iCloud presents multiple versions of the same sidecar (current + `NSFileVer
 3. **N-way fold.** Fold every parseable v1 envelope (current + conflict versions) with §5.3 merge from left to right. Because merge is associative, the fold order does not matter. If only one parseable envelope survives, that *is* the result.
 4. **Write back.**
    - If the *current* version was parseable: overwrite it with the merged envelope. Mark each non-skipped conflict version `isResolved = true` and `remove()` it. Leave skipped versions in conflict.
-   - If the *current* version was unparseable but at least one conflict version parsed: write the merge to a sibling file `<originalName>.recovered.<timestamp>.json` and report it. Leave the original current and all conflict versions intact (the human must triage). This prevents silent data destruction.
+   - If the *current* version was unparseable but at least one conflict version parsed: write the merge to a sibling file in a dedicated `<kind>/.recovered/` subdirectory (e.g. `contacts/.recovered/<originalName>.recovered.<deviceID>.<timestamp>.json`) and report it. The subdirectory keeps recovery siblings off the `allKeys()` scan so the link-rewrite pass (§13.4) can't mutate them, and the `<deviceID>` segment prevents same-millisecond cross-device writes from colliding into an unresolvable conflict on the sibling itself. Leave the original current and all conflict versions intact (the human must triage). This prevents silent data destruction.
    - If **no** version parsed: leave everything in conflict, report all skipped versions.
 5. **No conflict** on a file is a no-op.
 

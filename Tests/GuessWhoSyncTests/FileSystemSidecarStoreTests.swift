@@ -128,6 +128,41 @@ struct FileSystemSidecarStoreTests {
         #expect(keys == [a])
     }
 
+    #if os(macOS)
+    @Test
+    func recoverySiblingFilenameIncludesDeviceIDToAvoidCrossDeviceCollisions() throws {
+        // Two devices writing a recovery sibling in the same millisecond
+        // must produce distinct filenames so iCloud doesn't surface a
+        // conflict on the sibling itself (which listKeys ignores).
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root, deviceID: "alpha-device")
+        let key = SidecarKey(kind: .contact, id: "abc")
+
+        try store.write(envelope(id: "abc", fields: [
+            "x": SidecarCell(value: .string("ok"), modifiedAt: when, modifiedBy: "alpha")
+        ]), at: key)
+        let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
+        try injectConflict(at: url, root: root, envelope: envelope(id: "abc", fields: [
+            "y": SidecarCell(value: .string("other"), modifiedAt: when, modifiedBy: "beta")
+        ]))
+        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        guard !conflicts.isEmpty else {
+            // No iCloud — environment can't surface an unresolved conflict; skip.
+            return
+        }
+
+        let merged = envelope(id: "abc")
+        _ = try store.reconcileAllConflicts { _, _, _ in
+            .writeRecoverySibling(merged: merged, suffix: "recovered")
+        }
+
+        let recoveryDir = root.appendingPathComponent("contacts").appendingPathComponent(".recovered")
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: recoveryDir.path)) ?? []
+        #expect(entries.contains { $0.contains(".recovered.alpha-device.") && $0.hasSuffix(".json") })
+    }
+    #endif
+
     @Test
     func eventExternalIDWithSlashRoundTrips() throws {
         let root = makeRoot()
@@ -172,7 +207,7 @@ struct FileSystemSidecarStoreTests {
         let store = FileSystemSidecarStore(root: root)
         try store.write(envelope(id: "abc"), at: SidecarKey(kind: .contact, id: "abc"))
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("closure should not be called when no conflicts exist")
             return .leave
         }
@@ -476,9 +511,11 @@ struct FileSystemSidecarStoreTests {
         let merged = envelope(id: "abc", fields: [
             "nickname": SidecarCell(value: .string("Merged"), modifiedAt: when, modifiedBy: "device-C")
         ])
-        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, current, conflicts in
             #expect(receivedKey == key)
-            #expect(versions.count >= 2)
+            // At least one of current + conflicts is populated; the test sets
+            // up at least one conflict version against an existing current.
+            #expect(current != nil || !conflicts.isEmpty)
             return .write(merged: merged, skip: [])
         }
         #expect(outcomes.count == 1)
@@ -509,7 +546,7 @@ struct FileSystemSidecarStoreTests {
         let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         guard !conflicts.isEmpty else { return }
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)
