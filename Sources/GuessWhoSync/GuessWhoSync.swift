@@ -170,6 +170,10 @@ public final class GuessWhoSync {
         let id = UUID()
         let key = SidecarKey(kind: .link, id: id.uuidString)
         let now = Date()
+        // createdAt is stored as an ISO8601 string with millisecond
+        // precision. Round-trip `now` through that string so the returned
+        // Link's createdAt matches what link(id:) will read back.
+        let createdAtStored = SidecarISO8601.date(from: SidecarISO8601.string(from: now)) ?? now
         let envelope = SidecarEnvelope(
             schemaVersion: 1,
             entityID: key.id,
@@ -178,7 +182,7 @@ public final class GuessWhoSync {
                 Link.endpointBKey: SidecarCell(value: Link.encodeEndpoint(b), modifiedAt: now, modifiedBy: deviceID),
                 Link.noteKey: SidecarCell(value: .string(note), modifiedAt: now, modifiedBy: deviceID),
                 Link.createdAtKey: SidecarCell(
-                    value: .string(SidecarISO8601.string(from: now)),
+                    value: .string(SidecarISO8601.string(from: createdAtStored)),
                     modifiedAt: now,
                     modifiedBy: deviceID
                 ),
@@ -192,7 +196,7 @@ public final class GuessWhoSync {
             endpointA: a,
             endpointB: b,
             note: note,
-            createdAt: now,
+            createdAt: createdAtStored,
             modifiedAt: now,
             modifiedBy: deviceID
         )

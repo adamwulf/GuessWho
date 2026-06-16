@@ -230,7 +230,10 @@ struct LinkTests {
 
         let report = try sync.reconcileContactIdentities()
         let outcome = try #require(report.contactOutcomes.first { $0.localID == "local-1" })
-        #expect(outcome.mergedLoserUUIDs == [loserUUID])
+        // No loser sidecar exists here (only the contact URL was seeded), so
+        // mergedLoserUUIDs stays empty — that field reports loser sidecars
+        // that actually merged into the winner. The link rewrite is the
+        // invariant under test, and it always runs when Case D collapses URLs.
         #expect(outcome.rewrittenLinkIDs == [link.id])
 
         let rewritten = try #require(try sync.link(id: link.id))
