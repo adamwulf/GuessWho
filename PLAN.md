@@ -499,11 +499,18 @@ public protocol SidecarConflictReconciling: SidecarStoreProtocol {
 }
 ```
 
-`SidecarStoreProtocol` is the public surface — anything a host UI or third-party backend needs. The conflict-reconcile plumbing is exposed via `@_spi(ConflictReconcile)`: visible to the orchestrator and the two shipping stores (which `@_spi(ConflictReconcile) import GuessWhoSync`), invisible to plain `import GuessWhoSync` callers. The resolver always returns a merged `SidecarEnvelope` — no enum, no recovery sibling, no "leave in conflict" option. Per §6 we always converge.
+`SidecarStoreProtocol` is the public surface — anything a host UI or third-party backend needs. The conflict-reconcile plumbing is exposed via `@_spi(ConflictReconcile)`: visible to the orchestrator and the two shipping stores (which `@_spi(ConflictReconcile) import GuessWhoSync`), invisible to plain `import GuessWhoSync` callers. The resolver returns a merged `SidecarEnvelope` — no enum, no recovery sibling, no "leave in conflict" option for the success path.
 
 The orchestrator's `reconcileSidecars()` casts its store via `as? SidecarConflictReconciling` to drive the loop. A backend that doesn't conform (e.g. a non-iCloud store with no multi-version conflicts) gets an empty report — `reconcileSidecars()` is still safe to call.
 
-**Closure error handling.** If `resolve` throws for a given key, the store records a failure outcome (`mergedVersionCount = 0`, `skippedReasons` containing the error description) and the orchestrator continues with the next key.
+**Resolver contract.** The closure passed to `reconcileConflict(at:resolve:)`:
+- MUST return an envelope whose `entityID == key.id`. The FS store asserts this at write time as defense-in-depth — a mismatched return aborts the pass with `versionsConsidered = 0`.
+- SHOULD always converge (return a valid envelope even when no inputs parsed — e.g. an empty envelope at the right entityID).
+- MAY throw, in which case the store treats this key as "abort the pass": no write, no `version.remove()`, error surfaces in `skippedReasons` with `versionsConsidered = 0`, and the conflict stays on disk for the next reconcile to retry. The orchestrator's resolver doesn't throw; this clause only matters for third-party resolvers.
+
+**Store contract (success path).** The store calls `version.remove()` FIRST and only sets `version.isResolved = true` on success. If `remove()` throws, `isResolved` stays false so the next pass retries that version. Per-version `remove()` failures surface in `skippedReasons`; they don't fail the whole pass.
+
+**Read failures.** If `Data(contentsOf:)` throws on the current or any conflict version (sandbox glitch, transient I/O, iCloud not-yet-downloaded), the store aborts the pass the same way a resolver throw does: `versionsConsidered = 0`, no write, no `remove()`, error in `skippedReasons`. The bytes might be fine; we don't clobber them.
 
 ### 7.3 Orchestrator
 
@@ -792,12 +799,13 @@ Each phase ends with passing tests for the listed sections. Status markers:
 6. ✅ **Event sidecars.** Tests: §9.7.
 7. ✅🟡 **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`. ✅ unit-tested; 🟡 production-smoked on 2026-06-14 against the real iCloud ubiquity container `iCloud.com.milestonemade.guesswho` using the pre-pivot singleton `setField` API — produced a valid v1 envelope at `Documents/contacts/<uuid>.json` with correct `schemaVersion`, `entityID`, and a LWW cell carrying the device-ID tiebreaker. The 🟡 smoke is preserved as a historical waypoint; the API has since shifted to the field-instance shape (§7.3), so a fresh smoke against `addField` / `setField(at:id:field:value:)` / `deleteField(at:id:)` is on the §11.1 hit list. Real two-device `NSFileVersion` conflict path is still 🔴.
 8. 🟡🔴 **Real `CNContactStore` / `EKEventStore` adapters.** Smoke-tested on device; not unit-tested. `CNContactStoreAdapter`: 🟡 Case A reconcile + `save(_:)` partial-update verified on 2026-06-14 (Mac Catalyst) — wrote `guesswho://contact/<uuid>` to a real `CNContact` and macOS Contacts.app showed the URL. `EKEventStoreAdapter`: 🔴 untouched by the sample app, no smoke yet.
-9. 🔴 **Field-instance API + notes (§7.3, §12).** `addField` / `setField(at:id:field:value:)` / `deleteField(at:id:)` / `field(at:id:)` / `fields(at:)`; `SidecarFieldType`; `SidecarField`; `typeValueMismatch`. Foundation for every typed field (notes, dates, checkboxes). Sample-app notes UI built on top. Tests: §12.4.
-10. 🔴 **Entity links (§13).** `SidecarKind.link`, `Documents/links/` in `FileSystemSidecarStore`, `Link` model, five orchestrator methods (`addLink` / `setLinkNote` / `removeLink` / `link(id:)` / `links(at:)`), Case-D endpoint-rewrite step in both reconcile entry points, `rewrittenLinkIDs` on `ContactOutcome`. Tests: §13.6.
+9. ✅ **Field-instance API + notes (§7.3, §12).** `addField` / `setField(at:id:field:value:)` / `deleteField(at:id:)` / `field(at:id:)` / `fields(at:)`; `SidecarFieldType`; `SidecarField`; `typeValueMismatch`. Foundation for every typed field (notes, dates, checkboxes). Tests: §12.4 (unit). Sample-app UI + production smokes still 🔴 — see §11.1.
+10. ✅ **Entity links (§13).** `SidecarKind.link`, `Documents/links/` in `FileSystemSidecarStore`, `Link` model + Codable + envelope codec, five orchestrator methods (`addLink` / `setLinkNote` / `removeLink` / `link(id:)` / `links(at:)`), Case-D endpoint-rewrite step in both reconcile entry points, `rewrittenLinkIDs` on `ContactOutcome`. Tests: §13.6 (unit). Production smokes still 🔴 — see §11.1.
+11. ✅ **Public API surface narrowed.** `SidecarConflictReconciling` is `@_spi(ConflictReconcile)`; conflict-reconcile plumbing invisible to plain `import GuessWhoSync` (PLAN §7.2). Resolver contract documented and enforced: entityID match (defense-in-depth FS-store assertion), read-failure / resolver-throws / mismatched-entityID all abort the pass with `versionsConsidered = 0` and conflict surface intact for retry. Tests: §9.5.
 
-### 11.1 Verification gaps for the next agent
+### 11.1 Verification gaps
 
-The items below are load-bearing for v1 but not yet demonstrated in production. They should be the next agent's prioritized hit list before any new features land.
+The items below are load-bearing for v1 but not yet demonstrated in production (unit-test coverage exists for everything; what's missing is on-device behavior against the real Contacts/EventKit stores and real iCloud sync).
 
 **High priority (correctness-of-design risks):**
 - 🔴 **§7.3 field-instance API + §12 notes — single-device CRUD.** Add three notes via the sample app's bottom input, inline-edit one, swipe-delete one. Re-launch. Confirm the two live notes appear in `(createdAt, id)` ascending order. Exercises `addField` / `setField` / `deleteField` / `fields(at:)` (the foundation API for every future typed field — dates, checkboxes, etc.).
