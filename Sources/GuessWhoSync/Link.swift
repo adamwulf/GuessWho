@@ -6,7 +6,7 @@ import Foundation
 /// `Documents/links/<uuid>.json`. Per Core Semantics: one envelope write
 /// per mutation, generic §5.3 LWW per cell, `deletedAt` is the only
 /// delete mechanism.
-public struct Link: Hashable, Sendable {
+public struct Link: Hashable, Sendable, Codable {
     public var id: UUID
     public var endpointA: SidecarKey
     public var endpointB: SidecarKey

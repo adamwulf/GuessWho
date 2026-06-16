@@ -294,22 +294,44 @@ public final class GuessWhoSync {
             var reasons: [String] = []
             let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
                 try sidecars.reconcileConflict(at: key) { versions in
-                    var parsed: [SidecarEnvelope] = []
+                    // Convention with the store: `versions[0]` is the current
+                    // version's bytes when versions is non-empty; the rest are
+                    // conflict versions. This is required so §6 step 4 can
+                    // distinguish "current parsed → overwrite" from "current
+                    // didn't parse but a conflict did → write recovery
+                    // sibling, leave originals intact."
+                    guard let firstBytes = versions.first else {
+                        return .leave
+                    }
+                    let currentResult = parseEnvelope(firstBytes)
+                    var currentEnvelope: SidecarEnvelope? = nil
                     var skipped: [Data] = []
-                    for bytes in versions {
+                    switch currentResult {
+                    case .ok(let env):
+                        currentEnvelope = env
+                    case .skip(let reason):
+                        skipped.append(firstBytes)
+                        reasons.append("current: \(reason)")
+                    }
+
+                    var parsedConflicts: [SidecarEnvelope] = []
+                    for bytes in versions.dropFirst() {
                         switch parseEnvelope(bytes) {
-                        case .ok(let envelope):
-                            parsed.append(envelope)
+                        case .ok(let env):
+                            parsedConflicts.append(env)
                         case .skip(let reason):
                             skipped.append(bytes)
                             reasons.append(reason)
                         }
                     }
 
-                    guard var folded = parsed.first else {
+                    // Fold every parseable envelope into one merged result.
+                    let parseable = (currentEnvelope.map { [$0] } ?? []) + parsedConflicts
+                    guard var folded = parseable.first else {
+                        // Nothing parseable on any side — §6 step 4 last bullet.
                         return .leave
                     }
-                    for next in parsed.dropFirst() {
+                    for next in parseable.dropFirst() {
                         switch merge(folded, next) {
                         case .success(let combined):
                             folded = combined
@@ -318,7 +340,18 @@ public final class GuessWhoSync {
                             return .leave
                         }
                     }
-                    return .write(merged: folded, skip: skipped)
+
+                    if currentEnvelope != nil {
+                        // Current parseable: overwrite as usual.
+                        return .write(merged: folded, skip: skipped)
+                    } else {
+                        // Current unparseable but ≥1 conflict parsed: write
+                        // recovery sibling, leave originals intact (§6 step 4
+                        // middle bullet). Suffix includes a stable ".recovered"
+                        // marker so a human can find the sibling; timestamp is
+                        // appended by the store.
+                        return .writeRecoverySibling(merged: folded, suffix: "recovered")
+                    }
                 }
             }
             if let outcome {
@@ -336,13 +369,47 @@ public final class GuessWhoSync {
     }
 
     public func reconcileContactIdentities() throws -> IdentityReconcileReport {
-        var outcomes: [IdentityReconcileReport.ContactOutcome] = []
+        var results: [ContactReconcileResult] = []
         var carriedUUIDs: Set<String> = []
+        // Aggregate loser→winner mapping across every Case D in this pass so
+        // we can rewrite each affected link envelope exactly once (§13.4).
+        var loserToWinner: [String: String] = [:]
+        // Per-contact list of losers, so we can attribute rewrittenLinkIDs
+        // back to the contact whose Case D touched each link.
+        var losersByLocalID: [String: [String]] = [:]
 
         for contact in try contacts.fetchAll() {
-            let outcome = try reconcile(contact: contact)
-            outcomes.append(outcome.report)
-            carriedUUIDs.formUnion(outcome.carriedUUIDs)
+            let result = try reconcile(contact: contact)
+            results.append(result)
+            carriedUUIDs.formUnion(result.carriedUUIDs)
+            for loser in result.losers {
+                loserToWinner[loser] = result.winnerUUID
+            }
+            if !result.losers.isEmpty {
+                losersByLocalID[result.report.localID, default: []].append(contentsOf: result.losers)
+            }
+        }
+
+        // Run the link-endpoint rewrite once over the union of all losers from
+        // every Case D in this pass — §13.4: "one envelope write per link,
+        // even when both endpoints change."
+        let rewrittenLinksByLoser = try rewriteLinkEndpoints(mapping: loserToWinner)
+
+        // Attribute rewritten link IDs back to each contact's outcome. A link
+        // touched by losers belonging to two different contacts appears in
+        // both outcomes (§13.4).
+        var outcomes: [IdentityReconcileReport.ContactOutcome] = []
+        outcomes.reserveCapacity(results.count)
+        for result in results {
+            var rewritten: [UUID] = []
+            var seen: Set<UUID> = []
+            for loser in result.losers {
+                guard let ids = rewrittenLinksByLoser[loser] else { continue }
+                for id in ids where seen.insert(id).inserted {
+                    rewritten.append(id)
+                }
+            }
+            outcomes.append(result.report.with(rewrittenLinkIDs: rewritten))
         }
 
         let orphans = try sidecars.allKeys()
@@ -361,12 +428,29 @@ public final class GuessWhoSync {
         guard let contact = try contacts.fetch(localID: localID) else {
             throw ContactStoreError.contactNotFound(localID: localID)
         }
-        return try reconcile(contact: contact).report
+        let result = try reconcile(contact: contact)
+        // One Case-D worth of losers; run the rewrite pass scoped to those.
+        var mapping: [String: String] = [:]
+        for loser in result.losers { mapping[loser] = result.winnerUUID }
+        let rewrittenByLoser = try rewriteLinkEndpoints(mapping: mapping)
+        var rewritten: [UUID] = []
+        var seen: Set<UUID> = []
+        for loser in result.losers {
+            guard let ids = rewrittenByLoser[loser] else { continue }
+            for id in ids where seen.insert(id).inserted {
+                rewritten.append(id)
+            }
+        }
+        return result.report.with(rewrittenLinkIDs: rewritten)
     }
 
     private struct ContactReconcileResult {
         let report: IdentityReconcileReport.ContactOutcome
         let carriedUUIDs: [String]
+        // §13.4 inputs: contact's Case-D winner (if any) and its losers.
+        // Empty when the contact didn't hit Case D this pass.
+        let winnerUUID: String
+        let losers: [String]
     }
 
     private func reconcile(contact original: Contact) throws -> ContactReconcileResult {
@@ -413,7 +497,9 @@ public final class GuessWhoSync {
                     removedMalformedURLs: [],
                     errors: []
                 ),
-                carriedUUIDs: uniqueValidUUIDs
+                carriedUUIDs: uniqueValidUUIDs,
+                winnerUUID: uniqueValidUUIDs[0],
+                losers: []
             )
         case 1 where malformedURLs.isEmpty:
             // Duplicate URL entries collapsed; persist the trimmed contact, no other changes.
@@ -426,7 +512,9 @@ public final class GuessWhoSync {
                     removedMalformedURLs: [],
                     errors: []
                 ),
-                carriedUUIDs: uniqueValidUUIDs
+                carriedUUIDs: uniqueValidUUIDs,
+                winnerUUID: uniqueValidUUIDs[0],
+                losers: []
             )
         case 1:
             return try handleCaseC(contact: &contact, validUUID: uniqueValidUUIDs[0], malformedURLs: malformedURLs)
@@ -457,7 +545,9 @@ public final class GuessWhoSync {
                 removedMalformedURLs: malformedURLs,
                 errors: []
             ),
-            carriedUUIDs: [newUUID]
+            carriedUUIDs: [newUUID],
+            winnerUUID: newUUID,
+            losers: []
         )
     }
 
@@ -480,7 +570,9 @@ public final class GuessWhoSync {
                 removedMalformedURLs: malformedURLs,
                 errors: []
             ),
-            carriedUUIDs: [validUUID]
+            carriedUUIDs: [validUUID],
+            winnerUUID: validUUID,
+            losers: []
         )
     }
 
@@ -543,70 +635,96 @@ public final class GuessWhoSync {
         }
         try contacts.save(contact)
 
-        // §13.4 — rewrite any link endpoints pointing at a loser UUID to the
-        // winner UUID. Runs after winner/loser sidecars are reconciled and
-        // saved so the link graph reflects the merged state on return.
-        let rewrittenLinkIDs = try rewriteLinkEndpoints(losers: losers, winner: winner)
-
         return ContactReconcileResult(
             report: IdentityReconcileReport.ContactOutcome(
                 localID: contact.localID,
                 assignedUUID: nil,
                 mergedLoserUUIDs: mergedLoserUUIDs,
                 removedMalformedURLs: malformedURLs,
-                rewrittenLinkIDs: rewrittenLinkIDs,
                 errors: errors
             ),
-            carriedUUIDs: [winner]
+            carriedUUIDs: [winner],
+            winnerUUID: winner,
+            losers: losers
         )
     }
 
-    // §13.4 endpoint rewrite. For every `.link` envelope whose endpointA
-    // and/or endpointB cell points at `(.contact, L)` for any `L` in
-    // `losers`, write a new envelope with the affected endpoint cell(s)
-    // rewritten to `(.contact, winner)`. One envelope write per affected
-    // link, even when both endpoints change.
-    private func rewriteLinkEndpoints(losers: [String], winner: String) throws -> [UUID] {
-        guard !losers.isEmpty else { return [] }
-        let loserSet = Set(losers)
+    // §13.4 endpoint rewrite. Runs ONCE per reconcile pass, over the union of
+    // every Case-D's loser→winner mapping in the pass — so a link straddling
+    // L1 (from contact-1's collapse) and L2 (from contact-2's collapse) is
+    // rewritten in a single envelope write, not one per collapse.
+    //
+    // For each affected link envelope: acquire the per-link sidecar lock, re-
+    // read inside the lock (covers a concurrent setLinkNote / removeLink that
+    // landed since the all-keys scan started), apply all matching endpoint
+    // rewrites, and write once. Returns a map from loser UUID to the link
+    // UUIDs whose endpoints we rewrote because they pointed at that loser; the
+    // caller fans this back out to per-contact `rewrittenLinkIDs`.
+    private func rewriteLinkEndpoints(mapping: [String: String]) throws -> [String: [UUID]] {
+        guard !mapping.isEmpty else { return [:] }
 
-        var rewritten: [UUID] = []
+        var rewrittenByLoser: [String: [UUID]] = [:]
         for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key) else { continue }
-            guard let aCell = envelope.fields[Link.endpointAKey],
-                  let bCell = envelope.fields[Link.endpointBKey] else { continue }
-            let aEndpoint = Link.decodeEndpoint(aCell.value)
-            let bEndpoint = Link.decodeEndpoint(bCell.value)
+            // Cheap pre-screen against the loser set so we only lock links we
+            // intend to rewrite. The authoritative read happens inside the
+            // lock below; this read may be a moment stale.
+            guard let pre = try sidecars.read(key) else { continue }
+            guard let preA = pre.fields[Link.endpointAKey],
+                  let preB = pre.fields[Link.endpointBKey],
+                  let preAEnd = Link.decodeEndpoint(preA.value),
+                  let preBEnd = Link.decodeEndpoint(preB.value) else { continue }
+            let preAMatches = preAEnd.kind == .contact && mapping[preAEnd.id] != nil
+            let preBMatches = preBEnd.kind == .contact && mapping[preBEnd.id] != nil
+            guard preAMatches || preBMatches else { continue }
 
-            let aMatches = aEndpoint.map { $0.kind == .contact && loserSet.contains($0.id) } ?? false
-            let bMatches = bEndpoint.map { $0.kind == .contact && loserSet.contains($0.id) } ?? false
-            guard aMatches || bMatches else { continue }
+            try sidecarLocks.withLock(forKey: key) {
+                // Re-read inside the lock: a concurrent setLinkNote or
+                // removeLink may have written between the pre-screen and now.
+                guard let envelope = try sidecars.read(key) else { return }
+                guard let aCell = envelope.fields[Link.endpointAKey],
+                      let bCell = envelope.fields[Link.endpointBKey],
+                      let aEnd = Link.decodeEndpoint(aCell.value),
+                      let bEnd = Link.decodeEndpoint(bCell.value) else { return }
+                let aWinner = aEnd.kind == .contact ? mapping[aEnd.id] : nil
+                let bWinner = bEnd.kind == .contact ? mapping[bEnd.id] : nil
+                guard aWinner != nil || bWinner != nil else { return }
 
-            let now = Date()
-            var fields = envelope.fields
-            if aMatches {
-                fields[Link.endpointAKey] = SidecarCell(
-                    value: Link.encodeEndpoint(SidecarKey(kind: .contact, id: winner)),
-                    modifiedAt: now,
-                    modifiedBy: deviceID
+                let now = Date()
+                var fields = envelope.fields
+                if let w = aWinner {
+                    fields[Link.endpointAKey] = SidecarCell(
+                        value: Link.encodeEndpoint(SidecarKey(kind: .contact, id: w)),
+                        modifiedAt: now,
+                        modifiedBy: deviceID
+                    )
+                }
+                if let w = bWinner {
+                    fields[Link.endpointBKey] = SidecarCell(
+                        value: Link.encodeEndpoint(SidecarKey(kind: .contact, id: w)),
+                        modifiedAt: now,
+                        modifiedBy: deviceID
+                    )
+                }
+                try sidecars.write(
+                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
+                    at: key
                 )
-            }
-            if bMatches {
-                fields[Link.endpointBKey] = SidecarCell(
-                    value: Link.encodeEndpoint(SidecarKey(kind: .contact, id: winner)),
-                    modifiedAt: now,
-                    modifiedBy: deviceID
-                )
-            }
-            try sidecars.write(
-                SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
-                at: key
-            )
-            if let linkID = UUID(uuidString: key.id) {
-                rewritten.append(linkID)
+
+                guard let linkID = UUID(uuidString: key.id) else { return }
+                // Each link is recorded under EVERY loser whose collapse
+                // touched one of its endpoints — so it can surface in the
+                // ContactOutcome of every contact whose Case D affected it.
+                // The caller dedups per-contact (one link appears at most
+                // once in a given outcome's rewrittenLinkIDs).
+                if aWinner != nil {
+                    rewrittenByLoser[aEnd.id, default: []].append(linkID)
+                }
+                if bWinner != nil, aEnd.id != bEnd.id {
+                    rewrittenByLoser[bEnd.id, default: []].append(linkID)
+                }
             }
         }
-        return rewritten
+        return rewrittenByLoser
     }
 
     // Recursively acquire per-key locks in sorted UUID order, then execute

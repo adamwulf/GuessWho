@@ -37,3 +37,19 @@ public struct IdentityReconcileReport: Sendable {
         self.orphanSidecars = orphanSidecars
     }
 }
+
+extension IdentityReconcileReport.ContactOutcome {
+    /// Returns a copy of self with `rewrittenLinkIDs` replaced. Used by the
+    /// orchestrator after `rewriteLinkEndpoints` runs once over the union of
+    /// every Case-D mapping in a pass — see §13.4.
+    func with(rewrittenLinkIDs: [UUID]) -> IdentityReconcileReport.ContactOutcome {
+        IdentityReconcileReport.ContactOutcome(
+            localID: localID,
+            assignedUUID: assignedUUID,
+            mergedLoserUUIDs: mergedLoserUUIDs,
+            removedMalformedURLs: removedMalformedURLs,
+            rewrittenLinkIDs: rewrittenLinkIDs,
+            errors: errors
+        )
+    }
+}

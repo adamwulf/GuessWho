@@ -307,6 +307,67 @@ struct LinkTests {
     }
 
     @Test
+    func multiCaseDOnePassRewritesEachAffectedLinkOnce() throws {
+        // Two separate contacts, each in Case D collapsing its own losers.
+        // One link straddles the two contacts (endpointA points at contact-1's
+        // loser, endpointB points at contact-2's loser). Per §13.4 the link
+        // must be rewritten in EXACTLY ONE envelope write across the entire
+        // reconcileContactIdentities() pass — not once per contact.
+        let contacts = InMemoryContactStore()
+        let events = InMemoryEventStore()
+        let sidecars = CountingSidecarStore(wrapping: InMemorySidecarStore())
+        let sync = GuessWhoSync(contacts: contacts, events: events, sidecars: sidecars, deviceID: "device-A")
+
+        // Per §3.3 Case D, the lex-smaller UUID wins. So winner < loser in
+        // hex-string order. Construct the contacts with that invariant.
+        let winner1 = "00000000-0000-0000-0000-000000000001"
+        let loser1 = "00000000-0000-0000-0000-00000000000a"
+        var c1 = Contact(localID: "local-1")
+        c1.urlAddresses = [
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loser1),
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winner1),
+        ]
+        try contacts.save(c1)
+
+        let winner2 = "00000000-0000-0000-0000-000000000002"
+        let loser2 = "00000000-0000-0000-0000-00000000000b"
+        var c2 = Contact(localID: "local-2")
+        c2.urlAddresses = [
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loser2),
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winner2),
+        ]
+        try contacts.save(c2)
+
+        // Link straddling L1 and L2.
+        let link = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: loser1),
+            to: SidecarKey(kind: .contact, id: loser2),
+            note: "straddler"
+        )
+        let linkKey = SidecarKey(kind: .link, id: link.id.uuidString)
+        let writesToLinkBefore = sidecars.writeCounts[linkKey] ?? 0
+
+        let report = try sync.reconcileContactIdentities()
+
+        // Both contact outcomes carry this link in rewrittenLinkIDs (the same
+        // link was touched by both Case Ds).
+        let c1Outcome = try #require(report.contactOutcomes.first { $0.localID == "local-1" })
+        let c2Outcome = try #require(report.contactOutcomes.first { $0.localID == "local-2" })
+        #expect(c1Outcome.rewrittenLinkIDs == [link.id])
+        #expect(c2Outcome.rewrittenLinkIDs == [link.id])
+
+        // Exactly one envelope write to this link during reconcile, even
+        // though two separate Case Ds each touched one of its endpoints.
+        let writesToLinkAfter = sidecars.writeCounts[linkKey] ?? 0
+        #expect(writesToLinkAfter - writesToLinkBefore == 1)
+
+        // Final state: link's endpoints point at the winners.
+        let rewritten = try #require(try sync.link(id: link.id))
+        #expect(rewritten.endpointA == SidecarKey(kind: .contact, id: winner1))
+        #expect(rewritten.endpointB == SidecarKey(kind: .contact, id: winner2))
+    }
+
+    @Test
     func caseDLeavesNonMatchingLinksAlone() throws {
         let contacts = InMemoryContactStore()
         let events = InMemoryEventStore()

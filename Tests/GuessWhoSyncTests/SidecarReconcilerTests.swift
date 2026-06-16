@@ -34,7 +34,7 @@ struct SidecarReconcilerTests {
         try JSONEncoder().encode(env)
     }
 
-    // MARK: - §9.5
+    // MARK: - §6 happy path (current parseable + conflicts parseable)
 
     @Test
     func twoConflictVersionsBothParseable_mergesAndClears() throws {
@@ -45,7 +45,9 @@ struct SidecarReconcilerTests {
         let envB = envelope(fields: [
             "notes": SidecarCell(value: .string("Met at WWDC"), modifiedAt: t2, modifiedBy: "device-B")
         ])
-        store.scriptConflict(at: key(), versions: [try encode(envA), try encode(envB)])
+        // Seed current; script B as a conflict version. Current parses + 1 conflict parses → overwrite.
+        try store.write(envA, at: key())
+        store.scriptConflict(at: key(), versions: [try encode(envB)])
 
         let sync = makeSync(sidecars: store)
         let report = try sync.reconcileSidecars()
@@ -64,7 +66,7 @@ struct SidecarReconcilerTests {
     }
 
     @Test
-    func threeConflictVersionsAllParseable_nWayFold() throws {
+    func threeWayFold_currentPlusTwoConflictsAllParseable() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
             "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
@@ -75,9 +77,8 @@ struct SidecarReconcilerTests {
         let envC = envelope(fields: [
             "c": SidecarCell(value: .string("gamma"), modifiedAt: t3, modifiedBy: "device-C")
         ])
-        store.scriptConflict(at: key(), versions: [
-            try encode(envA), try encode(envB), try encode(envC)
-        ])
+        try store.write(envA, at: key())
+        store.scriptConflict(at: key(), versions: [try encode(envB), try encode(envC)])
 
         let report = try makeSync(sidecars: store).reconcileSidecars()
 
@@ -90,7 +91,7 @@ struct SidecarReconcilerTests {
     }
 
     @Test
-    func oneVersionUnparseableBytes_skippedAndReported() throws {
+    func oneConflictVersionUnparseable_skippedAndReported() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
             "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
@@ -98,10 +99,8 @@ struct SidecarReconcilerTests {
         let envB = envelope(fields: [
             "b": SidecarCell(value: .string("beta"), modifiedAt: t2, modifiedBy: "device-B")
         ])
-        let garbage = Data("not json".utf8)
-        store.scriptConflict(at: key(), versions: [
-            try encode(envA), garbage, try encode(envB)
-        ])
+        try store.write(envA, at: key())
+        store.scriptConflict(at: key(), versions: [Data("not json".utf8), try encode(envB)])
 
         let report = try makeSync(sidecars: store).reconcileSidecars()
 
@@ -117,7 +116,7 @@ struct SidecarReconcilerTests {
     }
 
     @Test
-    func oneVersionSchemaVersion99_skippedAndReported() throws {
+    func oneConflictVersionSchemaVersion99_skippedAndReported() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
             "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
@@ -125,7 +124,8 @@ struct SidecarReconcilerTests {
         let envFuture = envelope(schemaVersion: 99, fields: [
             "future": SidecarCell(value: .string("nope"), modifiedAt: t2, modifiedBy: "device-X")
         ])
-        store.scriptConflict(at: key(), versions: [try encode(envA), try encode(envFuture)])
+        try store.write(envA, at: key())
+        store.scriptConflict(at: key(), versions: [try encode(envFuture)])
 
         let report = try makeSync(sidecars: store).reconcileSidecars()
 
@@ -139,27 +139,34 @@ struct SidecarReconcilerTests {
         #expect(merged.fields.keys.sorted() == ["a"])
     }
 
+    // MARK: - §6 step 4: current unparseable but a conflict parsed → recovery sibling
+
     @Test
-    func unparseableAlongsideOneValid_collapsesToTheValid() throws {
+    func currentUnparseable_conflictParses_writesRecoverySibling() throws {
         let store = InMemorySidecarStore()
         let envValid = envelope(fields: [
             "only": SidecarCell(value: .string("survivor"), modifiedAt: t1, modifiedBy: "device-A")
         ])
-        store.scriptConflict(at: key(), versions: [Data("garbage".utf8), try encode(envValid)])
+        // No `write` for the current → first slot is empty bytes → "current unparseable".
+        store.scriptConflict(at: key(), versions: [try encode(envValid)])
 
         let report = try makeSync(sidecars: store).reconcileSidecars()
 
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
-        #expect(outcome.mergedVersionCount == 1)
-        #expect(outcome.skippedReasons.count == 1)
+        // No overwrite of the current happened; sibling was written instead.
+        #expect(outcome.mergedVersionCount == 0)
+        #expect(outcome.skippedReasons.contains { $0.contains("recovery sibling") })
 
-        let merged = try #require(try store.read(key()))
-        #expect(merged.fields.keys.sorted() == ["only"])
-        let onlyCell = try #require(merged.fields["only"])
-        #expect(onlyCell.value == .string("survivor"))
-        #expect(onlyCell.deletedAt == nil)
+        // The current envelope is left as-was (nil — never existed).
+        #expect(try store.read(key()) == nil)
+
+        // The recovery sibling carries the merged result.
+        let sibling = try #require(store.recoverySibling(of: key(), suffix: "recovered"))
+        #expect(sibling.fields.keys.sorted() == ["only"])
     }
+
+    // MARK: - §6 step 4 last bullet: nothing parses → leave everything in conflict
 
     @Test
     func noVersionParses_leavesAllInConflict() throws {
@@ -167,6 +174,7 @@ struct SidecarReconcilerTests {
         let g1 = Data("garbage-one".utf8)
         let g2 = Data("garbage-two".utf8)
         let g3 = Data("garbage-three".utf8)
+        // No current envelope written; all conflict versions garbage.
         store.scriptConflict(at: key(), versions: [g1, g2, g3])
 
         let sync = makeSync(sidecars: store)
@@ -175,7 +183,8 @@ struct SidecarReconcilerTests {
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
         #expect(outcome.mergedVersionCount == 0)
-        #expect(outcome.skippedReasons.count == 3)
+        // 1 "current: …" reason + 3 garbage-conflict reasons = 4.
+        #expect(outcome.skippedReasons.count == 4)
 
         #expect(try store.read(key()) == nil)
 

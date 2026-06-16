@@ -227,11 +227,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             // merged write below replaces the current contents regardless,
             // so even if the resolver returned current bytes in `skip`
             // (e.g. by mistake) the skip pass has nothing to do for them.
+            // Convention with the resolver: allBytes[0] is always the
+            // current version's bytes (empty Data if the current read fails
+            // or current isn't materialized). The resolver branches on
+            // §6 step 4 by inspecting whether allBytes[0] parses.
             var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
             var allBytes: [Data] = []
             if let current = NSFileVersion.currentVersionOfItem(at: url),
                let bytes = try? Data(contentsOf: current.url) {
                 allBytes.append(bytes)
+            } else {
+                allBytes.append(Data())
             }
             for version in conflicts {
                 let bytes = try? Data(contentsOf: version.url)
@@ -283,6 +289,34 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                     key: key,
                     mergedVersionCount: allBytes.count - skippedCount,
                     skippedReasons: []
+                )
+
+            case .writeRecoverySibling(let merged, let suffix):
+                // §6 step 4: current was unparseable but ≥1 conflict parsed.
+                // Write merged to <originalName>.<suffix>.<epochMillis>.json
+                // alongside the original. Leave current and all conflict
+                // versions intact so a human can triage. Note: we deliberately
+                // do NOT mark any version isResolved here — the conflict state
+                // persists on disk.
+                let mergedData = try JSONEncoder().encode(merged)
+                let basename = (url.lastPathComponent as NSString).deletingPathExtension
+                let directory = url.deletingLastPathComponent()
+                let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+                let siblingName = "\(basename).\(suffix).\(timestamp).json"
+                let siblingURL = directory.appendingPathComponent(siblingName)
+                var writeError: Error?
+                try coordinatedWrite(key: key, at: siblingURL) { safeURL in
+                    do {
+                        try mergedData.write(to: safeURL, options: [.atomic])
+                    } catch {
+                        writeError = error
+                    }
+                }
+                if let writeError { throw writeError }
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    mergedVersionCount: 0,
+                    skippedReasons: ["wrote recovery sibling: \(siblingName)"]
                 )
 
             case .leave:

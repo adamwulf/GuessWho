@@ -5,6 +5,9 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
     private var envelopes: [SidecarKey: SidecarEnvelope] = [:]
     private var scriptedConflicts: [SidecarKey: [Data]] = [:]
+    /// In-memory analogue of §6 step 4's recovery-sibling files. Keyed by a
+    /// derived SidecarKey whose id is `"<originalID>.<suffix>"`.
+    private var recoverySiblings: [SidecarKey: SidecarEnvelope] = [:]
 
     public init() {}
 
@@ -80,9 +83,16 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         let currentEnvelope = envelopes[key]
         lock.unlock()
 
+        // Convention with the resolver: versions[0] is always the current
+        // version's bytes, even when there's no current envelope (in which
+        // case it's empty / unparseable). This lets the resolver branch on
+        // §6 step 4 cleanly: current parsed → overwrite; current unparseable
+        // but ≥1 conflict parsed → write recovery sibling.
         var versions: [Data] = []
         if let currentEnvelope, let bytes = try? JSONEncoder().encode(currentEnvelope) {
             versions.append(bytes)
+        } else {
+            versions.append(Data())
         }
         versions.append(contentsOf: scripted)
 
@@ -111,6 +121,22 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
                 mergedVersionCount: versions.count - skippedCount,
                 skippedReasons: []
             )
+        case .writeRecoverySibling(let merged, let suffix):
+            // In-memory analogue of §6 step 4's filesystem sibling write:
+            // park the merged envelope under a sibling key so tests can
+            // observe that recovery ran without destroying the original.
+            // Leave the conflict scripting in place — recovery siblings do
+            // NOT mark conflicts resolved.
+            let siblingID = "\(key.id).\(suffix)"
+            let siblingKey = SidecarKey(kind: key.kind, id: siblingID)
+            lock.lock()
+            recoverySiblings[siblingKey] = merged
+            lock.unlock()
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                mergedVersionCount: 0,
+                skippedReasons: ["wrote recovery sibling at \(siblingID)"]
+            )
         case .leave:
             return SidecarReconcileReport.FileOutcome(
                 key: key,
@@ -118,5 +144,13 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
                 skippedReasons: []
             )
         }
+    }
+
+    /// Recovery-sibling envelopes parked by `.writeRecoverySibling` (§6 step 4).
+    /// Test-only accessor.
+    public func recoverySibling(of key: SidecarKey, suffix: String) -> SidecarEnvelope? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recoverySiblings[SidecarKey(kind: key.kind, id: "\(key.id).\(suffix)")]
     }
 }

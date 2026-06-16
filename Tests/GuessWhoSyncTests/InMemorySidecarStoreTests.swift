@@ -110,12 +110,15 @@ struct InMemorySidecarStoreTests {
         ])
         let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)
-            #expect(versions == [v1, v2])
+            // versions[0] is the current placeholder (empty here because we
+            // never wrote a current envelope); v1/v2 follow per §6 step 4
+            // convention.
+            #expect(versions == [Data(), v1, v2])
             return .write(merged: merged, skip: [])
         }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
-        #expect(outcomes[0].mergedVersionCount == 2)
+        #expect(outcomes[0].mergedVersionCount == 3)
         #expect(outcomes[0].skippedReasons.isEmpty)
 
         let fetched = try #require(try store.read(key))
@@ -186,7 +189,10 @@ struct InMemorySidecarStoreTests {
             .write(merged: merged, skip: [Data([0x03, 0x04])])
         }
         #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 2)
+        // versions: [<empty current>, v1, v2, v3]; v2 was skipped; merged
+        // count is 4 - 1 = 3 (the empty current is counted toward the merge
+        // total — same as the FS store's allBytes.count accounting).
+        #expect(outcomes[0].mergedVersionCount == 3)
     }
 
     @Test
