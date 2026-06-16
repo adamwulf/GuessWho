@@ -106,7 +106,10 @@ struct SidecarReconcilerTests {
 
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
-        #expect(outcome.mergedVersionCount == 2)
+        // mergedVersionCount counts every version slot the resolver saw:
+        // current (envA) + 2 conflicts (garbage + envB) = 3. Skipped reasons
+        // surface the one unparseable input separately.
+        #expect(outcome.mergedVersionCount == 3)
         #expect(outcome.skippedReasons.count == 1)
         let reason = outcome.skippedReasons[0].lowercased()
         #expect(reason.contains("json") || reason.contains("parse"))
@@ -131,7 +134,9 @@ struct SidecarReconcilerTests {
 
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
-        #expect(outcome.mergedVersionCount == 1)
+        // current (envA) + 1 v99 conflict = 2 slots considered; the v99 one
+        // is reported as skipped.
+        #expect(outcome.mergedVersionCount == 2)
         #expect(outcome.skippedReasons.count == 1)
         #expect(outcome.skippedReasons[0].contains("schemaVersion=99"))
 
@@ -139,31 +144,29 @@ struct SidecarReconcilerTests {
         #expect(merged.fields.keys.sorted() == ["a"])
     }
 
-    // MARK: - §6 step 4: current unparseable but a conflict parsed → recovery sibling
+    // MARK: - §6 step 4: current absent but a conflict parses → write the merged result
 
     @Test
-    func currentUnparseable_conflictParses_writesRecoverySibling() throws {
+    func currentAbsent_conflictParses_writesMergedAtKey() throws {
         let store = InMemorySidecarStore()
         let envValid = envelope(fields: [
             "only": SidecarCell(value: .string("survivor"), modifiedAt: t1, modifiedBy: "device-A")
         ])
-        // No `write` for the current → first slot is empty bytes → "current unparseable".
+        // No `write` for the current → store passes nil to the resolver.
         store.scriptConflict(at: key(), versions: [try encode(envValid)])
 
         let report = try makeSync(sidecars: store).reconcileSidecars()
 
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
-        // No overwrite of the current happened; sibling was written instead.
-        #expect(outcome.mergedVersionCount == 0)
-        #expect(outcome.skippedReasons.contains { $0.contains("recovery sibling") })
+        // The conflict version participated in the merge; the count includes
+        // it but not the absent current.
+        #expect(outcome.mergedVersionCount == 1)
+        #expect(outcome.skippedReasons.isEmpty)
 
-        // The current envelope is left as-was (nil — never existed).
-        #expect(try store.read(key()) == nil)
-
-        // The recovery sibling carries the merged result.
-        let sibling = try #require(store.recoverySibling(of: key(), suffix: "recovered"))
-        #expect(sibling.fields.keys.sorted() == ["only"])
+        // The merged envelope is now the current at this key.
+        let merged = try #require(try store.read(key()))
+        #expect(merged.fields.keys.sorted() == ["only"])
     }
 
     @Test
@@ -191,10 +194,10 @@ struct SidecarReconcilerTests {
         #expect(outcome.skippedReasons.contains { $0.contains("dropped 1 malformed cell") })
     }
 
-    // MARK: - §6 step 4 last bullet: nothing parses → leave everything in conflict
+    // MARK: - Nothing parses → write empty envelope, conflict is still resolved
 
     @Test
-    func noVersionParses_leavesAllInConflict() throws {
+    func noVersionParses_writesEmptyEnvelopeAndClearsConflict() throws {
         let store = InMemorySidecarStore()
         let g1 = Data("garbage-one".utf8)
         let g2 = Data("garbage-two".utf8)
@@ -207,14 +210,19 @@ struct SidecarReconcilerTests {
 
         #expect(report.fileOutcomes.count == 1)
         let outcome = report.fileOutcomes[0]
-        #expect(outcome.mergedVersionCount == 0)
-        // No current envelope to skip; one reason per garbage conflict.
+        // Three garbage conflicts surface as three skip reasons; the count
+        // is real (three conflict bytes were considered).
+        #expect(outcome.mergedVersionCount == 3)
         #expect(outcome.skippedReasons.count == 3)
 
-        #expect(try store.read(key()) == nil)
+        // The store now holds an empty envelope — every device converges
+        // to the same byte state on next reconcile.
+        let merged = try #require(try store.read(key()))
+        #expect(merged.fields.isEmpty)
+        #expect(merged.entityID == entityID)
 
+        // Conflict is cleared.
         let secondPass = try sync.reconcileSidecars()
-        #expect(secondPass.fileOutcomes.count == 1)
-        #expect(secondPass.fileOutcomes[0].mergedVersionCount == 0)
+        #expect(secondPass.fileOutcomes.isEmpty)
     }
 }

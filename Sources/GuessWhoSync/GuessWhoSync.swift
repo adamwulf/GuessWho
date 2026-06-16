@@ -282,6 +282,12 @@ public final class GuessWhoSync {
     }
 
     public func reconcileSidecars() throws -> SidecarReconcileReport {
+        // A third-party SidecarStoreProtocol conformer with no concept of
+        // multi-version conflicts has nothing to reconcile.
+        guard let conflictStore = sidecars as? SidecarConflictReconciling else {
+            return SidecarReconcileReport(fileOutcomes: [])
+        }
+
         var stamped: [SidecarReconcileReport.FileOutcome] = []
 
         // Iterate keys ourselves and hold the per-key sidecarLock for the full
@@ -290,12 +296,11 @@ public final class GuessWhoSync {
         // concurrent setField on the same key would slip a write between
         // the store's read-versions and its merged-write and be silently
         // clobbered.
-        for key in try sidecars.keysWithUnresolvedConflicts() {
+        for key in try conflictStore.keysWithUnresolvedConflicts() {
             var reasons: [String] = []
             let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
-                try sidecars.reconcileConflict(at: key) { currentBytes, conflictBytes in
-                    var currentEnvelope: SidecarEnvelope? = nil
-                    var skipped: [Data] = []
+                try conflictStore.reconcileConflict(at: key) { currentBytes, conflictBytes in
+                    var parseable: [SidecarEnvelope] = []
                     // §5.3 silent cell drops — sum across every parseable
                     // envelope going into the fold. Surface in skippedReasons
                     // so a peer shipping broken cells is observable.
@@ -303,22 +308,18 @@ public final class GuessWhoSync {
                     if let currentBytes {
                         switch parseEnvelope(currentBytes) {
                         case .ok(let env):
-                            currentEnvelope = env
+                            parseable.append(env)
                             totalCellsDropped += env.cellsDroppedOnDecode
                         case .skip(let reason):
-                            skipped.append(currentBytes)
                             reasons.append("current: \(reason)")
                         }
                     }
-
-                    var parsedConflicts: [SidecarEnvelope] = []
                     for bytes in conflictBytes {
                         switch parseEnvelope(bytes) {
                         case .ok(let env):
-                            parsedConflicts.append(env)
+                            parseable.append(env)
                             totalCellsDropped += env.cellsDroppedOnDecode
                         case .skip(let reason):
-                            skipped.append(bytes)
                             reasons.append(reason)
                         }
                     }
@@ -327,10 +328,10 @@ public final class GuessWhoSync {
                     }
 
                     // Fold every parseable envelope into one merged result.
-                    let parseable = (currentEnvelope.map { [$0] } ?? []) + parsedConflicts
+                    // If nothing parsed, write an empty envelope at this key
+                    // so every device still converges to the same byte state.
                     guard var folded = parseable.first else {
-                        // Nothing parseable on any side — §6 step 4 last bullet.
-                        return .leave
+                        return SidecarEnvelope(entityID: key.id, fields: [:])
                     }
                     for next in parseable.dropFirst() {
                         switch merge(folded, next) {
@@ -338,21 +339,9 @@ public final class GuessWhoSync {
                             folded = combined
                         case .failure(let err):
                             reasons.append("merge failed: \(err)")
-                            return .leave
                         }
                     }
-
-                    if currentEnvelope != nil {
-                        // Current parseable: overwrite as usual.
-                        return .write(merged: folded, skip: skipped)
-                    } else {
-                        // Current unparseable but ≥1 conflict parsed: write
-                        // recovery sibling, leave originals intact (§6 step 4
-                        // middle bullet). Suffix includes a stable ".recovered"
-                        // marker so a human can find the sibling; timestamp is
-                        // appended by the store.
-                        return .writeRecoverySibling(merged: folded, suffix: "recovered")
-                    }
+                    return folded
                 }
             }
             if let outcome {

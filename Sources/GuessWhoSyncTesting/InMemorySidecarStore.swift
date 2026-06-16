@@ -1,13 +1,11 @@
 import Foundation
 import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 
 public final class InMemorySidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
     private var envelopes: [SidecarKey: SidecarEnvelope] = [:]
     private var scriptedConflicts: [SidecarKey: [Data]] = [:]
-    /// In-memory analogue of §6 step 4's recovery-sibling files. Keyed by a
-    /// derived SidecarKey whose id is `"<originalID>.<suffix>"`.
-    private var recoverySiblings: [SidecarKey: SidecarEnvelope] = [:]
 
     public init() {}
 
@@ -42,12 +40,6 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         scriptedConflicts[key] = versions
     }
 
-    public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(scriptedConflicts.keys)
-    }
-
     // In-memory storage always has every byte locally, so download status
     // reduces to "do I have an envelope here?" `requestDownload` is a no-op.
     public func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
@@ -59,10 +51,21 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
     public func requestDownload(_ key: SidecarKey) throws {
         // No-op: in-memory storage has all bytes locally already.
     }
+}
+
+// SPI conformance — the conflict-reconciliation surface is exposed only to
+// the orchestrator (via @_spi(ConflictReconcile) import), not to host UI.
+@_spi(ConflictReconcile)
+extension InMemorySidecarStore: SidecarConflictReconciling {
+    public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(scriptedConflicts.keys)
+    }
 
     public func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
     ) throws -> SidecarReconcileReport.FileOutcome? {
         // Capture both the CURRENT envelope and the scripted conflict
         // versions atomically — the FS-store's reconcileConflict equivalent
@@ -70,11 +73,6 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         // together. Without including the current envelope, writes that
         // landed before reconcile acquired the lock would be silently
         // overwritten by the merged-conflicts result.
-        //
-        // mergedVersionCount accounting: includes the current envelope
-        // when present, matching the FS store's `allBytes.count` accounting.
-        // Tests that seed a current envelope and inspect mergedVersionCount
-        // will see N+1 rather than N (N = number of scripted versions).
         lock.lock()
         guard let scripted = scriptedConflicts[key] else {
             lock.unlock()
@@ -83,8 +81,6 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         let currentEnvelope = envelopes[key]
         lock.unlock()
 
-        // Encode the current envelope (when present) to a Data so the
-        // resolver receives it the same way it would from the FS store.
         let currentBytes: Data?
         if let currentEnvelope {
             currentBytes = try? JSONEncoder().encode(currentEnvelope)
@@ -92,9 +88,9 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
             currentBytes = nil
         }
 
-        let resolution: ConflictResolution
+        let merged: SidecarEnvelope
         do {
-            resolution = try resolve(currentBytes, scripted)
+            merged = try resolve(currentBytes, scripted)
         } catch {
             return SidecarReconcileReport.FileOutcome(
                 key: key,
@@ -103,56 +99,16 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
             )
         }
 
-        switch resolution {
-        case .write(let merged, let skip):
-            // Skip-matching considers both current and conflict bytes for
-            // symmetry with the FS store (which materializes both before
-            // running the resolver).
-            var allBytes: [Data] = []
-            if let currentBytes { allBytes.append(currentBytes) }
-            allBytes.append(contentsOf: scripted)
-            let skippedCount = allBytes.reduce(0) { count, bytes in
-                skip.contains(bytes) ? count + 1 : count
-            }
-            lock.lock()
-            envelopes[key] = merged
-            scriptedConflicts.removeValue(forKey: key)
-            lock.unlock()
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: allBytes.count - skippedCount,
-                skippedReasons: []
-            )
-        case .writeRecoverySibling(let merged, let suffix):
-            // In-memory analogue of §6 step 4's filesystem sibling write:
-            // park the merged envelope under a sibling key so tests can
-            // observe that recovery ran without destroying the original.
-            // Leave the conflict scripting in place — recovery siblings do
-            // NOT mark conflicts resolved.
-            let siblingID = "\(key.id).\(suffix)"
-            let siblingKey = SidecarKey(kind: key.kind, id: siblingID)
-            lock.lock()
-            recoverySiblings[siblingKey] = merged
-            lock.unlock()
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: ["wrote recovery sibling at \(siblingID)"]
-            )
-        case .leave:
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: []
-            )
-        }
-    }
-
-    /// Recovery-sibling envelopes parked by `.writeRecoverySibling` (§6 step 4).
-    /// Test-only accessor.
-    public func recoverySibling(of key: SidecarKey, suffix: String) -> SidecarEnvelope? {
         lock.lock()
-        defer { lock.unlock() }
-        return recoverySiblings[SidecarKey(kind: key.kind, id: "\(key.id).\(suffix)")]
+        envelopes[key] = merged
+        scriptedConflicts.removeValue(forKey: key)
+        lock.unlock()
+
+        let mergedVersionCount = (currentBytes != nil ? 1 : 0) + scripted.count
+        return SidecarReconcileReport.FileOutcome(
+            key: key,
+            mergedVersionCount: mergedVersionCount,
+            skippedReasons: []
+        )
     }
 }

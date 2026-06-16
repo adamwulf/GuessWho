@@ -1,7 +1,9 @@
 import Foundation
 import Testing
 @testable import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 import GuessWhoSyncTesting
+@_spi(ConflictReconcile) import GuessWhoSyncTesting
 
 @Suite("InMemorySidecarStore")
 struct InMemorySidecarStoreTests {
@@ -98,7 +100,7 @@ struct InMemorySidecarStoreTests {
     }
 
     @Test
-    func scriptedConflictResolveWriteUpdatesEnvelopeAndClearsConflict() throws {
+    func scriptedConflictResolveUpdatesEnvelopeAndClearsConflict() throws {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let v1 = Data([0x01])
@@ -115,12 +117,11 @@ struct InMemorySidecarStoreTests {
             // are the conflicts.
             #expect(current == nil)
             #expect(conflicts == [v1, v2])
-            return .write(merged: merged, skip: [])
+            return merged
         }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
-        // The placeholder current slot doesn't count toward the merge total —
-        // only the two scripted conflict versions did.
+        // Both scripted conflict versions participated; no current.
         #expect(outcomes[0].mergedVersionCount == 2)
         #expect(outcomes[0].skippedReasons.isEmpty)
 
@@ -129,13 +130,13 @@ struct InMemorySidecarStoreTests {
 
         let secondPass = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("conflict should have been cleared")
-            return .leave
+            return SidecarEnvelope(entityID: key.id, fields: [:])
         }
         #expect(secondPass.isEmpty)
     }
 
     @Test
-    func scriptedConflictResolveLeaveDoesNotUpdateEnvelope() throws {
+    func scriptedConflictResolverReturningCurrentClearsConflictWithoutSemanticChange() throws {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let existing = envelope(fields: [
@@ -144,20 +145,21 @@ struct InMemorySidecarStoreTests {
         try store.write(existing, at: key)
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileAllConflicts { _, _, _ in .leave }
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in existing }
         #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 0)
+        #expect(outcomes[0].mergedVersionCount == 2) // current + 1 conflict
         #expect(outcomes[0].skippedReasons.isEmpty)
 
+        // Conflict is cleared; envelope unchanged.
         let fetched = try #require(try store.read(key))
         expectEqual(fetched, existing)
 
         var sawConflictAgain = false
         _ = try store.reconcileAllConflicts { _, _, _ in
             sawConflictAgain = true
-            return .leave
+            return existing
         }
-        #expect(sawConflictAgain)
+        #expect(sawConflictAgain == false)
     }
 
     @Test
@@ -179,25 +181,6 @@ struct InMemorySidecarStoreTests {
     }
 
     @Test
-    func scriptedConflictSkipMatchingIsByByteEquality() throws {
-        let store = InMemorySidecarStore()
-        let key = contactKey()
-        let v1 = Data([0x01, 0x02])
-        let v2 = Data([0x03, 0x04])
-        let v3 = Data([0x05, 0x06])
-        store.scriptConflict(at: key, versions: [v1, v2, v3])
-
-        let merged = envelope()
-        let outcomes = try store.reconcileAllConflicts { _, _, _ in
-            .write(merged: merged, skip: [Data([0x03, 0x04])])
-        }
-        #expect(outcomes.count == 1)
-        // versions: [<empty current>, v1, v2, v3]; v2 was skipped; the empty
-        // current placeholder doesn't count; 3 real - 1 skipped = 2.
-        #expect(outcomes[0].mergedVersionCount == 2)
-    }
-
-    @Test
     func deleteClearsScriptedConflict() throws {
         let store = InMemorySidecarStore()
         let key = contactKey()
@@ -206,7 +189,7 @@ struct InMemorySidecarStoreTests {
 
         let outcomes = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("delete should have cleared the scripted conflict")
-            return .leave
+            return SidecarEnvelope(entityID: key.id, fields: [:])
         }
         #expect(outcomes.isEmpty)
     }
@@ -232,17 +215,14 @@ struct InMemorySidecarStoreTests {
     }
 }
 
-// A minimal SidecarStoreProtocol conformer that only implements the v1
-// surface plus the per-key conflict methods (which are NOT defaulted in
-// the protocol — see SidecarStoreProtocol.swift's comment for the
-// rationale). It deliberately does NOT implement downloadStatus /
-// requestDownload so the protocol-extension defaults are exercised.
-//
-// Reviewer A asked for this kind of minimal conformer to confirm the
-// compatibility story holds: the download API defaults work for backends
-// with no remote tier, and a backend that throws `.notYetDownloaded`
-// from `read()` is still reported as `.notStarted` by the default
-// `downloadStatus`.
+// A minimal SidecarStoreProtocol conformer that implements only the v1
+// surface — no conflict methods (those live on the @_spi
+// SidecarConflictReconciling protocol; a backend with no multi-version
+// conflict notion legitimately doesn't conform to it). Also deliberately
+// does NOT implement downloadStatus / requestDownload so the protocol-
+// extension defaults are exercised. This proves a third-party store
+// without conflict semantics still composes with the orchestrator;
+// reconcileSidecars() simply returns an empty report.
 private final class MinimalSidecarStore: SidecarStoreProtocol {
     var envelopes: [SidecarKey: SidecarEnvelope] = [:]
     var throwNotYetDownloadedFor: Set<SidecarKey> = []
@@ -264,17 +244,6 @@ private final class MinimalSidecarStore: SidecarStoreProtocol {
 
     func allKeys() throws -> [SidecarKey] {
         Array(envelopes.keys)
-    }
-
-    func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
-        []
-    }
-
-    func reconcileConflict(
-        at key: SidecarKey,
-        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
-    ) throws -> SidecarReconcileReport.FileOutcome? {
-        nil
     }
 }
 

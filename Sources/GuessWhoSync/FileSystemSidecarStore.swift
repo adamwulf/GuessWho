@@ -3,14 +3,6 @@ import Foundation
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
 
-    // Device identifier used to scope recovery-sibling filenames per writer.
-    // Without this, two devices independently running §6 step 4's recovery-
-    // sibling write within the same millisecond would land at the same path
-    // and iCloud would surface a conflict on the sibling itself — which
-    // listKeys() deliberately ignores, leaving the recovery sibling in a
-    // stuck unresolvable state.
-    private let deviceID: String
-
     // Per-key locks for write/delete/reconcile. Direct users of this store
     // (without going through GuessWhoSync) get correctness on writes/deletes
     // to distinct keys running independently and concurrent operations on the
@@ -46,16 +38,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     public init(
         root: URL,
-        deviceID: String? = nil,
         busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
         perAttemptTimeout: TimeInterval = 1.0
     ) {
         self.root = root
-        // Fall back to a per-instance random nonce when the host doesn't
-        // supply a stable deviceID. Per-instance still differs across
-        // devices (the nonce is generated locally), so it serves the cross-
-        // device-collision goal — it just doesn't survive a process restart.
-        self.deviceID = deviceID ?? UUID().uuidString
         self.busyHandler = busyHandler
         self.perAttemptTimeout = perAttemptTimeout
     }
@@ -151,6 +137,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
+    @_spi(ConflictReconcile)
     public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
         var result: [SidecarKey] = []
         for key in try allKeys() {
@@ -219,9 +206,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
     }
 
+    @_spi(ConflictReconcile)
     public func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
     ) throws -> SidecarReconcileReport.FileOutcome? {
         try fileLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
             let url = fileURL(for: key)
@@ -230,8 +218,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 return nil
             }
 
-            // Read current's bytes — nil when no materialized current exists,
-            // letting the resolver branch on §6 step 4 cleanly.
+            // Read current's bytes — nil when no materialized current exists.
             let currentBytes: Data?
             if let current = NSFileVersion.currentVersionOfItem(at: url) {
                 currentBytes = try? Data(contentsOf: current.url)
@@ -239,24 +226,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 currentBytes = nil
             }
 
-            // Cache conflict bytes alongside their NSFileVersion so the
-            // skip-matching pass doesn't re-read from disk (a second read can
-            // fail mid-resolve and produce an empty Data() that doesn't match
-            // any `skip` entry, silently deleting a version the resolver
-            // explicitly asked to keep).
-            var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
             var conflictBytes: [Data] = []
             for version in conflicts {
-                let bytes = try? Data(contentsOf: version.url)
-                conflictBytesByVersionID.append((version, bytes))
-                if let bytes {
+                if let bytes = try? Data(contentsOf: version.url) {
                     conflictBytes.append(bytes)
                 }
             }
 
-            let resolution: ConflictResolution
+            let merged: SidecarEnvelope
             do {
-                resolution = try resolve(currentBytes, conflictBytes)
+                merged = try resolve(currentBytes, conflictBytes)
             } catch {
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
@@ -265,91 +244,30 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 )
             }
 
-            switch resolution {
-            case .write(let merged, let skip):
-                let mergedData = try JSONEncoder().encode(merged)
-                var mergedWriteError: Error?
-                try coordinatedWrite(key: key, at: url) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        mergedWriteError = error
-                    }
+            let mergedData = try JSONEncoder().encode(merged)
+            var mergedWriteError: Error?
+            try coordinatedWrite(key: key, at: url) { safeURL in
+                do {
+                    try mergedData.write(to: safeURL, options: [.atomic])
+                } catch {
+                    mergedWriteError = error
                 }
-                if let mergedWriteError { throw mergedWriteError }
-
-                var skippedCount = 0
-                for (version, cachedBytes) in conflictBytesByVersionID {
-                    // If the first read failed, this version was never a
-                    // parseable candidate. Treat it as "not in skip" so the
-                    // default removal still applies; the resolver had no way
-                    // to request it kept.
-                    let bytes = cachedBytes ?? Data()
-                    if cachedBytes != nil, skip.contains(bytes) {
-                        skippedCount += 1
-                    } else {
-                        version.isResolved = true
-                        try? version.remove()
-                    }
-                }
-                // Count current (when real) + every conflict version we
-                // successfully read; subtract any conflicts the resolver
-                // asked to skip.
-                let realVersionCount = (currentBytes != nil ? 1 : 0) + conflictBytes.count
-                return SidecarReconcileReport.FileOutcome(
-                    key: key,
-                    mergedVersionCount: realVersionCount - skippedCount,
-                    skippedReasons: []
-                )
-
-            case .writeRecoverySibling(let merged, let suffix):
-                // §6 step 4: current was unparseable but ≥1 conflict parsed.
-                // Write merged into a dedicated `.recovered/` subdirectory
-                // alongside the kind directory so listKeys() never enumerates
-                // recovered files as phantom keys. Leave current and all
-                // conflict versions intact so a human can triage. Note: we
-                // deliberately do NOT mark any version isResolved here — the
-                // conflict state persists on disk.
-                //
-                // The filename includes deviceID so two devices independently
-                // writing a recovery sibling in the same millisecond produce
-                // distinct files instead of an iCloud conflict on the sibling
-                // itself — which listKeys() ignores, leaving the conflict
-                // unresolvable.
-                let mergedData = try JSONEncoder().encode(merged)
-                let parentDir = url.deletingLastPathComponent()
-                let recoveryDir = parentDir.appendingPathComponent(".recovered")
-                try FileManager.default.createDirectory(
-                    at: recoveryDir,
-                    withIntermediateDirectories: true
-                )
-                let basename = (url.lastPathComponent as NSString).deletingPathExtension
-                let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-                let safeDeviceID = filenameSafe(deviceID)
-                let siblingName = "\(basename).\(suffix).\(safeDeviceID).\(timestamp).json"
-                let siblingURL = recoveryDir.appendingPathComponent(siblingName)
-                var writeError: Error?
-                try coordinatedWrite(key: key, at: siblingURL) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        writeError = error
-                    }
-                }
-                if let writeError { throw writeError }
-                return SidecarReconcileReport.FileOutcome(
-                    key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: ["wrote recovery sibling: .recovered/\(siblingName)"]
-                )
-
-            case .leave:
-                return SidecarReconcileReport.FileOutcome(
-                    key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: []
-                )
             }
+            if let mergedWriteError { throw mergedWriteError }
+
+            // Always mark every conflict version resolved — the merged write
+            // is the new ground truth.
+            for version in conflicts {
+                version.isResolved = true
+                try? version.remove()
+            }
+
+            let mergedVersionCount = (currentBytes != nil ? 1 : 0) + conflictBytes.count
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                mergedVersionCount: mergedVersionCount,
+                skippedReasons: []
+            )
         }
     }
 
@@ -366,17 +284,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         case .event: return "events"
         case .link: return "links"
         }
-    }
-
-    // Percent-encode anything outside [A-Za-z0-9._-] so a free-form caller-
-    // supplied string (e.g. deviceID embedded in a recovery sibling name) is
-    // safe as a filename segment.
-    private func filenameSafe(_ raw: String) -> String {
-        var allowed = CharacterSet(charactersIn: "_-")
-        allowed.insert(charactersIn: "A"..."Z")
-        allowed.insert(charactersIn: "a"..."z")
-        allowed.insert(charactersIn: "0"..."9")
-        return raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
     }
 
     private func safeFilename(for key: SidecarKey) -> String {
@@ -422,10 +329,6 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             guard !seen.contains(realName) else { continue }
             seen.insert(realName)
 
-            // §6 step 4 recovery siblings live in a sibling `.recovered/`
-            // subdirectory, so this enumeration naturally never sees them
-            // (FileManager.contentsOfDirectory returns the subdirectory entry
-            // whose pathExtension != "json", which the `continue` above skips).
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
             case .contact, .link:
@@ -586,3 +489,11 @@ private enum SidecarMonotonicClock {
         TimeInterval(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 }
+
+// Conflict-reconciliation is wired up via this internal protocol so the
+// public surface area never exposes the conflict-resolver plumbing. The
+// orchestrator's reconcileSidecars() casts its store to this protocol and
+// drives the loop; the conformance witnesses are the keysWithUnresolvedConflicts
+// and reconcileConflict methods on the class above.
+@_spi(ConflictReconcile)
+extension FileSystemSidecarStore: SidecarConflictReconciling {}

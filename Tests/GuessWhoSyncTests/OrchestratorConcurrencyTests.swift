@@ -1,7 +1,9 @@
 import Foundation
 import Testing
 @testable import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 import GuessWhoSyncTesting
+@_spi(ConflictReconcile) import GuessWhoSyncTesting
 
 @Suite("OrchestratorConcurrency")
 struct OrchestratorConcurrencyTests {
@@ -224,13 +226,24 @@ private final class ResolveDelayingSidecarStore: SidecarStoreProtocol, @unchecke
         try underlying.allKeys()
     }
 
+    func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
+        underlying.downloadStatus(key)
+    }
+
+    func requestDownload(_ key: SidecarKey) throws {
+        try underlying.requestDownload(key)
+    }
+}
+
+@_spi(ConflictReconcile)
+extension ResolveDelayingSidecarStore: SidecarConflictReconciling {
     func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
         try underlying.keysWithUnresolvedConflicts()
     }
 
     func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
     ) throws -> SidecarReconcileReport.FileOutcome? {
         let delay = delayBeforeResolve
         return try underlying.reconcileConflict(at: key) { currentBytes, conflictBytes in
@@ -239,13 +252,5 @@ private final class ResolveDelayingSidecarStore: SidecarStoreProtocol, @unchecke
             }
             return try resolve(currentBytes, conflictBytes)
         }
-    }
-
-    func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
-        underlying.downloadStatus(key)
-    }
-
-    func requestDownload(_ key: SidecarKey) throws {
-        try underlying.requestDownload(key)
     }
 }
