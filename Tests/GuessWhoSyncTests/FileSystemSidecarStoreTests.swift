@@ -29,17 +29,14 @@ struct FileSystemSidecarStoreTests {
         #expect(lhs.schemaVersion == rhs.schemaVersion)
         #expect(lhs.fields.keys == rhs.fields.keys)
         for key in lhs.fields.keys {
-            switch (lhs.fields[key], rhs.fields[key]) {
-            case let (.value(lv, lt, lb)?, .value(rv, rt, rb)?):
-                #expect(lv == rv)
-                #expect(lt == rt)
-                #expect(lb == rb)
-            case let (.tombstone(lt, lb)?, .tombstone(rt, rb)?):
-                #expect(lt == rt)
-                #expect(lb == rb)
-            default:
+            guard let lc = lhs.fields[key], let rc = rhs.fields[key] else {
                 Issue.record("cells differ in shape at key \(key)")
+                continue
             }
+            #expect(lc.value == rc.value)
+            #expect(lc.modifiedAt == rc.modifiedAt)
+            #expect(lc.modifiedBy == rc.modifiedBy)
+            #expect(lc.deletedAt == rc.deletedAt)
         }
     }
 
@@ -50,7 +47,7 @@ struct FileSystemSidecarStoreTests {
         let store = FileSystemSidecarStore(root: root)
         let key = SidecarKey(kind: .contact, id: "abc")
         let env = envelope(id: "abc", fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(env, at: key)
         let fetched = try #require(try store.read(key))
@@ -116,7 +113,7 @@ struct FileSystemSidecarStoreTests {
         let externalID = "https://example.com/cal/123"
         let key = SidecarKey(kind: .event, id: externalID)
         let env = envelope(id: externalID, fields: [
-            "note": .value(.string("hi"), modifiedAt: when, modifiedBy: "device-A")
+            "note": SidecarCell(value: .string("hi"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(env, at: key)
 
@@ -407,7 +404,7 @@ struct FileSystemSidecarStoreTests {
 
         let key = SidecarKey(kind: .contact, id: "round-trip-uuid")
         let env = envelope(id: "round-trip-uuid", fields: [
-            "nickname": .value(.string("Coord"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Coord"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(env, at: key)
         let fetched = try #require(try store.read(key))
@@ -438,13 +435,13 @@ struct FileSystemSidecarStoreTests {
         let key = SidecarKey(kind: .contact, id: "abc")
 
         let currentEnv = envelope(id: "abc", fields: [
-            "nickname": .value(.string("Original"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Original"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(currentEnv, at: key)
 
         let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
         try injectConflict(at: url, root: root, envelope: envelope(id: "abc", fields: [
-            "nickname": .value(.string("FromOther"), modifiedAt: when, modifiedBy: "device-B")
+            "nickname": SidecarCell(value: .string("FromOther"), modifiedAt: when, modifiedBy: "device-B")
         ]))
 
         let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
@@ -454,7 +451,7 @@ struct FileSystemSidecarStoreTests {
         }
 
         let merged = envelope(id: "abc", fields: [
-            "nickname": .value(.string("Merged"), modifiedAt: when, modifiedBy: "device-C")
+            "nickname": SidecarCell(value: .string("Merged"), modifiedAt: when, modifiedBy: "device-C")
         ])
         let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)

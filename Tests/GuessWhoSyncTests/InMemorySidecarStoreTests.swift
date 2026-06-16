@@ -23,17 +23,14 @@ struct InMemorySidecarStoreTests {
         #expect(lhs.schemaVersion == rhs.schemaVersion)
         #expect(lhs.fields.keys == rhs.fields.keys)
         for key in lhs.fields.keys {
-            switch (lhs.fields[key], rhs.fields[key]) {
-            case let (.value(lv, lt, lb)?, .value(rv, rt, rb)?):
-                #expect(lv == rv)
-                #expect(lt == rt)
-                #expect(lb == rb)
-            case let (.tombstone(lt, lb)?, .tombstone(rt, rb)?):
-                #expect(lt == rt)
-                #expect(lb == rb)
-            default:
+            guard let lc = lhs.fields[key], let rc = rhs.fields[key] else {
                 Issue.record("cells differ in shape at key \(key)")
+                continue
             }
+            #expect(lc.value == rc.value)
+            #expect(lc.modifiedAt == rc.modifiedAt)
+            #expect(lc.modifiedBy == rc.modifiedBy)
+            #expect(lc.deletedAt == rc.deletedAt)
         }
     }
 
@@ -42,7 +39,7 @@ struct InMemorySidecarStoreTests {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let env = envelope(fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(env, at: key)
         let fetched = try #require(try store.read(key))
@@ -86,10 +83,10 @@ struct InMemorySidecarStoreTests {
         let a = SidecarKey(kind: .contact, id: "a")
         let b = SidecarKey(kind: .contact, id: "b")
         let envA = envelope(id: "a", fields: [
-            "x": .value(.string("A"), modifiedAt: when, modifiedBy: "device")
+            "x": SidecarCell(value: .string("A"), modifiedAt: when, modifiedBy: "device")
         ])
         let envB = envelope(id: "b", fields: [
-            "y": .value(.string("B"), modifiedAt: when, modifiedBy: "device")
+            "y": SidecarCell(value: .string("B"), modifiedAt: when, modifiedBy: "device")
         ])
         try store.write(envA, at: a)
         try store.write(envB, at: b)
@@ -109,7 +106,7 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [v1, v2])
 
         let merged = envelope(fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
         let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
             #expect(receivedKey == key)
@@ -136,7 +133,7 @@ struct InMemorySidecarStoreTests {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let existing = envelope(fields: [
-            "nickname": .value(.string("Original"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Original"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(existing, at: key)
         store.scriptConflict(at: key, versions: [Data([0x01])])

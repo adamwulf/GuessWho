@@ -40,10 +40,10 @@ struct SidecarReconcilerTests {
     func twoConflictVersionsBothParseable_mergesAndClears() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A")
         ])
         let envB = envelope(fields: [
-            "notes": .value(.string("Met at WWDC"), modifiedAt: t2, modifiedBy: "device-B")
+            "notes": SidecarCell(value: .string("Met at WWDC"), modifiedAt: t2, modifiedBy: "device-B")
         ])
         store.scriptConflict(at: key(), versions: [try encode(envA), try encode(envB)])
 
@@ -67,13 +67,13 @@ struct SidecarReconcilerTests {
     func threeConflictVersionsAllParseable_nWayFold() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
-            "a": .value(.string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
+            "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
         ])
         let envB = envelope(fields: [
-            "b": .value(.string("beta"), modifiedAt: t2, modifiedBy: "device-B")
+            "b": SidecarCell(value: .string("beta"), modifiedAt: t2, modifiedBy: "device-B")
         ])
         let envC = envelope(fields: [
-            "c": .value(.string("gamma"), modifiedAt: t3, modifiedBy: "device-C")
+            "c": SidecarCell(value: .string("gamma"), modifiedAt: t3, modifiedBy: "device-C")
         ])
         store.scriptConflict(at: key(), versions: [
             try encode(envA), try encode(envB), try encode(envC)
@@ -93,10 +93,10 @@ struct SidecarReconcilerTests {
     func oneVersionUnparseableBytes_skippedAndReported() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
-            "a": .value(.string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
+            "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
         ])
         let envB = envelope(fields: [
-            "b": .value(.string("beta"), modifiedAt: t2, modifiedBy: "device-B")
+            "b": SidecarCell(value: .string("beta"), modifiedAt: t2, modifiedBy: "device-B")
         ])
         let garbage = Data("not json".utf8)
         store.scriptConflict(at: key(), versions: [
@@ -120,10 +120,10 @@ struct SidecarReconcilerTests {
     func oneVersionSchemaVersion99_skippedAndReported() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [
-            "a": .value(.string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
+            "a": SidecarCell(value: .string("alpha"), modifiedAt: t1, modifiedBy: "device-A")
         ])
         let envFuture = envelope(schemaVersion: 99, fields: [
-            "future": .value(.string("nope"), modifiedAt: t2, modifiedBy: "device-X")
+            "future": SidecarCell(value: .string("nope"), modifiedAt: t2, modifiedBy: "device-X")
         ])
         store.scriptConflict(at: key(), versions: [try encode(envA), try encode(envFuture)])
 
@@ -143,7 +143,7 @@ struct SidecarReconcilerTests {
     func unparseableAlongsideOneValid_collapsesToTheValid() throws {
         let store = InMemorySidecarStore()
         let envValid = envelope(fields: [
-            "only": .value(.string("survivor"), modifiedAt: t1, modifiedBy: "device-A")
+            "only": SidecarCell(value: .string("survivor"), modifiedAt: t1, modifiedBy: "device-A")
         ])
         store.scriptConflict(at: key(), versions: [Data("garbage".utf8), try encode(envValid)])
 
@@ -156,12 +156,9 @@ struct SidecarReconcilerTests {
 
         let merged = try #require(try store.read(key()))
         #expect(merged.fields.keys.sorted() == ["only"])
-        switch merged.fields["only"] {
-        case let .value(v, _, _):
-            #expect(v == .string("survivor"))
-        default:
-            Issue.record("expected value cell")
-        }
+        let onlyCell = try #require(merged.fields["only"])
+        #expect(onlyCell.value == .string("survivor"))
+        #expect(onlyCell.deletedAt == nil)
     }
 
     @Test

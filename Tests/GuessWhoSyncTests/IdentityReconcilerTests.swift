@@ -75,7 +75,7 @@ struct IdentityReconcilerTests {
         let garbageKey = SidecarKey(kind: .contact, id: "garbage")
         try sidecars.write(
             SidecarEnvelope(entityID: "garbage", fields: [
-                "nickname": .value(.string("ghost"), modifiedAt: t1, modifiedBy: "device-X"),
+                "nickname": SidecarCell(value: .string("ghost"), modifiedAt: t1, modifiedBy: "device-X"),
             ]),
             at: garbageKey
         )
@@ -156,13 +156,13 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: alpha)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: beta, fields: [
-                "notes": .value(.string("met"), modifiedAt: t1, modifiedBy: "device-B"),
+                "notes": SidecarCell(value: .string("met"), modifiedAt: t1, modifiedBy: "device-B"),
             ]),
             at: SidecarKey(kind: .contact, id: beta)
         )
@@ -199,15 +199,15 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
-                "color": .value(.string("blue"), modifiedAt: t2, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "color": SidecarCell(value: .string("blue"), modifiedAt: t2, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: alpha)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: beta, fields: [
-                "nickname": .value(.string("Bear-cub"), modifiedAt: t2, modifiedBy: "device-B"),
-                "notes": .value(.string("met"), modifiedAt: t1, modifiedBy: "device-B"),
+                "nickname": SidecarCell(value: .string("Bear-cub"), modifiedAt: t2, modifiedBy: "device-B"),
+                "notes": SidecarCell(value: .string("met"), modifiedAt: t1, modifiedBy: "device-B"),
             ]),
             at: SidecarKey(kind: .contact, id: beta)
         )
@@ -218,25 +218,19 @@ struct IdentityReconcilerTests {
         let winner = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
         #expect(Set(winner.fields.keys) == ["nickname", "color", "notes"])
 
-        guard case .value(let nick, let nickAt, let nickBy) = winner.fields["nickname"] else {
-            Issue.record("nickname missing or wrong kind")
-            return
-        }
-        #expect(nick == .string("Bear-cub"))
-        #expect(nickAt == t2)
-        #expect(nickBy == "device-B")
+        let nickCell = try #require(winner.fields["nickname"])
+        #expect(nickCell.value == .string("Bear-cub"))
+        #expect(nickCell.modifiedAt == t2)
+        #expect(nickCell.modifiedBy == "device-B")
+        #expect(nickCell.deletedAt == nil)
 
-        guard case .value(let color, _, _) = winner.fields["color"] else {
-            Issue.record("color missing")
-            return
-        }
-        #expect(color == .string("blue"))
+        let colorCell = try #require(winner.fields["color"])
+        #expect(colorCell.value == .string("blue"))
+        #expect(colorCell.deletedAt == nil)
 
-        guard case .value(let notes, _, _) = winner.fields["notes"] else {
-            Issue.record("notes missing")
-            return
-        }
-        #expect(notes == .string("met"))
+        let notesCell = try #require(winner.fields["notes"])
+        #expect(notesCell.value == .string("met"))
+        #expect(notesCell.deletedAt == nil)
 
         #expect(try sidecars.read(SidecarKey(kind: .contact, id: beta)) == nil)
     }
@@ -255,19 +249,19 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "fieldA": .value(.string("a"), modifiedAt: t1, modifiedBy: "device-A"),
+                "fieldA": SidecarCell(value: .string("a"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: alpha)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: beta, fields: [
-                "fieldB": .value(.string("b"), modifiedAt: t1, modifiedBy: "device-B"),
+                "fieldB": SidecarCell(value: .string("b"), modifiedAt: t1, modifiedBy: "device-B"),
             ]),
             at: SidecarKey(kind: .contact, id: beta)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: gamma, fields: [
-                "fieldC": .value(.string("c"), modifiedAt: t1, modifiedBy: "device-C"),
+                "fieldC": SidecarCell(value: .string("c"), modifiedAt: t1, modifiedBy: "device-C"),
             ]),
             at: SidecarKey(kind: .contact, id: gamma)
         )
@@ -323,15 +317,15 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "nickname": .value(.string("from-A"), modifiedAt: t1, modifiedBy: "device-A"),
-                "shared": .value(.string("A-version"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("from-A"), modifiedAt: t1, modifiedBy: "device-A"),
+                "shared": SidecarCell(value: .string("A-version"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: alpha)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: beta, fields: [
-                "notes": .value(.string("from-B"), modifiedAt: t2, modifiedBy: "device-B"),
-                "shared": .value(.string("B-version"), modifiedAt: t3, modifiedBy: "device-B"),
+                "notes": SidecarCell(value: .string("from-B"), modifiedAt: t2, modifiedBy: "device-B"),
+                "shared": SidecarCell(value: .string("B-version"), modifiedAt: t3, modifiedBy: "device-B"),
             ]),
             at: SidecarKey(kind: .contact, id: beta)
         )
@@ -345,13 +339,11 @@ struct IdentityReconcilerTests {
         let winner = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
         #expect(Set(winner.fields.keys) == ["nickname", "notes", "shared"])
 
-        guard case .value(let shared, let sharedAt, let sharedBy) = winner.fields["shared"] else {
-            Issue.record("shared missing")
-            return
-        }
-        #expect(shared == .string("B-version"))
-        #expect(sharedAt == t3)
-        #expect(sharedBy == "device-B")
+        let sharedCell = try #require(winner.fields["shared"])
+        #expect(sharedCell.value == .string("B-version"))
+        #expect(sharedCell.modifiedAt == t3)
+        #expect(sharedCell.modifiedBy == "device-B")
+        #expect(sharedCell.deletedAt == nil)
 
         #expect(try sidecars.read(SidecarKey(kind: .contact, id: beta)) == nil)
     }
@@ -372,7 +364,7 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: alpha)
         )
@@ -412,7 +404,7 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: lower, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: lower)
         )
@@ -445,7 +437,7 @@ struct IdentityReconcilerTests {
 
         try sidecars.write(
             SidecarEnvelope(entityID: upper, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: upperKey
         )
@@ -476,13 +468,13 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: lowerAlpha, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: lowerAlpha)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: lowerBeta, fields: [
-                "notes": .value(.string("met"), modifiedAt: t1, modifiedBy: "device-B"),
+                "notes": SidecarCell(value: .string("met"), modifiedAt: t1, modifiedBy: "device-B"),
             ]),
             at: SidecarKey(kind: .contact, id: lowerBeta)
         )
@@ -515,7 +507,7 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         let orphanKey = SidecarKey(kind: .contact, id: alpha)
         let orphan = SidecarEnvelope(entityID: alpha, fields: [
-            "nickname": .value(.string("ghost"), modifiedAt: t1, modifiedBy: "device-Y"),
+            "nickname": SidecarCell(value: .string("ghost"), modifiedAt: t1, modifiedBy: "device-Y"),
         ])
         try sidecars.write(orphan, at: orphanKey)
 
