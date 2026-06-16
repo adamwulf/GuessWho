@@ -5,10 +5,23 @@ public struct SidecarEnvelope: Sendable, Codable {
     public let entityID: String
     public let fields: [String: SidecarCell]
 
+    /// Diagnostic counter: how many cells were dropped during decode because
+    /// they were malformed (bad modifiedAt/deletedAt, missing value key,
+    /// malformed inner-value object, etc.). Per PLAN §5.3 malformed cells are
+    /// treated as absent and the merge proceeds with the rest — but a
+    /// non-zero count is a hint that a peer device is shipping broken
+    /// envelopes. The orchestrator surfaces this in
+    /// `SidecarReconcileReport.FileOutcome.skippedReasons` so the silent-skip
+    /// discipline doesn't hide systematic data loss.
+    ///
+    /// Always 0 on envelopes constructed in-process via `init(...)`.
+    public let cellsDroppedOnDecode: Int
+
     public init(schemaVersion: Int = 1, entityID: String, fields: [String: SidecarCell]) {
         self.schemaVersion = schemaVersion
         self.entityID = entityID
         self.fields = fields
+        self.cellsDroppedOnDecode = 0
     }
 
     // §5.3 malformed-input handling: a malformed cell (bad modifiedAt, bad
@@ -31,15 +44,21 @@ public struct SidecarEnvelope: Sendable, Codable {
         // Decode `fields` as a [String: JSON-blob] first, then attempt each
         // cell individually. Cells that fail to decode are dropped (§5.3).
         var fields: [String: SidecarCell] = [:]
+        var dropped = 0
         if let fieldsContainer = try? container.nestedContainer(keyedBy: DynamicKey.self, forKey: .fields) {
             for key in fieldsContainer.allKeys {
                 if let cell = try? fieldsContainer.decode(SidecarCell.self, forKey: key) {
                     fields[key.stringValue] = cell
+                } else {
+                    dropped += 1
                 }
             }
         }
 
-        self.init(schemaVersion: schemaVersion, entityID: entityID, fields: fields)
+        self.schemaVersion = schemaVersion
+        self.entityID = entityID
+        self.fields = fields
+        self.cellsDroppedOnDecode = dropped
     }
 
     public func encode(to encoder: Encoder) throws {

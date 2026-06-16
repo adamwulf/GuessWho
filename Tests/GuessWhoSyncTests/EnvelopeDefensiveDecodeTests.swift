@@ -90,6 +90,36 @@ struct EnvelopeDefensiveDecodeTests {
     }
 
     @Test
+    func droppedCellCountIsExposed() throws {
+        let json = #"""
+        {
+          "schemaVersion": 1,
+          "entityID": "550e8400-e29b-41d4-a716-446655440000",
+          "fields": {
+            "ok": {
+              "value": "v",
+              "modifiedAt": "2026-06-14T20:15:00.000Z",
+              "modifiedBy": "device-A"
+            },
+            "bad1": { "value": "x", "modifiedAt": "nope", "modifiedBy": "d" },
+            "bad2": { "modifiedAt": "2026-06-14T20:15:00.000Z", "modifiedBy": "d" }
+          }
+        }
+        """#
+        let env = try decoder.decode(SidecarEnvelope.self, from: json.data(using: .utf8)!)
+        #expect(env.cellsDroppedOnDecode == 2)
+        #expect(env.fields.count == 1)
+    }
+
+    @Test
+    func freshlyConstructedEnvelopeReportsZeroDroppedCells() {
+        let env = SidecarEnvelope(entityID: "x", fields: [
+            "a": SidecarCell(value: .string("y"), modifiedAt: Date(), modifiedBy: "d")
+        ])
+        #expect(env.cellsDroppedOnDecode == 0)
+    }
+
+    @Test
     func envelopeWithAllCellsMalformedDecodesAsEmptyFields() throws {
         let json = #"""
         {

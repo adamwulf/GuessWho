@@ -166,6 +166,31 @@ struct SidecarReconcilerTests {
         #expect(sibling.fields.keys.sorted() == ["only"])
     }
 
+    @Test
+    func malformedCellsInEnvelopeAreReportedInSkippedReasons() throws {
+        // §5.3 silent cell drops should still be observable: the orchestrator
+        // surfaces a non-zero cellsDroppedOnDecode count via skippedReasons.
+        let store = InMemorySidecarStore()
+        try store.write(envelope(fields: [
+            "ok": SidecarCell(value: .string("present"), modifiedAt: t1, modifiedBy: "device-A")
+        ]), at: key())
+        let brokenConflict = #"""
+        {
+          "schemaVersion": 1,
+          "entityID": "\#(entityID)",
+          "fields": {
+            "good": { "value": "v", "modifiedAt": "2026-06-14T20:15:00.000Z", "modifiedBy": "device-X" },
+            "broken": { "value": "x", "modifiedAt": "nope", "modifiedBy": "d" }
+          }
+        }
+        """#
+        store.scriptConflict(at: key(), versions: [brokenConflict.data(using: .utf8)!])
+
+        let report = try makeSync(sidecars: store).reconcileSidecars()
+        let outcome = try #require(report.fileOutcomes.first)
+        #expect(outcome.skippedReasons.contains { $0.contains("dropped 1 malformed cell") })
+    }
+
     // MARK: - §6 step 4 last bullet: nothing parses → leave everything in conflict
 
     @Test

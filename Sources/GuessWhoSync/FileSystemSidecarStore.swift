@@ -233,11 +233,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             // §6 step 4 by inspecting whether allBytes[0] parses.
             var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
             var allBytes: [Data] = []
+            // Tracks whether allBytes[0] is real (true) or the empty
+            // placeholder (false). Used for mergedVersionCount accounting so
+            // a `.write` resolver doesn't get credit for the placeholder.
+            let currentSlotIsReal: Bool
             if let current = NSFileVersion.currentVersionOfItem(at: url),
                let bytes = try? Data(contentsOf: current.url) {
                 allBytes.append(bytes)
+                currentSlotIsReal = true
             } else {
                 allBytes.append(Data())
+                currentSlotIsReal = false
             }
             for version in conflicts {
                 let bytes = try? Data(contentsOf: version.url)
@@ -285,25 +291,34 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                         try? version.remove()
                     }
                 }
+                // Don't credit the placeholder for a missing current toward
+                // the merged-version count; only real bytes participated.
+                let realVersionCount = allBytes.count - (currentSlotIsReal ? 0 : 1)
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
-                    mergedVersionCount: allBytes.count - skippedCount,
+                    mergedVersionCount: realVersionCount - skippedCount,
                     skippedReasons: []
                 )
 
             case .writeRecoverySibling(let merged, let suffix):
                 // §6 step 4: current was unparseable but ≥1 conflict parsed.
-                // Write merged to <originalName>.<suffix>.<epochMillis>.json
-                // alongside the original. Leave current and all conflict
-                // versions intact so a human can triage. Note: we deliberately
-                // do NOT mark any version isResolved here — the conflict state
-                // persists on disk.
+                // Write merged into a dedicated `.recovered/` subdirectory
+                // alongside the kind directory so listKeys() never enumerates
+                // recovered files as phantom keys. Leave current and all
+                // conflict versions intact so a human can triage. Note: we
+                // deliberately do NOT mark any version isResolved here — the
+                // conflict state persists on disk.
                 let mergedData = try JSONEncoder().encode(merged)
+                let parentDir = url.deletingLastPathComponent()
+                let recoveryDir = parentDir.appendingPathComponent(".recovered")
+                try FileManager.default.createDirectory(
+                    at: recoveryDir,
+                    withIntermediateDirectories: true
+                )
                 let basename = (url.lastPathComponent as NSString).deletingPathExtension
-                let directory = url.deletingLastPathComponent()
                 let timestamp = Int(Date().timeIntervalSince1970 * 1000)
                 let siblingName = "\(basename).\(suffix).\(timestamp).json"
-                let siblingURL = directory.appendingPathComponent(siblingName)
+                let siblingURL = recoveryDir.appendingPathComponent(siblingName)
                 var writeError: Error?
                 try coordinatedWrite(key: key, at: siblingURL) { safeURL in
                     do {
@@ -316,7 +331,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
                     mergedVersionCount: 0,
-                    skippedReasons: ["wrote recovery sibling: \(siblingName)"]
+                    skippedReasons: ["wrote recovery sibling: .recovered/\(siblingName)"]
                 )
 
             case .leave:
@@ -387,6 +402,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             guard !seen.contains(realName) else { continue }
             seen.insert(realName)
 
+            // §6 step 4 recovery siblings live in a sibling `.recovered/`
+            // subdirectory, so this enumeration naturally never sees them
+            // (FileManager.contentsOfDirectory returns the subdirectory entry
+            // whose pathExtension != "json", which the `continue` above skips).
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
             case .contact, .link:

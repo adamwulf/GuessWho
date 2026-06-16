@@ -106,6 +106,29 @@ struct FileSystemSidecarStoreTests {
     }
 
     @Test
+    func recoverySiblingDirectoryDoesNotPolluteAllKeys() throws {
+        // §6 step 4 recovery siblings live under <kind>/.recovered/. They
+        // must NEVER surface as phantom SidecarKeys in allKeys(): if they
+        // did, §13.4's link rewrite would mutate the recovered file,
+        // violating the "leave originals intact" guarantee.
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        let a = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440000")
+        try store.write(envelope(id: a.id), at: a)
+
+        // Stuff some bytes into the recovery directory manually to simulate
+        // a prior §6 step 4 write.
+        let recoveryDir = root.appendingPathComponent("contacts").appendingPathComponent(".recovered")
+        try FileManager.default.createDirectory(at: recoveryDir, withIntermediateDirectories: true)
+        let recoveredFile = recoveryDir.appendingPathComponent("\(a.id).recovered.1234567890.json")
+        try Data("{}".utf8).write(to: recoveredFile)
+
+        let keys = try store.allKeys()
+        #expect(keys == [a])
+    }
+
+    @Test
     func eventExternalIDWithSlashRoundTrips() throws {
         let root = makeRoot()
         defer { cleanup(root) }

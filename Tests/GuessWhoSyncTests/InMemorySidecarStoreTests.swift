@@ -118,7 +118,9 @@ struct InMemorySidecarStoreTests {
         }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
-        #expect(outcomes[0].mergedVersionCount == 3)
+        // The placeholder current slot doesn't count toward the merge total —
+        // only the two scripted conflict versions did.
+        #expect(outcomes[0].mergedVersionCount == 2)
         #expect(outcomes[0].skippedReasons.isEmpty)
 
         let fetched = try #require(try store.read(key))
@@ -189,10 +191,9 @@ struct InMemorySidecarStoreTests {
             .write(merged: merged, skip: [Data([0x03, 0x04])])
         }
         #expect(outcomes.count == 1)
-        // versions: [<empty current>, v1, v2, v3]; v2 was skipped; merged
-        // count is 4 - 1 = 3 (the empty current is counted toward the merge
-        // total — same as the FS store's allBytes.count accounting).
-        #expect(outcomes[0].mergedVersionCount == 3)
+        // versions: [<empty current>, v1, v2, v3]; v2 was skipped; the empty
+        // current placeholder doesn't count; 3 real - 1 skipped = 2.
+        #expect(outcomes[0].mergedVersionCount == 2)
     }
 
     @Test

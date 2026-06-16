@@ -306,9 +306,14 @@ public final class GuessWhoSync {
                     let currentResult = parseEnvelope(firstBytes)
                     var currentEnvelope: SidecarEnvelope? = nil
                     var skipped: [Data] = []
+                    // §5.3 silent cell drops — sum across every parseable
+                    // envelope going into the fold. Surface in skippedReasons
+                    // so a peer shipping broken cells is observable.
+                    var totalCellsDropped = 0
                     switch currentResult {
                     case .ok(let env):
                         currentEnvelope = env
+                        totalCellsDropped += env.cellsDroppedOnDecode
                     case .skip(let reason):
                         skipped.append(firstBytes)
                         reasons.append("current: \(reason)")
@@ -319,10 +324,14 @@ public final class GuessWhoSync {
                         switch parseEnvelope(bytes) {
                         case .ok(let env):
                             parsedConflicts.append(env)
+                            totalCellsDropped += env.cellsDroppedOnDecode
                         case .skip(let reason):
                             skipped.append(bytes)
                             reasons.append(reason)
                         }
+                    }
+                    if totalCellsDropped > 0 {
+                        reasons.append("dropped \(totalCellsDropped) malformed cell(s)")
                     }
 
                     // Fold every parseable envelope into one merged result.

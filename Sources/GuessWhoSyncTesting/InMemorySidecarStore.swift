@@ -89,10 +89,13 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         // §6 step 4 cleanly: current parsed → overwrite; current unparseable
         // but ≥1 conflict parsed → write recovery sibling.
         var versions: [Data] = []
+        let currentSlotIsReal: Bool
         if let currentEnvelope, let bytes = try? JSONEncoder().encode(currentEnvelope) {
             versions.append(bytes)
+            currentSlotIsReal = true
         } else {
             versions.append(Data())
+            currentSlotIsReal = false
         }
         versions.append(contentsOf: scripted)
 
@@ -116,9 +119,12 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
             envelopes[key] = merged
             scriptedConflicts.removeValue(forKey: key)
             lock.unlock()
+            // Don't credit the placeholder for a missing current toward the
+            // merged-version count; only real bytes participated.
+            let realVersionCount = versions.count - (currentSlotIsReal ? 0 : 1)
             return SidecarReconcileReport.FileOutcome(
                 key: key,
-                mergedVersionCount: versions.count - skippedCount,
+                mergedVersionCount: realVersionCount - skippedCount,
                 skippedReasons: []
             )
         case .writeRecoverySibling(let merged, let suffix):
