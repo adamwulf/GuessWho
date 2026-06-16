@@ -6,11 +6,12 @@ public struct SidecarKey: Hashable, Sendable, Codable {
 
     public init(kind: SidecarKind, id: String) {
         self.kind = kind
-        // Contact UUIDs are canonicalized to lowercase so the same identifier
-        // can't be stored under two different cases. Event externalIDs are
-        // opaque strings owned by another system, so we don't touch their case.
+        // Contact and link UUIDs are canonicalized to lowercase so the same
+        // identifier can't be stored under two different cases. Event
+        // externalIDs are opaque strings owned by another system, so we don't
+        // touch their case.
         switch kind {
-        case .contact:
+        case .contact, .link:
             self.id = id.lowercased()
         case .event:
             self.id = id

@@ -133,9 +133,11 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         var result: [SidecarKey] = []
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("contacts"), kind: .contact))
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("events"), kind: .event))
+        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("links"), kind: .link))
         return result
     }
 
+    @_spi(ConflictReconcile)
     public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
         var result: [SidecarKey] = []
         for key in try allKeys() {
@@ -204,9 +206,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
     }
 
+    @_spi(ConflictReconcile)
     public func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
     ) throws -> SidecarReconcileReport.FileOutcome? {
         try fileLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
             let url = fileURL(for: key)
@@ -215,82 +218,109 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 return nil
             }
 
-            // Cache the bytes from the first read pass so the skip-matching
-            // pass below never re-reads from disk. A second read can fail
-            // (e.g. NSFileVersion's underlying file got swept) and would
-            // otherwise produce an empty Data() that fails to match any
-            // entry in `skip`, silently deleting a version the resolver
-            // explicitly asked to keep.
-            //
-            // The cache deliberately excludes the CURRENT version: the
-            // merged write below replaces the current contents regardless,
-            // so even if the resolver returned current bytes in `skip`
-            // (e.g. by mistake) the skip pass has nothing to do for them.
-            var conflictBytesByVersionID: [(NSFileVersion, Data?)] = []
-            var allBytes: [Data] = []
-            if let current = NSFileVersion.currentVersionOfItem(at: url),
-               let bytes = try? Data(contentsOf: current.url) {
-                allBytes.append(bytes)
+            var skipped: [String] = []
+
+            // Read current's bytes:
+            //   - currentVersionOfItem == nil          → no materialized current; pass nil.
+            //   - currentVersionOfItem exists, read OK → pass the bytes.
+            //   - currentVersionOfItem exists, read FAILS → abort this pass.
+            //     We can't tell what was on disk and we MUST NOT clobber it
+            //     with a fold of conflict-only inputs. Surface the error in
+            //     skippedReasons; next reconcile retries.
+            let currentBytes: Data?
+            if let current = NSFileVersion.currentVersionOfItem(at: url) {
+                do {
+                    currentBytes = try Data(contentsOf: current.url)
+                } catch {
+                    return SidecarReconcileReport.FileOutcome(
+                        key: key,
+                        versionsConsidered: 0,
+                        skippedReasons: ["current: read failed: \(error)"]
+                    )
+                }
+            } else {
+                currentBytes = nil
             }
+
+            // Conflict-version reads: a read failure (I/O, file not yet
+            // downloaded, sandbox, etc.) is NOT the same as "unparseable
+            // bytes." We don't know what's in those bytes; we MUST NOT
+            // converge without considering them. Abort the pass; next
+            // reconcile retries.
+            var conflictBytes: [Data] = []
             for version in conflicts {
-                let bytes = try? Data(contentsOf: version.url)
-                conflictBytesByVersionID.append((version, bytes))
-                if let bytes {
-                    allBytes.append(bytes)
+                do {
+                    conflictBytes.append(try Data(contentsOf: version.url))
+                } catch {
+                    return SidecarReconcileReport.FileOutcome(
+                        key: key,
+                        versionsConsidered: 0,
+                        skippedReasons: ["conflict: read failed: \(error)"]
+                    )
                 }
             }
 
-            let resolution: ConflictResolution
+            // The orchestrator's resolver does not throw. A third-party
+            // resolver that does throw produces no merged envelope to write
+            // — so we leave the conflict surface intact (no write, no
+            // remove) and surface the failure. The next pass retries with
+            // the same inputs. This is the same shape as the read-failure
+            // abort above: when in doubt, don't clobber.
+            let merged: SidecarEnvelope
             do {
-                resolution = try resolve(allBytes)
+                merged = try resolve(currentBytes, conflictBytes)
             } catch {
+                skipped.append("resolver threw: \(error)")
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: [String(describing: error)]
+                    versionsConsidered: 0,
+                    skippedReasons: skipped
                 )
             }
 
-            switch resolution {
-            case .write(let merged, let skip):
-                let mergedData = try JSONEncoder().encode(merged)
-                var mergedWriteError: Error?
-                try coordinatedWrite(key: key, at: url) { safeURL in
-                    do {
-                        try mergedData.write(to: safeURL, options: [.atomic])
-                    } catch {
-                        mergedWriteError = error
-                    }
-                }
-                if let mergedWriteError { throw mergedWriteError }
-
-                var skippedCount = 0
-                for (version, cachedBytes) in conflictBytesByVersionID {
-                    // If the first read failed, this version was never a
-                    // parseable candidate. Treat it as "not in skip" so the
-                    // default removal still applies; the resolver had no way
-                    // to request it kept.
-                    let bytes = cachedBytes ?? Data()
-                    if cachedBytes != nil, skip.contains(bytes) {
-                        skippedCount += 1
-                    } else {
-                        version.isResolved = true
-                        try? version.remove()
-                    }
-                }
+            // Defense-in-depth against a buggy resolver: refuse to write an
+            // envelope whose entityID doesn't match this key. The
+            // orchestrator's resolver enforces this in the fold, but a
+            // third-party resolver could violate the contract and produce
+            // wrong-routed data. Abort the pass and surface the violation.
+            guard merged.entityID == key.id else {
+                skipped.append("resolver returned mismatched entityID: \(merged.entityID) ≠ key \(key.id)")
                 return SidecarReconcileReport.FileOutcome(
                     key: key,
-                    mergedVersionCount: allBytes.count - skippedCount,
-                    skippedReasons: []
-                )
-
-            case .leave:
-                return SidecarReconcileReport.FileOutcome(
-                    key: key,
-                    mergedVersionCount: 0,
-                    skippedReasons: []
+                    versionsConsidered: 0,
+                    skippedReasons: skipped
                 )
             }
+
+            let mergedData = try JSONEncoder().encode(merged)
+            var mergedWriteError: Error?
+            try coordinatedWrite(key: key, at: url) { safeURL in
+                do {
+                    try mergedData.write(to: safeURL, options: [.atomic])
+                } catch {
+                    mergedWriteError = error
+                }
+            }
+            if let mergedWriteError { throw mergedWriteError }
+
+            // Mark every conflict version resolved — the merged write is the
+            // new ground truth. If a remove() fails, leave isResolved=false
+            // and surface the failure so the next pass retries this key
+            // (rather than silently claiming we converged).
+            for version in conflicts {
+                do {
+                    try version.remove()
+                    version.isResolved = true
+                } catch {
+                    skipped.append("version.remove failed: \(error)")
+                }
+            }
+
+            return SidecarReconcileReport.FileOutcome(
+                key: key,
+                versionsConsidered: (currentBytes != nil ? 1 : 0) + conflictBytes.count,
+                skippedReasons: skipped
+            )
         }
     }
 
@@ -305,15 +335,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         switch kind {
         case .contact: return "contacts"
         case .event: return "events"
+        case .link: return "links"
         }
     }
 
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
-        case .contact:
-            // Contact UUIDs are canonicalized to lowercase at every boundary so
-            // case-folding filesystems (iCloud Drive on APFS) can't desync the
-            // on-disk name from the in-memory key.
+        case .contact, .link:
+            // Contact and link UUIDs are canonicalized to lowercase at every
+            // boundary so case-folding filesystems (iCloud Drive on APFS) can't
+            // desync the on-disk name from the in-memory key.
             return "\(key.id.lowercased()).json"
         case .event:
             var allowed = CharacterSet(charactersIn: "._-")
@@ -353,8 +384,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
-            case .contact:
-                result.append(SidecarKey(kind: .contact, id: basename.lowercased()))
+            case .contact, .link:
+                result.append(SidecarKey(kind: kind, id: basename.lowercased()))
             case .event:
                 let decoded = basename.removingPercentEncoding ?? basename
                 result.append(SidecarKey(kind: .event, id: decoded))
@@ -511,3 +542,11 @@ private enum SidecarMonotonicClock {
         TimeInterval(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 }
+
+// Conflict-reconciliation is wired up via this internal protocol so the
+// public surface area never exposes the conflict-resolver plumbing. The
+// orchestrator's reconcileSidecars() casts its store to this protocol and
+// drives the loop; the conformance witnesses are the keysWithUnresolvedConflicts
+// and reconcileConflict methods on the class above.
+@_spi(ConflictReconcile)
+extension FileSystemSidecarStore: SidecarConflictReconciling {}

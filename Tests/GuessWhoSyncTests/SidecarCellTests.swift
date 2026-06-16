@@ -8,113 +8,97 @@ struct SidecarCellTests {
     private let decoder = JSONDecoder()
 
     @Test
-    func valueCellRoundtrips() throws {
+    func liveCellRoundtrips() throws {
         let when = Date(timeIntervalSince1970: 1_700_000_000.123)
-        let cell: SidecarCell = .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
+        let cell = SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         let data = try encoder.encode(cell)
         let decoded = try decoder.decode(SidecarCell.self, from: data)
-        guard case .value(let v, let ts, let by) = decoded else {
-            Issue.record("expected value cell, got \(decoded)")
-            return
-        }
-        #expect(v == .string("Bear"))
-        #expect(by == "device-A")
-        #expect(ts.timeIntervalSince1970 == when.timeIntervalSince1970)
+        #expect(decoded.value == .string("Bear"))
+        #expect(decoded.modifiedBy == "device-A")
+        #expect(decoded.modifiedAt.timeIntervalSince1970 == when.timeIntervalSince1970)
+        #expect(decoded.deletedAt == nil)
     }
 
     @Test
-    func tombstoneCellRoundtrips() throws {
+    func deletedCellRoundtripsPreservingValue() throws {
         let when = Date(timeIntervalSince1970: 1_700_000_500.456)
-        let cell: SidecarCell = .tombstone(modifiedAt: when, modifiedBy: "device-B")
+        let cell = SidecarCell(
+            value: .string("what was here"),
+            modifiedAt: when,
+            modifiedBy: "device-B",
+            deletedAt: when
+        )
         let data = try encoder.encode(cell)
         let decoded = try decoder.decode(SidecarCell.self, from: data)
-        guard case .tombstone(let ts, let by) = decoded else {
-            Issue.record("expected tombstone cell, got \(decoded)")
-            return
-        }
-        #expect(by == "device-B")
-        #expect(ts.timeIntervalSince1970 == when.timeIntervalSince1970)
+        #expect(decoded.value == .string("what was here"))
+        #expect(decoded.modifiedBy == "device-B")
+        #expect(decoded.modifiedAt.timeIntervalSince1970 == when.timeIntervalSince1970)
+        #expect(decoded.deletedAt?.timeIntervalSince1970 == when.timeIntervalSince1970)
     }
 
     @Test
-    func decodingBothValueAndDeletedThrows() {
+    func absentDeletedAtMeansLive() throws {
         let json = #"""
-        {"deleted":true,"value":"x","modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
+        {"value":"x","modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
         """#
-        let data = json.data(using: .utf8)!
-        #expect(throws: DecodingError.self) {
-            try self.decoder.decode(SidecarCell.self, from: data)
-        }
+        let cell = try decoder.decode(SidecarCell.self, from: json.data(using: .utf8)!)
+        #expect(cell.deletedAt == nil)
     }
 
     @Test
-    func decodingNeitherValueNorDeletedThrows() {
+    func presentDeletedAtMeansDeleted() throws {
         let json = #"""
-        {"modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
+        {"value":"x","modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A","deletedAt":"2026-06-14T22:00:00.000Z"}
         """#
-        let data = json.data(using: .utf8)!
-        #expect(throws: DecodingError.self) {
-            try self.decoder.decode(SidecarCell.self, from: data)
-        }
+        let cell = try decoder.decode(SidecarCell.self, from: json.data(using: .utf8)!)
+        #expect(cell.deletedAt != nil)
     }
 
     @Test
-    func decodingDeletedFalseAlsoThrows() {
-        let json = #"""
-        {"deleted":false,"modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
-        """#
-        let data = json.data(using: .utf8)!
-        #expect(throws: DecodingError.self) {
-            try self.decoder.decode(SidecarCell.self, from: data)
-        }
-    }
-
-    @Test
-    func decodingMalformedTimestampThrows() {
+    func decodingMalformedModifiedAtThrows() {
         let json = #"""
         {"value":"x","modifiedAt":"not-a-date","modifiedBy":"device-A"}
         """#
-        let data = json.data(using: .utf8)!
         #expect(throws: DecodingError.self) {
-            try self.decoder.decode(SidecarCell.self, from: data)
+            try self.decoder.decode(SidecarCell.self, from: json.data(using: .utf8)!)
         }
+    }
+
+    @Test
+    func decodingMalformedDeletedAtThrows() {
+        let json = #"""
+        {"value":"x","modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A","deletedAt":"not-a-date"}
+        """#
+        #expect(throws: DecodingError.self) {
+            try self.decoder.decode(SidecarCell.self, from: json.data(using: .utf8)!)
+        }
+    }
+
+    @Test
+    func decodingMissingValueKeyThrows() {
+        let json = #"""
+        {"modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
+        """#
+        #expect(throws: DecodingError.self) {
+            try self.decoder.decode(SidecarCell.self, from: json.data(using: .utf8)!)
+        }
+    }
+
+    @Test
+    func nullValueIsValid() throws {
+        let json = #"""
+        {"value":null,"modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
+        """#
+        let cell = try decoder.decode(SidecarCell.self, from: json.data(using: .utf8)!)
+        #expect(cell.value == .null)
     }
 
     @Test
     func encodesISO8601WithMillisecondsInUTC() throws {
         let when = Date(timeIntervalSince1970: 1_700_000_000.500)
-        let cell: SidecarCell = .value(.string("x"), modifiedAt: when, modifiedBy: "d")
+        let cell = SidecarCell(value: .string("x"), modifiedAt: when, modifiedBy: "d")
         let data = try encoder.encode(cell)
         let json = String(data: data, encoding: .utf8)!
         #expect(json.contains(".500Z"))
-    }
-
-    @Test
-    func decodesExactSpecExampleValueCell() throws {
-        let json = #"""
-        {"value":"Bear","modifiedAt":"2026-06-14T20:15:00.000Z","modifiedBy":"device-A"}
-        """#
-        let data = json.data(using: .utf8)!
-        let cell = try decoder.decode(SidecarCell.self, from: data)
-        guard case .value(let v, _, let by) = cell else {
-            Issue.record("expected value cell")
-            return
-        }
-        #expect(v == .string("Bear"))
-        #expect(by == "device-A")
-    }
-
-    @Test
-    func decodesExactSpecExampleTombstone() throws {
-        let json = #"""
-        {"deleted":true,"modifiedAt":"2026-06-13T10:00:00.000Z","modifiedBy":"device-A"}
-        """#
-        let data = json.data(using: .utf8)!
-        let cell = try decoder.decode(SidecarCell.self, from: data)
-        guard case .tombstone(_, let by) = cell else {
-            Issue.record("expected tombstone cell")
-            return
-        }
-        #expect(by == "device-A")
     }
 }

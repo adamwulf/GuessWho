@@ -1,7 +1,9 @@
 import Foundation
 import Testing
 @testable import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 import GuessWhoSyncTesting
+@_spi(ConflictReconcile) import GuessWhoSyncTesting
 
 @Suite("InMemorySidecarStore")
 struct InMemorySidecarStoreTests {
@@ -23,17 +25,14 @@ struct InMemorySidecarStoreTests {
         #expect(lhs.schemaVersion == rhs.schemaVersion)
         #expect(lhs.fields.keys == rhs.fields.keys)
         for key in lhs.fields.keys {
-            switch (lhs.fields[key], rhs.fields[key]) {
-            case let (.value(lv, lt, lb)?, .value(rv, rt, rb)?):
-                #expect(lv == rv)
-                #expect(lt == rt)
-                #expect(lb == rb)
-            case let (.tombstone(lt, lb)?, .tombstone(rt, rb)?):
-                #expect(lt == rt)
-                #expect(lb == rb)
-            default:
+            guard let lc = lhs.fields[key], let rc = rhs.fields[key] else {
                 Issue.record("cells differ in shape at key \(key)")
+                continue
             }
+            #expect(lc.value == rc.value)
+            #expect(lc.modifiedAt == rc.modifiedAt)
+            #expect(lc.modifiedBy == rc.modifiedBy)
+            #expect(lc.deletedAt == rc.deletedAt)
         }
     }
 
@@ -42,7 +41,7 @@ struct InMemorySidecarStoreTests {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let env = envelope(fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(env, at: key)
         let fetched = try #require(try store.read(key))
@@ -86,10 +85,10 @@ struct InMemorySidecarStoreTests {
         let a = SidecarKey(kind: .contact, id: "a")
         let b = SidecarKey(kind: .contact, id: "b")
         let envA = envelope(id: "a", fields: [
-            "x": .value(.string("A"), modifiedAt: when, modifiedBy: "device")
+            "x": SidecarCell(value: .string("A"), modifiedAt: when, modifiedBy: "device")
         ])
         let envB = envelope(id: "b", fields: [
-            "y": .value(.string("B"), modifiedAt: when, modifiedBy: "device")
+            "y": SidecarCell(value: .string("B"), modifiedAt: when, modifiedBy: "device")
         ])
         try store.write(envA, at: a)
         try store.write(envB, at: b)
@@ -101,7 +100,7 @@ struct InMemorySidecarStoreTests {
     }
 
     @Test
-    func scriptedConflictResolveWriteUpdatesEnvelopeAndClearsConflict() throws {
+    func scriptedConflictResolveUpdatesEnvelopeAndClearsConflict() throws {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let v1 = Data([0x01])
@@ -109,56 +108,62 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [v1, v2])
 
         let merged = envelope(fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
         ])
-        let outcomes = try store.reconcileAllConflicts { receivedKey, versions in
+        let outcomes = try store.reconcileAllConflicts { receivedKey, current, conflicts in
             #expect(receivedKey == key)
-            #expect(versions == [v1, v2])
-            return .write(merged: merged, skip: [])
+            // No current envelope was written for this key, so the store
+            // passes nil as the current bytes. The two scripted versions
+            // are the conflicts.
+            #expect(current == nil)
+            #expect(conflicts == [v1, v2])
+            return merged
         }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
-        #expect(outcomes[0].mergedVersionCount == 2)
+        // Both scripted conflict versions participated; no current.
+        #expect(outcomes[0].versionsConsidered == 2)
         #expect(outcomes[0].skippedReasons.isEmpty)
 
         let fetched = try #require(try store.read(key))
         expectEqual(fetched, merged)
 
-        let secondPass = try store.reconcileAllConflicts { _, _ in
+        let secondPass = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("conflict should have been cleared")
-            return .leave
+            return SidecarEnvelope(entityID: key.id, fields: [:])
         }
         #expect(secondPass.isEmpty)
     }
 
     @Test
-    func scriptedConflictResolveLeaveDoesNotUpdateEnvelope() throws {
+    func scriptedConflictResolverReturningCurrentClearsConflictWithoutSemanticChange() throws {
         let store = InMemorySidecarStore()
         let key = contactKey()
         let existing = envelope(fields: [
-            "nickname": .value(.string("Original"), modifiedAt: when, modifiedBy: "device-A")
+            "nickname": SidecarCell(value: .string("Original"), modifiedAt: when, modifiedBy: "device-A")
         ])
         try store.write(existing, at: key)
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in .leave }
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in existing }
         #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 0)
+        #expect(outcomes[0].versionsConsidered == 2) // current + 1 conflict
         #expect(outcomes[0].skippedReasons.isEmpty)
 
+        // Conflict is cleared; envelope unchanged.
         let fetched = try #require(try store.read(key))
         expectEqual(fetched, existing)
 
         var sawConflictAgain = false
-        _ = try store.reconcileAllConflicts { _, _ in
+        _ = try store.reconcileAllConflicts { _, _, _ in
             sawConflictAgain = true
-            return .leave
+            return existing
         }
-        #expect(sawConflictAgain)
+        #expect(sawConflictAgain == false)
     }
 
     @Test
-    func scriptedConflictResolverThrowingRecordsErrorAndDoesNotRethrow() throws {
+    func scriptedConflictResolverThrowingRecordsErrorAndPreservesConflictForRetry() throws {
         struct ResolveBoom: Error, CustomStringConvertible {
             var description: String { "kaboom" }
         }
@@ -166,30 +171,17 @@ struct InMemorySidecarStoreTests {
         let key = contactKey()
         store.scriptConflict(at: key, versions: [Data([0x01])])
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             throw ResolveBoom()
         }
         #expect(outcomes.count == 1)
         #expect(outcomes[0].key == key)
-        #expect(outcomes[0].mergedVersionCount == 0)
+        #expect(outcomes[0].versionsConsidered == 0)
         #expect(outcomes[0].skippedReasons.contains { $0.contains("kaboom") })
-    }
 
-    @Test
-    func scriptedConflictSkipMatchingIsByByteEquality() throws {
-        let store = InMemorySidecarStore()
-        let key = contactKey()
-        let v1 = Data([0x01, 0x02])
-        let v2 = Data([0x03, 0x04])
-        let v3 = Data([0x05, 0x06])
-        store.scriptConflict(at: key, versions: [v1, v2, v3])
-
-        let merged = envelope()
-        let outcomes = try store.reconcileAllConflicts { _, _ in
-            .write(merged: merged, skip: [Data([0x03, 0x04])])
-        }
-        #expect(outcomes.count == 1)
-        #expect(outcomes[0].mergedVersionCount == 2)
+        // The conflict is preserved for the next pass to retry — the
+        // resolver-throws contract is "abort the pass," not "claim resolved."
+        #expect(try store.keysWithUnresolvedConflicts().contains(key))
     }
 
     @Test
@@ -199,9 +191,9 @@ struct InMemorySidecarStoreTests {
         store.scriptConflict(at: key, versions: [Data([0x01])])
         try store.delete(key)
 
-        let outcomes = try store.reconcileAllConflicts { _, _ in
+        let outcomes = try store.reconcileAllConflicts { _, _, _ in
             Issue.record("delete should have cleared the scripted conflict")
-            return .leave
+            return SidecarEnvelope(entityID: key.id, fields: [:])
         }
         #expect(outcomes.isEmpty)
     }
@@ -227,17 +219,14 @@ struct InMemorySidecarStoreTests {
     }
 }
 
-// A minimal SidecarStoreProtocol conformer that only implements the v1
-// surface plus the per-key conflict methods (which are NOT defaulted in
-// the protocol — see SidecarStoreProtocol.swift's comment for the
-// rationale). It deliberately does NOT implement downloadStatus /
-// requestDownload so the protocol-extension defaults are exercised.
-//
-// Reviewer A asked for this kind of minimal conformer to confirm the
-// compatibility story holds: the download API defaults work for backends
-// with no remote tier, and a backend that throws `.notYetDownloaded`
-// from `read()` is still reported as `.notStarted` by the default
-// `downloadStatus`.
+// A minimal SidecarStoreProtocol conformer that implements only the v1
+// surface — no conflict methods (those live on the @_spi
+// SidecarConflictReconciling protocol; a backend with no multi-version
+// conflict notion legitimately doesn't conform to it). Also deliberately
+// does NOT implement downloadStatus / requestDownload so the protocol-
+// extension defaults are exercised. This proves a third-party store
+// without conflict semantics still composes with the orchestrator;
+// reconcileSidecars() simply returns an empty report.
 private final class MinimalSidecarStore: SidecarStoreProtocol {
     var envelopes: [SidecarKey: SidecarEnvelope] = [:]
     var throwNotYetDownloadedFor: Set<SidecarKey> = []
@@ -259,17 +248,6 @@ private final class MinimalSidecarStore: SidecarStoreProtocol {
 
     func allKeys() throws -> [SidecarKey] {
         Array(envelopes.keys)
-    }
-
-    func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
-        []
-    }
-
-    func reconcileConflict(
-        at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
-    ) throws -> SidecarReconcileReport.FileOutcome? {
-        nil
     }
 }
 
@@ -301,5 +279,21 @@ struct ProtocolDefaultsTests {
     func defaultRequestDownloadIsNoOp() throws {
         let store = MinimalSidecarStore()
         try store.requestDownload(SidecarKey(kind: .contact, id: "x"))
+    }
+
+    @Test
+    func reconcileSidecarsOnStoreWithoutConflictReconcilingReturnsEmptyReport() throws {
+        // A third-party SidecarStoreProtocol conformer with no concept of
+        // multi-version conflicts won't implement SidecarConflictReconciling.
+        // The orchestrator's as? cast fails; reconcileSidecars() returns an
+        // empty report (it's still safe to call).
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: MinimalSidecarStore(),
+            deviceID: "device-A"
+        )
+        let report = try sync.reconcileSidecars()
+        #expect(report.fileOutcomes.isEmpty)
     }
 }

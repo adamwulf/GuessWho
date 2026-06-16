@@ -6,24 +6,6 @@ public protocol SidecarStoreProtocol {
     func delete(_ key: SidecarKey) throws
     func allKeys() throws -> [SidecarKey]
 
-    // Keys that have an unresolved cross-device conflict. The orchestrator
-    // drives reconcile by iterating these, acquiring its per-key lock for
-    // each one, and calling `reconcileConflict(at:resolve:)`. Implementations
-    // backed by storage with no notion of conflicts (e.g. in-memory test
-    // doubles) may return any keys for which the resolver should be invoked.
-    func keysWithUnresolvedConflicts() throws -> [SidecarKey]
-
-    // Reconcile a single key. The resolver is invoked with every version's
-    // bytes (current + conflict versions). Implementations MUST execute the
-    // resolver and its resulting write/delete atomically with respect to
-    // other operations the caller may serialize against this key.
-    //
-    // Returns nil if the key has no conflicts (the caller can ignore it).
-    func reconcileConflict(
-        at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
-    ) throws -> SidecarReconcileReport.FileOutcome?
-
     // Storage backends that may not have all bytes resident on this device
     // throw `.notYetDownloaded` from `read()`. Call `requestDownload(_:)`
     // to initiate a fetch, then poll `downloadStatus(_:)` to observe
@@ -38,17 +20,65 @@ public protocol SidecarStoreProtocol {
     func requestDownload(_ key: SidecarKey) throws
 }
 
+// Conflict-reconcile plumbing is exposed via SPI so the two shipping stores
+// (FileSystemSidecarStore, InMemorySidecarStore) can conform from their own
+// modules, but a host or UI doing a plain `import GuessWhoSync` never sees
+// it — they only see the public SidecarStoreProtocol surface and call
+// reconcileSidecars() on the orchestrator. A third-party SidecarStoreProtocol
+// conformer that doesn't implement this is silently skipped by
+// reconcileSidecars() — fine for backends with no multi-version conflicts.
+@_spi(ConflictReconcile)
+public protocol SidecarConflictReconciling: SidecarStoreProtocol {
+    // Keys that have an unresolved cross-device conflict. The orchestrator
+    // drives reconcile by iterating these, acquiring its per-key lock for
+    // each one, and calling `reconcileConflict(at:resolve:)`.
+    func keysWithUnresolvedConflicts() throws -> [SidecarKey]
+
+    // Reconcile a single key. The resolver receives the current version's
+    // bytes (nil when no materialized current exists) and the conflict
+    // versions' bytes, and returns the merged envelope. The store
+    // overwrites the current with that envelope and marks every conflict
+    // version resolved.
+    //
+    // **Resolver contract.** The resolver:
+    //   - MUST return an envelope whose `entityID == key.id`. The store
+    //     MAY assert this (defense-in-depth against a buggy resolver).
+    //     A returned envelope with a mismatched entityID would otherwise
+    //     write wrong-routed data under this key.
+    //   - SHOULD always converge — return a valid envelope even if no input
+    //     bytes parsed (e.g. an empty envelope at `entityID = key.id`).
+    //     The store does not write recovery siblings.
+    //   - MAY throw, in which case the store treats this key as "abort the
+    //     pass": no write, no version.remove(). The next reconcile retries
+    //     with the same inputs. The throw is surfaced in `skippedReasons`.
+    //
+    // **Read-failure abort.** If the store cannot read the current bytes
+    // or any conflict bytes off disk (transient I/O, not-yet-downloaded,
+    // sandbox), it aborts the pass for this key the same way: no write,
+    // no remove(), surface the error. Next reconcile retries.
+    //
+    // **isResolved / remove() ordering on success.** The store calls
+    // version.remove() FIRST and only sets version.isResolved = true on
+    // success. If remove() throws, isResolved stays false so the next
+    // pass retries.
+    //
+    // Implementations MUST execute the resolver and the resulting write
+    // atomically with respect to other operations the caller may serialize
+    // against this key.
+    //
+    // Returns nil if the key has no conflicts (the caller can ignore it).
+    func reconcileConflict(
+        at key: SidecarKey,
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
+    ) throws -> SidecarReconcileReport.FileOutcome?
+}
+
 // Default implementations for the download API.
 //
 // The defaults are correct for any backend without a remote tier (the
 // common case), and the `downloadStatus` default explicitly maps
 // `.notYetDownloaded` to `.notStarted` so a backend that adds a remote
 // tier later still gets sensible status reporting without overriding.
-//
-// Conflict methods (`keysWithUnresolvedConflicts`, `reconcileConflict`)
-// are intentionally NOT defaulted: a default returning `[]` / `nil`
-// would cause a conformer that forgot to implement them to silently
-// no-op on reconcile, which is worse than a compile error.
 public extension SidecarStoreProtocol {
     // Default: backends that always have bytes locally report known keys
     // as `.downloaded` and everything else as `.notFound`. A backend that

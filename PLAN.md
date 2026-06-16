@@ -20,9 +20,21 @@ This document is the spec.
 
 - Writing to EventKit events. Events are **read-only**; only their sidecars are mutable.
 - Background sync (`NSFilePresenter` wiring). The host calls `reconcile…()` explicitly.
-- Soft-delete garbage collection. `deletedAt`-set cells, notes, and links live forever in v1 (§5.5, §12.3, §13.6).
+- Soft-delete garbage collection. `deletedAt`-set cells, notes, and links live forever in v1 (Core Semantics).
 - Non-iCloud Contacts sources (Exchange, Google CardDAV). v1 makes no guarantees; behavior is "best effort, may drift."
 - Cross-iCloud-account sync. Single user, single iCloud account.
+
+## Core Semantics
+
+Five primitives govern every read, write, and merge in this package. Every later section is an application of these — when something here says "per Core Semantics," that's the rule, not a restatement.
+
+1. **Storage boundary.** Whatever the Contacts or EventKit frameworks can represent lives there. Writes to Contacts are best-effort — CardDAV handles sync; it's not our problem. Everything else lives in sidecar files (§4, §5).
+2. **Disk is Truth; writes are atomic.** Every mutation is one envelope write to one file. There is no "half-written" state on disk. `NSFileVersion` reports conflicts per-file (§6).
+3. **LWW everywhere, per-cell, on `(modifiedAt, modifiedBy)`.** Every sidecar cell — contact field, event field, link cell — competes via §5.3 whole-cell LWW. The winning cell brings its `value`, stamps, and `deletedAt` as one atomic unit. New feature types add new cell shapes, never new merge code.
+4. **`deletedAt` is the only delete mechanism.** A cell with `deletedAt == nil` (or absent) is **live**. A cell with `deletedAt` set is **deleted**. Delete = set `deletedAt`; undelete = clear it. Both operations are normal cell writes that compete in LWW exactly like value edits. Soft-deleted cells survive forever in v1 (GC deferred — §10); the package never filters by `deletedAt` — callers decide what to render.
+5. **FWW only for the GuessWho UUID.** The lone exception to LWW: when two devices independently assigned UUIDs to the same contact, the lex-smallest wins (§3.3 Case D) without further writes. All syncing devices converge on the same canonical identifier deterministically.
+
+UUID collision is treated as impossible at every layer (122 bits of entropy from `UUID()`). Cross-process writers on a single device rely on the same astronomical-improbability stance as cross-device.
 
 ## 3. Identity
 
@@ -72,13 +84,9 @@ Convergence: once every device has reconciled the same merged contact, every dev
 
 ### 3.4 Orphan sidecars
 
-A sidecar file is *orphan* if no contact carries its UUID in `urlAddresses` after a full identity reconcile pass.
+A sidecar file is *orphan* if no contact carries its UUID in `urlAddresses` after a full identity reconcile pass. Two cases produce orphans and look identical to the algorithm: a user-driven delete on another device, or a transient gap during in-flight CardDAV sync.
 
-**v1 policy:** orphan sidecars are **kept**, not deleted. The canonical case is a user deleting a contact on one device while another device writes to the same sidecar. A second, equally common case is **transient orphans during in-flight CardDAV sync**: device X reconciles before the contact carrying the matching `guesswho://` URL has arrived. Both cases look identical to the algorithm, so the rule is conservative.
-
-Orphans surface in `IdentityReconcileReport.orphanSidecars`. **Host UIs MUST NOT auto-delete from this list** — orphans may be transient. Only act on explicit user input.
-
-A v2 policy could auto-GC orphans older than a threshold (long enough for any reasonable sync to complete). Deferred — see §10.
+**v1 policy:** orphans are kept, never auto-deleted. They surface in `IdentityReconcileReport.orphanSidecars`; host UIs MUST act only on explicit user input. v2 may add age-based GC — deferred (§10).
 
 ## 4. Storage Boundary
 
@@ -200,7 +208,7 @@ merged.fields[k] for each k in (a.fields ∪ b.fields):
                      (ISO8601 lexicographic, then string lexicographic)
 ```
 
-LWW operates on the whole cell. The winning cell brings its `value`, `modifiedAt`, `modifiedBy`, and `deletedAt` (live or soft-deleted) as one atomic unit. A soft-deleted cell that wins LWW keeps the field deleted; a live cell that wins LWW resurrects it. Deletion is not stickier than any other field state — it competes on `(modifiedAt, modifiedBy)` like every other write.
+Per Core Semantics: LWW operates on the whole cell as one atomic unit. A soft-deleted cell that wins LWW keeps the field deleted; a live cell that wins LWW resurrects it.
 
 **Properties.** This merge is **commutative** (`merge(a, b) == merge(b, a)`) and **associative** (`merge(merge(a, b), c) == merge(a, merge(b, c))`). Both are required for convergence when ≥3 devices merge in different orders. §9 asserts both.
 
@@ -218,11 +226,9 @@ LWW operates on the whole cell. The winning cell brings its `value`, `modifiedAt
 
 Malformed cells from a single side propagate as absent into the merge result; the merge does not preserve the malformed cell.
 
-**Footnotes on cell-level LWW.**
+**Whole-cell LWW detail.** The winning cell brings *the entire inner-value object* (including the caller-supplied `field` label and any extension keys) along with stamps and `deletedAt`. A UI that concurrently renames the `field` label on one device while another device edits the `value` sees one cell win — winner's `field` and `value` survive together. Per-key-within-cell convergence is not provided.
 
-- *Whole-cell LWW.* The winning cell brings its `value`, `modifiedAt`, `modifiedBy`, `deletedAt`, *and the entire inner-value object* (including the caller-supplied `field` label and any extension keys) as one atomic unit. A UI that concurrently renames the `field` label on one device while another device edits the `value` will see one cell win — the winner's `field` and `value` survive together. Per-key-within-cell convergence is not provided.
-- *Field-instance UUID uniqueness.* Instance UUIDs are minted from `UUID()` (122 bits of entropy). The spec assumes collisions across devices never occur in practice. A hypothetical collision (two devices independently mint the same UUID for two different field definitions) would resolve via whole-cell LWW above — the loser's `type` is silently lost. The §7.3 type-immutability rule is enforced *per device on write*, not across the merge boundary.
-- *Cross-process minting.* `addField`'s per-`SidecarKey` lock serializes in-process writers. Cross-process writers (e.g. main app + share extension on the same device) rely entirely on `UUID()` randomness for non-collision — the same astronomical-improbability stance as cross-device.
+`addField`'s per-`SidecarKey` lock serializes in-process writers; cross-process and cross-device collision avoidance relies on `UUID()` entropy per Core Semantics. The §7.3 type-immutability rule is enforced per device on write, not across the merge boundary.
 
 ### 5.4 Clock skew is acknowledged, not solved
 
@@ -230,20 +236,29 @@ Device clocks can disagree. A device with a fast clock can "win" LWW for a field
 
 ### 5.5 Soft-delete lifecycle
 
-A soft-deleted cell (one with `deletedAt` set) survives forever in v1 — it is the only thing that prevents a stale value-write from a device that hasn't seen the delete from silently resurrecting a deleted field on the next merge. GC is deferred (§10). The same `deletedAt: Date?` shape is reused for entity-level soft-delete on links (`Link.deletedAt`, §13). Notes are just field instances (§12), so their soft-delete is the cell's own `deletedAt` directly — no separate concept.
+Per Core Semantics: `deletedAt` is the only delete mechanism, it's a normal cell write competing in LWW, and soft-deleted cells survive forever in v1 (GC deferred — §10). The same shape applies to link entity-level soft-delete (§13) and to notes (which are just field-instance cells — §12).
+
+Soft-deleted cells must survive forever in v1 because they're the only thing preventing a stale value-write from a device that hasn't seen the delete from silently resurrecting a deleted field on the next merge.
 
 ## 6. iCloud Conflict Handling
 
-When iCloud presents multiple versions of the same sidecar (current + `NSFileVersion.unresolvedConflictVersionsOfItem(at:)`), the package's `reconcileSidecars()`:
+When iCloud presents multiple versions of the same sidecar (current + `NSFileVersion.unresolvedConflictVersionsOfItem(at:)`), `reconcileSidecars()` converges in one pass for every key whose bytes it can read. Per Core Semantics: LWW always wins; disk is Truth; we never refuse to write when we have the data.
 
-1. **Collect.** For each conflicted file: gather the bytes of the current version and each conflict version.
-2. **Parse.** Decode each version into an envelope. A version whose bytes fail to parse, or whose `schemaVersion` ≠ 1, is **skipped** — not used in the merge and not deleted. It is reported in `SidecarReconcileReport` so a human can investigate. (Skipping is conservative: never silently destroy data we can't read.)
-3. **N-way fold.** Fold every parseable v1 envelope (current + conflict versions) with §5.3 merge from left to right. Because merge is associative, the fold order does not matter. If only one parseable envelope survives, that *is* the result.
-4. **Write back.**
-   - If the *current* version was parseable: overwrite it with the merged envelope. Mark each non-skipped conflict version `isResolved = true` and `remove()` it. Leave skipped versions in conflict.
-   - If the *current* version was unparseable but at least one conflict version parsed: write the merge to a sibling file `<originalName>.recovered.<timestamp>.json` and report it. Leave the original current and all conflict versions intact (the human must triage). This prevents silent data destruction.
-   - If **no** version parsed: leave everything in conflict, report all skipped versions.
-5. **No conflict** on a file is a no-op.
+The pass for one conflicted file:
+
+1. **Read current bytes.** If `currentVersionOfItem` is nil → pass `nil` to the resolver. If it exists but `Data(contentsOf:)` throws → **abort this pass for this key**: no write, no `remove()`, surface the error in `skippedReasons`. The bytes may be fine; we just can't access them right now (sandbox, transient I/O, iCloud not-yet-downloaded). Next reconcile retries.
+2. **Read conflict bytes.** Same rule: a single conflict-version read failure aborts the pass for this key. We won't converge without considering every version's actual contents.
+3. **Parse.** Decode each successfully-read version into an envelope. A version whose JSON / envelope decode fails, or whose `schemaVersion` ≠ 1, is dropped from the fold and reported in `skippedReasons`. Those bytes were garbage; we don't preserve garbage. An envelope whose `entityID` ≠ the file's key id is also dropped (it's wrong-routed data; folding it would propagate corruption).
+4. **Fold.** Fold every parseable v1 envelope with §5.3 merge. Order doesn't matter (merge is associative + commutative).
+5. **Write.** Overwrite the current with the folded envelope. The store first checks `merged.entityID == key.id` (defense-in-depth against a buggy resolver); a mismatch aborts the pass the same way a resolver throw does. Then `remove()` each conflict version FIRST and only set `version.isResolved = true` on success; surface any `remove()` failure in `skippedReasons` and leave `isResolved = false` for that version so the next pass retries. If no version parsed (all garbage), write an empty envelope at this key — every device still converges.
+6. **Resolver throws.** The orchestrator's resolver doesn't throw. A third-party resolver that does produces no merged envelope; the store treats it the same as a read-failure abort: no write, no `remove()`, the throw surfaces in `skippedReasons`, conflict stays on disk for the next pass to retry. (Earlier we considered "always mark resolved on throw" but rejected it: destroying conflict bytes when we have no merged result to write is exactly the irreversible data loss this design is meant to avoid.)
+7. **No conflict** on a file is a no-op.
+
+The split is the safety/convergence balance: **parseable garbage is dropped (data was already gone); unreadable bytes abort (data might be fine — don't clobber it).**
+
+The pre-pivot design tried to preserve unparseable bytes via a recovery-sibling file. That added a §6-step-4 branch, a `.recovered/` subdirectory, a deviceID parameter on the store, and a stuck-conflict failure mode. With one schemaVersion, atomic writes, and iCloud's transport, the "unparseable current" case is rare enough that converging beats preserving.
+
+**`SidecarReconcileReport.FileOutcome.versionsConsidered`** counts how many version slots the resolver examined (current + conflict bytes that successfully read off disk). It includes unparseable ones — they contribute a `skippedReasons` entry but still counted as "considered." A non-zero `skippedReasons` with `versionsConsidered > 0` means some inputs participated and others were dropped.
 
 **Deletion is not a conflict.** `NSFileVersion.unresolvedConflictVersionsOfItem(at:)` never returns a "deletion version" — versions always have bytes. A delete done on another device reaches this device as a file removal handled outside this API (orphan policy §3.4; future `NSFilePresenter` wiring §10).
 
@@ -257,7 +272,7 @@ The package owns its own plain-Swift models — not `CNContact`/`EKEvent` — so
 
 **Codable.** Every model type below conforms to `Codable` so the value graph composes for sidecar emission, on-disk caching, and test fixtures (a `Contact` snapshot may be embedded inside a sidecar field as a `JSONValue.object`). The sidecar types (`SidecarEnvelope`, `SidecarCell`, `JSONValue`, `SidecarKey`, `SidecarKind`) are the literal payload of the JSON files in §5.2. `JSONValue` uses hand-rolled `Codable` because the JSON layout (dynamic value shapes) does not match the compiler-synthesized form. `SidecarCell` is a plain struct (§5.2's one-shape-per-cell rule), so its `Codable` is compiler-synthesized.
 
-**Date encoding strategy.** The `JSONEncoder` / `JSONDecoder` used for sidecar envelopes is configured with `dateEncodingStrategy = .iso8601` (fractional-second variant) and `dateDecodingStrategy = .iso8601` (with a permissive fallback that also accepts the non-fractional variant — same rule as §12.2). This makes the `Date` fields on `SidecarCell` (`modifiedAt`, `deletedAt`) serialize as the ISO8601 strings shown in §5.2, and lets envelopes written by a peer with a slightly different encoder still decode.
+**Date encoding strategy.** The `JSONEncoder` / `JSONDecoder` used for sidecar envelopes is configured with `dateEncodingStrategy = .iso8601` (fractional-second variant) and `dateDecodingStrategy = .iso8601` with a permissive fallback that also accepts the non-fractional variant. This makes the `Date` fields on `SidecarCell` (`modifiedAt`, `deletedAt`) serialize as the ISO8601 strings shown in §5.2, and lets envelopes written by a peer with a slightly different encoder still decode.
 
 ```swift
 public struct Contact: Hashable, Sendable, Codable {
@@ -471,34 +486,31 @@ public protocol SidecarStoreProtocol {
     func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws
     func delete(_ key: SidecarKey) throws
     func allKeys() throws -> [SidecarKey]
-
-    /// Walks every conflicted file. For each, the store hands the caller all
-    /// version bytes; the caller returns one of three resolutions per file.
-    /// The store applies the resolution against `NSFileVersion`, leaving
-    /// `NSFileVersion` semantics hidden inside the implementation.
-    func reconcileConflicts(
-        _ resolve: (_ key: SidecarKey, _ versions: [Data]) throws -> ConflictResolution
-    ) throws -> [SidecarReconcileReport.FileOutcome]
+    // (+ download/requestDownload — see source)
 }
 
-public enum ConflictResolution: Sendable {
-    /// Write `merged` as current; mark every conflict version isResolved=true,
-    /// remove(). Versions whose bytes appear in `skip` are left in conflict.
-    /// Matching is byte-equality on the version bytes; if two conflict versions
-    /// are byte-identical, they are treated as the same outcome (all matching
-    /// versions skipped together, or all marked resolved together).
-    case write(merged: SidecarEnvelope, skip: [Data])
-    /// Write `merged` to a sibling file; leave original current and all
-    /// conflict versions intact. Used when current is unparseable (§6).
-    case writeRecoverySibling(merged: SidecarEnvelope, suffix: String)
-    /// Leave everything in conflict.
-    case leave
+@_spi(ConflictReconcile)
+public protocol SidecarConflictReconciling: SidecarStoreProtocol {
+    func keysWithUnresolvedConflicts() throws -> [SidecarKey]
+    func reconcileConflict(
+        at key: SidecarKey,
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
+    ) throws -> SidecarReconcileReport.FileOutcome?
 }
 ```
 
-The orchestrator (§7.3) calls `reconcileConflicts` and supplies the merge logic via the closure. The store owns the `NSFileVersion` calls; the closure owns the policy (§6).
+`SidecarStoreProtocol` is the public surface — anything a host UI or third-party backend needs. The conflict-reconcile plumbing is exposed via `@_spi(ConflictReconcile)`: visible to the orchestrator and the two shipping stores (which `@_spi(ConflictReconcile) import GuessWhoSync`), invisible to plain `import GuessWhoSync` callers. The resolver returns a merged `SidecarEnvelope` — no enum, no recovery sibling, no "leave in conflict" option for the success path.
 
-**Closure error handling.** If `resolve` throws for a given file, the store records a failure outcome for that file (`mergedVersionCount = 0`, `skippedReasons` containing the thrown error description) and continues with the next file. `reconcileConflicts` itself never throws on a single-file failure; it only throws on store-level IO errors (e.g., can't enumerate the directory).
+The orchestrator's `reconcileSidecars()` casts its store via `as? SidecarConflictReconciling` to drive the loop. A backend that doesn't conform (e.g. a non-iCloud store with no multi-version conflicts) gets an empty report — `reconcileSidecars()` is still safe to call.
+
+**Resolver contract.** The closure passed to `reconcileConflict(at:resolve:)`:
+- MUST return an envelope whose `entityID == key.id`. The FS store asserts this at write time as defense-in-depth — a mismatched return aborts the pass with `versionsConsidered = 0`.
+- SHOULD always converge (return a valid envelope even when no inputs parsed — e.g. an empty envelope at the right entityID).
+- MAY throw, in which case the store treats this key as "abort the pass": no write, no `version.remove()`, error surfaces in `skippedReasons` with `versionsConsidered = 0`, and the conflict stays on disk for the next reconcile to retry. The orchestrator's resolver doesn't throw; this clause only matters for third-party resolvers.
+
+**Store contract (success path).** The store calls `version.remove()` FIRST and only sets `version.isResolved = true` on success. If `remove()` throws, `isResolved` stays false so the next pass retries that version. Per-version `remove()` failures surface in `skippedReasons`; they don't fail the whole pass.
+
+**Read failures.** If `Data(contentsOf:)` throws on the current or any conflict version (sandbox glitch, transient I/O, iCloud not-yet-downloaded), the store aborts the pass the same way a resolver throw does: `versionsConsidered = 0`, no write, no `remove()`, error in `skippedReasons`. The bytes might be fine; we don't clobber them.
 
 ### 7.3 Orchestrator
 
@@ -567,7 +579,7 @@ public final class GuessWhoSync {
     /// `sidecar(at:)` for the unfiltered view). This keeps forward-compatibility
     /// with future types added by newer peers.
     /// Precondition: `key.kind == .contact || key.kind == .event`. On a
-    /// `.link` key the result is unspecified — use the §13.6 link API instead.
+    /// `.link` key the result is unspecified — use the §13.5 link API instead.
     public func fields(at key: SidecarKey) throws -> [SidecarField]
 }
 
@@ -577,7 +589,7 @@ public struct IdentityReconcileReport: Sendable {
         public let assignedUUID: String?              // newly assigned, if any
         public let mergedLoserUUIDs: [String]         // sidecars merged into the winner
         public let removedMalformedURLs: [String]
-        public let rewrittenLinkIDs: [UUID]           // §13.5 — link UUIDs whose
+        public let rewrittenLinkIDs: [UUID]           // §13.4 — link UUIDs whose
                                                       // endpoints were rewritten by
                                                       // this contact's Case-D collapse.
                                                       // Each link appears at most once,
@@ -630,7 +642,7 @@ extension SidecarKey {
 
 `InMemoryContactStore`, `InMemoryEventStore`, `InMemorySidecarStore` ship in a `GuessWhoSyncTesting` module. Each is a full implementation backed by a dictionary. The orchestrator runs unchanged against mocks (unit tests) and the real adapters (production).
 
-**Image data in `InMemoryContactStore`.** Because `Contact` does not carry image bytes, the in-memory store keeps a parallel `[localID: (image: Data?, thumbnail: Data?)]` sideband. It exposes a test-only setter so test fixtures can attach bytes:
+**Image data in `InMemoryContactStore`.** Because `Contact` does not carry image bytes, the store keeps a parallel `[localID: (image: Data?, thumbnail: Data?)]` sideband. Test-only setter:
 
 ```swift
 extension InMemoryContactStore {
@@ -638,11 +650,16 @@ extension InMemoryContactStore {
 }
 ```
 
-`save(_:)` clears the sideband entry **only on a true→false transition** of `imageDataAvailable` — i.e., the previously stored `Contact` for this localID had `imageDataAvailable == true` and the incoming save has it as `false`. A save that arrives with `imageDataAvailable == false` for a contact whose stored flag was already `false` (or for a brand-new contact) does **not** touch the sideband. Without this rule, a routine read/modify/write (`fetch → mutate one field → save`) would wipe bytes the caller never intended to touch, because §7.2 explicitly tolerates the flag lagging the truth. This mirrors the partial-update strategy the real `CNContactStoreAdapter` uses in §10.5 — `save(_:)` only mutates state that the caller has provably changed.
+The invariants — designed so a routine `fetch → mutate one field → save` never wipes bytes:
 
-Setting `imageDataAvailable = true` without calling `setImageData(...)` leaves the sideband empty (the "available flag is stale-true" race described in §7.2). Conversely, calling `setImageData(image: someBytes, ...)` while the stored `Contact` carries `imageDataAvailable == false` leaves the stored flag false momentarily — the next call to `fetch(localID:)` auto-corrects `imageDataAvailable` against the sideband's current truth before returning the `Contact`. `fetchAll()` does **not** correct the flag: it is the cheap bulk path and must not peek at image bytes or the sideband (§9.1 `testFetchAllDoesNotTouchImageBytes`); callers who need the corrected flag for a specific contact follow up with `fetch(localID:)` or call `loadImageData(localID:)` and treat the bytes result as the source of truth. (`save(_:)` is *not* required to flip the flag; the in-memory store corrects it on the single-contact read path. The real `CNContactStoreAdapter` is exempt — it has no sideband to peek at — but its flag matches `CNContact.imageDataAvailable` byte-for-byte, which the OS keeps consistent.)
+| Call | Bytes (sideband) | Flag (`imageDataAvailable`) |
+|---|---|---|
+| `loadImageData` / `loadThumbnailImageData` | The truth. Returns current sideband bytes (nil if absent). Throws `contactNotFound` only when the contact is absent. | Ignored. |
+| `fetch(localID:)` | Untouched. | Auto-corrected against current sideband truth before return. |
+| `fetchAll()` | Untouched (cheap bulk path; never peeks — see §9.1). | Returned as-stored; may be stale. |
+| `save(_:)` | Cleared **only** on a true→false transition of the flag from the previously stored `Contact`. New contact or already-false → sideband untouched. | Stored verbatim; not corrected. |
 
-`loadImageData` / `loadThumbnailImageData` honor the §7.2 contract — throw `ContactStoreError.contactNotFound` when the contact is absent; otherwise return the sideband bytes (or nil if no bytes are currently attached), independent of the `imageDataAvailable` flag value at the moment of the call.
+The real `CNContactStoreAdapter` has no sideband to peek at, but the OS keeps `CNContact.imageDataAvailable` byte-consistent with the underlying bytes, so the same observable contract holds. Same partial-update philosophy as §10.5.
 
 `FileSystemSidecarStore` is the real `SidecarStoreProtocol` implementation, wrapping a directory `URL` plus `NSFileVersion`.
 
@@ -723,12 +740,17 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - schemaVersion ≠ 1 on either side: merge refuses; neither envelope is written
 
 ### 9.5 Sidecar reconciliation under conflict (§6)
-- two conflict versions, both parseable v1: merged result written, both losers `remove()`d
-- three conflict versions: N-way fold produces the right merged envelope
-- one conflict version has unparseable bytes: it is skipped (left in conflict, reported); the others merge normally
-- one conflict version has `schemaVersion = 99`: same — skipped, reported, left intact
-- *current* version is unparseable, one conflict version is valid: merged result written to `<name>.recovered.<timestamp>.json`; original current and all conflict versions left intact
-- no version parses: every version left in conflict, all reported, nothing written
+- current + one conflict version, both parseable v1: merged result written, conflict version `remove()`d
+- current + two conflict versions, all parseable: N-way fold produces the right merged envelope, both conflicts removed
+- one conflict version has unparseable bytes: it is dropped from the fold and reported in `skippedReasons`; the others merge normally; conflict is still cleared
+- one conflict version has `schemaVersion = 99`: same — dropped from fold, reported, conflict cleared
+- a parseable conflict envelope's `entityID` doesn't match the file's key id: dropped from the fold and reported; the others merge normally
+- a parseable CURRENT envelope with mismatched entityID is also dropped (handles rename / restore-from-backup / buggy peer write)
+- current absent, one conflict version is valid: merged result (the conflict envelope) becomes the new current
+- no version parses: empty envelope written at this key; every device converges to the same byte state on next reconcile; all skipped versions reported
+- meta-property: after **one** `reconcileSidecars()` call, `keysWithUnresolvedConflicts()` is empty for every key whose bytes were readable
+- resolver throws: pass aborts for this key — no write, no `version.remove()`, error reported in `skippedReasons`, conflict stays for retry
+- (host backend that conforms to `SidecarStoreProtocol` only — not `SidecarConflictReconciling` — `reconcileSidecars()` returns an empty report and does NOT throw)
 
 ### 9.6 Combined identity + sidecar
 - two devices independently assign UUIDs A and B to the same contact, each with a populated sidecar; after `reconcileContactIdentities()` the contact has exactly one GuessWho URL (lex-smaller of A and B), one sidecar at that UUID, containing the per-field merge of A's and B's fields
@@ -777,10 +799,13 @@ Each phase ends with passing tests for the listed sections. Status markers:
 6. ✅ **Event sidecars.** Tests: §9.7.
 7. ✅🟡 **`FileSystemSidecarStore`.** Tests: §9.2 (filesystem rows), real-conflict integration tests using `NSFileVersion.add(of:withContentsOf:)`. ✅ unit-tested; 🟡 production-smoked on 2026-06-14 against the real iCloud ubiquity container `iCloud.com.milestonemade.guesswho` using the pre-pivot singleton `setField` API — produced a valid v1 envelope at `Documents/contacts/<uuid>.json` with correct `schemaVersion`, `entityID`, and a LWW cell carrying the device-ID tiebreaker. The 🟡 smoke is preserved as a historical waypoint; the API has since shifted to the field-instance shape (§7.3), so a fresh smoke against `addField` / `setField(at:id:field:value:)` / `deleteField(at:id:)` is on the §11.1 hit list. Real two-device `NSFileVersion` conflict path is still 🔴.
 8. 🟡🔴 **Real `CNContactStore` / `EKEventStore` adapters.** Smoke-tested on device; not unit-tested. `CNContactStoreAdapter`: 🟡 Case A reconcile + `save(_:)` partial-update verified on 2026-06-14 (Mac Catalyst) — wrote `guesswho://contact/<uuid>` to a real `CNContact` and macOS Contacts.app showed the URL. `EKEventStoreAdapter`: 🔴 untouched by the sample app, no smoke yet.
+9. ✅ **Field-instance API + notes (§7.3, §12).** `addField` / `setField(at:id:field:value:)` / `deleteField(at:id:)` / `field(at:id:)` / `fields(at:)`; `SidecarFieldType`; `SidecarField`; `typeValueMismatch`. Foundation for every typed field (notes, dates, checkboxes). Tests: §12.4 (unit). Sample-app UI + production smokes still 🔴 — see §11.1.
+10. ✅ **Entity links (§13).** `SidecarKind.link`, `Documents/links/` in `FileSystemSidecarStore`, `Link` model + Codable + envelope codec, five orchestrator methods (`addLink` / `setLinkNote` / `removeLink` / `link(id:)` / `links(at:)`), Case-D endpoint-rewrite step in both reconcile entry points, `rewrittenLinkIDs` on `ContactOutcome`. Tests: §13.6 (unit). Production smokes still 🔴 — see §11.1.
+11. ✅ **Public API surface narrowed.** `SidecarConflictReconciling` is `@_spi(ConflictReconcile)`; conflict-reconcile plumbing invisible to plain `import GuessWhoSync` (PLAN §7.2). Resolver contract documented and enforced: entityID match (defense-in-depth FS-store assertion), read-failure / resolver-throws / mismatched-entityID all abort the pass with `versionsConsidered = 0` and conflict surface intact for retry. Tests: §9.5.
 
-### 11.1 Verification gaps for the next agent
+### 11.1 Verification gaps
 
-The items below are load-bearing for v1 but not yet demonstrated in production. They should be the next agent's prioritized hit list before any new features land.
+The items below are load-bearing for v1 but not yet demonstrated in production (unit-test coverage exists for everything; what's missing is on-device behavior against the real Contacts/EventKit stores and real iCloud sync).
 
 **High priority (correctness-of-design risks):**
 - 🔴 **§7.3 field-instance API + §12 notes — single-device CRUD.** Add three notes via the sample app's bottom input, inline-edit one, swipe-delete one. Re-launch. Confirm the two live notes appear in `(createdAt, id)` ascending order. Exercises `addField` / `setField` / `deleteField` / `fields(at:)` (the foundation API for every future typed field — dates, checkboxes, etc.).
@@ -791,9 +816,11 @@ The items below are load-bearing for v1 but not yet demonstrated in production. 
 
 **Medium priority (sync-mechanism risks):**
 - 🔴 **§10.5 partial-update preserves untouched native fields.** The partial-update save path is still load-bearing for any `CNContact` field we don't model. Pick a contact that already has a Notes-app `note` value (the convenient canary), reconcile it through the sample app, confirm `note` survives byte-for-byte. Downgraded from high since we're no longer in the contacts-notes business — but the partial-update contract itself is unchanged.
-- 🔴 **§7.3 field-instance API + §12 notes — two-device edit/delete race.** Device A edits note X; device B deletes note X. Confirm both devices converge to the same state (newer stamp wins). Medium priority because §12.6 unit tests exercise this case exhaustively; the production smoke is confirmation, not discovery.
+- 🔴 **§7.3 field-instance API + §12 notes — two-device edit/delete race.** Device A edits note X; device B deletes note X. Confirm both devices converge to the same state (newer stamp wins). Medium priority because §12.4 unit tests exercise this case exhaustively; the production smoke is confirmation, not discovery.
 - 🔴 **§6 `NSFileVersion` conflict resolution on real iCloud.** Force two devices to write the same sidecar offline, bring them online, watch `reconcileSidecars()` resolve the conflict per §6 rules.
 - 🔴 **§3.4 orphan sidecar detection in production.** Reconcile a contact, delete it from Contacts on the same device, run `reconcileContactIdentities()` (all-contacts sweep), confirm the sidecar appears in `IdentityReconcileReport.orphanSidecars` and is **not** auto-deleted.
+- 🔴 **§13 links — two-device convergence.** Device A adds a person↔event link, device B independently adds a *different* link between the same two entities. After sync, both devices show both links (two distinct ids, no implicit dedup).
+- 🔴 **§13.4 links — Case-D endpoint rewrite.** Each device independently mints a UUID for the same contact, each writes a link to a third party. After sync + Case D, both devices show one merged contact and the link's endpoint pointing at the winner UUID. The §3.3 Case D smoke above should also include one link whose endpoint references the merging contact.
 
 **Low priority (out of scope for v1 sample, but blocks v2):**
 - 🔴 **`EKEventStoreAdapter` minimum smoke.** Fetch one event, write a sidecar, fetch by externalID. Establishes the event path is viable before any event UI lands.
@@ -802,11 +829,11 @@ When any item above flips from 🔴 to 🟡, update its status here AND note the
 
 ## 12. Timestamped Notes (Sidecar-Only Feature)
 
-Notes are the first user-visible exercise of the generic field-instance API (§7.3). A "note" is just a field instance whose `type` is `.note`. Every contact may carry zero or more notes, mixed freely with any other field types (dates, checkboxes, future types). `CNContact.note` is never read or written — the entitlement gate is out of scope (§10.5).
+Notes are the first user-visible exercise of the generic field-instance API (§7.3). A "note" is a `SidecarField` (§7.1) with `type == .note` and `value == .string(body)`. Every contact may carry zero or more notes, mixed freely with other field types. Notes inherit everything from Core Semantics — LWW per cell, `deletedAt`-based delete, one envelope write per mutation. **The notes feature adds zero merge code and zero new types to the package.** `CNContact.note` is never read or written (§10.5).
 
-### 12.1 No new package type — notes ride on `SidecarField`
+### 12.1 Sample-app convenience wrapper
 
-The package does **not** ship a dedicated `ContactNote` Swift type. A note is a `SidecarField` (§7.1) whose `type == .note` and whose `value` is a `.string` carrying the body. Sample-app code that wants a typed convenience can build a thin `ContactNote` wrapper locally:
+Sample-app code that wants a typed convenience can build a thin `ContactNote` wrapper locally (not in the package):
 
 ```swift
 // Sample-app convenience (NOT in the package).
@@ -830,46 +857,27 @@ struct ContactNote {
 }
 ```
 
-**Note creation.** A new note is `addField(at: contactKey, field: "<user-supplied label>", type: .note, value: .string(body))`. The orchestrator mints the instance UUID, stamps `modifiedAt = now` / `modifiedBy = deviceID` on the cell, and writes the §5.2 `createdAt` key inside the inner value object (stamped from the same `now`). Subsequent `setField` calls preserve `createdAt` verbatim, so `SidecarField.createdAt` is stable across edits. The sample-app `ContactNote` convenience above falls back to `modifiedAt` if `createdAt` is nil (i.e., the cell was written by a peer running an older package version that didn't stamp `createdAt`).
-
-So the inner value object for a note is:
+**`createdAt` is content, not stamp.** `createdAt` lives inside the inner value object (not as a cell stamp) so it never changes on edit or delete. `setField` preserves it verbatim. The wrapper falls back to `modifiedAt` if a peer running an older package version omitted it. Inner-value shape:
 
 ```json
-{
-  "field": "general notes",
-  "type":  "note",
-  "value": "Met at WWDC",
-  "createdAt": "2026-06-14T20:15:00.000Z"
-}
+{ "field": "general notes", "type": "note", "value": "Met at WWDC", "createdAt": "2026-06-14T20:15:00.000Z" }
 ```
 
-`createdAt` lives inside the inner value (not as a cell stamp) because it's *content*, not LWW state — it should never change on edit or delete. Including it via the inner value makes that property structural.
+### 12.2 Operations
 
-### 12.2 Reading and writing — all the work happens at §7.3
+Every note operation is a §7.3 call:
 
-The orchestrator API in §7.3 covers every note operation:
+| Op | Call |
+|---|---|
+| Add | `addField(at: contactKey, field: label, type: .note, value: .string(body))` |
+| Edit | `setField(at: contactKey, id: noteID, field: label, value: .string(newBody))` |
+| Delete | `deleteField(at: contactKey, id: noteID)` |
+| Fetch one | `field(at: contactKey, id: noteID)` |
+| Fetch all | `fields(at: contactKey).filter { $0.type == .note }` |
 
-- **Add a note.** `addField(at: contactKey, field: label, type: .note, value: .string(body))`. Returns the instance UUID.
-- **Edit a note.** `setField(at: contactKey, id: noteID, field: label, value: .string(newBody))`. One envelope read + write.
-- **Delete a note.** `deleteField(at: contactKey, id: noteID)`. Sets cell `deletedAt = now`.
-- **Fetch one.** `field(at: contactKey, id: noteID)` returns a `SidecarField?`.
-- **Fetch all notes.** `fields(at: contactKey).filter { $0.type == .note }`. Sample-app sorts however it wants.
+Concurrent `addField` calls on the same contact target different instance UUIDs — both survive. Concurrent edits to the same note race on the per-`SidecarKey` lock locally and on LWW across devices. Identity-reconcile Case D rebases the loser's notes into the winner's envelope via the same generic merge — no special-case code.
 
-**No package-side codec, no `mergeNotesCell`, no `"notes"`-cell-with-array.** Each note is its own cell, keyed by its instance UUID. §5.3 generic LWW handles every concurrent-edit case (parallel creates land at different UUIDs and both survive; edits and deletes on the same note race per-cell on `(modifiedAt, modifiedBy)`). The §12 feature contributes zero new merge code to `SidecarMerge.swift`.
-
-### 12.3 Concurrency
-
-Two `addNote` calls on the same contact serialize at the per-`SidecarKey` lock (§7.3), but they target different instance UUIDs — both new cells land in the envelope, no lost note. This is the load-bearing improvement over the prior "list-in-a-cell" design: parallel additions used to require codec-level merge logic; now they're trivially independent cells.
-
-Concurrent edits to the *same* note's body race against the per-key lock. Whichever lands last wins; the loser sees the winner's body on next read. v1 accepts the race; LWW on the next sync converges across devices.
-
-### 12.4 Interaction with reconciliation
-
-`reconcileSidecars()` (§6) is unchanged. The N-way fold via `merge(_:_:)` resolves each note cell independently per §5.3. No new code path.
-
-Identity reconciliation (§3.3 Case D) rebases a loser sidecar's fields into the winner via the same `merge(_:_:)`. Notes from the loser's sidecar land in the winner's `fields` map; instance UUIDs are unique, so no collisions. Case D extends one line: the loser's notes appear in the winner's `fields(at:)` after reconcile.
-
-### 12.5 Sample-app UI
+### 12.3 Sample-app UI
 
 The sample app gains its first user-facing edit surface.
 
@@ -884,205 +892,135 @@ The sample app gains its first user-facing edit surface.
 
 The DEBUG button in the sample app calls `addField` with a synthesized `.note` value — retained as a smoke-test trigger.
 
-### 12.6 Test plan
+### 12.4 Test plan
 
-The note feature ships no new package code, so most of its testing is exercising the §7.3 field-instance API specifically with `.note` typed fields:
+Notes ship no new package code; testing exercises the §7.3 field-instance API with `.note` values.
 
 **Unit tests (in `GuessWhoSyncTests`, against `InMemorySidecarStore`):**
-- `NoteAddRoundTrip`: `addField(type: .note, value: .string("body"))` then `field(at:id:)` returns a `SidecarField` with `type == .note`, `value == .string("body")`, populated `modifiedAt`/`modifiedBy`, `deletedAt == nil`, `createdAt != nil`.
-- `NoteEditPreservesCreatedAt`: edit a note via `setField`. The new `SidecarField.modifiedAt` is later than before; `createdAt` is unchanged (still in the inner value object).
-- `NoteDeleteSetsDeletedAt`: `deleteField`. `field(at:id:)` returns a `SidecarField` with `deletedAt != nil`. `fields(at:).filter { $0.type == .note && $0.deletedAt == nil }` excludes it.
-- `NoteTypeMismatchThrows`: `addField(type: .note, value: .bool(true))` throws `typeValueMismatch`. `setField` on an existing `.note` cell with a `.number(42)` value throws the same.
-- `NoteParallelCreates`: two `addField(type: .note)` calls on the same contact land at two different instance UUIDs; both survive in `fields(at:)`.
-- `NoteParallelCreateMerge` (§9.4 addition): device A and device B each call `addField` for the same contact while offline. After `merge(envelopeA, envelopeB)`, both notes are present in the merged envelope.
-- `NoteEditVsDelete` (§9.4 addition): device A edits note X; device B deletes note X. Later `(modifiedAt, modifiedBy)` wins on the cell. Same generic §5.3 rule, no new merge code.
-- `NoteEnvelopeMultiNote3WayFold` (§9.5 addition): three devices each add one note; 3-way N-fold via `reconcileSidecars()` results in all three notes present.
+- `NoteAddRoundTrip` — `addField(type: .note, value: .string("body"))` then `field(at:id:)` returns the expected `SidecarField` (populated stamps, `createdAt != nil`).
+- `NoteEditPreservesCreatedAt` — `setField` advances `modifiedAt`; `createdAt` unchanged.
+- `NoteDeleteSetsDeletedAt` — `deleteField` flips `deletedAt`; caller-side `.filter { $0.deletedAt == nil }` excludes it.
+- `NoteTypeMismatchThrows` — non-string values to `.note` throw `typeValueMismatch` on both `addField` and `setField`.
+- `NoteParallelCreates` — two `addField` calls land at two distinct UUIDs; both survive.
+- §9.4 additions: parallel-create merge, edit-vs-delete race.
+- §9.5 addition: 3-way N-fold of three single-note envelopes preserves all three notes.
 
-**Sample-app smoke tests (§11.1 additions, all 🔴):**
-- 🔴 **Single-device notes CRUD.** Add three via bottom input, inline-edit one, swipe-delete one. Re-launch. List shows two live notes in `(createdAt, id)` ascending order.
-- 🔴 **Two-device convergence.** A creates X, B creates Y, both offline. After sync + reconcile, both devices show `[X, Y]`.
-- 🔴 **Two-device edit/delete race.** A edits X; B deletes X. Newer-timestamp wins, both devices converge to the same state.
-
-**Case A/B/C** smokes — unchanged. **Case D** — extend so each pre-merge contact's sidecar carries one note; after reconcile, the winner sidecar holds both notes. No new code path; the §3.3 rebase uses `merge(_:_:)`, which handles per-cell LWW automatically.
-
-### 12.7 Slot in §11.1
-
-Notes are now a feature *of* the §7.3 field-instance API, so the implementation order is:
-
-1. **NEW 🔴 (high)** — §7.3 field-instance API (`addField`, `setField(at:id:field:value:)`, `deleteField(at:id:)`, `field(at:id:)`, `fields(at:)`); `SidecarFieldType` enum; `SidecarField` decoded struct; `typeValueMismatch` validation. This is the foundation — notes, dates, checkboxes all ride on it.
-2. **NEW 🔴 (high)** — Sample-app notes UI built on top of §7.3.
-3. **NEW 🔴 (high)** — Two-device notes convergence smoke.
-4. Existing 🔴 §3.3 Case C and Case D smokes — Case D extended per §12.6.
-5. **Downgrade** the former §10.5 `CNContact.note` smoke to medium, reframed as "partial-update preserves untouched native fields, witnessed by `note`." Partial-update path is still load-bearing for any `CNContact` field we don't model.
+Case A/B/C smokes unchanged. Case D smoke extends to include one note per pre-merge sidecar so the post-reconcile winner sidecar holds both notes (no new code — §3.3 rebase rides on `merge(_:_:)`). Sample-app smokes (single-device CRUD, two-device convergence, two-device edit/delete race) are listed in §11.1.
 
 ## 13. Entity Links (Sidecar-Only Feature)
 
-A `Link` connects two entities (contact or event) with a free-text note. Same shape works for person↔person, person↔event, person↔organization (organizations are contacts with `contactType == .organization`), org↔event, event↔event. `CNContactRelation` continues to round-trip via §7.1; `Link` is the orthogonal hard-reference path with a stable ID and a note attached.
+A `Link` connects two entities (contact or event) with a free-text note. Same shape works for person↔person, person↔event, person↔organization, org↔event, event↔event. `CNContactRelation` continues to round-trip via §7.1; `Link` is the orthogonal hard-reference path with a stable ID and a note attached.
 
-**A link is one atomic on-disk record.** Each link lives in its own sidecar envelope at `SidecarKey(kind: .link, id: link.id.uuidString)` under `Documents/links/<uuid>.json`. No dual-write, no split-across-files state, no "canonical side" rule. A single mutation = a single envelope write.
+**A link is one atomic on-disk record** at `Documents/links/<uuid>.json` (`SidecarKey(.link, link.id.uuidString)`) — no dual-write, no "canonical side" rule. Per Core Semantics: one envelope write per mutation, generic §5.3 LWW per cell, `deletedAt` is the only delete mechanism.
 
 ### 13.1 Data model
 
-A new Codable type in `Sources/GuessWhoSync/Link.swift`:
-
 ```swift
 public struct Link: Hashable, Sendable, Codable {
-    public var id: UUID                // minted at create; stable across edits and merges
+    public var id: UUID                // minted at create; envelope's entityID
     public var endpointA: SidecarKey   // canonicalized via SidecarKey.init (lowercased for .contact)
     public var endpointB: SidecarKey
     public var note: String            // free text; "" when absent
     public var createdAt: Date         // immutable after creation
-    public var modifiedAt: Date        // bumped on note edit, endpoint rewrite, and delete
-    public var modifiedBy: String      // device ID — same source as SidecarCell.modifiedBy
-    public var deletedAt: Date?        // nil = live; non-nil = soft-deleted per §5.5
+    public var modifiedAt: Date        // bumped on note edit, endpoint rewrite, or delete (derived)
+    public var modifiedBy: String      // same source as SidecarCell.modifiedBy (derived)
+    public var deletedAt: Date?        // nil = live; non-nil = soft-deleted
 }
 ```
 
-**Endpoint canonicalization.** `SidecarKey.init` already lowercases contact UUIDs and leaves event externalIDs untouched. `Link` inherits that — two devices constructing a link between the same pair always produce equal endpoint values regardless of input casing.
+- **Endpoints are not order-normalized.** A→B and B→A are two distinct links (different `id`s). UI decides whether to render them as one edge.
+- **Self-links allowed** (`endpointA == endpointB`). UI may reject; the package does not.
+- **Clock source.** `Date()` at mutation time, no injectable clock.
 
-**Endpoint ordering is not normalized.** A link from A→B and a link from B→A are two distinct `Link`s (different `id`s). The UI decides whether to render them as one bidirectional edge or two; the package treats them independently. This avoids a "which side is canonical" rule that would otherwise leak through every API.
+### 13.2 Storage layout
 
-**Self-links are allowed at the data layer** (`endpointA == endpointB`). The package does not reject them; UI may.
+Each link is one §5.2 sidecar envelope. The `fields` map carries five cells:
 
-**Clock source.** Same as §12.1 — `Date()` at mutation time, no injectable clock.
+| Cell key       | Value (`JSONValue`)                              | Notes |
+|----------------|--------------------------------------------------|-------|
+| `endpointA`    | object: `{ "kind": "...", "id": "..." }`         | Mutable only by §13.4 Case-D rewrite |
+| `endpointB`    | same                                             | Mutable only by §13.4 Case-D rewrite |
+| `note`         | string                                           | The only user-driven mutable cell |
+| `createdAt`    | string (ISO8601)                                 | Written once at create; never rewritten |
+| `deletedAt`    | string (ISO8601) or `null`                       | Live when cell is absent OR `value: null`; soft-deleted when value is an ISO8601 string |
 
-### 13.2 Storage layout — one file per link
+`Link` properties are **derived** from these cells:
+- `id` ← envelope's `entityID`.
+- `endpointA` / `endpointB` / `note` / `createdAt` ← cell `value`s.
+- `modifiedAt` ← max `modifiedAt` across the four mutable cells (`createdAt`'s stamp is ignored).
+- `modifiedBy` ← the `modifiedBy` of the cell contributing `modifiedAt` (lex tiebreak).
+- `deletedAt` ← the `deletedAt` cell's `value` parsed as `Date`, or nil.
 
-Each link is one sidecar envelope. `SidecarKey(.link, link.id.uuidString)` resolves to `Documents/links/<uuid>.json`. The envelope's `entityID` is the link UUID. Same §5.2 schema as any other sidecar — no per-link special-case file format.
+Single-sourced stamps: §5.3 cell stamps are ground truth; `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections. (Links predate the §7.3 field-instance pivot — they keep their own envelope shape because a link *is* an entity, not a field instance on another entity.)
 
-**Cells vs. derived properties.** The envelope's `fields` map carries **five** cells:
+**Codec.** `Link.init?(from envelope: SidecarEnvelope)` decodes the cells per the table; returns nil on any missing required cell or unparseable value. There is no inverse: mutations emit only the cells they change (§13.3), so on-disk stamps always reflect actual writes — round-tripping through a `Link` value would rewrite untouched cells.
 
-| Cell key       | Value (`JSONValue`)                                  | Purpose |
-|----------------|------------------------------------------------------|---------|
-| `endpointA`    | object: `{ "kind": "...", "id": "..." }`             | Endpoint A of the link |
-| `endpointB`    | object: `{ "kind": "...", "id": "..." }`             | Endpoint B of the link |
-| `note`         | string                                               | Free-text note |
-| `createdAt`    | string (ISO8601)                                     | Immutable creation timestamp; written once, never rewritten |
-| `deletedAt`    | string (ISO8601) or JSON `null` | Entity-level soft-delete marker. Live when the cell is absent OR present with `value: null`. Soft-deleted when present with an ISO8601 string `value`. |
+**Read pattern.** `links(at: SidecarKey) -> [Link]` is O(N links) — scans `allKeys()` filtered to `.link`, decodes each, returns matches on either endpoint. `link(id:) -> Link?` is O(1). The app builds its own in-memory graph for fast queries (§14).
 
-**Public `Link` properties are derived from cells**, not stored as separate cells:
-- `Link.id` is the envelope's `entityID`.
-- `Link.endpointA` / `Link.endpointB` / `Link.note` / `Link.createdAt` come from their cell `value`s.
-- `Link.modifiedAt` is the max `modifiedAt` across the four mutable cells (`endpointA`, `endpointB`, `note`, `deletedAt`). `createdAt`'s cell stamp is ignored — it can never be the most recent change.
-- `Link.modifiedBy` is the `modifiedBy` of the cell that contributed `Link.modifiedAt` (lex tiebreak on equal stamps).
-- `Link.deletedAt` is the `value` of the `deletedAt` cell parsed as `Date`, or `nil` if that cell is absent or has `value: null`.
+### 13.3 Mutations (one envelope write each)
 
-This keeps stamps single-sourced: the underlying §5.3 cell stamps are the ground truth for LWW; the public-facing `Link.modifiedAt`/`modifiedBy`/`deletedAt` are projections of that ground truth. The `deletedAt` cell is a normal cell whose `value` is either `null` (link is live) or an ISO8601 timestamp string (link is soft-deleted). Soft-delete flips the value to a timestamp; undelete (via `setLinkNote`) flips it back to `null`. Both operations are normal cell writes that compete in LWW like any other write.
+| Op | Cells written | Cells preserved |
+|---|---|---|
+| Create | `endpointA`, `endpointB`, `note`, `createdAt` (all stamped now/deviceID) | n/a (new envelope) |
+| Edit note | `note` only | endpoints, `createdAt`, `deletedAt` |
+| Delete | `deletedAt` cell with ISO8601 value | `note`, endpoints, `createdAt` (so undelete preserves the note) |
+| Undelete | `deletedAt` cell with `null` value | `note`, endpoints, `createdAt` |
+| Case-D rewrite (§13.4) | affected endpoint cell(s) | everything else |
 
-**Codec.** Conversion between `Link` and `SidecarEnvelope` lives in `Sources/GuessWhoSync/Link.swift` alongside the model. (Links pre-date the field-instance pivot in §7.3/§12; they keep their own envelope shape because a link is one *entity*, not a field instance on another entity.) The two operations:
+`merge(_:_:)` is untouched — link envelopes route through generic §5.3 LWW. A note-edit racing a delete converges per stamps; concurrent note edits converge per stamps. Same code path as contact/event envelopes in `reconcileSidecars()` (§6).
 
-- `Link.init?(from envelope: SidecarEnvelope)` — decode the envelope's cells per the table above into a `Link`. Required cells: `endpointA`, `endpointB`, `note`, `createdAt`. Optional cell: `deletedAt`. Returns `nil` if any required cell is missing or any cell carries an unparseable value. `Link.modifiedAt` / `modifiedBy` / `deletedAt` are computed from the cell stamps and values per the derivation rules.
-- `SidecarEnvelope` is *not* built from a `Link` directly. The orchestrator never round-trips through a `Link` value on write — mutations (`addLink`, `setLinkNote`, `removeLink`, Case-D rewrite) emit the specific cells they change (§13.3), preserving the existing cell stamps for cells they don't touch. This avoids the trap of "round-trip rewrites cells the caller didn't intend to change" and means the on-disk stamps always reflect actual writes.
+### 13.4 Case-D endpoint rewrite
 
-**Atomicity is structural.** Every mutation (create, edit, delete, endpoint rewrite) is one envelope write of one file. There is no scenario where a link is "half-written" across two files. NSFileVersion conflict reporting per-file works exactly as it does for contact/event sidecars.
+When §3.3 Case D collapses loser UUID `L` into winner UUID `W`, any link with `endpointA` or `endpointB` equal to `(.contact, L)` must be rewritten to `(.contact, W)`. v1 does this — it is not deferred.
 
-**Read pattern.** `links(at: SidecarKey) -> [Link]` lists all link envelopes (via `allKeys()` filtered to `.link`), decodes each, and returns those whose `endpointA` or `endpointB` cell value matches the queried key. This is O(N links) at the package layer. The app builds its own in-memory graph for fast queries (§14); the package stays disk-centric.
+**Procedure.** After §3.3 merges `L`'s sidecar into `W`'s and deletes `L`'s file, the orchestrator scans all `.link` envelopes via `allKeys()`, decodes each, and for any link matching either endpoint writes a new envelope with the affected endpoint cell(s) rewritten — **one envelope write per link**, even when both endpoints change (e.g. a single reconcile pass collapsing `L1→W1` and `L2→W2`). The rewrite bumps `modifiedAt`/`modifiedBy` on rewritten cells only.
 
-`link(id: UUID) -> Link?` is a single-envelope read — O(1).
+**Convergence is automatic.** Two devices independently running Case D produce identical endpoint payloads (lex-min winner per §3.3); concurrent stamps resolve via §5.3 cell LWW. A note-edit racing a rewrite hits a different cell — no clobber. After Case D, the rewritten endpoint cell is by construction the freshest, so derived `Link.modifiedAt`/`modifiedBy` reflect the rewriting device.
 
-### 13.3 Merge semantics
+**Reporting and ordering.** Rewrite runs *after* the §3.3 winner sidecar is written and the loser file is deleted, *before* `reconcileContactIdentities()` returns. `IdentityReconcileReport.ContactOutcome.rewrittenLinkIDs` lists exactly which link envelopes were touched so app-side caches (§14) can re-read precisely those. `reconcileContactIdentity(localID:)` performs the same O(N links) scan scoped to that contact.
 
-**No per-link branching in `merge(_:_:)`.** A link envelope is a normal sidecar envelope; §5.3 per-cell LWW resolves the cells in §13.2's table independently.
+**Orphan endpoints** (link points at a UUID no live contact carries) are not rewritten and not considered stale — see §3.4. UI decides.
 
-**Endpoints are mutable** — only by the Case-D endpoint rewrite step (§13.5). User-driven edits change only `note`. `createdAt`'s cell is immutable after creation. `id` is the envelope's `entityID` and never changes.
+### 13.5 Public API
 
-**Edit-vs-create-vs-delete (one envelope write each):**
-- **Create.** Mint a new UUID. Write the envelope with four cells: `endpointA`, `endpointB`, `note`, `createdAt`, all with `modifiedAt = now`, `modifiedBy = deviceID`. A fresh link has no `deletedAt` cell — its absence means live.
-- **Edit note.** Rewrite the `note` cell with a fresh `(value, now, deviceID)`. All other cells untouched.
-- **Delete.** Add (or rewrite) the `deletedAt` cell with `value = now` (ISO8601 string), `modifiedAt = now`, `modifiedBy = deviceID`. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are untouched — their bytes are preserved on disk so a subsequent `setLinkNote` can undelete cleanly without losing what the user wrote.
-- **Undelete.** Rewrite the `deletedAt` cell with `value = null`, fresh stamps. Other cells untouched. (Performed by `setLinkNote` when called on a soft-deleted link — see §13.6.)
-- **Case-D endpoint rewrite (§13.5).** Rewrite only the affected endpoint cell(s) with the new endpoint value and fresh `modifiedAt`/`modifiedBy`. All other cells untouched.
-
-### 13.4 Interaction with the iCloud conflict reconciler
-
-`reconcileSidecars()` (§6) enumerates *all* `SidecarKey`s, which now includes `.link` keys. Link envelopes go through the same merge path as contact and event envelopes. No new code in the reconciler.
-
-A link envelope under iCloud conflict resolves per §5.3 cell-by-cell LWW. Two devices concurrently editing the note converge to the later-stamped value. A note-edit racing against a delete converges to the later-stamped state (live note or soft-deleted, whichever wins LWW).
-
-### 13.5 Interaction with identity reconciliation — Case-D endpoint rewrite
-
-§3.3 Case D collapses loser UUID `L` into winner UUID `W` on the contact side. Link envelopes whose `endpointA` or `endpointB` points at `(.contact, L)` must be rewritten to point at `(.contact, W)`. v1 does this — it is **not** deferred.
-
-**Rewrite procedure.** After §3.3 has merged `L`'s sidecar into `W`'s and deleted `L`'s file, the orchestrator walks all `.link` envelopes (via `allKeys()` filtered to `.link`), decodes each, and for any link whose `endpointA` and/or `endpointB` cell value equals `(.contact, L)`, writes a new envelope with the endpoint cell value rewritten to `(.contact, W)`. The rewrite bumps `modifiedAt`/`modifiedBy` on the rewritten cell only; other cells are untouched.
-
-**Convergence under concurrent Case-D.** Two devices independently running Case D produce identical rewrites: same `W` (per §3.3 lex-min rule), same endpoint payload. The cells differ only in `modifiedAt`/`modifiedBy` stamps. §5.3 LWW picks one stamp; the resulting envelope is the same on both devices regardless of order.
-
-**Concurrent multi-Case-D.** If one reconcile pass collapses `L1→W1` and `L2→W2`, and a link has `endpointA = L1`, `endpointB = L2`, the rewrite applies *both* transformations in one envelope write: the new envelope carries `endpointA = W1`, `endpointB = W2`. One stamp bump per cell, not two per link.
-
-**Atomicity.** All endpoint rewrites for a single link from a single reconcile pass are emitted as exactly one envelope write — never one write per affected cell. This holds whether one or both endpoints are being rewritten.
-
-**Derived-property consequence.** The rewritten endpoint cell carries the freshest `(modifiedAt, modifiedBy)` in the envelope by construction (its stamp is `now`/rewriting deviceID). Per the §13.2 derivation rules, `Link.modifiedAt` and `Link.modifiedBy` therefore reflect the rewriting device after Case D. This is a consequence of the cell stamps, not a separate bookkeeping rule.
-
-**Concurrent note-edit vs rewrite.** A note edit on a link runs against a different cell (`note`) than the rewrite (`endpointA`/`endpointB`). §5.3 LWW resolves each cell independently — no clobber.
-
-**Ordering.** Rewrite runs *after* §3.3's merge step has produced the winner envelope and deleted the loser file, but *before* `reconcileContactIdentities()` returns. The per-contact `IdentityReconcileReport.ContactOutcome` gains `rewrittenLinkIDs: [UUID]` listing exactly which link envelopes the rewrite touched — so an app-side cache (§14) can re-read precisely those, not dump and rebuild.
-
-**Single-contact entry point.** `reconcileContactIdentity(localID:)` performs the same rewrite scoped to the same single Case-D collapse — same O(N links) scan. Acknowledged cost; the per-contact call must leave links consistent.
-
-**Orphan endpoints.** A link whose endpoint points at a contact UUID that no live contact carries (because the contact was deleted in Contacts.app, or the sidecar is orphaned per §3.4) is **not** rewritten and is **not** considered stale at the package layer. UI may choose to render it differently; out of scope here.
-
-### 13.6 Public API
-
-Added to `GuessWhoSync` (§7.3). Each method is one envelope read or write.
+Added to `GuessWhoSync` (§7.3). Per §13.3, each method is one envelope read or write.
 
 ```swift
 extension GuessWhoSync {
-    /// Creates a link between two entities. Writes one envelope; returns the
-    /// minted Link. Does NOT dedup — see "Dedup" below.
+    /// Creates a link. Returns the minted Link. Never dedups (see below).
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link
 
-    /// Mutates the note on an existing link, and undeletes it if it was
-    /// soft-deleted (writes the `deletedAt` cell with `value: null` to clear
-    /// the soft-delete marker, alongside the note write). One envelope read +
-    /// write. Silent no-op if the envelope is missing.
+    /// Mutates the note. If the link is soft-deleted, also undeletes it
+    /// (writes the deletedAt cell back to null). Silent no-op if missing.
     public func setLinkNote(id: UUID, note: String) throws
 
-    /// Soft-deletes the link by adding (or rewriting) the `deletedAt` cell
-    /// with `value: <ISO8601 of now>`. All other cells (note, endpointA,
-    /// endpointB, createdAt) are untouched — their bytes are preserved so a
-    /// future `setLinkNote` can undelete without losing the note. One envelope
-    /// write. Silent no-op if already soft-deleted (no stamp churn).
+    /// Soft-deletes by writing deletedAt = now. Silent no-op if already soft-deleted.
     public func removeLink(id: UUID) throws
 
-    /// Returns a single link by id, or nil if the envelope is missing.
-    /// Soft-deleted links are returned (deletedAt is populated); callers filter.
+    /// Single link by id; nil if missing. Soft-deleted links are returned.
     public func link(id: UUID) throws -> Link?
 
-    /// Returns every link whose endpointA or endpointB equals `key`. Soft-deleted
-    /// links are returned. Callers filter on `deletedAt`. O(N links) at the
-    /// package layer; apps may cache (§14).
+    /// Every link with either endpoint matching `key`. Soft-deleted included.
+    /// O(N links); apps may cache (§14).
     public func links(at key: SidecarKey) throws -> [Link]
 }
 ```
 
-**Soft-deleted links are returned.** `links(at:)` and `link(id:)` return links with `deletedAt != nil`. The package does not filter — that is the caller's decision. UI that wants only live links calls `.filter { $0.deletedAt == nil }`; UI that wants to surface deletions (recovery view, audit log) reads everything.
+Per Core Semantics, the package never filters by `deletedAt` — callers do. `addLink` never dedups: A→B can have multiple distinct `Link`s. UI that wants "edit existing if one exists, else create" calls `links(at:)` and decides.
 
-**No `oneEndpoint` hint.** `setLinkNote` and `removeLink` find the link by `SidecarKey(.link, id)` — one envelope, no fan-out, no caller-supplied hint needed.
-
-**Dedup is the caller's choice.** `addLink` never dedups. §13.1 explicitly allows multiple `Link`s between the same `(endpointA, endpointB)` pair (different IDs, possibly different notes). UI that wants "edit existing if one exists, else create" calls `links(at:)`, filters, and decides. UI that wants "always create a new connection" calls `addLink` directly.
-
-### 13.7 Test plan
+### 13.6 Test plan
 
 **Unit tests (new module `LinkTests`):**
-- `LinkEnvelopeRoundTripTests`: build a `SidecarEnvelope` with the cells of §13.2 (live variant: four required cells; soft-deleted variant: those plus a `deletedAt` cell with ISO8601 value), decode via `Link.init?(from:)`, and assert the resulting `Link` matches expected `id`, `endpointA`, `endpointB`, `note`, `createdAt`, `deletedAt`, and derived `modifiedAt`/`modifiedBy`. Also assert that `Link.init?` returns `nil` for envelopes missing any required cell (`endpointA`, `endpointB`, `note`, `createdAt`).
-- `LinkMergeTests` (§9.4 addition — exercises the existing §5.3 merge against link envelopes, no new merge code):
-  - Two devices edit `note` concurrently: later `(modifiedAt, modifiedBy)` wins.
-  - Edit vs. delete: later stamp wins.
-  - Soft-delete vs. older edit: soft-delete wins (its `(modifiedAt, modifiedBy)` cell beats the older edit's).
-  - Two soft-deletes with different stamps: larger stamp wins; `deletedAt` carries the winner's timestamp.
-  - Disjoint cell edits (one device edits `note`, another rewrites `endpointA`): both survive.
+- `LinkEnvelopeRoundTripTests`: build a `SidecarEnvelope` per §13.2 (live and soft-deleted variants), decode via `Link.init?(from:)`, assert all `Link` properties match (including derived `modifiedAt`/`modifiedBy`). `Link.init?` returns nil for any missing required cell.
+- `LinkMergeTests` (§9.4 addition — link-shaped envelopes against the existing §5.3 merge, no new merge code): one test per row of §13.3's mutation table covering edit/delete/undelete/disjoint-cell stamp races.
 - `LinkAPITests` (orchestrator-level, against in-memory stores):
-  - `addLink` writes one envelope; `link(id:)` returns it; `links(at: endpointA)` returns it; `links(at: endpointB)` returns it.
-  - `addLink` twice with same endpoints + note: two distinct envelopes, two distinct ids — witnesses the no-dedup policy.
-  - `removeLink(X)` then `addLink(same endpoints, fresh note)`: two distinct envelopes, two distinct ids; X is soft-deleted, the new one is live; both surface via `links(at:)` (callers filter on `deletedAt`).
-  - `setLinkNote` updates `note` cell, bumps `modifiedAt`/`modifiedBy`.
-  - `setLinkNote` on missing envelope: silent no-op, no throw.
-  - `setLinkNote` on a soft-deleted envelope undeletes it: `deletedAt` cell's `value` flips to `null`, `note` cell takes the new value, both cells stamped fresh; `link(id:).deletedAt == nil` after.
-  - `removeLink` writes the `deletedAt` cell (timestamp value) and bumps its stamps. All other cells (`note`, `endpointA`, `endpointB`, `createdAt`) are byte-identical before and after.
-  - `removeLink` on already-soft-deleted envelope: silent no-op, no stamp churn.
-  - `links(at:)` returns soft-deleted links; callers must filter — assert by querying with and without a `.deletedAt == nil` filter.
-  - `link(id:)` returns soft-deleted links unchanged.
-  - Event↔event, org↔contact, person↔person, person↔event, person↔org links all round-trip — package is type-agnostic at the link layer.
+  - `addLink` writes one envelope; `link(id:)` and `links(at: endpointA/B)` return it.
+  - `addLink` twice with identical endpoints + note → two distinct ids (no-dedup policy).
+  - `removeLink(X)` then `addLink(same endpoints)` → X soft-deleted, new one live, both surface via `links(at:)`.
+  - `setLinkNote`: updates `note` cell; missing envelope is silent no-op; on a soft-deleted link, also flips `deletedAt` to null and stamps both cells fresh.
+  - `removeLink`: writes `deletedAt` cell only; other cells byte-identical before/after; already-deleted is a silent no-op (no stamp churn).
+  - `links(at:)` and `link(id:)` return soft-deleted links unchanged.
+  - All endpoint type combos round-trip (event↔event, org↔contact, etc.) — package is type-agnostic.
 - `LinkCaseDRewriteTests` (§9.3/§9.8 addition):
   - Pre-seed a link with `endpointB = (.contact, L)`. Run Case D collapsing `L → W`. Assert the link envelope now carries `endpointB = (.contact, W)`; `modifiedAt`/`modifiedBy` on the rewritten cell are bumped; `note` cell untouched. `IdentityReconcileReport.ContactOutcome.rewrittenLinkIDs == [link.id]`.
   - Single-contact `reconcileContactIdentity(localID:)` performs the same rewrite, and the returned `ContactOutcome.rewrittenLinkIDs` carries the same link UUID(s) as the all-contacts path.
@@ -1093,27 +1031,17 @@ extension GuessWhoSync {
   - Two devices independently rewrite the same link's endpoint: post-sync, LWW resolves to one stamp; endpoint value is identical on both devices.
   - Concurrent note-edit on device A and endpoint-rewrite on device B for the same link: after sync, both cells survive (disjoint cell LWW).
 
-### 13.8 Slot in §11.1
+### 13.7 Out of scope and deferred
 
-Slots after §12 (notes).
+**Out of scope (spec choices, not deferrals):**
+- **No link-typed schema** (e.g. `LinkType.metAt`). A link is two entities and a free-text note; richer taxonomy lives in the app's `note` payload.
+- **No bidirectional dedup.** A→B and B→A are two distinct links.
 
-1. **NEW 🔴 (high)** — `SidecarKind.link` case, `Documents/links/` directory in `FileSystemSidecarStore`, `Link` model, five orchestrator methods (`addLink`, `setLinkNote`, `removeLink`, `link(id:)`, `links(at:)`).
-2. **NEW 🔴 (high)** — Case-D endpoint-rewrite step in `reconcileContactIdentities()` and `reconcileContactIdentity(localID:)`; `rewrittenLinkIDs` on `ContactOutcome`.
-3. **NEW 🔴 (medium)** — Two-device convergence smoke: device A adds a person↔event link, device B independently adds a *different* link between the same two entities. After sync, both devices show both links (two distinct ids, no implicit dedup).
-4. **NEW 🔴 (medium)** — Two-device Case-D + endpoint-rewrite smoke: each device independently mints a UUID for the same contact, each writes a link to a third party. After sync + Case D, both devices show one merged contact and the link's endpoint pointing at the winner UUID.
-5. Existing 🔴 §3.3 Case D smoke is extended: include one link whose endpoint references the merging contact; after reconcile, the link envelope's endpoint is rewritten to the winner UUID.
+**Deferred to v2:**
+- **No link query index.** `links(at:)` is O(N links). App-side graph (§14) is the v1 mitigation.
+- **No orphan-link GC.** Same stance as §3.4 orphan sidecars.
 
-### 13.9 Out of scope (spec choices, not deferrals)
-
-These are deliberate omissions, not "we'll add later" items:
-
-- **No link-typed schema** (e.g. `LinkType.metAt`, `.worksWith`). A link is two entities and a free-text note. If a richer taxonomy is wanted, the app encodes it inside `note` (or builds a UI that picks predefined notes).
-- **No bidirectional dedup.** A→B and B→A are two distinct links. UI may render them as one edge.
-
-### 13.10 Deferred
-
-- **No link query index.** v1 reads `allKeys()` filtered to `.link` and decodes each link to answer `links(at:)`. For personal-scale data this is fine; v2 may add a cache. The app's in-memory graph (§14) is the v1 mitigation.
-- **No orphan-link GC.** A link whose endpoint points at a deleted or unknown contact/event survives. Same stance as §3.4 orphan sidecars. v2 may add a sweep.
+(Implementation order and smoke list: see §11 and §11.1.)
 
 ## 14. Future Performance Considerations
 

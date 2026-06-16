@@ -67,13 +67,13 @@ struct SingleContactReconcilerTests {
         let sidecars = InMemorySidecarStore()
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+                "nickname": SidecarCell(value: .string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
             ]),
             at: SidecarKey(kind: .contact, id: alpha)
         )
         try sidecars.write(
             SidecarEnvelope(entityID: beta, fields: [
-                "notes": .value(.string("met"), modifiedAt: t1, modifiedBy: "device-B"),
+                "notes": SidecarCell(value: .string("met"), modifiedAt: t1, modifiedBy: "device-B"),
             ]),
             at: SidecarKey(kind: .contact, id: beta)
         )
@@ -146,7 +146,7 @@ struct SingleContactReconcilerTests {
         let strangerKey = SidecarKey(kind: .contact, id: alpha)
         try sidecars.write(
             SidecarEnvelope(entityID: alpha, fields: [
-                "nickname": .value(.string("Stranger"), modifiedAt: t2, modifiedBy: "device-X"),
+                "nickname": SidecarCell(value: .string("Stranger"), modifiedAt: t2, modifiedBy: "device-X"),
             ]),
             at: strangerKey
         )

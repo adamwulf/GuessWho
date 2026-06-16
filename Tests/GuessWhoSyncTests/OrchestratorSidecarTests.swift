@@ -49,154 +49,169 @@ struct OrchestratorSidecarTests {
         let (sync, _, sidecars) = makeSync(events: events)
 
         let key = SidecarKey.forEvent(event)
-        try sync.setField("notes", value: .string("hello"), at: key)
+        let id = try sync.addField(at: key, field: "notes", type: .note, value: .string("hello"))
 
         let after = try #require(try events.fetch(externalID: event.externalID))
         #expect(after == event)
 
         let envelope = try #require(try sidecars.read(key))
         #expect(envelope.entityID == event.externalID)
-        switch envelope.fields["notes"] {
-        case let .value(v, _, modifiedBy):
-            #expect(v == .string("hello"))
-            #expect(modifiedBy == deviceID)
-        default:
-            Issue.record("expected value cell for notes")
-        }
+        let cell = try #require(envelope.fields[id.uuidString])
+        #expect(cell.modifiedBy == deviceID)
+        #expect(cell.deletedAt == nil)
+
+        let field = try #require(try sync.field(at: key, id: id))
+        #expect(field.field == "notes")
+        #expect(field.type == .note)
+        #expect(field.value == .string("hello"))
     }
 
     @Test
-    func perFieldLWWAppliesToEventSidecars() throws {
+    func perFieldInstancesAreIndependentOnEventSidecars() throws {
         let event = makeEvent()
         let events = InMemoryEventStore(events: [event])
         let (sync, _, sidecars) = makeSync(events: events)
         let key = SidecarKey.forEvent(event)
 
-        try sync.setField("notes", value: .string("first"), at: key)
-        let firstModifiedAt: Date
-        switch try #require(try sidecars.read(key)).fields["notes"] {
-        case let .value(_, modifiedAt, _):
-            firstModifiedAt = modifiedAt
-        default:
-            firstModifiedAt = .distantPast
-            Issue.record("expected value cell")
-        }
+        let firstID = try sync.addField(at: key, field: "notes", type: .note, value: .string("first"))
+        let firstModifiedAt = try #require(try sync.field(at: key, id: firstID)).modifiedAt
 
-        try sync.setField("notes", value: .string("second"), at: key)
-        switch try #require(try sidecars.read(key)).fields["notes"] {
-        case let .value(v, modifiedAt, modifiedBy):
-            #expect(v == .string("second"))
-            #expect(modifiedBy == deviceID)
-            #expect(modifiedAt >= firstModifiedAt)
-        default:
-            Issue.record("expected value cell")
-        }
+        try sync.setField(at: key, id: firstID, field: "notes", value: .string("second"))
+        let updated = try #require(try sync.field(at: key, id: firstID))
+        #expect(updated.value == .string("second"))
+        #expect(updated.modifiedBy == deviceID)
+        #expect(updated.modifiedAt >= firstModifiedAt)
+        #expect(updated.deletedAt == nil)
 
-        try sync.setField("attendees", value: .number(3), at: key)
+        let attendeesID = try sync.addField(at: key, field: "attendees", type: .checkbox, value: .bool(true))
         let envelope = try #require(try sidecars.read(key))
-        #expect(envelope.fields.keys.sorted() == ["attendees", "notes"])
-        switch envelope.fields["notes"] {
-        case let .value(v, _, _):
-            #expect(v == .string("second"))
-        default:
-            Issue.record("expected notes value cell to coexist with attendees")
-        }
-        switch envelope.fields["attendees"] {
-        case let .value(v, _, _):
-            #expect(v == .number(3))
-        default:
-            Issue.record("expected attendees value cell")
-        }
+        #expect(envelope.fields.keys.sorted() == [attendeesID.uuidString, firstID.uuidString].sorted())
+
+        let notesField = try #require(try sync.field(at: key, id: firstID))
+        #expect(notesField.value == .string("second"))
+
+        let attendeesField = try #require(try sync.field(at: key, id: attendeesID))
+        #expect(attendeesField.value == .bool(true))
+        #expect(attendeesField.type == .checkbox)
     }
 
-    // MARK: - Orchestrator setField / deleteField
+    // MARK: - Field-instance API (§7.3)
 
     @Test
-    func setFieldCreatesSidecarIfNoneExists() throws {
+    func addFieldCreatesSidecarIfNoneExists() throws {
         let (sync, _, sidecars) = makeSync()
         let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440000")
 
         #expect(try sidecars.read(key) == nil)
-        try sync.setField("nickname", value: .string("Bear"), at: key)
+        let id = try sync.addField(at: key, field: "nickname", type: .note, value: .string("Bear"))
 
         let envelope = try #require(try sync.sidecar(at: key))
         #expect(envelope.schemaVersion == 1)
         #expect(envelope.entityID == key.id)
         #expect(envelope.fields.count == 1)
-        switch envelope.fields["nickname"] {
-        case let .value(v, modifiedAt, modifiedBy):
-            #expect(v == .string("Bear"))
-            #expect(modifiedBy == deviceID)
-            #expect(abs(modifiedAt.timeIntervalSinceNow) < 1.0)
-        default:
-            Issue.record("expected value cell for nickname")
-        }
+        let cell = try #require(envelope.fields[id.uuidString])
+        #expect(cell.modifiedBy == deviceID)
+        #expect(cell.deletedAt == nil)
+        #expect(abs(cell.modifiedAt.timeIntervalSinceNow) < 1.0)
+
+        let field = try #require(try sync.field(at: key, id: id))
+        #expect(field.field == "nickname")
+        #expect(field.type == .note)
+        #expect(field.value == .string("Bear"))
     }
 
     @Test
-    func setFieldOverwritesExistingCell() throws {
+    func setFieldUpdatesExistingCell() throws {
         let (sync, _, sidecars) = makeSync()
         let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440001")
 
-        try sync.setField("nickname", value: .string("Bear"), at: key)
-        try sync.setField("nickname", value: .string("Honey"), at: key)
+        let id = try sync.addField(at: key, field: "nickname", type: .note, value: .string("Bear"))
+        try sync.setField(at: key, id: id, field: "nickname", value: .string("Honey"))
 
         let envelope = try #require(try sidecars.read(key))
         #expect(envelope.fields.count == 1)
-        switch envelope.fields["nickname"] {
-        case let .value(v, modifiedAt, modifiedBy):
-            #expect(v == .string("Honey"))
-            #expect(modifiedBy == deviceID)
-            #expect(abs(modifiedAt.timeIntervalSinceNow) < 1.0)
-        default:
-            Issue.record("expected value cell after overwrite")
-        }
+        let cell = try #require(envelope.fields[id.uuidString])
+        #expect(cell.modifiedBy == deviceID)
+        #expect(cell.deletedAt == nil)
+        #expect(abs(cell.modifiedAt.timeIntervalSinceNow) < 1.0)
+
+        let field = try #require(try sync.field(at: key, id: id))
+        #expect(field.value == .string("Honey"))
+        #expect(field.type == .note)
     }
 
     @Test
-    func deleteFieldWritesTombstoneAndPreservesOthers() throws {
+    func deleteFieldSetsDeletedAtAndPreservesOthers() throws {
         let (sync, _, sidecars) = makeSync()
         let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440002")
 
-        try sync.setField("nickname", value: .string("Bear"), at: key)
-        try sync.setField("notes", value: .string("met at WWDC"), at: key)
-        try sync.deleteField("nickname", at: key)
+        let nickID = try sync.addField(at: key, field: "nickname", type: .note, value: .string("Bear"))
+        let notesID = try sync.addField(at: key, field: "notes", type: .note, value: .string("met at WWDC"))
+        try sync.deleteField(at: key, id: nickID)
 
         let envelope = try #require(try sidecars.read(key))
-        #expect(envelope.fields.keys.sorted() == ["nickname", "notes"])
-        switch envelope.fields["nickname"] {
-        case let .tombstone(modifiedAt, modifiedBy):
-            #expect(modifiedBy == deviceID)
-            #expect(abs(modifiedAt.timeIntervalSinceNow) < 1.0)
-        default:
-            Issue.record("expected tombstone cell for nickname")
-        }
-        switch envelope.fields["notes"] {
-        case let .value(v, _, _):
-            #expect(v == .string("met at WWDC"))
-        default:
-            Issue.record("expected notes value cell to remain")
-        }
+        #expect(envelope.fields.keys.sorted() == [nickID.uuidString, notesID.uuidString].sorted())
+
+        let nickCell = try #require(envelope.fields[nickID.uuidString])
+        #expect(nickCell.modifiedBy == deviceID)
+        #expect(nickCell.deletedAt != nil)
+        #expect(abs(nickCell.modifiedAt.timeIntervalSinceNow) < 1.0)
+        // The inner value object is preserved on soft delete.
+        #expect(SidecarField.type(of: nickCell) == .note)
+
+        let notesCell = try #require(envelope.fields[notesID.uuidString])
+        #expect(notesCell.deletedAt == nil)
+        let notesField = try #require(try sync.field(at: key, id: notesID))
+        #expect(notesField.value == .string("met at WWDC"))
     }
 
     @Test
-    func deleteFieldOnFreshSidecarCreatesTombstoneOnlyEnvelope() throws {
+    func deleteFieldOnMissingCellIsNoOp() throws {
         let (sync, _, sidecars) = makeSync()
         let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440003")
 
         #expect(try sidecars.read(key) == nil)
-        try sync.deleteField("nickname", at: key)
+        try sync.deleteField(at: key, id: UUID())
 
-        let envelope = try #require(try sidecars.read(key))
-        #expect(envelope.schemaVersion == 1)
-        #expect(envelope.entityID == key.id)
-        #expect(envelope.fields.count == 1)
-        switch envelope.fields["nickname"] {
-        case let .tombstone(modifiedAt, modifiedBy):
-            #expect(modifiedBy == deviceID)
-            #expect(abs(modifiedAt.timeIntervalSinceNow) < 1.0)
-        default:
-            Issue.record("expected tombstone-only envelope")
+        #expect(try sidecars.read(key) == nil)
+    }
+
+    @Test
+    func addFieldThrowsOnTypeValueMismatch() throws {
+        let (sync, _, _) = makeSync()
+        let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440004")
+
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: key, field: "flag", type: .checkbox, value: .string("not a bool"))
         }
+    }
+
+    @Test
+    func setFieldRevivesSoftDeletedCell() throws {
+        let (sync, _, _) = makeSync()
+        let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440005")
+
+        let id = try sync.addField(at: key, field: "nickname", type: .note, value: .string("Bear"))
+        try sync.deleteField(at: key, id: id)
+        let deleted = try #require(try sync.field(at: key, id: id))
+        #expect(deleted.deletedAt != nil)
+
+        try sync.setField(at: key, id: id, field: "nickname", value: .string("Bear-cub"))
+        let revived = try #require(try sync.field(at: key, id: id))
+        #expect(revived.deletedAt == nil)
+        #expect(revived.value == .string("Bear-cub"))
+    }
+
+    @Test
+    func fieldsReturnsEveryDecodedField() throws {
+        let (sync, _, _) = makeSync()
+        let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440006")
+
+        let aID = try sync.addField(at: key, field: "nickname", type: .note, value: .string("Bear"))
+        let bID = try sync.addField(at: key, field: "birthday", type: .date, value: .string("2026-01-01T00:00:00Z"))
+
+        let all = try sync.fields(at: key)
+        let ids = Set(all.map(\.id))
+        #expect(ids == [aID, bID])
     }
 }

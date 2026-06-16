@@ -1,5 +1,6 @@
 import Foundation
 import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 
 public final class InMemorySidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
@@ -39,12 +40,6 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         scriptedConflicts[key] = versions
     }
 
-    public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(scriptedConflicts.keys)
-    }
-
     // In-memory storage always has every byte locally, so download status
     // reduces to "do I have an envelope here?" `requestDownload` is a no-op.
     public func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
@@ -56,10 +51,21 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
     public func requestDownload(_ key: SidecarKey) throws {
         // No-op: in-memory storage has all bytes locally already.
     }
+}
+
+// SPI conformance — the conflict-reconciliation surface is exposed only to
+// the orchestrator (via @_spi(ConflictReconcile) import), not to host UI.
+@_spi(ConflictReconcile)
+extension InMemorySidecarStore: SidecarConflictReconciling {
+    public func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(scriptedConflicts.keys)
+    }
 
     public func reconcileConflict(
         at key: SidecarKey,
-        resolve: (_ versions: [Data]) throws -> ConflictResolution
+        resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
     ) throws -> SidecarReconcileReport.FileOutcome? {
         // Capture both the CURRENT envelope and the scripted conflict
         // versions atomically — the FS-store's reconcileConflict equivalent
@@ -67,11 +73,6 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         // together. Without including the current envelope, writes that
         // landed before reconcile acquired the lock would be silently
         // overwritten by the merged-conflicts result.
-        //
-        // mergedVersionCount accounting: includes the current envelope
-        // when present, matching the FS store's `allBytes.count` accounting.
-        // Tests that seed a current envelope and inspect mergedVersionCount
-        // will see N+1 rather than N (N = number of scripted versions).
         lock.lock()
         guard let scripted = scriptedConflicts[key] else {
             lock.unlock()
@@ -80,43 +81,34 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         let currentEnvelope = envelopes[key]
         lock.unlock()
 
-        var versions: [Data] = []
-        if let currentEnvelope, let bytes = try? JSONEncoder().encode(currentEnvelope) {
-            versions.append(bytes)
+        let currentBytes: Data?
+        if let currentEnvelope {
+            currentBytes = try? JSONEncoder().encode(currentEnvelope)
+        } else {
+            currentBytes = nil
         }
-        versions.append(contentsOf: scripted)
 
-        let resolution: ConflictResolution
+        let merged: SidecarEnvelope
         do {
-            resolution = try resolve(versions)
+            merged = try resolve(currentBytes, scripted)
         } catch {
             return SidecarReconcileReport.FileOutcome(
                 key: key,
-                mergedVersionCount: 0,
+                versionsConsidered: 0,
                 skippedReasons: [String(describing: error)]
             )
         }
 
-        switch resolution {
-        case .write(let merged, let skip):
-            let skippedCount = versions.reduce(0) { count, bytes in
-                skip.contains(bytes) ? count + 1 : count
-            }
-            lock.lock()
-            envelopes[key] = merged
-            scriptedConflicts.removeValue(forKey: key)
-            lock.unlock()
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: versions.count - skippedCount,
-                skippedReasons: []
-            )
-        case .leave:
-            return SidecarReconcileReport.FileOutcome(
-                key: key,
-                mergedVersionCount: 0,
-                skippedReasons: []
-            )
-        }
+        lock.lock()
+        envelopes[key] = merged
+        scriptedConflicts.removeValue(forKey: key)
+        lock.unlock()
+
+        let versionsConsidered = (currentBytes != nil ? 1 : 0) + scripted.count
+        return SidecarReconcileReport.FileOutcome(
+            key: key,
+            versionsConsidered: versionsConsidered,
+            skippedReasons: []
+        )
     }
 }

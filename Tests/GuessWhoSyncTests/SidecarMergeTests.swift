@@ -11,90 +11,86 @@ struct SidecarMergeTests {
     @Test
     func disjointFieldsBothSurvive() throws {
         let a = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+            "nickname": live(.string("Bear"), at: t1, by: "device-A"),
         ])
         let b = SidecarEnvelope(entityID: "e", fields: [
-            "notes": .value(.string("Met at WWDC"), modifiedAt: t1, modifiedBy: "device-B"),
+            "notes": live(.string("Met at WWDC"), at: t1, by: "device-B"),
         ])
         let merged = try merge(a, b).get()
         #expect(merged.entityID == "e")
         #expect(merged.fields.count == 2)
-        try assertValue(merged.fields["nickname"], equals: .string("Bear"), by: "device-A", at: t1)
-        try assertValue(merged.fields["notes"], equals: .string("Met at WWDC"), by: "device-B", at: t1)
+        try assertLive(merged.fields["nickname"], equals: .string("Bear"), by: "device-A", at: t1)
+        try assertLive(merged.fields["notes"], equals: .string("Met at WWDC"), by: "device-B", at: t1)
     }
 
     @Test
     func laterModifiedAtWinsOnSameField() throws {
         let a = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
+            "nickname": live(.string("Bear"), at: t1, by: "device-A"),
         ])
         let b = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("Bear-cub"), modifiedAt: t2, modifiedBy: "device-A"),
+            "nickname": live(.string("Bear-cub"), at: t2, by: "device-A"),
         ])
         let merged = try merge(a, b).get()
-        try assertValue(merged.fields["nickname"], equals: .string("Bear-cub"), by: "device-A", at: t2)
+        try assertLive(merged.fields["nickname"], equals: .string("Bear-cub"), by: "device-A", at: t2)
     }
 
     @Test
     func tiedModifiedAtPicksLexLargerModifiedBy() throws {
         let a = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-A"), modifiedAt: t1, modifiedBy: "device-A"),
+            "nickname": live(.string("from-A"), at: t1, by: "device-A"),
         ])
         let b = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-B"), modifiedAt: t1, modifiedBy: "device-B"),
+            "nickname": live(.string("from-B"), at: t1, by: "device-B"),
         ])
         let mergedAB = try merge(a, b).get()
-        try assertValue(mergedAB.fields["nickname"], equals: .string("from-B"), by: "device-B", at: t1)
-
+        try assertLive(mergedAB.fields["nickname"], equals: .string("from-B"), by: "device-B", at: t1)
         let mergedBA = try merge(b, a).get()
-        try assertValue(mergedBA.fields["nickname"], equals: .string("from-B"), by: "device-B", at: t1)
+        try assertLive(mergedBA.fields["nickname"], equals: .string("from-B"), by: "device-B", at: t1)
     }
 
     @Test
-    func tombstoneWinsWhenLater() throws {
-        let live = SidecarEnvelope(entityID: "e", fields: [
-            "petName": .value(.string("Snuggles"), modifiedAt: t1, modifiedBy: "device-A"),
+    func deletedWinsWhenLater() throws {
+        let aLive = SidecarEnvelope(entityID: "e", fields: [
+            "petName": live(.string("Snuggles"), at: t1, by: "device-A"),
         ])
-        let killed = SidecarEnvelope(entityID: "e", fields: [
-            "petName": .tombstone(modifiedAt: t2, modifiedBy: "device-B"),
+        let bDeleted = SidecarEnvelope(entityID: "e", fields: [
+            "petName": deleted(.string("Snuggles"), at: t2, by: "device-B"),
         ])
-        let merged = try merge(live, killed).get()
-        guard case .tombstone(let ts, let by) = merged.fields["petName"] else {
-            Issue.record("expected tombstone to survive")
-            return
-        }
-        #expect(ts == t2)
-        #expect(by == "device-B")
+        let merged = try merge(aLive, bDeleted).get()
+        let cell = try #require(merged.fields["petName"])
+        #expect(cell.deletedAt != nil)
+        #expect(cell.modifiedBy == "device-B")
     }
 
     @Test
-    func liveValueWinsWhenLaterThanTombstone() throws {
-        let killed = SidecarEnvelope(entityID: "e", fields: [
-            "petName": .tombstone(modifiedAt: t1, modifiedBy: "device-A"),
+    func liveValueWinsWhenLaterThanDeleted() throws {
+        let bDeleted = SidecarEnvelope(entityID: "e", fields: [
+            "petName": deleted(.string("old"), at: t1, by: "device-A"),
         ])
-        let live = SidecarEnvelope(entityID: "e", fields: [
-            "petName": .value(.string("Snuggles"), modifiedAt: t2, modifiedBy: "device-B"),
+        let aLive = SidecarEnvelope(entityID: "e", fields: [
+            "petName": live(.string("Snuggles"), at: t2, by: "device-B"),
         ])
-        let merged = try merge(killed, live).get()
-        try assertValue(merged.fields["petName"], equals: .string("Snuggles"), by: "device-B", at: t2)
+        let merged = try merge(bDeleted, aLive).get()
+        try assertLive(merged.fields["petName"], equals: .string("Snuggles"), by: "device-B", at: t2)
     }
 
     @Test
     func associativeAcrossThreeEnvelopes() throws {
         let a = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-A"), modifiedAt: t1, modifiedBy: "device-A"),
-            "notes": .value(.string("note-A"), modifiedAt: t2, modifiedBy: "device-A"),
-            "petName": .value(.string("Snuggles"), modifiedAt: t1, modifiedBy: "device-A"),
+            "nickname": live(.string("from-A"), at: t1, by: "device-A"),
+            "notes": live(.string("note-A"), at: t2, by: "device-A"),
+            "petName": live(.string("Snuggles"), at: t1, by: "device-A"),
         ])
         let b = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-B"), modifiedAt: t2, modifiedBy: "device-B"),
-            "color": .value(.string("blue"), modifiedAt: t1, modifiedBy: "device-B"),
-            "petName": .tombstone(modifiedAt: t3, modifiedBy: "device-B"),
+            "nickname": live(.string("from-B"), at: t2, by: "device-B"),
+            "color": live(.string("blue"), at: t1, by: "device-B"),
+            "petName": deleted(.string("Snuggles"), at: t3, by: "device-B"),
         ])
         let c = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-C"), modifiedAt: t2, modifiedBy: "device-C"),
-            "notes": .value(.string("note-C"), modifiedAt: t1, modifiedBy: "device-C"),
-            "size": .value(.number(42), modifiedAt: t3, modifiedBy: "device-C"),
+            "nickname": live(.string("from-C"), at: t2, by: "device-C"),
+            "notes": live(.string("note-C"), at: t1, by: "device-C"),
+            "size": live(.number(42), at: t3, by: "device-C"),
         ])
 
         let leftFold = try merge(merge(a, b).get(), c).get()
@@ -148,15 +144,13 @@ struct SidecarMergeTests {
     func emptyMergedIntoNonEmptyPreservesFields() throws {
         let empty = SidecarEnvelope(entityID: "e", fields: [:])
         let full = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("Bear"), modifiedAt: t1, modifiedBy: "device-A"),
-            "notes": .value(.string("hi"), modifiedAt: t2, modifiedBy: "device-B"),
+            "nickname": live(.string("Bear"), at: t1, by: "device-A"),
+            "notes": live(.string("hi"), at: t2, by: "device-B"),
         ])
-
         let mergedEF = try merge(empty, full).get()
         #expect(mergedEF.fields.count == 2)
-        try assertValue(mergedEF.fields["nickname"], equals: .string("Bear"), by: "device-A", at: t1)
-        try assertValue(mergedEF.fields["notes"], equals: .string("hi"), by: "device-B", at: t2)
-
+        try assertLive(mergedEF.fields["nickname"], equals: .string("Bear"), by: "device-A", at: t1)
+        try assertLive(mergedEF.fields["notes"], equals: .string("hi"), by: "device-B", at: t2)
         let mergedFE = try merge(full, empty).get()
         assertEnvelopesEqual(mergedEF, mergedFE)
     }
@@ -164,14 +158,14 @@ struct SidecarMergeTests {
     @Test
     func commutativeOnOverlappingFields() throws {
         let a = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-A"), modifiedAt: t2, modifiedBy: "device-A"),
-            "notes": .value(.string("note-A"), modifiedAt: t1, modifiedBy: "device-A"),
-            "petName": .tombstone(modifiedAt: t1, modifiedBy: "device-A"),
+            "nickname": live(.string("from-A"), at: t2, by: "device-A"),
+            "notes": live(.string("note-A"), at: t1, by: "device-A"),
+            "petName": deleted(.string("old"), at: t1, by: "device-A"),
         ])
         let b = SidecarEnvelope(entityID: "e", fields: [
-            "nickname": .value(.string("from-B"), modifiedAt: t1, modifiedBy: "device-B"),
-            "notes": .value(.string("note-B"), modifiedAt: t1, modifiedBy: "device-B"),
-            "petName": .value(.string("Snuggles"), modifiedAt: t2, modifiedBy: "device-B"),
+            "nickname": live(.string("from-B"), at: t1, by: "device-B"),
+            "notes": live(.string("note-B"), at: t1, by: "device-B"),
+            "petName": live(.string("Snuggles"), at: t2, by: "device-B"),
         ])
 
         let ab = try merge(a, b).get()
@@ -181,24 +175,26 @@ struct SidecarMergeTests {
 
     // MARK: - helpers
 
-    private func assertValue(
+    private func live(_ value: JSONValue, at: Date, by: String) -> SidecarCell {
+        SidecarCell(value: value, modifiedAt: at, modifiedBy: by)
+    }
+
+    private func deleted(_ value: JSONValue, at: Date, by: String) -> SidecarCell {
+        SidecarCell(value: value, modifiedAt: at, modifiedBy: by, deletedAt: at)
+    }
+
+    private func assertLive(
         _ cell: SidecarCell?,
         equals expected: JSONValue,
         by: String,
         at: Date,
         sourceLocation: SourceLocation = #_sourceLocation
     ) throws {
-        guard let cell else {
-            Issue.record("cell missing", sourceLocation: sourceLocation)
-            return
-        }
-        guard case .value(let v, let ts, let writer) = cell else {
-            Issue.record("expected value cell, got \(cell)", sourceLocation: sourceLocation)
-            return
-        }
-        #expect(v == expected, sourceLocation: sourceLocation)
-        #expect(writer == by, sourceLocation: sourceLocation)
-        #expect(ts == at, sourceLocation: sourceLocation)
+        let cell = try #require(cell, sourceLocation: sourceLocation)
+        #expect(cell.deletedAt == nil, sourceLocation: sourceLocation)
+        #expect(cell.value == expected, sourceLocation: sourceLocation)
+        #expect(cell.modifiedBy == by, sourceLocation: sourceLocation)
+        #expect(cell.modifiedAt == at, sourceLocation: sourceLocation)
     }
 
     private func assertEnvelopesEqual(
@@ -210,17 +206,14 @@ struct SidecarMergeTests {
         #expect(x.schemaVersion == y.schemaVersion, sourceLocation: sourceLocation)
         #expect(x.fields.keys.sorted() == y.fields.keys.sorted(), sourceLocation: sourceLocation)
         for key in x.fields.keys {
-            switch (x.fields[key], y.fields[key]) {
-            case (.value(let xv, let xt, let xb), .value(let yv, let yt, let yb)):
-                #expect(xv == yv, "value for \(key)", sourceLocation: sourceLocation)
-                #expect(xt == yt, "modifiedAt for \(key)", sourceLocation: sourceLocation)
-                #expect(xb == yb, "modifiedBy for \(key)", sourceLocation: sourceLocation)
-            case (.tombstone(let xt, let xb), .tombstone(let yt, let yb)):
-                #expect(xt == yt, "modifiedAt for \(key)", sourceLocation: sourceLocation)
-                #expect(xb == yb, "modifiedBy for \(key)", sourceLocation: sourceLocation)
-            default:
-                Issue.record("cells differ in kind for \(key): \(String(describing: x.fields[key])) vs \(String(describing: y.fields[key]))", sourceLocation: sourceLocation)
+            guard let xc = x.fields[key], let yc = y.fields[key] else {
+                Issue.record("missing cell for \(key)", sourceLocation: sourceLocation)
+                continue
             }
+            #expect(xc.value == yc.value, "value for \(key)", sourceLocation: sourceLocation)
+            #expect(xc.modifiedAt == yc.modifiedAt, "modifiedAt for \(key)", sourceLocation: sourceLocation)
+            #expect(xc.modifiedBy == yc.modifiedBy, "modifiedBy for \(key)", sourceLocation: sourceLocation)
+            #expect(xc.deletedAt == yc.deletedAt, "deletedAt for \(key)", sourceLocation: sourceLocation)
         }
     }
 }
