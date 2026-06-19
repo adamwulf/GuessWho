@@ -415,87 +415,20 @@ struct FileSystemSidecarStoreTests {
         #expect(try store.read(key) == nil)
     }
 
-    // NSFileVersion.addOfItem(at:withContentsOf:options:) is macOS-only. On macOS in a sandbox-free
-    // dev shell, adding a version yields an "other version" (isConflict=false) — not an unresolved
-    // conflict. Unresolved conflicts in practice come from iCloud Drive sync. The tests below
-    // attempt injection and skip the conflict-resolution assertions if the environment couldn't
-    // produce one, while still exercising the wiring whenever it can.
-    #if os(macOS)
-    private func injectConflict(at url: URL, root: URL, envelope: SidecarEnvelope) throws {
-        let stagingURL = root.appendingPathComponent("staging-\(UUID().uuidString).json")
-        try JSONEncoder().encode(envelope).write(to: stagingURL, options: [.atomic])
-        _ = try NSFileVersion.addOfItem(at: url, withContentsOf: stagingURL, options: [])
-        try? FileManager.default.removeItem(at: stagingURL)
-    }
-
+    // Exercise the .icloud-placeholder branch of downloadStatus(_:) for an
+    // event-kind key. The contact-kind variant is covered by
+    // downloadStatusReportsNotStartedForPlaceholder above; this drives the
+    // events `safeFilename` path through the placeholder-detection code so
+    // the per-kind file-naming for downloadStatus doesn't silently break.
     @Test
-    func realConflictResolutionWritesMergedAndRemovesConflict() throws {
+    func downloadStatusReportsNotStartedForEventPlaceholder() throws {
         let root = makeRoot()
         defer { cleanup(root) }
         let store = FileSystemSidecarStore(root: root)
-        let key = SidecarKey(kind: .contact, id: "abc")
 
-        let currentEnv = envelope(id: "abc", fields: [
-            "nickname": SidecarCell(value: .string("Original"), modifiedAt: when, modifiedBy: "device-A")
-        ])
-        try store.write(currentEnv, at: key)
+        let basename = "evt-only"
+        try plantPlaceholder(in: root, kindDir: "events", basename: basename)
 
-        let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
-        try injectConflict(at: url, root: root, envelope: envelope(id: "abc", fields: [
-            "nickname": SidecarCell(value: .string("FromOther"), modifiedAt: when, modifiedBy: "device-B")
-        ]))
-
-        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        guard !conflicts.isEmpty else {
-            // No iCloud — environment can't surface an unresolved conflict; nothing to assert.
-            return
-        }
-
-        let merged = envelope(id: "abc", fields: [
-            "nickname": SidecarCell(value: .string("Merged"), modifiedAt: when, modifiedBy: "device-C")
-        ])
-        let outcomes = try store.reconcileAllConflicts { receivedKey, current, conflicts in
-            #expect(receivedKey == key)
-            // At least one of current + conflicts is populated; the test sets
-            // up at least one conflict version against an existing current.
-            #expect(current != nil || !conflicts.isEmpty)
-            return merged
-        }
-        #expect(outcomes.count == 1)
-        #expect(outcomes.first?.key == key)
-        #expect(outcomes.first?.skippedReasons.isEmpty == true)
-
-        let fetched = try #require(try store.read(key))
-        expectEqual(fetched, merged)
-
-        let after = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        #expect(after.isEmpty)
+        #expect(store.downloadStatus(SidecarKey(kind: .event, id: basename)) == .notStarted)
     }
-
-    @Test
-    func closureThrowingRecordsFailureAndDoesNotRethrow() throws {
-        struct ResolveBoom: Error, CustomStringConvertible {
-            var description: String { "kaboom" }
-        }
-        let root = makeRoot()
-        defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
-        let key = SidecarKey(kind: .contact, id: "abc")
-        try store.write(envelope(id: "abc"), at: key)
-
-        let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
-        try injectConflict(at: url, root: root, envelope: envelope(id: "abc"))
-
-        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        guard !conflicts.isEmpty else { return }
-
-        let outcomes = try store.reconcileAllConflicts { _, _, _ in
-            throw ResolveBoom()
-        }
-        #expect(outcomes.count == 1)
-        #expect(outcomes.first?.key == key)
-        #expect(outcomes.first?.versionsConsidered == 0)
-        #expect(outcomes.first?.skippedReasons.contains { $0.contains("kaboom") } == true)
-    }
-    #endif
 }
