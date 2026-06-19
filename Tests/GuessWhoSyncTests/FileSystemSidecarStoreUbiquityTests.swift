@@ -42,6 +42,11 @@ final class FakeUbiquityProvider: SidecarUbiquityProvider, @unchecked Sendable {
     // version exists" (the resolver receives nil); not setting an entry
     // also means nil.
     var currentBytes: [URL: Data] = [:]
+    // Set this AND currentBytes[url] together to simulate "current version
+    // exists on disk but reading its bytes fails" — the only throw shape the
+    // production adapter can produce. Setting currentReadError alone (without
+    // currentBytes) models a state NSFileVersion + Data(contentsOf:) cannot
+    // reach; don't write tests against that.
     var currentReadError: [URL: Error] = [:]
 
     // Downloading status keyed by URL. nil → not-a-ubiquity-URL (provider
@@ -285,6 +290,9 @@ struct FileSystemSidecarStoreUbiquityTests {
         let url = fileURL(in: root, kindDir: "contacts", basename: "currfail")
 
         let fake = FakeUbiquityProvider()
+        // Both set together: production reaches the throwing path only
+        // when a current version exists on disk but reading it fails.
+        fake.currentBytes[url] = encode(envelope(id: "currfail"))
         fake.currentReadError[url] = CurrentReadFail()
         let conflictHandle = FakeVersionHandle(contents: Data())
         fake.conflicts[url] = [conflictHandle]
@@ -478,6 +486,10 @@ struct FileSystemSidecarStoreUbiquityTests {
     func downloadStatusPlaceholderWithDownloadingStatusReturnsDownloading() throws {
         let root = makeRoot()
         defer { cleanup(root) }
+        // A placeholder file (.icloud sibling) with downloading-status != .notDownloaded
+        // means iCloud is actively pulling the real file in — the store reports
+        // .downloading. Any non-.notDownloaded status reaches that branch; .downloaded
+        // here is a concrete representative.
         let store = FileSystemSidecarStore(root: root, ubiquity: makeProviderForPlaceholderTest(root: root, basename: "downloading", placeholderStatus: .downloaded))
         let key = SidecarKey(kind: .contact, id: "downloading")
 
@@ -519,7 +531,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let key = SidecarKey(kind: .contact, id: "needs-dl")
 
         try store.requestDownload(key)
-        #expect(fake.startDownloadingCalls.count == 1)
+        try #require(fake.startDownloadingCalls.count == 1)
         #expect(fake.startDownloadingCalls.first == fileURL(in: root, kindDir: "contacts", basename: "needs-dl"))
     }
 
