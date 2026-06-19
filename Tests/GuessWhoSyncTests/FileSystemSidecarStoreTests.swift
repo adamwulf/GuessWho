@@ -497,5 +497,127 @@ struct FileSystemSidecarStoreTests {
         #expect(outcomes.first?.versionsConsidered == 0)
         #expect(outcomes.first?.skippedReasons.contains { $0.contains("kaboom") } == true)
     }
+
+    // Drive reconcileConflict(at:resolve:) directly (not via the
+    // reconcileAllConflicts test helper) and assert the resolver-receives /
+    // current-bytes / conflict-bytes plumbing plus post-conditions: the
+    // resolved envelope is on disk and the conflict surface clears.
+    @Test
+    func reconcileConflictDirectInvocationResolvesAndPersists() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        let key = SidecarKey(kind: .contact, id: "abc")
+
+        let currentEnv = envelope(id: "abc", fields: [
+            "nickname": SidecarCell(value: .string("Original"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+        try store.write(currentEnv, at: key)
+
+        let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
+        try injectConflict(at: url, root: root, envelope: envelope(id: "abc", fields: [
+            "nickname": SidecarCell(
+                value: .string("FromOther"),
+                modifiedAt: when.addingTimeInterval(60),
+                modifiedBy: "device-B"
+            )
+        ]))
+
+        let before = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        guard !before.isEmpty else {
+            // No iCloud — environment can't surface an unresolved conflict; nothing to assert.
+            return
+        }
+
+        let resolved = envelope(id: "abc", fields: [
+            "nickname": SidecarCell(value: .string("Resolved"), modifiedAt: when, modifiedBy: "device-C")
+        ])
+        var resolverInvocations = 0
+        var receivedCurrentNonNil = false
+        var receivedConflictCount = 0
+        let outcome = try store.reconcileConflict(at: key) { current, conflicts in
+            resolverInvocations += 1
+            receivedCurrentNonNil = current != nil
+            receivedConflictCount = conflicts.count
+            return resolved
+        }
+
+        let unwrapped = try #require(outcome)
+        #expect(unwrapped.key == key)
+        #expect(unwrapped.versionsConsidered > 0)
+        #expect(unwrapped.skippedReasons.isEmpty)
+        #expect(resolverInvocations == 1)
+        #expect(receivedCurrentNonNil)
+        #expect(receivedConflictCount >= 1)
+
+        let fetched = try #require(try store.read(key))
+        expectEqual(fetched, resolved)
+
+        let after = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        #expect(after.isEmpty)
+    }
+
+    // Direct invocation of reconcileConflict(at:resolve:) with a throwing
+    // resolver. Per PLAN.md §11 step 11 the store treats a resolver throw the
+    // same as a read-failure abort: no write, no version.remove(), the throw
+    // is captured in `skippedReasons` (NOT rethrown), and the conflict
+    // surface is left intact so the next pass retries.
+    @Test
+    func reconcileConflictDirectInvocationResolverThrowsPreservesConflict() throws {
+        struct ResolveBoom: Error, CustomStringConvertible {
+            var description: String { "explode" }
+        }
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+        let key = SidecarKey(kind: .contact, id: "abc")
+
+        let currentEnv = envelope(id: "abc", fields: [
+            "nickname": SidecarCell(value: .string("Original"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+        try store.write(currentEnv, at: key)
+
+        let url = root.appendingPathComponent("contacts").appendingPathComponent("abc.json")
+        try injectConflict(at: url, root: root, envelope: envelope(id: "abc", fields: [
+            "nickname": SidecarCell(value: .string("FromOther"), modifiedAt: when, modifiedBy: "device-B")
+        ]))
+
+        let before = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        guard !before.isEmpty else { return }
+
+        let outcome = try store.reconcileConflict(at: key) { _, _ in
+            throw ResolveBoom()
+        }
+
+        let unwrapped = try #require(outcome)
+        #expect(unwrapped.key == key)
+        #expect(unwrapped.versionsConsidered == 0)
+        #expect(unwrapped.skippedReasons.contains { $0.contains("explode") })
+
+        // Conflict surface preserved — the throw aborted the pass without data loss.
+        let after = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        #expect(!after.isEmpty)
+
+        // Current bytes are untouched — the pre-throw envelope still reads back.
+        let fetched = try #require(try store.read(key))
+        expectEqual(fetched, currentEnv)
+    }
     #endif
+
+    // Exercise the .icloud-placeholder branch of downloadStatus(_:) for an
+    // event-kind key. The contact-kind variant is covered by
+    // downloadStatusReportsNotStartedForPlaceholder above; this drives the
+    // events `safeFilename` path through the placeholder-detection code so
+    // the per-kind file-naming for downloadStatus doesn't silently break.
+    @Test
+    func downloadStatusReportsNotStartedForEventPlaceholder() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let basename = "evt-only"
+        try plantPlaceholder(in: root, kindDir: "events", basename: basename)
+
+        #expect(store.downloadStatus(SidecarKey(kind: .event, id: basename)) == .notStarted)
+    }
 }
