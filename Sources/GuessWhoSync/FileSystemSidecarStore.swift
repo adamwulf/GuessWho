@@ -21,6 +21,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // Defaults to 1 second.
     public let perAttemptTimeout: TimeInterval
 
+    // Seam over the iCloud-facing OS APIs (NSFileVersion + ubiquity download).
+    // Production callers get ProductionUbiquityProvider by default; tests
+    // pass an in-memory fake to exercise conflict + download logic that
+    // cannot be triggered against a local filesystem.
+    private let ubiquity: SidecarUbiquityProvider
+
     // Background queue the coordinator runs on so the calling thread can
     // wait with a timeout. One serial queue per store instance — coordinator
     // calls are coarse-grained and don't need parallel dispatch.
@@ -44,6 +50,23 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.root = root
         self.busyHandler = busyHandler
         self.perAttemptTimeout = perAttemptTimeout
+        self.ubiquity = ProductionUbiquityProvider()
+    }
+
+    // SPI-gated constructor that lets tests inject a fake ubiquity provider.
+    // Shares the SPI with the conflict-reconcile plumbing so the public
+    // surface for plain `import GuessWhoSync` consumers remains unchanged.
+    @_spi(ConflictReconcile)
+    public init(
+        root: URL,
+        ubiquity: SidecarUbiquityProvider,
+        busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
+        perAttemptTimeout: TimeInterval = 1.0
+    ) {
+        self.root = root
+        self.busyHandler = busyHandler
+        self.perAttemptTimeout = perAttemptTimeout
+        self.ubiquity = ubiquity
     }
 
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
@@ -82,7 +105,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             return try JSONDecoder().decode(SidecarEnvelope.self, from: data)
         case .placeholderPresent:
             // Request the download and tell the caller to retry later.
-            try? fm.startDownloadingUbiquitousItem(at: url)
+            try? ubiquity.startDownloading(at: url)
             throw SidecarStoreError.notYetDownloaded(key)
         case .missing:
             return nil
@@ -142,7 +165,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         var result: [SidecarKey] = []
         for key in try allKeys() {
             let url = fileURL(for: key)
-            if let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+            if let conflicts = ubiquity.unresolvedConflictVersions(at: url),
                !conflicts.isEmpty {
                 result.append(key)
             }
@@ -154,11 +177,11 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         let url = fileURL(for: key)
         let fm = FileManager.default
 
-        // If the materialized file exists, ask URLResourceValues whether it
-        // is "current" (fully downloaded) or still downloading. For non-
-        // ubiquity files those keys return nil; treat that as downloaded.
+        // If the materialized file exists, ask the ubiquity provider whether
+        // it is "current" (fully downloaded) or still downloading. For non-
+        // ubiquity files the provider returns nil; treat that as downloaded.
         if fm.fileExists(atPath: url.path) {
-            if let status = ubiquityDownloadingStatus(for: url) {
+            if let status = ubiquity.downloadingStatus(for: url) {
                 switch status {
                 case .current, .downloaded:
                     return .downloaded
@@ -176,7 +199,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         // downloading-in-progress signal.
         let placeholder = placeholderURL(for: url)
         if fm.fileExists(atPath: placeholder.path) {
-            if let status = ubiquityDownloadingStatus(for: placeholder),
+            if let status = ubiquity.downloadingStatus(for: placeholder),
                status != .notDownloaded {
                 return .downloading
             }
@@ -188,22 +211,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     public func requestDownload(_ key: SidecarKey) throws {
         let url = fileURL(for: key)
-        try FileManager.default.startDownloadingUbiquitousItem(at: url)
-    }
-
-    // Read the ubiquity downloading-status for a URL. Returns nil if the
-    // URL isn't a ubiquity item (e.g. a temp file in tests).
-    private func ubiquityDownloadingStatus(
-        for url: URL
-    ) -> URLUbiquitousItemDownloadingStatus? {
-        let keys: Set<URLResourceKey> = [.ubiquitousItemDownloadingStatusKey]
-        guard let raw = try? url.resourceValues(forKeys: keys).allValues else {
-            return nil
-        }
-        guard let rawStatus = raw[.ubiquitousItemDownloadingStatusKey] as? String else {
-            return nil
-        }
-        return URLUbiquitousItemDownloadingStatus(rawValue: rawStatus)
+        try ubiquity.startDownloading(at: url)
     }
 
     @_spi(ConflictReconcile)
@@ -213,7 +221,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     ) throws -> SidecarReconcileReport.FileOutcome? {
         try fileLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
             let url = fileURL(for: key)
-            guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+            guard let conflicts = ubiquity.unresolvedConflictVersions(at: url),
                   !conflicts.isEmpty else {
                 return nil
             }
@@ -221,25 +229,21 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             var skipped: [String] = []
 
             // Read current's bytes:
-            //   - currentVersionOfItem == nil          → no materialized current; pass nil.
-            //   - currentVersionOfItem exists, read OK → pass the bytes.
-            //   - currentVersionOfItem exists, read FAILS → abort this pass.
+            //   - no current version on disk          → pass nil to resolver.
+            //   - current version exists, read OK     → pass the bytes.
+            //   - current version exists, read FAILS  → abort this pass.
             //     We can't tell what was on disk and we MUST NOT clobber it
             //     with a fold of conflict-only inputs. Surface the error in
             //     skippedReasons; next reconcile retries.
             let currentBytes: Data?
-            if let current = NSFileVersion.currentVersionOfItem(at: url) {
-                do {
-                    currentBytes = try Data(contentsOf: current.url)
-                } catch {
-                    return SidecarReconcileReport.FileOutcome(
-                        key: key,
-                        versionsConsidered: 0,
-                        skippedReasons: ["current: read failed: \(error)"]
-                    )
-                }
-            } else {
-                currentBytes = nil
+            do {
+                currentBytes = try ubiquity.currentVersionBytes(at: url)
+            } catch {
+                return SidecarReconcileReport.FileOutcome(
+                    key: key,
+                    versionsConsidered: 0,
+                    skippedReasons: ["current: read failed: \(error)"]
+                )
             }
 
             // Conflict-version reads: a read failure (I/O, file not yet
@@ -250,7 +254,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             var conflictBytes: [Data] = []
             for version in conflicts {
                 do {
-                    conflictBytes.append(try Data(contentsOf: version.url))
+                    conflictBytes.append(try version.bytes())
                 } catch {
                     return SidecarReconcileReport.FileOutcome(
                         key: key,
@@ -372,7 +376,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 // download so subsequent reads can succeed; surface the key
                 // now so the orchestrator knows the sidecar exists.
                 let realURL = directory.appendingPathComponent(placeholderName)
-                try? fm.startDownloadingUbiquitousItem(at: realURL)
+                try? ubiquity.startDownloading(at: realURL)
                 realName = placeholderName
             } else {
                 continue
