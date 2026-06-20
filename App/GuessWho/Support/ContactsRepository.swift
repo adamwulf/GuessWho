@@ -61,36 +61,11 @@ final class ContactsRepository {
         matching query: String,
         where predicate: (Contact) -> Bool
     ) -> [Contact] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = contacts.filter(predicate)
-        let matched: [Contact]
-        if trimmed.isEmpty {
-            matched = base
-        } else {
-            matched = base.filter { Self.matches($0, query: trimmed) }
-        }
-        return matched.sorted { lhs, rhs in
-            lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-        }
-    }
-
-    /// Substring search across the fields a user would reasonably search
-    /// to find someone: every name component, the organization+job, and
-    /// the raw values of every email / phone / URL. Case-insensitive.
-    static func matches(_ contact: Contact, query: String) -> Bool {
-        let needle = query.lowercased()
-        var haystack: [String] = [
-            contact.namePrefix, contact.givenName, contact.middleName,
-            contact.familyName, contact.previousFamilyName, contact.nameSuffix,
-            contact.nickname, contact.phoneticGivenName, contact.phoneticMiddleName,
-            contact.phoneticFamilyName,
-            contact.jobTitle, contact.departmentName,
-            contact.organizationName, contact.phoneticOrganizationName,
-        ]
-        haystack.append(contentsOf: contact.emailAddresses.map(\.value))
-        haystack.append(contentsOf: contact.phoneNumbers.map(\.value))
-        haystack.append(contentsOf: contact.urlAddresses.map(\.value))
-        for hay in haystack where hay.lowercased().contains(needle) { return true }
-        return false
+        contacts
+            .filter(predicate)
+            .filter { $0.matches(searchQuery: query) }
+            .sorted { lhs, rhs in
+                lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
     }
 }
