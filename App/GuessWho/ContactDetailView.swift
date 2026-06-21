@@ -12,6 +12,8 @@ struct ContactDetailView: View {
     @State private var isReconciling = false
     @State private var showConfirmReconcile = false
     @State private var outcome: ReconcileOutcomeWrapper?
+    @State private var newNoteText: String = ""
+    @FocusState private var newNoteFocused: Bool
 
     var body: some View {
         Form {
@@ -45,7 +47,11 @@ struct ContactDetailView: View {
                 }
 
                 if let notesStore {
-                    NotesSection(store: notesStore)
+                    NotesSection(
+                        store: notesStore,
+                        newNoteText: $newNoteText,
+                        newNoteFocused: $newNoteFocused
+                    )
                 }
 
                 if let sidecar {
@@ -83,6 +89,15 @@ struct ContactDetailView: View {
             }
         }
         .navigationTitle(contact.map { displayName(for: $0) } ?? "Contact")
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    submitNewNote()
+                }
+                .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
         .task {
             await loadContact()
         }
@@ -155,6 +170,18 @@ struct ContactDetailView: View {
         }
     }
 
+    private func submitNewNote() {
+        let body = newNoteText
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let notesStore else {
+            newNoteFocused = false
+            return
+        }
+        notesStore.addNote(body: body)
+        newNoteText = ""
+        newNoteFocused = false
+    }
+
     private func displayName(for contact: Contact) -> String {
         let personName = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
         if !personName.isEmpty { return personName }
@@ -187,6 +214,8 @@ struct ContactDetailView: View {
 
 private struct NotesSection: View {
     let store: NotesStore
+    @Binding var newNoteText: String
+    var newNoteFocused: FocusState<Bool>.Binding
 
     // Focus identity for the row currently in edit mode. nil means no row
     // is editing. The bottom "new note" editor uses its own focus state so
@@ -205,8 +234,6 @@ private struct NotesSection: View {
     // who only inspected must not silently win LWW against the
     // reconciled-in change.
     @State private var editStartSnapshot: String = ""
-    @State private var newNoteText: String = ""
-    @FocusState private var newNoteFocused: Bool
 
     var body: some View {
         Section("Notes") {
@@ -225,19 +252,7 @@ private struct NotesSection: View {
 
             TextEditor(text: $newNoteText)
                 .frame(minHeight: 32)
-                .focused($newNoteFocused)
-                .scrollDismissesKeyboard(.interactively)
-                .toolbar {
-                    if newNoteFocused {
-                        ToolbarItemGroup(placement: .keyboard) {
-                            Spacer()
-                            Button("Done") {
-                                submitNewNote()
-                            }
-                            .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    }
-                }
+                .focused(newNoteFocused)
         }
     }
 
@@ -316,15 +331,6 @@ private struct NotesSection: View {
         draftBody = ""
         editStartSnapshot = ""
         editFocus = nil
-    }
-
-    private func submitNewNote() {
-        let body = newNoteText
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        store.addNote(body: body)
-        newNoteText = ""
-        newNoteFocused = false
     }
 }
 
