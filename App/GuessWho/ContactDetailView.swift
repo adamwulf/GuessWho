@@ -1,5 +1,6 @@
 import SwiftUI
 import Contacts
+import MapKit
 import GuessWhoSync
 
 struct ContactDetailView: View {
@@ -111,8 +112,8 @@ struct ContactDetailView: View {
         let rows = infoRows(for: contact)
         if !rows.isEmpty {
             Section {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    InfoRow(label: row.label, value: row.value)
+                ForEach(rows) { row in
+                    InfoRow(data: row)
                 }
             }
         }
@@ -121,26 +122,9 @@ struct ContactDetailView: View {
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
-        // Names — only emit individual name parts that are actually
-        // populated; skip the noisy ones (phonetic, prefix/suffix) when
-        // empty, just like Contacts does.
-        let nameParts: [(String, String)] = [
-            ("prefix", contact.namePrefix),
-            ("given", contact.givenName),
-            ("middle", contact.middleName),
-            ("family", contact.familyName),
-            ("previous family", contact.previousFamilyName),
-            ("suffix", contact.nameSuffix),
-            ("nickname", contact.nickname),
-            ("phonetic given", contact.phoneticGivenName),
-            ("phonetic middle", contact.phoneticMiddleName),
-            ("phonetic family", contact.phoneticFamilyName),
-        ]
-        for (label, value) in nameParts where !value.isEmpty {
-            rows.append(.init(label: label, value: value))
-        }
-
-        // Work
+        // Skip the individual name parts — the navigation title already
+        // shows the contact's name. Job title / organization are still
+        // useful here because they're not part of the displayed name.
         let workParts: [(String, String)] = [
             ("job title", contact.jobTitle),
             ("department", contact.departmentName),
@@ -148,45 +132,41 @@ struct ContactDetailView: View {
             ("phonetic organization", contact.phoneticOrganizationName),
         ]
         for (label, value) in workParts where !value.isEmpty {
-            rows.append(.init(label: label, value: value))
+            rows.append(.text(label: label, value: value))
         }
 
-        // Phones, emails, URLs (user-facing only — guesswho:// lives in DEBUG)
         for item in contact.phoneNumbers {
-            rows.append(.init(label: localizedLabel(item.label), value: item.value))
+            rows.append(.phone(label: localizedLabel(item.label), number: item.value))
         }
         for item in contact.emailAddresses {
-            rows.append(.init(label: localizedLabel(item.label), value: item.value))
+            rows.append(.email(label: localizedLabel(item.label), address: item.value))
         }
         for item in contact.urlAddresses where SidecarKey.parseGuessWhoContactURL(item.value) == nil {
-            rows.append(.init(label: localizedLabel(item.label), value: item.value))
+            rows.append(.url(label: localizedLabel(item.label), urlString: item.value))
         }
 
-        // Postal addresses
         for item in contact.postalAddresses {
-            rows.append(.init(label: localizedLabel(item.label), value: formatPostalAddress(item.value)))
+            rows.append(.address(label: localizedLabel(item.label), address: item.value))
         }
 
-        // Dates
         if let bday = contact.birthday {
-            rows.append(.init(label: "birthday", value: formatDateComponents(bday)))
+            rows.append(.text(label: "birthday", value: formatDateComponents(bday)))
         }
         if let nonGreg = contact.nonGregorianBirthday {
-            rows.append(.init(label: "non-gregorian birthday", value: formatDateComponents(nonGreg)))
+            rows.append(.text(label: "non-gregorian birthday", value: formatDateComponents(nonGreg)))
         }
         for item in contact.dates {
-            rows.append(.init(label: localizedLabel(item.label), value: formatDateComponents(item.value)))
+            rows.append(.text(label: localizedLabel(item.label), value: formatDateComponents(item.value)))
         }
 
-        // Social, IM, relations
         for item in contact.socialProfiles {
-            rows.append(.init(label: socialProfileLabel(item), value: socialProfileValue(item.value)))
+            rows.append(.text(label: socialProfileLabel(item), value: socialProfileValue(item.value)))
         }
         for item in contact.instantMessageAddresses {
-            rows.append(.init(label: instantMessageLabel(item), value: item.value.username))
+            rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
         }
         for item in contact.contactRelations {
-            rows.append(.init(label: localizedLabel(item.label), value: item.value.name))
+            rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
         }
 
         return rows
@@ -195,76 +175,75 @@ struct ContactDetailView: View {
     #if DEBUG
     @ViewBuilder
     private func debugSection(_ contact: Contact) -> some View {
+        let rows = debugRows(for: contact)
         Section("Debug") {
-            InfoRow(label: "localID", value: contact.localID, monospaced: true)
-            InfoRow(label: "contact type", value: contact.contactType.rawValue)
-            InfoRow(label: "image available", value: contact.imageDataAvailable ? "yes" : "no")
-
-            if let uuid = service.guessWhoUUID(in: contact) {
-                InfoRow(label: "guesswho uuid", value: uuid, monospaced: true)
-            } else if let reason = sidecarUnavailableReason {
-                InfoRow(label: "guesswho uuid", value: "none — \(reason)")
-            } else {
-                InfoRow(label: "guesswho uuid", value: "none")
+            ForEach(rows) { row in
+                InfoRow(data: row)
             }
-
-            let guessWhoURLs = contact.urlAddresses.filter {
-                $0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
-            }
-            ForEach(Array(guessWhoURLs.enumerated()), id: \.offset) { _, item in
-                InfoRow(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true)
-            }
-
-            reconcileRows
-            sidecarRows
         }
     }
 
-    @ViewBuilder
-    private var reconcileRows: some View {
+    private func debugRows(for contact: Contact) -> [InfoRowData] {
+        var rows: [InfoRowData] = []
+
+        rows.append(.text(label: "localID", value: contact.localID, monospaced: true))
+        rows.append(.text(label: "contact type", value: contact.contactType.rawValue))
+        rows.append(.text(label: "image available", value: contact.imageDataAvailable ? "yes" : "no"))
+
+        if let uuid = service.guessWhoUUID(in: contact) {
+            rows.append(.text(label: "guesswho uuid", value: uuid, monospaced: true))
+        } else if let reason = sidecarUnavailableReason {
+            rows.append(.text(label: "guesswho uuid", value: "none — \(reason)"))
+        } else {
+            rows.append(.text(label: "guesswho uuid", value: "none"))
+        }
+
+        for item in contact.urlAddresses where item.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) {
+            rows.append(.text(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true))
+        }
+
         if let outcome = reconcileOutcome {
-            InfoRow(label: "reconcile: assigned uuid", value: outcome.assignedUUID ?? "—", monospaced: outcome.assignedUUID != nil)
-            InfoRow(
+            rows.append(.text(label: "reconcile: assigned uuid", value: outcome.assignedUUID ?? "—", monospaced: outcome.assignedUUID != nil))
+            rows.append(.text(
                 label: "reconcile: merged loser uuids",
                 value: outcome.mergedLoserUUIDs.isEmpty ? "—" : outcome.mergedLoserUUIDs.joined(separator: ", "),
                 monospaced: !outcome.mergedLoserUUIDs.isEmpty
-            )
-            InfoRow(
+            ))
+            rows.append(.text(
                 label: "reconcile: removed malformed urls",
                 value: outcome.removedMalformedURLs.isEmpty ? "—" : outcome.removedMalformedURLs.joined(separator: ", "),
                 monospaced: !outcome.removedMalformedURLs.isEmpty
-            )
-            InfoRow(
+            ))
+            rows.append(.text(
                 label: "reconcile: rewritten link ids",
                 value: outcome.rewrittenLinkIDs.isEmpty ? "—" : outcome.rewrittenLinkIDs.map(\.uuidString).joined(separator: ", "),
                 monospaced: !outcome.rewrittenLinkIDs.isEmpty
-            )
-            ForEach(Array(outcome.errors.enumerated()), id: \.offset) { _, err in
-                InfoRow(label: "reconcile error", value: err, valueColor: .red)
+            ))
+            for err in outcome.errors {
+                rows.append(.text(label: "reconcile error", value: err, valueColor: .red))
             }
         } else if let error = reconcileError {
-            InfoRow(label: "reconcile error", value: error, valueColor: .red)
+            rows.append(.text(label: "reconcile error", value: error, valueColor: .red))
         } else {
-            InfoRow(label: "reconcile", value: "running…")
+            rows.append(.text(label: "reconcile", value: "running…"))
         }
-    }
 
-    @ViewBuilder
-    private var sidecarRows: some View {
         if let sidecar {
-            InfoRow(label: "sidecar: entity id", value: sidecar.entityID, monospaced: true)
-            InfoRow(label: "sidecar: schema version", value: String(sidecar.schemaVersion))
-            InfoRow(label: "sidecar: cells dropped on decode", value: String(sidecar.cellsDroppedOnDecode))
+            rows.append(.text(label: "sidecar: entity id", value: sidecar.entityID, monospaced: true))
+            rows.append(.text(label: "sidecar: schema version", value: String(sidecar.schemaVersion)))
+            rows.append(.text(label: "sidecar: cells dropped on decode", value: String(sidecar.cellsDroppedOnDecode)))
             if sidecar.fields.isEmpty {
-                InfoRow(label: "sidecar fields", value: "(none)")
+                rows.append(.text(label: "sidecar fields", value: "(none)"))
             } else {
-                ForEach(Array(sidecar.fields.keys).sorted(), id: \.self) { name in
-                    InfoRow(label: "sidecar: \(name)", value: cellDescription(sidecar.fields[name]), monospaced: true)
+                for name in sidecar.fields.keys.sorted() {
+                    rows.append(.text(label: "sidecar: \(name)", value: cellDescription(sidecar.fields[name]), monospaced: true))
                 }
             }
         } else {
-            InfoRow(label: "sidecar", value: "(none)")
+            rows.append(.text(label: "sidecar", value: "(none)"))
         }
+
+        return rows
     }
     #endif
 
@@ -380,19 +359,6 @@ struct ContactDetailView: View {
         return CNLabeledValue<NSString>.localizedString(forLabel: raw)
     }
 
-    private func formatPostalAddress(_ address: PostalAddress) -> String {
-        let cn = CNMutablePostalAddress()
-        cn.street = address.street
-        cn.subLocality = address.subLocality
-        cn.city = address.city
-        cn.subAdministrativeArea = address.subAdministrativeArea
-        cn.state = address.state
-        cn.postalCode = address.postalCode
-        cn.country = address.country
-        cn.isoCountryCode = address.isoCountryCode
-        return CNPostalAddressFormatter.string(from: cn, style: .mailingAddress)
-    }
-
     private func formatDateComponents(_ components: DateComponents) -> String {
         if let date = Calendar(identifier: .gregorian).date(from: components) {
             let style = Date.FormatStyle()
@@ -461,18 +427,56 @@ struct ContactDetailView: View {
     }
 }
 
-private struct InfoRowData {
+private struct InfoRowData: Identifiable {
+    enum Kind {
+        case text(value: String, monospaced: Bool, valueColor: Color?)
+        case phone(number: String)
+        case email(address: String)
+        case url(urlString: String)
+        case address(PostalAddress)
+    }
+
+    let id = UUID()
     let label: String
-    let value: String
+    let kind: Kind
+
+    static func text(label: String, value: String, monospaced: Bool = false, valueColor: Color? = nil) -> InfoRowData {
+        InfoRowData(label: label, kind: .text(value: value, monospaced: monospaced, valueColor: valueColor))
+    }
+    static func phone(label: String, number: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .phone(number: number))
+    }
+    static func email(label: String, address: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .email(address: address))
+    }
+    static func url(label: String, urlString: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .url(urlString: urlString))
+    }
+    static func address(label: String, address: PostalAddress) -> InfoRowData {
+        InfoRowData(label: label, kind: .address(address))
+    }
 }
 
 private struct InfoRow: View {
-    let label: String
-    let value: String
-    var monospaced: Bool = false
-    var valueColor: Color? = nil
+    let data: InfoRowData
 
     var body: some View {
+        switch data.kind {
+        case .text(let value, let monospaced, let valueColor):
+            labeledValue(label: data.label, value: value, monospaced: monospaced, valueColor: valueColor)
+        case .phone(let number):
+            tappableRow(label: data.label, value: number, url: phoneURL(number))
+        case .email(let address):
+            tappableRow(label: data.label, value: address, url: URL(string: "mailto:\(address)"))
+        case .url(let urlString):
+            tappableRow(label: data.label, value: urlString, url: URL(string: urlString))
+        case .address(let address):
+            AddressRow(label: data.label, address: address)
+        }
+    }
+
+    @ViewBuilder
+    private func labeledValue(label: String, value: String, monospaced: Bool, valueColor: Color?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption)
@@ -482,6 +486,136 @@ private struct InfoRow: View {
                 .foregroundStyle(valueColor ?? .primary)
                 .textSelection(.enabled)
         }
+    }
+
+    @ViewBuilder
+    private func tappableRow(label: String, value: String, url: URL?) -> some View {
+        if let url {
+            // Apple's Contacts colors the value in tint and the whole row
+            // is the hit target — Link wrapping the VStack does both.
+            Link(destination: url) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .foregroundStyle(.tint)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            labeledValue(label: label, value: value, monospaced: false, valueColor: nil)
+        }
+    }
+
+    private func phoneURL(_ raw: String) -> URL? {
+        // tel: requires digits only (plus '+'); strip everything else.
+        let allowed = Set("+0123456789")
+        let cleaned = raw.filter { allowed.contains($0) }
+        guard !cleaned.isEmpty else { return nil }
+        return URL(string: "tel:\(cleaned)")
+    }
+}
+
+private struct AddressRow: View {
+    let label: String
+    let address: PostalAddress
+
+    @State private var coordinate: CLLocationCoordinate2D?
+    @State private var didStartGeocode = false
+
+    var body: some View {
+        Button {
+            openInMaps()
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(formatted)
+                        .foregroundStyle(.tint)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 8)
+                mapPreview
+            }
+        }
+        .buttonStyle(.plain)
+        .task {
+            guard !didStartGeocode else { return }
+            didStartGeocode = true
+            await geocode()
+        }
+    }
+
+    @ViewBuilder
+    private var mapPreview: some View {
+        if let coordinate {
+            // Static, non-interactive preview — taps fall through to the
+            // surrounding Button so the whole row opens Maps as one unit.
+            Map(initialPosition: .region(MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+            ))) {
+                Marker("", coordinate: coordinate)
+                    .tint(.red)
+            }
+            .allowsHitTesting(false)
+            .frame(width: 96, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            // Reserve the same footprint so the row doesn't reflow when
+            // the geocode resolves.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.15))
+                .frame(width: 96, height: 72)
+        }
+    }
+
+    private var formatted: String {
+        let cn = mutablePostalAddress()
+        return CNPostalAddressFormatter.string(from: cn, style: .mailingAddress)
+    }
+
+    private func mutablePostalAddress() -> CNMutablePostalAddress {
+        let cn = CNMutablePostalAddress()
+        cn.street = address.street
+        cn.subLocality = address.subLocality
+        cn.city = address.city
+        cn.subAdministrativeArea = address.subAdministrativeArea
+        cn.state = address.state
+        cn.postalCode = address.postalCode
+        cn.country = address.country
+        cn.isoCountryCode = address.isoCountryCode
+        return cn
+    }
+
+    private func geocode() async {
+        let geocoder = CLGeocoder()
+        do {
+            let placemarks = try await geocoder.geocodePostalAddress(mutablePostalAddress())
+            await MainActor.run {
+                self.coordinate = placemarks.first?.location?.coordinate
+            }
+        } catch {
+            // Leave the placeholder; the row still functions, tap still
+            // launches Maps which will do its own resolution.
+        }
+    }
+
+    private func openInMaps() {
+        let placemark: MKPlacemark
+        if let coordinate {
+            placemark = MKPlacemark(coordinate: coordinate, postalAddress: mutablePostalAddress())
+        } else {
+            // Maps accepts a placemark with no coordinate and resolves
+            // it from the address fields.
+            placemark = MKPlacemark(coordinate: kCLLocationCoordinate2DInvalid, postalAddress: mutablePostalAddress())
+        }
+        let item = MKMapItem(placemark: placemark)
+        item.name = formatted
+        item.openInMaps(launchOptions: nil)
     }
 }
 
