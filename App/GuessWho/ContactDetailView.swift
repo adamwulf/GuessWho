@@ -17,6 +17,8 @@ struct ContactDetailView: View {
     @State private var reconcileOutcome: IdentityReconcileReport.ContactOutcome?
     @State private var reconcileError: String?
     @State private var didAutoReconcile = false
+    @State private var eventLinks: [ContactLink] = []
+    @State private var showingEventPicker = false
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -61,6 +63,8 @@ struct ContactDetailView: View {
                 if let linksStore, let uuid = service.guessWhoUUID(in: contact) {
                     ConnectionsSection(store: linksStore, contactUUID: uuid)
                 }
+
+                linkedEventsSection
 
                 #if DEBUG
                 debugSection(contact)
@@ -290,6 +294,94 @@ struct ContactDetailView: View {
     }
     #endif
 
+    // MARK: - Linked events
+
+    @ViewBuilder
+    private var linkedEventsSection: some View {
+        Section("Linked Events") {
+            ForEach(eventLinks, id: \.id) { link in
+                linkedEventRow(link)
+            }
+            .onDelete { offsets in
+                let ids = offsets.map { eventLinks[$0].id }
+                for id in ids { removeEventLink(id) }
+            }
+            Button {
+                showingEventPicker = true
+            } label: {
+                Label("Add Event", systemImage: "calendar.badge.plus")
+            }
+            .disabled(contactUUID == nil)
+        }
+        .sheet(isPresented: $showingEventPicker) {
+            EventPickerSheet { event, note in
+                addEventLink(eventID: event.externalID, note: note)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkedEventRow(_ link: ContactLink) -> some View {
+        let other = otherEndpoint(of: link)
+        let event = service.event(externalID: other.id)
+        NavigationLink(value: EventReference(externalID: other.id)) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let event {
+                    Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                    Text(event.startDate, style: .date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("(Unknown event)")
+                        .foregroundStyle(.secondary)
+                }
+                if !link.note.isEmpty {
+                    Text(link.note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var contactUUID: String? {
+        guard let contact else { return nil }
+        return service.guessWhoUUID(in: contact)
+    }
+
+    private func otherEndpoint(of link: ContactLink) -> SidecarKey {
+        guard let uuid = contactUUID else { return link.endpointB }
+        let endpoint = SidecarKey(kind: .contact, id: uuid)
+        return SyncService.otherEndpoint(of: link, from: endpoint)
+    }
+
+    private func reloadEventLinks() {
+        guard let uuid = contactUUID else {
+            eventLinks = []
+            return
+        }
+        eventLinks = service.eventLinks(forContactUUID: uuid)
+    }
+
+    private func addEventLink(eventID: String, note: String) {
+        guard let uuid = contactUUID else { return }
+        do {
+            _ = try service.addContactEventLink(contactUUID: uuid, eventID: eventID, note: note)
+        } catch {
+            service.recordError("add contact-event link failed: \(error.localizedDescription)")
+        }
+        reloadEventLinks()
+    }
+
+    private func removeEventLink(_ id: UUID) {
+        do {
+            try service.removeLink(id: id)
+        } catch {
+            service.recordError("remove link failed: \(error.localizedDescription)")
+        }
+        reloadEventLinks()
+    }
+
     // MARK: - Loading & reconcile
 
     private var sidecarUnavailableReason: String? {
@@ -327,6 +419,7 @@ struct ContactDetailView: View {
                 notesStore = nil
                 linksStore = nil
             }
+            reloadEventLinks()
         }
     }
 
@@ -549,7 +642,7 @@ private struct InfoRow: View {
         // Inverse-relation row: contact name is primary tinted (the
         // tappable target) and the descriptor reads "their <label>" in
         // small caption so the relationship direction is unambiguous.
-        NavigationLink(value: localID) {
+        NavigationLink(value: ContactReference(localID: localID)) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayName)
                     .foregroundStyle(.tint)
@@ -564,9 +657,9 @@ private struct InfoRow: View {
     @ViewBuilder
     private func contactLinkRow(label: String, displayName: String, localID: String) -> some View {
         // Match the tappable-row visual: label above, tinted value, whole
-        // row tappable. NavigationLink(value:) feeds the existing
-        // .navigationDestination(for: String.self) chain.
-        NavigationLink(value: localID) {
+        // row tappable. NavigationLink(value:) feeds the typed
+        // ContactReference navigation destination.
+        NavigationLink(value: ContactReference(localID: localID)) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.caption)
@@ -736,6 +829,90 @@ private struct AddressRow: View {
         let item = MKMapItem(placemark: placemark)
         item.name = formatted
         item.openInMaps(launchOptions: nil)
+    }
+}
+
+private struct EventPickerSheet: View {
+    @Environment(SyncService.self) private var service
+    @Environment(\.dismiss) private var dismiss
+
+    let onPick: (Event, String) -> Void
+
+    @State private var query: String = ""
+    @State private var events: [Event] = []
+    @State private var selection: Event?
+    @State private var note: String = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let selection {
+                    Form {
+                        Section("Event") {
+                            VStack(alignment: .leading) {
+                                Text(selection.title.isEmpty ? "(Untitled event)" : selection.title)
+                                Text(selection.startDate, style: .date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button("Change") { self.selection = nil }
+                                .buttonStyle(.borderless)
+                        }
+                        Section("Note") {
+                            TextField("Optional note", text: $note, axis: .vertical)
+                        }
+                    }
+                } else {
+                    List(filtered, id: \.externalID) { event in
+                        Button {
+                            selection = event
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                                Text(event.startDate, style: .date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .searchable(text: $query, prompt: "Search events")
+                }
+            }
+            .navigationTitle(selection == nil ? "Pick Event" : "Add Link")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                if let selection {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add") {
+                            onPick(selection, note.trimmingCharacters(in: .whitespacesAndNewlines))
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .task { loadEvents() }
+        }
+    }
+
+    private func loadEvents() {
+        let now = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
+        events = service.fetchEventsRange(from: start, to: end)
+            .sorted { $0.startDate < $1.startDate }
+    }
+
+    private var filtered: [Event] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return events }
+        let needle = trimmed.lowercased()
+        return events.filter { e in
+            e.title.lowercased().contains(needle)
+                || (e.location ?? "").lowercased().contains(needle)
+                || (e.notes ?? "").lowercased().contains(needle)
+        }
     }
 }
 

@@ -18,7 +18,7 @@ struct PeopleListView: View {
             ForEach(sections, id: \.0) { letter, contacts in
                 Section {
                     ForEach(contacts, id: \.localID) { contact in
-                        NavigationLink(value: contact.localID) {
+                        NavigationLink(value: ContactReference(localID: contact.localID)) {
                             ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)
                         }
                     }
@@ -41,9 +41,12 @@ struct PeopleListView: View {
             }
         }
         .navigationTitle("People")
-        .navigationDestination(for: String.self) { localID in
-            ContactDetailView(localID: localID)
+        .navigationDestination(for: ContactReference.self) { ref in
+            ContactDetailView(localID: ref.localID)
                 .environment(repository)
+        }
+        .navigationDestination(for: EventReference.self) { ref in
+            EventDetailView(externalID: ref.externalID)
         }
         .searchable(
             text: $repository.peopleSearch,

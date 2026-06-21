@@ -1,12 +1,13 @@
 import SwiftUI
 import Contacts
+import EventKit
 import GuessWhoSync
 
 struct RootView: View {
     @Environment(SyncService.self) private var service
 
     @State private var contactsRepository: ContactsRepository?
-    @State private var eventsRepository = EventsRepository()
+    @State private var eventsRepository: EventsRepository?
 
     var body: some View {
         Group {
@@ -30,8 +31,8 @@ struct RootView: View {
                     description: Text("Contacts access is restricted on this device.")
                 )
             case .authorized:
-                if let contactsRepository {
-                    mainTabs(contactsRepository: contactsRepository)
+                if let contactsRepository, let eventsRepository {
+                    mainTabs(contactsRepository: contactsRepository, eventsRepository: eventsRepository)
                 } else {
                     ProgressView()
                 }
@@ -39,13 +40,19 @@ struct RootView: View {
         }
         .task {
             await service.requestContactsAccessIfNeeded()
+            await service.requestEventsAccessIfNeeded()
             if service.contactsAuthorization == .authorized {
-                ensureContactsRepositoryAndLoad()
+                ensureRepositoriesAndLoad()
             }
         }
         .onChange(of: service.contactsAuthorization) { _, new in
             if new == .authorized {
-                ensureContactsRepositoryAndLoad()
+                ensureRepositoriesAndLoad()
+            }
+        }
+        .onChange(of: service.eventsAuthorization) { _, new in
+            if new == .authorized {
+                Task { await eventsRepository?.reload() }
             }
         }
         // CNContactStore posts CNContactStoreDidChange across the address-book
@@ -54,13 +61,16 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .CNContactStoreDidChange)) { _ in
             Task {
                 await contactsRepository?.reload()
-                await eventsRepository.reload()
+                await eventsRepository?.reload()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
+            Task { await eventsRepository?.reload() }
         }
     }
 
     @ViewBuilder
-    private func mainTabs(contactsRepository: ContactsRepository) -> some View {
+    private func mainTabs(contactsRepository: ContactsRepository, eventsRepository: EventsRepository) -> some View {
         let tabs = TabView {
             NavigationStack {
                 PeopleListView(repository: contactsRepository)
@@ -94,11 +104,15 @@ struct RootView: View {
         }
     }
 
-    private func ensureContactsRepositoryAndLoad() {
+    private func ensureRepositoriesAndLoad() {
         if contactsRepository == nil {
             contactsRepository = ContactsRepository(service: service)
         }
+        if eventsRepository == nil {
+            eventsRepository = EventsRepository(service: service)
+        }
         Task { await contactsRepository?.reload() }
+        Task { await eventsRepository?.reload() }
     }
 }
 

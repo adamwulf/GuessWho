@@ -200,7 +200,7 @@ private struct LinkRow: View {
     @ViewBuilder
     private var otherContactView: some View {
         if let other = otherContact {
-            NavigationLink(value: other.localID) {
+            NavigationLink(value: ContactReference(localID: other.localID)) {
                 Text(other.displayName)
                     .font(.body)
                     .foregroundStyle(.tint)
