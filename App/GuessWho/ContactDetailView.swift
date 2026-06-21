@@ -1,4 +1,6 @@
 import SwiftUI
+import Contacts
+import MapKit
 import GuessWhoSync
 
 struct ContactDetailView: View {
@@ -10,9 +12,9 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var sidecar: SidecarEnvelope?
     @State private var notesStore: NotesStore?
-    @State private var isReconciling = false
-    @State private var showConfirmReconcile = false
-    @State private var outcome: ReconcileOutcomeWrapper?
+    @State private var reconcileOutcome: IdentityReconcileReport.ContactOutcome?
+    @State private var reconcileError: String?
+    @State private var didAutoReconcile = false
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -38,33 +40,7 @@ struct ContactDetailView: View {
     var body: some View {
         Form {
             if let contact {
-                Section("Name") {
-                    LabeledContent("Display", value: displayName(for: contact))
-                    if !contact.givenName.isEmpty {
-                        LabeledContent("Given", value: contact.givenName)
-                    }
-                    if !contact.familyName.isEmpty {
-                        LabeledContent("Family", value: contact.familyName)
-                    }
-                    if !contact.organizationName.isEmpty {
-                        LabeledContent("Organization", value: contact.organizationName)
-                    }
-                }
-
-                Section("Identity") {
-                    LabeledContent("localID", value: contact.localID)
-                    if let uuid = service.guessWhoUUID(in: contact) {
-                        LabeledContent("GuessWho UUID", value: uuid)
-                    } else if let reason = sidecarUnavailableReason {
-                        Text("No GuessWho UUID. Reconcile is unavailable: \(reason)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("No GuessWho UUID. Tap Reconcile to assign one on this device.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                infoSection(contact)
 
                 if let notesStore {
                     NotesSection(
@@ -78,41 +54,14 @@ struct ContactDetailView: View {
                     )
                 }
 
-                if let sidecar {
-                    Section("Sidecar Fields") {
-                        if sidecar.fields.isEmpty {
-                            Text("(empty)").foregroundStyle(.secondary)
-                        } else {
-                            ForEach(Array(sidecar.fields.keys).sorted(), id: \.self) { name in
-                                LabeledContent(name, value: cellDescription(sidecar.fields[name]))
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    Button {
-                        showConfirmReconcile = true
-                    } label: {
-                        if isReconciling {
-                            HStack {
-                                ProgressView()
-                                Text("Reconciling…")
-                            }
-                        } else {
-                            Text("Reconcile this contact")
-                        }
-                    }
-                    .disabled(isReconciling || isSidecarStorageUnavailable)
-                } footer: {
-                    Text("Reconcile assigns a GuessWho UUID if missing, merges duplicate UUIDs, and removes malformed GuessWho URLs. Other contacts are untouched.")
-                }
-
+                #if DEBUG
+                debugSection(contact)
+                #endif
             } else {
                 ProgressView()
             }
         }
-        .navigationTitle(contact.map { displayName(for: $0) } ?? "Contact")
+        .navigationTitle(contact?.displayName ?? "Contact")
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -141,6 +90,10 @@ struct ContactDetailView: View {
         }
         .task {
             await loadContact()
+            if !didAutoReconcile {
+                didAutoReconcile = true
+                await performReconcile()
+            }
         }
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop
@@ -148,33 +101,162 @@ struct ContactDetailView: View {
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
-        .confirmationDialog(
-            "Reconcile this contact?",
-            isPresented: $showConfirmReconcile,
-            titleVisibility: .visible
-        ) {
-            Button("Reconcile", role: .destructive) {
-                Task { await performReconcile() }
+    }
+
+    // MARK: - Sections
+
+    @ViewBuilder
+    private func infoSection(_ contact: Contact) -> some View {
+        // Mirror Apple's Contacts: one card with every populated field as
+        // a label-above-value row, in roughly the same order Contacts uses.
+        let rows = infoRows(for: contact)
+        if !rows.isEmpty {
+            Section {
+                ForEach(rows) { row in
+                    InfoRow(data: row)
+                }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This may add or remove GuessWho URLs on this contact and merge any duplicate GuessWho sidecars. No other contact fields are modified.")
         }
-        .sheet(item: $outcome) { wrapper in
-            ReconcileOutcomeView(outcome: wrapper.outcome) {
-                outcome = nil
+    }
+
+    private func infoRows(for contact: Contact) -> [InfoRowData] {
+        var rows: [InfoRowData] = []
+
+        // Skip the individual name parts — the navigation title already
+        // shows the contact's name. Job title / organization are still
+        // useful here because they're not part of the displayed name.
+        let workParts: [(String, String)] = [
+            ("job title", contact.jobTitle),
+            ("department", contact.departmentName),
+            ("organization", contact.organizationName),
+            ("phonetic organization", contact.phoneticOrganizationName),
+        ]
+        for (label, value) in workParts where !value.isEmpty {
+            rows.append(.text(label: label, value: value))
+        }
+
+        for item in contact.phoneNumbers {
+            rows.append(.phone(label: localizedLabel(item.label), number: item.value))
+        }
+        for item in contact.emailAddresses {
+            rows.append(.email(label: localizedLabel(item.label), address: item.value))
+        }
+        for item in contact.urlAddresses where SidecarKey.parseGuessWhoContactURL(item.value) == nil {
+            rows.append(.url(label: localizedLabel(item.label), urlString: item.value))
+        }
+
+        for item in contact.postalAddresses {
+            rows.append(.address(label: localizedLabel(item.label), address: item.value))
+        }
+
+        if let bday = contact.birthday {
+            rows.append(.date(label: "birthday", components: bday, formatted: formatDateComponents(bday)))
+        }
+        if let nonGreg = contact.nonGregorianBirthday {
+            rows.append(.date(label: "non-gregorian birthday", components: nonGreg, formatted: formatDateComponents(nonGreg)))
+        }
+        for item in contact.dates {
+            rows.append(.date(label: localizedLabel(item.label), components: item.value, formatted: formatDateComponents(item.value)))
+        }
+
+        for item in contact.socialProfiles {
+            rows.append(.text(label: socialProfileLabel(item), value: socialProfileValue(item.value)))
+        }
+        for item in contact.instantMessageAddresses {
+            rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
+        }
+        for item in contact.contactRelations {
+            rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
+        }
+
+        return rows
+    }
+
+    #if DEBUG
+    @ViewBuilder
+    private func debugSection(_ contact: Contact) -> some View {
+        let rows = debugRows(for: contact)
+        Section("Debug") {
+            ForEach(rows) { row in
+                InfoRow(data: row)
             }
         }
+    }
+
+    private func debugRows(for contact: Contact) -> [InfoRowData] {
+        var rows: [InfoRowData] = []
+
+        rows.append(.text(label: "localID", value: contact.localID, monospaced: true))
+        rows.append(.text(label: "contact type", value: contact.contactType.rawValue))
+        rows.append(.text(label: "image available", value: contact.imageDataAvailable ? "yes" : "no"))
+
+        if let uuid = service.guessWhoUUID(in: contact) {
+            rows.append(.text(label: "guesswho uuid", value: uuid, monospaced: true))
+        } else if let reason = sidecarUnavailableReason {
+            rows.append(.text(label: "guesswho uuid", value: "none — \(reason)"))
+        } else {
+            rows.append(.text(label: "guesswho uuid", value: "none"))
+        }
+
+        for item in contact.urlAddresses where item.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) {
+            rows.append(.text(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true))
+        }
+
+        if let outcome = reconcileOutcome {
+            rows.append(.text(label: "reconcile: assigned uuid", value: outcome.assignedUUID ?? "—", monospaced: outcome.assignedUUID != nil))
+            rows.append(.text(
+                label: "reconcile: merged loser uuids",
+                value: outcome.mergedLoserUUIDs.isEmpty ? "—" : outcome.mergedLoserUUIDs.joined(separator: ", "),
+                monospaced: !outcome.mergedLoserUUIDs.isEmpty
+            ))
+            rows.append(.text(
+                label: "reconcile: removed malformed urls",
+                value: outcome.removedMalformedURLs.isEmpty ? "—" : outcome.removedMalformedURLs.joined(separator: ", "),
+                monospaced: !outcome.removedMalformedURLs.isEmpty
+            ))
+            rows.append(.text(
+                label: "reconcile: rewritten link ids",
+                value: outcome.rewrittenLinkIDs.isEmpty ? "—" : outcome.rewrittenLinkIDs.map(\.uuidString).joined(separator: ", "),
+                monospaced: !outcome.rewrittenLinkIDs.isEmpty
+            ))
+            for err in outcome.errors {
+                rows.append(.text(label: "reconcile error", value: err, valueColor: .red))
+            }
+        } else if let error = reconcileError {
+            rows.append(.text(label: "reconcile error", value: error, valueColor: .red))
+        } else {
+            rows.append(.text(label: "reconcile", value: "running…"))
+        }
+
+        if let sidecar {
+            rows.append(.text(label: "sidecar: entity id", value: sidecar.entityID, monospaced: true))
+            rows.append(.text(label: "sidecar: schema version", value: String(sidecar.schemaVersion)))
+            rows.append(.text(label: "sidecar: cells dropped on decode", value: String(sidecar.cellsDroppedOnDecode)))
+            if sidecar.fields.isEmpty {
+                rows.append(.text(label: "sidecar fields", value: "(none)"))
+            } else {
+                for name in sidecar.fields.keys.sorted() {
+                    rows.append(.text(label: "sidecar: \(name)", value: cellDescription(sidecar.fields[name]), monospaced: true))
+                }
+            }
+        } else {
+            rows.append(.text(label: "sidecar", value: "(none)"))
+        }
+
+        return rows
+    }
+    #endif
+
+    // MARK: - Loading & reconcile
+
+    private var sidecarUnavailableReason: String? {
+        if case .unavailable(let reason) = service.sidecarLocation { return reason }
+        return nil
     }
 
     private var isSidecarStorageUnavailable: Bool {
         if case .unavailable = service.sidecarLocation { return true }
         return false
-    }
-
-    private var sidecarUnavailableReason: String? {
-        if case .unavailable(let reason) = service.sidecarLocation { return reason }
-        return nil
     }
 
     private func loadContact() async {
@@ -200,22 +282,21 @@ struct ContactDetailView: View {
     }
 
     private func performReconcile() async {
-        isReconciling = true
-        defer { isReconciling = false }
+        guard !isSidecarStorageUnavailable else {
+            reconcileError = sidecarUnavailableReason ?? "Sidecar storage unavailable"
+            return
+        }
         do {
             let result = try service.reconcile(localID: localID)
-            outcome = ReconcileOutcomeWrapper(outcome: result)
+            reconcileOutcome = result
+            reconcileError = nil
             await loadContact()
         } catch {
-            outcome = ReconcileOutcomeWrapper(outcome: .init(
-                localID: localID,
-                assignedUUID: nil,
-                mergedLoserUUIDs: [],
-                removedMalformedURLs: [],
-                errors: ["\(error)"]
-            ))
+            reconcileError = "\(error)"
         }
     }
+
+    // MARK: - Notes
 
     private func beginEdit(_ note: ContactNote) {
         // Tapping a different row mid-edit commits the prior one first.
@@ -271,12 +352,57 @@ struct ContactDetailView: View {
         notesStore?.editNote(id, newBody: proposed)
     }
 
-    private func displayName(for contact: Contact) -> String {
-        let personName = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-        if !personName.isEmpty { return personName }
-        if !contact.organizationName.isEmpty { return contact.organizationName }
-        if !contact.nickname.isEmpty { return contact.nickname }
-        return "(Unnamed)"
+    // MARK: - Formatting
+
+    private func localizedLabel(_ raw: String) -> String {
+        if raw.isEmpty { return "other" }
+        return CNLabeledValue<NSString>.localizedString(forLabel: raw)
+    }
+
+    private func formatDateComponents(_ components: DateComponents) -> String {
+        if let date = Calendar(identifier: .gregorian).date(from: components) {
+            let style = Date.FormatStyle()
+                .year(.defaultDigits)
+                .month(.abbreviated)
+                .day(.defaultDigits)
+            return date.formatted(style)
+        }
+        var parts: [String] = []
+        if let y = components.year { parts.append(String(y)) }
+        if let m = components.month { parts.append(String(format: "%02d", m)) }
+        if let d = components.day { parts.append(String(format: "%02d", d)) }
+        return parts.isEmpty ? "—" : parts.joined(separator: "-")
+    }
+
+    private func socialProfileLabel(_ labeled: LabeledSocialProfile) -> String {
+        // The CN-provided per-profile label is usually empty; the service
+        // (twitter, linkedin, …) is the meaningful identifier here.
+        let service = labeled.value.service
+        if !labeled.label.isEmpty {
+            return localizedLabel(labeled.label)
+        }
+        if !service.isEmpty {
+            return service
+        }
+        return "social"
+    }
+
+    private func socialProfileValue(_ profile: SocialProfile) -> String {
+        if !profile.username.isEmpty { return profile.username }
+        if !profile.urlString.isEmpty { return profile.urlString }
+        if !profile.userIdentifier.isEmpty { return profile.userIdentifier }
+        return "—"
+    }
+
+    private func instantMessageLabel(_ labeled: LabeledInstantMessageAddress) -> String {
+        let service = labeled.value.service
+        if !labeled.label.isEmpty {
+            return localizedLabel(labeled.label)
+        }
+        if !service.isEmpty {
+            return service
+        }
+        return "im"
     }
 
     private func cellDescription(_ cell: SidecarCell?) -> String {
@@ -301,6 +427,221 @@ struct ContactDetailView: View {
     }
 }
 
+private struct InfoRowData: Identifiable {
+    enum Kind {
+        case text(value: String, monospaced: Bool, valueColor: Color?)
+        case phone(number: String)
+        case email(address: String)
+        case url(urlString: String)
+        case address(PostalAddress)
+        case date(components: DateComponents, formatted: String)
+    }
+
+    let id = UUID()
+    let label: String
+    let kind: Kind
+
+    static func text(label: String, value: String, monospaced: Bool = false, valueColor: Color? = nil) -> InfoRowData {
+        InfoRowData(label: label, kind: .text(value: value, monospaced: monospaced, valueColor: valueColor))
+    }
+    static func phone(label: String, number: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .phone(number: number))
+    }
+    static func email(label: String, address: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .email(address: address))
+    }
+    static func url(label: String, urlString: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .url(urlString: urlString))
+    }
+    static func address(label: String, address: PostalAddress) -> InfoRowData {
+        InfoRowData(label: label, kind: .address(address))
+    }
+    static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
+    }
+}
+
+private struct InfoRow: View {
+    let data: InfoRowData
+
+    var body: some View {
+        switch data.kind {
+        case .text(let value, let monospaced, let valueColor):
+            labeledValue(label: data.label, value: value, monospaced: monospaced, valueColor: valueColor)
+        case .phone(let number):
+            tappableRow(label: data.label, value: number, url: phoneURL(number))
+        case .email(let address):
+            tappableRow(label: data.label, value: address, url: URL(string: "mailto:\(address)"))
+        case .url(let urlString):
+            tappableRow(label: data.label, value: urlString, url: URL(string: urlString))
+        case .address(let address):
+            AddressRow(label: data.label, address: address)
+        case .date(let components, let formatted):
+            tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
+        }
+    }
+
+    @ViewBuilder
+    private func labeledValue(label: String, value: String, monospaced: Bool, valueColor: Color?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(monospaced ? .footnote.monospaced() : .body)
+                .foregroundStyle(valueColor ?? .primary)
+                .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func tappableRow(label: String, value: String, url: URL?) -> some View {
+        if let url {
+            // Apple's Contacts colors the value in tint and the whole row
+            // is the hit target — Link wrapping the VStack does both.
+            Link(destination: url) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .foregroundStyle(.tint)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            labeledValue(label: label, value: value, monospaced: false, valueColor: nil)
+        }
+    }
+
+    private func phoneURL(_ raw: String) -> URL? {
+        // tel: requires digits only (plus '+'); strip everything else.
+        let allowed = Set("+0123456789")
+        let cleaned = raw.filter { allowed.contains($0) }
+        guard !cleaned.isEmpty else { return nil }
+        return URL(string: "tel:\(cleaned)")
+    }
+
+    private func calendarURL(for components: DateComponents) -> URL? {
+        // Calendar's calshow: scheme takes seconds since 2001-01-01.
+        // Birthdays often lack a year; in that case land Calendar on
+        // this year's occurrence so the user sees the next/most recent
+        // one rather than year 1.
+        var resolved = components
+        if resolved.year == nil {
+            resolved.year = Calendar(identifier: .gregorian).component(.year, from: Date())
+        }
+        if resolved.hour == nil { resolved.hour = 12 }
+        if resolved.minute == nil { resolved.minute = 0 }
+        guard let date = Calendar(identifier: .gregorian).date(from: resolved) else {
+            return URL(string: "calshow:")
+        }
+        return URL(string: "calshow:\(Int(date.timeIntervalSinceReferenceDate))")
+    }
+}
+
+private struct AddressRow: View {
+    let label: String
+    let address: PostalAddress
+
+    @State private var coordinate: CLLocationCoordinate2D?
+    @State private var didStartGeocode = false
+
+    var body: some View {
+        Button {
+            openInMaps()
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(formatted)
+                        .foregroundStyle(.tint)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 8)
+                mapPreview
+            }
+        }
+        .buttonStyle(.plain)
+        .task {
+            guard !didStartGeocode else { return }
+            didStartGeocode = true
+            await geocode()
+        }
+    }
+
+    @ViewBuilder
+    private var mapPreview: some View {
+        if let coordinate {
+            // Static, non-interactive preview — taps fall through to the
+            // surrounding Button so the whole row opens Maps as one unit.
+            Map(initialPosition: .region(MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+            ))) {
+                Marker("", coordinate: coordinate)
+                    .tint(.red)
+            }
+            .allowsHitTesting(false)
+            .frame(width: 96, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            // Reserve the same footprint so the row doesn't reflow when
+            // the geocode resolves.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.15))
+                .frame(width: 96, height: 72)
+        }
+    }
+
+    private var formatted: String {
+        let cn = mutablePostalAddress()
+        return CNPostalAddressFormatter.string(from: cn, style: .mailingAddress)
+    }
+
+    private func mutablePostalAddress() -> CNMutablePostalAddress {
+        let cn = CNMutablePostalAddress()
+        cn.street = address.street
+        cn.subLocality = address.subLocality
+        cn.city = address.city
+        cn.subAdministrativeArea = address.subAdministrativeArea
+        cn.state = address.state
+        cn.postalCode = address.postalCode
+        cn.country = address.country
+        cn.isoCountryCode = address.isoCountryCode
+        return cn
+    }
+
+    private func geocode() async {
+        let geocoder = CLGeocoder()
+        do {
+            let placemarks = try await geocoder.geocodePostalAddress(mutablePostalAddress())
+            await MainActor.run {
+                self.coordinate = placemarks.first?.location?.coordinate
+            }
+        } catch {
+            // Leave the placeholder; the row still functions, tap still
+            // launches Maps which will do its own resolution.
+        }
+    }
+
+    private func openInMaps() {
+        let placemark: MKPlacemark
+        if let coordinate {
+            placemark = MKPlacemark(coordinate: coordinate, postalAddress: mutablePostalAddress())
+        } else {
+            // Maps accepts a placemark with no coordinate and resolves
+            // it from the address fields.
+            placemark = MKPlacemark(coordinate: kCLLocationCoordinate2DInvalid, postalAddress: mutablePostalAddress())
+        }
+        let item = MKMapItem(placemark: placemark)
+        item.name = formatted
+        item.openInMaps(launchOptions: nil)
+    }
+}
+
 private struct NotesSection: View {
     let store: NotesStore
     @Binding var newNoteText: String
@@ -320,8 +661,11 @@ private struct NotesSection: View {
                 for id in ids { deleteNote(id) }
             }
 
-            TextEditor(text: $newNoteText)
-                .frame(minHeight: 32)
+            // TextField with axis: .vertical inherits the cell's default
+            // font + leading inset, so the editor lines up with the read
+            // rows above. TextEditor draws its own inset and looked
+            // shifted right.
+            TextField("Add a note", text: $newNoteText, axis: .vertical)
                 .focused(noteFocus, equals: .newNote)
         }
     }
@@ -329,81 +673,39 @@ private struct NotesSection: View {
     @ViewBuilder
     private func row(for note: ContactNote) -> some View {
         if editingID == note.id {
-            TextEditor(text: $draftBody)
-                .frame(minHeight: 44)
+            TextField("", text: $draftBody, axis: .vertical)
                 .focused(noteFocus, equals: .row(note.id))
         } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(note.body)
-                HStack(spacing: 6) {
-                    Text(note.createdAt, format: .relative(presentation: .named))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if note.modifiedAt > note.createdAt {
-                        Text("edited")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
+            // Wrap in a Button so the whole row — including the empty
+            // trailing space of the Form cell — is the hit target.
+            // .plain keeps the visual styling intact; without it the row
+            // would adopt button tint colors.
+            Button {
                 beginEdit(note)
-            }
-            .contextMenu {
-                Button("Delete", role: .destructive) {
-                    deleteNote(note.id)
-                }
-            }
-        }
-    }
-}
-
-private struct ReconcileOutcomeWrapper: Identifiable {
-    let id = UUID()
-    let outcome: IdentityReconcileReport.ContactOutcome
-}
-
-private struct ReconcileOutcomeView: View {
-    let outcome: IdentityReconcileReport.ContactOutcome
-    let dismiss: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Result") {
-                    LabeledContent("localID", value: outcome.localID)
-                    if let uuid = outcome.assignedUUID {
-                        LabeledContent("Assigned UUID", value: uuid)
-                    } else {
-                        Text("No new UUID assigned.")
-                    }
-                }
-                if !outcome.mergedLoserUUIDs.isEmpty {
-                    Section("Merged loser UUIDs") {
-                        ForEach(outcome.mergedLoserUUIDs, id: \.self) { Text($0) }
-                    }
-                }
-                if !outcome.removedMalformedURLs.isEmpty {
-                    Section("Removed malformed URLs") {
-                        ForEach(outcome.removedMalformedURLs, id: \.self) { Text($0) }
-                    }
-                }
-                if !outcome.errors.isEmpty {
-                    Section("Errors") {
-                        ForEach(outcome.errors, id: \.self) {
-                            Text($0).foregroundStyle(.red)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(note.body)
+                    HStack(spacing: 6) {
+                        Text(note.createdAt, format: .relative(presentation: .named))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if note.modifiedAt > note.createdAt {
+                            Text("edited")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .navigationTitle("Reconcile")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: dismiss)
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button("Delete", role: .destructive) {
+                    deleteNote(note.id)
                 }
             }
         }
