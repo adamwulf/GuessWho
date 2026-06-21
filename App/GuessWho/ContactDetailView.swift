@@ -39,16 +39,7 @@ struct ContactDetailView: View {
     var body: some View {
         Form {
             if let contact {
-                nameSection(contact)
-                workSection(contact)
-                phoneSection(contact)
-                emailSection(contact)
-                addressSection(contact)
-                urlSection(contact)
-                datesSection(contact)
-                socialSection(contact)
-                instantMessageSection(contact)
-                relationsSection(contact)
+                infoSection(contact)
 
                 if let notesStore {
                     NotesSection(
@@ -114,232 +105,165 @@ struct ContactDetailView: View {
     // MARK: - Sections
 
     @ViewBuilder
-    private func nameSection(_ contact: Contact) -> some View {
-        let rows: [(String, String)] = [
-            ("Prefix", contact.namePrefix),
-            ("Given", contact.givenName),
-            ("Middle", contact.middleName),
-            ("Family", contact.familyName),
-            ("Previous Family", contact.previousFamilyName),
-            ("Suffix", contact.nameSuffix),
-            ("Nickname", contact.nickname),
-            ("Phonetic Given", contact.phoneticGivenName),
-            ("Phonetic Middle", contact.phoneticMiddleName),
-            ("Phonetic Family", contact.phoneticFamilyName),
-        ].filter { !$0.1.isEmpty }
-
+    private func infoSection(_ contact: Contact) -> some View {
+        // Mirror Apple's Contacts: one card with every populated field as
+        // a label-above-value row, in roughly the same order Contacts uses.
+        let rows = infoRows(for: contact)
         if !rows.isEmpty {
-            Section("Name") {
-                LabeledContent("Display", value: contact.displayName)
-                ForEach(rows, id: \.0) { row in
-                    LabeledContent(row.0, value: row.1)
+            Section {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    InfoRow(label: row.label, value: row.value)
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private func workSection(_ contact: Contact) -> some View {
-        let rows: [(String, String)] = [
-            ("Job Title", contact.jobTitle),
-            ("Department", contact.departmentName),
-            ("Organization", contact.organizationName),
-            ("Phonetic Organization", contact.phoneticOrganizationName),
-        ].filter { !$0.1.isEmpty }
+    private func infoRows(for contact: Contact) -> [InfoRowData] {
+        var rows: [InfoRowData] = []
 
-        if !rows.isEmpty {
-            Section("Work") {
-                ForEach(rows, id: \.0) { row in
-                    LabeledContent(row.0, value: row.1)
-                }
-            }
+        // Names — only emit individual name parts that are actually
+        // populated; skip the noisy ones (phonetic, prefix/suffix) when
+        // empty, just like Contacts does.
+        let nameParts: [(String, String)] = [
+            ("prefix", contact.namePrefix),
+            ("given", contact.givenName),
+            ("middle", contact.middleName),
+            ("family", contact.familyName),
+            ("previous family", contact.previousFamilyName),
+            ("suffix", contact.nameSuffix),
+            ("nickname", contact.nickname),
+            ("phonetic given", contact.phoneticGivenName),
+            ("phonetic middle", contact.phoneticMiddleName),
+            ("phonetic family", contact.phoneticFamilyName),
+        ]
+        for (label, value) in nameParts where !value.isEmpty {
+            rows.append(.init(label: label, value: value))
         }
-    }
 
-    @ViewBuilder
-    private func phoneSection(_ contact: Contact) -> some View {
-        if !contact.phoneNumbers.isEmpty {
-            Section("Phone") {
-                ForEach(Array(contact.phoneNumbers.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(localizedLabel(item.label), value: item.value)
-                }
-            }
+        // Work
+        let workParts: [(String, String)] = [
+            ("job title", contact.jobTitle),
+            ("department", contact.departmentName),
+            ("organization", contact.organizationName),
+            ("phonetic organization", contact.phoneticOrganizationName),
+        ]
+        for (label, value) in workParts where !value.isEmpty {
+            rows.append(.init(label: label, value: value))
         }
-    }
 
-    @ViewBuilder
-    private func emailSection(_ contact: Contact) -> some View {
-        if !contact.emailAddresses.isEmpty {
-            Section("Email") {
-                ForEach(Array(contact.emailAddresses.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(localizedLabel(item.label), value: item.value)
-                }
-            }
+        // Phones, emails, URLs (user-facing only — guesswho:// lives in DEBUG)
+        for item in contact.phoneNumbers {
+            rows.append(.init(label: localizedLabel(item.label), value: item.value))
         }
-    }
+        for item in contact.emailAddresses {
+            rows.append(.init(label: localizedLabel(item.label), value: item.value))
+        }
+        for item in contact.urlAddresses where SidecarKey.parseGuessWhoContactURL(item.value) == nil {
+            rows.append(.init(label: localizedLabel(item.label), value: item.value))
+        }
 
-    @ViewBuilder
-    private func addressSection(_ contact: Contact) -> some View {
-        if !contact.postalAddresses.isEmpty {
-            Section("Address") {
-                ForEach(Array(contact.postalAddresses.enumerated()), id: \.offset) { _, item in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(localizedLabel(item.label))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(formatPostalAddress(item.value))
-                    }
-                }
-            }
+        // Postal addresses
+        for item in contact.postalAddresses {
+            rows.append(.init(label: localizedLabel(item.label), value: formatPostalAddress(item.value)))
         }
-    }
 
-    @ViewBuilder
-    private func urlSection(_ contact: Contact) -> some View {
-        // GuessWho's internal guesswho:// URLs are an implementation
-        // detail; the user-facing URL list omits them and they appear
-        // in the DEBUG section instead.
-        let userURLs = contact.urlAddresses.filter {
-            SidecarKey.parseGuessWhoContactURL($0.value) == nil
+        // Dates
+        if let bday = contact.birthday {
+            rows.append(.init(label: "birthday", value: formatDateComponents(bday)))
         }
-        if !userURLs.isEmpty {
-            Section("URL") {
-                ForEach(Array(userURLs.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(localizedLabel(item.label), value: item.value)
-                }
-            }
+        if let nonGreg = contact.nonGregorianBirthday {
+            rows.append(.init(label: "non-gregorian birthday", value: formatDateComponents(nonGreg)))
         }
-    }
+        for item in contact.dates {
+            rows.append(.init(label: localizedLabel(item.label), value: formatDateComponents(item.value)))
+        }
 
-    @ViewBuilder
-    private func datesSection(_ contact: Contact) -> some View {
-        let hasAnyDate = contact.birthday != nil
-            || contact.nonGregorianBirthday != nil
-            || !contact.dates.isEmpty
-
-        if hasAnyDate {
-            Section("Dates") {
-                if let bday = contact.birthday {
-                    LabeledContent("Birthday", value: formatDateComponents(bday))
-                }
-                if let nonGreg = contact.nonGregorianBirthday {
-                    LabeledContent("Non-Gregorian Birthday", value: formatDateComponents(nonGreg))
-                }
-                ForEach(Array(contact.dates.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(localizedLabel(item.label), value: formatDateComponents(item.value))
-                }
-            }
+        // Social, IM, relations
+        for item in contact.socialProfiles {
+            rows.append(.init(label: socialProfileLabel(item), value: socialProfileValue(item.value)))
         }
-    }
-
-    @ViewBuilder
-    private func socialSection(_ contact: Contact) -> some View {
-        if !contact.socialProfiles.isEmpty {
-            Section("Social Profiles") {
-                ForEach(Array(contact.socialProfiles.enumerated()), id: \.offset) { _, item in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(socialProfileLabel(item))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(socialProfileValue(item.value))
-                    }
-                }
-            }
+        for item in contact.instantMessageAddresses {
+            rows.append(.init(label: instantMessageLabel(item), value: item.value.username))
         }
-    }
-
-    @ViewBuilder
-    private func instantMessageSection(_ contact: Contact) -> some View {
-        if !contact.instantMessageAddresses.isEmpty {
-            Section("Instant Message") {
-                ForEach(Array(contact.instantMessageAddresses.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(instantMessageLabel(item), value: item.value.username)
-                }
-            }
+        for item in contact.contactRelations {
+            rows.append(.init(label: localizedLabel(item.label), value: item.value.name))
         }
-    }
 
-    @ViewBuilder
-    private func relationsSection(_ contact: Contact) -> some View {
-        if !contact.contactRelations.isEmpty {
-            Section("Related") {
-                ForEach(Array(contact.contactRelations.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(localizedLabel(item.label), value: item.value.name)
-                }
-            }
-        }
+        return rows
     }
 
     #if DEBUG
     @ViewBuilder
     private func debugSection(_ contact: Contact) -> some View {
-        Section("Debug — Identity") {
-            LabeledContent("localID", value: contact.localID)
-            LabeledContent("Contact Type", value: contact.contactType.rawValue)
-            LabeledContent("Image Available", value: contact.imageDataAvailable ? "yes" : "no")
+        Section("Debug") {
+            InfoRow(label: "localID", value: contact.localID, monospaced: true)
+            InfoRow(label: "contact type", value: contact.contactType.rawValue)
+            InfoRow(label: "image available", value: contact.imageDataAvailable ? "yes" : "no")
+
             if let uuid = service.guessWhoUUID(in: contact) {
-                LabeledContent("GuessWho UUID", value: uuid)
+                InfoRow(label: "guesswho uuid", value: uuid, monospaced: true)
             } else if let reason = sidecarUnavailableReason {
-                LabeledContent("GuessWho UUID", value: "none — \(reason)")
+                InfoRow(label: "guesswho uuid", value: "none — \(reason)")
             } else {
-                LabeledContent("GuessWho UUID", value: "none")
+                InfoRow(label: "guesswho uuid", value: "none")
             }
-        }
 
-        let guessWhoURLs = contact.urlAddresses.filter {
-            $0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+            let guessWhoURLs = contact.urlAddresses.filter {
+                $0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+            }
+            ForEach(Array(guessWhoURLs.enumerated()), id: \.offset) { _, item in
+                InfoRow(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true)
+            }
+
+            reconcileRows
+            sidecarRows
         }
-        if !guessWhoURLs.isEmpty {
-            Section("Debug — GuessWho URLs") {
-                ForEach(Array(guessWhoURLs.enumerated()), id: \.offset) { _, item in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(localizedLabel(item.label))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(item.value)
-                            .font(.footnote.monospaced())
-                            .textSelection(.enabled)
-                    }
+    }
+
+    @ViewBuilder
+    private var reconcileRows: some View {
+        if let outcome = reconcileOutcome {
+            InfoRow(label: "reconcile: assigned uuid", value: outcome.assignedUUID ?? "—", monospaced: outcome.assignedUUID != nil)
+            InfoRow(
+                label: "reconcile: merged loser uuids",
+                value: outcome.mergedLoserUUIDs.isEmpty ? "—" : outcome.mergedLoserUUIDs.joined(separator: ", "),
+                monospaced: !outcome.mergedLoserUUIDs.isEmpty
+            )
+            InfoRow(
+                label: "reconcile: removed malformed urls",
+                value: outcome.removedMalformedURLs.isEmpty ? "—" : outcome.removedMalformedURLs.joined(separator: ", "),
+                monospaced: !outcome.removedMalformedURLs.isEmpty
+            )
+            InfoRow(
+                label: "reconcile: rewritten link ids",
+                value: outcome.rewrittenLinkIDs.isEmpty ? "—" : outcome.rewrittenLinkIDs.map(\.uuidString).joined(separator: ", "),
+                monospaced: !outcome.rewrittenLinkIDs.isEmpty
+            )
+            ForEach(Array(outcome.errors.enumerated()), id: \.offset) { _, err in
+                InfoRow(label: "reconcile error", value: err, valueColor: .red)
+            }
+        } else if let error = reconcileError {
+            InfoRow(label: "reconcile error", value: error, valueColor: .red)
+        } else {
+            InfoRow(label: "reconcile", value: "running…")
+        }
+    }
+
+    @ViewBuilder
+    private var sidecarRows: some View {
+        if let sidecar {
+            InfoRow(label: "sidecar: entity id", value: sidecar.entityID, monospaced: true)
+            InfoRow(label: "sidecar: schema version", value: String(sidecar.schemaVersion))
+            InfoRow(label: "sidecar: cells dropped on decode", value: String(sidecar.cellsDroppedOnDecode))
+            if sidecar.fields.isEmpty {
+                InfoRow(label: "sidecar fields", value: "(none)")
+            } else {
+                ForEach(Array(sidecar.fields.keys).sorted(), id: \.self) { name in
+                    InfoRow(label: "sidecar: \(name)", value: cellDescription(sidecar.fields[name]), monospaced: true)
                 }
             }
-        }
-
-        Section("Debug — Reconcile") {
-            if let outcome = reconcileOutcome {
-                LabeledContent("Assigned UUID", value: outcome.assignedUUID ?? "—")
-                LabeledContent("Merged loser UUIDs",
-                               value: outcome.mergedLoserUUIDs.isEmpty ? "—" : outcome.mergedLoserUUIDs.joined(separator: ", "))
-                LabeledContent("Removed malformed URLs",
-                               value: outcome.removedMalformedURLs.isEmpty ? "—" : outcome.removedMalformedURLs.joined(separator: ", "))
-                LabeledContent("Rewritten link IDs",
-                               value: outcome.rewrittenLinkIDs.isEmpty ? "—" : outcome.rewrittenLinkIDs.map(\.uuidString).joined(separator: ", "))
-                if !outcome.errors.isEmpty {
-                    ForEach(outcome.errors, id: \.self) { err in
-                        Text(err).foregroundStyle(.red)
-                    }
-                }
-            } else if let error = reconcileError {
-                Text(error).foregroundStyle(.red)
-            } else {
-                Text("Reconciling…").foregroundStyle(.secondary)
-            }
-        }
-
-        Section("Debug — Sidecar") {
-            if let sidecar {
-                LabeledContent("Entity ID", value: sidecar.entityID)
-                LabeledContent("Schema Version", value: String(sidecar.schemaVersion))
-                LabeledContent("Cells Dropped On Decode", value: String(sidecar.cellsDroppedOnDecode))
-                if sidecar.fields.isEmpty {
-                    Text("No fields").foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(sidecar.fields.keys).sorted(), id: \.self) { name in
-                        LabeledContent(name, value: cellDescription(sidecar.fields[name]))
-                    }
-                }
-            } else {
-                Text("No sidecar").foregroundStyle(.secondary)
-            }
+        } else {
+            InfoRow(label: "sidecar", value: "(none)")
         }
     }
     #endif
@@ -533,6 +457,30 @@ struct ContactDetailView: View {
                 return s
             }
             return "(complex)"
+        }
+    }
+}
+
+private struct InfoRowData {
+    let label: String
+    let value: String
+}
+
+private struct InfoRow: View {
+    let label: String
+    let value: String
+    var monospaced: Bool = false
+    var valueColor: Color? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(monospaced ? .footnote.monospaced() : .body)
+                .foregroundStyle(valueColor ?? .primary)
+                .textSelection(.enabled)
         }
     }
 }
