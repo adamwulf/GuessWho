@@ -1,4 +1,5 @@
 import SwiftUI
+import Contacts
 import GuessWhoSync
 
 struct ContactDetailView: View {
@@ -10,9 +11,9 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var sidecar: SidecarEnvelope?
     @State private var notesStore: NotesStore?
-    @State private var isReconciling = false
-    @State private var showConfirmReconcile = false
-    @State private var outcome: ReconcileOutcomeWrapper?
+    @State private var reconcileOutcome: IdentityReconcileReport.ContactOutcome?
+    @State private var reconcileError: String?
+    @State private var didAutoReconcile = false
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -38,33 +39,16 @@ struct ContactDetailView: View {
     var body: some View {
         Form {
             if let contact {
-                Section("Name") {
-                    LabeledContent("Display", value: displayName(for: contact))
-                    if !contact.givenName.isEmpty {
-                        LabeledContent("Given", value: contact.givenName)
-                    }
-                    if !contact.familyName.isEmpty {
-                        LabeledContent("Family", value: contact.familyName)
-                    }
-                    if !contact.organizationName.isEmpty {
-                        LabeledContent("Organization", value: contact.organizationName)
-                    }
-                }
-
-                Section("Identity") {
-                    LabeledContent("localID", value: contact.localID)
-                    if let uuid = service.guessWhoUUID(in: contact) {
-                        LabeledContent("GuessWho UUID", value: uuid)
-                    } else if let reason = sidecarUnavailableReason {
-                        Text("No GuessWho UUID. Reconcile is unavailable: \(reason)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("No GuessWho UUID. Tap Reconcile to assign one on this device.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                nameSection(contact)
+                workSection(contact)
+                phoneSection(contact)
+                emailSection(contact)
+                addressSection(contact)
+                urlSection(contact)
+                datesSection(contact)
+                socialSection(contact)
+                instantMessageSection(contact)
+                relationsSection(contact)
 
                 if let notesStore {
                     NotesSection(
@@ -78,41 +62,14 @@ struct ContactDetailView: View {
                     )
                 }
 
-                if let sidecar {
-                    Section("Sidecar Fields") {
-                        if sidecar.fields.isEmpty {
-                            Text("(empty)").foregroundStyle(.secondary)
-                        } else {
-                            ForEach(Array(sidecar.fields.keys).sorted(), id: \.self) { name in
-                                LabeledContent(name, value: cellDescription(sidecar.fields[name]))
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    Button {
-                        showConfirmReconcile = true
-                    } label: {
-                        if isReconciling {
-                            HStack {
-                                ProgressView()
-                                Text("Reconciling…")
-                            }
-                        } else {
-                            Text("Reconcile this contact")
-                        }
-                    }
-                    .disabled(isReconciling || isSidecarStorageUnavailable)
-                } footer: {
-                    Text("Reconcile assigns a GuessWho UUID if missing, merges duplicate UUIDs, and removes malformed GuessWho URLs. Other contacts are untouched.")
-                }
-
+                #if DEBUG
+                debugSection(contact)
+                #endif
             } else {
                 ProgressView()
             }
         }
-        .navigationTitle(contact.map { displayName(for: $0) } ?? "Contact")
+        .navigationTitle(contact?.displayName ?? "Contact")
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -141,6 +98,10 @@ struct ContactDetailView: View {
         }
         .task {
             await loadContact()
+            if !didAutoReconcile {
+                didAutoReconcile = true
+                await performReconcile()
+            }
         }
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop
@@ -148,33 +109,251 @@ struct ContactDetailView: View {
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
-        .confirmationDialog(
-            "Reconcile this contact?",
-            isPresented: $showConfirmReconcile,
-            titleVisibility: .visible
-        ) {
-            Button("Reconcile", role: .destructive) {
-                Task { await performReconcile() }
+    }
+
+    // MARK: - Sections
+
+    @ViewBuilder
+    private func nameSection(_ contact: Contact) -> some View {
+        let rows: [(String, String)] = [
+            ("Prefix", contact.namePrefix),
+            ("Given", contact.givenName),
+            ("Middle", contact.middleName),
+            ("Family", contact.familyName),
+            ("Previous Family", contact.previousFamilyName),
+            ("Suffix", contact.nameSuffix),
+            ("Nickname", contact.nickname),
+            ("Phonetic Given", contact.phoneticGivenName),
+            ("Phonetic Middle", contact.phoneticMiddleName),
+            ("Phonetic Family", contact.phoneticFamilyName),
+        ].filter { !$0.1.isEmpty }
+
+        if !rows.isEmpty {
+            Section("Name") {
+                LabeledContent("Display", value: contact.displayName)
+                ForEach(rows, id: \.0) { row in
+                    LabeledContent(row.0, value: row.1)
+                }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This may add or remove GuessWho URLs on this contact and merge any duplicate GuessWho sidecars. No other contact fields are modified.")
         }
-        .sheet(item: $outcome) { wrapper in
-            ReconcileOutcomeView(outcome: wrapper.outcome) {
-                outcome = nil
+    }
+
+    @ViewBuilder
+    private func workSection(_ contact: Contact) -> some View {
+        let rows: [(String, String)] = [
+            ("Job Title", contact.jobTitle),
+            ("Department", contact.departmentName),
+            ("Organization", contact.organizationName),
+            ("Phonetic Organization", contact.phoneticOrganizationName),
+        ].filter { !$0.1.isEmpty }
+
+        if !rows.isEmpty {
+            Section("Work") {
+                ForEach(rows, id: \.0) { row in
+                    LabeledContent(row.0, value: row.1)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func phoneSection(_ contact: Contact) -> some View {
+        if !contact.phoneNumbers.isEmpty {
+            Section("Phone") {
+                ForEach(Array(contact.phoneNumbers.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(localizedLabel(item.label), value: item.value)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func emailSection(_ contact: Contact) -> some View {
+        if !contact.emailAddresses.isEmpty {
+            Section("Email") {
+                ForEach(Array(contact.emailAddresses.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(localizedLabel(item.label), value: item.value)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func addressSection(_ contact: Contact) -> some View {
+        if !contact.postalAddresses.isEmpty {
+            Section("Address") {
+                ForEach(Array(contact.postalAddresses.enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(localizedLabel(item.label))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(formatPostalAddress(item.value))
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func urlSection(_ contact: Contact) -> some View {
+        // GuessWho's internal guesswho:// URLs are an implementation
+        // detail; the user-facing URL list omits them and they appear
+        // in the DEBUG section instead.
+        let userURLs = contact.urlAddresses.filter {
+            SidecarKey.parseGuessWhoContactURL($0.value) == nil
+        }
+        if !userURLs.isEmpty {
+            Section("URL") {
+                ForEach(Array(userURLs.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(localizedLabel(item.label), value: item.value)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func datesSection(_ contact: Contact) -> some View {
+        let hasAnyDate = contact.birthday != nil
+            || contact.nonGregorianBirthday != nil
+            || !contact.dates.isEmpty
+
+        if hasAnyDate {
+            Section("Dates") {
+                if let bday = contact.birthday {
+                    LabeledContent("Birthday", value: formatDateComponents(bday))
+                }
+                if let nonGreg = contact.nonGregorianBirthday {
+                    LabeledContent("Non-Gregorian Birthday", value: formatDateComponents(nonGreg))
+                }
+                ForEach(Array(contact.dates.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(localizedLabel(item.label), value: formatDateComponents(item.value))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func socialSection(_ contact: Contact) -> some View {
+        if !contact.socialProfiles.isEmpty {
+            Section("Social Profiles") {
+                ForEach(Array(contact.socialProfiles.enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(socialProfileLabel(item))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(socialProfileValue(item.value))
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func instantMessageSection(_ contact: Contact) -> some View {
+        if !contact.instantMessageAddresses.isEmpty {
+            Section("Instant Message") {
+                ForEach(Array(contact.instantMessageAddresses.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(instantMessageLabel(item), value: item.value.username)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func relationsSection(_ contact: Contact) -> some View {
+        if !contact.contactRelations.isEmpty {
+            Section("Related") {
+                ForEach(Array(contact.contactRelations.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(localizedLabel(item.label), value: item.value.name)
+                }
+            }
+        }
+    }
+
+    #if DEBUG
+    @ViewBuilder
+    private func debugSection(_ contact: Contact) -> some View {
+        Section("Debug — Identity") {
+            LabeledContent("localID", value: contact.localID)
+            LabeledContent("Contact Type", value: contact.contactType.rawValue)
+            LabeledContent("Image Available", value: contact.imageDataAvailable ? "yes" : "no")
+            if let uuid = service.guessWhoUUID(in: contact) {
+                LabeledContent("GuessWho UUID", value: uuid)
+            } else if let reason = sidecarUnavailableReason {
+                LabeledContent("GuessWho UUID", value: "none — \(reason)")
+            } else {
+                LabeledContent("GuessWho UUID", value: "none")
+            }
+        }
+
+        let guessWhoURLs = contact.urlAddresses.filter {
+            $0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+        }
+        if !guessWhoURLs.isEmpty {
+            Section("Debug — GuessWho URLs") {
+                ForEach(Array(guessWhoURLs.enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(localizedLabel(item.label))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(item.value)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+
+        Section("Debug — Reconcile") {
+            if let outcome = reconcileOutcome {
+                LabeledContent("Assigned UUID", value: outcome.assignedUUID ?? "—")
+                LabeledContent("Merged loser UUIDs",
+                               value: outcome.mergedLoserUUIDs.isEmpty ? "—" : outcome.mergedLoserUUIDs.joined(separator: ", "))
+                LabeledContent("Removed malformed URLs",
+                               value: outcome.removedMalformedURLs.isEmpty ? "—" : outcome.removedMalformedURLs.joined(separator: ", "))
+                LabeledContent("Rewritten link IDs",
+                               value: outcome.rewrittenLinkIDs.isEmpty ? "—" : outcome.rewrittenLinkIDs.map(\.uuidString).joined(separator: ", "))
+                if !outcome.errors.isEmpty {
+                    ForEach(outcome.errors, id: \.self) { err in
+                        Text(err).foregroundStyle(.red)
+                    }
+                }
+            } else if let error = reconcileError {
+                Text(error).foregroundStyle(.red)
+            } else {
+                Text("Reconciling…").foregroundStyle(.secondary)
+            }
+        }
+
+        Section("Debug — Sidecar") {
+            if let sidecar {
+                LabeledContent("Entity ID", value: sidecar.entityID)
+                LabeledContent("Schema Version", value: String(sidecar.schemaVersion))
+                LabeledContent("Cells Dropped On Decode", value: String(sidecar.cellsDroppedOnDecode))
+                if sidecar.fields.isEmpty {
+                    Text("No fields").foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(sidecar.fields.keys).sorted(), id: \.self) { name in
+                        LabeledContent(name, value: cellDescription(sidecar.fields[name]))
+                    }
+                }
+            } else {
+                Text("No sidecar").foregroundStyle(.secondary)
+            }
+        }
+    }
+    #endif
+
+    // MARK: - Loading & reconcile
+
+    private var sidecarUnavailableReason: String? {
+        if case .unavailable(let reason) = service.sidecarLocation { return reason }
+        return nil
     }
 
     private var isSidecarStorageUnavailable: Bool {
         if case .unavailable = service.sidecarLocation { return true }
         return false
-    }
-
-    private var sidecarUnavailableReason: String? {
-        if case .unavailable(let reason) = service.sidecarLocation { return reason }
-        return nil
     }
 
     private func loadContact() async {
@@ -200,22 +379,21 @@ struct ContactDetailView: View {
     }
 
     private func performReconcile() async {
-        isReconciling = true
-        defer { isReconciling = false }
+        guard !isSidecarStorageUnavailable else {
+            reconcileError = sidecarUnavailableReason ?? "Sidecar storage unavailable"
+            return
+        }
         do {
             let result = try service.reconcile(localID: localID)
-            outcome = ReconcileOutcomeWrapper(outcome: result)
+            reconcileOutcome = result
+            reconcileError = nil
             await loadContact()
         } catch {
-            outcome = ReconcileOutcomeWrapper(outcome: .init(
-                localID: localID,
-                assignedUUID: nil,
-                mergedLoserUUIDs: [],
-                removedMalformedURLs: [],
-                errors: ["\(error)"]
-            ))
+            reconcileError = "\(error)"
         }
     }
+
+    // MARK: - Notes
 
     private func beginEdit(_ note: ContactNote) {
         // Tapping a different row mid-edit commits the prior one first.
@@ -271,12 +449,70 @@ struct ContactDetailView: View {
         notesStore?.editNote(id, newBody: proposed)
     }
 
-    private func displayName(for contact: Contact) -> String {
-        let personName = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-        if !personName.isEmpty { return personName }
-        if !contact.organizationName.isEmpty { return contact.organizationName }
-        if !contact.nickname.isEmpty { return contact.nickname }
-        return "(Unnamed)"
+    // MARK: - Formatting
+
+    private func localizedLabel(_ raw: String) -> String {
+        if raw.isEmpty { return "other" }
+        return CNLabeledValue<NSString>.localizedString(forLabel: raw)
+    }
+
+    private func formatPostalAddress(_ address: PostalAddress) -> String {
+        let cn = CNMutablePostalAddress()
+        cn.street = address.street
+        cn.subLocality = address.subLocality
+        cn.city = address.city
+        cn.subAdministrativeArea = address.subAdministrativeArea
+        cn.state = address.state
+        cn.postalCode = address.postalCode
+        cn.country = address.country
+        cn.isoCountryCode = address.isoCountryCode
+        return CNPostalAddressFormatter.string(from: cn, style: .mailingAddress)
+    }
+
+    private func formatDateComponents(_ components: DateComponents) -> String {
+        if let date = Calendar(identifier: .gregorian).date(from: components) {
+            let style = Date.FormatStyle()
+                .year(.defaultDigits)
+                .month(.abbreviated)
+                .day(.defaultDigits)
+            return date.formatted(style)
+        }
+        var parts: [String] = []
+        if let y = components.year { parts.append(String(y)) }
+        if let m = components.month { parts.append(String(format: "%02d", m)) }
+        if let d = components.day { parts.append(String(format: "%02d", d)) }
+        return parts.isEmpty ? "—" : parts.joined(separator: "-")
+    }
+
+    private func socialProfileLabel(_ labeled: LabeledSocialProfile) -> String {
+        // The CN-provided per-profile label is usually empty; the service
+        // (twitter, linkedin, …) is the meaningful identifier here.
+        let service = labeled.value.service
+        if !labeled.label.isEmpty {
+            return localizedLabel(labeled.label)
+        }
+        if !service.isEmpty {
+            return service
+        }
+        return "social"
+    }
+
+    private func socialProfileValue(_ profile: SocialProfile) -> String {
+        if !profile.username.isEmpty { return profile.username }
+        if !profile.urlString.isEmpty { return profile.urlString }
+        if !profile.userIdentifier.isEmpty { return profile.userIdentifier }
+        return "—"
+    }
+
+    private func instantMessageLabel(_ labeled: LabeledInstantMessageAddress) -> String {
+        let service = labeled.value.service
+        if !labeled.label.isEmpty {
+            return localizedLabel(labeled.label)
+        }
+        if !service.isEmpty {
+            return service
+        }
+        return "im"
     }
 
     private func cellDescription(_ cell: SidecarCell?) -> String {
@@ -356,54 +592,6 @@ private struct NotesSection: View {
             .contextMenu {
                 Button("Delete", role: .destructive) {
                     deleteNote(note.id)
-                }
-            }
-        }
-    }
-}
-
-private struct ReconcileOutcomeWrapper: Identifiable {
-    let id = UUID()
-    let outcome: IdentityReconcileReport.ContactOutcome
-}
-
-private struct ReconcileOutcomeView: View {
-    let outcome: IdentityReconcileReport.ContactOutcome
-    let dismiss: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Result") {
-                    LabeledContent("localID", value: outcome.localID)
-                    if let uuid = outcome.assignedUUID {
-                        LabeledContent("Assigned UUID", value: uuid)
-                    } else {
-                        Text("No new UUID assigned.")
-                    }
-                }
-                if !outcome.mergedLoserUUIDs.isEmpty {
-                    Section("Merged loser UUIDs") {
-                        ForEach(outcome.mergedLoserUUIDs, id: \.self) { Text($0) }
-                    }
-                }
-                if !outcome.removedMalformedURLs.isEmpty {
-                    Section("Removed malformed URLs") {
-                        ForEach(outcome.removedMalformedURLs, id: \.self) { Text($0) }
-                    }
-                }
-                if !outcome.errors.isEmpty {
-                    Section("Errors") {
-                        ForEach(outcome.errors, id: \.self) {
-                            Text($0).foregroundStyle(.red)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Reconcile")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: dismiss)
                 }
             }
         }
