@@ -13,6 +13,7 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var sidecar: SidecarEnvelope?
     @State private var notesStore: NotesStore?
+    @State private var linksStore: ContactLinksStore?
     @State private var reconcileOutcome: IdentityReconcileReport.ContactOutcome?
     @State private var reconcileError: String?
     @State private var didAutoReconcile = false
@@ -55,6 +56,10 @@ struct ContactDetailView: View {
                         beginEdit: beginEdit(_:),
                         deleteNote: deleteNote(_:)
                     )
+                }
+
+                if let linksStore, let uuid = service.guessWhoUUID(in: contact) {
+                    ConnectionsSection(store: linksStore, contactUUID: uuid)
                 }
 
                 #if DEBUG
@@ -313,8 +318,14 @@ struct ContactDetailView: View {
                 } else {
                     notesStore?.reload()
                 }
+                if linksStore?.contactUUID != uuid {
+                    linksStore = ContactLinksStore(service: service, contactUUID: uuid)
+                } else {
+                    linksStore?.reload()
+                }
             } else {
                 notesStore = nil
+                linksStore = nil
             }
         }
     }

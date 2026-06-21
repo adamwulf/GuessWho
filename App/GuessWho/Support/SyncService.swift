@@ -167,6 +167,52 @@ final class SyncService {
         try sync.deleteNote(at: SidecarKey(kind: .contact, id: uuid), id: id)
     }
 
+    // MARK: - Contact Links
+
+    func contactLinks(forContactUUID uuid: String) -> [Link] {
+        guard let sync else { return [] }
+        do {
+            let all = try sync.links(at: SidecarKey(kind: .contact, id: uuid))
+            return all.filter { $0.deletedAt == nil }
+        } catch {
+            lastError = "links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    @discardableResult
+    func addContactLink(fromUUID: String, toUUID: String, note: String) throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addLink(
+            from: SidecarKey(kind: .contact, id: fromUUID),
+            to: SidecarKey(kind: .contact, id: toUUID),
+            note: note
+        )
+    }
+
+    func setContactLinkNote(id: UUID, note: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.setLinkNote(id: id, note: note)
+    }
+
+    func removeContactLink(id: UUID) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.removeLink(id: id)
+    }
+
+    /// Reverse of `guessWhoUUID(in:)`: finds the contact whose GuessWho URL
+    /// carries `uuid`. Returns nil if no current contact owns that UUID
+    /// (e.g. the contact was deleted from the address book).
+    func contact(forGuessWhoUUID uuid: String) -> Contact? {
+        let target = uuid.lowercased()
+        for contact in fetchAll() {
+            if let owned = guessWhoUUID(in: contact), owned == target {
+                return contact
+            }
+        }
+        return nil
+    }
+
     // MARK: - Private
 
     private static func resolveSidecarLocation() -> SidecarLocation {
