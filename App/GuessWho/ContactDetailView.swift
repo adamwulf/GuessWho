@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
+    @Environment(\.dismiss) private var dismiss
 
     let localID: String
 
@@ -112,7 +113,17 @@ struct ContactDetailView: View {
             }
         }
         .navigationTitle(contact.map { displayName(for: $0) } ?? "Contact")
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    commitActiveEdit()
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.backward")
+                }
+                .accessibilityLabel("Back")
+            }
             if isEditingAnything {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -130,6 +141,12 @@ struct ContactDetailView: View {
         }
         .task {
             await loadContact()
+        }
+        .onDisappear {
+            // Backstop for the edge-swipe-back gesture: the system pop
+            // bypasses our custom back button, so commit here too. A no-op
+            // if commitActiveEdit() already ran from a button tap.
+            commitActiveEdit()
         }
         .confirmationDialog(
             "Reconcile this contact?",
