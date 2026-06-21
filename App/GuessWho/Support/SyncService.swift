@@ -139,18 +139,32 @@ final class SyncService {
         return try sync.reconcileContactIdentity(localID: localID)
     }
 
-    func setField(_ name: String, value: JSONValue, forContactUUID uuid: String) throws {
-        guard let sync else {
-            throw SidecarUnavailableError()
+    // MARK: - Notes
+
+    func notes(forContactUUID uuid: String) -> [ContactNote] {
+        guard let sync else { return [] }
+        do {
+            return try sync.notes(at: SidecarKey(kind: .contact, id: uuid))
+        } catch {
+            lastError = "notes read failed: \(error.localizedDescription)"
+            return []
         }
-        try sync.setField(name, value: value, at: SidecarKey(kind: .contact, id: uuid))
     }
 
-    func sidecarEnvelope(forContactUUID uuid: String) throws -> SidecarEnvelope? {
-        guard let sync else {
-            throw SidecarUnavailableError()
-        }
-        return try sync.sidecar(at: SidecarKey(kind: .contact, id: uuid))
+    @discardableResult
+    func addNote(body: String, forContactUUID uuid: String) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addNote(at: SidecarKey(kind: .contact, id: uuid), body: body)
+    }
+
+    func editNote(id: UUID, newBody: String, forContactUUID uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.editNote(at: SidecarKey(kind: .contact, id: uuid), id: id, newBody: newBody)
+    }
+
+    func deleteNote(id: UUID, forContactUUID uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.deleteNote(at: SidecarKey(kind: .contact, id: uuid), id: id)
     }
 
     // MARK: - Private

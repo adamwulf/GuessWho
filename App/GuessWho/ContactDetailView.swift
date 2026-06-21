@@ -12,9 +12,6 @@ struct ContactDetailView: View {
     @State private var isReconciling = false
     @State private var showConfirmReconcile = false
     @State private var outcome: ReconcileOutcomeWrapper?
-    #if DEBUG
-    @State private var debugError: String?
-    #endif
 
     var body: some View {
         Form {
@@ -81,23 +78,6 @@ struct ContactDetailView: View {
                     Text("Reconcile assigns a GuessWho UUID if missing, merges duplicate UUIDs, and removes malformed GuessWho URLs. Other contacts are untouched.")
                 }
 
-                #if DEBUG
-                Section {
-                    Button("Write debug field") {
-                        writeDebugField()
-                    }
-                    .disabled(service.guessWhoUUID(in: contact) == nil || isSidecarStorageUnavailable)
-                    if let debugError {
-                        Text(debugError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                } header: {
-                    Text("Debug")
-                } footer: {
-                    Text("Writes a sidecar field 'lastReconciledAt' with the current ISO8601 timestamp. A JSON file should appear in the iCloud Documents folder. Disabled until this contact has a GuessWho UUID.")
-                }
-                #endif
             } else {
                 ProgressView()
             }
@@ -157,20 +137,6 @@ struct ContactDetailView: View {
         }
     }
 
-    #if DEBUG
-    private func writeDebugField() {
-        guard let contact, let uuid = service.guessWhoUUID(in: contact) else { return }
-        debugError = nil
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        do {
-            try service.setField("lastReconciledAt", value: .string(stamp), forContactUUID: uuid)
-            sidecar = service.sidecar(for: contact)
-        } catch {
-            debugError = "Write failed: \(error.localizedDescription)"
-        }
-    }
-    #endif
-
     private func performReconcile() async {
         isReconciling = true
         defer { isReconciling = false }
@@ -199,12 +165,8 @@ struct ContactDetailView: View {
 
     private func cellDescription(_ cell: SidecarCell?) -> String {
         guard let cell else { return "—" }
-        switch cell {
-        case .value(let value, _, _):
-            return jsonValueDescription(value)
-        case .tombstone:
-            return "(deleted)"
-        }
+        if cell.deletedAt != nil { return "(deleted)" }
+        return jsonValueDescription(cell.value)
     }
 
     private func jsonValueDescription(_ value: JSONValue) -> String {
