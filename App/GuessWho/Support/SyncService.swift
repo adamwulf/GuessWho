@@ -1,13 +1,7 @@
 import Foundation
 import Contacts
+import EventKit
 import GuessWhoSync
-
-// A no-op EventStoreProtocol so v0 of the app does not need EventKit
-// permission or even a calendar at all.
-final class NoopEventStore: EventStoreProtocol {
-    func fetchEvents(in interval: DateInterval) throws -> [Event] { [] }
-    func fetch(externalID: String) throws -> Event? { nil }
-}
 
 @MainActor
 @Observable
@@ -28,8 +22,16 @@ final class SyncService {
         case authorized
     }
 
+    enum EventsAuthorization: Equatable {
+        case notRequested
+        case denied
+        case restricted
+        case authorized
+    }
+
     private(set) var sidecarLocation: SidecarLocation
     private(set) var contactsAuthorization: ContactsAuthorization
+    private(set) var eventsAuthorization: EventsAuthorization
     private(set) var lastError: String?
 
     // Exposed so view-models that mint records carrying a writer ID
@@ -40,6 +42,8 @@ final class SyncService {
 
     private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
+    private let eventStore: EKEventStore
+    private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
 
     // Known v1 limitation: sidecarLocation and sync are resolved once
@@ -59,6 +63,11 @@ final class SyncService {
         let adapter = CNContactStoreAdapter(store: store)
         self.contactsAdapter = adapter
 
+        let ek = EKEventStore()
+        self.eventStore = ek
+        let ekAdapter = EKEventStoreAdapter(store: ek)
+        self.eventsAdapter = ekAdapter
+
         let location = Self.resolveSidecarLocation()
         self.sidecarLocation = location
 
@@ -70,7 +79,7 @@ final class SyncService {
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
                 contacts: adapter,
-                events: NoopEventStore(),
+                events: ekAdapter,
                 sidecars: sidecarStore,
                 deviceID: id
             )
@@ -79,6 +88,7 @@ final class SyncService {
         }
 
         self.contactsAuthorization = Self.readAuthorization()
+        self.eventsAuthorization = Self.readEventsAuthorization()
     }
 
     func requestContactsAccessIfNeeded() async {
@@ -99,6 +109,59 @@ final class SyncService {
             contactsAuthorization = .restricted
         @unknown default:
             contactsAuthorization = .denied
+        }
+    }
+
+    func requestEventsAccessIfNeeded() async {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        switch status {
+        case .fullAccess:
+            eventsAuthorization = .authorized
+        case .authorized:
+            // Pre-iOS-17 grant. Treat as authorized for read.
+            eventsAuthorization = .authorized
+        case .writeOnly:
+            // Write-only access does not let us read events; surface as denied.
+            eventsAuthorization = .denied
+        case .notDetermined:
+            do {
+                if #available(iOS 17.0, macCatalyst 17.0, macOS 14.0, *) {
+                    let granted = try await eventStore.requestFullAccessToEvents()
+                    eventsAuthorization = granted ? .authorized : .denied
+                } else {
+                    let granted = try await eventStore.requestAccess(to: .event)
+                    eventsAuthorization = granted ? .authorized : .denied
+                }
+            } catch {
+                eventsAuthorization = .denied
+                lastError = "Events access request failed: \(error.localizedDescription)"
+            }
+        case .denied:
+            eventsAuthorization = .denied
+        case .restricted:
+            eventsAuthorization = .restricted
+        @unknown default:
+            eventsAuthorization = .denied
+        }
+    }
+
+    func fetchEventsRange(from start: Date, to end: Date) -> [Event] {
+        guard eventsAuthorization == .authorized else { return [] }
+        do {
+            return try eventsAdapter.fetchEvents(in: DateInterval(start: start, end: end))
+        } catch {
+            lastError = "fetchEvents failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    func event(externalID: String) -> Event? {
+        guard eventsAuthorization == .authorized else { return nil }
+        do {
+            return try eventsAdapter.fetch(externalID: externalID)
+        } catch {
+            lastError = "event fetch failed: \(error.localizedDescription)"
+            return nil
         }
     }
 
@@ -167,6 +230,105 @@ final class SyncService {
         try sync.deleteNote(at: SidecarKey(kind: .contact, id: uuid), id: id)
     }
 
+    // MARK: - Contact Links
+
+    func contactLinks(forContactUUID uuid: String) -> [Link] {
+        guard let sync else { return [] }
+        do {
+            let all = try sync.links(at: SidecarKey(kind: .contact, id: uuid))
+            return all.filter { $0.deletedAt == nil }
+        } catch {
+            lastError = "links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    @discardableResult
+    func addContactLink(fromUUID: String, toUUID: String, note: String) throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addLink(
+            from: SidecarKey(kind: .contact, id: fromUUID),
+            to: SidecarKey(kind: .contact, id: toUUID),
+            note: note
+        )
+    }
+
+    func setContactLinkNote(id: UUID, note: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.setLinkNote(id: id, note: note)
+    }
+
+    func removeContactLink(id: UUID) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.removeLink(id: id)
+    }
+
+    /// Reverse of `guessWhoUUID(in:)`: finds the contact whose GuessWho URL
+    /// carries `uuid`. Returns nil if no current contact owns that UUID
+    /// (e.g. the contact was deleted from the address book).
+    func contact(forGuessWhoUUID uuid: String) -> Contact? {
+        let target = uuid.lowercased()
+        for contact in fetchAll() {
+            if let owned = guessWhoUUID(in: contact), owned == target {
+                return contact
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Contact ↔ Event links
+
+    func eventLinks(forContactUUID uuid: String) -> [Link] {
+        guard let sync else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: uuid)
+        do {
+            let all = try sync.links(at: endpoint)
+            return all.filter { link in
+                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
+            }
+        } catch {
+            lastError = "event links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    func contactLinks(forEventID externalID: String) -> [Link] {
+        guard let sync else { return [] }
+        let endpoint = SidecarKey(kind: .event, id: externalID)
+        do {
+            let all = try sync.links(at: endpoint)
+            return all.filter { link in
+                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
+            }
+        } catch {
+            lastError = "contact links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    @discardableResult
+    func addContactEventLink(contactUUID: String, eventID: String, note: String) throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addLink(
+            from: SidecarKey(kind: .contact, id: contactUUID),
+            to: SidecarKey(kind: .event, id: eventID),
+            note: note
+        )
+    }
+
+    func removeLink(id: UUID) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.removeLink(id: id)
+    }
+
+    static func otherEndpoint(of link: Link, from endpoint: SidecarKey) -> SidecarKey {
+        link.endpointA == endpoint ? link.endpointB : link.endpointA
+    }
+
+    func recordError(_ message: String) {
+        lastError = message
+    }
+
     // MARK: - Private
 
     private static func resolveSidecarLocation() -> SidecarLocation {
@@ -229,6 +391,17 @@ final class SyncService {
     private static func readAuthorization() -> ContactsAuthorization {
         switch CNContactStore.authorizationStatus(for: .contacts) {
         case .authorized, .limited: return .authorized
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notRequested
+        @unknown default: return .denied
+        }
+    }
+
+    private static func readEventsAuthorization() -> EventsAuthorization {
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .fullAccess, .authorized: return .authorized
+        case .writeOnly: return .denied
         case .denied: return .denied
         case .restricted: return .restricted
         case .notDetermined: return .notRequested

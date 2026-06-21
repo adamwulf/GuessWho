@@ -5,6 +5,7 @@ import GuessWhoSync
 
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
+    @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss
 
     let localID: String
@@ -12,9 +13,12 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var sidecar: SidecarEnvelope?
     @State private var notesStore: NotesStore?
+    @State private var linksStore: ContactLinksStore?
     @State private var reconcileOutcome: IdentityReconcileReport.ContactOutcome?
     @State private var reconcileError: String?
     @State private var didAutoReconcile = false
+    @State private var eventLinks: [ContactLink] = []
+    @State private var showingEventPicker = false
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -42,6 +46,8 @@ struct ContactDetailView: View {
             if let contact {
                 infoSection(contact)
 
+                referencedBySection(contact)
+
                 if let notesStore {
                     NotesSection(
                         store: notesStore,
@@ -53,6 +59,12 @@ struct ContactDetailView: View {
                         deleteNote: deleteNote(_:)
                     )
                 }
+
+                if let linksStore, let uuid = service.guessWhoUUID(in: contact) {
+                    ConnectionsSection(store: linksStore, contactUUID: uuid)
+                }
+
+                linkedEventsSection
 
                 #if DEBUG
                 debugSection(contact)
@@ -119,6 +131,31 @@ struct ContactDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func referencedBySection(_ contact: Contact) -> some View {
+        let backrefs = repository.contactsReferencing(contact: contact)
+        if !backrefs.isEmpty {
+            // Inbound relations read INVERSE: "Alice's mother is Bob"
+            // becomes, on Bob's screen, a row showing Alice with the
+            // descriptor "their mother" — i.e. Bob is Alice's mother.
+            // Promoting the contact name to primary and demoting the
+            // label to a "their <label>" caption keeps the direction
+            // unambiguous.
+            let rows = backrefs.map { entry in
+                InfoRowData.backReference(
+                    displayName: entry.contact.displayName,
+                    descriptor: "their \(localizedLabel(entry.label))",
+                    localID: entry.contact.localID
+                )
+            }
+            Section("Referenced By") {
+                ForEach(rows) { row in
+                    InfoRow(data: row)
+                }
+            }
+        }
+    }
+
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
@@ -165,8 +202,18 @@ struct ContactDetailView: View {
         for item in contact.instantMessageAddresses {
             rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
         }
+        let lookup = repository.lookupByDisplayName()
         for item in contact.contactRelations {
-            rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
+            let key = item.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !key.isEmpty, let match = lookup[key], match.localID != contact.localID {
+                rows.append(.contactLink(
+                    label: localizedLabel(item.label),
+                    displayName: match.displayName,
+                    localID: match.localID
+                ))
+            } else {
+                rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
+            }
         }
 
         return rows
@@ -247,6 +294,94 @@ struct ContactDetailView: View {
     }
     #endif
 
+    // MARK: - Linked events
+
+    @ViewBuilder
+    private var linkedEventsSection: some View {
+        Section("Linked Events") {
+            ForEach(eventLinks, id: \.id) { link in
+                linkedEventRow(link)
+            }
+            .onDelete { offsets in
+                let ids = offsets.map { eventLinks[$0].id }
+                for id in ids { removeEventLink(id) }
+            }
+            Button {
+                showingEventPicker = true
+            } label: {
+                Label("Add Event", systemImage: "calendar.badge.plus")
+            }
+            .disabled(contactUUID == nil)
+        }
+        .sheet(isPresented: $showingEventPicker) {
+            EventPickerSheet { event, note in
+                addEventLink(eventID: event.externalID, note: note)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkedEventRow(_ link: ContactLink) -> some View {
+        let other = otherEndpoint(of: link)
+        let event = service.event(externalID: other.id)
+        NavigationLink(value: EventReference(externalID: other.id)) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let event {
+                    Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                    Text(event.startDate, style: .date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("(Unknown event)")
+                        .foregroundStyle(.secondary)
+                }
+                if !link.note.isEmpty {
+                    Text(link.note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var contactUUID: String? {
+        guard let contact else { return nil }
+        return service.guessWhoUUID(in: contact)
+    }
+
+    private func otherEndpoint(of link: ContactLink) -> SidecarKey {
+        guard let uuid = contactUUID else { return link.endpointB }
+        let endpoint = SidecarKey(kind: .contact, id: uuid)
+        return SyncService.otherEndpoint(of: link, from: endpoint)
+    }
+
+    private func reloadEventLinks() {
+        guard let uuid = contactUUID else {
+            eventLinks = []
+            return
+        }
+        eventLinks = service.eventLinks(forContactUUID: uuid)
+    }
+
+    private func addEventLink(eventID: String, note: String) {
+        guard let uuid = contactUUID else { return }
+        do {
+            _ = try service.addContactEventLink(contactUUID: uuid, eventID: eventID, note: note)
+        } catch {
+            service.recordError("add contact-event link failed: \(error.localizedDescription)")
+        }
+        reloadEventLinks()
+    }
+
+    private func removeEventLink(_ id: UUID) {
+        do {
+            try service.removeLink(id: id)
+        } catch {
+            service.recordError("remove link failed: \(error.localizedDescription)")
+        }
+        reloadEventLinks()
+    }
+
     // MARK: - Loading & reconcile
 
     private var sidecarUnavailableReason: String? {
@@ -275,9 +410,16 @@ struct ContactDetailView: View {
                 } else {
                     notesStore?.reload()
                 }
+                if linksStore?.contactUUID != uuid {
+                    linksStore = ContactLinksStore(service: service, contactUUID: uuid)
+                } else {
+                    linksStore?.reload()
+                }
             } else {
                 notesStore = nil
+                linksStore = nil
             }
+            reloadEventLinks()
         }
     }
 
@@ -435,6 +577,8 @@ private struct InfoRowData: Identifiable {
         case url(urlString: String)
         case address(PostalAddress)
         case date(components: DateComponents, formatted: String)
+        case contactLink(displayName: String, localID: String)
+        case backReference(displayName: String, descriptor: String, localID: String)
     }
 
     let id = UUID()
@@ -459,6 +603,14 @@ private struct InfoRowData: Identifiable {
     static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
         InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
     }
+    static func contactLink(label: String, displayName: String, localID: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .contactLink(displayName: displayName, localID: localID))
+    }
+    static func backReference(displayName: String, descriptor: String, localID: String) -> InfoRowData {
+        // No top-line label here — the back-ref row's primary text is
+        // the contact name, with the descriptor as a small caption.
+        InfoRowData(label: "", kind: .backReference(displayName: displayName, descriptor: descriptor, localID: localID))
+    }
 }
 
 private struct InfoRow: View {
@@ -478,7 +630,45 @@ private struct InfoRow: View {
             AddressRow(label: data.label, address: address)
         case .date(let components, let formatted):
             tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
+        case .contactLink(let displayName, let localID):
+            contactLinkRow(label: data.label, displayName: displayName, localID: localID)
+        case .backReference(let displayName, let descriptor, let localID):
+            backReferenceRow(displayName: displayName, descriptor: descriptor, localID: localID)
         }
+    }
+
+    @ViewBuilder
+    private func backReferenceRow(displayName: String, descriptor: String, localID: String) -> some View {
+        // Inverse-relation row: contact name is primary tinted (the
+        // tappable target) and the descriptor reads "their <label>" in
+        // small caption so the relationship direction is unambiguous.
+        NavigationLink(value: ContactReference(localID: localID)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName)
+                    .foregroundStyle(.tint)
+                Text(descriptor)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func contactLinkRow(label: String, displayName: String, localID: String) -> some View {
+        // Match the tappable-row visual: label above, tinted value, whole
+        // row tappable. NavigationLink(value:) feeds the typed
+        // ContactReference navigation destination.
+        NavigationLink(value: ContactReference(localID: localID)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(displayName)
+                    .foregroundStyle(.tint)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -639,6 +829,90 @@ private struct AddressRow: View {
         let item = MKMapItem(placemark: placemark)
         item.name = formatted
         item.openInMaps(launchOptions: nil)
+    }
+}
+
+private struct EventPickerSheet: View {
+    @Environment(SyncService.self) private var service
+    @Environment(\.dismiss) private var dismiss
+
+    let onPick: (Event, String) -> Void
+
+    @State private var query: String = ""
+    @State private var events: [Event] = []
+    @State private var selection: Event?
+    @State private var note: String = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let selection {
+                    Form {
+                        Section("Event") {
+                            VStack(alignment: .leading) {
+                                Text(selection.title.isEmpty ? "(Untitled event)" : selection.title)
+                                Text(selection.startDate, style: .date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button("Change") { self.selection = nil }
+                                .buttonStyle(.borderless)
+                        }
+                        Section("Note") {
+                            TextField("Optional note", text: $note, axis: .vertical)
+                        }
+                    }
+                } else {
+                    List(filtered, id: \.externalID) { event in
+                        Button {
+                            selection = event
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                                Text(event.startDate, style: .date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .searchable(text: $query, prompt: "Search events")
+                }
+            }
+            .navigationTitle(selection == nil ? "Pick Event" : "Add Link")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                if let selection {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add") {
+                            onPick(selection, note.trimmingCharacters(in: .whitespacesAndNewlines))
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .task { loadEvents() }
+        }
+    }
+
+    private func loadEvents() {
+        let now = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
+        events = service.fetchEventsRange(from: start, to: end)
+            .sorted { $0.startDate < $1.startDate }
+    }
+
+    private var filtered: [Event] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return events }
+        let needle = trimmed.lowercased()
+        return events.filter { e in
+            e.title.lowercased().contains(needle)
+                || (e.location ?? "").lowercased().contains(needle)
+                || (e.notes ?? "").lowercased().contains(needle)
+        }
     }
 }
 

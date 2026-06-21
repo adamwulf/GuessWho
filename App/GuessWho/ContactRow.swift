@@ -11,7 +11,7 @@ struct ContactRow: View {
                 .font(.title2)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(contact.displayName)
+                nameLabel
                     .font(.body)
                 if hasGuessWhoUUID {
                     Text("GuessWho ✓")
@@ -25,6 +25,21 @@ struct ContactRow: View {
                 }
             }
         }
+    }
+
+    private var nameLabel: Text {
+        let given = contact.givenName.trimmingCharacters(in: .whitespaces)
+        let family = contact.familyName.trimmingCharacters(in: .whitespaces)
+        if !given.isEmpty, !family.isEmpty {
+            return Text(given + " ") + Text(family).fontWeight(.bold)
+        }
+        if !family.isEmpty {
+            return Text(family).fontWeight(.bold)
+        }
+        if !given.isEmpty {
+            return Text(given)
+        }
+        return Text(contact.displayName)
     }
 
     private var roleSubtitle: String {

@@ -11,26 +11,26 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
 
     public func fetchEvents(in interval: DateInterval) throws -> [Event] {
         let predicate = store.predicateForEvents(withStart: interval.start, end: interval.end, calendars: nil)
-        return store.events(matching: predicate).map(Self.toEvent)
+        return store.events(matching: predicate).compactMap(Self.toEvent)
     }
 
     public func fetch(externalID: String) throws -> Event? {
-        let items = store.calendarItems(withExternalIdentifier: externalID)
-        guard let event = items.compactMap({ $0 as? EKEvent }).first else {
-            return nil
-        }
+        guard let event = store.event(withIdentifier: externalID) else { return nil }
         return Self.toEvent(event)
     }
 
-    private static func toEvent(_ e: EKEvent) -> Event {
-        Event(
-            externalID: e.calendarItemExternalIdentifier ?? "",
+    private static func toEvent(_ e: EKEvent) -> Event? {
+        guard let id = e.eventIdentifier, !id.isEmpty else { return nil }
+        let location = (e.location?.isEmpty ?? true) ? nil : e.location
+        let notes = (e.notes?.isEmpty ?? true) ? nil : e.notes
+        return Event(
+            externalID: id,
             title: e.title ?? "",
             startDate: e.startDate,
             endDate: e.endDate,
             isAllDay: e.isAllDay,
-            location: e.location,
-            notes: e.notes
+            location: location,
+            notes: notes
         )
     }
 }
