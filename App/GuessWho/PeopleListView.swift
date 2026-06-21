@@ -39,7 +39,6 @@ struct PeopleListView: View {
         }
         .searchable(
             text: $repository.peopleSearch,
-            placement: .navigationBarDrawer(displayMode: .automatic),
             prompt: "Search people"
         )
         .refreshable { await repository.reload() }
