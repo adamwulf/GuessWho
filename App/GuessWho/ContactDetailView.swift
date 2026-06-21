@@ -210,38 +210,34 @@ private struct NotesSection: View {
 
     var body: some View {
         Section("Notes") {
-            if store.notes.isEmpty {
-                Text("No notes yet")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 8)
-            } else {
-                ForEach(store.notes, id: \.id) { note in
-                    row(for: note)
-                }
-                .onDelete { offsets in
-                    let ids = offsets.map { store.notes[$0].id }
-                    for id in ids {
-                        if editingID == id {
-                            cancelEdit()
-                        }
-                        store.deleteNote(id)
+            ForEach(store.notes, id: \.id) { note in
+                row(for: note)
+            }
+            .onDelete { offsets in
+                let ids = offsets.map { store.notes[$0].id }
+                for id in ids {
+                    if editingID == id {
+                        cancelEdit()
                     }
+                    store.deleteNote(id)
                 }
             }
 
-            HStack(alignment: .top) {
-                TextEditor(text: $newNoteText)
-                    .frame(minHeight: 32)
-                    .focused($newNoteFocused)
-                Button {
-                    submitNewNote()
-                } label: {
-                    Image(systemName: "paperplane.fill")
+            TextEditor(text: $newNoteText)
+                .frame(minHeight: 32)
+                .focused($newNoteFocused)
+                .scrollDismissesKeyboard(.interactively)
+                .toolbar {
+                    if newNoteFocused {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") {
+                                submitNewNote()
+                            }
+                            .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
                 }
-                .buttonStyle(.borderless)
-                .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
         }
     }
 
