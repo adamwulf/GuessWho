@@ -37,10 +37,6 @@ struct RootView: View {
                 }
             }
         }
-        .overlay(alignment: .bottom) {
-            SidecarLocationBanner(location: service.sidecarLocation)
-                .padding()
-        }
         .task {
             await service.requestContactsAccessIfNeeded()
             if service.contactsAuthorization == .authorized {
@@ -106,32 +102,3 @@ struct RootView: View {
     }
 }
 
-private struct SidecarLocationBanner: View {
-    let location: SyncService.SidecarLocation
-
-    var body: some View {
-        switch location {
-        case .iCloud:
-            EmptyView()
-        case .localFallback(_, let reason):
-            Label {
-                Text(reason).font(.footnote)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-            }
-            .padding(8)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        case .unavailable(let reason):
-            Label {
-                Text("Sidecar storage unavailable. Reconcile and sidecar reads are disabled. \(reason)")
-                    .font(.footnote)
-            } icon: {
-                Image(systemName: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-            }
-            .padding(8)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        }
-    }
-}

@@ -8,6 +8,12 @@ struct PeopleListView: View {
     var body: some View {
         let people = repository.people
         List {
+            if service.sidecarLocation.needsBanner {
+                SidecarLocationBanner(location: service.sidecarLocation)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
             ForEach(people, id: \.localID) { contact in
                 NavigationLink(value: contact.localID) {
                     ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)

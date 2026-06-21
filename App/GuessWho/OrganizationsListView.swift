@@ -8,6 +8,12 @@ struct OrganizationsListView: View {
     var body: some View {
         let orgs = repository.organizations
         List {
+            if service.sidecarLocation.needsBanner {
+                SidecarLocationBanner(location: service.sidecarLocation)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
             ForEach(orgs, id: \.localID) { contact in
                 NavigationLink(value: contact.localID) {
                     ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)
