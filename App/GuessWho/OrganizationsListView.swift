@@ -39,7 +39,6 @@ struct OrganizationsListView: View {
         }
         .searchable(
             text: $repository.organizationsSearch,
-            placement: .navigationBarDrawer(displayMode: .automatic),
             prompt: "Search organizations"
         )
         .refreshable { await repository.reload() }
