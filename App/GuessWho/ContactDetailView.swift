@@ -661,8 +661,11 @@ private struct NotesSection: View {
                 for id in ids { deleteNote(id) }
             }
 
-            TextEditor(text: $newNoteText)
-                .frame(minHeight: 32)
+            // TextField with axis: .vertical inherits the cell's default
+            // font + leading inset, so the editor lines up with the read
+            // rows above. TextEditor draws its own inset and looked
+            // shifted right.
+            TextField("Add a note", text: $newNoteText, axis: .vertical)
                 .focused(noteFocus, equals: .newNote)
         }
     }
@@ -670,8 +673,7 @@ private struct NotesSection: View {
     @ViewBuilder
     private func row(for note: ContactNote) -> some View {
         if editingID == note.id {
-            TextEditor(text: $draftBody)
-                .frame(minHeight: 44)
+            TextField("", text: $draftBody, axis: .vertical)
                 .focused(noteFocus, equals: .row(note.id))
         } else {
             // Wrap in a Button so the whole row — including the empty
