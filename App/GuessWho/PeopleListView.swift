@@ -6,7 +6,8 @@ struct PeopleListView: View {
     @Bindable var repository: ContactsRepository
 
     var body: some View {
-        let people = repository.people
+        let sections = repository.peopleSections
+        let isEmpty = sections.isEmpty
         List {
             if service.sidecarLocation.needsBanner {
                 SidecarLocationBanner(location: service.sidecarLocation)
@@ -14,18 +15,24 @@ struct PeopleListView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             }
-            ForEach(people, id: \.localID) { contact in
-                NavigationLink(value: contact.localID) {
-                    ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)
+            ForEach(sections, id: \.0) { letter, contacts in
+                Section {
+                    ForEach(contacts, id: \.localID) { contact in
+                        NavigationLink(value: contact.localID) {
+                            ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)
+                        }
+                    }
+                } header: {
+                    Text(letter)
                 }
             }
         }
         .overlay {
-            if repository.isLoading && people.isEmpty {
+            if repository.isLoading && isEmpty {
                 ProgressView()
-            } else if people.isEmpty && !repository.peopleSearch.isEmpty {
+            } else if isEmpty && !repository.peopleSearch.isEmpty {
                 ContentUnavailableView.search(text: repository.peopleSearch)
-            } else if people.isEmpty {
+            } else if isEmpty {
                 ContentUnavailableView(
                     "No People",
                     systemImage: "person.crop.circle.badge.questionmark",

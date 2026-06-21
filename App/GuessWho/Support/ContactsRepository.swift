@@ -51,6 +51,16 @@ final class ContactsRepository {
         filtered(matching: organizationsSearch, where: { $0.contactType == .organization })
     }
 
+    /// `people` grouped by section letter and sorted A-Z then "#".
+    var peopleSections: [(String, [Contact])] {
+        sectioned(people)
+    }
+
+    /// `organizations` grouped by section letter and sorted A-Z then "#".
+    var organizationsSections: [(String, [Contact])] {
+        sectioned(organizations)
+    }
+
     func contact(localID: String) -> Contact? {
         contacts.first { $0.localID == localID }
     }
@@ -65,7 +75,23 @@ final class ContactsRepository {
             .filter(predicate)
             .filter { $0.matches(searchQuery: query) }
             .sorted { lhs, rhs in
-                lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+                let primary = lhs.lastNameSortKey.localizedCaseInsensitiveCompare(rhs.lastNameSortKey)
+                if primary != .orderedSame { return primary == .orderedAscending }
+                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
+    }
+
+    private func sectioned(_ contacts: [Contact]) -> [(String, [Contact])] {
+        let grouped = Dictionary(grouping: contacts, by: { $0.sectionLetter })
+        return grouped
+            .map { ($0.key, $0.value) }
+            .sorted { lhs, rhs in
+                switch (lhs.0, rhs.0) {
+                case ("#", "#"): return false
+                case ("#", _): return false
+                case (_, "#"): return true
+                default: return lhs.0 < rhs.0
+                }
             }
     }
 }

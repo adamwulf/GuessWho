@@ -6,7 +6,8 @@ struct OrganizationsListView: View {
     @Bindable var repository: ContactsRepository
 
     var body: some View {
-        let orgs = repository.organizations
+        let sections = repository.organizationsSections
+        let isEmpty = sections.isEmpty
         List {
             if service.sidecarLocation.needsBanner {
                 SidecarLocationBanner(location: service.sidecarLocation)
@@ -14,18 +15,24 @@ struct OrganizationsListView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             }
-            ForEach(orgs, id: \.localID) { contact in
-                NavigationLink(value: contact.localID) {
-                    ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)
+            ForEach(sections, id: \.0) { letter, contacts in
+                Section {
+                    ForEach(contacts, id: \.localID) { contact in
+                        NavigationLink(value: contact.localID) {
+                            ContactRow(contact: contact, hasGuessWhoUUID: service.guessWhoUUID(in: contact) != nil)
+                        }
+                    }
+                } header: {
+                    Text(letter)
                 }
             }
         }
         .overlay {
-            if repository.isLoading && orgs.isEmpty {
+            if repository.isLoading && isEmpty {
                 ProgressView()
-            } else if orgs.isEmpty && !repository.organizationsSearch.isEmpty {
+            } else if isEmpty && !repository.organizationsSearch.isEmpty {
                 ContentUnavailableView.search(text: repository.organizationsSearch)
-            } else if orgs.isEmpty {
+            } else if isEmpty {
                 ContentUnavailableView(
                     "No Organizations",
                     systemImage: "building.2.crop.circle",
