@@ -82,15 +82,17 @@ final class ContactsRepository {
     }
 
     /// Inbound relations: every OTHER contact whose `contactRelations`
-    /// names this display name. Used by ContactDetailView's "Referenced
-    /// By" section. O(N·M) over the address book — fine at personal scale.
-    func contactsReferencing(displayName: String) -> [(contact: Contact, label: String)] {
-        let needle = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    /// names this contact's display name. Self-filtering keys on
+    /// `localID` — not displayName — so two distinct contacts that
+    /// happen to share a name (two "Chris Smith" entries) still see each
+    /// other's references. O(N·M) over the address book; fine at
+    /// personal scale.
+    func contactsReferencing(contact: Contact) -> [(contact: Contact, label: String)] {
+        let needle = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return [] }
         var results: [(contact: Contact, label: String)] = []
         for other in contacts {
-            let otherKey = other.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if otherKey == needle { continue }
+            if other.localID == contact.localID { continue }
             for relation in other.contactRelations {
                 let key = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if key == needle {

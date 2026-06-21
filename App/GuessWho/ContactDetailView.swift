@@ -124,12 +124,18 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func referencedBySection(_ contact: Contact) -> some View {
-        let backrefs = repository.contactsReferencing(displayName: contact.displayName)
+        let backrefs = repository.contactsReferencing(contact: contact)
         if !backrefs.isEmpty {
+            // Inbound relations read INVERSE: "Alice's mother is Bob"
+            // becomes, on Bob's screen, a row showing Alice with the
+            // descriptor "their mother" — i.e. Bob is Alice's mother.
+            // Promoting the contact name to primary and demoting the
+            // label to a "their <label>" caption keeps the direction
+            // unambiguous.
             let rows = backrefs.map { entry in
-                InfoRowData.contactLink(
-                    label: localizedLabel(entry.label),
+                InfoRowData.backReference(
                     displayName: entry.contact.displayName,
+                    descriptor: "their \(localizedLabel(entry.label))",
                     localID: entry.contact.localID
                 )
             }
@@ -468,6 +474,7 @@ private struct InfoRowData: Identifiable {
         case address(PostalAddress)
         case date(components: DateComponents, formatted: String)
         case contactLink(displayName: String, localID: String)
+        case backReference(displayName: String, descriptor: String, localID: String)
     }
 
     let id = UUID()
@@ -495,6 +502,11 @@ private struct InfoRowData: Identifiable {
     static func contactLink(label: String, displayName: String, localID: String) -> InfoRowData {
         InfoRowData(label: label, kind: .contactLink(displayName: displayName, localID: localID))
     }
+    static func backReference(displayName: String, descriptor: String, localID: String) -> InfoRowData {
+        // No top-line label here — the back-ref row's primary text is
+        // the contact name, with the descriptor as a small caption.
+        InfoRowData(label: "", kind: .backReference(displayName: displayName, descriptor: descriptor, localID: localID))
+    }
 }
 
 private struct InfoRow: View {
@@ -516,7 +528,26 @@ private struct InfoRow: View {
             tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
         case .contactLink(let displayName, let localID):
             contactLinkRow(label: data.label, displayName: displayName, localID: localID)
+        case .backReference(let displayName, let descriptor, let localID):
+            backReferenceRow(displayName: displayName, descriptor: descriptor, localID: localID)
         }
+    }
+
+    @ViewBuilder
+    private func backReferenceRow(displayName: String, descriptor: String, localID: String) -> some View {
+        // Inverse-relation row: contact name is primary tinted (the
+        // tappable target) and the descriptor reads "their <label>" in
+        // small caption so the relationship direction is unambiguous.
+        NavigationLink(value: localID) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName)
+                    .foregroundStyle(.tint)
+                Text(descriptor)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
