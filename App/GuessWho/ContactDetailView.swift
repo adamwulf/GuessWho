@@ -12,8 +12,27 @@ struct ContactDetailView: View {
     @State private var isReconciling = false
     @State private var showConfirmReconcile = false
     @State private var outcome: ReconcileOutcomeWrapper?
+
+    // Focus identity covers both the bottom new-note editor and any row
+    // currently being edited. Hoisted here so a single nav-bar checkmark
+    // can commit whichever edit is active and dismiss the keyboard.
+    fileprivate enum NoteFocus: Hashable {
+        case newNote
+        case row(UUID)
+    }
+    @FocusState private var noteFocus: NoteFocus?
     @State private var newNoteText: String = ""
-    @FocusState private var newNoteFocused: Bool
+    @State private var editingID: UUID?
+    @State private var draftBody: String = ""
+    // Body captured at edit-start, used by §12.5's no-op-tap rule: commit
+    // is a no-op only when the draft is unchanged from this snapshot —
+    // never the current on-disk value. Matters when a reconcile lands
+    // mid-edit and rewrites the on-disk body.
+    @State private var editStartSnapshot: String = ""
+
+    private var isEditingAnything: Bool {
+        noteFocus != nil
+    }
 
     var body: some View {
         Form {
@@ -50,7 +69,11 @@ struct ContactDetailView: View {
                     NotesSection(
                         store: notesStore,
                         newNoteText: $newNoteText,
-                        newNoteFocused: $newNoteFocused
+                        editingID: $editingID,
+                        draftBody: $draftBody,
+                        noteFocus: $noteFocus,
+                        beginEdit: beginEdit(_:),
+                        deleteNote: deleteNote(_:)
                     )
                 }
 
@@ -90,12 +113,17 @@ struct ContactDetailView: View {
         }
         .navigationTitle(contact.map { displayName(for: $0) } ?? "Contact")
         .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    submitNewNote()
+            if isEditingAnything {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        commitActiveEdit()
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .font(.title2)
+                    }
+                    .accessibilityLabel("Done")
                 }
-                .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .task {
@@ -170,16 +198,58 @@ struct ContactDetailView: View {
         }
     }
 
-    private func submitNewNote() {
+    private func beginEdit(_ note: ContactNote) {
+        // Tapping a different row mid-edit commits the prior one first.
+        if let editingID, editingID != note.id {
+            commitRowEditIfChanged()
+        }
+        editingID = note.id
+        draftBody = note.body
+        editStartSnapshot = note.body
+        noteFocus = .row(note.id)
+    }
+
+    private func deleteNote(_ id: UUID) {
+        if editingID == id {
+            editingID = nil
+            draftBody = ""
+            editStartSnapshot = ""
+            if case .row(let focused) = noteFocus, focused == id {
+                noteFocus = nil
+            }
+        }
+        notesStore?.deleteNote(id)
+    }
+
+    private func commitActiveEdit() {
+        switch noteFocus {
+        case .newNote:
+            commitNewNote()
+        case .row:
+            commitRowEditIfChanged()
+        case .none:
+            break
+        }
+        noteFocus = nil
+    }
+
+    private func commitNewNote() {
         let body = newNoteText
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let notesStore else {
-            newNoteFocused = false
-            return
-        }
+        guard !trimmed.isEmpty, let notesStore else { return }
         notesStore.addNote(body: body)
         newNoteText = ""
-        newNoteFocused = false
+    }
+
+    private func commitRowEditIfChanged() {
+        guard let id = editingID else { return }
+        let proposed = draftBody
+        let snapshot = editStartSnapshot
+        editingID = nil
+        draftBody = ""
+        editStartSnapshot = ""
+        if proposed == snapshot { return }
+        notesStore?.editNote(id, newBody: proposed)
     }
 
     private func displayName(for contact: Contact) -> String {
@@ -215,25 +285,11 @@ struct ContactDetailView: View {
 private struct NotesSection: View {
     let store: NotesStore
     @Binding var newNoteText: String
-    var newNoteFocused: FocusState<Bool>.Binding
-
-    // Focus identity for the row currently in edit mode. nil means no row
-    // is editing. The bottom "new note" editor uses its own focus state so
-    // editing a row doesn't fight with creating a new one.
-    private enum EditFocus: Hashable {
-        case row(UUID)
-    }
-
-    @FocusState private var editFocus: EditFocus?
-    @State private var editingID: UUID?
-    @State private var draftBody: String = ""
-    // The body captured at edit-start, used by §12.5's no-op-tap rule:
-    // commit is a no-op only when the draft is unchanged from this
-    // snapshot — never the current on-disk value. This matters when a
-    // reconcile lands mid-edit and rewrites the on-disk body — a user
-    // who only inspected must not silently win LWW against the
-    // reconciled-in change.
-    @State private var editStartSnapshot: String = ""
+    @Binding var editingID: UUID?
+    @Binding var draftBody: String
+    var noteFocus: FocusState<ContactDetailView.NoteFocus?>.Binding
+    let beginEdit: (ContactNote) -> Void
+    let deleteNote: (UUID) -> Void
 
     var body: some View {
         Section("Notes") {
@@ -242,37 +298,21 @@ private struct NotesSection: View {
             }
             .onDelete { offsets in
                 let ids = offsets.map { store.notes[$0].id }
-                for id in ids {
-                    if editingID == id {
-                        cancelEdit()
-                    }
-                    store.deleteNote(id)
-                }
+                for id in ids { deleteNote(id) }
             }
 
             TextEditor(text: $newNoteText)
                 .frame(minHeight: 32)
-                .focused(newNoteFocused)
+                .focused(noteFocus, equals: .newNote)
         }
     }
 
     @ViewBuilder
     private func row(for note: ContactNote) -> some View {
         if editingID == note.id {
-            HStack(alignment: .top) {
-                TextEditor(text: $draftBody)
-                    .frame(minHeight: 44)
-                    .focused($editFocus, equals: .row(note.id))
-                    .onChange(of: editFocus) { _, newValue in
-                        if newValue != .row(note.id), editingID == note.id {
-                            commitEditIfChanged()
-                        }
-                    }
-                Button("Done") {
-                    commitEditIfChanged()
-                }
-                .buttonStyle(.borderless)
-            }
+            TextEditor(text: $draftBody)
+                .frame(minHeight: 44)
+                .focused(noteFocus, equals: .row(note.id))
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(note.body)
@@ -296,41 +336,10 @@ private struct NotesSection: View {
             }
             .contextMenu {
                 Button("Delete", role: .destructive) {
-                    if editingID == note.id {
-                        cancelEdit()
-                    }
-                    store.deleteNote(note.id)
+                    deleteNote(note.id)
                 }
             }
         }
-    }
-
-    private func beginEdit(_ note: ContactNote) {
-        if let editingID, editingID != note.id {
-            commitEditIfChanged()
-        }
-        editingID = note.id
-        draftBody = note.body
-        editStartSnapshot = note.body
-        editFocus = .row(note.id)
-    }
-
-    private func commitEditIfChanged() {
-        guard let id = editingID else { return }
-        let proposed = draftBody
-        editingID = nil
-        draftBody = ""
-        let snapshot = editStartSnapshot
-        editStartSnapshot = ""
-        if proposed == snapshot { return }
-        store.editNote(id, newBody: proposed)
-    }
-
-    private func cancelEdit() {
-        editingID = nil
-        draftBody = ""
-        editStartSnapshot = ""
-        editFocus = nil
     }
 }
 
