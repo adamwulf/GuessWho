@@ -118,10 +118,12 @@ struct ContactDetailView: View {
                     Button {
                         commitActiveEdit()
                     } label: {
-                        Image(systemName: "checkmark.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .font(.title2)
+                        Image(systemName: "checkmark")
+                            .font(.subheadline.weight(.bold))
                     }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.circle)
+                    .controlSize(.small)
                     .accessibilityLabel("Done")
                 }
             }
