@@ -150,13 +150,13 @@ struct ContactDetailView: View {
         }
 
         if let bday = contact.birthday {
-            rows.append(.text(label: "birthday", value: formatDateComponents(bday)))
+            rows.append(.date(label: "birthday", components: bday, formatted: formatDateComponents(bday)))
         }
         if let nonGreg = contact.nonGregorianBirthday {
-            rows.append(.text(label: "non-gregorian birthday", value: formatDateComponents(nonGreg)))
+            rows.append(.date(label: "non-gregorian birthday", components: nonGreg, formatted: formatDateComponents(nonGreg)))
         }
         for item in contact.dates {
-            rows.append(.text(label: localizedLabel(item.label), value: formatDateComponents(item.value)))
+            rows.append(.date(label: localizedLabel(item.label), components: item.value, formatted: formatDateComponents(item.value)))
         }
 
         for item in contact.socialProfiles {
@@ -434,6 +434,7 @@ private struct InfoRowData: Identifiable {
         case email(address: String)
         case url(urlString: String)
         case address(PostalAddress)
+        case date(components: DateComponents, formatted: String)
     }
 
     let id = UUID()
@@ -455,6 +456,9 @@ private struct InfoRowData: Identifiable {
     static func address(label: String, address: PostalAddress) -> InfoRowData {
         InfoRowData(label: label, kind: .address(address))
     }
+    static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
+    }
 }
 
 private struct InfoRow: View {
@@ -472,6 +476,8 @@ private struct InfoRow: View {
             tappableRow(label: data.label, value: urlString, url: URL(string: urlString))
         case .address(let address):
             AddressRow(label: data.label, address: address)
+        case .date(let components, let formatted):
+            tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
         }
     }
 
@@ -514,6 +520,23 @@ private struct InfoRow: View {
         let cleaned = raw.filter { allowed.contains($0) }
         guard !cleaned.isEmpty else { return nil }
         return URL(string: "tel:\(cleaned)")
+    }
+
+    private func calendarURL(for components: DateComponents) -> URL? {
+        // Calendar's calshow: scheme takes seconds since 2001-01-01.
+        // Birthdays often lack a year; in that case land Calendar on
+        // this year's occurrence so the user sees the next/most recent
+        // one rather than year 1.
+        var resolved = components
+        if resolved.year == nil {
+            resolved.year = Calendar(identifier: .gregorian).component(.year, from: Date())
+        }
+        if resolved.hour == nil { resolved.hour = 12 }
+        if resolved.minute == nil { resolved.minute = 0 }
+        guard let date = Calendar(identifier: .gregorian).date(from: resolved) else {
+            return URL(string: "calshow:")
+        }
+        return URL(string: "calshow:\(Int(date.timeIntervalSinceReferenceDate))")
     }
 }
 
