@@ -87,7 +87,6 @@ final class ContactsRepository {
             .map { ($0.key, $0.value) }
             .sorted { lhs, rhs in
                 switch (lhs.0, rhs.0) {
-                case ("#", "#"): return false
                 case ("#", _): return false
                 case (_, "#"): return true
                 default: return lhs.0 < rhs.0

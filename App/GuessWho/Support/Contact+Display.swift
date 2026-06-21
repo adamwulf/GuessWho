@@ -27,14 +27,15 @@ extension Contact {
     }
 
     /// Section header letter for the contact list. Returns the first
-    /// A-Z letter of `lastNameSortKey` uppercased; anything else
-    /// (digits, symbols, non-Latin scripts, empty) buckets under "#".
+    /// A-Z letter of `lastNameSortKey` (diacritic-folded, uppercased);
+    /// anything else (digits, symbols, non-Latin scripts, empty)
+    /// buckets under "#".
     var sectionLetter: String {
         guard let scalar = lastNameSortKey.unicodeScalars.first(where: { !CharacterSet.whitespaces.contains($0) }) else {
             return "#"
         }
-        let upper = String(scalar).uppercased()
-        guard let first = upper.first, ("A"..."Z").contains(first) else {
+        let folded = String(scalar).folding(options: .diacriticInsensitive, locale: .current).uppercased()
+        guard let first = folded.first, ("A"..."Z").contains(first) else {
             return "#"
         }
         return String(first)
