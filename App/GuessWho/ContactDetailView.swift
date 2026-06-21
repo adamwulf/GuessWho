@@ -674,26 +674,33 @@ private struct NotesSection: View {
                 .frame(minHeight: 44)
                 .focused(noteFocus, equals: .row(note.id))
         } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(note.body)
-                HStack(spacing: 6) {
-                    Text(note.createdAt, format: .relative(presentation: .named))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if note.modifiedAt > note.createdAt {
-                        Text("edited")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
+            // Wrap in a Button so the whole row — including the empty
+            // trailing space of the Form cell — is the hit target.
+            // .plain keeps the visual styling intact; without it the row
+            // would adopt button tint colors.
+            Button {
+                beginEdit(note)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(note.body)
+                    HStack(spacing: 6) {
+                        Text(note.createdAt, format: .relative(presentation: .named))
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                        if note.modifiedAt > note.createdAt {
+                            Text("edited")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                beginEdit(note)
-            }
+            .buttonStyle(.plain)
             .contextMenu {
                 Button("Delete", role: .destructive) {
                     deleteNote(note.id)
