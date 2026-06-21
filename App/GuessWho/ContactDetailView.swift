@@ -5,6 +5,7 @@ import GuessWhoSync
 
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
+    @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss
 
     let localID: String
@@ -41,6 +42,8 @@ struct ContactDetailView: View {
         Form {
             if let contact {
                 infoSection(contact)
+
+                referencedBySection(contact)
 
                 if let notesStore {
                     NotesSection(
@@ -119,6 +122,25 @@ struct ContactDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func referencedBySection(_ contact: Contact) -> some View {
+        let backrefs = repository.contactsReferencing(displayName: contact.displayName)
+        if !backrefs.isEmpty {
+            let rows = backrefs.map { entry in
+                InfoRowData.contactLink(
+                    label: localizedLabel(entry.label),
+                    displayName: entry.contact.displayName,
+                    localID: entry.contact.localID
+                )
+            }
+            Section("Referenced By") {
+                ForEach(rows) { row in
+                    InfoRow(data: row)
+                }
+            }
+        }
+    }
+
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
@@ -165,8 +187,18 @@ struct ContactDetailView: View {
         for item in contact.instantMessageAddresses {
             rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
         }
+        let lookup = repository.lookupByDisplayName()
         for item in contact.contactRelations {
-            rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
+            let key = item.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !key.isEmpty, let match = lookup[key], match.localID != contact.localID {
+                rows.append(.contactLink(
+                    label: localizedLabel(item.label),
+                    displayName: match.displayName,
+                    localID: match.localID
+                ))
+            } else {
+                rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
+            }
         }
 
         return rows
@@ -435,6 +467,7 @@ private struct InfoRowData: Identifiable {
         case url(urlString: String)
         case address(PostalAddress)
         case date(components: DateComponents, formatted: String)
+        case contactLink(displayName: String, localID: String)
     }
 
     let id = UUID()
@@ -459,6 +492,9 @@ private struct InfoRowData: Identifiable {
     static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
         InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
     }
+    static func contactLink(label: String, displayName: String, localID: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .contactLink(displayName: displayName, localID: localID))
+    }
 }
 
 private struct InfoRow: View {
@@ -478,7 +514,26 @@ private struct InfoRow: View {
             AddressRow(label: data.label, address: address)
         case .date(let components, let formatted):
             tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
+        case .contactLink(let displayName, let localID):
+            contactLinkRow(label: data.label, displayName: displayName, localID: localID)
         }
+    }
+
+    @ViewBuilder
+    private func contactLinkRow(label: String, displayName: String, localID: String) -> some View {
+        // Match the tappable-row visual: label above, tinted value, whole
+        // row tappable. NavigationLink(value:) feeds the existing
+        // .navigationDestination(for: String.self) chain.
+        NavigationLink(value: localID) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(displayName)
+                    .foregroundStyle(.tint)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

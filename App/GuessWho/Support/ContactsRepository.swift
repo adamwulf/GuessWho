@@ -65,6 +65,42 @@ final class ContactsRepository {
         contacts.first { $0.localID == localID }
     }
 
+    // MARK: - Relation auto-linking
+
+    /// Build a map keyed by `displayName` lowercased + trimmed so
+    /// relation-text lookups can be O(1) per row. Multiple contacts can
+    /// share a display name in pathological address books — last one wins;
+    /// users with that case can disambiguate in Contacts.
+    func lookupByDisplayName() -> [String: Contact] {
+        var map: [String: Contact] = [:]
+        for contact in contacts {
+            let key = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty else { continue }
+            map[key] = contact
+        }
+        return map
+    }
+
+    /// Inbound relations: every OTHER contact whose `contactRelations`
+    /// names this display name. Used by ContactDetailView's "Referenced
+    /// By" section. O(N·M) over the address book — fine at personal scale.
+    func contactsReferencing(displayName: String) -> [(contact: Contact, label: String)] {
+        let needle = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        var results: [(contact: Contact, label: String)] = []
+        for other in contacts {
+            let otherKey = other.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if otherKey == needle { continue }
+            for relation in other.contactRelations {
+                let key = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if key == needle {
+                    results.append((contact: other, label: relation.label))
+                }
+            }
+        }
+        return results
+    }
+
     // MARK: - Filtering
 
     private func filtered(

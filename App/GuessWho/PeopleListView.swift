@@ -43,6 +43,7 @@ struct PeopleListView: View {
         .navigationTitle("People")
         .navigationDestination(for: String.self) { localID in
             ContactDetailView(localID: localID)
+                .environment(repository)
         }
         .searchable(
             text: $repository.peopleSearch,

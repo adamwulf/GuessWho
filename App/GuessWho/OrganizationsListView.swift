@@ -43,6 +43,7 @@ struct OrganizationsListView: View {
         .navigationTitle("Organizations")
         .navigationDestination(for: String.self) { localID in
             ContactDetailView(localID: localID)
+                .environment(repository)
         }
         .searchable(
             text: $repository.organizationsSearch,
