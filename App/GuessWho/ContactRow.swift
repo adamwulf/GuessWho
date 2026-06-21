@@ -5,6 +5,8 @@ struct ContactRow: View {
     let contact: Contact
     let hasGuessWhoUUID: Bool
 
+    @AppStorage(AppSettingsKey.debugModeEnabled) private var debugModeEnabled = false
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: contact.contactType == .organization ? "building.2.crop.circle.fill" : "person.crop.circle.fill")
@@ -13,7 +15,7 @@ struct ContactRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 nameLabel
                     .font(.body)
-                if hasGuessWhoUUID {
+                if debugModeEnabled, hasGuessWhoUUID {
                     Text("GuessWho ✓")
                         .font(.caption)
                         .foregroundStyle(.secondary)
