@@ -42,6 +42,7 @@ struct ConnectionsSection: View {
     @State private var draftNote: String = ""
     @State private var editStartSnapshot: String = ""
     @State private var showAddSheet = false
+    @State private var uuidToContact: [String: Contact] = [:]
     @FocusState private var editingFocus: UUID?
 
     var body: some View {
@@ -51,7 +52,7 @@ struct ConnectionsSection: View {
             }
             .onDelete { offsets in
                 let ids = offsets.map { store.links[$0].id }
-                for id in ids { store.remove(id: id) }
+                for id in ids { deleteLink(id) }
             }
 
             Button {
@@ -63,11 +64,11 @@ struct ConnectionsSection: View {
         .sheet(isPresented: $showAddSheet) {
             AddLinkSheet(currentContactUUID: contactUUID) { toUUID, note in
                 store.addLink(toUUID: toUUID, note: note)
+                refreshContactMap()
             }
         }
-        .onDisappear {
-            commitEditIfChanged()
-        }
+        .onAppear { refreshContactMap() }
+        .onChange(of: store.links.count) { _, _ in refreshContactMap() }
     }
 
     @ViewBuilder
@@ -76,13 +77,32 @@ struct ConnectionsSection: View {
             LinkRow(
                 link: link,
                 direction: direction,
+                otherContact: otherContact(for: direction),
                 isEditing: editingID == link.id,
                 draftNote: $draftNote,
                 editingFocus: $editingFocus,
                 onBeginEdit: { beginEdit(link) },
-                onDelete: { store.remove(id: link.id) }
+                onCommit: { commitEditIfChanged() },
+                onCancel: { cancelEdit() },
+                onDelete: { deleteLink(link.id) }
             )
         }
+    }
+
+    private func otherContact(for direction: LinkDirection) -> Contact? {
+        let endpoint = direction.other
+        guard endpoint.kind == .contact else { return nil }
+        return uuidToContact[endpoint.id]
+    }
+
+    private func refreshContactMap() {
+        var map: [String: Contact] = [:]
+        for contact in service.fetchAll() {
+            if let uuid = service.guessWhoUUID(in: contact) {
+                map[uuid] = contact
+            }
+        }
+        uuidToContact = map
     }
 
     private func beginEdit(_ link: ContactLink) {
@@ -102,28 +122,49 @@ struct ConnectionsSection: View {
         editingID = nil
         draftNote = ""
         editStartSnapshot = ""
+        editingFocus = nil
         if proposed == snapshot { return }
         store.setNote(id: id, note: proposed)
+    }
+
+    private func cancelEdit() {
+        editingID = nil
+        draftNote = ""
+        editStartSnapshot = ""
+        editingFocus = nil
+    }
+
+    private func deleteLink(_ id: UUID) {
+        // Clear edit state first: setLinkNote on a soft-deleted link
+        // undeletes it (§13 link API), so a pending edit must NOT be
+        // committed after the delete lands.
+        if editingID == id {
+            editingID = nil
+            draftNote = ""
+            editStartSnapshot = ""
+            editingFocus = nil
+        }
+        store.remove(id: id)
     }
 }
 
 private struct LinkRow: View {
-    @Environment(SyncService.self) private var service
-
     let link: ContactLink
     let direction: LinkDirection
+    let otherContact: Contact?
     let isEditing: Bool
     @Binding var draftNote: String
     var editingFocus: FocusState<UUID?>.Binding
     let onBeginEdit: () -> Void
+    let onCommit: () -> Void
+    let onCancel: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
             if isEditing {
-                TextField("", text: $draftNote, axis: .vertical)
-                    .focused(editingFocus, equals: link.id)
+                editor
             } else {
                 Button(action: onBeginEdit) {
                     noteAndTimestamp
@@ -140,7 +181,6 @@ private struct LinkRow: View {
 
     @ViewBuilder
     private var header: some View {
-        let endpoint = direction.other
         let symbol = direction.isOutgoing ? "arrow.right" : "arrow.left"
         let label = direction.isOutgoing ? "Introduced" : "Introduced By"
 
@@ -152,14 +192,14 @@ private struct LinkRow: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                otherContactView(endpoint: endpoint)
+                otherContactView
             }
         }
     }
 
     @ViewBuilder
-    private func otherContactView(endpoint: SidecarKey) -> some View {
-        if endpoint.kind == .contact, let other = service.contact(forGuessWhoUUID: endpoint.id) {
+    private var otherContactView: some View {
+        if let other = otherContact {
             NavigationLink(value: other.localID) {
                 Text(other.displayName)
                     .font(.body)
@@ -170,6 +210,23 @@ private struct LinkRow: View {
             Text("(Unknown contact)")
                 .font(.body)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("", text: $draftNote, axis: .vertical)
+                .focused(editingFocus, equals: link.id)
+            HStack(spacing: 12) {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("Done", action: onCommit)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
         }
     }
 
@@ -210,6 +267,8 @@ struct AddLinkSheet: View {
     @State private var noteText: String = ""
     @State private var selectedContactUUID: String?
     @State private var pickerSearch: String = ""
+    @State private var eligible: [EligibleContact] = []
+    @State private var didLoad = false
 
     var body: some View {
         NavigationStack {
@@ -219,8 +278,9 @@ struct AddLinkSheet: View {
                 }
 
                 Section("Contact") {
-                    let eligible = eligibleContacts()
-                    if eligible.isEmpty {
+                    if !didLoad {
+                        ProgressView()
+                    } else if eligible.isEmpty {
                         ContentUnavailableView(
                             "No Eligible Contacts",
                             systemImage: "person.crop.circle.badge.questionmark",
@@ -263,6 +323,12 @@ struct AddLinkSheet: View {
                     .disabled(selectedContactUUID == nil)
                 }
             }
+            .task {
+                if !didLoad {
+                    eligible = loadEligibleContacts()
+                    didLoad = true
+                }
+            }
         }
     }
 
@@ -272,7 +338,7 @@ struct AddLinkSheet: View {
         var localID: String { contact.localID }
     }
 
-    private func eligibleContacts() -> [EligibleContact] {
+    private func loadEligibleContacts() -> [EligibleContact] {
         var result: [EligibleContact] = []
         let target = currentContactUUID.lowercased()
         for contact in service.fetchAll() {
