@@ -426,7 +426,7 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func noteRow(_ note: ContactNote) -> some View {
         if editingNoteID == note.id {
-            ActivityRowLayout(systemImage: nil) {
+            ActivityRowLayout(systemImage: "text.rectangle") {
                 TextField("", text: $draftBody, axis: .vertical)
                     .focused($noteFocus, equals: .noteRow(note.id))
             }
@@ -434,7 +434,7 @@ struct ContactDetailView: View {
             Button {
                 beginEdit(note)
             } label: {
-                ActivityRowLayout(systemImage: nil) {
+                ActivityRowLayout(systemImage: "text.rectangle") {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(note.body)
                         HStack(spacing: 6) {
@@ -490,17 +490,29 @@ struct ContactDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if let event {
                         Text(event.title.isEmpty ? "(Untitled event)" : event.title)
-                        Text(event.startDate, style: .date)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.body)
+                            .foregroundStyle(.tint)
                     } else {
                         Text("(Unknown event)")
                             .foregroundStyle(.secondary)
                     }
                     if !link.note.isEmpty {
                         Text(link.note)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 6) {
+                        if let event {
+                            Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if link.modifiedAt > link.createdAt {
+                            Text("edited")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
