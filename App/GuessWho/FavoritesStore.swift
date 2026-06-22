@@ -1,0 +1,63 @@
+import Foundation
+import GuessWhoSync
+
+/// Thin app-side view model that exposes the ordered favorites list as a
+/// SwiftUI-observable property and routes mutations through SyncService.
+/// The authoritative store lives in the package
+/// (`GuessWhoSync.FavoritesStore`, a single JSON file). We reload after
+/// every mutation so the UI mirrors what `loadAll()` returns.
+///
+/// Naming: the package type is `FavoritesStore`, and the module name
+/// (`GuessWhoSync`) is shadowed by the package's orchestrator class of the
+/// same name — so `GuessWhoSync.FavoritesStore` resolves to a member of
+/// the class, not the module, and the qualification trick used elsewhere
+/// (e.g. `ContactLink = Link`) can't disambiguate here. We sidestep the
+/// collision by giving the app type a distinct suffix; mutations still
+/// route through `SyncService` exactly like `NotesStore` /
+/// `ContactLinksStore` do.
+@MainActor
+@Observable
+final class FavoritesListStore {
+    private let service: SyncService
+
+    private(set) var items: [Favorite] = []
+
+    init(service: SyncService) {
+        self.service = service
+        reload()
+    }
+
+    func reload() {
+        items = service.favorites()
+    }
+
+    func toggle(kind: FavoriteKind, id: String) {
+        do {
+            try service.toggleFavorite(kind: kind, id: id)
+        } catch {
+            // Sidecar storage unavailable or write failed — reload below
+            // shows what's on disk regardless.
+        }
+        reload()
+    }
+
+    func setOrder(_ items: [Favorite]) {
+        do {
+            try service.setFavoritesOrder(items)
+        } catch {
+            // ignore — reload reflects the truth
+        }
+        reload()
+    }
+
+    /// SwiftUI `.onMove` callback. Reorders the local list and persists.
+    func move(from source: IndexSet, to destination: Int) {
+        var reordered = items
+        reordered.move(fromOffsets: source, toOffset: destination)
+        setOrder(reordered)
+    }
+
+    func isFavorite(kind: FavoriteKind, id: String) -> Bool {
+        items.contains { $0.kind == kind && $0.id == id.lowercased() }
+    }
+}

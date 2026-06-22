@@ -6,6 +6,7 @@ import GuessWhoSync
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
+    @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
 
     let localID: String
@@ -133,6 +134,19 @@ struct ContactDetailView: View {
                 }
             }
             if !isEditingAnything, contact != nil {
+                // Star sits BEFORE Edit so the toolbar reads star, Edit.
+                // Disabled until reconcile has stamped a real GuessWho UUID
+                // onto the contact (matches `referencedBySection`'s gate
+                // and `contactLinks` footer button).
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        toggleFavorite()
+                    } label: {
+                        Image(systemName: isContactFavorited ? "star.fill" : "star")
+                    }
+                    .disabled(contactUUID == nil)
+                    .accessibilityLabel(isContactFavorited ? "Unfavorite" : "Favorite")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Edit") {
                         Task { await presentEditor() }
@@ -635,6 +649,16 @@ struct ContactDetailView: View {
     private var contactUUID: String? {
         guard let contact else { return nil }
         return service.guessWhoUUID(in: contact)
+    }
+
+    private var isContactFavorited: Bool {
+        guard let uuid = contactUUID else { return false }
+        return favoritesStore.isFavorite(kind: .contact, id: uuid)
+    }
+
+    private func toggleFavorite() {
+        guard let uuid = contactUUID else { return }
+        favoritesStore.toggle(kind: .contact, id: uuid)
     }
 
     private func otherEndpoint(of link: ContactLink) -> SidecarKey {

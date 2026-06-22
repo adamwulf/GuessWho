@@ -96,6 +96,19 @@ struct RootView: View {
                 Label("Events", systemImage: "calendar")
             }
 
+            NavigationStack {
+                FavoritesListView()
+            }
+            .tabItem {
+                Label("Favorites", systemImage: "star.fill")
+            }
+            // Favorites is the last visible tab on every shipping target
+            // (iOS / iPadOS / "Designed for iPad" on Mac). The Settings
+            // tab below is `#if os(macOS)`-only — it compiles in for the
+            // native macOS target. Reviewer R2: on a "Designed for iPad"
+            // Mac build, `os(macOS)` is false, so Settings never renders
+            // there and Favorites is simply the trailing tab.
+
             // On iOS/iPadOS the Debug toggle lives in the system Settings
             // app via the bundled Settings.bundle. Native macOS also
             // ignores Settings.bundle, so the in-app Settings tab is
