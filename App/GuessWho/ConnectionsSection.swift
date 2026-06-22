@@ -265,10 +265,11 @@ struct AddLinkSheet: View {
     let onSave: (_ toUUID: String, _ note: String) -> Void
 
     @State private var noteText: String = ""
-    @State private var selectedContactUUID: String?
+    @State private var selectedLocalID: String?
     @State private var pickerSearch: String = ""
     @State private var eligible: [EligibleContact] = []
     @State private var didLoad = false
+    @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
@@ -282,20 +283,20 @@ struct AddLinkSheet: View {
                         ProgressView()
                     } else if eligible.isEmpty {
                         ContentUnavailableView(
-                            "No Eligible Contacts",
+                            "No Contacts",
                             systemImage: "person.crop.circle.badge.questionmark",
-                            description: Text("No other contacts have a GuessWho identity yet. Open a contact to assign one.")
+                            description: Text("No other contacts are available to link.")
                         )
                     } else {
                         ForEach(filtered(eligible: eligible), id: \.localID) { entry in
                             Button {
-                                selectedContactUUID = entry.uuid
+                                selectedLocalID = entry.localID
                             } label: {
                                 HStack {
                                     Text(entry.contact.displayName)
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    if selectedContactUUID == entry.uuid {
+                                    if selectedLocalID == entry.localID {
                                         Image(systemName: "checkmark")
                                             .foregroundStyle(.tint)
                                     }
@@ -306,6 +307,12 @@ struct AddLinkSheet: View {
                         }
                     }
                 }
+
+                if let saveError {
+                    Section {
+                        Text(saveError).foregroundStyle(.red)
+                    }
+                }
             }
             .searchable(text: $pickerSearch, prompt: "Search contacts")
             .navigationTitle("Add Link")
@@ -314,13 +321,8 @@ struct AddLinkSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        if let toUUID = selectedContactUUID {
-                            onSave(toUUID, noteText)
-                            dismiss()
-                        }
-                    }
-                    .disabled(selectedContactUUID == nil)
+                    Button("Save") { save() }
+                        .disabled(selectedLocalID == nil)
                 }
             }
             .task {
@@ -334,17 +336,21 @@ struct AddLinkSheet: View {
 
     private struct EligibleContact {
         let contact: Contact
-        let uuid: String
-        var localID: String { contact.localID }
+        let localID: String
+        let existingUUID: String?
     }
 
     private func loadEligibleContacts() -> [EligibleContact] {
         var result: [EligibleContact] = []
         let target = currentContactUUID.lowercased()
         for contact in service.fetchAll() {
-            guard let uuid = service.guessWhoUUID(in: contact) else { continue }
-            if uuid == target { continue }
-            result.append(EligibleContact(contact: contact, uuid: uuid))
+            let existing = service.guessWhoUUID(in: contact)
+            if let existing, existing == target { continue }
+            result.append(EligibleContact(
+                contact: contact,
+                localID: contact.localID,
+                existingUUID: existing
+            ))
         }
         return result.sorted { lhs, rhs in
             lhs.contact.displayName.localizedCaseInsensitiveCompare(rhs.contact.displayName) == .orderedAscending
@@ -355,5 +361,28 @@ struct AddLinkSheet: View {
         let query = pickerSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         if query.isEmpty { return eligible }
         return eligible.filter { $0.contact.matches(searchQuery: query) }
+    }
+
+    private func save() {
+        guard let localID = selectedLocalID,
+              let entry = eligible.first(where: { $0.localID == localID }) else { return }
+        do {
+            let toUUID: String
+            if let existing = entry.existingUUID {
+                toUUID = existing
+            } else {
+                _ = try service.reconcile(localID: localID)
+                guard let fresh = service.fetchAll().first(where: { $0.localID == localID }),
+                      let assigned = service.guessWhoUUID(in: fresh) else {
+                    saveError = "Could not assign an identity to this contact."
+                    return
+                }
+                toUUID = assigned
+            }
+            onSave(toUUID, noteText)
+            dismiss()
+        } catch {
+            saveError = "Failed to save link: \(error.localizedDescription)"
+        }
     }
 }
