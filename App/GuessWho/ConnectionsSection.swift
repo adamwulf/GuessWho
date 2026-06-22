@@ -62,6 +62,11 @@ struct LinkRow: View {
             }
         }
         .contextMenu {
+            Button {
+                onBeginEdit()
+            } label: {
+                Label("Edit Note", systemImage: "pencil")
+            }
             Button("Delete", role: .destructive, action: onDelete)
         }
     }

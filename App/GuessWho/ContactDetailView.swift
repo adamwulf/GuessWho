@@ -456,6 +456,11 @@ struct ContactDetailView: View {
             }
             .buttonStyle(.plain)
             .contextMenu {
+                Button {
+                    beginEdit(note)
+                } label: {
+                    Label("Edit Note", systemImage: "pencil")
+                }
                 Button("Delete", role: .destructive) {
                     deleteNote(note.id)
                 }
@@ -485,36 +490,74 @@ struct ContactDetailView: View {
     private func linkedEventRow(_ link: ContactLink) -> some View {
         let other = otherEndpoint(of: link)
         let event = service.event(uuid: other.id)
-        NavigationLink(value: EventReference(eventUUID: other.id)) {
-            ActivityRowLayout(systemImage: "calendar") {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let event {
+        let isEditing = editingLinkID == link.id
+        ActivityRowLayout(systemImage: "calendar") {
+            VStack(alignment: .leading, spacing: 4) {
+                if let event {
+                    NavigationLink(value: EventReference(eventUUID: other.id)) {
                         Text(event.title.isEmpty ? "(Untitled event)" : event.title)
                             .font(.body)
                             .foregroundStyle(.tint)
-                    } else {
-                        Text("(Unknown event)")
-                            .foregroundStyle(.secondary)
                     }
-                    if !link.note.isEmpty {
-                        Text(link.note)
-                    }
-                    HStack(spacing: 6) {
-                        if let event {
-                            Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if link.modifiedAt > link.createdAt {
-                            Text("edited")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.15), in: Capsule())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text("(Unknown event)")
+                        .foregroundStyle(.secondary)
                 }
+
+                if isEditing {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("", text: $draftLinkNote, axis: .vertical)
+                            .focused($noteFocus, equals: .linkRow(link.id))
+                        HStack(spacing: 12) {
+                            Spacer()
+                            Button("Cancel", role: .cancel) { cancelLinkEdit() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            Button("Done") { commitLinkEditIfChanged() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                        }
+                    }
+                } else {
+                    Button {
+                        beginLinkEdit(link)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !link.note.isEmpty {
+                                Text(link.note)
+                            }
+                            HStack(spacing: 6) {
+                                if let event {
+                                    Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if link.modifiedAt > link.createdAt {
+                                    Text("edited")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.secondary.opacity(0.15), in: Capsule())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .contextMenu {
+            Button {
+                beginLinkEdit(link)
+            } label: {
+                Label("Edit Note", systemImage: "pencil")
+            }
+            Button("Delete", role: .destructive) {
+                removeEventLink(link.id)
             }
         }
     }
@@ -585,6 +628,17 @@ struct ContactDetailView: View {
     }
 
     private func removeEventLink(_ id: UUID) {
+        // Clear edit state first: setLinkNote on a soft-deleted link
+        // undeletes it (§13 link API), so a pending edit must NOT be
+        // committed after the delete lands.
+        if editingLinkID == id {
+            editingLinkID = nil
+            draftLinkNote = ""
+            editLinkStartSnapshot = ""
+            if case .linkRow(let focused) = noteFocus, focused == id {
+                noteFocus = nil
+            }
+        }
         do {
             try service.removeLink(id: id)
         } catch {
@@ -741,7 +795,16 @@ struct ContactDetailView: View {
             noteFocus = nil
         }
         if proposed == snapshot { return }
-        linksStore?.setNote(id: id, note: proposed)
+        if linksStore?.links.contains(where: { $0.id == id }) == true {
+            linksStore?.setNote(id: id, note: proposed)
+        } else if eventLinks.contains(where: { $0.id == id }) {
+            do {
+                try service.setContactLinkNote(id: id, note: proposed)
+                eventLinks = service.eventLinks(forContactUUID: contactUUID ?? "")
+            } catch {
+                service.recordError("set event-link note failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func cancelLinkEdit() {
