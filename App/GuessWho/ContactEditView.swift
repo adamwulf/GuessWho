@@ -7,12 +7,17 @@ import ContactsUI
 /// editing experience for the underlying `CNContact` fields, without our
 /// GuessWho-specific notes/links/events appearing in the editor.
 ///
-/// Completion semantics (per `CNContactViewControllerDelegate`):
-/// - `contact == nil`     → user deleted the contact. `onDelete` fires.
+/// Completion semantics:
 /// - `contact != nil`     → Done OR Cancel-of-existing. `onDone` fires.
 ///                          The two aren't distinguishable cheaply; we
 ///                          refresh unconditionally — a Cancel just re-reads
 ///                          unchanged state.
+/// - `contact == nil`     → observed to mean the user deleted the contact.
+///                          Apple's docs only describe the non-nil cases
+///                          explicitly, so the receiving side guards by
+///                          re-fetching and only popping if the contact is
+///                          actually gone (handles the rare case where this
+///                          observation doesn't hold).
 ///
 /// The VC does NOT auto-dismiss; the coordinator dismisses inside the
 /// delegate callback before firing the closure.

@@ -183,11 +183,14 @@ struct ContactDetailView: View {
 
     private func handleEditorDone() async {
         editingCNContact = nil
-        // performReconcile internally calls loadContact, so it refreshes
-        // local @State by itself. Reload the repository once after, so the
-        // list-view caches reflect any name/field changes — not before, so
-        // the contact-store isn't fetched twice in a row.
+        // Reconcile runs first so it can re-stamp our x-guesswho:// URL
+        // before any other read sees the post-edit state. It calls
+        // loadContact() on its success path; an explicit loadContact()
+        // afterward catches the reconcile-error case where it doesn't.
+        // Then reload the repository so the list-view caches reflect
+        // any name/field changes.
         await performReconcile()
+        await loadContact()
         await repository.reload()
     }
 
@@ -721,6 +724,16 @@ struct ContactDetailView: View {
             }
             reloadEventLinks()
             await refreshContactMap()
+        } else {
+            // Contact disappeared from the store (e.g. deleted via the
+            // edit sheet). Tear down sidecar-bound state so nothing keeps
+            // reading/writing a dead localID/UUID while the view animates
+            // away. Safe to nil regardless of whether the caller is about
+            // to dismiss — a re-load would reconstruct them.
+            sidecar = nil
+            notesStore = nil
+            linksStore = nil
+            eventLinks = []
         }
     }
 
