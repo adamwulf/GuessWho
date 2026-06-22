@@ -40,6 +40,8 @@ struct EventDetailView: View {
 
     @State private var newTagText: String = ""
 
+    @State private var favoritesStore: FavoritesListStore?
+
     init(eventUUID: String, eventKitID: String? = nil) {
         self.eventKitID = eventKitID
         _resolvedUUID = State(initialValue: eventUUID.lowercased())
@@ -58,8 +60,27 @@ struct EventDetailView: View {
             }
         }
         .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
-        .task { await reload() }
+        .task {
+            if favoritesStore == nil {
+                favoritesStore = FavoritesListStore(service: service)
+            }
+            await reload()
+        }
         .toolbar {
+            // Star sits BEFORE the existing Menu so the toolbar reads
+            // star, ellipsis. Disabled until the event resolves AND the
+            // sidecar UUID is real (post-adoption) — favoriting a
+            // synthetic stable-id would point at a sidecar that doesn't
+            // exist, and the user can adopt one tap away via the Menu.
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    toggleFavorite()
+                } label: {
+                    Image(systemName: isEventFavorited ? "star.fill" : "star")
+                }
+                .disabled(!canFavoriteEvent)
+                .accessibilityLabel(isEventFavorited ? "Unfavorite" : "Favorite")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {
@@ -283,6 +304,25 @@ struct EventDetailView: View {
                 Label("Delete event", systemImage: "trash")
             }
         }
+    }
+
+    private var canFavoriteEvent: Bool {
+        // Sidecar must already exist for `resolvedUUID` — the synthetic
+        // `Event.stableID(forEventKitID:)` an unadopted EventKit row carries
+        // has no sidecar, so `service.event(uuid:)` returns nil for it.
+        // After adoption, `resolvedUUID` is swapped to the real UUID and
+        // this becomes true.
+        event != nil && service.event(uuid: resolvedUUID) != nil
+    }
+
+    private var isEventFavorited: Bool {
+        guard let favoritesStore else { return false }
+        return favoritesStore.isFavorite(kind: .event, id: resolvedUUID)
+    }
+
+    private func toggleFavorite() {
+        guard canFavoriteEvent, let favoritesStore else { return }
+        favoritesStore.toggle(kind: .event, id: resolvedUUID)
     }
 
     private func reload() async {
