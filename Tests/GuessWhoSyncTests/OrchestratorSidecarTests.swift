@@ -20,25 +20,26 @@ struct OrchestratorSidecarTests {
         return (sync, events, sidecars)
     }
 
-    private func makeEvent(externalID: String = "EVT-1") -> Event {
+    private func makeEvent(eventKitID: String = "EVT-1") -> Event {
         Event(
-            externalID: externalID,
+            id: UUID(),
+            eventKitID: eventKitID,
             title: "WWDC Keynote",
             startDate: Date(timeIntervalSince1970: 1_700_000_000),
             endDate: Date(timeIntervalSince1970: 1_700_007_200),
             isAllDay: false,
             location: "Apple Park",
-            notes: "Original notes"
+            eventKitNotes: "Original notes"
         )
     }
 
     // MARK: - §9.7 Event sidecars
 
     @Test
-    func eventLookupByExternalID() throws {
+    func eventLookupByEventKitID() throws {
         let event = makeEvent()
         let events = InMemoryEventStore(events: [event])
-        let fetched = try events.fetch(externalID: event.externalID)
+        let fetched = try events.fetch(eventKitID: event.eventKitID!)
         #expect(fetched == event)
     }
 
@@ -51,11 +52,11 @@ struct OrchestratorSidecarTests {
         let key = SidecarKey.forEvent(event)
         let id = try sync.addField(at: key, field: "notes", type: .note, value: .string("hello"))
 
-        let after = try #require(try events.fetch(externalID: event.externalID))
+        let after = try #require(try events.fetch(eventKitID: event.eventKitID!))
         #expect(after == event)
 
         let envelope = try #require(try sidecars.read(key))
-        #expect(envelope.entityID == event.externalID)
+        #expect(envelope.entityID == event.id.uuidString.lowercased())
         let cell = try #require(envelope.fields[id.uuidString])
         #expect(cell.modifiedBy == deviceID)
         #expect(cell.deletedAt == nil)

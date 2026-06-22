@@ -155,10 +155,14 @@ final class SyncService {
         }
     }
 
+    // TODO(phase 5): rework per EVENT_STRATEGY_PLAN.md E2.1 — switch to
+    // `event(uuid:)` routed through the orchestrator's Option C projection.
+    // Minimal phase 1 change: rename the adapter call from `fetch(externalID:)`
+    // to `fetch(eventKitID:)` to satisfy the new EventStoreProtocol.
     func event(externalID: String) -> Event? {
         guard eventsAuthorization == .authorized else { return nil }
         do {
-            return try eventsAdapter.fetch(externalID: externalID)
+            return try eventsAdapter.fetch(eventKitID: externalID)
         } catch {
             lastError = "event fetch failed: \(error.localizedDescription)"
             return nil

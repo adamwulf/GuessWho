@@ -1,6 +1,56 @@
 import Foundation
 
 public protocol EventStoreProtocol {
+    // MARK: - Reads (EventKit-keyed)
+
+    /// All EventKit events intersecting `interval`. Each returned Event has
+    /// `eventKitID` set; `id` is a STABLE synthesized UUID derived from the
+    /// `eventKitID` (so SwiftUI / EventReference identity is stable across
+    /// repeat fetches). The orchestrator/app maps to the real sidecar UUID
+    /// via `eventKitID`. `isLinked == true`.
     func fetchEvents(in interval: DateInterval) throws -> [Event]
-    func fetch(externalID: String) throws -> Event?
+
+    /// One EventKit event by its `calendarItemExternalIdentifier`, or nil if
+    /// it no longer exists. The dual-namespace adapter implementation may
+    /// also resolve legacy `eventIdentifier` strings as a fallback so
+    /// dead-pointer migration rows still resolve when the EKEvent is later
+    /// re-found by `eventIdentifier`.
+    func fetch(eventKitID: String) throws -> Event?
+
+    /// EventKit events whose start falls on the given calendar day (host's
+    /// current calendar). Backs the link sheet's per-day sections.
+    func fetchEvents(on day: Date) throws -> [Event]
+
+    /// EventKit events matching `text` (title OR location, case-insensitive)
+    /// within `interval`. Backs the link sheet search. Empty `text` returns
+    /// all events in the interval.
+    func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event]
+
+    // MARK: - Writes (linked events only; Option C)
+
+    /// Create a brand-new EventKit event from the given fields in the host's
+    /// default calendar. Returns the created event (with `eventKitID`
+    /// populated). Used when the user creates an event that SHOULD land in
+    /// their calendar. (Manual "Add Other" events do NOT call this — they
+    /// are sidecar-only.)
+    func createEvent(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws -> Event
+
+    /// Update an existing EventKit event's title/start/end/location/isAllDay.
+    /// Partial-update semantics: fetch the existing EKEvent, mutate only
+    /// these fields, commit. Throws if `eventKitID` no longer resolves to a
+    /// live event. Notes are NOT written (GuessWho notes live in the sidecar).
+    func updateEvent(
+        eventKitID: String,
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws
 }
