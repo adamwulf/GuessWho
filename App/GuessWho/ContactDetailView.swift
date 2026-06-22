@@ -23,6 +23,7 @@ struct ContactDetailView: View {
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
     @State private var editingCNContact: EditingCNContact?
+    @State private var editFetchErrorMessage: String?
 
     private struct EditingCNContact: Identifiable {
         let contact: CNContact
@@ -146,6 +147,14 @@ struct ContactDetailView: View {
             )
             .ignoresSafeArea()
         }
+        .alert("Couldn't open editor", isPresented: Binding(
+            get: { editFetchErrorMessage != nil },
+            set: { if !$0 { editFetchErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { editFetchErrorMessage = nil }
+        } message: {
+            Text(editFetchErrorMessage ?? "")
+        }
         .task {
             await loadContact()
             if !didAutoReconcile {
@@ -168,22 +177,31 @@ struct ContactDetailView: View {
             let cn = try service.fetchCNContactForEditing(localID: localID)
             editingCNContact = EditingCNContact(contact: cn)
         } catch {
-            service.recordError("fetch CNContact for editing failed: \(error.localizedDescription)")
+            editFetchErrorMessage = error.localizedDescription
         }
     }
 
     private func handleEditorDone() async {
         editingCNContact = nil
-        await repository.reload()
-        // Reconcile re-stamps our x-guesswho:// URL if the editor stripped
-        // it, and internally calls loadContact() to refresh @State.
+        // performReconcile internally calls loadContact, so it refreshes
+        // local @State by itself. Reload the repository once after, so the
+        // list-view caches reflect any name/field changes — not before, so
+        // the contact-store isn't fetched twice in a row.
         await performReconcile()
+        await repository.reload()
     }
 
     private func handleEditorDelete() async {
         editingCNContact = nil
         await repository.reload()
-        dismiss()
+        await loadContact()
+        // If the underlying contact really is gone, pop. If reload didn't
+        // confirm the delete (rare; CNContactViewController may have
+        // declared completion before the save propagated), keep the view
+        // up — the user can hit back manually instead of getting bounced.
+        if contact == nil {
+            dismiss()
+        }
     }
 
     // MARK: - Sections
