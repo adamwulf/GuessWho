@@ -314,9 +314,9 @@ struct ContactDetailView: View {
             .disabled(contactUUID == nil)
         }
         .sheet(isPresented: $showingEventPicker) {
-            EventPickerSheet { event, note in
-                addEventLink(eventUUID: event.id.uuidString, note: note)
-            }
+            EventLinkSheet(mode: .link(onLinked: { eventUUID, note in
+                addEventLink(eventUUID: eventUUID, note: note)
+            }))
         }
     }
 
@@ -840,93 +840,6 @@ private struct AddressRow: View {
     }
 }
 
-// TODO(phase 7): replace with the shared `EventLinkSheet` (E3) in
-// link-to-existing mode. The sheet will be configured to call back with an
-// event UUID (linking an existing EventKit event mints/returns a sidecar
-// UUID via `service.linkEvent(toEventKitID:)`).
-private struct EventPickerSheet: View {
-    @Environment(SyncService.self) private var service
-    @Environment(\.dismiss) private var dismiss
-
-    let onPick: (Event, String) -> Void
-
-    @State private var query: String = ""
-    @State private var events: [Event] = []
-    @State private var selection: Event?
-    @State private var note: String = ""
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if let selection {
-                    Form {
-                        Section("Event") {
-                            VStack(alignment: .leading) {
-                                Text(selection.title.isEmpty ? "(Untitled event)" : selection.title)
-                                Text(selection.startDate, style: .date)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Button("Change") { self.selection = nil }
-                                .buttonStyle(.borderless)
-                        }
-                        Section("Note") {
-                            TextField("Optional note", text: $note, axis: .vertical)
-                        }
-                    }
-                } else {
-                    List(filtered, id: \.id) { event in
-                        Button {
-                            selection = event
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(event.title.isEmpty ? "(Untitled event)" : event.title)
-                                Text(event.startDate, style: .date)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .searchable(text: $query, prompt: "Search events")
-                }
-            }
-            .navigationTitle(selection == nil ? "Pick Event" : "Add Link")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                if let selection {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Add") {
-                            onPick(selection, note.trimmingCharacters(in: .whitespacesAndNewlines))
-                            dismiss()
-                        }
-                    }
-                }
-            }
-            .task { loadEvents() }
-        }
-    }
-
-    private func loadEvents() {
-        let now = Date()
-        let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
-        let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
-        events = service.fetchEventsRange(from: start, to: end)
-            .sorted { $0.startDate < $1.startDate }
-    }
-
-    private var filtered: [Event] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return events }
-        let needle = trimmed.lowercased()
-        return events.filter { e in
-            e.title.lowercased().contains(needle)
-                || (e.location ?? "").lowercased().contains(needle)
-                || (e.eventKitNotes ?? "").lowercased().contains(needle)
-        }
-    }
-}
 
 private struct NotesSection: View {
     let store: NotesStore
