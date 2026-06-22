@@ -312,11 +312,11 @@ struct ContactDetailView: View {
                 Label("Add Event", systemImage: "calendar.badge.plus")
             }
             .disabled(contactUUID == nil)
-        }
-        .sheet(isPresented: $showingEventPicker) {
-            EventLinkSheet(mode: .link(onLinked: { eventUUID, note in
-                addEventLink(eventUUID: eventUUID, note: note)
-            }))
+            .sheet(isPresented: $showingEventPicker) {
+                EventLinkSheet(mode: .link(onLinked: { eventUUID, note in
+                    addEventLink(eventUUID: eventUUID, note: note)
+                }))
+            }
         }
     }
 

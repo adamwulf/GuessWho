@@ -60,11 +60,11 @@ struct ConnectionsSection: View {
             } label: {
                 Label("Add Link", systemImage: "plus.circle")
             }
-        }
-        .sheet(isPresented: $showAddSheet) {
-            AddLinkSheet(currentContactUUID: contactUUID) { toUUID, note in
-                store.addLink(toUUID: toUUID, note: note)
-                refreshContactMap()
+            .sheet(isPresented: $showAddSheet) {
+                AddLinkSheet(currentContactUUID: contactUUID) { toUUID, note in
+                    store.addLink(toUUID: toUUID, note: note)
+                    refreshContactMap()
+                }
             }
         }
         .onAppear { refreshContactMap() }
