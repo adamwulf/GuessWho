@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct PostalSection: View {
+struct PostalAddressRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
         Section("Address") {

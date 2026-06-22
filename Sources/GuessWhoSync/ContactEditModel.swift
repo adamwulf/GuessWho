@@ -111,9 +111,6 @@ public struct ContactEditModel: Equatable {
         if visible.count > originalVisibleCount {
             result.append(contentsOf: visible.suffix(visible.count - originalVisibleCount))
         }
-        // Defensive guard: visible bucket is smaller than originalVisibleCount
-        // implies deletions, already handled above.
-        _ = visibleIndex
         return result
     }
 
@@ -125,12 +122,18 @@ public struct ContactEditModel: Equatable {
     public static let birthdaySentinelYear: Int = 2000
 
     /// Convert the edited birthday `DateComponents` to a `Date` suitable
-    /// for SwiftUI's `DatePicker`. Uses a sentinel year when
-    /// `birthdayHasYear` is false. Returns nil if the components don't
-    /// resolve to a date (shouldn't happen for valid components).
+    /// for SwiftUI's `DatePicker`. Substitutes a sentinel year whenever
+    /// the underlying components lack one — regardless of
+    /// `birthdayHasYear` — so the picker always has a usable `Date` to
+    /// bind to. The save path (`setBirthday`) is what decides whether
+    /// the year ends up in the persisted `DateComponents`. This split
+    /// keeps the toggle's false→true transition safe: if the user flips
+    /// "Include year" on, `birthdayAsDate()` still resolves and
+    /// `setBirthday(from:)` then writes a real `year` value to
+    /// `edited.birthday`.
     public func birthdayAsDate(calendar: Calendar = .current) -> Date? {
         var components = edited.birthday ?? DateComponents()
-        if !birthdayHasYear {
+        if components.year == nil {
             components.year = Self.birthdaySentinelYear
         }
         return calendar.date(from: components)

@@ -43,9 +43,21 @@ struct LabelPicker: View {
         }
     }
 
+    /// Resolve a raw CN constant to a user-facing string. Tries the
+    /// label localizer first (`CNLabeledValue.localizedString(forLabel:)`),
+    /// then the social-service and IM-service localizers — those handle
+    /// constants like `CNSocialProfileServiceTwitter` /
+    /// `CNInstantMessageServiceAIM` that the label localizer doesn't
+    /// recognize. Falls back to the raw string if nothing matches.
     private func displayName(for raw: String) -> String {
         if raw.isEmpty { return "label" }
-        return CNLabeledValue<NSString>.localizedString(forLabel: raw)
+        let labelLocalized = CNLabeledValue<NSString>.localizedString(forLabel: raw)
+        if labelLocalized != raw { return labelLocalized }
+        let socialLocalized = CNSocialProfile.localizedString(forService: raw)
+        if socialLocalized != raw { return socialLocalized }
+        let imLocalized = CNInstantMessageAddress.localizedString(forService: raw)
+        if imLocalized != raw { return imLocalized }
+        return raw
     }
 }
 

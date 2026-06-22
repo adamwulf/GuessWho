@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct IMSection: View {
+struct IMRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
         Section("Instant Message") {

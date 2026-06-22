@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct NameSection: View {
+struct NameFieldsRow: View {
     @Binding var model: ContactEditModel
     @FocusState private var focus: NameField?
 

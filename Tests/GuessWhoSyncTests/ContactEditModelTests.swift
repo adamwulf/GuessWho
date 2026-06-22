@@ -138,7 +138,7 @@ struct ContactEditModelTests {
     }
 
     @Test("Birthday no-year roundtrip preserves month/day with no year on save")
-    func testBirthdayNoYearRoundtrip() {
+    func testBirthdayNoYearRoundtrip() throws {
         var original = DateComponents()
         original.month = 6
         original.day = 22
@@ -148,14 +148,11 @@ struct ContactEditModelTests {
 
         // Convert to Date for the DatePicker; sentinel year is in play
         // but invisible to the consumer.
-        let asDate = try? #require(model.birthdayAsDate(calendar: cal))
-        #expect(asDate != nil)
+        let asDate = try #require(model.birthdayAsDate(calendar: cal))
 
         // User clicks Save without changing anything: round-trip via
         // setBirthday should preserve month/day with no year.
-        if let asDate {
-            model.setBirthday(from: asDate, calendar: cal)
-        }
+        model.setBirthday(from: asDate, calendar: cal)
 
         #expect(model.edited.birthday?.year == nil)
         #expect(model.edited.birthday?.month == 6)
@@ -164,7 +161,7 @@ struct ContactEditModelTests {
     }
 
     @Test("Birthday with-year roundtrip preserves the year on save")
-    func testBirthdayWithYearRoundtrip() {
+    func testBirthdayWithYearRoundtrip() throws {
         var original = DateComponents()
         original.year = 1984
         original.month = 6
@@ -173,12 +170,61 @@ struct ContactEditModelTests {
         var model = ContactEditModel(original: contact)
         let cal = Calendar(identifier: .gregorian)
 
-        let asDate = try? #require(model.birthdayAsDate(calendar: cal))
-        if let asDate {
-            model.setBirthday(from: asDate, calendar: cal)
-        }
+        let asDate = try #require(model.birthdayAsDate(calendar: cal))
+        model.setBirthday(from: asDate, calendar: cal)
 
         #expect(model.edited.birthday?.year == 1984)
+        #expect(model.edited.birthday?.month == 6)
+        #expect(model.edited.birthday?.day == 22)
+    }
+
+    @Test("Toggling birthdayHasYear false→true on a no-year birthday adds a real year on save")
+    func testBirthdayHasYearToggleFalseToTrue() throws {
+        // Reviewer-found regression: with the previous birthdayAsDate()
+        // implementation, this sequence silently lost the year intent.
+        var original = DateComponents()
+        original.month = 6
+        original.day = 22
+        let contact = Contact(localID: "c", birthday: original)
+        var model = ContactEditModel(original: contact)
+        let cal = Calendar(identifier: .gregorian)
+        #expect(model.birthdayHasYear == false)
+
+        // User flips "Include year" on.
+        model.birthdayHasYear = true
+        // The DatePicker binding now reads birthdayAsDate() and feeds it
+        // back through setBirthday — that round trip MUST succeed and
+        // result in a real year being written.
+        let asDate = try #require(model.birthdayAsDate(calendar: cal))
+        model.setBirthday(from: asDate, calendar: cal)
+
+        // The saved birthday should now have a year (the sentinel, since
+        // the user didn't pick a new one — what matters is that a year
+        // IS present, not that the user lost their month/day).
+        #expect(model.edited.birthday?.year != nil)
+        #expect(model.edited.birthday?.month == 6)
+        #expect(model.edited.birthday?.day == 22)
+    }
+
+    @Test("Toggling birthdayHasYear true→false strips the year, preserving month/day")
+    func testBirthdayHasYearToggleTrueToFalse() throws {
+        var original = DateComponents()
+        original.year = 1984
+        original.month = 6
+        original.day = 22
+        let contact = Contact(localID: "c", birthday: original)
+        var model = ContactEditModel(original: contact)
+        let cal = Calendar(identifier: .gregorian)
+        #expect(model.birthdayHasYear == true)
+
+        // User flips "Include year" off; the row's toggle code re-writes
+        // the birthday via setBirthday so the stored components reflect
+        // the new shape.
+        model.birthdayHasYear = false
+        let asDate = try #require(model.birthdayAsDate(calendar: cal))
+        model.setBirthday(from: asDate, calendar: cal)
+
+        #expect(model.edited.birthday?.year == nil)
         #expect(model.edited.birthday?.month == 6)
         #expect(model.edited.birthday?.day == 22)
     }

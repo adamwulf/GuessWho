@@ -128,4 +128,52 @@ struct InMemoryContactStoreTests {
         let all = try await store.fetchAll()
         #expect(Set(all.map(\.localID)) == ["a", "b"])
     }
+
+    // MARK: - delete(localID:)
+
+    @Test
+    func deleteRemovesTheContact() async throws {
+        let contact = sampleContact()
+        let store = InMemoryContactStore(contacts: [contact])
+
+        try await store.delete(localID: contact.localID)
+
+        #expect(try await store.fetch(localID: contact.localID) == nil)
+    }
+
+    @Test
+    func deleteOfMissingIDThrowsContactNotFound() async throws {
+        let store = InMemoryContactStore()
+        await #expect(throws: ContactStoreError.self) {
+            try await store.delete(localID: "not-present")
+        }
+    }
+
+    @Test
+    func deleteDropsImageSidebandBytes() async throws {
+        let contact = sampleContact()
+        let store = InMemoryContactStore(contacts: [contact])
+        await store.setImageData(Data([0x01]), thumbnail: Data([0x02]), for: contact.localID)
+
+        try await store.delete(localID: contact.localID)
+
+        // The contact is gone; a subsequent loadImageData throws
+        // contactNotFound (which proves the image record was cleaned up
+        // along with the contact, not orphaned).
+        await #expect(throws: ContactStoreError.self) {
+            _ = try await store.loadImageData(localID: contact.localID)
+        }
+    }
+
+    @Test
+    func deleteOnlyAffectsTheTargetedContact() async throws {
+        let a = sampleContact(localID: "a")
+        let b = sampleContact(localID: "b")
+        let store = InMemoryContactStore(contacts: [a, b])
+
+        try await store.delete(localID: "a")
+
+        #expect(try await store.fetch(localID: "a") == nil)
+        #expect(try await store.fetch(localID: "b")?.localID == "b")
+    }
 }

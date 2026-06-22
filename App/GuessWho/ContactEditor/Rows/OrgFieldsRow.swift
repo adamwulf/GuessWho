@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct OrgSection: View {
+struct OrgFieldsRow: View {
     @Binding var model: ContactEditModel
     @FocusState private var focus: OrgField?
 

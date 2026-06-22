@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct PhoneSection: View {
+struct PhoneRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
         LabeledTextSection(
@@ -17,7 +17,7 @@ struct PhoneSection: View {
     }
 }
 
-struct EmailSection: View {
+struct EmailRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
         LabeledTextSection(
@@ -33,7 +33,7 @@ struct EmailSection: View {
     }
 }
 
-struct URLSection: View {
+struct URLRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
         LabeledTextSection(

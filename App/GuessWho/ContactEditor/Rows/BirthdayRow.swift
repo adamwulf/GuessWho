@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct BirthdaySection: View {
+struct BirthdayRow: View {
     @Binding var model: ContactEditModel
 
     var body: some View {

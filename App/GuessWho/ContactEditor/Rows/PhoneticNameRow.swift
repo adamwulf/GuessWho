@@ -1,7 +1,7 @@
 import SwiftUI
 import GuessWhoSync
 
-struct PhoneticSection: View {
+struct PhoneticNameRow: View {
     @Binding var model: ContactEditModel
     @State private var expanded = false
     @FocusState private var focus: PhoneticField?
