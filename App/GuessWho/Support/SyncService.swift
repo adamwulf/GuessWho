@@ -55,12 +55,14 @@ final class SyncService {
     // mid-session has implications (in-flight ops, cache state) that
     // are out of scope for the v1 sample.
     init() {
-        // Single CNContactStore instance shared between this service and
-        // the adapter, so contact-store state (auth prompt cache, etc.)
-        // is consistent across the app.
-        let store = CNContactStore()
-        self.contactStore = store
-        let adapter = CNContactStoreAdapter(store: store)
+        // SyncService keeps its own CNContactStore for the main-actor
+        // `requestAccess(for:)` call; the adapter (isolated to its own
+        // actor) owns a separate CNContactStore for off-main fetch/save
+        // work. The two never touch each other — they only share the
+        // process-global authorization status, which CNContactStore reads
+        // off system state, not per-instance.
+        self.contactStore = CNContactStore()
+        let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
 
         let ek = EKEventStore()
@@ -439,13 +441,13 @@ final class SyncService {
     /// require any permission. Phase 6 wires this into RootView.task.
     func migrateEventsIfNeeded() {
         guard let sync else { return }
-        try? sync.migrateEventsToSidecarFirst()
+        _ = try? sync.migrateEventsToSidecarFirst()
     }
 
-    func fetchAll() -> [Contact] {
+    func fetchAll() async -> [Contact] {
         guard contactsAuthorization == .authorized else { return [] }
         do {
-            return try contactsAdapter.fetchAll()
+            return try await contactsAdapter.fetchAll()
         } catch {
             lastError = "fetchAll failed: \(error.localizedDescription)"
             return []
@@ -472,11 +474,11 @@ final class SyncService {
         return nil
     }
 
-    func reconcile(localID: String) throws -> IdentityReconcileReport.ContactOutcome {
+    func reconcile(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
         guard let sync else {
             throw SidecarUnavailableError()
         }
-        return try sync.reconcileContactIdentity(localID: localID)
+        return try await sync.reconcileContactIdentity(localID: localID)
     }
 
     // MARK: - Notes
@@ -546,9 +548,9 @@ final class SyncService {
     /// Reverse of `guessWhoUUID(in:)`: finds the contact whose GuessWho URL
     /// carries `uuid`. Returns nil if no current contact owns that UUID
     /// (e.g. the contact was deleted from the address book).
-    func contact(forGuessWhoUUID uuid: String) -> Contact? {
+    func contact(forGuessWhoUUID uuid: String) async -> Contact? {
         let target = uuid.lowercased()
-        for contact in fetchAll() {
+        for contact in await fetchAll() {
             if let owned = guessWhoUUID(in: contact), owned == target {
                 return contact
             }

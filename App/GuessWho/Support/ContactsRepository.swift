@@ -35,7 +35,7 @@ final class ContactsRepository {
     func reload() async {
         isLoading = true
         defer { isLoading = false }
-        contacts = service.fetchAll()
+        contacts = await service.fetchAll()
     }
 
     /// People (contactType == .person) matching `peopleSearch`, sorted

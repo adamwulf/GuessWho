@@ -212,13 +212,13 @@ struct AddLinkSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                    Button("Save") { Task { await save() } }
                         .disabled(selectedLocalID == nil)
                 }
             }
             .task {
                 if !didLoad {
-                    eligible = loadEligibleContacts()
+                    eligible = await loadEligibleContacts()
                     didLoad = true
                 }
             }
@@ -231,10 +231,10 @@ struct AddLinkSheet: View {
         let existingUUID: String?
     }
 
-    private func loadEligibleContacts() -> [EligibleContact] {
+    private func loadEligibleContacts() async -> [EligibleContact] {
         var result: [EligibleContact] = []
         let target = currentContactUUID.lowercased()
-        for contact in service.fetchAll() {
+        for contact in await service.fetchAll() {
             let existing = service.guessWhoUUID(in: contact)
             if let existing, existing == target { continue }
             result.append(EligibleContact(
@@ -254,7 +254,7 @@ struct AddLinkSheet: View {
         return eligible.filter { $0.contact.matches(searchQuery: query) }
     }
 
-    private func save() {
+    private func save() async {
         guard let localID = selectedLocalID,
               let entry = eligible.first(where: { $0.localID == localID }) else { return }
         do {
@@ -262,8 +262,8 @@ struct AddLinkSheet: View {
             if let existing = entry.existingUUID {
                 toUUID = existing
             } else {
-                _ = try service.reconcile(localID: localID)
-                guard let fresh = service.fetchAll().first(where: { $0.localID == localID }),
+                _ = try await service.reconcile(localID: localID)
+                guard let fresh = await service.fetchAll().first(where: { $0.localID == localID }),
                       let assigned = service.guessWhoUUID(in: fresh) else {
                     saveError = "Could not assign an identity to this contact."
                     return

@@ -25,82 +25,82 @@ struct InMemoryContactStoreTests {
     }
 
     @Test
-    func createAndFetchByLocalID() throws {
+    func createAndFetchByLocalID() async throws {
         let store = InMemoryContactStore()
         let contact = sampleContact()
-        try store.save(contact)
+        try await store.save(contact)
 
-        let fetched = try store.fetch(localID: "local-1")
+        let fetched = try await store.fetch(localID: "local-1")
         #expect(fetched == contact)
     }
 
     @Test
-    func fetchMissingReturnsNil() throws {
+    func fetchMissingReturnsNil() async throws {
         let store = InMemoryContactStore()
-        #expect(try store.fetch(localID: "nope") == nil)
+        #expect(try await store.fetch(localID: "nope") == nil)
     }
 
     @Test
-    func saveUpsertsByLocalID() throws {
+    func saveUpsertsByLocalID() async throws {
         let store = InMemoryContactStore(contacts: [sampleContact()])
 
         var updated = sampleContact()
         updated.givenName = "Augusta"
         updated.phoneNumbers = [LabeledValue(label: "work", value: "+15555550199")]
-        try store.save(updated)
+        try await store.save(updated)
 
-        let all = try store.fetchAll()
+        let all = try await store.fetchAll()
         #expect(all.count == 1)
         #expect(all.first?.givenName == "Augusta")
         #expect(all.first?.phoneNumbers.first?.value == "+15555550199")
     }
 
     @Test
-    func saveFetchRoundtripIsIdentity() throws {
+    func saveFetchRoundtripIsIdentity() async throws {
         let store = InMemoryContactStore()
         let contact = sampleContact()
-        try store.save(contact)
-        let fetched = try #require(try store.fetch(localID: contact.localID))
+        try await store.save(contact)
+        let fetched = try #require(try await store.fetch(localID: contact.localID))
         #expect(fetched == contact)
         #expect(fetched.hashValue == contact.hashValue)
     }
 
     @Test
-    func addingURLPreservesGuessWhoURL() throws {
+    func addingURLPreservesGuessWhoURL() async throws {
         let store = InMemoryContactStore()
         let guessWho = LabeledValue(label: "GuessWho", value: "guesswho://contact/550E8400-E29B-41D4-A716-446655440000")
         var contact = sampleContact()
         contact.urlAddresses = [guessWho]
-        try store.save(contact)
+        try await store.save(contact)
 
-        var withExtraURL = try #require(try store.fetch(localID: contact.localID))
+        var withExtraURL = try #require(try await store.fetch(localID: contact.localID))
         withExtraURL.urlAddresses.append(LabeledValue(label: "work", value: "https://work.example.com"))
-        try store.save(withExtraURL)
+        try await store.save(withExtraURL)
 
-        let fetched = try #require(try store.fetch(localID: contact.localID))
+        let fetched = try #require(try await store.fetch(localID: contact.localID))
         #expect(fetched.urlAddresses.contains(guessWho))
         #expect(fetched.urlAddresses.count == 2)
     }
 
     @Test
-    func removingNonGuessWhoURLPreservesGuessWhoURL() throws {
+    func removingNonGuessWhoURLPreservesGuessWhoURL() async throws {
         let store = InMemoryContactStore()
         let guessWho = LabeledValue(label: "GuessWho", value: "guesswho://contact/550E8400-E29B-41D4-A716-446655440000")
         let other = LabeledValue(label: "home", value: "https://example.com")
         var contact = sampleContact()
         contact.urlAddresses = [other, guessWho]
-        try store.save(contact)
+        try await store.save(contact)
 
-        var updated = try #require(try store.fetch(localID: contact.localID))
+        var updated = try #require(try await store.fetch(localID: contact.localID))
         updated.urlAddresses.removeAll { $0 == other }
-        try store.save(updated)
+        try await store.save(updated)
 
-        let fetched = try #require(try store.fetch(localID: contact.localID))
+        let fetched = try #require(try await store.fetch(localID: contact.localID))
         #expect(fetched.urlAddresses == [guessWho])
     }
 
     @Test
-    func postalAddressStructuredComponentsRoundtrip() throws {
+    func postalAddressStructuredComponentsRoundtrip() async throws {
         let store = InMemoryContactStore()
         let postal = PostalAddress(
             street: "1 Infinite Loop",
@@ -114,18 +114,18 @@ struct InMemoryContactStoreTests {
         )
         var contact = sampleContact()
         contact.postalAddresses = [LabeledPostalAddress(label: "work", value: postal)]
-        try store.save(contact)
+        try await store.save(contact)
 
-        let fetched = try #require(try store.fetch(localID: contact.localID))
+        let fetched = try #require(try await store.fetch(localID: contact.localID))
         #expect(fetched.postalAddresses == [LabeledPostalAddress(label: "work", value: postal)])
     }
 
     @Test
-    func fetchAllReturnsEveryContact() throws {
+    func fetchAllReturnsEveryContact() async throws {
         let a = sampleContact(localID: "a")
         let b = sampleContact(localID: "b")
         let store = InMemoryContactStore(contacts: [a, b])
-        let all = try store.fetchAll()
+        let all = try await store.fetchAll()
         #expect(Set(all.map(\.localID)) == ["a", "b"])
     }
 }

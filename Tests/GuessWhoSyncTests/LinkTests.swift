@@ -229,7 +229,7 @@ struct LinkTests {
     // MARK: - Case-D endpoint rewrite
 
     @Test
-    func caseDRewritesLinkEndpoint() throws {
+    func caseDRewritesLinkEndpoint() async throws {
         let contacts = InMemoryContactStore()
         let events = InMemoryEventStore()
         let sidecars = InMemorySidecarStore()
@@ -243,14 +243,14 @@ struct LinkTests {
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loserUUID),
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winnerUUID),
         ]
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         // Pre-seed a link whose endpointB points at the loser.
         let third = SidecarKey(kind: .contact, id: "33333333-3333-3333-3333-333333333333")
         let loserKey = SidecarKey(kind: .contact, id: loserUUID)
         let link = try sync.addLink(from: third, to: loserKey, note: "via loser")
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
         let outcome = try #require(report.contactOutcomes.first { $0.localID == "local-1" })
         // No loser sidecar exists here (only the contact URL was seeded), so
         // mergedLoserUUIDs stays empty — that field reports loser sidecars
@@ -264,7 +264,7 @@ struct LinkTests {
     }
 
     @Test
-    func caseDRewriteOfBothEndpointsIsOneWrite() throws {
+    func caseDRewriteOfBothEndpointsIsOneWrite() async throws {
         let contacts = InMemoryContactStore()
         let events = InMemoryEventStore()
         let sidecars = InMemorySidecarStore()
@@ -281,7 +281,7 @@ struct LinkTests {
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loser2),
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winner),
         ]
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         let link = try sync.addLink(
             from: SidecarKey(kind: .contact, id: loser1),
@@ -289,7 +289,7 @@ struct LinkTests {
             note: "self-edge through losers"
         )
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
         let outcome = try #require(report.contactOutcomes.first { $0.localID == "local-1" })
         // Link appears at most once even though both endpoints were rewritten.
         #expect(outcome.rewrittenLinkIDs == [link.id])
@@ -300,7 +300,7 @@ struct LinkTests {
     }
 
     @Test
-    func caseDDoesNotRewriteOrphanEndpoint() throws {
+    func caseDDoesNotRewriteOrphanEndpoint() async throws {
         let contacts = InMemoryContactStore()
         let events = InMemoryEventStore()
         let sidecars = InMemorySidecarStore()
@@ -315,12 +315,12 @@ struct LinkTests {
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loserUUID),
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winnerUUID),
         ]
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         let orphan = SidecarKey(kind: .contact, id: "deadbeef-dead-dead-dead-deaddeaddead")
         let link = try sync.addLink(from: orphan, to: contactA, note: "orphan endpoint")
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
         let outcome = try #require(report.contactOutcomes.first { $0.localID == "local-1" })
         #expect(outcome.rewrittenLinkIDs.isEmpty)
         let untouched = try #require(try sync.link(id: link.id))
@@ -329,7 +329,7 @@ struct LinkTests {
     }
 
     @Test
-    func multiCaseDOnePassRewritesEachAffectedLinkOnce() throws {
+    func multiCaseDOnePassRewritesEachAffectedLinkOnce() async throws {
         // Two separate contacts, each in Case D collapsing its own losers.
         // One link straddles the two contacts (endpointA points at contact-1's
         // loser, endpointB points at contact-2's loser). Per §13.4 the link
@@ -349,7 +349,7 @@ struct LinkTests {
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loser1),
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winner1),
         ]
-        try contacts.save(c1)
+        try await contacts.save(c1)
 
         let winner2 = "00000000-0000-0000-0000-000000000002"
         let loser2 = "00000000-0000-0000-0000-00000000000b"
@@ -358,7 +358,7 @@ struct LinkTests {
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loser2),
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winner2),
         ]
-        try contacts.save(c2)
+        try await contacts.save(c2)
 
         // Link straddling L1 and L2.
         let link = try sync.addLink(
@@ -369,7 +369,7 @@ struct LinkTests {
         let linkKey = SidecarKey(kind: .link, id: link.id.uuidString)
         let writesToLinkBefore = sidecars.writeCounts[linkKey] ?? 0
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         // Both contact outcomes carry this link in rewrittenLinkIDs (the same
         // link was touched by both Case Ds).
@@ -390,7 +390,7 @@ struct LinkTests {
     }
 
     @Test
-    func caseDLeavesNonMatchingLinksAlone() throws {
+    func caseDLeavesNonMatchingLinksAlone() async throws {
         let contacts = InMemoryContactStore()
         let events = InMemoryEventStore()
         let sidecars = InMemorySidecarStore()
@@ -403,11 +403,11 @@ struct LinkTests {
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loserUUID),
             LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winnerUUID),
         ]
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         let unrelated = try sync.addLink(from: contactA, to: contactB, note: "unrelated")
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
         let outcome = try #require(report.contactOutcomes.first { $0.localID == "local-1" })
         #expect(outcome.rewrittenLinkIDs.isEmpty)
         let stillThere = try #require(try sync.link(id: unrelated.id))

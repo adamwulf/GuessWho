@@ -9,7 +9,7 @@ import Foundation
 ///
 /// Locks are retained for the lifetime of the table; eviction isn't needed at
 /// the expected key cardinality (per-contact / per-event sidecars).
-final class PerKeyLockTable<Key: Hashable> {
+final class PerKeyLockTable<Key: Hashable>: @unchecked Sendable {
     private let registryLock = NSLock()
     private var locks: [Key: NSLock] = [:]
 

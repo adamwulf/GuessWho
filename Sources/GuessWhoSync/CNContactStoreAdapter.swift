@@ -2,7 +2,7 @@
 import Contacts
 import Foundation
 
-public final class CNContactStoreAdapter: ContactStoreProtocol {
+public actor CNContactStoreAdapter: ContactStoreProtocol {
     private let store: CNContactStore
 
     public init(store: CNContactStore = CNContactStore()) {
