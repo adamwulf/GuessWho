@@ -103,7 +103,7 @@ Event sidecars use the **same field-instance envelope** as contacts (`PLAN.md §
 | `isAllDayCache` | `checkbox` | bool | Cached all-day flag |
 | `locationCache` | `note` | string (empty when no location) | Cached location |
 | `eventKitNotesCache` | `note` | string | Cached EventKit notes string |
-| `deletedAt` | `note` | ISO8601 string | Envelope-level whole-event soft-delete tombstone. Mirrors the link `deletedAt` cell from `PLAN.md §13.2`. Once set, `allEvents()` and `eventsWindow(from:to:)` filter the event out; raw `sidecars.read` / `event(at:)` still returns it so callers can audit. For linked events, the EKEvent is NOT deleted from the user's calendar (out of scope; sidecar-only delete). |
+| `deletedAt` | `note` | ISO8601 string | Envelope-level whole-event soft-delete tombstone. Uses the same `{field,type,value}` shape as every other group-(a) cell (NOT the bare-value/null-convention shape of the link `deletedAt` cell at `Link.swift:64-77` — events have no `value:null` undelete path; undelete is `deleteField(at:id:)`-style soft-clearing per §5.5). Behaviorally parallel to link `deletedAt`: once set, `allEvents()` and `eventsWindow(from:to:)` filter the event out; raw `sidecars.read` / `event(at:)` still returns it so callers can audit. For linked events, the EKEvent is NOT deleted from the user's calendar (out of scope; sidecar-only delete). |
 
 > Why fixed keys rather than minted-UUID instances: an event has exactly one title/start/end. Using well-known keys (like links) means the cache-refresh write (E4) is a deterministic per-cell write that LWW-merges cleanly across devices, and avoids accumulating duplicate cache instances. The `SidecarField` inner-value shape is preserved, so `merge(_:_:)` is untouched (`PLAN.md §5.3`).
 
@@ -440,7 +440,7 @@ public struct EventTag: Hashable, Sendable {
 
 **Unlink mechanics.** `unlinkEvent(at:)` uses `writeWellKnownCell` to overwrite the `eventKitID` cell as soft-deleted: same `value` string (per E1.2), new `modifiedAt`/`modifiedBy`, `deletedAt = now`. It does NOT touch cache cells. See E1.2 for the cell-shape rationale and §5.3 LWW disjoint-cell convergence note.
 
-**Whole-event delete mechanics.** `deleteEvent(at:)` writes the envelope-level `deletedAt` well-known cell with the current ISO8601 timestamp. The cell behaves like the link `deletedAt` cell (`PLAN.md §13.2`); per-cell LWW applies, so two devices that delete and edit concurrently are governed by §5.3. `allEvents()` and the new `eventsWindow(from:to:)` filter `deletedAt`-bearing envelopes out. Raw `event(at:)` returns the envelope (callers wanting an audit/undelete path can read it).
+**Whole-event delete mechanics.** `deleteEvent(at:)` writes the envelope-level `deletedAt` well-known cell via `writeWellKnownCell` — a regular `{field,type,value}` `.note`-typed cell whose `value` is the current ISO8601 timestamp (per E1.2; the on-disk shape is the standard group-(a) cell shape, NOT the bare-value/null shape of the link `deletedAt` at `Link.swift:64-77`). Behaviorally parallel to the link `deletedAt` (`PLAN.md §13.2`): per-cell LWW applies, so two devices that delete and edit concurrently are governed by §5.3. `allEvents()` and the new `eventsWindow(from:to:)` filter `deletedAt`-bearing envelopes out. Raw `event(at:)` returns the envelope (callers wanting an audit/undelete path can read it).
 
 `event(at:)` reads the envelope once (`sidecars.read`), decodes the well-known cells into an `Event`, then — if `eventKitID` cell is live — calls `events.fetch(eventKitID:)` and overlays the live values onto the cached `Event`, preserving the sidecar UUID as `id`.
 
@@ -738,6 +738,10 @@ public struct EventMigrationReport: Sendable {
    /// per-key-locked re-read-and-write invariants from §13.4 (one write per
    /// link, locks acquired in sorted UUID order, no other endpoint touched).
    /// Returns the link UUIDs whose endpoint A and/or B was rewritten.
+   ///
+   /// Return shape is intentionally simplified vs. `rewriteLinkEndpoints`'s
+   /// `[String: [UUID]]` (loser-bucketed): migration's caller only needs the
+   /// flat list of rewritten link UUIDs for the report (no per-loser grouping).
    private func rewriteEventLinkEndpoints(mapping: [String: UUID]) throws -> [UUID]
    ```
 
@@ -843,7 +847,7 @@ New file `Tests/GuessWhoSyncTests/CountingEventStore.swift` (was N-COUNTING-EVEN
 - `crossDeviceTwoUUIDsForSameEventKitID` — two migrations on the same legacy id (simulated) produce two UUID sidecars sharing an eventKitID; `eventUUID(forEventKitID:)` returns the deterministic (lex-min) one (documents E7 Q1 default).
 
 **`Tests/GuessWhoSyncTests/EventWindowTests.swift`** — `eventsWindow(from:to:)` returns the union of sidecar events and EventKit-window events deduped by `eventKitID`; manual events with no EventKit presence still appear; EventKit-only events (no sidecar) appear as unlinked-display rows. Specifically:
-- `eventsWindowSinglesOnesFetchInWindow` (was C-WINDOW-FETCH test) — wrap the in-memory event store in `CountingEventStore`; seed 5 linked sidecars and 5 EKEvents all in-window; call `eventsWindow(...)`; assert `CountingEventStore.fetchEventsInIntervalCount == 1` AND `fetchEventKitIDCount == 0` (no per-sidecar fetch). Also assert each returned linked event projects live values (cache overlay).
+- `eventsWindowDoesOneFetchInWindow` (was C-WINDOW-FETCH test) — wrap the in-memory event store in `CountingEventStore`; seed 5 linked sidecars and 5 EKEvents all in-window; call `eventsWindow(...)`; assert `CountingEventStore.fetchEventsInIntervalCount == 1` AND `fetchEventKitIDCount == 0` (no per-sidecar fetch). Also assert each returned linked event projects live values (cache overlay).
 - `eventsWindowExcludesDeletedEnvelopes` — soft-delete an event via `deleteEvent`; assert it's missing from the window output.
 - `eventsWindowIncludeEventKitFalseReturnsSidecarOnly` — pass `includeEventKit: false`; assert no EventKit fetch fires; only sidecar events returned (manual + linked-with-cache).
 - `eventsWindowEphemeralRowsUseStableID` (was N-EPHEMERAL-ROW-ID test) — call `eventsWindow(...)` twice; assert un-adopted EKEvent rows have identical `Event.id` across the two calls (derived from `eventKitID`).
