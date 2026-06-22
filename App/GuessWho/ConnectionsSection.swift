@@ -35,7 +35,6 @@ extension ContactLink {
 
 struct LinkRow: View {
     let link: ContactLink
-    let direction: LinkDirection
     let otherContact: Contact?
     let isEditing: Bool
     @Binding var draftNote: String
@@ -47,39 +46,23 @@ struct LinkRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            header
-            if isEditing {
-                editor
-            } else {
-                Button(action: onBeginEdit) {
-                    noteAndTimestamp
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+        ActivityRowLayout(systemImage: "person") {
+            VStack(alignment: .leading, spacing: 4) {
+                otherContactView
+                if isEditing {
+                    editor
+                } else {
+                    Button(action: onBeginEdit) {
+                        noteAndTimestamp
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .contextMenu {
             Button("Delete", role: .destructive, action: onDelete)
-        }
-    }
-
-    @ViewBuilder
-    private var header: some View {
-        let symbol = direction.isOutgoing ? "arrow.right" : "arrow.left"
-        let label = direction.isOutgoing ? "Introduced" : "Introduced By"
-
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                otherContactView
-            }
         }
     }
 
@@ -121,10 +104,6 @@ struct LinkRow: View {
         VStack(alignment: .leading, spacing: 4) {
             if !link.note.isEmpty {
                 Text(link.note)
-            } else {
-                Text("(no note)")
-                    .foregroundStyle(.secondary)
-                    .italic()
             }
             HStack(spacing: 6) {
                 Text(link.createdAt, format: .relative(presentation: .named))
@@ -139,6 +118,37 @@ struct LinkRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+}
+
+/// Shared row layout for the merged Activity section: a leading icon column
+/// (or empty space, for note rows) and a content column. Keeps note text,
+/// connection bodies, and event titles vertically aligned across types.
+struct ActivityRowLayout<Content: View>: View {
+    let systemImage: String?
+    let content: Content
+
+    init(systemImage: String?, @ViewBuilder content: () -> Content) {
+        self.systemImage = systemImage
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: 20)
+
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

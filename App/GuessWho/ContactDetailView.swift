@@ -426,29 +426,32 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func noteRow(_ note: ContactNote) -> some View {
         if editingNoteID == note.id {
-            TextField("", text: $draftBody, axis: .vertical)
-                .focused($noteFocus, equals: .noteRow(note.id))
+            ActivityRowLayout(systemImage: nil) {
+                TextField("", text: $draftBody, axis: .vertical)
+                    .focused($noteFocus, equals: .noteRow(note.id))
+            }
         } else {
             Button {
                 beginEdit(note)
             } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(note.body)
-                    HStack(spacing: 6) {
-                        Text(note.createdAt, format: .relative(presentation: .named))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if note.modifiedAt > note.createdAt {
-                            Text("edited")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                ActivityRowLayout(systemImage: nil) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(note.body)
+                        HStack(spacing: 6) {
+                            Text(note.createdAt, format: .relative(presentation: .named))
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if note.modifiedAt > note.createdAt {
+                                Text("edited")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -465,7 +468,6 @@ struct ContactDetailView: View {
         if let uuid = contactUUID, let direction = link.direction(forContactUUID: uuid) {
             LinkRow(
                 link: link,
-                direction: direction,
                 otherContact: otherContact(for: direction),
                 isEditing: editingLinkID == link.id,
                 draftNote: $draftLinkNote,
@@ -484,20 +486,22 @@ struct ContactDetailView: View {
         let other = otherEndpoint(of: link)
         let event = service.event(uuid: other.id)
         NavigationLink(value: EventReference(eventUUID: other.id)) {
-            VStack(alignment: .leading, spacing: 4) {
-                if let event {
-                    Text(event.title.isEmpty ? "(Untitled event)" : event.title)
-                    Text(event.startDate, style: .date)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("(Unknown event)")
-                        .foregroundStyle(.secondary)
-                }
-                if !link.note.isEmpty {
-                    Text(link.note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            ActivityRowLayout(systemImage: "calendar") {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let event {
+                        Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                        Text(event.startDate, style: .date)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("(Unknown event)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if !link.note.isEmpty {
+                        Text(link.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
