@@ -5,37 +5,53 @@ struct EventsListView: View {
     @Environment(SyncService.self) private var service
     @Bindable var repository: EventsRepository
 
+    @State private var bannerDismissed: Bool = false
+    @State private var pendingDelete: Event?
+    // TODO(phase 7): replace with `EventLinkSheet` presentation; for now
+    // the "+" toolbar button is a placeholder until the link sheet lands.
+    @State private var showingLinkSheet: Bool = false
+
     var body: some View {
         Group {
             switch service.eventsAuthorization {
-            case .notRequested:
-                ContentUnavailableView(
-                    "Requesting Calendar Access…",
-                    systemImage: "calendar.badge.clock",
-                    description: Text("Approve the permission prompt to view your events.")
-                )
-            case .denied:
-                ContentUnavailableView(
-                    "Calendar Access Needed",
-                    systemImage: "calendar.badge.exclamationmark",
-                    description: Text("Open Settings and enable Calendar access for GuessWho.")
-                )
-            case .restricted:
-                ContentUnavailableView(
-                    "Calendar Restricted",
-                    systemImage: "lock",
-                    description: Text("Calendar access is restricted on this device.")
-                )
+            case .notRequested, .denied, .restricted:
+                eventList(showPermissionBanner: !bannerDismissed)
             case .authorized:
-                eventList
+                eventList(showPermissionBanner: false)
             }
         }
         .navigationTitle("Events")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    // TODO(phase 7): present EventLinkSheet in create mode.
+                    showingLinkSheet = true
+                } label: {
+                    Label("Add Event", systemImage: "plus")
+                }
+                .disabled(true)
+            }
+        }
+        .confirmationDialog(
+            "Remove from GuessWho? (Won't delete from Calendar.)",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { event in
+            Button("Remove", role: .destructive) {
+                delete(event)
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        }
         .contactAndEventDestinations()
     }
 
     @ViewBuilder
-    private var eventList: some View {
+    private func eventList(showPermissionBanner: Bool) -> some View {
         let events = repository.filtered
         List {
             if service.sidecarLocation.needsBanner {
@@ -44,9 +60,24 @@ struct EventsListView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             }
-            ForEach(events, id: \.externalID) { event in
-                NavigationLink(value: EventReference(externalID: event.externalID)) {
+            if showPermissionBanner {
+                CalendarPermissionBanner {
+                    bannerDismissed = true
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+            ForEach(events, id: \.id) { event in
+                NavigationLink(value: EventReference(eventUUID: event.id.uuidString)) {
                     EventRow(event: event)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        pendingDelete = event
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
                 }
             }
         }
@@ -64,18 +95,63 @@ struct EventsListView: View {
         .searchable(text: $repository.searchText, prompt: "Search events")
         .refreshable { await repository.reload() }
     }
+
+    private func delete(_ event: Event) {
+        do {
+            try service.deleteEvent(uuid: event.id.uuidString)
+        } catch {
+            service.recordError("delete event failed: \(error.localizedDescription)")
+        }
+        Task { await repository.reload() }
+    }
+}
+
+private struct CalendarPermissionBanner: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "calendar.badge.exclamationmark")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Calendar access disabled")
+                    .font(.subheadline.weight(.semibold))
+                Text("Enable Calendar access in Settings to see and link calendar events.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .imageScale(.small)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.orange.opacity(0.12))
+        )
+    }
 }
 
 private struct EventRow: View {
     let event: Event
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(event.title.isEmpty ? "(Untitled event)" : event.title)
-                .font(.body)
-            Text(event.startDate, style: .date)
-                .font(.caption)
+        HStack(spacing: 10) {
+            Image(systemName: event.isLinked ? "calendar" : "calendar.badge.plus")
                 .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                    .font(.body)
+                Text(event.startDate, style: .date)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
