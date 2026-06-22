@@ -27,9 +27,14 @@ struct FavoritesListView: View {
         }
         .navigationTitle("Favorites")
         .toolbar {
+            #if os(iOS)
+            // EditButton is iOS/iPadOS-only — macOS has no .editMode and
+            // the symbol is unavailable. On native macOS, `.onMove` already
+            // supports drag-to-reorder without an explicit edit toggle.
             ToolbarItem(placement: .primaryAction) {
                 EditButton()
             }
+            #endif
         }
         .task {
             // Build/refresh the store and contact map on appearance — no
