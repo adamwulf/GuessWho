@@ -194,6 +194,53 @@ struct EventMigrationTests {
         #expect(second.skipped.count == 1)
     }
 
+    /// Regression: manual (unlinked) events created via `createManualEvent`
+    /// have a UUID-keyed sidecar but NO `eventKitID` cell. Migration must
+    /// recognize them as post-pivot and leave them untouched. Without the
+    /// fix, the migrator treats their UUID key as a legacy `eventIdentifier`,
+    /// resolves it to nil, mints a fresh UUID, writes a bogus dead-pointer
+    /// `eventKitID` cell, drops the cache cells, and falsely marks the event
+    /// linked — silently destroying the manual event's data on every launch.
+    @Test
+    func migrationIsIdempotentForManualEvent() throws {
+        let (sync, sidecars, _) = makeOrchestrator()
+        let uuid = try sync.createManualEvent(
+            title: "X",
+            startDate: Date(timeIntervalSinceReferenceDate: 3_000_000),
+            endDate: Date(timeIntervalSinceReferenceDate: 3_003_600),
+            isAllDay: false,
+            location: "Home"
+        )
+        let key = SidecarKey(kind: .event, id: uuid.uuidString)
+
+        // Capture the BEFORE envelope so we can assert byte-for-byte equality.
+        // SidecarEnvelope isn't Equatable; encode both as canonical JSON
+        // (sorted keys) and compare the bytes.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let before = try encoder.encode(try #require(try sidecars.read(key)))
+
+        let report = try sync.migrateEventsToSidecarFirst()
+        #expect(report.migratedEvents.isEmpty)
+        #expect(report.rewrittenLinkIDs.isEmpty)
+        #expect(report.skipped.count == 1)
+        // SidecarKey.event lowercases the id, so the skipped key is the
+        // lowercased form of the UUID string.
+        #expect(report.skipped.first == uuid.uuidString.lowercased())
+
+        // AFTER envelope: the sidecar must be untouched.
+        let after = try encoder.encode(try #require(try sidecars.read(key)))
+        #expect(after == before)
+
+        // And the projected event still reads as a manual (unlinked) event
+        // with the original title.
+        let projected = try #require(try sync.event(at: key))
+        #expect(projected.id == uuid)
+        #expect(projected.title == "X")
+        #expect(projected.isLinked == false)
+        #expect(projected.location == "Home")
+    }
+
     // MARK: - Link rewrite
 
     @Test

@@ -688,14 +688,14 @@ extension GuessWhoSync {
         var mapping: [String: UUID] = [:]
 
         for key in try sidecars.allKeys() where key.kind == .event {
-            // Already migrated: UUID-keyed AND has a live `eventKitID` cell.
+            // Any UUID-keyed event sidecar is post-pivot — legacy
+            // `eventIdentifier` strings are never UUID-shaped — so skip
+            // regardless of whether an `eventKitID` cell is present.
+            // Manual events (created via `createManualEvent`) have a UUID
+            // key but no `eventKitID` cell; they must NOT be re-migrated.
             if UUID(uuidString: key.id) != nil {
-                if let envelope = try sidecars.read(key),
-                   envelope.fields[Self.eventKitIDCellKey] != nil
-                {
-                    skipped.append(key.id)
-                    continue
-                }
+                skipped.append(key.id)
+                continue
             }
             // Treat key.id as a legacy `eventIdentifier`. `listKeys`'s
             // percent-decode path preserves the original case; we must keep
