@@ -652,4 +652,272 @@ extension GuessWhoSync {
         else { return nil }
         return value
     }
+
+    // MARK: - Migration (E5)
+
+    /// One-shot pre-pivot → post-pivot event-sidecar migration. Idempotent;
+    /// safe to call at every launch until it converges. Does NOT require
+    /// Contacts or EventKit permission (the EventKit fetch is best-effort;
+    /// the dead-pointer branch handles the unauthorized case the same as
+    /// the gone-event case).
+    ///
+    /// Step 1: for every `events/<legacyEventIdentifier>.json` sidecar that
+    /// is not yet UUID-keyed, mint a new event UUID, translate the legacy
+    /// identifier to a `calendarItemExternalIdentifier` via the adapter's
+    /// `fetch(legacyEventIdentifier:)`, write a new envelope at the UUID
+    /// key (with `eventKitID` cell + cache seeded from the resolved EKEvent
+    /// when present, or the original legacy id as a dead pointer when not),
+    /// preserve any pre-existing field-instance cells (notes, tags), and
+    /// delete the legacy file.
+    ///
+    /// Step 2: rewrite every contact↔event `Link` whose `.event` endpoint
+    /// still points at a legacy identifier to point at the freshly-minted
+    /// UUID instead. One envelope write per link.
+    @discardableResult
+    public func migrateEventsToSidecarFirst() throws -> EventMigrationReport {
+        // (originalCase, lowercased) pairs collected from listKeys. Order is
+        // arbitrary; the migration is per-key independent.
+        var legacyKeys: [(original: String, lowered: String)] = []
+        var skipped: [String] = []
+        var migrated: [(oldExternalID: String, newUUID: UUID)] = []
+
+        // The mapping passed to `rewriteEventLinkEndpoints` is keyed by the
+        // lowercased legacy id because `Link.decodeEndpoint` routes through
+        // `SidecarKey.init`'s `.event` lowercasing branch — so any decoded
+        // endpoint id we compare against has already been lowercased.
+        var mapping: [String: UUID] = [:]
+
+        for key in try sidecars.allKeys() where key.kind == .event {
+            // Already migrated: UUID-keyed AND has a live `eventKitID` cell.
+            if UUID(uuidString: key.id) != nil {
+                if let envelope = try sidecars.read(key),
+                   envelope.fields[Self.eventKitIDCellKey] != nil
+                {
+                    skipped.append(key.id)
+                    continue
+                }
+            }
+            // Treat key.id as a legacy `eventIdentifier`. `listKeys`'s
+            // percent-decode path preserves the original case; we must keep
+            // it for the case-sensitive EventKit lookup, AND keep a
+            // lowercased copy for the map / the new UUID-keyed write.
+            legacyKeys.append((original: key.id, lowered: key.id.lowercased()))
+        }
+
+        for legacy in legacyKeys {
+            let newUUID = UUID()
+            // SidecarKey for the legacy file. The .event branch lowercases
+            // unconditionally per E1.4, so a SidecarKey built from the
+            // original-case id and one built from the lowercased id are
+            // equal — but on the FS-store side the file is named with the
+            // original-case bytes via the percent-decode path, and the
+            // in-memory store hashes the lowercased id consistently.
+            let oldKey = SidecarKey(kind: .event, id: legacy.original)
+            let newKey = SidecarKey(kind: .event, id: newUUID.uuidString)
+
+            // Read the legacy envelope first so we preserve any pre-existing
+            // field-instance cells (notes, tags) the user attached.
+            let oldEnvelope = try sidecars.read(oldKey)
+
+            // Translate identifier via the migration-only resolver. The
+            // EKEvent lookup is fed the ORIGINAL-case id (EventKit is
+            // case-sensitive).
+            let resolved = try? events.fetch(legacyEventIdentifier: legacy.original)
+
+            // Choose what goes in the `eventKitID` cell.
+            let pointerValue: String
+            let cacheSeed: Event?
+            if let resolved, let ekid = resolved.eventKitID {
+                pointerValue = ekid
+                cacheSeed = resolved
+            } else {
+                // Dead pointer: keep the original-case legacy identifier so
+                // the dual-namespace `fetch(eventKitID:)` may still resolve
+                // it later if the EKEvent reappears.
+                pointerValue = legacy.original
+                cacheSeed = nil
+            }
+
+            // Build the new envelope cells.
+            let now = Date()
+            var newFields: [String: SidecarCell] = [:]
+
+            // Preserve any pre-existing field-instance cells (notes, tags).
+            // Field-instance keys are UUIDs; well-known event cell keys are
+            // human-readable strings. Anything whose key parses as a UUID is
+            // a field instance and must be carried forward verbatim. The
+            // well-known cells (`eventKitID`, `titleCache`, …) are rewritten
+            // from scratch below.
+            if let oldEnvelope {
+                for (cellKey, cell) in oldEnvelope.fields {
+                    if UUID(uuidString: cellKey) != nil {
+                        newFields[cellKey] = cell
+                    }
+                }
+            }
+
+            // eventKitID cell.
+            newFields[Self.eventKitIDCellKey] = SidecarCell(
+                value: SidecarField.makeInnerValue(
+                    field: Self.eventKitIDCellKey,
+                    type: .note,
+                    value: .string(pointerValue),
+                    createdAt: now
+                ),
+                modifiedAt: now,
+                modifiedBy: deviceID,
+                deletedAt: nil
+            )
+
+            // Cache cells.
+            if let seed = cacheSeed {
+                newFields[Self.eventTitleCacheKey] = makeCellCell(
+                    fieldName: Self.eventTitleCacheKey,
+                    type: .note,
+                    value: .string(seed.title),
+                    now: now
+                )
+                newFields[Self.eventStartCacheKey] = makeCellCell(
+                    fieldName: Self.eventStartCacheKey,
+                    type: .date,
+                    value: .string(SidecarISO8601.string(from: seed.startDate)),
+                    now: now
+                )
+                newFields[Self.eventEndCacheKey] = makeCellCell(
+                    fieldName: Self.eventEndCacheKey,
+                    type: .date,
+                    value: .string(SidecarISO8601.string(from: seed.endDate)),
+                    now: now
+                )
+                newFields[Self.eventIsAllDayCacheKey] = makeCellCell(
+                    fieldName: Self.eventIsAllDayCacheKey,
+                    type: .checkbox,
+                    value: .bool(seed.isAllDay),
+                    now: now
+                )
+                newFields[Self.eventLocationCacheKey] = makeCellCell(
+                    fieldName: Self.eventLocationCacheKey,
+                    type: .note,
+                    value: .string(seed.location ?? ""),
+                    now: now
+                )
+                newFields[Self.eventNotesCacheKey] = makeCellCell(
+                    fieldName: Self.eventNotesCacheKey,
+                    type: .note,
+                    value: .string(seed.eventKitNotes ?? ""),
+                    now: now
+                )
+            }
+
+            let newEnvelope = SidecarEnvelope(
+                schemaVersion: 1,
+                entityID: newKey.id,
+                fields: newFields
+            )
+
+            try sidecarLocks.withLock(forKey: newKey) {
+                try sidecars.write(newEnvelope, at: newKey)
+            }
+            try sidecarLocks.withLock(forKey: oldKey) {
+                try sidecars.delete(oldKey)
+            }
+
+            migrated.append((oldExternalID: legacy.original, newUUID: newUUID))
+            mapping[legacy.lowered] = newUUID
+        }
+
+        // Step 2: rewrite link endpoints. Uses the lowercased map (matches
+        // what `Link.decodeEndpoint` produces after SidecarKey.init's .event
+        // lowercasing).
+        let rewrittenLinkIDs = try rewriteEventLinkEndpoints(mapping: mapping)
+
+        return EventMigrationReport(
+            migratedEvents: migrated,
+            rewrittenLinkIDs: rewrittenLinkIDs,
+            skipped: skipped
+        )
+    }
+
+    /// Migration-only helper. Mirrors the shape of
+    /// `rewriteLinkEndpoints` (`GuessWhoSync.swift:664`) but matches against
+    /// `.event` endpoints whose id appears in `mapping`. One envelope write
+    /// per affected link, under the per-key `sidecarLocks` discipline. The
+    /// mapping is keyed by the **lowercased** legacy `eventIdentifier` (so
+    /// it lines up with `Link.decodeEndpoint`'s lowercased output).
+    /// Returns the link UUIDs whose endpoint A and/or B was rewritten.
+    private func rewriteEventLinkEndpoints(mapping: [String: UUID]) throws -> [UUID] {
+        guard !mapping.isEmpty else { return [] }
+
+        var rewritten: [UUID] = []
+        for key in try sidecars.allKeys() where key.kind == .link {
+            // Cheap pre-screen. The authoritative read happens inside the
+            // lock below; this read may be a moment stale.
+            guard let pre = try sidecars.read(key) else { continue }
+            guard let preA = pre.fields[Link.endpointAKey],
+                  let preB = pre.fields[Link.endpointBKey],
+                  let preAEnd = Link.decodeEndpoint(preA.value),
+                  let preBEnd = Link.decodeEndpoint(preB.value) else { continue }
+            let preAMatches = preAEnd.kind == .event && mapping[preAEnd.id] != nil
+            let preBMatches = preBEnd.kind == .event && mapping[preBEnd.id] != nil
+            guard preAMatches || preBMatches else { continue }
+
+            try sidecarLocks.withLock(forKey: key) {
+                // Re-read inside the lock: a concurrent setLinkNote or
+                // removeLink may have written between the pre-screen and now.
+                guard let envelope = try sidecars.read(key) else { return }
+                guard let aCell = envelope.fields[Link.endpointAKey],
+                      let bCell = envelope.fields[Link.endpointBKey],
+                      let aEnd = Link.decodeEndpoint(aCell.value),
+                      let bEnd = Link.decodeEndpoint(bCell.value) else { return }
+                let aWinner = aEnd.kind == .event ? mapping[aEnd.id] : nil
+                let bWinner = bEnd.kind == .event ? mapping[bEnd.id] : nil
+                guard aWinner != nil || bWinner != nil else { return }
+
+                let now = Date()
+                var fields = envelope.fields
+                if let w = aWinner {
+                    fields[Link.endpointAKey] = SidecarCell(
+                        value: Link.encodeEndpoint(SidecarKey(kind: .event, id: w.uuidString)),
+                        modifiedAt: now,
+                        modifiedBy: deviceID
+                    )
+                }
+                if let w = bWinner {
+                    fields[Link.endpointBKey] = SidecarCell(
+                        value: Link.encodeEndpoint(SidecarKey(kind: .event, id: w.uuidString)),
+                        modifiedAt: now,
+                        modifiedBy: deviceID
+                    )
+                }
+                try sidecars.write(
+                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
+                    at: key
+                )
+
+                if let linkID = UUID(uuidString: key.id) {
+                    rewritten.append(linkID)
+                }
+            }
+        }
+        return rewritten
+    }
+
+    private func makeCellCell(
+        fieldName: String,
+        type: SidecarFieldType,
+        value: JSONValue,
+        now: Date
+    ) -> SidecarCell {
+        SidecarCell(
+            value: SidecarField.makeInnerValue(
+                field: fieldName,
+                type: type,
+                value: value,
+                createdAt: now
+            ),
+            modifiedAt: now,
+            modifiedBy: deviceID,
+            deletedAt: nil
+        )
+    }
 }
