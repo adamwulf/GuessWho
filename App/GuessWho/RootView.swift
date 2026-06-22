@@ -39,6 +39,9 @@ struct RootView: View {
             }
         }
         .task {
+            // E5.3: sidecar-only migration; runs BEFORE any permission gate
+            // so it executes even when Contacts/Events access is denied.
+            service.migrateEventsIfNeeded()
             await service.requestContactsAccessIfNeeded()
             await service.requestEventsAccessIfNeeded()
             if service.contactsAuthorization == .authorized {
