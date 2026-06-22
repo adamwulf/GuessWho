@@ -1,5 +1,6 @@
 import Foundation
 import Contacts
+import ContactsUI
 import EventKit
 import GuessWhoSync
 
@@ -479,6 +480,23 @@ final class SyncService {
             throw SidecarUnavailableError()
         }
         return try await sync.reconcileContactIdentity(localID: localID)
+    }
+
+    // MARK: - Edit (CNContactViewController bridge)
+
+    /// Fetches the system `CNContact` for in-app editing via
+    /// `CNContactViewController`. The view controller requires its own
+    /// descriptor (`CNContactViewController.descriptorForRequiredKeys()`),
+    /// distinct from the adapter's `fetchAll` keys.
+    ///
+    /// Unlike `fetchAll`, this stays on the main actor: `CNContact` is not
+    /// Sendable so it can't cleanly cross actor boundaries, and a single
+    /// `unifiedContact(withIdentifier:)` call is fast enough that the brief
+    /// main-thread hit at "tap Edit" is preferable to the boilerplate of
+    /// hand-wrapping CNContact for transport.
+    func fetchCNContactForEditing(localID: String) throws -> CNContact {
+        let keys: [CNKeyDescriptor] = [CNContactViewController.descriptorForRequiredKeys()]
+        return try contactStore.unifiedContact(withIdentifier: localID, keysToFetch: keys)
     }
 
     // MARK: - Notes

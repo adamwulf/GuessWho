@@ -6,6 +6,7 @@ import GuessWhoSync
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
+    @Environment(\.dismiss) private var dismiss
 
     let localID: String
 
@@ -21,6 +22,13 @@ struct ContactDetailView: View {
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
+    @State private var editingCNContact: EditingCNContact?
+    @State private var editFetchErrorMessage: String?
+
+    private struct EditingCNContact: Identifiable {
+        let contact: CNContact
+        var id: String { contact.identifier }
+    }
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -123,7 +131,29 @@ struct ContactDetailView: View {
                     .controlSize(.small)
                     .accessibilityLabel("Done")
                 }
+            } else if contact != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") {
+                        presentEditor()
+                    }
+                }
             }
+        }
+        .sheet(item: $editingCNContact) { wrapper in
+            ContactEditView(
+                contact: wrapper.contact,
+                onDone: { Task { await handleEditorDone() } },
+                onDelete: { Task { await handleEditorDelete() } }
+            )
+            .ignoresSafeArea()
+        }
+        .alert("Couldn't open editor", isPresented: Binding(
+            get: { editFetchErrorMessage != nil },
+            set: { if !$0 { editFetchErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { editFetchErrorMessage = nil }
+        } message: {
+            Text(editFetchErrorMessage ?? "")
         }
         .task {
             await loadContact()
@@ -137,6 +167,43 @@ struct ContactDetailView: View {
             // bypasses our custom back button, so commit here too. A no-op
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
+        }
+    }
+
+    // MARK: - Edit (CNContactViewController bridge)
+
+    private func presentEditor() {
+        do {
+            let cn = try service.fetchCNContactForEditing(localID: localID)
+            editingCNContact = EditingCNContact(contact: cn)
+        } catch {
+            editFetchErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func handleEditorDone() async {
+        editingCNContact = nil
+        // Reconcile runs first so it can re-stamp our x-guesswho:// URL
+        // before any other read sees the post-edit state. It calls
+        // loadContact() on its success path; an explicit loadContact()
+        // afterward catches the reconcile-error case where it doesn't.
+        // Then reload the repository so the list-view caches reflect
+        // any name/field changes.
+        await performReconcile()
+        await loadContact()
+        await repository.reload()
+    }
+
+    private func handleEditorDelete() async {
+        editingCNContact = nil
+        await repository.reload()
+        await loadContact()
+        // If the underlying contact really is gone, pop. If reload didn't
+        // confirm the delete (rare; CNContactViewController may have
+        // declared completion before the save propagated), keep the view
+        // up — the user can hit back manually instead of getting bounced.
+        if contact == nil {
+            dismiss()
         }
     }
 
@@ -657,6 +724,16 @@ struct ContactDetailView: View {
             }
             reloadEventLinks()
             await refreshContactMap()
+        } else {
+            // Contact disappeared from the store (e.g. deleted via the
+            // edit sheet). Tear down sidecar-bound state so nothing keeps
+            // reading/writing a dead localID/UUID while the view animates
+            // away. Safe to nil regardless of whether the caller is about
+            // to dismiss — a re-load would reconstruct them.
+            sidecar = nil
+            notesStore = nil
+            linksStore = nil
+            eventLinks = []
         }
     }
 
