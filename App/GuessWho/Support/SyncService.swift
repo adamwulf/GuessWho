@@ -491,16 +491,23 @@ final class SyncService {
         try await contactsAdapter.fetch(localID: localID)
     }
 
-    /// Writes the edited contact back through the adapter. Caller is
-    /// responsible for `await repository.reload()` afterwards —
-    /// SyncService stays decoupled from ContactsRepository to avoid
-    /// a retain cycle (ContactsRepository already holds SyncService).
+    /// Writes the edited contact back through the adapter.
+    ///
+    /// **Caller contract:** `await repository.reload()` after this
+    /// returns so the list-view caches reflect the changes. SyncService
+    /// intentionally does NOT touch the repository — ContactsRepository
+    /// already holds SyncService, so injecting the reverse direction
+    /// adds coupling without an upside (every current caller already
+    /// reloads after its own post-save dance — `handleEditorDone` runs
+    /// performReconcile → loadContact → repository.reload).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }
 
-    /// Deletes the contact identified by `localID`. Caller is
-    /// responsible for `await repository.reload()` afterwards.
+    /// Deletes the contact identified by `localID`.
+    ///
+    /// **Caller contract:** `await repository.reload()` after this
+    /// returns. See `saveContact` for rationale.
     func deleteContact(localID: String) async throws {
         try await contactsAdapter.delete(localID: localID)
     }

@@ -107,8 +107,17 @@ struct ContactEditView: View {
                     set: { if !$0 { deleteError = nil } }
                 ),
                 presenting: deleteError
-            ) { _ in
+            ) { category in
                 Button("OK", role: .cancel) { deleteError = nil }
+                #if !os(macOS)
+                if category == .authorizationDenied {
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                }
+                #endif
             } message: { category in
                 Text(deleteErrorMessage(for: category))
             }
@@ -484,27 +493,35 @@ private struct PostalAddressEditor: View {
 
 private struct BirthdaySection: View {
     @Binding var model: ContactEditModel
-    @State private var expanded: Bool = false
 
     var body: some View {
         Section("Birthday") {
             if model.edited.birthday != nil {
+                // SwiftUI's DatePicker only exposes the `.date` component
+                // (no month/day-only variant). When `birthdayHasYear` is
+                // false, the picker still shows the year wheel populated
+                // with the sentinel year (2000); the data layer strips it
+                // on save via ContactEditModel.setBirthday. The "Include
+                // year" toggle is the user-visible control for the
+                // year-vs-no-year intent — see the comment on the toggle.
                 DatePicker(
                     "Birthday",
                     selection: Binding(
                         get: { model.birthdayAsDate() ?? Date() },
                         set: { model.setBirthday(from: $0) }
                     ),
-                    displayedComponents: model.birthdayHasYear ? [.date] : [.date]
+                    displayedComponents: [.date]
                 )
                 .labelsHidden()
+                // When "Include year" is off, the year shown above is
+                // a sentinel (2000) and is dropped on save. The toggle
+                // is how the user signals intent; the picker itself
+                // can't hide its year wheel.
                 Toggle("Include year", isOn: Binding(
                     get: { model.birthdayHasYear },
                     set: { newValue in
                         let prev = model.birthdayHasYear
                         model.birthdayHasYear = newValue
-                        // When toggling, re-write the birthday so the
-                        // stored DateComponents reflects the new shape.
                         if prev != newValue, let d = model.birthdayAsDate() {
                             model.setBirthday(from: d)
                         }
@@ -517,11 +534,10 @@ private struct BirthdaySection: View {
                 }
             } else {
                 Button {
-                    var dc = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+                    let dc = Calendar.current.dateComponents([.year, .month, .day], from: Date())
                     model.edited.birthday = dc
                     model.birthdayHasYear = (dc.year != nil)
                     model.isDirty = true
-                    _ = dc // silence unused warning paths
                 } label: {
                     Label("Add Birthday", systemImage: "plus.circle.fill")
                 }
@@ -648,21 +664,15 @@ private struct SocialSection: View {
         Section("Social Profile") {
             ForEach(model.edited.socialProfiles.indices, id: \.self) { idx in
                 VStack(alignment: .leading) {
+                    // Picker drives SocialProfile.service (the CN-recognized
+                    // service constant: CNSocialProfileServiceTwitter, etc).
+                    // The labeled-value `label` slot stays empty by default
+                    // — CN doesn't surface a per-profile category in
+                    // Contacts.app for social profiles.
                     LabelPicker(
-                        label: Binding(
-                            get: { model.edited.socialProfiles[idx].label },
-                            set: {
-                                let entry = model.edited.socialProfiles[idx]
-                                model.edited.socialProfiles[idx] = LabeledSocialProfile(
-                                    label: $0,
-                                    value: entry.value
-                                )
-                                model.isDirty = true
-                            }
-                        ),
-                        options: LabelOptions.social
+                        label: socialBinding(\.service, idx: idx),
+                        options: LabelOptions.socialService
                     )
-                    TextField("Service", text: socialBinding(\.service, idx: idx))
                     TextField("Username", text: socialBinding(\.username, idx: idx))
                     TextField("URL", text: socialBinding(\.urlString, idx: idx))
                 }
@@ -674,8 +684,13 @@ private struct SocialSection: View {
             Button {
                 model.edited.socialProfiles.append(
                     LabeledSocialProfile(
-                        label: LabelOptions.social.first ?? "",
-                        value: SocialProfile()
+                        label: "",
+                        value: SocialProfile(
+                            urlString: "",
+                            username: "",
+                            userIdentifier: "",
+                            service: LabelOptions.socialService.first ?? ""
+                        )
                     )
                 )
                 model.isDirty = true
@@ -711,21 +726,14 @@ private struct IMSection: View {
         Section("Instant Message") {
             ForEach(model.edited.instantMessageAddresses.indices, id: \.self) { idx in
                 VStack(alignment: .leading) {
+                    // Picker drives InstantMessageAddress.service (the
+                    // CN-recognized service constant). The labeled-value
+                    // `label` slot stays empty; Contacts.app doesn't
+                    // surface a per-row category for IM.
                     LabelPicker(
-                        label: Binding(
-                            get: { model.edited.instantMessageAddresses[idx].label },
-                            set: {
-                                let entry = model.edited.instantMessageAddresses[idx]
-                                model.edited.instantMessageAddresses[idx] = LabeledInstantMessageAddress(
-                                    label: $0,
-                                    value: entry.value
-                                )
-                                model.isDirty = true
-                            }
-                        ),
-                        options: LabelOptions.instantMessage
+                        label: imBinding(\.service, idx: idx),
+                        options: LabelOptions.imService
                     )
-                    TextField("Service", text: imBinding(\.service, idx: idx))
                     TextField("Username", text: imBinding(\.username, idx: idx))
                 }
             }
@@ -736,8 +744,11 @@ private struct IMSection: View {
             Button {
                 model.edited.instantMessageAddresses.append(
                     LabeledInstantMessageAddress(
-                        label: LabelOptions.instantMessage.first ?? "",
-                        value: InstantMessageAddress()
+                        label: "",
+                        value: InstantMessageAddress(
+                            username: "",
+                            service: LabelOptions.imService.first ?? ""
+                        )
                     )
                 )
                 model.isDirty = true
@@ -919,7 +930,12 @@ private enum LabelOptions {
         CNLabelOther
     ]
 
-    static let social: [String] = [
+    // Social-profile and IM rows surface a service picker (Twitter,
+    // Facebook, …) bound to the underlying struct's `.service` field.
+    // The labeled-value `label` slot stays empty — CN doesn't expose
+    // per-row categories for social or IM in Contacts.app, so neither
+    // do we.
+    static let socialService: [String] = [
         CNSocialProfileServiceTwitter,
         CNSocialProfileServiceFacebook,
         CNSocialProfileServiceLinkedIn,
@@ -931,7 +947,7 @@ private enum LabelOptions {
         CNSocialProfileServiceYelp
     ]
 
-    static let instantMessage: [String] = [
+    static let imService: [String] = [
         CNInstantMessageServiceAIM,
         CNInstantMessageServiceFacebook,
         CNInstantMessageServiceGaduGadu,
