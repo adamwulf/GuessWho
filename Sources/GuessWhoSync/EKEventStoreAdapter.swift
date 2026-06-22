@@ -41,6 +41,17 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         return try fetchEvents(in: DateInterval(start: start, end: end))
     }
 
+    public func fetch(legacyEventIdentifier: String) throws -> Event? {
+        // Migration-only: resolve a pre-pivot `eventIdentifier` to an Event
+        // whose `eventKitID` is the canonical
+        // `calendarItemExternalIdentifier`. `store.event(withIdentifier:)`
+        // takes the legacy `eventIdentifier` string and returns the EKEvent;
+        // `toEvent` then reads `calendarItemExternalIdentifier`. Returns nil
+        // when the EKEvent no longer exists.
+        guard let ekEvent = store.event(withIdentifier: legacyEventIdentifier) else { return nil }
+        return Self.toEvent(ekEvent)
+    }
+
     public func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] {
         let events = try fetchEvents(in: interval)
         guard !text.isEmpty else { return events }

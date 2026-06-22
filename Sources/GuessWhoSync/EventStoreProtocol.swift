@@ -26,6 +26,15 @@ public protocol EventStoreProtocol {
     /// all events in the interval.
     func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event]
 
+    /// Migration-only: resolve a legacy `eventIdentifier` (the pre-pivot
+    /// sidecar key shape) to an Event whose `eventKitID` is the canonical
+    /// `calendarItemExternalIdentifier`. Returns nil if the EKEvent no longer
+    /// exists. Used by `migrateEventsToSidecarFirst` (E5.2) to translate
+    /// legacy sidecar keys to the new identifier namespace. The adapter
+    /// implements this via `store.event(withIdentifier:)`; the in-memory mock
+    /// implements it via a test-set translation map.
+    func fetch(legacyEventIdentifier: String) throws -> Event?
+
     // MARK: - Writes (linked events only; Option C)
 
     /// Create a brand-new EventKit event from the given fields in the host's

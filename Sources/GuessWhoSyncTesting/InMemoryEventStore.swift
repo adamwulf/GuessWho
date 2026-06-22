@@ -5,6 +5,11 @@ public final class InMemoryEventStore: EventStoreProtocol {
     private let lock = NSLock()
     private var eventsByEventKitID: [String: Event]
     private var createCounter: Int = 0
+    /// Test-only translation map: legacy `eventIdentifier` (case-sensitive) →
+    /// `eventKitID` (= `calendarItemExternalIdentifier`). Drives
+    /// `fetch(legacyEventIdentifier:)` so migration tests can simulate
+    /// EventKit's two-namespace lookup without a real `EKEventStore`.
+    private var legacyToEventKitID: [String: String] = [:]
 
     public init(events: [Event] = []) {
         var initial: [String: Event] = [:]
@@ -44,6 +49,13 @@ public final class InMemoryEventStore: EventStoreProtocol {
             event.startDate >= start && event.startDate < end
                 && event.startDate <= interval.end && event.endDate >= interval.start
         }
+    }
+
+    public func fetch(legacyEventIdentifier: String) throws -> Event? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let ekid = legacyToEventKitID[legacyEventIdentifier] else { return nil }
+        return eventsByEventKitID[ekid]
     }
 
     public func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] {
@@ -117,5 +129,17 @@ public final class InMemoryEventStore: EventStoreProtocol {
         lock.lock()
         defer { lock.unlock() }
         eventsByEventKitID.removeValue(forKey: eventKitID)
+    }
+
+    /// Test-only: register a translation from a legacy (case-sensitive)
+    /// `eventIdentifier` to the canonical `eventKitID`
+    /// (= `calendarItemExternalIdentifier`). Drives
+    /// `fetch(legacyEventIdentifier:)` so migration tests can simulate
+    /// EventKit's `event(withIdentifier:)` lookup without a real
+    /// `EKEventStore`.
+    public func setLegacyTranslation(_ legacy: String, to ekid: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        legacyToEventKitID[legacy] = ekid
     }
 }
