@@ -13,10 +13,16 @@ import Foundation
 /// are last-writer-wins.
 public final class FavoritesStore {
     private let root: URL
-    private let queue = DispatchQueue(label: "GuessWhoSync.FavoritesStore.coordinator")
+    /// Background queue the coordinator runs on so the caller (often the
+    /// main thread under @MainActor SyncService) can wait with a bounded
+    /// timeout instead of being held by a stuck cloudd coordination.
+    /// Mirrors the sidecar store's `coordinatorQueue` discipline.
+    private let coordinatorQueue = DispatchQueue(label: "GuessWhoSync.FavoritesStore.coordinator")
+    private let perAttemptTimeout: TimeInterval
 
-    public init(root: URL) {
+    public init(root: URL, perAttemptTimeout: TimeInterval = 1.0) {
         self.root = root
+        self.perAttemptTimeout = perAttemptTimeout
     }
 
     /// Absolute file path: `<root>/Favorites.json`.
@@ -97,29 +103,68 @@ public final class FavoritesStore {
     // MARK: - Coordinator wrappers (hand-rolled; sidecar store's are private)
 
     private func coordinatedRead(at url: URL, _ body: @escaping (URL) -> Void) throws {
-        var thrown: Error?
-        queue.sync {
+        try runBounded {
             let coordinator = NSFileCoordinator(filePresenter: nil)
             var coordError: NSError?
             coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
                 body(safeURL)
             }
-            if let coordError { thrown = coordError }
+            if let coordError { throw coordError }
         }
-        if let thrown { throw thrown }
     }
 
     private func coordinatedWrite(at url: URL, _ body: @escaping (URL) -> Void) throws {
-        var thrown: Error?
-        queue.sync {
+        try runBounded {
             let coordinator = NSFileCoordinator(filePresenter: nil)
             var coordError: NSError?
             coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
                 body(safeURL)
             }
-            if let coordError { thrown = coordError }
+            if let coordError { throw coordError }
         }
-        if let thrown { throw thrown }
+    }
+
+    /// Dispatches `operation` onto `coordinatorQueue` and waits up to
+    /// `perAttemptTimeout` for it to complete. On wait-timeout, throws
+    /// `SidecarStoreError.timedOut` — same behavior the sidecar store gets
+    /// from `runWithBusyHandling`. The caller's thread is never held by
+    /// the coordinator: a stuck cloudd cannot freeze the main thread.
+    ///
+    /// If `operation` eventually completes after we threw, its body still
+    /// runs on the background queue; captured state lives in `ResultBox`
+    /// so a late completion doesn't write to a dead stack frame. Same
+    /// trade-off the sidecar store makes (see `FileSystemSidecarStore`).
+    private func runBounded(_ operation: @escaping () throws -> Void) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = ResultBox()
+        coordinatorQueue.async {
+            do {
+                try operation()
+                box.error = nil
+            } catch {
+                box.error = error
+            }
+            box.didComplete = true
+            semaphore.signal()
+        }
+        switch semaphore.wait(timeout: .now() + perAttemptTimeout) {
+        case .success:
+            if let error = box.error { throw error }
+        case .timedOut:
+            // Synthesize the same key-less timeout the sidecar store uses
+            // for a stuck operation. The Favorites store has no
+            // SidecarKey, so we surface a NSError with a clear message.
+            throw NSError(
+                domain: "GuessWhoSync.FavoritesStore",
+                code: NSUserCancelledError,
+                userInfo: [NSLocalizedDescriptionKey: "Favorites file coordination timed out after \(perAttemptTimeout)s"]
+            )
+        }
+    }
+
+    private final class ResultBox {
+        var error: Error?
+        var didComplete: Bool = false
     }
 
     /// iCloud surfaces near-simultaneous edits as `NSFileVersion` siblings
