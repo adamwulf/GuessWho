@@ -32,7 +32,7 @@ final class EventsRepository {
         return events.filter { e in
             e.title.lowercased().contains(needle)
                 || (e.location ?? "").lowercased().contains(needle)
-                || (e.notes ?? "").lowercased().contains(needle)
+                || (e.eventKitNotes ?? "").lowercased().contains(needle)
         }
     }
 }
