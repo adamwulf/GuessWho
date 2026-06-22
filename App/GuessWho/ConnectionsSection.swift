@@ -33,128 +33,14 @@ extension ContactLink {
     }
 }
 
-struct ConnectionsSection: View {
-    let store: ContactLinksStore
-    let contactUUID: String
-    @Environment(SyncService.self) private var service
-
-    @State private var editingID: UUID?
-    @State private var draftNote: String = ""
-    @State private var editStartSnapshot: String = ""
-    @State private var showAddSheet = false
-    @State private var uuidToContact: [String: Contact] = [:]
-    @FocusState private var editingFocus: UUID?
-
-    var body: some View {
-        Section("Connections") {
-            ForEach(store.links, id: \.id) { link in
-                row(for: link)
-            }
-            .onDelete { offsets in
-                let ids = offsets.map { store.links[$0].id }
-                for id in ids { deleteLink(id) }
-            }
-
-            Button {
-                showAddSheet = true
-            } label: {
-                Label("Add Link", systemImage: "plus.circle")
-            }
-            .sheet(isPresented: $showAddSheet) {
-                AddLinkSheet(currentContactUUID: contactUUID) { toUUID, note in
-                    store.addLink(toUUID: toUUID, note: note)
-                    refreshContactMap()
-                }
-            }
-        }
-        .onAppear { refreshContactMap() }
-        .onChange(of: store.links.count) { _, _ in refreshContactMap() }
-    }
-
-    @ViewBuilder
-    private func row(for link: ContactLink) -> some View {
-        if let direction = link.direction(forContactUUID: contactUUID) {
-            LinkRow(
-                link: link,
-                direction: direction,
-                otherContact: otherContact(for: direction),
-                isEditing: editingID == link.id,
-                draftNote: $draftNote,
-                editingFocus: $editingFocus,
-                onBeginEdit: { beginEdit(link) },
-                onCommit: { commitEditIfChanged() },
-                onCancel: { cancelEdit() },
-                onDelete: { deleteLink(link.id) }
-            )
-        }
-    }
-
-    private func otherContact(for direction: LinkDirection) -> Contact? {
-        let endpoint = direction.other
-        guard endpoint.kind == .contact else { return nil }
-        return uuidToContact[endpoint.id]
-    }
-
-    private func refreshContactMap() {
-        var map: [String: Contact] = [:]
-        for contact in service.fetchAll() {
-            if let uuid = service.guessWhoUUID(in: contact) {
-                map[uuid] = contact
-            }
-        }
-        uuidToContact = map
-    }
-
-    private func beginEdit(_ link: ContactLink) {
-        if let editingID, editingID != link.id {
-            commitEditIfChanged()
-        }
-        editingID = link.id
-        draftNote = link.note
-        editStartSnapshot = link.note
-        editingFocus = link.id
-    }
-
-    private func commitEditIfChanged() {
-        guard let id = editingID else { return }
-        let proposed = draftNote
-        let snapshot = editStartSnapshot
-        editingID = nil
-        draftNote = ""
-        editStartSnapshot = ""
-        editingFocus = nil
-        if proposed == snapshot { return }
-        store.setNote(id: id, note: proposed)
-    }
-
-    private func cancelEdit() {
-        editingID = nil
-        draftNote = ""
-        editStartSnapshot = ""
-        editingFocus = nil
-    }
-
-    private func deleteLink(_ id: UUID) {
-        // Clear edit state first: setLinkNote on a soft-deleted link
-        // undeletes it (§13 link API), so a pending edit must NOT be
-        // committed after the delete lands.
-        if editingID == id {
-            editingID = nil
-            draftNote = ""
-            editStartSnapshot = ""
-            editingFocus = nil
-        }
-        store.remove(id: id)
-    }
-}
-
-private struct LinkRow: View {
+struct LinkRow: View {
     let link: ContactLink
     let direction: LinkDirection
     let otherContact: Contact?
     let isEditing: Bool
     @Binding var draftNote: String
-    var editingFocus: FocusState<UUID?>.Binding
+    var noteFocus: FocusState<ContactDetailView.NoteFocus?>.Binding
+    let focusValue: ContactDetailView.NoteFocus
     let onBeginEdit: () -> Void
     let onCommit: () -> Void
     let onCancel: () -> Void
@@ -217,7 +103,7 @@ private struct LinkRow: View {
     private var editor: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("", text: $draftNote, axis: .vertical)
-                .focused(editingFocus, equals: link.id)
+                .focused(noteFocus, equals: focusValue)
             HStack(spacing: 12) {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
