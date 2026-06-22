@@ -14,6 +14,7 @@ struct FavoritesListView: View {
     /// button update this same instance, so the tab is always in sync
     /// without a per-tab `.task` reload.
     @Environment(FavoritesListStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Single-shot contacts map built from one `service.fetchAll()` per
     /// appearance — resolving each `.contact` favorite via
@@ -51,6 +52,16 @@ struct FavoritesListView: View {
                 // keeps the list consistent if an event UUID newly
                 // resolves.
                 store.reload()
+            }
+            .onChange(of: scenePhase) { _, new in
+                // Foregrounding picks up an iCloud-pushed Favorites.json
+                // from another device. No NSMetadataQuery anywhere in the
+                // app — same approach the rest of the app uses for cross-
+                // device freshness (notifications + scene-active reloads).
+                if new == .active {
+                    store.reload()
+                    Task { await refreshContactMap() }
+                }
             }
             .contactAndEventDestinations()
     }
