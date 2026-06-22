@@ -65,12 +65,31 @@ struct SidecarKeyTests {
     }
 
     @Test
-    func forEventReturnsKeyFromExternalID() {
+    func forEventReturnsKeyFromEventUUID() {
+        let uuid = UUID(uuidString: "550E8400-E29B-41D4-A716-446655440000")!
         let event = Event(
-            externalID: "ext-abc-123",
+            id: uuid,
+            eventKitID: nil,
             startDate: Date(timeIntervalSince1970: 0),
             endDate: Date(timeIntervalSince1970: 60)
         )
-        #expect(SidecarKey.forEvent(event) == SidecarKey(kind: .event, id: "ext-abc-123"))
+        // SidecarKey.init lowercases the event id (the new .event branch).
+        #expect(SidecarKey.forEvent(event) == SidecarKey(kind: .event, id: uuid.uuidString))
+        #expect(SidecarKey.forEvent(event).id == uuid.uuidString.lowercased())
+    }
+
+    @Test
+    func sidecarKeyLowercasesEventIDs() {
+        let upperUUID = "550E8400-E29B-41D4-A716-446655440000"
+        let lowerUUID = upperUUID.lowercased()
+        let key = SidecarKey(kind: .event, id: upperUUID)
+        #expect(key.id == lowerUUID)
+    }
+
+    @Test
+    func sidecarKeyEventIDsWithDifferentCasingAreEqual() {
+        let upperUUID = "550E8400-E29B-41D4-A716-446655440000"
+        let lowerUUID = upperUUID.lowercased()
+        #expect(SidecarKey(kind: .event, id: upperUUID) == SidecarKey(kind: .event, id: lowerUUID))
     }
 }

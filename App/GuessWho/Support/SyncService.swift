@@ -122,6 +122,9 @@ final class SyncService {
             eventsAuthorization = .authorized
         case .writeOnly:
             // Write-only access does not let us read events; surface as denied.
+            // Under the new write path (E2.2), write-only users are routed to
+            // manual-only events — `createLinkedEvent` is gated on .authorized,
+            // so write-only callers fall through to `createManualEvent`.
             eventsAuthorization = .denied
         case .notDetermined:
             do {
@@ -145,24 +148,298 @@ final class SyncService {
         }
     }
 
+    // Routes the windowed read through the orchestrator's Option-C projection
+    // (`sync.eventsWindow`). EventKit inclusion is gated here — the orchestrator
+    // stays permission-agnostic.
     func fetchEventsRange(from start: Date, to end: Date) -> [Event] {
-        guard eventsAuthorization == .authorized else { return [] }
+        guard let sync else { return [] }
+        let includeEventKit = (eventsAuthorization == .authorized)
         do {
-            return try eventsAdapter.fetchEvents(in: DateInterval(start: start, end: end))
+            return try sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
         } catch {
             lastError = "fetchEvents failed: \(error.localizedDescription)"
             return []
         }
     }
 
-    func event(externalID: String) -> Event? {
-        guard eventsAuthorization == .authorized else { return nil }
+    // Sidecar-only read; does NOT require eventsAuthorization. The package's
+    // `event(at:)` falls back to the cached projection when EventKit access is
+    // denied or the live event is gone.
+    func event(uuid: String) -> Event? {
+        guard let sync else { return nil }
         do {
-            return try eventsAdapter.fetch(externalID: externalID)
+            return try sync.event(at: SidecarKey(kind: .event, id: uuid))
         } catch {
             lastError = "event fetch failed: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or nil.
+    func eventUUID(forEventKitID ekid: String) -> UUID? {
+        guard let sync else { return nil }
+        do {
+            return try sync.eventUUID(forEventKitID: ekid)
+        } catch {
+            lastError = "eventUUID lookup failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    // MARK: - Event lifecycle (sidecar-only writes)
+
+    /// Sidecar-only manual event. Not gated by eventsAuthorization — under
+    /// the v1 write-path, write-only users land here.
+    @discardableResult
+    func createManualEvent(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.createManualEvent(
+            title: title,
+            startDate: startDate,
+            endDate: endDate,
+            isAllDay: isAllDay,
+            location: location
+        )
+    }
+
+    /// Create both a calendar event and its sidecar. Requires authorized read
+    /// access so we can write to the EKEventStore.
+    @discardableResult
+    func createLinkedEvent(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
+        return try sync.createLinkedEvent(
+            title: title,
+            startDate: startDate,
+            endDate: endDate,
+            isAllDay: isAllDay,
+            location: location
+        )
+    }
+
+    /// Link-existing: takes an EventKit identifier and either reuses the
+    /// existing sidecar (when one already points at this ekid) or mints a
+    /// fresh UUID-keyed sidecar seeded from the live snapshot.
+    @discardableResult
+    func linkEvent(toEventKitID ekid: String) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
+        // Pre-dedup: if a sidecar already points at this ekid, return its UUID
+        // and skip the mint.
+        if let existing = try sync.eventUUID(forEventKitID: ekid) {
+            return existing
+        }
+        guard let snapshot = try eventsAdapter.fetch(eventKitID: ekid) else {
+            throw EventStoreError.eventNotFound(eventKitID: ekid)
+        }
+        return try sync.linkEvent(toEventKitID: ekid, snapshot: snapshot)
+    }
+
+    /// Adopt an existing manual sidecar (`uuid`) by attaching it to an EventKit
+    /// event. Requires authorized access — the orchestrator refreshes the cache
+    /// from EventKit after the link.
+    func linkExistingSidecar(uuid: String, toEventKitID ekid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
+        try sync.linkExistingSidecar(at: SidecarKey(kind: .event, id: uuid), toEventKitID: ekid)
+    }
+
+    /// Soft-delete the `eventKitID` cell on a sidecar; the EKEvent is untouched.
+    func unlinkEvent(uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.unlinkEvent(at: SidecarKey(kind: .event, id: uuid))
+    }
+
+    /// Whole-event soft-delete on the sidecar; the EKEvent is untouched.
+    func deleteEvent(uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.deleteEvent(at: SidecarKey(kind: .event, id: uuid))
+    }
+
+    /// Edit an event's fields. When the sidecar is linked, the EKEvent is
+    /// updated (requires authorized access) and the cache is refreshed from
+    /// the post-write read; when unlinked, the cache cells are written
+    /// directly (no permission required).
+    func updateEvent(
+        uuid: String,
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let key = SidecarKey(kind: .event, id: uuid)
+        // If the sidecar is linked AND the EKEvent resolves live, this is an
+        // EKEventStore write — gate it on authorized access. The orchestrator
+        // handles the unlinked/dead-pointer branches sidecar-only.
+        if let projected = try sync.event(at: key),
+           let ekid = projected.eventKitID,
+           let _ = try eventsAdapter.fetch(eventKitID: ekid)
+        {
+            guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
+        }
+        try sync.updateEventFields(
+            at: key,
+            title: title,
+            startDate: startDate,
+            endDate: endDate,
+            isAllDay: isAllDay,
+            location: location
+        )
+    }
+
+    // MARK: - Refresh (debounced, silent)
+
+    private static let refreshDebounceInterval: TimeInterval = 60
+
+    /// Per-session debounce: maps a sidecar key to the last refresh time.
+    /// In-memory only (cleared on launch). @MainActor guarantees serial access.
+    private var recentlyRefreshed: [SidecarKey: Date] = [:]
+
+    /// Silent best-effort refresh of an event sidecar's cache cells. Skipped
+    /// when the entry was refreshed within `refreshDebounceInterval` seconds.
+    /// Errors surface via `lastError` rather than throwing.
+    func refreshEvent(uuid: String) {
+        guard let sync else { return }
+        let key = SidecarKey(kind: .event, id: uuid)
+        let now = Date()
+        if let last = recentlyRefreshed[key],
+           now.timeIntervalSince(last) < Self.refreshDebounceInterval
+        {
+            return
+        }
+        do {
+            _ = try sync.refreshEventCache(at: key)
+            recentlyRefreshed[key] = now
+        } catch {
+            lastError = "refresh event failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Silent refresh for every event linked to `contactUUID`. Uses the same
+    /// debounce window as `refreshEvent`. Initial-load-only pattern — callers
+    /// invoke this once when the contact loads, not on every redraw.
+    func refreshLinkedEvents(forContactUUID contactUUID: String) {
+        guard let sync else { return }
+        let endpoint = SidecarKey(kind: .contact, id: contactUUID)
+        let links: [Link]
+        do {
+            links = try sync.links(at: endpoint).filter { $0.deletedAt == nil }
+        } catch {
+            lastError = "refresh linked events failed: \(error.localizedDescription)"
+            return
+        }
+        for link in links {
+            let other = Self.otherEndpoint(of: link, from: endpoint)
+            guard other.kind == .event else { continue }
+            refreshEvent(uuid: other.id)
+        }
+    }
+
+    // MARK: - Event notes (sidecar-only)
+
+    func eventNotes(forEventUUID uuid: String) -> [ContactNote] {
+        guard let sync else { return [] }
+        do {
+            return try sync.notes(at: SidecarKey(kind: .event, id: uuid))
+        } catch {
+            lastError = "event notes read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    @discardableResult
+    func addEventNote(body: String, forEventUUID uuid: String) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addNote(at: SidecarKey(kind: .event, id: uuid), body: body)
+    }
+
+    func editEventNote(id: UUID, newBody: String, forEventUUID uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.editNote(at: SidecarKey(kind: .event, id: uuid), id: id, newBody: newBody)
+    }
+
+    func deleteEventNote(id: UUID, forEventUUID uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.deleteNote(at: SidecarKey(kind: .event, id: uuid), id: id)
+    }
+
+    // MARK: - Event tags
+
+    func eventTags(forEventUUID uuid: String) -> [EventTag] {
+        guard let sync else { return [] }
+        do {
+            return try sync.tags(at: SidecarKey(kind: .event, id: uuid))
+        } catch {
+            lastError = "event tags read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    @discardableResult
+    func addEventTag(text: String, forEventUUID uuid: String) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addTag(at: SidecarKey(kind: .event, id: uuid), text: text)
+    }
+
+    func editEventTag(id: UUID, text: String, forEventUUID uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.editTag(at: SidecarKey(kind: .event, id: uuid), id: id, text: text)
+    }
+
+    func deleteEventTag(id: UUID, forEventUUID uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.deleteTag(at: SidecarKey(kind: .event, id: uuid), id: id)
+    }
+
+    // MARK: - Calendar search (link-sheet backing reads)
+
+    /// EventKit events whose start falls on the given calendar day. Returns
+    /// `[]` when calendar access is denied — gated here so the orchestrator
+    /// stays permission-agnostic.
+    func eventsOnDay(_ day: Date) -> [Event] {
+        guard eventsAuthorization == .authorized else { return [] }
+        do {
+            return try eventsAdapter.fetchEvents(on: day)
+        } catch {
+            lastError = "events-on-day failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// EventKit events matching `text` within `interval`. Returns `[]` when
+    /// access is denied. Empty `text` returns all events in the interval.
+    func searchCalendarEvents(text: String, in interval: DateInterval) -> [Event] {
+        guard eventsAuthorization == .authorized else { return [] }
+        do {
+            return try eventsAdapter.searchEvents(matching: text, in: interval)
+        } catch {
+            lastError = "search events failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    // MARK: - Migration
+
+    /// Best-effort one-shot migration of legacy event sidecars to the
+    /// UUID-keyed shape. Idempotent — safe to call on every launch. Does NOT
+    /// require any permission. Phase 6 wires this into RootView.task.
+    func migrateEventsIfNeeded() {
+        guard let sync else { return }
+        try? sync.migrateEventsToSidecarFirst()
     }
 
     func fetchAll() -> [Contact] {
@@ -234,9 +511,12 @@ final class SyncService {
 
     func contactLinks(forContactUUID uuid: String) -> [Link] {
         guard let sync else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: uuid)
         do {
-            let all = try sync.links(at: SidecarKey(kind: .contact, id: uuid))
-            return all.filter { $0.deletedAt == nil }
+            let all = try sync.links(at: endpoint)
+            return all.filter { link in
+                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
+            }
         } catch {
             lastError = "links read failed: \(error.localizedDescription)"
             return []
@@ -292,9 +572,9 @@ final class SyncService {
         }
     }
 
-    func contactLinks(forEventID externalID: String) -> [Link] {
+    func contactLinks(forEventUUID uuid: String) -> [Link] {
         guard let sync else { return [] }
-        let endpoint = SidecarKey(kind: .event, id: externalID)
+        let endpoint = SidecarKey(kind: .event, id: uuid)
         do {
             let all = try sync.links(at: endpoint)
             return all.filter { link in
@@ -307,11 +587,11 @@ final class SyncService {
     }
 
     @discardableResult
-    func addContactEventLink(contactUUID: String, eventID: String, note: String) throws -> Link {
+    func addContactEventLink(contactUUID: String, eventUUID: String, note: String) throws -> Link {
         guard let sync else { throw SidecarUnavailableError() }
         return try sync.addLink(
             from: SidecarKey(kind: .contact, id: contactUUID),
-            to: SidecarKey(kind: .event, id: eventID),
+            to: SidecarKey(kind: .event, id: eventUUID),
             note: note
         )
     }

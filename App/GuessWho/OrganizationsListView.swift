@@ -46,7 +46,7 @@ struct OrganizationsListView: View {
                 .environment(repository)
         }
         .navigationDestination(for: EventReference.self) { ref in
-            EventDetailView(externalID: ref.externalID)
+            EventDetailView(eventUUID: ref.eventUUID)
         }
         .searchable(
             text: $repository.organizationsSearch,

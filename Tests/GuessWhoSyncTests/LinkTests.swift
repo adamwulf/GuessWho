@@ -146,6 +146,28 @@ struct LinkTests {
         #expect(fetched.endpointB == eventX)
     }
 
+    @Test
+    func personEventLinkRoundTripsWithUUIDEventKey() throws {
+        let (sync, _) = makeOrchestrator()
+        let eventUUID = SidecarKey(kind: .event, id: "11111111-1111-1111-1111-111111111111")
+        let link = try sync.addLink(from: contactA, to: eventUUID, note: "uuid-keyed event")
+        let fetched = try #require(try sync.link(id: link.id))
+        #expect(fetched.endpointA == contactA)
+        #expect(fetched.endpointB == eventUUID)
+        #expect(fetched.endpointB.id == "11111111-1111-1111-1111-111111111111")
+    }
+
+    @Test
+    func eventEventLinkRoundTripsWithUUIDEventKeys() throws {
+        let (sync, _) = makeOrchestrator()
+        let eventA = SidecarKey(kind: .event, id: "22222222-2222-2222-2222-222222222222")
+        let eventB = SidecarKey(kind: .event, id: "33333333-3333-3333-3333-333333333333")
+        let link = try sync.addLink(from: eventA, to: eventB, note: "both UUID events")
+        let fetched = try #require(try sync.link(id: link.id))
+        #expect(fetched.endpointA == eventA)
+        #expect(fetched.endpointB == eventB)
+    }
+
     // MARK: - Envelope codec
 
     @Test

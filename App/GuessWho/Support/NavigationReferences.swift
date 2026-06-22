@@ -6,7 +6,8 @@ struct ContactReference: Hashable {
 }
 
 struct EventReference: Hashable {
-    let externalID: String
+    let eventUUID: String
+    init(eventUUID: String) { self.eventUUID = eventUUID.lowercased() }
 }
 
 extension View {
@@ -18,8 +19,7 @@ extension View {
                 ContactDetailView(localID: ref.localID)
             }
             .navigationDestination(for: EventReference.self) { ref in
-                EventDetailView(externalID: ref.externalID)
+                EventDetailView(eventUUID: ref.eventUUID)
             }
     }
 }
-

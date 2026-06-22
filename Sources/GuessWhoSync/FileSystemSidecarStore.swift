@@ -345,18 +345,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
-        case .contact, .link:
-            // Contact and link UUIDs are canonicalized to lowercase at every
-            // boundary so case-folding filesystems (iCloud Drive on APFS) can't
-            // desync the on-disk name from the in-memory key.
+        case .contact, .link, .event:
+            // All sidecar kinds are now UUID-keyed and canonicalized to
+            // lowercase at every boundary so case-folding filesystems (iCloud
+            // Drive on APFS) can't desync the on-disk name from the in-memory
+            // key. (A UUID happens to percent-encode to itself, so legacy
+            // event filenames named with percent-encoded externalIDs that may
+            // briefly coexist with this lowercased path until migration
+            // deletes them are still writable. New writes go through this
+            // branch.)
             return "\(key.id.lowercased()).json"
-        case .event:
-            var allowed = CharacterSet(charactersIn: "._-")
-            allowed.insert(charactersIn: "A"..."Z")
-            allowed.insert(charactersIn: "a"..."z")
-            allowed.insert(charactersIn: "0"..."9")
-            let encoded = key.id.addingPercentEncoding(withAllowedCharacters: allowed) ?? key.id
-            return "\(encoded).json"
         }
     }
 

@@ -19,17 +19,21 @@ struct ContactDetailView: View {
     @State private var didAutoReconcile = false
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
+    @State private var showingAddLinkSheet = false
+    @State private var showingNewNoteEditor = false
+    @State private var uuidToContact: [String: Contact] = [:]
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
     // can commit whichever edit is active and dismiss the keyboard.
-    fileprivate enum NoteFocus: Hashable {
+    enum NoteFocus: Hashable {
         case newNote
-        case row(UUID)
+        case noteRow(UUID)
+        case linkRow(UUID)
     }
     @FocusState private var noteFocus: NoteFocus?
     @State private var newNoteText: String = ""
-    @State private var editingID: UUID?
+    @State private var editingNoteID: UUID?
     @State private var draftBody: String = ""
     // Body captured at edit-start, used by §12.5's no-op-tap rule: commit
     // is a no-op only when the draft is unchanged from this snapshot —
@@ -39,8 +43,54 @@ struct ContactDetailView: View {
 
     @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
 
+    // Contact-link edit state (lifted from the old ConnectionsSection).
+    @State private var editingLinkID: UUID?
+    @State private var draftLinkNote: String = ""
+    @State private var editLinkStartSnapshot: String = ""
+
     private var isEditingAnything: Bool {
         noteFocus != nil
+    }
+
+    private enum ActivityItem: Identifiable {
+        case note(ContactNote)
+        case connection(ContactLink)
+        case event(ContactLink)
+
+        var id: AnyHashable {
+            switch self {
+            case .note(let n): return AnyHashable("note-\(n.id)")
+            case .connection(let l): return AnyHashable("conn-\(l.id)")
+            case .event(let l): return AnyHashable("event-\(l.id)")
+            }
+        }
+
+        var createdAt: Date {
+            switch self {
+            case .note(let n): return n.createdAt
+            case .connection(let l), .event(let l): return l.createdAt
+            }
+        }
+
+        var sortKey: (Date, String) {
+            switch self {
+            case .note(let n): return (n.createdAt, "n-\(n.id.uuidString)")
+            case .connection(let l): return (l.createdAt, "c-\(l.id.uuidString)")
+            case .event(let l): return (l.createdAt, "e-\(l.id.uuidString)")
+            }
+        }
+    }
+
+    private var activityItems: [ActivityItem] {
+        var items: [ActivityItem] = []
+        if let notesStore {
+            items.append(contentsOf: notesStore.notes.map(ActivityItem.note))
+        }
+        if let linksStore {
+            items.append(contentsOf: linksStore.links.map(ActivityItem.connection))
+        }
+        items.append(contentsOf: eventLinks.map(ActivityItem.event))
+        return items.sorted { $0.sortKey < $1.sortKey }
     }
 
     var body: some View {
@@ -50,23 +100,7 @@ struct ContactDetailView: View {
 
                 referencedBySection(contact)
 
-                if let notesStore {
-                    NotesSection(
-                        store: notesStore,
-                        newNoteText: $newNoteText,
-                        editingID: $editingID,
-                        draftBody: $draftBody,
-                        noteFocus: $noteFocus,
-                        beginEdit: beginEdit(_:),
-                        deleteNote: deleteNote(_:)
-                    )
-                }
-
-                if let linksStore, let uuid = service.guessWhoUUID(in: contact) {
-                    ConnectionsSection(store: linksStore, contactUUID: uuid)
-                }
-
-                linkedEventsSection
+                activitySection
 
                 if debugModeEnabled {
                     debugSection(contact)
@@ -294,54 +328,248 @@ struct ContactDetailView: View {
         return rows
     }
 
-    // MARK: - Linked events
+    // MARK: - Activity (merged notes + connections + linked events)
 
     @ViewBuilder
-    private var linkedEventsSection: some View {
-        Section("Linked Events") {
-            ForEach(eventLinks, id: \.id) { link in
-                linkedEventRow(link)
+    private var activitySection: some View {
+        let items = activityItems
+        Section("Activity") {
+            ForEach(items) { item in
+                activityRow(item)
             }
             .onDelete { offsets in
-                let ids = offsets.map { eventLinks[$0].id }
-                for id in ids { removeEventLink(id) }
+                let targets = offsets.map { items[$0] }
+                for target in targets { deleteActivityItem(target) }
             }
-            Button {
-                showingEventPicker = true
-            } label: {
-                Label("Add Event", systemImage: "calendar.badge.plus")
+
+            if showingNewNoteEditor {
+                TextField("Add a note", text: $newNoteText, axis: .vertical)
+                    .focused($noteFocus, equals: .newNote)
             }
-            .disabled(contactUUID == nil)
+
+            activityFooter
         }
-        .sheet(isPresented: $showingEventPicker) {
-            EventPickerSheet { event, note in
-                addEventLink(eventID: event.externalID, note: note)
+    }
+
+    @ViewBuilder
+    private var activityFooter: some View {
+        HStack(spacing: 0) {
+            activityFooterButton(
+                title: "Add Note",
+                systemImage: "note.text",
+                action: { showNewNoteEditor() }
+            )
+            .disabled(notesStore == nil)
+
+            Divider()
+
+            activityFooterButton(
+                title: "Link Contact",
+                systemImage: "person.line.dotted.person",
+                action: { showingAddLinkSheet = true }
+            )
+            .disabled(linksStore == nil || contactUUID == nil)
+            .sheet(isPresented: $showingAddLinkSheet) {
+                if let uuid = contactUUID, let linksStore {
+                    AddLinkSheet(currentContactUUID: uuid) { toUUID, note in
+                        linksStore.addLink(toUUID: toUUID, note: note)
+                        refreshContactMap()
+                    }
+                }
             }
+
+            Divider()
+
+            activityFooterButton(
+                title: "Link Event",
+                systemImage: "calendar.badge.plus",
+                action: { showingEventPicker = true }
+            )
+            .disabled(contactUUID == nil)
+            .sheet(isPresented: $showingEventPicker) {
+                EventLinkSheet(mode: .link(onLinked: { eventUUID, note in
+                    addEventLink(eventUUID: eventUUID, note: note)
+                }))
+            }
+        }
+        .listRowInsets(EdgeInsets())
+    }
+
+    @ViewBuilder
+    private func activityFooterButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                Text(title)
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func activityRow(_ item: ActivityItem) -> some View {
+        switch item {
+        case .note(let note):
+            noteRow(note)
+        case .connection(let link):
+            connectionRow(link)
+        case .event(let link):
+            linkedEventRow(link)
+        }
+    }
+
+    @ViewBuilder
+    private func noteRow(_ note: ContactNote) -> some View {
+        if editingNoteID == note.id {
+            ActivityRowLayout(systemImage: "text.rectangle") {
+                TextField("", text: $draftBody, axis: .vertical)
+                    .focused($noteFocus, equals: .noteRow(note.id))
+            }
+        } else {
+            Button {
+                beginEdit(note)
+            } label: {
+                ActivityRowLayout(systemImage: "text.rectangle") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(note.body)
+                        Text(note.createdAt, format: .relative(presentation: .named))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    beginEdit(note)
+                } label: {
+                    Label("Edit Note", systemImage: "pencil")
+                }
+                Button("Delete", role: .destructive) {
+                    deleteNote(note.id)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionRow(_ link: ContactLink) -> some View {
+        if let uuid = contactUUID, let direction = link.direction(forContactUUID: uuid) {
+            LinkRow(
+                link: link,
+                otherContact: otherContact(for: direction),
+                isEditing: editingLinkID == link.id,
+                draftNote: $draftLinkNote,
+                noteFocus: $noteFocus,
+                focusValue: .linkRow(link.id),
+                onBeginEdit: { beginLinkEdit(link) },
+                onCommit: { commitLinkEditIfChanged() },
+                onCancel: { cancelLinkEdit() },
+                onDelete: { deleteLink(link.id) }
+            )
         }
     }
 
     @ViewBuilder
     private func linkedEventRow(_ link: ContactLink) -> some View {
         let other = otherEndpoint(of: link)
-        let event = service.event(externalID: other.id)
-        NavigationLink(value: EventReference(externalID: other.id)) {
+        let event = service.event(uuid: other.id)
+        let isEditing = editingLinkID == link.id
+        ActivityRowLayout(systemImage: "calendar") {
             VStack(alignment: .leading, spacing: 4) {
                 if let event {
-                    Text(event.title.isEmpty ? "(Untitled event)" : event.title)
-                    Text(event.startDate, style: .date)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    NavigationLink(value: EventReference(eventUUID: other.id)) {
+                        Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                            .font(.body)
+                            .foregroundStyle(.tint)
+                    }
+                    .buttonStyle(.plain)
                 } else {
                     Text("(Unknown event)")
                         .foregroundStyle(.secondary)
                 }
-                if !link.note.isEmpty {
-                    Text(link.note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                if isEditing {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("", text: $draftLinkNote, axis: .vertical)
+                            .focused($noteFocus, equals: .linkRow(link.id))
+                        HStack(spacing: 12) {
+                            Spacer()
+                            Button("Cancel", role: .cancel) { cancelLinkEdit() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            Button("Done") { commitLinkEditIfChanged() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                        }
+                    }
+                } else {
+                    Button {
+                        beginLinkEdit(link)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !link.note.isEmpty {
+                                Text(link.note)
+                            }
+                            if let event {
+                                Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
+        .contextMenu {
+            Button {
+                beginLinkEdit(link)
+            } label: {
+                Label("Edit Note", systemImage: "pencil")
+            }
+            Button("Delete", role: .destructive) {
+                removeEventLink(link.id)
+            }
+        }
+    }
+
+    private func deleteActivityItem(_ item: ActivityItem) {
+        switch item {
+        case .note(let n): deleteNote(n.id)
+        case .connection(let l): deleteLink(l.id)
+        case .event(let l): removeEventLink(l.id)
+        }
+    }
+
+    private func showNewNoteEditor() {
+        guard notesStore != nil else { return }
+        showingNewNoteEditor = true
+        noteFocus = .newNote
+    }
+
+    private func otherContact(for direction: LinkDirection) -> Contact? {
+        let endpoint = direction.other
+        guard endpoint.kind == .contact else { return nil }
+        return uuidToContact[endpoint.id]
+    }
+
+    private func refreshContactMap() {
+        var map: [String: Contact] = [:]
+        for contact in service.fetchAll() {
+            if let uuid = service.guessWhoUUID(in: contact) {
+                map[uuid] = contact
+            }
+        }
+        uuidToContact = map
     }
 
     private var contactUUID: String? {
@@ -361,25 +589,44 @@ struct ContactDetailView: View {
             return
         }
         eventLinks = service.eventLinks(forContactUUID: uuid)
+        // Option C cache-refresh trigger (b): fire on initial contact load
+        // only. SyncService debounces per eventKitID, so repeat appearances
+        // are cheap; we still avoid firing on every add/remove edit.
+        service.refreshLinkedEvents(forContactUUID: uuid)
     }
 
-    private func addEventLink(eventID: String, note: String) {
+    private func addEventLink(eventUUID: String, note: String) {
         guard let uuid = contactUUID else { return }
         do {
-            _ = try service.addContactEventLink(contactUUID: uuid, eventID: eventID, note: note)
+            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: eventUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }
-        reloadEventLinks()
+        // Do NOT refire refreshLinkedEvents — see E4 / C-REFRESH-FANOUT. The
+        // freshly-added event refreshes when the user opens its detail view.
+        eventLinks = service.eventLinks(forContactUUID: uuid)
     }
 
     private func removeEventLink(_ id: UUID) {
+        // Clear edit state first: setLinkNote on a soft-deleted link
+        // undeletes it (§13 link API), so a pending edit must NOT be
+        // committed after the delete lands.
+        if editingLinkID == id {
+            editingLinkID = nil
+            draftLinkNote = ""
+            editLinkStartSnapshot = ""
+            if case .linkRow(let focused) = noteFocus, focused == id {
+                noteFocus = nil
+            }
+        }
         do {
             try service.removeLink(id: id)
         } catch {
             service.recordError("remove link failed: \(error.localizedDescription)")
         }
-        reloadEventLinks()
+        // Do NOT refire refreshLinkedEvents — see E4 / C-REFRESH-FANOUT.
+        guard let uuid = contactUUID else { return }
+        eventLinks = service.eventLinks(forContactUUID: uuid)
     }
 
     // MARK: - Loading & reconcile
@@ -420,6 +667,7 @@ struct ContactDetailView: View {
                 linksStore = nil
             }
             reloadEventLinks()
+            refreshContactMap()
         }
     }
 
@@ -442,21 +690,24 @@ struct ContactDetailView: View {
 
     private func beginEdit(_ note: ContactNote) {
         // Tapping a different row mid-edit commits the prior one first.
-        if let editingID, editingID != note.id {
+        if let editingNoteID, editingNoteID != note.id {
             commitRowEditIfChanged()
         }
-        editingID = note.id
+        if editingLinkID != nil {
+            commitLinkEditIfChanged()
+        }
+        editingNoteID = note.id
         draftBody = note.body
         editStartSnapshot = note.body
-        noteFocus = .row(note.id)
+        noteFocus = .noteRow(note.id)
     }
 
     private func deleteNote(_ id: UUID) {
-        if editingID == id {
-            editingID = nil
+        if editingNoteID == id {
+            editingNoteID = nil
             draftBody = ""
             editStartSnapshot = ""
-            if case .row(let focused) = noteFocus, focused == id {
+            if case .noteRow(let focused) = noteFocus, focused == id {
                 noteFocus = nil
             }
         }
@@ -467,8 +718,10 @@ struct ContactDetailView: View {
         switch noteFocus {
         case .newNote:
             commitNewNote()
-        case .row:
+        case .noteRow:
             commitRowEditIfChanged()
+        case .linkRow:
+            commitLinkEditIfChanged()
         case .none:
             break
         }
@@ -478,20 +731,84 @@ struct ContactDetailView: View {
     private func commitNewNote() {
         let body = newNoteText
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let notesStore else { return }
-        notesStore.addNote(body: body)
+        if !trimmed.isEmpty, let notesStore {
+            notesStore.addNote(body: body)
+        }
         newNoteText = ""
+        showingNewNoteEditor = false
     }
 
     private func commitRowEditIfChanged() {
-        guard let id = editingID else { return }
+        guard let id = editingNoteID else { return }
         let proposed = draftBody
         let snapshot = editStartSnapshot
-        editingID = nil
+        editingNoteID = nil
         draftBody = ""
         editStartSnapshot = ""
         if proposed == snapshot { return }
         notesStore?.editNote(id, newBody: proposed)
+    }
+
+    // MARK: - Contact-contact links (connections)
+
+    private func beginLinkEdit(_ link: ContactLink) {
+        if editingNoteID != nil {
+            commitRowEditIfChanged()
+        }
+        if let editingLinkID, editingLinkID != link.id {
+            commitLinkEditIfChanged()
+        }
+        editingLinkID = link.id
+        draftLinkNote = link.note
+        editLinkStartSnapshot = link.note
+        noteFocus = .linkRow(link.id)
+    }
+
+    private func commitLinkEditIfChanged() {
+        guard let id = editingLinkID else { return }
+        let proposed = draftLinkNote
+        let snapshot = editLinkStartSnapshot
+        editingLinkID = nil
+        draftLinkNote = ""
+        editLinkStartSnapshot = ""
+        if case .linkRow(let focused) = noteFocus, focused == id {
+            noteFocus = nil
+        }
+        if proposed == snapshot { return }
+        if linksStore?.links.contains(where: { $0.id == id }) == true {
+            linksStore?.setNote(id: id, note: proposed)
+        } else if eventLinks.contains(where: { $0.id == id }) {
+            do {
+                try service.setContactLinkNote(id: id, note: proposed)
+                eventLinks = service.eventLinks(forContactUUID: contactUUID ?? "")
+            } catch {
+                service.recordError("set event-link note failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func cancelLinkEdit() {
+        editingLinkID = nil
+        draftLinkNote = ""
+        editLinkStartSnapshot = ""
+        if case .linkRow = noteFocus {
+            noteFocus = nil
+        }
+    }
+
+    private func deleteLink(_ id: UUID) {
+        // Clear edit state first: setLinkNote on a soft-deleted link
+        // undeletes it (§13 link API), so a pending edit must NOT be
+        // committed after the delete lands.
+        if editingLinkID == id {
+            editingLinkID = nil
+            draftLinkNote = ""
+            editLinkStartSnapshot = ""
+            if case .linkRow(let focused) = noteFocus, focused == id {
+                noteFocus = nil
+            }
+        }
+        linksStore?.remove(id: id)
     }
 
     // MARK: - Formatting
@@ -832,156 +1149,4 @@ private struct AddressRow: View {
     }
 }
 
-private struct EventPickerSheet: View {
-    @Environment(SyncService.self) private var service
-    @Environment(\.dismiss) private var dismiss
 
-    let onPick: (Event, String) -> Void
-
-    @State private var query: String = ""
-    @State private var events: [Event] = []
-    @State private var selection: Event?
-    @State private var note: String = ""
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if let selection {
-                    Form {
-                        Section("Event") {
-                            VStack(alignment: .leading) {
-                                Text(selection.title.isEmpty ? "(Untitled event)" : selection.title)
-                                Text(selection.startDate, style: .date)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Button("Change") { self.selection = nil }
-                                .buttonStyle(.borderless)
-                        }
-                        Section("Note") {
-                            TextField("Optional note", text: $note, axis: .vertical)
-                        }
-                    }
-                } else {
-                    List(filtered, id: \.externalID) { event in
-                        Button {
-                            selection = event
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(event.title.isEmpty ? "(Untitled event)" : event.title)
-                                Text(event.startDate, style: .date)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .searchable(text: $query, prompt: "Search events")
-                }
-            }
-            .navigationTitle(selection == nil ? "Pick Event" : "Add Link")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                if let selection {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Add") {
-                            onPick(selection, note.trimmingCharacters(in: .whitespacesAndNewlines))
-                            dismiss()
-                        }
-                    }
-                }
-            }
-            .task { loadEvents() }
-        }
-    }
-
-    private func loadEvents() {
-        let now = Date()
-        let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
-        let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
-        events = service.fetchEventsRange(from: start, to: end)
-            .sorted { $0.startDate < $1.startDate }
-    }
-
-    private var filtered: [Event] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return events }
-        let needle = trimmed.lowercased()
-        return events.filter { e in
-            e.title.lowercased().contains(needle)
-                || (e.location ?? "").lowercased().contains(needle)
-                || (e.notes ?? "").lowercased().contains(needle)
-        }
-    }
-}
-
-private struct NotesSection: View {
-    let store: NotesStore
-    @Binding var newNoteText: String
-    @Binding var editingID: UUID?
-    @Binding var draftBody: String
-    var noteFocus: FocusState<ContactDetailView.NoteFocus?>.Binding
-    let beginEdit: (ContactNote) -> Void
-    let deleteNote: (UUID) -> Void
-
-    var body: some View {
-        Section("Notes") {
-            ForEach(store.notes, id: \.id) { note in
-                row(for: note)
-            }
-            .onDelete { offsets in
-                let ids = offsets.map { store.notes[$0].id }
-                for id in ids { deleteNote(id) }
-            }
-
-            // TextField with axis: .vertical inherits the cell's default
-            // font + leading inset, so the editor lines up with the read
-            // rows above. TextEditor draws its own inset and looked
-            // shifted right.
-            TextField("Add a note", text: $newNoteText, axis: .vertical)
-                .focused(noteFocus, equals: .newNote)
-        }
-    }
-
-    @ViewBuilder
-    private func row(for note: ContactNote) -> some View {
-        if editingID == note.id {
-            TextField("", text: $draftBody, axis: .vertical)
-                .focused(noteFocus, equals: .row(note.id))
-        } else {
-            // Wrap in a Button so the whole row — including the empty
-            // trailing space of the Form cell — is the hit target.
-            // .plain keeps the visual styling intact; without it the row
-            // would adopt button tint colors.
-            Button {
-                beginEdit(note)
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(note.body)
-                    HStack(spacing: 6) {
-                        Text(note.createdAt, format: .relative(presentation: .named))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if note.modifiedAt > note.createdAt {
-                            Text("edited")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.15), in: Capsule())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button("Delete", role: .destructive) {
-                    deleteNote(note.id)
-                }
-            }
-        }
-    }
-}
