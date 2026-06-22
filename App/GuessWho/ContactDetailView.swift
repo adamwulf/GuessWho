@@ -106,6 +106,8 @@ struct ContactDetailView: View {
             if let contact {
                 infoSection(contact)
 
+                Section { activityFooter }
+
                 referencedBySection(contact)
 
                 activitySection
@@ -407,21 +409,21 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var activitySection: some View {
         let items = activityItems
-        Section("Activity") {
-            ForEach(items) { item in
-                activityRow(item)
-            }
-            .onDelete { offsets in
-                let targets = offsets.map { items[$0] }
-                for target in targets { deleteActivityItem(target) }
-            }
+        if !items.isEmpty || showingNewNoteEditor {
+            Section("Activity") {
+                ForEach(items) { item in
+                    activityRow(item)
+                }
+                .onDelete { offsets in
+                    let targets = offsets.map { items[$0] }
+                    for target in targets { deleteActivityItem(target) }
+                }
 
-            if showingNewNoteEditor {
-                TextField("Add a note", text: $newNoteText, axis: .vertical)
-                    .focused($noteFocus, equals: .newNote)
+                if showingNewNoteEditor {
+                    TextField("Add a note", text: $newNoteText, axis: .vertical)
+                        .focused($noteFocus, equals: .newNote)
+                }
             }
-
-            activityFooter
         }
     }
 
@@ -726,7 +728,12 @@ struct ContactDetailView: View {
     }
 
     private func loadContact() async {
-        let loaded = await service.fetchAll().first { $0.localID == localID }
+        let loaded: Contact?
+        if let cached = repository.contact(localID: localID) {
+            loaded = cached
+        } else {
+            loaded = await service.fetchAll().first { $0.localID == localID }
+        }
         contact = loaded
         if let loaded {
             sidecar = service.sidecar(for: loaded)
