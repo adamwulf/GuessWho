@@ -1,5 +1,6 @@
 import Foundation
 import Contacts
+import ContactsUI
 import EventKit
 import GuessWhoSync
 
@@ -479,6 +480,18 @@ final class SyncService {
             throw SidecarUnavailableError()
         }
         return try await sync.reconcileContactIdentity(localID: localID)
+    }
+
+    // MARK: - Edit (CNContactViewController bridge)
+
+    /// Fetches the system `CNContact` for in-app editing via
+    /// `CNContactViewController`. The view controller requires its own
+    /// descriptor (`CNContactViewController.descriptorForRequiredKeys()`) —
+    /// the adapter's key set deliberately omits some of these, so we fetch
+    /// fresh here rather than reusing the adapter path.
+    func fetchCNContactForEditing(localID: String) throws -> CNContact {
+        let keys: [CNKeyDescriptor] = [CNContactViewController.descriptorForRequiredKeys()]
+        return try contactStore.unifiedContact(withIdentifier: localID, keysToFetch: keys)
     }
 
     // MARK: - Notes

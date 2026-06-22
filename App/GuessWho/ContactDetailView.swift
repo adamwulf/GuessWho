@@ -6,6 +6,7 @@ import GuessWhoSync
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
+    @Environment(\.dismiss) private var dismiss
 
     let localID: String
 
@@ -21,6 +22,12 @@ struct ContactDetailView: View {
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
+    @State private var editingCNContact: EditingCNContact?
+
+    private struct EditingCNContact: Identifiable {
+        let contact: CNContact
+        var id: String { contact.identifier }
+    }
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -123,7 +130,21 @@ struct ContactDetailView: View {
                     .controlSize(.small)
                     .accessibilityLabel("Done")
                 }
+            } else if contact != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") {
+                        presentEditor()
+                    }
+                }
             }
+        }
+        .sheet(item: $editingCNContact) { wrapper in
+            ContactEditView(
+                contact: wrapper.contact,
+                onDone: { Task { await handleEditorDone() } },
+                onDelete: { Task { await handleEditorDelete() } }
+            )
+            .ignoresSafeArea()
         }
         .task {
             await loadContact()
@@ -138,6 +159,31 @@ struct ContactDetailView: View {
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
+    }
+
+    // MARK: - Edit (CNContactViewController bridge)
+
+    private func presentEditor() {
+        do {
+            let cn = try service.fetchCNContactForEditing(localID: localID)
+            editingCNContact = EditingCNContact(contact: cn)
+        } catch {
+            service.recordError("fetch CNContact for editing failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleEditorDone() async {
+        editingCNContact = nil
+        await repository.reload()
+        // Reconcile re-stamps our x-guesswho:// URL if the editor stripped
+        // it, and internally calls loadContact() to refresh @State.
+        await performReconcile()
+    }
+
+    private func handleEditorDelete() async {
+        editingCNContact = nil
+        await repository.reload()
+        dismiss()
     }
 
     // MARK: - Sections
