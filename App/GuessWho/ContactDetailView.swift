@@ -315,7 +315,7 @@ struct ContactDetailView: View {
         }
         .sheet(isPresented: $showingEventPicker) {
             EventPickerSheet { event, note in
-                addEventLink(eventID: event.externalID, note: note)
+                addEventLink(eventUUID: event.id.uuidString, note: note)
             }
         }
     }
@@ -323,11 +323,8 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func linkedEventRow(_ link: ContactLink) -> some View {
         let other = otherEndpoint(of: link)
-        // TODO(phase 6): EventReference still passes the link endpoint id;
-        // post-migration that id is the sidecar event UUID. Update the
-        // reference shape to carry a UUID once views are reworked.
         let event = service.event(uuid: other.id)
-        NavigationLink(value: EventReference(externalID: other.id)) {
+        NavigationLink(value: EventReference(eventUUID: other.id)) {
             VStack(alignment: .leading, spacing: 4) {
                 if let event {
                     Text(event.title.isEmpty ? "(Untitled event)" : event.title)
@@ -364,19 +361,22 @@ struct ContactDetailView: View {
             return
         }
         eventLinks = service.eventLinks(forContactUUID: uuid)
+        // Option C cache-refresh trigger (b): fire on initial contact load
+        // only. SyncService debounces per eventKitID, so repeat appearances
+        // are cheap; we still avoid firing on every add/remove edit.
+        service.refreshLinkedEvents(forContactUUID: uuid)
     }
 
-    private func addEventLink(eventID: String, note: String) {
+    private func addEventLink(eventUUID: String, note: String) {
         guard let uuid = contactUUID else { return }
         do {
-            // TODO(phase 6): the `eventID` carried here is currently the
-            // legacy externalID flowing from `EventPickerSheet`; phase 6 will
-            // switch the picker to deliver event UUIDs.
-            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: eventID, note: note)
+            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: eventUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }
-        reloadEventLinks()
+        // Do NOT refire refreshLinkedEvents — see E4 / C-REFRESH-FANOUT. The
+        // freshly-added event refreshes when the user opens its detail view.
+        eventLinks = service.eventLinks(forContactUUID: uuid)
     }
 
     private func removeEventLink(_ id: UUID) {
@@ -385,7 +385,9 @@ struct ContactDetailView: View {
         } catch {
             service.recordError("remove link failed: \(error.localizedDescription)")
         }
-        reloadEventLinks()
+        // Do NOT refire refreshLinkedEvents — see E4 / C-REFRESH-FANOUT.
+        guard let uuid = contactUUID else { return }
+        eventLinks = service.eventLinks(forContactUUID: uuid)
     }
 
     // MARK: - Loading & reconcile
@@ -838,6 +840,10 @@ private struct AddressRow: View {
     }
 }
 
+// TODO(phase 7): replace with the shared `EventLinkSheet` (E3) in
+// link-to-existing mode. The sheet will be configured to call back with an
+// event UUID (linking an existing EventKit event mints/returns a sidecar
+// UUID via `service.linkEvent(toEventKitID:)`).
 private struct EventPickerSheet: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
@@ -869,7 +875,7 @@ private struct EventPickerSheet: View {
                         }
                     }
                 } else {
-                    List(filtered, id: \.externalID) { event in
+                    List(filtered, id: \.id) { event in
                         Button {
                             selection = event
                         } label: {
@@ -917,7 +923,7 @@ private struct EventPickerSheet: View {
         return events.filter { e in
             e.title.lowercased().contains(needle)
                 || (e.location ?? "").lowercased().contains(needle)
-                || (e.notes ?? "").lowercased().contains(needle)
+                || (e.eventKitNotes ?? "").lowercased().contains(needle)
         }
     }
 }
