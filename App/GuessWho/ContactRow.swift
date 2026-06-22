@@ -5,7 +5,7 @@ struct ContactRow: View {
     let contact: Contact
     let hasGuessWhoUUID: Bool
 
-    @AppStorage(AppSettingsKey.debugModeEnabled) private var debugModeEnabled = false
+    @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
 
     var body: some View {
         HStack(spacing: 12) {

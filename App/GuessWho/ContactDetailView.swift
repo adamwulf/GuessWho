@@ -37,6 +37,8 @@ struct ContactDetailView: View {
     // mid-edit and rewrites the on-disk body.
     @State private var editStartSnapshot: String = ""
 
+    @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
+
     private var isEditingAnything: Bool {
         noteFocus != nil
     }
@@ -66,9 +68,9 @@ struct ContactDetailView: View {
 
                 linkedEventsSection
 
-                #if DEBUG
-                debugSection(contact)
-                #endif
+                if debugModeEnabled {
+                    debugSection(contact)
+                }
             } else {
                 ProgressView()
             }
@@ -219,7 +221,6 @@ struct ContactDetailView: View {
         return rows
     }
 
-    #if DEBUG
     @ViewBuilder
     private func debugSection(_ contact: Contact) -> some View {
         let rows = debugRows(for: contact)
@@ -292,7 +293,6 @@ struct ContactDetailView: View {
 
         return rows
     }
-    #endif
 
     // MARK: - Linked events
 
