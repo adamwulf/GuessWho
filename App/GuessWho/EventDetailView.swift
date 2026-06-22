@@ -17,6 +17,7 @@ struct EventDetailView: View {
     @State private var showingEditSheet = false
     @State private var showingUnlinkConfirm = false
     @State private var showingDeleteConfirm = false
+    @State private var showingLinkSheet = false
 
     @State private var newNoteText: String = ""
     @State private var editingNoteID: UUID?
@@ -70,6 +71,11 @@ struct EventDetailView: View {
                     save(updated)
                 }
             }
+        }
+        .sheet(isPresented: $showingLinkSheet) {
+            EventLinkSheet(mode: .adopt(eventUUID: eventUUID, onAdopted: {
+                reload()
+            }))
         }
         .confirmationDialog(
             "Unlink from Calendar?",
@@ -245,13 +251,11 @@ struct EventDetailView: View {
                 }
             } else {
                 Button {
-                    // TODO(phase 7): present EventLinkSheet in link mode to
-                    // attach this manual sidecar to an EventKit event via
-                    // service.linkExistingSidecar(uuid:toEventKitID:).
+                    showingLinkSheet = true
                 } label: {
                     Label("Link to a calendar event", systemImage: "calendar.badge.plus")
                 }
-                .disabled(true)
+                .disabled(service.eventsAuthorization != .authorized)
             }
             Button(role: .destructive) {
                 showingDeleteConfirm = true
