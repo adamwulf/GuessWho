@@ -4,56 +4,127 @@
 
 Replace `CNContactViewController` with a pure-SwiftUI editor for the
 underlying `CNContact` fields, so the app compiles and behaves the same
-on iOS and native macOS, and we can drop the `UIViewControllerRepresentable`
-bridge entirely. Catalyst support is removed in the same change so the
-app builds for two platforms only: iOS and native macOS.
+on iOS, iPadOS, and native macOS, and we can drop the
+`UIViewControllerRepresentable` bridge entirely. Mac Catalyst support
+is removed in the same change so the app builds for two platform
+families only: iOS family (iPhone + iPad) and native macOS.
 
 ## Non-goals
 
 - Editing GuessWho-owned data (notes, links, events). Those already have
   their own SwiftUI editors and are out of scope.
-- Editing contact image / thumbnail bytes. The existing adapter's
-  `apply(_:to:)` deliberately leaves image data alone; the new editor
-  inherits that.
-- A unified create-new-contact flow. The existing CN-backed contact
-  creation path (if any) is not what this work touches; we only replace
-  the *edit* affordance, identified by `Edit` button → sheet from
-  `ContactDetailView`.
+- **Editing the contact photo (`imageData` / `thumbnailImageData`).**
+  This is a deliberate, user-visible regression vs. the old
+  `CNContactViewController` flow, which surfaced a tap-to-change photo
+  affordance at the top of edit mode. We are accepting the regression
+  in v1 to keep this change focused on field editing; the photo
+  affordance moves to the deferred-features list (see
+  [WWDC26 deferred features](../.ittybitty/.../wwdc26-deferred-features.md)
+  or equivalent project tracker). The existing `apply(_:to:)` in the
+  adapter already skips image bytes, so saves preserve whatever bytes
+  are already on the contact.
+- **In-line name suggestions** (Apple's edit-mode "Smith" → "Smith
+  family" banners). Not reproducible in SwiftUI without private API.
+  Accepted v1 regression; tracked alongside photos.
+- **Creating a new contact from scratch.** Confirmed by grep: the only
+  entry point today is `ContactDetailView.presentEditor()` and it
+  always starts from an existing `CNContact`. New-contact creation is
+  out of scope.
+- **Changing `contactType` (person ↔ organization)** after creation.
+  Apple's Contacts.app supports it; we don't, in v1.
+- **Editing `nonGregorianBirthday`.** It rides through unchanged
+  (preserved per §"Data preservation"). v1 has no UI for it.
+- Editing contact image / thumbnail bytes (restated; covered above).
 - iCloud / sync behavior changes. Save goes through the existing
   `CNContactStoreAdapter.save(_:)` path, which the reconcile machinery
   already exercises.
 
 ## What we have today
 
-- `Contact` (in `Sources/GuessWhoSync/`) — a Sendable struct that
-  mirrors every CNContact field we currently read. Editing operates on
-  this struct, not on `CNContact` directly.
-- `CNContactStoreAdapter.save(_ contact: Contact)` — already round-trips
-  the struct back to a `CNMutableContact` + `CNSaveRequest`. We reuse it.
-- `ContactsRepository` — the cache the UI reads from. Already has
-  `reload()`; we add a save-and-reload path.
-- `SyncService.fetchCNContactForEditing(localID:)` — fetches a `CNContact`
-  using `CNContactViewController.descriptorForRequiredKeys()`. We remove
-  this method entirely (it's only called from the editor sheet) and
-  load a `Contact` struct via the existing repository / adapter instead.
-- `ContactEditView.swift` — the UIKit bridge being replaced. Deleted at
-  the end of the work.
+- `Contact` (`Sources/GuessWhoSync/Contact.swift`) — a Sendable struct
+  that mirrors every CNContact field we currently read.
+- `CNContactStoreAdapter.save(_ contact: Contact)` (actor-isolated) —
+  already round-trips the struct back to a `CNMutableContact` +
+  `CNSaveRequest`. We reuse it. Image bytes are deliberately preserved
+  by `apply(_:to:)` so wholesale overwrite is safe (`CNContactStoreAdapter.swift:248-252`).
+- `ContactsRepository` — the cache the UI reads from; has `reload()`.
+  The repository does NOT hold the adapter directly — `SyncService`
+  owns it. So the save path is editor → `SyncService.saveContact(_:)` →
+  `contacts.save(_:)` on the adapter actor → `await repository.reload()`
+  back on the main actor. Mirrors the existing `fetchAll` pattern
+  (`SyncService.swift:448-456`).
+- `SyncService.fetchCNContactForEditing(localID:)` — the old UIKit
+  bridge fetch. Removed entirely with this change, along with its
+  unconditional `import ContactsUI` at the top of `SyncService.swift`
+  (line 3). `ContactsUI` does not build on native macOS; leaving the
+  import in is a hard compile failure on the new destination.
+- `ContactEditView.swift` — the UIKit bridge being replaced. Rewritten
+  in place as SwiftUI (same filename so the call site in
+  `ContactDetailView.swift` stays put).
+
+## Data preservation — carry-through-without-UI fields
+
+The editor's row UI does NOT cover every field on `Contact`. The
+adapter's `apply(_:to:)` overwrites editable fields wholesale on
+save (this is by design — it matches the reconciler's behavior).
+**Therefore: any field not surfaced by a row must still be carried
+through unmodified, or wholesale save will silently clear it.**
+
+The contract:
+- The editor loads a `Contact` from the freshly-fetched original.
+- That `Contact` lives entirely in a single `@State edited: Contact`.
+- Rows bind to slices of `edited` (`$edited.givenName`,
+  `$edited.phoneNumbers`, etc.).
+- Fields with no row binding are never re-assigned — they ride through
+  in `edited` from load to save.
+
+Fields with NO row binding in v1, which MUST ride through:
+
+| Field                                | Lives on                              | Why no row                                  |
+| ------------------------------------ | ------------------------------------- | ------------------------------------------- |
+| `previousFamilyName`                 | `Contact`                             | Rare; not user-edited                       |
+| `phoneticOrganizationName`           | `Contact`                             | Rare; not user-edited                       |
+| `nonGregorianBirthday`               | `Contact`                             | Niche calendars; deferred                   |
+| `socialProfiles[].userIdentifier`    | `SocialProfile`                       | Service-internal stable ID                  |
+| `postalAddresses[].subLocality`      | `PostalAddress`                       | CJK / UK addressing; not in v1 row layout   |
+| `postalAddresses[].subAdministrativeArea` | `PostalAddress`                  | Same                                        |
+| `postalAddresses[].isoCountryCode`   | `PostalAddress`                       | Drives locale-correct formatter rendering   |
+| All `urlAddresses` entries matching `SidecarKey.guessWhoContactURLPrefix` | `Contact` | **Identity URL — sidecar binding** |
+
+The GuessWho identity URL is the most critical case. Deleting it
+severs the contact ↔ sidecar binding (notes, links, events all
+become orphans). The URL editor section MUST hide it (matching the
+filter at `ContactDetailView.swift:278`) AND re-merge it back into
+the saved `urlAddresses` array before write. Concretely:
+
+- The URL section binds to a derived list of "user URLs" (filtered).
+- On save, the editor reconstructs `edited.urlAddresses` =
+  (user URLs from the binding) + (original GuessWho URL entries
+  carried through from the loaded original).
+
+Tests in §"Tests" exercise every carry-through field explicitly.
 
 ## Editor data model
 
 The editor edits a `Contact` (the Sendable struct, not `CNContact`).
 The form is initialized from a freshly-fetched copy, mutated as a
-`@State`, and on Save the whole struct is passed to the adapter.
+`@State`, and on Save the whole struct is passed to the adapter via
+`SyncService.saveContact(_:)`.
 
-There is no diff-vs-original tracking in the save path itself — the
-adapter's `apply(_:to:)` overwrites the mutable copy of the existing
-CN record wholesale. (This matches the current reconcile-pass behavior.)
-Image bytes are explicitly preserved by the adapter, so wholesale
-overwrite of *editable* fields is safe.
+### Dirty-state tracking
 
-The UI does need to detect "any change vs. original" to enable Save
-and to drive the unsaved-changes confirmation on Cancel. That comparison
-is a value-equality check on `Contact`, which is already `Equatable`.
+The plan uses an explicit `@State isDirty: Bool` flag flipped on any
+user input, NOT a deep `Equatable` comparison against the original.
+Reasons:
+- The adapter normalizes labels (`label.isEmpty ? nil : label`), so a
+  load → save round-trip can flip equality in subtle non-user-visible
+  ways.
+- Row-reorder drag gestures shouldn't necessarily count as "dirty";
+  explicit flag lets the row author decide.
+
+`isDirty` drives:
+- Save button enable/disable.
+- Cancel-with-unsaved-changes confirmation dialog.
 
 ## Row types — the core of the row-based design
 
@@ -67,34 +138,87 @@ out. Listed by the underlying `Contact` property:
 |                     | `nameSuffix`, `nickname`                                        | nickname. No labels — collapses empty fields.                |
 | `OrgFieldsRow`      | `organizationName`, `departmentName`, `jobTitle`                | Three plain text fields, only shown when contactType is      |
 |                     |                                                                 | person OR organization (org gets organization first).        |
-| `PhoneticNameRow`   | `phoneticGivenName`, `phoneticMiddleName`, `phoneticFamilyName` | Disclosed-by-default-collapsed section. Power-user only.     |
+| `PhoneticNameRow`   | `phoneticGivenName`, `phoneticMiddleName`, `phoneticFamilyName` | `DisclosureGroup`, collapsed by default. Power-user only.    |
 | `LabeledTextRow`    | `phoneNumbers`, `emailAddresses`, `urlAddresses`                | One row per entry: label picker + text field. Plus           |
-|                     |                                                                 | "Add" affordance at the bottom of each section.              |
-| `PostalAddressRow`  | `postalAddresses`                                               | Expanded multi-line editor: street / city / state / zip /    |
-|                     |                                                                 | country. Label picker on header.                             |
-| `DateRow`           | `birthday`, `dates`                                             | DatePicker for birthday. List of labeled dates for `dates`.  |
+|                     |                                                                 | "Add" affordance always visible at the bottom of each        |
+|                     |                                                                 | section, even when the list is empty.                        |
+| `PostalAddressRow`  | `postalAddresses` (street, city, state, postal code, country)   | Expanded multi-line editor with label picker on header.      |
+|                     |                                                                 | `subLocality`, `subAdministrativeArea`, `isoCountryCode`     |
+|                     |                                                                 | are carry-through (see §"Data preservation").                |
+| `BirthdayRow`       | `birthday` (DateComponents)                                     | "Add Birthday" button when nil; DatePicker + remove when     |
+|                     |                                                                 | present. See §"Birthday/DateComponents handling".            |
+| `DateRow`           | `dates` (LabeledDate list)                                      | Label picker + DatePicker per entry; "Add Date" affordance.  |
 | `RelationRow`       | `contactRelations`                                              | Label picker + name text field. Picker uses standard         |
-|                     |                                                                 | CN relation labels (mother, father, partner, …).             |
-| `SocialProfileRow`  | `socialProfiles`                                                | Service picker + username + URL.                             |
+|                     |                                                                 | CN relation labels (mother, father, partner, …) plus         |
+|                     |                                                                 | "Custom…" sheet.                                             |
+| `SocialProfileRow`  | `socialProfiles` (service, username, url)                       | Service picker + username + URL. `userIdentifier` is         |
+|                     |                                                                 | carry-through.                                               |
 | `IMRow`             | `instantMessageAddresses`                                       | Service picker + username.                                   |
 
-Each row type lives in its own file under
-`App/GuessWho/ContactEditor/Rows/`. Each is a `View` with `@Binding`
-inputs to a slice of the `Contact` struct.
+`BirthdayRow` and `DateRow` are separate files because birthday is a
+single optional value and `dates` is a labeled list — the UI shapes
+differ enough that combining them would be more code, not less.
+
+Each row type lives in its own file (see §"File layout" for the
+rationale on a subdirectory). Each is a `View` with `@Binding` inputs
+to a slice of `edited: Contact` plus a `@Binding<Bool>` to the parent's
+`isDirty` flag.
+
+### Birthday / DateComponents handling
+
+`Contact.birthday` is `DateComponents?` — explicitly so a "no year"
+birthday survives. SwiftUI's `DatePicker` needs a `Date`. The row:
+
+- When loading: convert `DateComponents` to `Date` via
+  `Calendar.current.date(from:)`. If `year` is missing in components,
+  substitute a sentinel year (e.g. 2000) for the picker; remember that
+  the original was no-year via a `@State hasYear: Bool` flag.
+- When writing: reconstruct `DateComponents`. If `hasYear == false`,
+  set only `month` and `day` on the result, dropping the picker's
+  sentinel year.
+- UI surfaces a "Include year" toggle so the user can opt in/out;
+  matches Contacts.app's behavior.
+
+### Section visibility — Add affordance is always present
+
+The "section collapses when empty" rule from earlier drafts created a
+contradiction: a contact with zero phone numbers would have no UI for
+adding the first. Resolved:
+
+- The labeled-list sections (Phone, Email, URL, Address, Date,
+  Related, Social, IM) **always render a section header and an Add
+  affordance**, even when the list is empty.
+- Singleton sections (Name, Org, Phonetic, Birthday) render
+  conditionally:
+  - Name: always shown.
+  - Org: shown when `contactType == .organization` OR any of
+    `organizationName / departmentName / jobTitle` is non-empty.
+  - Phonetic: collapsed `DisclosureGroup`, always available.
+  - Birthday: always shown; row internally toggles between "Add
+    Birthday" button and editor.
+
+### Validation policy
+
+Match Contacts.app: **the editor does NOT block save on field-content
+validation.** Phone numbers, URLs, emails are saved as the user typed
+them. Adapter / CN may reject save at the system level (e.g.
+`invalidFieldValue`); those surface via the alert pipeline below.
 
 ## Label picker
 
-CN labels are mostly raw constants like `_$!<Home>!$_`. We render them
-via `CNLabeledValue.localizedString(forLabel:)`. The picker:
+CN labels are mostly raw constants like `_$!<Home>!$_`. We render via
+`CNLabeledValue.localizedString(forLabel:)`. The picker:
 
-- Offers the standard set per field type (home / work / mobile / …).
-- Lets the user enter a custom label, stored verbatim. Custom labels
-  round-trip through `CNLabeledValue` unchanged.
-- Shows the localized form in the picker; stores the raw form in the
-  `Contact` struct.
+- Offers the standard set per field type (home / work / mobile / …)
+  — including the less-common labels like `anniversary`, `spouse`,
+  `partner` for dates/relations, matching Contacts.app's full list.
+- Always offers a "Custom…" entry that opens a small text-input sheet
+  for a user-typed label, stored verbatim. Round-trips unchanged.
+- Picker UI shows the **localized form** ("Mobile", "Home"); the
+  `Contact` struct stores the **raw form** (`_$!<Mobile>!$_`).
 
-One shared `LabelPicker` view, parameterized by field type, is reused
-across every labeled-value row.
+One shared `LabelPicker` view, parameterized by the field type's
+allowed label set, is reused across every labeled-value row.
 
 ## Form composition
 
@@ -104,26 +228,26 @@ across every labeled-value row.
 NavigationStack {
     Form {
         Section { NameFieldsRow(...) }
-        Section("Organization") { OrgFieldsRow(...) }   // if non-empty or contactType == .organization
-        Section("Phone")        { phoneRows }
-        Section("Email")        { emailRows }
-        Section("URL")          { urlRows }
-        Section("Address")      { postalRows }
-        Section("Birthday")     { birthdayRow }
-        Section("Dates")        { dateRows }
-        Section("Related")      { relationRows }
-        Section("Social")       { socialRows }
-        Section("IM")           { imRows }
-        Section("Phonetic")     { PhoneticNameRow(...) } // collapsed by default
+        if orgVisible { Section("Organization") { OrgFieldsRow(...) } }
+        Section("Phone")    { phoneRows;    AddRowButton(...) }
+        Section("Email")    { emailRows;    AddRowButton(...) }
+        Section("URL")      { urlRows;      AddRowButton(...) }   // filters out guesswho://
+        Section("Address")  { postalRows;   AddRowButton(...) }
+        Section("Birthday") { BirthdayRow(...) }
+        Section("Dates")    { dateRows;     AddRowButton(...) }
+        Section("Related")  { relationRows; AddRowButton(...) }
+        Section("Social")   { socialRows;   AddRowButton(...) }
+        Section("IM")       { imRows;       AddRowButton(...) }
+        Section { PhoneticNameRow(...) }    // collapsed by default
         Section { deleteButton }
     }
+    .formStyle(.grouped)                      // see §"macOS specifics"
     .toolbar { cancel, save }
 }
 ```
 
-Sections collapse to nothing when their list is empty AND the contact
-isn't the kind that "owns" the section (e.g. an organization always
-shows Organization). This avoids a wall of empty editors.
+`.formStyle(.grouped)` is set so macOS doesn't render this as a
+settings-style two-column pane.
 
 The current ContactEditView callback shape is preserved:
 - Save → `onDone()`
@@ -135,56 +259,147 @@ keep working unchanged.
 
 ## Save / cancel / delete
 
-- **Save**: `try await repository.save(edited)`, which calls
-  `contacts.save(edited)` on the adapter actor and then triggers a
-  `repository.reload()`. The current detail-view post-edit dance
-  (`performReconcile()` then `loadContact()` then `reload()`) is
-  preserved because we still call `onDone` and the detail view runs
-  the same handler.
-- **Cancel**: dismiss without saving. If `edited != original`, present
-  a confirmation dialog ("Discard changes?"). Standard pattern.
-- **Delete**: `CNSaveRequest().delete(_:)` path. Add a
-  `delete(localID:)` method to the adapter (it doesn't have one yet),
-  fire `onDelete()` on success. Confirmation dialog before the actual
-  call.
+- **Save**: `try await service.saveContact(edited)`. That method (new
+  on `SyncService`) awaits the adapter actor's `contacts.save(edited)`
+  and then `await repository.reload()` back on the main actor,
+  mirroring the existing `fetchAll` pattern (`SyncService.swift:448-456`).
+  On success, fires `onDone()`. The post-edit dance owned by
+  `ContactDetailView.handleEditorDone` (`performReconcile()` →
+  `loadContact()` → `repository.reload()`) is preserved verbatim
+  because we still call `onDone` and the detail view runs the same
+  handler.
+- **Cancel**: dismiss without saving. If `isDirty == true`, present a
+  `confirmationDialog` ("Discard changes?"). Standard pattern.
+- **Delete**: confirmation `confirmationDialog` first. On confirm,
+  `try await service.deleteContact(localID:)` (new) which calls
+  `contacts.delete(localID:)` on the adapter and then
+  `repository.reload()`. Fire `onDelete()` on success. The detail-view
+  handler then pops if the contact is actually gone (existing logic at
+  `ContactDetailView.swift:205-207`).
 
-Errors from any of these surface as an `.alert` on the editor itself,
-not a silent failure.
+### Sidecar tombstone on delete
+
+Deleting the CN contact leaves the sidecar (notes, links, events)
+orphaned under the now-gone UUID. v1 policy: **leave sidecars
+orphaned, do not actively delete them.** Reasons:
+- iCloud sync is eventually-consistent; another device may still hold
+  the contact for a brief window after delete on this device.
+- Reconcile already handles orphans gracefully (a sidecar with no
+  matching CN UUID is dormant, not broken).
+- An explicit "delete sidecar by contact" API does not exist today and
+  designing it carefully (especially across iCloud) is its own
+  workstream.
+
+This is documented as a known v1 behavior; the deferred-features
+tracker should pick up "sidecar GC on contact delete" for follow-up.
+
+### Save error contract
+
+Errors surface as an `.alert` on the editor sheet itself, with text
+matched to the error category:
+
+- `CNError.authorizationDenied` / permission revoked mid-edit:
+  "Couldn't save — Contacts access was revoked. Open Settings to
+  re-enable."
+- `CNError.invalidFieldValue` / validation: "Couldn't save — one of
+  the fields was rejected by the system: `<localizedDescription>`."
+- `CNError.recordDoesNotExist` (race: another client deleted it):
+  "This contact has been deleted on another device. Close the editor
+  to refresh."
+- Catch-all: `error.localizedDescription`.
+
+Codify the category mapping in a small switch in the editor
+view-model so test coverage stays straightforward.
 
 ## Removing Catalyst, adding native macOS
 
-Catalyst goes off; native macOS goes on. In the pbxproj this means:
+Catalyst goes off; native macOS is the macOS path. In the pbxproj:
 
-- Drop the Mac Catalyst destination from the scheme / target.
+- Drop the Mac Catalyst destination from the GuessWho target.
 - Add explicit `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"`
-  and set `MACOSX_DEPLOYMENT_TARGET` (matching `IPHONEOS_DEPLOYMENT_TARGET`).
-- Ensure the existing macOS-incompatible bits are guarded or removed:
-  - `.topBarTrailing` / other iOS-only toolbar placements → use
-    `.primaryAction` (works on both).
-  - `Settings.bundle` is iOS-only; either gate or keep it as-is (it
-    just isn't built into the macOS product).
-  - `UIScene` / `LSRequiresIPhoneOS` Info.plist keys harmlessly
-    stripped by the Mac build (already observed in the recent build
-    log).
-- Anywhere else `#if canImport(UIKit)` was needed solely for the
-  bridge: delete the guard once the bridge is gone.
+  and set `MACOSX_DEPLOYMENT_TARGET` (matching `IPHONEOS_DEPLOYMENT_TARGET`,
+  currently 26.2).
 
-A pre-flight grep for `UIKit`, `UIViewControllerRepresentable`,
-`UIViewRepresentable`, and `topBarTrailing` confirms the scope is
-small.
+In code:
+
+- **`SyncService.swift` line 3**: remove the unconditional
+  `import ContactsUI`. It exists only for the deleted
+  `fetchCNContactForEditing` method's
+  `CNContactViewController.descriptorForRequiredKeys()` call.
+  Replace with the explicit key list the adapter already uses (or
+  delete the method outright and route through the adapter).
+- **`RootView.swift:99-109`**: the existing Settings-tab guard is
+  `#if targetEnvironment(macCatalyst)` because Catalyst ignores
+  `Settings.bundle`. **Native macOS ALSO ignores `Settings.bundle`.**
+  Broaden the guard to
+  `#if targetEnvironment(macCatalyst) || os(macOS)` (or equivalently
+  `#if !os(iOS)`) so Debug Mode remains reachable on macOS.
+- **`ContactDetailView.swift`**: the `#if canImport(UIKit)` guards
+  added in commit 78d690e around `.sheet(item:)` and the Edit toolbar
+  item are **removed** — once `ContactEditView` is pure SwiftUI it
+  builds on both platforms.
+- **`.topBarTrailing`** in the toolbar branch is iOS-only. Switch to
+  `.primaryAction` (works on both, matches existing convention at
+  `EventDetailView.swift:63`).
+
+In `Info.plist`:
+
+- **`LSRequiresIPhoneOS`** (line 27-28): explicitly remove. The Mac
+  build's strip behavior we observed (build log: "removing entry for
+  LSRequiresIPhoneOS - not supported on macOS") works, but submission
+  /signing hygiene prefers it absent.
+- **`UIApplicationSceneManifest`** (line 33-39): leave as-is. It does
+  no harm on the macOS build and removing it would force a parallel
+  iOS scene-config rework. Worth a one-line code comment marking it
+  iOS-only.
+
+Pre-flight grep before declaring the move done:
+
+```
+grep -rn "ContactsUI\|UIViewControllerRepresentable\|UIViewRepresentable\|topBarTrailing\|targetEnvironment(macCatalyst)" --include="*.swift" .
+```
+
+Every hit must be either deleted, re-routed, or have a written
+justification.
+
+## SwiftUI on macOS — specifics this plan commits to
+
+These are the cross-platform behaviors the implementer must hit
+explicitly. Each is a known divergence between iOS and native macOS
+that defaults badly on one side.
+
+- **`.formStyle(.grouped)`** on the top-level `Form` so macOS doesn't
+  render two-column settings-style. Already in the form sketch above.
+- **Sheet sizing**: SwiftUI sheets on macOS open as fixed-size
+  windows. Set `.frame(minWidth: 480, minHeight: 600)` on the
+  sheet's root view for macOS. On iOS use `.presentationDetents([.large])`.
+  Wrap in `#if os(macOS)` / `#else`.
+- **`@FocusState` tab navigation**: name and address rows have
+  multiple text fields. Wire `@FocusState` enums so Tab / Shift-Tab
+  advance through fields in a sensible order on macOS. iOS won't
+  notice the wiring; macOS power users will.
+- **`DatePicker` no-year case**: handled in §"Birthday/DateComponents
+  handling".
+- **`confirmationDialog`** for unsaved-changes and delete: this is
+  rendered as a modal alert sheet on macOS and a bottom action sheet
+  on iOS. Both are acceptable; this is the intentional cross-platform
+  idiom.
+- **Delete `role: .destructive`** styling differs visually between
+  platforms. Verify manually on both; no code-level workaround.
 
 ## File layout
 
 ```
 App/GuessWho/ContactEditor/
-    ContactEditView.swift               (rewritten, no UIKit)
+    ContactEditView.swift               (rewritten, no UIKit; the entry View)
+    ContactEditModel.swift              (the @Observable / @State model + error mapping)
     LabelPicker.swift
     LabelOptions.swift                  (per-field standard label sets)
     Rows/
         NameFieldsRow.swift
         OrgFieldsRow.swift
         PhoneticNameRow.swift
-        LabeledTextRow.swift
+        LabeledTextRow.swift            (phone, email, url)
         PostalAddressRow.swift
         BirthdayRow.swift
         DateRow.swift
@@ -193,75 +408,161 @@ App/GuessWho/ContactEditor/
         IMRow.swift
 ```
 
+**Why a subdirectory and not co-located private structs.** The
+existing convention (`EventEditSheet` co-located inside
+`EventDetailView.swift:441`; `AddLinkSheet` inside
+`ConnectionsSection.swift:151`) holds when the sub-sheet has one or
+two private subviews. Here we have ten distinct row types, each with
+its own label set, validation, and a non-trivial layout. Co-locating
+all of them produces a single ~1000-line file that's painful to
+navigate. The subdirectory is justified by:
+
+- Per-row unit tests in §"Tests" target row-level data binding in
+  isolation; that's easier when each is its own type at its own path.
+- New row additions (e.g. a future Photo row) drop in without touching
+  the parent file.
+
 The file name `ContactEditView.swift` is kept so the call site in
 `ContactDetailView.swift` doesn't change, only its sheet body.
 
 ## Adapter additions
 
-`CNContactStoreAdapter`:
-- `func delete(localID: String) throws` — `CNSaveRequest.delete(_:)` on
-  a fetched mutable copy. Mirrors `save(_:)`'s error semantics.
+`Sources/GuessWhoSync/CNContactStoreAdapter.swift`:
+- `public func delete(localID: String) throws`. Implementation:
 
-`SyncService` / repository:
-- `func saveContact(_ contact: Contact) async throws` — wraps the adapter
-  save and triggers a `reload`.
-- `func deleteContact(localID: String) async throws` — adapter delete +
-  reload.
+  ```swift
+  let cn = try store.unifiedContact(
+      withIdentifier: localID,
+      keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+  )
+  guard let mutable = cn.mutableCopy() as? CNMutableContact else {
+      throw ContactStoreError.contactNotFound(localID: localID)
+  }
+  let req = CNSaveRequest()
+  req.delete(mutable)
+  try store.execute(req)
+  ```
 
-`SyncService.fetchCNContactForEditing(localID:)` is **removed**. Its
-two call sites (`presentEditor`, `EditingCNContact` struct) move to
-fetching a `Contact` via the repository.
+  Errors:
+  - `CNError.recordDoesNotExist` from the fetch → re-throw as
+    `ContactStoreError.contactNotFound`. Mirrors the existing pattern
+    in `loadImageData`.
+
+`Sources/GuessWhoSync/ContactStoreProtocol.swift`:
+- Add `func delete(localID: String) throws` to the protocol so the
+  in-memory test fake can implement it. Without this, the adapter
+  test described in §"Tests" cannot be written.
+
+`App/GuessWho/Support/SyncService.swift`:
+- `func saveContact(_ contact: Contact) async throws` — `await
+  contactsAdapter.save(contact)` then `await repository.reload()`.
+- `func deleteContact(localID: String) async throws` — `await
+  contactsAdapter.delete(localID: localID)` then
+  `await repository.reload()`.
+- **Remove** `fetchCNContactForEditing(localID:)` and the
+  `import ContactsUI` at line 3.
 
 ## Tests
 
-- `ContactEditViewModelTests`:
-  - Round-trip: load `Contact` → mutate → equality check against the
-    save argument. (No CNContactStore in test.)
-  - "Dirty?" detection: equality-based, including order-sensitive list
-    fields (CN preserves order).
-  - Label round-trip: standard label and custom label both survive a
-    write/read cycle.
-- `CNContactStoreAdapterTests`:
-  - `delete(localID:)` against the test in-memory store.
-- A new SwiftUI snapshot test is **not** introduced (we have none today;
-  not the moment to start).
+`Tests/GuessWhoSyncTests/`:
+
+- **`CNContactStoreAdapterRoundTripTests`** — using an in-memory store
+  fake, assert that for a `Contact` with every field populated
+  (including `previousFamilyName`, `phoneticOrganizationName`,
+  `nonGregorianBirthday`, `postalAddresses[].subLocality`,
+  `socialProfiles[].userIdentifier`, and a `guesswho://` URL in
+  `urlAddresses`), `load → mutate one visible field → save → load`
+  preserves every other field unchanged. **This is the single best
+  regression net for §"Data preservation".**
+- **`CNContactStoreAdapterDeleteTests`** — `delete(localID:)` removes
+  the contact; subsequent `fetch(localID:)` returns nil; deleting a
+  missing ID throws `contactNotFound`.
+
+`Tests/GuessWhoTests/` (app-target):
+
+- **`ContactEditModelTests`** —
+  - Dirty-flag transitions on mutation; cancel-confirmation only when
+    dirty.
+  - Label round-trip: standard `_$!<Home>!$_` label survives unchanged
+    when only the value is edited (not lowercased, not localized).
+  - URL section: editing a non-GuessWho URL re-merges with the
+    GuessWho identity URL on save; the identity URL is never visible
+    to the binding.
+  - Birthday no-year case: a `DateComponents` with only month/day
+    survives load → no-op-save round-trip with year still absent.
+
+Manual verification (drive via the `/verify` skill before declaring
+the work merged):
+
+- iOS and native macOS destinations both build green with zero
+  `#if canImport(UIKit)` guards remaining in `App/GuessWho/ContactEditor/`.
+- Open an existing contact → Edit → change name → Save → reopen,
+  confirm change persisted.
+- Open contact with a photo set → Edit → Save → reopen, confirm photo
+  still present.
+- Edit URL section on a contact with a `guesswho://` URL → save → on
+  next reconcile pass, sidecar binding is intact (notes still
+  accessible).
+- Cancel with unsaved changes → confirmation dialog appears.
+- Delete from inside editor → confirmation dialog → on confirm,
+  detail view pops, list reload removes the row.
+- Debug Mode tab is reachable on macOS via the in-app Settings tab.
+
+SwiftUI snapshot tests / XCUITest are out of scope for v1 (no
+existing harness in the project to extend); manual `/verify`
+substitutes.
 
 ## Review-cycle integration points
 
-- **After plan approval**: implement against this doc.
-- **After implementation**: review-cycle skill (two reviewers, fix-and-
-  iterate). Focus areas to call out for the reviewers:
-  1. Catalyst-removal completeness (no lingering Catalyst-only API
-     references, scheme cleanliness, Info.plist hygiene).
-  2. Editor save correctness — especially label round-trip and the
-     phonetic-section / org-section conditional display.
-  3. Delete-flow safety: confirmation dialog, error surface, no
-     orphaned sidecar data after delete.
-  4. SwiftUI-only verification: build green on both iOS and native
-     macOS destinations with zero `#if canImport(UIKit)` guards
-     remaining in the editor area.
+- **After plan approval** (this revision): implement against this doc.
+- **After implementation**: review-cycle skill (two reviewers, fix-
+  and-iterate). Focus areas to call out for the reviewers:
+  1. Catalyst-removal completeness: no `ContactsUI` import remains, no
+     `targetEnvironment(macCatalyst)` guard remains without an
+     `os(macOS)` companion, both iOS and native macOS destinations
+     build green, scheme/Info.plist hygiene.
+  2. Editor save correctness — every §"Data preservation" carry-
+     through field survives a roundtrip including the GuessWho URL.
+  3. Label round-trip — raw form preserved, custom-label round-trip.
+  4. Delete-flow safety — confirmation dialog, error surface, detail
+     view pops only after actual deletion confirmed by reload.
+  5. macOS rendering — `.formStyle(.grouped)` set, sheet sized,
+     FocusState wired for tab navigation, DatePicker no-year case
+     visually correct.
+  6. Debug Mode reachable on macOS.
 
 ## Out-of-band considerations
 
 - Mac contact-store authorization: `CNContactStore.requestAccess`
   already runs through the same code path on macOS; no new prompt
   plumbing required.
-- The editor is the only UIKit holdover, but we should grep for
-  other `representable` types and `UI*` calls once during
-  implementation to be sure.
-- After this lands, `docs/swiftui-contact-editor-plan.md` should be
-  removed (or moved to an archive) — it's a planning doc, not a
-  living one.
+- After this lands, move this doc to `docs/archive/` (don't delete)
+  so the next time this area is touched, the context — what we
+  considered, what we deferred, why — is still recoverable.
 
 ## Decided
 
 1. **Label sets**: surface the common CN labels for every field type
    (anniversary, spouse, mother, father, partner, etc.) AND offer a
    "Custom…" option that lets the user type their own label, stored
-   verbatim. Matches Contacts.app behavior.
-2. **Picker rendering**: show the localized "Home / Work / Mobile" form
-   in the picker UI, store the raw `_$!<Home>!$_` form in the `Contact`
-   struct. Custom labels round-trip as-is.
+   verbatim. Matches Contacts.app behavior. *(This decision drives
+   the §"Label picker" allowed-set wiring.)*
+2. **Picker rendering**: show the localized "Home / Work / Mobile"
+   form in the picker UI, store the raw `_$!<Home>!$_` form in the
+   `Contact` struct. Custom labels round-trip as-is.
 3. **Delete affordance**: inside the editor sheet (matches the old
-   `CNContactViewController` flow which had a Delete button at the
-   bottom of the edit form), gated by a confirmation dialog.
+   `CNContactViewController` flow), gated by a confirmation dialog.
+4. **Section visibility**: labeled-list sections always render header +
+   Add affordance even when empty. Singleton sections per §"Section
+   visibility — Add affordance is always present".
+5. **Validation policy**: match Contacts.app — save does not
+   block on field content; the system surfaces validation rejections
+   via the alert pipeline.
+6. **Dirty-state tracking**: explicit `@State isDirty: Bool` flag
+   flipped by row authors on user input. NOT a deep `Equatable`
+   compare against the original (adapter normalization makes equality
+   fragile, per §"Editor data model").
+7. **Photo / name-suggestion regressions**: explicitly accepted as v1
+   regressions; tracked in deferred-features for follow-up.
+8. **Sidecar-on-delete**: v1 policy is leave orphaned; explicit
+   sidecar GC is deferred work.
