@@ -96,6 +96,13 @@ struct RootView: View {
                 Label("Events", systemImage: "calendar")
             }
 
+            NavigationStack {
+                FavoritesListView()
+            }
+            .tabItem {
+                Label("Favorites", systemImage: "star.fill")
+            }
+
             // On iOS/iPadOS the Debug toggle lives in the system Settings
             // app via the bundled Settings.bundle. Native macOS also
             // ignores Settings.bundle, so the in-app Settings tab is
