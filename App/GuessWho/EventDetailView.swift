@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct EventDetailView: View {
     @Environment(SyncService.self) private var service
+    @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
 
     /// Optional EventKit identifier carried so the detail view can adopt
@@ -40,8 +41,6 @@ struct EventDetailView: View {
 
     @State private var newTagText: String = ""
 
-    @State private var favoritesStore: FavoritesListStore?
-
     init(eventUUID: String, eventKitID: String? = nil) {
         self.eventKitID = eventKitID
         _resolvedUUID = State(initialValue: eventUUID.lowercased())
@@ -60,12 +59,7 @@ struct EventDetailView: View {
             }
         }
         .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
-        .task {
-            if favoritesStore == nil {
-                favoritesStore = FavoritesListStore(service: service)
-            }
-            await reload()
-        }
+        .task { await reload() }
         .toolbar {
             // Star sits BEFORE the existing Menu so the toolbar reads
             // star, ellipsis. Disabled until the event resolves AND the
@@ -316,12 +310,11 @@ struct EventDetailView: View {
     }
 
     private var isEventFavorited: Bool {
-        guard let favoritesStore else { return false }
-        return favoritesStore.isFavorite(kind: .event, id: resolvedUUID)
+        favoritesStore.isFavorite(kind: .event, id: resolvedUUID)
     }
 
     private func toggleFavorite() {
-        guard canFavoriteEvent, let favoritesStore else { return }
+        guard canFavoriteEvent else { return }
         favoritesStore.toggle(kind: .event, id: resolvedUUID)
     }
 

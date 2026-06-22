@@ -6,6 +6,7 @@ import GuessWhoSync
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
+    @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
 
     let localID: String
@@ -24,8 +25,6 @@ struct ContactDetailView: View {
     @State private var uuidToContact: [String: Contact] = [:]
     @State private var editingContact: EditingContact?
     @State private var editFetchErrorMessage: String?
-
-    @State private var favoritesStore: FavoritesListStore?
 
     private struct EditingContact: Identifiable {
         let contact: Contact
@@ -171,9 +170,6 @@ struct ContactDetailView: View {
             Text(editFetchErrorMessage ?? "")
         }
         .task {
-            if favoritesStore == nil {
-                favoritesStore = FavoritesListStore(service: service)
-            }
             await loadContact()
             if !didAutoReconcile {
                 didAutoReconcile = true
@@ -656,12 +652,12 @@ struct ContactDetailView: View {
     }
 
     private var isContactFavorited: Bool {
-        guard let uuid = contactUUID, let favoritesStore else { return false }
+        guard let uuid = contactUUID else { return false }
         return favoritesStore.isFavorite(kind: .contact, id: uuid)
     }
 
     private func toggleFavorite() {
-        guard let uuid = contactUUID, let favoritesStore else { return }
+        guard let uuid = contactUUID else { return }
         favoritesStore.toggle(kind: .contact, id: uuid)
     }
 

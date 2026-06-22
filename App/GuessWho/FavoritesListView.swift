@@ -10,61 +10,56 @@ import GuessWhoSync
 /// support the swipe-to-unfavorite path.
 struct FavoritesListView: View {
     @Environment(SyncService.self) private var service
+    /// Single hoisted store from the app root — toggles from any star
+    /// button update this same instance, so the tab is always in sync
+    /// without a per-tab `.task` reload.
+    @Environment(FavoritesListStore.self) private var store
 
-    @State private var store: FavoritesListStore?
     /// Single-shot contacts map built from one `service.fetchAll()` per
     /// appearance — resolving each `.contact` favorite via
     /// `contact(forGuessWhoUUID:)` would be O(N × M) (review C5).
     @State private var uuidToContact: [String: Contact] = [:]
 
     var body: some View {
-        Group {
-            if let store {
-                listView(store: store)
-            } else {
-                ProgressView()
+        listView
+            .navigationTitle("Favorites")
+            .toolbar {
+                #if os(iOS)
+                // EditButton is iOS/iPadOS-only — macOS has no .editMode
+                // and the symbol is unavailable. On native macOS, `.onMove`
+                // already supports drag-to-reorder without an explicit edit
+                // toggle.
+                ToolbarItem(placement: .primaryAction) {
+                    EditButton()
+                }
+                #endif
             }
-        }
-        .navigationTitle("Favorites")
-        .toolbar {
-            #if os(iOS)
-            // EditButton is iOS/iPadOS-only — macOS has no .editMode and
-            // the symbol is unavailable. On native macOS, `.onMove` already
-            // supports drag-to-reorder without an explicit edit toggle.
-            ToolbarItem(placement: .primaryAction) {
-                EditButton()
+            .task {
+                // Bump the store off the file (cheap — usually a no-op if
+                // a sibling view already reloaded) and rebuild the contact
+                // map. Cross-device freshness lands via the scenePhase
+                // reload below.
+                store.reload()
+                await refreshContactMap()
             }
-            #endif
-        }
-        .task {
-            // Build/refresh the store and contact map on appearance — no
-            // NSMetadataQuery anywhere in the app, so this is how cross-
-            // device freshness lands here. Same pattern as the rest of
-            // the app.
-            if store == nil {
-                store = FavoritesListStore(service: service)
-            } else {
-                store?.reload()
+            .onReceive(NotificationCenter.default.publisher(for: .CNContactStoreDidChange)) { _ in
+                Task { await refreshContactMap() }
             }
-            await refreshContactMap()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .CNContactStoreDidChange)) { _ in
-            Task { await refreshContactMap() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
-            // Events resolve per-row via the sidecar-cheap
-            // `service.event(uuid:)` — but bumping the store reload keeps
-            // the list consistent if an event UUID newly resolves.
-            store?.reload()
-        }
-        .contactAndEventDestinations()
+            .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
+                // Events resolve per-row via the sidecar-cheap
+                // `service.event(uuid:)` — but bumping the store reload
+                // keeps the list consistent if an event UUID newly
+                // resolves.
+                store.reload()
+            }
+            .contactAndEventDestinations()
     }
 
     @ViewBuilder
-    private func listView(store: FavoritesListStore) -> some View {
+    private var listView: some View {
         List {
             ForEach(store.items, id: \.stableID) { favorite in
-                favoriteRow(favorite, store: store)
+                favoriteRow(favorite)
             }
             .onMove { source, destination in
                 store.move(from: source, to: destination)
@@ -82,17 +77,17 @@ struct FavoritesListView: View {
     }
 
     @ViewBuilder
-    private func favoriteRow(_ favorite: Favorite, store: FavoritesListStore) -> some View {
+    private func favoriteRow(_ favorite: Favorite) -> some View {
         switch favorite.kind {
         case .contact:
-            contactRow(favorite, store: store)
+            contactRow(favorite)
         case .event:
-            eventRow(favorite, store: store)
+            eventRow(favorite)
         }
     }
 
     @ViewBuilder
-    private func contactRow(_ favorite: Favorite, store: FavoritesListStore) -> some View {
+    private func contactRow(_ favorite: Favorite) -> some View {
         let contact = uuidToContact[favorite.id]
         if let contact {
             NavigationLink(value: ContactReference(localID: contact.localID)) {
@@ -103,18 +98,18 @@ struct FavoritesListView: View {
                 }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                unfavoriteButton(favorite, store: store)
+                unfavoriteButton(favorite)
             }
         } else {
             unavailableRow(systemImage: "person.crop.circle.badge.questionmark", kindLabel: "Contact")
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    unfavoriteButton(favorite, store: store)
+                    unfavoriteButton(favorite)
                 }
         }
     }
 
     @ViewBuilder
-    private func eventRow(_ favorite: Favorite, store: FavoritesListStore) -> some View {
+    private func eventRow(_ favorite: Favorite) -> some View {
         if let event = service.event(uuid: favorite.id) {
             NavigationLink(value: EventReference(eventUUID: favorite.id, eventKitID: event.eventKitID)) {
                 HStack(spacing: 10) {
@@ -130,12 +125,12 @@ struct FavoritesListView: View {
                 }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                unfavoriteButton(favorite, store: store)
+                unfavoriteButton(favorite)
             }
         } else {
             unavailableRow(systemImage: "calendar.badge.exclamationmark", kindLabel: "Event")
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    unfavoriteButton(favorite, store: store)
+                    unfavoriteButton(favorite)
                 }
         }
     }
@@ -155,7 +150,7 @@ struct FavoritesListView: View {
     }
 
     @ViewBuilder
-    private func unfavoriteButton(_ favorite: Favorite, store: FavoritesListStore) -> some View {
+    private func unfavoriteButton(_ favorite: Favorite) -> some View {
         Button(role: .destructive) {
             store.toggle(kind: favorite.kind, id: favorite.id)
         } label: {
