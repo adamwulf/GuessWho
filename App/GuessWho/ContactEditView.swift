@@ -1,7 +1,10 @@
 import SwiftUI
 import Contacts
+#if canImport(ContactsUI)
 import ContactsUI
+#endif
 
+#if canImport(UIKit)
 /// SwiftUI wrapper over `CNContactViewController` in editing mode. Used as
 /// a sheet from `ContactDetailView` so users get Apple's full Contacts.app
 /// editing experience for the underlying `CNContact` fields, without our
@@ -73,3 +76,4 @@ struct ContactEditView: UIViewControllerRepresentable {
         }
     }
 }
+#endif

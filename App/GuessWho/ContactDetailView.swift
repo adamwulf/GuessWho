@@ -131,14 +131,18 @@ struct ContactDetailView: View {
                     .controlSize(.small)
                     .accessibilityLabel("Done")
                 }
-            } else if contact != nil {
+            }
+            #if canImport(UIKit)
+            if !isEditingAnything, contact != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Edit") {
                         presentEditor()
                     }
                 }
             }
+            #endif
         }
+        #if canImport(UIKit)
         .sheet(item: $editingCNContact) { wrapper in
             ContactEditView(
                 contact: wrapper.contact,
@@ -147,6 +151,7 @@ struct ContactDetailView: View {
             )
             .ignoresSafeArea()
         }
+        #endif
         .alert("Couldn't open editor", isPresented: Binding(
             get: { editFetchErrorMessage != nil },
             set: { if !$0 { editFetchErrorMessage = nil } }
