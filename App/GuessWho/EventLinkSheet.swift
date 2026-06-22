@@ -20,6 +20,11 @@ struct EventLinkSheet: View {
         /// `service.linkExistingSidecar(uuid: existingUUID, toEventKitID:)`
         /// on row tap, then fires `onAdopted()` (typically a reload).
         case adopt(eventUUID: String, onAdopted: () -> Void)
+
+        var isAdopt: Bool {
+            if case .adopt = self { return true }
+            return false
+        }
     }
 
     @Environment(SyncService.self) private var service
@@ -165,6 +170,11 @@ struct EventLinkSheet: View {
         }
         .searchable(text: $search, prompt: "Search events")
         .refreshable { await loadOneMoreYearBackward() }
+        .onChange(of: search) { _, _ in
+            // Reset the "Search older events" affordance whenever the search
+            // term changes so subsequent zero-hit searches can re-trigger it.
+            didMergeOlderSearch = false
+        }
     }
 
     @ViewBuilder
@@ -359,13 +369,33 @@ struct EventLinkSheet: View {
         didMergeOlderSearch = true
     }
 
+    /// Stable cross-source identity for dedup. `initialLoad` (via
+    /// `eventsOnDay`) and `loadShowMore`/`loadOneMoreYearBackward` (via
+    /// `fetchEventsRange`/`eventsWindow`) live in two id-spaces: the adapter
+    /// hands back `Event.stableID(forEventKitID:)`; the window read projects
+    /// sidecar-backed events under the real sidecar UUID. Both produce the
+    /// SAME `eventKitID` for any EventKit-backed event, so it dedups across
+    /// both paths. Manual events (no `eventKitID`) only come through the
+    /// window read and so can't collide with adapter rows; fall back to the
+    /// UUID string. Do NOT "simplify" this back to `event.id` — that key
+    /// silently produces duplicate rows for any user-touched (linked)
+    /// EventKit event.
+    private func dedupKey(for event: Event) -> String {
+        event.eventKitID ?? event.id.uuidString
+    }
+
     private func mergeIntoLoadedDays(_ events: [Event]) {
+        // Adopt mode only deals with EventKit-backed events; manual
+        // sidecar-only rows (eventKitID == nil) returned by the window read
+        // are un-adoptable and would hit a dead-end guard if tapped.
+        let filtered = mode.isAdopt ? events.filter { $0.eventKitID != nil } : events
         var bucket = loadedDays
         let cal = Calendar.current
-        for event in events {
+        for event in filtered {
             let day = cal.startOfDay(for: event.startDate)
             var existing = bucket[day] ?? []
-            if !existing.contains(where: { $0.id == event.id }) {
+            let key = dedupKey(for: event)
+            if !existing.contains(where: { dedupKey(for: $0) == key }) {
                 existing.append(event)
             }
             bucket[day] = existing
