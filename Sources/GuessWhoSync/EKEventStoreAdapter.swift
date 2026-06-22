@@ -21,11 +21,11 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         // `calendarItemExternalIdentifier` path first, then fall back to the
         // legacy `eventIdentifier` path so dead-pointer migration rows still
         // resolve when their EKEvent is later re-found by `eventIdentifier`.
-        // TODO(phase 4): wire up the canonical
-        // `store.calendarItems(withExternalIdentifier:)` path. For now the
-        // adapter only resolves through the legacy `event(withIdentifier:)`
-        // path; full dual-namespace lookup is finalized in phase 4 along
-        // with the on-device smoke harness.
+        // The cell value may be *either* identifier type — the resolver tries
+        // both and returns nil only if both lookups fail.
+        if let item = store.calendarItems(withExternalIdentifier: eventKitID).first(where: { $0 is EKEvent }) as? EKEvent {
+            return Self.toEvent(item)
+        }
         if let ekEvent = store.event(withIdentifier: eventKitID) {
             return Self.toEvent(ekEvent)
         }
@@ -54,8 +54,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
 
     public func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] {
         let events = try fetchEvents(in: interval)
-        guard !text.isEmpty else { return events }
-        let needle = text.lowercased()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return events }
+        let needle = trimmed.lowercased()
         return events.filter { event in
             if event.title.lowercased().contains(needle) { return true }
             if let location = event.location, location.lowercased().contains(needle) { return true }
@@ -63,7 +64,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         }
     }
 
-    // MARK: - Writes (phase 4 wires these up fully; the protocol requires them)
+    // MARK: - Writes
 
     public func createEvent(
         title: String,
@@ -72,9 +73,6 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         isAllDay: Bool,
         location: String?
     ) throws -> Event {
-        // TODO(phase 4): finalize the EKEvent creation path per
-        // EVENT_STRATEGY_PLAN.md E1.6 — defaultCalendarForNewEvents lookup,
-        // span/commit semantics, etc.
         guard let calendar = store.defaultCalendarForNewEvents else {
             throw EventStoreError.noWritableCalendar
         }
@@ -87,7 +85,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         ekEvent.calendar = calendar
         try store.save(ekEvent, span: .thisEvent, commit: true)
         guard let event = Self.toEvent(ekEvent) else {
-            throw EventStoreError.noWritableCalendar
+            // The just-created EKEvent must have a calendarItemExternalIdentifier
+            // — but if it somehow doesn't, surface eventNotFound for safety.
+            throw EventStoreError.eventNotFound(eventKitID: ekEvent.eventIdentifier ?? "")
         }
         return event
     }
@@ -100,8 +100,13 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         isAllDay: Bool,
         location: String?
     ) throws {
-        // TODO(phase 4): use the dual-namespace resolver here too.
-        guard let ekEvent = store.event(withIdentifier: eventKitID) else {
+        // Resolve via the same dual-namespace path as `fetch(eventKitID:)`.
+        let ekEvent: EKEvent
+        if let item = store.calendarItems(withExternalIdentifier: eventKitID).first(where: { $0 is EKEvent }) as? EKEvent {
+            ekEvent = item
+        } else if let legacy = store.event(withIdentifier: eventKitID) {
+            ekEvent = legacy
+        } else {
             throw EventStoreError.eventNotFound(eventKitID: eventKitID)
         }
         ekEvent.title = title
