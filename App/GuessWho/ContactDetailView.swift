@@ -6,7 +6,6 @@ import GuessWhoSync
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
-    @Environment(\.dismiss) private var dismiss
 
     let localID: String
 
@@ -110,17 +109,7 @@ struct ContactDetailView: View {
             }
         }
         .navigationTitle(contact?.displayName ?? "Contact")
-        .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    commitActiveEdit()
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.backward")
-                }
-                .accessibilityLabel("Back")
-            }
             if isEditingAnything {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
