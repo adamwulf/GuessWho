@@ -5,7 +5,22 @@ struct EventDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
 
-    let eventUUID: String
+    /// Optional EventKit identifier carried so the detail view can adopt
+    /// (mint or look up) the sidecar for an ephemeral EventKit row whose
+    /// `eventUUID` is `Event.stableID(forEventKitID:)`, not a real
+    /// sidecar UUID.
+    private let eventKitID: String?
+
+    /// The sidecar UUID currently being read/written. Starts as the UUID
+    /// handed in by the navigation push and is swapped to the real
+    /// sidecar UUID after adoption — every internal use (reads, writes,
+    /// sub-sheet passes) targets `resolvedUUID`.
+    @State private var resolvedUUID: String
+    /// Guards `reload()` against concurrent adoption attempts. Without it,
+    /// fast successive reloads (mutation immediately after appearance)
+    /// could each see `event == nil` and both call `linkEvent`, minting
+    /// duplicate sidecars.
+    @State private var adoptionInFlight: Bool = false
 
     @State private var event: Event?
     @State private var links: [ContactLink] = []
@@ -24,6 +39,11 @@ struct EventDetailView: View {
     @State private var editingNoteDraft: String = ""
 
     @State private var newTagText: String = ""
+
+    init(eventUUID: String, eventKitID: String? = nil) {
+        self.eventKitID = eventKitID
+        _resolvedUUID = State(initialValue: eventUUID.lowercased())
+    }
 
     var body: some View {
         Form {
@@ -73,7 +93,7 @@ struct EventDetailView: View {
             }
         }
         .sheet(isPresented: $showingLinkSheet) {
-            EventLinkSheet(mode: .adopt(eventUUID: eventUUID, onAdopted: {
+            EventLinkSheet(mode: .adopt(eventUUID: resolvedUUID, onAdopted: {
                 Task { await reload() }
             }))
         }
@@ -212,7 +232,7 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private func linkedContactRow(_ link: ContactLink) -> some View {
-        let endpoint = SidecarKey(kind: .event, id: eventUUID)
+        let endpoint = SidecarKey(kind: .event, id: resolvedUUID)
         let other = SyncService.otherEndpoint(of: link, from: endpoint)
         let contact = uuidToContact[other.id]
 
@@ -266,11 +286,34 @@ struct EventDetailView: View {
     }
 
     private func reload() async {
-        service.refreshEvent(uuid: eventUUID)
-        event = service.event(uuid: eventUUID)
-        links = service.contactLinks(forEventUUID: eventUUID)
-        notes = service.eventNotes(forEventUUID: eventUUID)
-        tags = service.eventTags(forEventUUID: eventUUID)
+        // Adopt-on-load: if the incoming UUID is the synthetic
+        // `Event.stableID(forEventKitID:)` for an ephemeral EventKit row
+        // (no sidecar exists at that key) AND we were handed an
+        // `eventKitID` hint, mint or look up the real sidecar UUID first
+        // so every read/write below targets it. Guarded by
+        // `adoptionInFlight` so concurrent reloads can't double-mint.
+        if service.event(uuid: resolvedUUID) == nil,
+           let ekid = eventKitID,
+           !adoptionInFlight
+        {
+            adoptionInFlight = true
+            defer { adoptionInFlight = false }
+            if let existing = service.eventUUID(forEventKitID: ekid) {
+                resolvedUUID = existing.uuidString.lowercased()
+            } else {
+                do {
+                    let minted = try service.linkEvent(toEventKitID: ekid)
+                    resolvedUUID = minted.uuidString.lowercased()
+                } catch {
+                    service.recordError("adopt event failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        service.refreshEvent(uuid: resolvedUUID)
+        event = service.event(uuid: resolvedUUID)
+        links = service.contactLinks(forEventUUID: resolvedUUID)
+        notes = service.eventNotes(forEventUUID: resolvedUUID)
+        tags = service.eventTags(forEventUUID: resolvedUUID)
         var map: [String: Contact] = [:]
         for contact in await service.fetchAll() {
             if let uuid = service.guessWhoUUID(in: contact) {
@@ -283,7 +326,7 @@ struct EventDetailView: View {
     private func addLink(to contact: Contact, note: String) {
         guard let uuid = service.guessWhoUUID(in: contact) else { return }
         do {
-            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: eventUUID, note: note)
+            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: resolvedUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }
@@ -302,7 +345,7 @@ struct EventDetailView: View {
     private func save(_ edited: Event) {
         do {
             try service.updateEvent(
-                uuid: eventUUID,
+                uuid: resolvedUUID,
                 title: edited.title,
                 startDate: edited.startDate,
                 endDate: edited.endDate,
@@ -317,7 +360,7 @@ struct EventDetailView: View {
 
     private func unlink() {
         do {
-            try service.unlinkEvent(uuid: eventUUID)
+            try service.unlinkEvent(uuid: resolvedUUID)
         } catch {
             service.recordError("unlink event failed: \(error.localizedDescription)")
         }
@@ -326,7 +369,7 @@ struct EventDetailView: View {
 
     private func delete() {
         do {
-            try service.deleteEvent(uuid: eventUUID)
+            try service.deleteEvent(uuid: resolvedUUID)
             dismiss()
         } catch {
             service.recordError("delete event failed: \(error.localizedDescription)")
@@ -339,7 +382,7 @@ struct EventDetailView: View {
         let trimmed = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
-            _ = try service.addEventNote(body: trimmed, forEventUUID: eventUUID)
+            _ = try service.addEventNote(body: trimmed, forEventUUID: resolvedUUID)
             newNoteText = ""
         } catch {
             service.recordError("add event note failed: \(error.localizedDescription)")
@@ -355,7 +398,7 @@ struct EventDetailView: View {
             return
         }
         do {
-            try service.editEventNote(id: id, newBody: trimmed, forEventUUID: eventUUID)
+            try service.editEventNote(id: id, newBody: trimmed, forEventUUID: resolvedUUID)
         } catch {
             service.recordError("edit event note failed: \(error.localizedDescription)")
         }
@@ -366,7 +409,7 @@ struct EventDetailView: View {
 
     private func deleteNote(_ id: UUID) {
         do {
-            try service.deleteEventNote(id: id, forEventUUID: eventUUID)
+            try service.deleteEventNote(id: id, forEventUUID: resolvedUUID)
         } catch {
             service.recordError("delete event note failed: \(error.localizedDescription)")
         }
@@ -377,7 +420,7 @@ struct EventDetailView: View {
         let trimmed = newTagText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
-            _ = try service.addEventTag(text: trimmed, forEventUUID: eventUUID)
+            _ = try service.addEventTag(text: trimmed, forEventUUID: resolvedUUID)
             newTagText = ""
         } catch {
             service.recordError("add event tag failed: \(error.localizedDescription)")
@@ -387,7 +430,7 @@ struct EventDetailView: View {
 
     private func deleteTag(_ id: UUID) {
         do {
-            try service.deleteEventTag(id: id, forEventUUID: eventUUID)
+            try service.deleteEventTag(id: id, forEventUUID: resolvedUUID)
         } catch {
             service.recordError("delete event tag failed: \(error.localizedDescription)")
         }

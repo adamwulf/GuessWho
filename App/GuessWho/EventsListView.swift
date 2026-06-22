@@ -85,7 +85,10 @@ struct EventsListView: View {
                 .listRowSeparator(.hidden)
             }
             ForEach(events, id: \.id) { event in
-                NavigationLink(value: EventReference(eventUUID: event.id.uuidString)) {
+                NavigationLink(value: EventReference(
+                    eventUUID: event.id.uuidString,
+                    eventKitID: event.eventKitID
+                )) {
                     EventRow(event: event)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
