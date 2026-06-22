@@ -418,10 +418,21 @@ struct EventSidecarTests {
         #expect(event.isLinked == false)
     }
 
+    /// Renamed from `unlinkVsRefreshDisjointCellsConverge`. The original
+    /// name and the plan (E1.7 / E6.4) promised a two-device disjoint-cell
+    /// LWW convergence test (A unlinks, B refreshes from a mutated EKEvent,
+    /// the merge under §5.3 yields both the unlink stamp AND the refreshed
+    /// cache values). What the test actually proves is the
+    /// single-store post-unlink behavior: `refreshEventCache` is a no-op on
+    /// an envelope whose `eventKitID` cell is soft-deleted, so the cache
+    /// stays at v1 even when EventKit has moved to v2. That's a real
+    /// invariant worth keeping (it's distinct from
+    /// `refreshEventCacheNoOpForUnlinked`, which exercises a manual
+    /// never-linked event — never had an `eventKitID` cell at all),
+    /// so we keep the test and rename it. The two-device convergence
+    /// claim is not yet verified by tests; flagged for follow-up.
     @Test
-    func unlinkVsRefreshDisjointCellsConverge() throws {
-        // Device-A unlinks; Device-B refreshes from a mutated EventKit. The
-        // merged result has the unlinked eventKitID cell AND the fresh cache.
+    func refreshEventCacheNoOpAfterUnlink() throws {
         let (syncA, sidecarsA, eventsA) = makeOrchestrator(deviceID: "A")
         let now = Date()
         let snapshot = try eventsA.createEvent(
@@ -435,14 +446,10 @@ struct EventSidecarTests {
         let id = try syncA.linkEvent(toEventKitID: ekid, snapshot: snapshot)
         let key = eventKey(for: id)
 
-        // Device-A unlinks (soft-deletes eventKitID cell).
+        // Unlink (soft-deletes the eventKitID cell).
         try syncA.unlinkEvent(at: key)
 
-        // Simulate a sync to a Device-B view: copy envelope to a fresh
-        // sidecar store; pre-seed EventKit on B with a fresh title.
-        // For simplicity, mutate the SAME EventKit and refresh on A (the
-        // cell stamps still demonstrate disjoint-cell merge: unlink cell
-        // newer than original cache, refresh writes fresh cache cells).
+        // EventKit moves to v2 underneath us.
         try eventsA.updateEvent(
             eventKitID: ekid,
             title: "Title v2",
@@ -451,15 +458,14 @@ struct EventSidecarTests {
             isAllDay: false,
             location: nil
         )
-        // Need to re-link briefly for refresh to operate? No — refresh
-        // requires eventKitID to be live. So directly assert merge semantics
-        // by walking the cells.
-        _ = try syncA.refreshEventCache(at: key) // no-op because soft-deleted
+
+        // Refresh must no-op: a soft-deleted eventKitID cell means the
+        // sidecar is no longer linked, so we don't read EventKit's v2.
+        _ = try syncA.refreshEventCache(at: key)
 
         let envelope = try #require(try sidecarsA.read(key))
         let ekCell = try #require(envelope.fields[GuessWhoSync.eventKitIDCellKey])
         #expect(ekCell.deletedAt != nil)
-        // titleCache still v1 (refresh skipped due to unlinked).
         guard case .object(let inner) = envelope.fields[GuessWhoSync.eventTitleCacheKey]!.value,
               case .string(let cachedTitle) = inner[SidecarField.innerValueKey] ?? .null
         else {

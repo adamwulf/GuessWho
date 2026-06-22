@@ -90,9 +90,14 @@ struct EventsListView: View {
             }
         }
         .overlay {
+            // Suppress the full-screen empty-state overlay when the
+            // permission banner is visible — otherwise the overlay covers
+            // the banner inside the List, and a denied user with no manual
+            // events sees a generic "No Events" message with no path to the
+            // permission guidance and no way to dismiss the banner.
             if events.isEmpty && !repository.searchText.isEmpty {
                 ContentUnavailableView.search(text: repository.searchText)
-            } else if events.isEmpty {
+            } else if events.isEmpty && !showPermissionBanner {
                 ContentUnavailableView(
                     "No Events",
                     systemImage: "calendar",
