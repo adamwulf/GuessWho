@@ -142,4 +142,14 @@ public final class InMemoryEventStore: EventStoreProtocol {
         defer { lock.unlock() }
         legacyToEventKitID[legacy] = ekid
     }
+
+    /// Test-only: insert an `Event` keyed by its own `eventKitID`, bypassing
+    /// the create-event auto-id-mint path. Used by migration tests that
+    /// need a deterministic eventKitID rather than the `"ek-N"` counter.
+    public func _injectForTest(event: Event) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let ekid = event.eventKitID else { return }
+        eventsByEventKitID[ekid] = event
+    }
 }

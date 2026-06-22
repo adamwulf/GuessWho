@@ -11,6 +11,7 @@ final class CountingEventStore: EventStoreProtocol {
 
     private(set) var fetchEventsInIntervalCount: Int = 0
     private(set) var fetchEventKitIDCount: Int = 0
+    private(set) var fetchLegacyEventIdentifierCount: Int = 0
     private(set) var fetchEventsOnDayCount: Int = 0
     private(set) var searchEventsCount: Int = 0
     private(set) var createEventCount: Int = 0
@@ -32,6 +33,13 @@ final class CountingEventStore: EventStoreProtocol {
         fetchEventKitIDCount += 1
         lock.unlock()
         return try inner.fetch(eventKitID: eventKitID)
+    }
+
+    func fetch(legacyEventIdentifier: String) throws -> Event? {
+        lock.lock()
+        fetchLegacyEventIdentifierCount += 1
+        lock.unlock()
+        return try inner.fetch(legacyEventIdentifier: legacyEventIdentifier)
     }
 
     func fetchEvents(on day: Date) throws -> [Event] {
