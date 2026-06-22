@@ -96,12 +96,17 @@ struct RootView: View {
                 Label("Events", systemImage: "calendar")
             }
 
+            // On iOS/iPadOS the Debug toggle lives in the system Settings
+            // app via the bundled Settings.bundle. Mac Catalyst ignores
+            // Settings.bundle, so keep an in-app tab there.
+            #if targetEnvironment(macCatalyst)
             NavigationStack {
                 SettingsView()
             }
             .tabItem {
                 Label("Settings", systemImage: "gear")
             }
+            #endif
         }
 
         // .sidebarAdaptable lands the same TabView as a bottom tab bar on
