@@ -33,8 +33,16 @@ struct EventsListView: View {
         }
         .sheet(isPresented: $showingLinkSheet) {
             EventLinkSheet(mode: .create(onCreated: { uuid in
-                navigateToEvent = EventReference(eventUUID: uuid)
-                Task { await repository.reload() }
+                // Defer the navigation push until after the sheet's own
+                // dismiss has had a chance to commit. Setting
+                // `navigateToEvent` synchronously here (while the sheet is
+                // still presented) can coalesce with the dismissal and the
+                // push silently drops. The Task hop pushes the state
+                // change to the next run-loop tick, after dismiss.
+                Task { @MainActor in
+                    navigateToEvent = EventReference(eventUUID: uuid)
+                    await repository.reload()
+                }
             }))
         }
         .navigationDestination(item: $navigateToEvent) { ref in
