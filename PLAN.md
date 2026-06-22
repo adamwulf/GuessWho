@@ -18,7 +18,7 @@ This document is the spec.
 
 ## 2. Non-goals (v1)
 
-- Writing to EventKit events. Events are **read-only**; only their sidecars are mutable.
+- Writing arbitrary EventKit metadata (e.g. attendees) — only title/start/end/location/isAllDay are writable for linked events; notes remain GuessWho-sidecar-only.
 - Background sync (`NSFilePresenter` wiring). The host calls `reconcile…()` explicitly.
 - Soft-delete garbage collection. `deletedAt`-set cells, notes, and links live forever in v1 (Core Semantics).
 - Non-iCloud Contacts sources (Exchange, Google CardDAV). v1 makes no guarantees; behavior is "best effort, may drift."
@@ -42,7 +42,7 @@ UUID collision is treated as impossible at every layer (122 bits of entropy from
 
 `CNContact.identifier` is **device-local**. The same logical contact has a different `identifier` on each device after iCloud sync. We cannot use it as a stable cross-device key.
 
-EventKit is different: `EKEvent.calendarItemExternalIdentifier` is documented as stable across the same iCloud account, so events use it directly without a GuessWho-assigned UUID.
+EventKit is different: `EKEvent.calendarItemExternalIdentifier` is documented as stable across the same iCloud account. Events also receive a GuessWho-assigned UUID at sidecar-mint time; `eventKitID` is a separate pointer cell.
 
 ### 3.2 The GuessWho URL
 
@@ -93,8 +93,8 @@ A sidecar file is *orphan* if no contact carries its UUID in `urlAddresses` afte
 | Data lives where? | Examples |
 |---|---|
 | **Contacts store (canonical, writable)** | Every `CNContact` field the framework exposes except `note` (gated by `com.apple.developer.contacts.notes` entitlement; deferred until we obtain it). Specifically: `identifier` (carried as `Contact.localID` for store reads/writes); `contactType`; the full name family (`namePrefix`, `givenName`, `middleName`, `familyName`, `previousFamilyName`, `nameSuffix`, `nickname`, plus phonetic given/middle/family); the full work family (`jobTitle`, `departmentName`, `organizationName`, `phoneticOrganizationName`); `phoneNumbers`, `emailAddresses`, `postalAddresses`, `urlAddresses` (including our GuessWho URL); `birthday`, `nonGregorianBirthday`, and labeled `dates` (anniversary, custom); `socialProfiles`; `instantMessageAddresses`; `contactRelations`; `imageDataAvailable` (raw `imageData`/`thumbnailImageData` are loaded on demand, not carried on `Contact`). |
-| **EventKit (canonical, read-only)** | Calendar events, attendees, location, recurrence — read but never written by this package |
-| **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. Three sidecar kinds: per-contact (keyed by GuessWho UUID), per-event (keyed by `calendarItemExternalIdentifier`), per-link (keyed by link UUID — see §13). |
+| **EventKit (canonical for linked events, writable)** | Linked events: title/start/end/location/isAllDay are canonical in EventKit, mirrored into the sidecar cache cells (see EVENT_STRATEGY_PLAN.md E1.2); attendees and recurrence remain read-only. Manual events: canonical in the sidecar cache cells. |
+| **Sidecar (writable)** | GuessWho-specific fields with no Contacts/EventKit home. v1 ships the storage primitive; callers define the field set. Three sidecar kinds: per-contact (keyed by GuessWho UUID), per-event (keyed by minted UUID, with an `eventKitID` cell pointing OUT to EventKit), per-link (keyed by link UUID — see §13). |
 
 ## 5. Sidecar Format
 
@@ -105,20 +105,20 @@ The package takes a **root `URL`** at init. The host decides whether that root i
 ```
 <root>/
   contacts/<uuid>.json
-  events/<eventExternalID-safe>.json
+  events/<uuid-lowercased>.json
   links/<uuid>.json
 ```
 
 One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict on contact A never blocks contact B. Links live as independent files (§13) — a link is one atomic on-disk record, never split across multiple files.
 
-**Filename safety.** Contact and link UUIDs are lowercase hex + dashes, safe as-is. Event external identifiers are opaque strings that may contain `/`, `:`, or other characters illegal in filenames. The package percent-encodes every character outside `[A-Za-z0-9._-]` before using them as filenames; the inverse transform is applied on read. The stored `entityID` field inside the envelope is always the original (untransformed) string.
+**Filename safety.** Contact, event, and link UUIDs are lowercase hex + dashes, safe as-is. Events are keyed by minted UUID, mirroring contacts; legacy event sidecars whose filenames carry percent-encoded `eventIdentifier` strings remain readable via the `listKeys` percent-decode path until migration (EVENT_STRATEGY_PLAN.md E5) rewrites them as `<uuid-lowercased>.json`. The stored `entityID` field inside the envelope is always the original (untransformed) string.
 
 ### 5.2 File schema
 
 ```json
 {
   "schemaVersion": 1,
-  "entityID": "<contact UUID, event externalID, or link UUID — untransformed>",
+  "entityID": "<contact UUID, event UUID, or link UUID — untransformed>",
   "fields": {
     "9F4A1B6E-...": {
       "value": {
@@ -154,14 +154,14 @@ One file per entity. `NSFileVersion` reports conflicts per-file, so a conflict o
 
 **`schemaVersion`** — bumped on breaking envelope changes; readers refuse to merge or write unknown versions (see §6).
 
-**`entityID`** — the canonical UUID string (contacts, links) or the raw `calendarItemExternalIdentifier` (events). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/` vs `links/`) disambiguates kind; there is no `kind` field.
+**`entityID`** — the canonical UUID string (contacts, events, links). No `guesswho://` prefix. The directory the file lives in (`contacts/` vs `events/` vs `links/`) disambiguates kind; there is no `kind` field.
 
 **`fields`** — the map's keys and inner-value shape depend on the sidecar's `kind`:
 
 | `SidecarKind` | `fields` key      | Inner cell `value` shape         | Where spec'd |
 |---------------|-------------------|----------------------------------|--------------|
 | `.contact`    | field-instance UUID string | `{ field, type, value, [createdAt, ...extensions] }` (this section) | §5.2 below |
-| `.event`      | field-instance UUID string | same as `.contact`               | §5.2 below |
+| `.event`      | field-instance UUID string OR well-known cell name (e.g. `eventKitID`, `titleCache`) | same as `.contact` for field-instance cells; primitive `{field,type,value}` for well-known cells | §5.2 below + EVENT_STRATEGY_PLAN.md E1.2 |
 | `.link`       | well-known cell name (e.g. `endpointA`, `note`) | primitive `JSONValue` per the cell's role | §13.2 |
 
 The rest of §5.2 specifies the contact/event shape. Link sidecars predate the field-instance pivot — see §13.2 for their cell layout. Everything else in §5 (envelope structure, cell stamps, `deletedAt`, §5.3 merge mechanics) applies uniformly to all three kinds; only the inner-value-object rule below is contact/event-only.
@@ -322,8 +322,9 @@ public enum ContactType: String, Sendable, Codable {
 }
 
 public struct Event: Hashable, Sendable, Codable {
-    public var externalID: String               // calendarItemExternalIdentifier
-    // plus title, dates, location, notes — see §4
+    public var id: UUID                          // GuessWho-minted event UUID (the sidecar key)
+    public var eventKitID: String?               // optional pointer OUT to EventKit's calendarItemExternalIdentifier
+    // plus title, dates, location, eventKitNotes — see §4 and EVENT_STRATEGY_PLAN.md E1.1
 }
 
 public struct LabeledValue: Hashable, Sendable, Codable {
@@ -431,7 +432,7 @@ public struct SidecarField: Sendable {
 
 public struct SidecarKey: Hashable, Sendable, Codable {
     public let kind: SidecarKind
-    public let id: String                       // contact UUID, event externalID, or link UUID
+    public let id: String                       // contact UUID, event UUID, or link UUID
 }
 
 public struct SidecarEnvelope: Sendable, Codable {
@@ -476,9 +477,15 @@ public enum ContactStoreError: Error, Sendable {
 }
 
 public protocol EventStoreProtocol {
+    // Reads (EventKit-keyed)
     func fetchEvents(in: DateInterval) throws -> [Event]
-    func fetch(externalID: String) throws -> Event?
-    // No save: events are read-only.
+    func fetch(eventKitID: String) throws -> Event?
+    func fetchEvents(on day: Date) throws -> [Event]
+    func searchEvents(matching text: String, in: DateInterval) throws -> [Event]
+
+    // Writes (linked events only — see EVENT_STRATEGY_PLAN.md E1.5)
+    func createEvent(title: String, startDate: Date, endDate: Date, isAllDay: Bool, location: String?) throws -> Event
+    func updateEvent(eventKitID: String, title: String, startDate: Date, endDate: Date, isAllDay: Bool, location: String?) throws
 }
 
 public protocol SidecarStoreProtocol {
@@ -636,7 +643,7 @@ extension SidecarKey {
 }
 ```
 
-`forContact` returns nil if no GuessWho URL is present (caller forgot to reconcile, or contact is brand-new). `forEvent` is total because the event's `externalID` is the canonical key. `forLink` is total because the link's `id` is the canonical key.
+`forContact` returns nil if no GuessWho URL is present (caller forgot to reconcile, or contact is brand-new). `forEvent` is total because every `Event` has a `UUID id`. `forLink` is total because the link's `id` is the canonical key.
 
 ### 7.4 Mocks
 
@@ -757,9 +764,13 @@ Each bullet below names one test. The full `Contact` model is exercised — ever
 - contact deleted on device X while device Y writes a sidecar for its UUID: after reconcile on device X (which sees the deletion), the sidecar appears in `IdentityReconcileReport.orphanSidecars` and is **not** deleted
 
 ### 9.7 Event sidecars
-- event lookup by `externalID` works
-- writing a sidecar for an event does not mutate the event in the mock
+- event lookup by `eventKitID` (`calendarItemExternalIdentifier`) works via the dual-namespace resolver; event sidecars keyed by minted UUID
+- writing a sidecar for an event does not mutate the EventKit event unless the edit targets a linked field, in which case it writes EventKit via `updateEvent` (Option C)
 - per-field LWW rules apply identically to event sidecars
+- Option C display projection: live-when-linked-and-present, cache otherwise
+- no auto-unlink on EventKit deletion
+- whole-event soft-delete via envelope-level `deletedAt` cell, mirroring link `deletedAt`
+- unlink and refresh touch disjoint cells (`eventKitID` vs cache cells), converging cleanly under §5.3
 
 ### 9.8 Single-contact reconciliation (§3.3, per-contact)
 Tests mirror §9.3 through `reconcileContactIdentity(localID:)`:
