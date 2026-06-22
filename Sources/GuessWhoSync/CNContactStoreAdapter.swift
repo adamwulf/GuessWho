@@ -94,6 +94,23 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         try store.execute(saveRequest)
     }
 
+    public func delete(localID: String) throws {
+        let cn: CNContact
+        do {
+            cn = try store.unifiedContact(
+                withIdentifier: localID,
+                keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+            )
+        } catch let error as CNError where error.code == .recordDoesNotExist {
+            throw ContactStoreError.contactNotFound(localID: localID)
+        }
+        // mutableCopy() on a CNContact always returns CNMutableContact.
+        let mutable = cn.mutableCopy() as! CNMutableContact
+        let req = CNSaveRequest()
+        req.delete(mutable)
+        try store.execute(req)
+    }
+
     public func loadImageData(localID: String) throws -> Data? {
         do {
             let cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.imageKeys)

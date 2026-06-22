@@ -50,6 +50,20 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         }
     }
 
+    public func delete(localID: String) throws {
+        guard contactsByID[localID] != nil else {
+            throw ContactStoreError.contactNotFound(localID: localID)
+        }
+        contactsByID.removeValue(forKey: localID)
+        // Drop any image sideband bytes for the deleted contact so a
+        // fresh contact with the same ID (rare; CN re-issues) doesn't
+        // inherit them.
+        if imageSideband[localID] != nil {
+            imageSidebandAccessCount += 1
+            imageSideband.removeValue(forKey: localID)
+        }
+    }
+
     public func loadImageData(localID: String) throws -> Data? {
         guard contactsByID[localID] != nil else {
             throw ContactStoreError.contactNotFound(localID: localID)

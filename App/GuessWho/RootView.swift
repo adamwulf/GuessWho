@@ -97,9 +97,10 @@ struct RootView: View {
             }
 
             // On iOS/iPadOS the Debug toggle lives in the system Settings
-            // app via the bundled Settings.bundle. Mac Catalyst ignores
-            // Settings.bundle, so keep an in-app tab there.
-            #if targetEnvironment(macCatalyst)
+            // app via the bundled Settings.bundle. Native macOS also
+            // ignores Settings.bundle, so the in-app Settings tab is
+            // also where Mac users reach Debug Mode.
+            #if os(macOS)
             NavigationStack {
                 SettingsView()
             }
@@ -112,7 +113,7 @@ struct RootView: View {
         // .sidebarAdaptable lands the same TabView as a bottom tab bar on
         // iPhone (compact) and a left-rail sidebar on iPad/Mac (regular).
         // Falls back to the plain bottom tab bar on iOS 17.
-        if #available(iOS 18.0, macCatalyst 18.0, macOS 15.0, *) {
+        if #available(iOS 18.0, macOS 15.0, *) {
             tabs.tabViewStyle(.sidebarAdaptable)
         } else {
             tabs

@@ -24,8 +24,6 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>GuessWho shows your upcoming events so you can link them to contacts.</string>
 	<key>NSContactsUsageDescription</key>

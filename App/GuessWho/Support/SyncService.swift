@@ -1,6 +1,5 @@
 import Foundation
 import Contacts
-import ContactsUI
 import EventKit
 import GuessWhoSync
 
@@ -131,7 +130,7 @@ final class SyncService {
             eventsAuthorization = .denied
         case .notDetermined:
             do {
-                if #available(iOS 17.0, macCatalyst 17.0, macOS 14.0, *) {
+                if #available(iOS 17.0, macOS 14.0, *) {
                     let granted = try await eventStore.requestFullAccessToEvents()
                     eventsAuthorization = granted ? .authorized : .denied
                 } else {
@@ -482,21 +481,35 @@ final class SyncService {
         return try await sync.reconcileContactIdentity(localID: localID)
     }
 
-    // MARK: - Edit (CNContactViewController bridge)
+    // MARK: - Edit
 
-    /// Fetches the system `CNContact` for in-app editing via
-    /// `CNContactViewController`. The view controller requires its own
-    /// descriptor (`CNContactViewController.descriptorForRequiredKeys()`),
-    /// distinct from the adapter's `fetchAll` keys.
+    /// Fetches a `Contact` for editing in the SwiftUI editor. Goes
+    /// through the adapter actor (the same path `fetchAll` uses) so
+    /// the editor sees the same field set as the rest of the app and
+    /// no main-thread fetch is required.
+    func fetchContactForEditing(localID: String) async throws -> Contact? {
+        try await contactsAdapter.fetch(localID: localID)
+    }
+
+    /// Writes the edited contact back through the adapter.
     ///
-    /// Unlike `fetchAll`, this stays on the main actor: `CNContact` is not
-    /// Sendable so it can't cleanly cross actor boundaries, and a single
-    /// `unifiedContact(withIdentifier:)` call is fast enough that the brief
-    /// main-thread hit at "tap Edit" is preferable to the boilerplate of
-    /// hand-wrapping CNContact for transport.
-    func fetchCNContactForEditing(localID: String) throws -> CNContact {
-        let keys: [CNKeyDescriptor] = [CNContactViewController.descriptorForRequiredKeys()]
-        return try contactStore.unifiedContact(withIdentifier: localID, keysToFetch: keys)
+    /// **Caller contract:** `await repository.reload()` after this
+    /// returns so the list-view caches reflect the changes. SyncService
+    /// intentionally does NOT touch the repository — ContactsRepository
+    /// already holds SyncService, so injecting the reverse direction
+    /// adds coupling without an upside (every current caller already
+    /// reloads after its own post-save dance — `handleEditorDone` runs
+    /// performReconcile → loadContact → repository.reload).
+    func saveContact(_ contact: Contact) async throws {
+        try await contactsAdapter.save(contact)
+    }
+
+    /// Deletes the contact identified by `localID`.
+    ///
+    /// **Caller contract:** `await repository.reload()` after this
+    /// returns. See `saveContact` for rationale.
+    func deleteContact(localID: String) async throws {
+        try await contactsAdapter.delete(localID: localID)
     }
 
     // MARK: - Notes

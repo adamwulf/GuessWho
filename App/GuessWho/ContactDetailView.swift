@@ -22,12 +22,12 @@ struct ContactDetailView: View {
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
-    @State private var editingCNContact: EditingCNContact?
+    @State private var editingContact: EditingContact?
     @State private var editFetchErrorMessage: String?
 
-    private struct EditingCNContact: Identifiable {
-        let contact: CNContact
-        var id: String { contact.identifier }
+    private struct EditingContact: Identifiable {
+        let contact: Contact
+        var id: String { contact.localID }
     }
 
     // Focus identity covers both the bottom new-note editor and any row
@@ -131,21 +131,21 @@ struct ContactDetailView: View {
                     .controlSize(.small)
                     .accessibilityLabel("Done")
                 }
-            } else if contact != nil {
-                ToolbarItem(placement: .topBarTrailing) {
+            }
+            if !isEditingAnything, contact != nil {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Edit") {
-                        presentEditor()
+                        Task { await presentEditor() }
                     }
                 }
             }
         }
-        .sheet(item: $editingCNContact) { wrapper in
+        .sheet(item: $editingContact) { wrapper in
             ContactEditView(
                 contact: wrapper.contact,
                 onDone: { Task { await handleEditorDone() } },
                 onDelete: { Task { await handleEditorDelete() } }
             )
-            .ignoresSafeArea()
         }
         .alert("Couldn't open editor", isPresented: Binding(
             get: { editFetchErrorMessage != nil },
@@ -170,19 +170,22 @@ struct ContactDetailView: View {
         }
     }
 
-    // MARK: - Edit (CNContactViewController bridge)
+    // MARK: - Edit (SwiftUI editor presentation)
 
-    private func presentEditor() {
+    private func presentEditor() async {
         do {
-            let cn = try service.fetchCNContactForEditing(localID: localID)
-            editingCNContact = EditingCNContact(contact: cn)
+            guard let loaded = try await service.fetchContactForEditing(localID: localID) else {
+                editFetchErrorMessage = "Contact could not be found."
+                return
+            }
+            editingContact = EditingContact(contact: loaded)
         } catch {
             editFetchErrorMessage = error.localizedDescription
         }
     }
 
     private func handleEditorDone() async {
-        editingCNContact = nil
+        editingContact = nil
         // Reconcile runs first so it can re-stamp our x-guesswho:// URL
         // before any other read sees the post-edit state. It calls
         // loadContact() on its success path; an explicit loadContact()
@@ -195,13 +198,14 @@ struct ContactDetailView: View {
     }
 
     private func handleEditorDelete() async {
-        editingCNContact = nil
+        editingContact = nil
         await repository.reload()
         await loadContact()
         // If the underlying contact really is gone, pop. If reload didn't
-        // confirm the delete (rare; CNContactViewController may have
-        // declared completion before the save propagated), keep the view
-        // up — the user can hit back manually instead of getting bounced.
+        // confirm the delete (rare; the editor may have signaled
+        // completion before the save propagated to fetchAll), keep the
+        // view up — the user can hit back manually instead of getting
+        // bounced.
         if contact == nil {
             dismiss()
         }
