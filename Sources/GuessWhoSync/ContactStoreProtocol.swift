@@ -4,6 +4,7 @@ public protocol ContactStoreProtocol: Actor {
     func fetchAll() throws -> [Contact]
     func fetch(localID: String) throws -> Contact?
     func save(_ contact: Contact) throws
+    func delete(localID: String) throws
 
     // Image bytes are loaded on demand so bulk fetches don't pay the cost.
     // - Contact does not exist          → throws ContactStoreError.contactNotFound
