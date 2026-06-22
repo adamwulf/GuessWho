@@ -110,19 +110,9 @@ struct LinkRow: View {
             if !link.note.isEmpty {
                 Text(link.note)
             }
-            HStack(spacing: 6) {
-                Text(link.createdAt, format: .relative(presentation: .named))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if link.modifiedAt > link.createdAt {
-                    Text("edited")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(link.createdAt, format: .relative(presentation: .named))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

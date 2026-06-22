@@ -437,19 +437,9 @@ struct ContactDetailView: View {
                 ActivityRowLayout(systemImage: "text.rectangle") {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(note.body)
-                        HStack(spacing: 6) {
-                            Text(note.createdAt, format: .relative(presentation: .named))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            if note.modifiedAt > note.createdAt {
-                                Text("edited")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.secondary.opacity(0.15), in: Capsule())
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        Text(note.createdAt, format: .relative(presentation: .named))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .contentShape(Rectangle())
@@ -527,20 +517,10 @@ struct ContactDetailView: View {
                             if !link.note.isEmpty {
                                 Text(link.note)
                             }
-                            HStack(spacing: 6) {
-                                if let event {
-                                    Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if link.modifiedAt > link.createdAt {
-                                    Text("edited")
-                                        .font(.caption2)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.secondary.opacity(0.15), in: Capsule())
-                                        .foregroundStyle(.secondary)
-                                }
+                            if let event {
+                                Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
