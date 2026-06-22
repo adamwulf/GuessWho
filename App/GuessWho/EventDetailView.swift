@@ -38,7 +38,7 @@ struct EventDetailView: View {
             }
         }
         .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
-        .task { reload() }
+        .task { await reload() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -74,7 +74,7 @@ struct EventDetailView: View {
         }
         .sheet(isPresented: $showingLinkSheet) {
             EventLinkSheet(mode: .adopt(eventUUID: eventUUID, onAdopted: {
-                reload()
+                Task { await reload() }
             }))
         }
         .confirmationDialog(
@@ -265,14 +265,14 @@ struct EventDetailView: View {
         }
     }
 
-    private func reload() {
+    private func reload() async {
         service.refreshEvent(uuid: eventUUID)
         event = service.event(uuid: eventUUID)
         links = service.contactLinks(forEventUUID: eventUUID)
         notes = service.eventNotes(forEventUUID: eventUUID)
         tags = service.eventTags(forEventUUID: eventUUID)
         var map: [String: Contact] = [:]
-        for contact in service.fetchAll() {
+        for contact in await service.fetchAll() {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }
@@ -287,7 +287,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func remove(linkID: UUID) {
@@ -296,7 +296,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("remove link failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func save(_ edited: Event) {
@@ -312,7 +312,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("update event failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func unlink() {
@@ -321,7 +321,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("unlink event failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func delete() {
@@ -344,7 +344,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("add event note failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func commitEdit(_ id: UUID) {
@@ -361,7 +361,7 @@ struct EventDetailView: View {
         }
         editingNoteID = nil
         editingNoteDraft = ""
-        reload()
+        Task { await reload() }
     }
 
     private func deleteNote(_ id: UUID) {
@@ -370,7 +370,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("delete event note failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func commitNewTag() {
@@ -382,7 +382,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("add event tag failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 
     private func deleteTag(_ id: UUID) {
@@ -391,7 +391,7 @@ struct EventDetailView: View {
         } catch {
             service.recordError("delete event tag failed: \(error.localizedDescription)")
         }
-        reload()
+        Task { await reload() }
     }
 }
 
@@ -524,7 +524,7 @@ private struct ContactPickerSheet: View {
                     }
                 }
             }
-            .task { contacts = service.fetchAll() }
+            .task { contacts = await service.fetchAll() }
         }
     }
 

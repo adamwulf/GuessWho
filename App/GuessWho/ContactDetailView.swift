@@ -373,7 +373,7 @@ struct ContactDetailView: View {
                 if let uuid = contactUUID, let linksStore {
                     AddLinkSheet(currentContactUUID: uuid) { toUUID, note in
                         linksStore.addLink(toUUID: toUUID, note: note)
-                        refreshContactMap()
+                        Task { await refreshContactMap() }
                     }
                 }
             }
@@ -562,9 +562,9 @@ struct ContactDetailView: View {
         return uuidToContact[endpoint.id]
     }
 
-    private func refreshContactMap() {
+    private func refreshContactMap() async {
         var map: [String: Contact] = [:]
-        for contact in service.fetchAll() {
+        for contact in await service.fetchAll() {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }
@@ -642,7 +642,7 @@ struct ContactDetailView: View {
     }
 
     private func loadContact() async {
-        let loaded = service.fetchAll().first { $0.localID == localID }
+        let loaded = await service.fetchAll().first { $0.localID == localID }
         contact = loaded
         if let loaded {
             sidecar = service.sidecar(for: loaded)
@@ -667,7 +667,7 @@ struct ContactDetailView: View {
                 linksStore = nil
             }
             reloadEventLinks()
-            refreshContactMap()
+            await refreshContactMap()
         }
     }
 
@@ -677,7 +677,7 @@ struct ContactDetailView: View {
             return
         }
         do {
-            let result = try service.reconcile(localID: localID)
+            let result = try await service.reconcile(localID: localID)
             reconcileOutcome = result
             reconcileError = nil
             await loadContact()
