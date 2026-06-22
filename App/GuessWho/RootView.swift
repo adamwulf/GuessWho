@@ -92,6 +92,13 @@ struct RootView: View {
             .tabItem {
                 Label("Events", systemImage: "calendar")
             }
+
+            NavigationStack {
+                SettingsView()
+            }
+            .tabItem {
+                Label("Settings", systemImage: "gear")
+            }
         }
 
         // .sidebarAdaptable lands the same TabView as a bottom tab bar on
