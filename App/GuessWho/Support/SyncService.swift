@@ -45,6 +45,11 @@ final class SyncService {
     private let eventStore: EKEventStore
     private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
+    // nil only when `sidecarLocation == .unavailable` — favorites need a
+    // writable root, same as `sync`. The unqualified `FavoritesStore`
+    // refers to the package type; the app-side view-model with the same
+    // name lives outside this file and never collides here.
+    private let favoritesStore: FavoritesStore?
 
     // Known v1 limitation: sidecarLocation and sync are resolved once
     // in init() and never refreshed. If the app launches while iCloud
@@ -85,8 +90,13 @@ final class SyncService {
                 sidecars: sidecarStore,
                 deviceID: id
             )
+            // Favorites.json lives as a sibling of the sidecar
+            // `contacts/`/`events/`/`links/` directories under the same
+            // root the sidecar store uses.
+            self.favoritesStore = FavoritesStore(root: url)
         case .unavailable:
             self.sync = nil
+            self.favoritesStore = nil
         }
 
         self.contactsAuthorization = Self.readAuthorization()
@@ -640,6 +650,46 @@ final class SyncService {
 
     func recordError(_ message: String) {
         lastError = message
+    }
+
+    // MARK: - Favorites
+
+    /// Current ordered favorites list. Returns `[]` when storage is
+    /// unavailable or the on-disk file is missing / unreadable; errors
+    /// surface via `lastError`.
+    func favorites() -> [Favorite] {
+        guard let favoritesStore else { return [] }
+        do {
+            return try favoritesStore.loadAll()
+        } catch {
+            lastError = "favorites read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// `false` on error or when storage is unavailable.
+    func isFavorite(kind: FavoriteKind, id: String) -> Bool {
+        guard let favoritesStore else { return false }
+        do {
+            return try favoritesStore.isFavorite(kind: kind, id: id)
+        } catch {
+            lastError = "favorites lookup failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Returns the new state: `true` if just added, `false` if removed.
+    @discardableResult
+    func toggleFavorite(kind: FavoriteKind, id: String) throws -> Bool {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        return try favoritesStore.toggle(kind: kind, id: id, now: Date())
+    }
+
+    /// Persist a full ordered list. Used by reorder/move and by the swipe-
+    /// to-unfavorite path's reorder primitive.
+    func setFavoritesOrder(_ items: [Favorite]) throws {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        try favoritesStore.setAll(items)
     }
 
     // MARK: - Private
