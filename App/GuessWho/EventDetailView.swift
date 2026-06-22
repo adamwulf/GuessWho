@@ -310,7 +310,12 @@ struct EventDetailView: View {
     }
 
     private var isEventFavorited: Bool {
-        favoritesStore.isFavorite(kind: .event, id: resolvedUUID)
+        // Gate symmetric with `toggleFavorite` and `canFavoriteEvent` —
+        // a synthetic stable-id can never hold a real favorite, but
+        // querying the store for one would silently report "not
+        // favorited" without making the dependency explicit.
+        guard canFavoriteEvent else { return false }
+        return favoritesStore.isFavorite(kind: .event, id: resolvedUUID)
     }
 
     private func toggleFavorite() {
