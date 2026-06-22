@@ -8,13 +8,14 @@ import Foundation
 /// without an app-target test bundle.
 ///
 /// No SwiftUI imports, no `CNContact` types: the model only sees
-/// `Contact` and standard-library types. SwiftUI views in
-/// `App/GuessWho/ContactEditor/` bind to this model.
-public final class ContactEditModel {
+/// `Contact` and standard-library types. The SwiftUI editor view
+/// holds this as `@State` (a value-type wrapping by `@Observable`
+/// would also work; struct keeps it tidy here).
+public struct ContactEditModel: Equatable {
     /// The contact as initially loaded — used as the carry-through
     /// source for fields the editor never surfaces, and as the URL
     /// merge reference (preserves ordering, see `mergedURLAddresses`).
-    public let original: Contact
+    public private(set) var original: Contact
 
     /// The user's working copy. Bindings in the editor's SwiftUI rows
     /// mutate this directly; on Save, the whole struct is handed to
@@ -137,7 +138,7 @@ public final class ContactEditModel {
 
     /// Write a `DatePicker`-sourced `Date` back into `edited.birthday`,
     /// dropping the year when `birthdayHasYear` is false.
-    public func setBirthday(from date: Date, calendar: Calendar = .current) {
+    public mutating func setBirthday(from date: Date, calendar: Calendar = .current) {
         let dc = calendar.dateComponents([.year, .month, .day], from: date)
         if birthdayHasYear {
             edited.birthday = dc
@@ -151,7 +152,7 @@ public final class ContactEditModel {
     }
 
     /// Clear the birthday entirely (used by the "Remove" affordance).
-    public func clearBirthday() {
+    public mutating func clearBirthday() {
         edited.birthday = nil
         isDirty = true
     }

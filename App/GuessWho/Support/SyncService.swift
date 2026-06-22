@@ -1,6 +1,5 @@
 import Foundation
 import Contacts
-import ContactsUI
 import EventKit
 import GuessWhoSync
 
@@ -482,21 +481,28 @@ final class SyncService {
         return try await sync.reconcileContactIdentity(localID: localID)
     }
 
-    // MARK: - Edit (CNContactViewController bridge)
+    // MARK: - Edit
 
-    /// Fetches the system `CNContact` for in-app editing via
-    /// `CNContactViewController`. The view controller requires its own
-    /// descriptor (`CNContactViewController.descriptorForRequiredKeys()`),
-    /// distinct from the adapter's `fetchAll` keys.
-    ///
-    /// Unlike `fetchAll`, this stays on the main actor: `CNContact` is not
-    /// Sendable so it can't cleanly cross actor boundaries, and a single
-    /// `unifiedContact(withIdentifier:)` call is fast enough that the brief
-    /// main-thread hit at "tap Edit" is preferable to the boilerplate of
-    /// hand-wrapping CNContact for transport.
-    func fetchCNContactForEditing(localID: String) throws -> CNContact {
-        let keys: [CNKeyDescriptor] = [CNContactViewController.descriptorForRequiredKeys()]
-        return try contactStore.unifiedContact(withIdentifier: localID, keysToFetch: keys)
+    /// Fetches a `Contact` for editing in the SwiftUI editor. Goes
+    /// through the adapter actor (the same path `fetchAll` uses) so
+    /// the editor sees the same field set as the rest of the app and
+    /// no main-thread fetch is required.
+    func fetchContactForEditing(localID: String) async throws -> Contact? {
+        try await contactsAdapter.fetch(localID: localID)
+    }
+
+    /// Writes the edited contact back through the adapter. Caller is
+    /// responsible for `await repository.reload()` afterwards —
+    /// SyncService stays decoupled from ContactsRepository to avoid
+    /// a retain cycle (ContactsRepository already holds SyncService).
+    func saveContact(_ contact: Contact) async throws {
+        try await contactsAdapter.save(contact)
+    }
+
+    /// Deletes the contact identified by `localID`. Caller is
+    /// responsible for `await repository.reload()` afterwards.
+    func deleteContact(localID: String) async throws {
+        try await contactsAdapter.delete(localID: localID)
     }
 
     // MARK: - Notes

@@ -24,7 +24,7 @@ struct ContactEditModelTests {
             localID: "c",
             urlAddresses: [wellFormed, userHome, malformed, userWork]
         )
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         // The user-facing binding sees only the two user URLs, in the
         // order they appear in the original — never the guesswho://
@@ -44,7 +44,7 @@ struct ContactEditModelTests {
         // Order: user, guesswho, user. After the user renames userHome,
         // the saved order must remain [userHome', guesswho, userWork].
         let contact = Contact(localID: "c", urlAddresses: [userHome, guessWho, userWork])
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         let renamed = LabeledValue(label: "home", value: "https://home.example.com/new")
         model.visibleURLAddresses = [renamed, userWork]
@@ -62,7 +62,7 @@ struct ContactEditModelTests {
         let added = LabeledValue(label: "blog", value: "https://blog.example.com")
 
         let contact = Contact(localID: "c", urlAddresses: [guessWho, userHome])
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         model.visibleURLAddresses = [userHome, added]
 
@@ -79,7 +79,7 @@ struct ContactEditModelTests {
         let userWork = LabeledValue(label: "work", value: "https://work.example.com")
 
         let contact = Contact(localID: "c", urlAddresses: [userHome, guessWho, userWork])
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         // User removes the first visible entry. The merge pairs by
         // visible-bucket position, so slot-0 of the original becomes
@@ -102,7 +102,7 @@ struct ContactEditModelTests {
             value: "guesswho://contact/not-a-uuid"
         )
         let contact = Contact(localID: "c", urlAddresses: [malformed])
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         // The user can't see or touch the malformed URL.
         #expect(model.visibleURLAddresses == [])
@@ -123,7 +123,7 @@ struct ContactEditModelTests {
         dc.month = 6
         dc.day = 22
         let contact = Contact(localID: "c", birthday: dc)
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
         #expect(model.birthdayHasYear == true)
     }
 
@@ -133,7 +133,7 @@ struct ContactEditModelTests {
         dc.month = 6
         dc.day = 22
         let contact = Contact(localID: "c", birthday: dc)
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
         #expect(model.birthdayHasYear == false)
     }
 
@@ -143,7 +143,7 @@ struct ContactEditModelTests {
         original.month = 6
         original.day = 22
         let contact = Contact(localID: "c", birthday: original)
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
         let cal = Calendar(identifier: .gregorian)
 
         // Convert to Date for the DatePicker; sentinel year is in play
@@ -170,7 +170,7 @@ struct ContactEditModelTests {
         original.month = 6
         original.day = 22
         let contact = Contact(localID: "c", birthday: original)
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
         let cal = Calendar(identifier: .gregorian)
 
         let asDate = try? #require(model.birthdayAsDate(calendar: cal))
@@ -190,7 +190,7 @@ struct ContactEditModelTests {
         dc.month = 6
         dc.day = 22
         let contact = Contact(localID: "c", birthday: dc)
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         model.clearBirthday()
 
@@ -259,7 +259,7 @@ struct ContactEditModelTests {
             ],
             nonGregorianBirthday: dc
         )
-        let model = ContactEditModel(original: contact)
+        var model = ContactEditModel(original: contact)
 
         // Simulate the user editing the given name.
         model.edited.givenName = "Augusta Ada"
