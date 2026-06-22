@@ -7,9 +7,10 @@ struct EventsListView: View {
 
     @State private var bannerDismissed: Bool = false
     @State private var pendingDelete: Event?
-    // TODO(phase 7): replace with `EventLinkSheet` presentation; for now
-    // the "+" toolbar button is a placeholder until the link sheet lands.
     @State private var showingLinkSheet: Bool = false
+    /// When the link sheet creates an event, this drives the post-dismiss
+    /// programmatic push into its detail view via `.navigationDestination(item:)`.
+    @State private var navigateToEvent: EventReference?
 
     var body: some View {
         Group {
@@ -24,13 +25,20 @@ struct EventsListView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    // TODO(phase 7): present EventLinkSheet in create mode.
                     showingLinkSheet = true
                 } label: {
                     Label("Add Event", systemImage: "plus")
                 }
-                .disabled(true)
             }
+        }
+        .sheet(isPresented: $showingLinkSheet) {
+            EventLinkSheet(mode: .create(onCreated: { uuid in
+                navigateToEvent = EventReference(eventUUID: uuid)
+                Task { await repository.reload() }
+            }))
+        }
+        .navigationDestination(item: $navigateToEvent) { ref in
+            EventDetailView(eventUUID: ref.eventUUID)
         }
         .confirmationDialog(
             "Remove from GuessWho? (Won't delete from Calendar.)",
