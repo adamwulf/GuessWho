@@ -130,7 +130,7 @@ final class SyncService {
             eventsAuthorization = .denied
         case .notDetermined:
             do {
-                if #available(iOS 17.0, macCatalyst 17.0, macOS 14.0, *) {
+                if #available(iOS 17.0, macOS 14.0, *) {
                     let granted = try await eventStore.requestFullAccessToEvents()
                     eventsAuthorization = granted ? .authorized : .denied
                 } else {

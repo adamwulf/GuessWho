@@ -61,7 +61,8 @@ LOCALIZATION_PREFERS_STRING_CATALOGS = YES
 ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES
 
 // Platforms / deployment. iOS 17 / macOS 14 to match Package.swift.
+// Catalyst is intentionally off; macOS builds as a native app.
 SDKROOT = iphoneos
-SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx
 IPHONEOS_DEPLOYMENT_TARGET = 17.0
 MACOSX_DEPLOYMENT_TARGET = 14.0
