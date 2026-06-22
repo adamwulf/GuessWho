@@ -353,27 +353,21 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private var activityFooter: some View {
-        HStack(spacing: 8) {
-            Button {
-                showNewNoteEditor()
-            } label: {
-                Label("Add Note", systemImage: "note.text")
-                    .font(.caption)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+        HStack(spacing: 0) {
+            activityFooterButton(
+                title: "Add Note",
+                systemImage: "note.text",
+                action: { showNewNoteEditor() }
+            )
             .disabled(notesStore == nil)
 
-            Button {
-                showingAddLinkSheet = true
-            } label: {
-                Label("Link Contact", systemImage: "person.line.dotted.person")
-                    .font(.caption)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            Divider()
+
+            activityFooterButton(
+                title: "Link Contact",
+                systemImage: "person.line.dotted.person",
+                action: { showingAddLinkSheet = true }
+            )
             .disabled(linksStore == nil || contactUUID == nil)
             .sheet(isPresented: $showingAddLinkSheet) {
                 if let uuid = contactUUID, let linksStore {
@@ -384,15 +378,13 @@ struct ContactDetailView: View {
                 }
             }
 
-            Button {
-                showingEventPicker = true
-            } label: {
-                Label("Link Event", systemImage: "calendar.badge.plus")
-                    .font(.caption)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            Divider()
+
+            activityFooterButton(
+                title: "Link Event",
+                systemImage: "calendar.badge.plus",
+                action: { showingEventPicker = true }
+            )
             .disabled(contactUUID == nil)
             .sheet(isPresented: $showingEventPicker) {
                 EventLinkSheet(mode: .link(onLinked: { eventUUID, note in
@@ -400,6 +392,23 @@ struct ContactDetailView: View {
                 }))
             }
         }
+        .listRowInsets(EdgeInsets())
+    }
+
+    @ViewBuilder
+    private func activityFooterButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                Text(title)
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

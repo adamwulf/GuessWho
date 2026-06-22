@@ -511,9 +511,12 @@ final class SyncService {
 
     func contactLinks(forContactUUID uuid: String) -> [Link] {
         guard let sync else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: uuid)
         do {
-            let all = try sync.links(at: SidecarKey(kind: .contact, id: uuid))
-            return all.filter { $0.deletedAt == nil }
+            let all = try sync.links(at: endpoint)
+            return all.filter { link in
+                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
+            }
         } catch {
             lastError = "links read failed: \(error.localizedDescription)"
             return []
