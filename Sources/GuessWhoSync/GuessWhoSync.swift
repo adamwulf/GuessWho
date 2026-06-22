@@ -1,6 +1,12 @@
 import Foundation
 
-public final class GuessWhoSync {
+// Thread-safety is provided by `sidecarLocks` (per-sidecar serialization
+// for read-modify-write) and by the fact that `contacts` is now an actor.
+// Conformers passed in for `events` / `sidecars` are expected to handle
+// their own internal locking (the bundled FileSystemSidecarStore and
+// InMemorySidecarStore both do). Marked @unchecked so the type can be
+// shared across actors without requiring those protocols to be Sendable.
+public final class GuessWhoSync: @unchecked Sendable {
     private let contacts: ContactStoreProtocol
     internal let events: EventStoreProtocol
     internal let sidecars: SidecarStoreProtocol
@@ -369,7 +375,7 @@ public final class GuessWhoSync {
         return SidecarReconcileReport(fileOutcomes: stamped)
     }
 
-    public func reconcileContactIdentities() throws -> IdentityReconcileReport {
+    public func reconcileContactIdentities() async throws -> IdentityReconcileReport {
         var results: [ContactReconcileResult] = []
         var carriedUUIDs: Set<String> = []
         // Aggregate loser→winner mapping across every Case D in this pass so
@@ -379,8 +385,8 @@ public final class GuessWhoSync {
         // back to the contact whose Case D touched each link.
         var losersByLocalID: [String: [String]] = [:]
 
-        for contact in try contacts.fetchAll() {
-            let result = try reconcile(contact: contact)
+        for contact in try await contacts.fetchAll() {
+            let result = try await reconcile(contact: contact)
             results.append(result)
             carriedUUIDs.formUnion(result.carriedUUIDs)
             for loser in result.losers {
@@ -425,11 +431,11 @@ public final class GuessWhoSync {
     // performed here: it requires the complete set of carried UUIDs across
     // every contact to be meaningful. Use reconcileContactIdentities() when
     // that information is needed.
-    public func reconcileContactIdentity(localID: String) throws -> IdentityReconcileReport.ContactOutcome {
-        guard let contact = try contacts.fetch(localID: localID) else {
+    public func reconcileContactIdentity(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
+        guard let contact = try await contacts.fetch(localID: localID) else {
             throw ContactStoreError.contactNotFound(localID: localID)
         }
-        let result = try reconcile(contact: contact)
+        let result = try await reconcile(contact: contact)
         // One Case-D worth of losers; run the rewrite pass scoped to those.
         var mapping: [String: String] = [:]
         for loser in result.losers { mapping[loser] = result.winnerUUID }
@@ -454,7 +460,7 @@ public final class GuessWhoSync {
         let losers: [String]
     }
 
-    private func reconcile(contact original: Contact) throws -> ContactReconcileResult {
+    private func reconcile(contact original: Contact) async throws -> ContactReconcileResult {
         var contact = original
         var uniqueValidUUIDs: [String] = []
         var seenUUIDs: Set<String> = []
@@ -488,7 +494,7 @@ public final class GuessWhoSync {
 
         switch uniqueValidUUIDs.count {
         case 0:
-            return try handleCaseA(contact: &contact, malformedURLs: malformedURLs)
+            return try await handleCaseA(contact: &contact, malformedURLs: malformedURLs)
         case 1 where malformedURLs.isEmpty && !hadDuplicateUUID:
             return ContactReconcileResult(
                 report: IdentityReconcileReport.ContactOutcome(
@@ -504,7 +510,7 @@ public final class GuessWhoSync {
             )
         case 1 where malformedURLs.isEmpty:
             // Duplicate URL entries collapsed; persist the trimmed contact, no other changes.
-            try contacts.save(contact)
+            try await contacts.save(contact)
             return ContactReconcileResult(
                 report: IdentityReconcileReport.ContactOutcome(
                     localID: contact.localID,
@@ -518,16 +524,16 @@ public final class GuessWhoSync {
                 losers: []
             )
         case 1:
-            return try handleCaseC(contact: &contact, validUUID: uniqueValidUUIDs[0], malformedURLs: malformedURLs)
+            return try await handleCaseC(contact: &contact, validUUID: uniqueValidUUIDs[0], malformedURLs: malformedURLs)
         default:
-            return try handleCaseD(contact: &contact, validUUIDs: uniqueValidUUIDs, malformedURLs: malformedURLs)
+            return try await handleCaseD(contact: &contact, validUUIDs: uniqueValidUUIDs, malformedURLs: malformedURLs)
         }
     }
 
     private func handleCaseA(
         contact: inout Contact,
         malformedURLs: [String]
-    ) throws -> ContactReconcileResult {
+    ) async throws -> ContactReconcileResult {
         contact.urlAddresses.removeAll { url in
             url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
                 && SidecarKey.parseGuessWhoContactURL(url.value) == nil
@@ -536,7 +542,7 @@ public final class GuessWhoSync {
         contact.urlAddresses.append(
             LabeledValue(label: "GuessWho", value: SidecarKey.guessWhoContactURLPrefix + newUUID)
         )
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         return ContactReconcileResult(
             report: IdentityReconcileReport.ContactOutcome(
@@ -556,12 +562,12 @@ public final class GuessWhoSync {
         contact: inout Contact,
         validUUID: String,
         malformedURLs: [String]
-    ) throws -> ContactReconcileResult {
+    ) async throws -> ContactReconcileResult {
         contact.urlAddresses.removeAll { url in
             url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
                 && SidecarKey.parseGuessWhoContactURL(url.value) == nil
         }
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         return ContactReconcileResult(
             report: IdentityReconcileReport.ContactOutcome(
@@ -581,7 +587,7 @@ public final class GuessWhoSync {
         contact: inout Contact,
         validUUIDs: [String],
         malformedURLs: [String]
-    ) throws -> ContactReconcileResult {
+    ) async throws -> ContactReconcileResult {
         let sortedUUIDs = validUUIDs.sorted()
         let winner = sortedUUIDs[0]
         let losers = Array(sortedUUIDs.dropFirst())
@@ -634,7 +640,7 @@ public final class GuessWhoSync {
             guard let parsed = SidecarKey.parseGuessWhoContactURL(url.value) else { return true }
             return loserUUIDs.contains(parsed)
         }
-        try contacts.save(contact)
+        try await contacts.save(contact)
 
         return ContactReconcileResult(
             report: IdentityReconcileReport.ContactOutcome(

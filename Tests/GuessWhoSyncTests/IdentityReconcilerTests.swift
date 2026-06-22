@@ -35,13 +35,13 @@ struct IdentityReconcilerTests {
     // MARK: - §9.3
 
     @Test
-    func caseA_assignsFreshUUID() throws {
+    func caseA_assignsFreshUUID() async throws {
         let contact = Contact(localID: "C1", givenName: "Ada")
         let contacts = InMemoryContactStore(contacts: [contact])
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         #expect(report.contactOutcomes.count == 1)
         let outcome = report.contactOutcomes[0]
@@ -51,7 +51,7 @@ struct IdentityReconcilerTests {
         #expect(outcome.mergedLoserUUIDs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         #expect(gwURLs.count == 1)
         let uuid = try #require(SidecarKey.parseGuessWhoContactURL(gwURLs[0]))
@@ -63,7 +63,7 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func caseA_withMalformedURLsThatNameExistingSidecars() throws {
+    func caseA_withMalformedURLsThatNameExistingSidecars() async throws {
         let contact = Contact(
             localID: "C1",
             urlAddresses: [
@@ -81,13 +81,13 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID != nil)
         #expect(outcome.removedMalformedURLs == ["guesswho://contact/garbage"])
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         #expect(gwURLs.count == 1)
         #expect(!gwURLs.contains("guesswho://contact/garbage"))
@@ -97,14 +97,14 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func caseB_singleValidIsNoOp() throws {
+    func caseB_singleValidIsNoOp() async throws {
         let url = LabeledValue(label: "GuessWho", value: "guesswho://contact/" + alpha)
         let original = Contact(localID: "C1", givenName: "Ada", urlAddresses: [url])
         let contacts = InMemoryContactStore(contacts: [original])
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
@@ -112,12 +112,12 @@ struct IdentityReconcilerTests {
         #expect(outcome.removedMalformedURLs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         #expect(saved == original)
     }
 
     @Test
-    func caseC_validKeptAndMalformedRemoved() throws {
+    func caseC_validKeptAndMalformedRemoved() async throws {
         let contact = Contact(
             localID: "C1",
             urlAddresses: [
@@ -130,21 +130,21 @@ struct IdentityReconcilerTests {
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs.isEmpty)
         #expect(outcome.removedMalformedURLs == ["guesswho://contact/garbage"])
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         #expect(gwURLs == ["guesswho://contact/" + alpha])
         #expect(saved.urlAddresses.contains(LabeledValue(label: "home", value: "https://example.com")))
     }
 
     @Test
-    func caseD_twoValidLexSmallestWinsAndLoserSidecarMerged() throws {
+    func caseD_twoValidLexSmallestWinsAndLoserSidecarMerged() async throws {
         let contact = Contact(
             localID: "C1",
             urlAddresses: [
@@ -168,14 +168,14 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs == [beta])
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         #expect(gwURLs == ["guesswho://contact/" + alpha])
 
@@ -187,7 +187,7 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func caseD_perFieldLWWAcrossOverlappingAndDisjointFields() throws {
+    func caseD_perFieldLWWAcrossOverlappingAndDisjointFields() async throws {
         let contact = Contact(
             localID: "C1",
             urlAddresses: [
@@ -213,7 +213,7 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        _ = try sync.reconcileContactIdentities()
+        _ = try await sync.reconcileContactIdentities()
 
         let winner = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
         #expect(Set(winner.fields.keys) == ["nickname", "color", "notes"])
@@ -236,7 +236,7 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func caseD_threeValidLexSmallestWinsAndBothLosersMerged() throws {
+    func caseD_threeValidLexSmallestWinsAndBothLosersMerged() async throws {
         let contact = Contact(
             localID: "C1",
             urlAddresses: [
@@ -267,12 +267,12 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.mergedLoserUUIDs == [beta, gamma])
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         #expect(guessWhoURLs(in: saved) == ["guesswho://contact/" + alpha])
 
         let winner = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
@@ -282,30 +282,30 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func idempotentOnStableContact() throws {
+    func idempotentOnStableContact() async throws {
         let url = LabeledValue(label: "GuessWho", value: "guesswho://contact/" + alpha)
         let contact = Contact(localID: "C1", givenName: "Ada", urlAddresses: [url])
         let contacts = InMemoryContactStore(contacts: [contact])
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        _ = try sync.reconcileContactIdentities()
-        let snapshot = try #require(try contacts.fetch(localID: "C1"))
+        _ = try await sync.reconcileContactIdentities()
+        let snapshot = try #require(try await contacts.fetch(localID: "C1"))
 
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let after = try #require(try contacts.fetch(localID: "C1"))
+        let after = try #require(try await contacts.fetch(localID: "C1"))
         #expect(after == snapshot)
     }
 
     // MARK: - §9.6
 
     @Test
-    func combined_twoDevicesIndependentUUIDsConverge() throws {
+    func combined_twoDevicesIndependentUUIDsConverge() async throws {
         let contact = Contact(
             localID: "C1",
             urlAddresses: [
@@ -331,9 +331,9 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        _ = try sync.reconcileContactIdentities()
+        _ = try await sync.reconcileContactIdentities()
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         #expect(guessWhoURLs(in: saved) == ["guesswho://contact/" + alpha])
 
         let winner = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
@@ -351,7 +351,7 @@ struct IdentityReconcilerTests {
     // MARK: - Duplicate-UUID and case-canonicalization
 
     @Test
-    func caseB_duplicateSameUUIDCollapsesToSingleURL() throws {
+    func caseB_duplicateSameUUIDCollapsesToSingleURL() async throws {
         let url = "guesswho://contact/" + alpha
         let contact = Contact(
             localID: "C1",
@@ -370,7 +370,7 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
@@ -378,7 +378,7 @@ struct IdentityReconcilerTests {
         #expect(outcome.removedMalformedURLs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         #expect(gwURLs == [url])
 
@@ -388,7 +388,7 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func caseB_duplicateMixedCaseSameUUIDCollapsesToSingleURL() throws {
+    func caseB_duplicateMixedCaseSameUUIDCollapsesToSingleURL() async throws {
         // [<UUID-X-upper>, <uuid-x-lower>] — same canonical UUID in two cases.
         // Must collapse to ONE URL via the duplicate path, NOT trigger Case D.
         let lower = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
@@ -410,14 +410,14 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         #expect(gwURLs.count == 1)
         #expect(SidecarKey.parseGuessWhoContactURL(gwURLs[0]) == lower)
@@ -451,7 +451,7 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func caseD_mixedCaseUUIDsCanonicalizeAndWinnerSurvives() throws {
+    func caseD_mixedCaseUUIDsCanonicalizeAndWinnerSurvives() async throws {
         // Two UUIDs with hex letters; aa... < bb... lexicographically when both lowercased.
         let lowerAlpha = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         let lowerBeta  = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -480,14 +480,14 @@ struct IdentityReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         let outcome = report.contactOutcomes[0]
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs == [lowerBeta])
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "C1"))
+        let saved = try #require(try await contacts.fetch(localID: "C1"))
         let gwURLs = guessWhoURLs(in: saved)
         // The winner URL was uppercase in the input; the loser must be removed.
         // We don't require the surviving URL to be re-cased — only that it parses
@@ -502,7 +502,7 @@ struct IdentityReconcilerTests {
     }
 
     @Test
-    func combined_deletedContactLeavesOrphanSidecarUntouched() throws {
+    func combined_deletedContactLeavesOrphanSidecarUntouched() async throws {
         let contacts = InMemoryContactStore()
         let sidecars = InMemorySidecarStore()
         let orphanKey = SidecarKey(kind: .contact, id: alpha)
@@ -512,7 +512,7 @@ struct IdentityReconcilerTests {
         try sidecars.write(orphan, at: orphanKey)
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        let report = try sync.reconcileContactIdentities()
+        let report = try await sync.reconcileContactIdentities()
 
         #expect(report.contactOutcomes.isEmpty)
         #expect(report.orphanSidecars == [orphanKey])

@@ -31,14 +31,14 @@ struct SingleContactReconcilerTests {
     }
 
     @Test
-    func caseA_assignsFreshUUIDToTargetOnly() throws {
+    func caseA_assignsFreshUUIDToTargetOnly() async throws {
         let target = Contact(localID: "TARGET", givenName: "Ada")
         let bystander = Contact(localID: "OTHER", givenName: "Grace")
         let contacts = InMemoryContactStore(contacts: [target, bystander])
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        let outcome = try sync.reconcileContactIdentity(localID: "TARGET")
+        let outcome = try await sync.reconcileContactIdentity(localID: "TARGET")
 
         #expect(outcome.localID == "TARGET")
         #expect(outcome.assignedUUID != nil)
@@ -46,16 +46,16 @@ struct SingleContactReconcilerTests {
         #expect(outcome.mergedLoserUUIDs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let savedTarget = try #require(try contacts.fetch(localID: "TARGET"))
+        let savedTarget = try #require(try await contacts.fetch(localID: "TARGET"))
         let gwURLs = guessWhoURLs(in: savedTarget)
         #expect(gwURLs.count == 1)
 
-        let savedBystander = try #require(try contacts.fetch(localID: "OTHER"))
+        let savedBystander = try #require(try await contacts.fetch(localID: "OTHER"))
         #expect(guessWhoURLs(in: savedBystander).isEmpty)
     }
 
     @Test
-    func caseD_mergesLoserSidecarsForTargetOnly() throws {
+    func caseD_mergesLoserSidecarsForTargetOnly() async throws {
         let target = Contact(
             localID: "TARGET",
             urlAddresses: [
@@ -79,13 +79,13 @@ struct SingleContactReconcilerTests {
         )
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        let outcome = try sync.reconcileContactIdentity(localID: "TARGET")
+        let outcome = try await sync.reconcileContactIdentity(localID: "TARGET")
 
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs == [beta])
         #expect(outcome.errors.isEmpty)
 
-        let saved = try #require(try contacts.fetch(localID: "TARGET"))
+        let saved = try #require(try await contacts.fetch(localID: "TARGET"))
         #expect(guessWhoURLs(in: saved) == ["guesswho://contact/" + alpha])
 
         let winner = try #require(try sidecars.read(SidecarKey(kind: .contact, id: alpha)))
@@ -95,34 +95,34 @@ struct SingleContactReconcilerTests {
     }
 
     @Test
-    func idempotentOnStableContact() throws {
+    func idempotentOnStableContact() async throws {
         let url = LabeledValue(label: "GuessWho", value: "guesswho://contact/" + alpha)
         let target = Contact(localID: "TARGET", givenName: "Ada", urlAddresses: [url])
         let contacts = InMemoryContactStore(contacts: [target])
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
-        _ = try sync.reconcileContactIdentity(localID: "TARGET")
-        let snapshot = try #require(try contacts.fetch(localID: "TARGET"))
+        _ = try await sync.reconcileContactIdentity(localID: "TARGET")
+        let snapshot = try #require(try await contacts.fetch(localID: "TARGET"))
 
-        let outcome = try sync.reconcileContactIdentity(localID: "TARGET")
+        let outcome = try await sync.reconcileContactIdentity(localID: "TARGET")
         #expect(outcome.assignedUUID == nil)
         #expect(outcome.mergedLoserUUIDs.isEmpty)
         #expect(outcome.removedMalformedURLs.isEmpty)
         #expect(outcome.errors.isEmpty)
 
-        let after = try #require(try contacts.fetch(localID: "TARGET"))
+        let after = try #require(try await contacts.fetch(localID: "TARGET"))
         #expect(after == snapshot)
     }
 
     @Test
-    func unknownLocalIDThrowsContactNotFound() throws {
+    func unknownLocalIDThrowsContactNotFound() async throws {
         let contacts = InMemoryContactStore()
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
 
         do {
-            _ = try sync.reconcileContactIdentity(localID: "DOES-NOT-EXIST")
+            _ = try await sync.reconcileContactIdentity(localID: "DOES-NOT-EXIST")
             Issue.record("expected throw")
         } catch let error as ContactStoreError {
             switch error {
@@ -138,7 +138,7 @@ struct SingleContactReconcilerTests {
     // Confirm by leaving an unrelated sidecar in place and showing that
     // reconciling one contact does not delete or report it.
     @Test
-    func leavesUnrelatedSidecarsUntouched() throws {
+    func leavesUnrelatedSidecarsUntouched() async throws {
         let target = Contact(localID: "TARGET", givenName: "Ada")
         let contacts = InMemoryContactStore(contacts: [target])
         let sidecars = InMemorySidecarStore()
@@ -152,7 +152,7 @@ struct SingleContactReconcilerTests {
         )
 
         let sync = makeSync(contacts: contacts, sidecars: sidecars)
-        _ = try sync.reconcileContactIdentity(localID: "TARGET")
+        _ = try await sync.reconcileContactIdentity(localID: "TARGET")
 
         #expect(try sidecars.read(strangerKey) != nil)
     }

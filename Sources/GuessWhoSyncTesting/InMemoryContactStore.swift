@@ -1,8 +1,7 @@
 import Foundation
 import GuessWhoSync
 
-public final class InMemoryContactStore: ContactStoreProtocol {
-    private let lock = NSLock()
+public actor InMemoryContactStore: ContactStoreProtocol {
     private var contactsByID: [String: Contact]
     private var imageSideband: [String: (image: Data?, thumbnail: Data?)] = [:]
 
@@ -22,16 +21,12 @@ public final class InMemoryContactStore: ContactStoreProtocol {
     }
 
     public func fetchAll() throws -> [Contact] {
-        lock.lock()
-        defer { lock.unlock() }
         // §7.4 — bulk path must NOT peek at the sideband. Return whatever the
         // persisted flag says, full stop.
         return Array(contactsByID.values)
     }
 
     public func fetch(localID: String) throws -> Contact? {
-        lock.lock()
-        defer { lock.unlock() }
         guard var contact = contactsByID[localID] else { return nil }
         // §7.4 — single-contact path auto-corrects `imageDataAvailable`
         // against the sideband. This peek is allowed; bulk fetchAll is not.
@@ -46,8 +41,6 @@ public final class InMemoryContactStore: ContactStoreProtocol {
     }
 
     public func save(_ contact: Contact) throws {
-        lock.lock()
-        defer { lock.unlock() }
         let previous = contactsByID[contact.localID]
         contactsByID[contact.localID] = contact
         // §7.4 — clear sideband ONLY on a true→false transition.
@@ -58,8 +51,6 @@ public final class InMemoryContactStore: ContactStoreProtocol {
     }
 
     public func loadImageData(localID: String) throws -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
         guard contactsByID[localID] != nil else {
             throw ContactStoreError.contactNotFound(localID: localID)
         }
@@ -68,8 +59,6 @@ public final class InMemoryContactStore: ContactStoreProtocol {
     }
 
     public func loadThumbnailImageData(localID: String) throws -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
         guard contactsByID[localID] != nil else {
             throw ContactStoreError.contactNotFound(localID: localID)
         }
@@ -81,8 +70,6 @@ public final class InMemoryContactStore: ContactStoreProtocol {
     /// Does not flip `imageDataAvailable` on the stored `Contact`; the
     /// single-contact `fetch(localID:)` path auto-corrects the flag.
     public func setImageData(_ image: Data?, thumbnail: Data?, for localID: String) {
-        lock.lock()
-        defer { lock.unlock() }
         imageSidebandAccessCount += 1
         if image == nil && thumbnail == nil {
             imageSideband.removeValue(forKey: localID)
