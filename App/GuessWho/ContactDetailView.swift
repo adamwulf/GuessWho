@@ -323,7 +323,10 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func linkedEventRow(_ link: ContactLink) -> some View {
         let other = otherEndpoint(of: link)
-        let event = service.event(externalID: other.id)
+        // TODO(phase 6): EventReference still passes the link endpoint id;
+        // post-migration that id is the sidecar event UUID. Update the
+        // reference shape to carry a UUID once views are reworked.
+        let event = service.event(uuid: other.id)
         NavigationLink(value: EventReference(externalID: other.id)) {
             VStack(alignment: .leading, spacing: 4) {
                 if let event {
@@ -366,7 +369,10 @@ struct ContactDetailView: View {
     private func addEventLink(eventID: String, note: String) {
         guard let uuid = contactUUID else { return }
         do {
-            _ = try service.addContactEventLink(contactUUID: uuid, eventID: eventID, note: note)
+            // TODO(phase 6): the `eventID` carried here is currently the
+            // legacy externalID flowing from `EventPickerSheet`; phase 6 will
+            // switch the picker to deliver event UUIDs.
+            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: eventID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }

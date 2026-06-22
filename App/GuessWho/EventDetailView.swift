@@ -123,8 +123,11 @@ struct EventDetailView: View {
     }
 
     private func reload() {
-        event = service.event(externalID: externalID)
-        links = service.contactLinks(forEventID: externalID)
+        // TODO(phase 6): EventReference carries an externalID; once phase 6
+        // reworks the reference shape, `externalID` here becomes the event
+        // sidecar UUID. The string flowing through is the same.
+        event = service.event(uuid: externalID)
+        links = service.contactLinks(forEventUUID: externalID)
         var map: [String: Contact] = [:]
         for contact in service.fetchAll() {
             if let uuid = service.guessWhoUUID(in: contact) {
@@ -137,7 +140,9 @@ struct EventDetailView: View {
     private func addLink(to contact: Contact, note: String) {
         guard let uuid = service.guessWhoUUID(in: contact) else { return }
         do {
-            _ = try service.addContactEventLink(contactUUID: uuid, eventID: externalID, note: note)
+            // TODO(phase 6): pass the event sidecar UUID once EventReference
+            // is reworked to carry one (phase 6).
+            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: externalID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }
