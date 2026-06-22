@@ -18,9 +18,8 @@ families only: iOS family (iPhone + iPad) and native macOS.
   `CNContactViewController` flow, which surfaced a tap-to-change photo
   affordance at the top of edit mode. We are accepting the regression
   in v1 to keep this change focused on field editing; the photo
-  affordance moves to the deferred-features list (see
-  [WWDC26 deferred features](../.ittybitty/.../wwdc26-deferred-features.md)
-  or equivalent project tracker). The existing `apply(_:to:)` in the
+  affordance moves to the project's deferred-features tracker for
+  follow-up. The existing `apply(_:to:)` in the
   adapter already skips image bytes, so saves preserve whatever bytes
   are already on the contact.
 - **In-line name suggestions** (Apple's edit-mode "Smith" → "Smith
@@ -89,20 +88,44 @@ Fields with NO row binding in v1, which MUST ride through:
 | `postalAddresses[].subLocality`      | `PostalAddress`                       | CJK / UK addressing; not in v1 row layout   |
 | `postalAddresses[].subAdministrativeArea` | `PostalAddress`                  | Same                                        |
 | `postalAddresses[].isoCountryCode`   | `PostalAddress`                       | Drives locale-correct formatter rendering   |
-| All `urlAddresses` entries matching `SidecarKey.guessWhoContactURLPrefix` | `Contact` | **Identity URL — sidecar binding** |
+| All `urlAddresses` entries with `value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)` | `Contact` | **Identity URL — sidecar binding** |
+| `CNContact.note` | CNContact only; not on `Contact` | Reading `note` requires the `com.apple.developer.contacts.notes` entitlement. The adapter's key list (`CNContactStoreAdapter.swift:54`) deliberately omits `CNContactNoteKey`, so the field isn't fetched and `apply(_:to:)` never sets `mutable.note`. Existing notes on the CN record survive a wholesale-overwrite save because we re-fetch and `mutableCopy()` the original (`CNContactStoreAdapter.swift:85-88`) before applying — so any field `apply` doesn't touch is preserved by the CN copy. |
 
 The GuessWho identity URL is the most critical case. Deleting it
 severs the contact ↔ sidecar binding (notes, links, events all
-become orphans). The URL editor section MUST hide it (matching the
-filter at `ContactDetailView.swift:278`) AND re-merge it back into
-the saved `urlAddresses` array before write. Concretely:
+become orphans). The URL editor section MUST hide it AND re-merge
+it back into the saved `urlAddresses` array before write.
 
-- The URL section binds to a derived list of "user URLs" (filtered).
-- On save, the editor reconstructs `edited.urlAddresses` =
-  (user URLs from the binding) + (original GuessWho URL entries
-  carried through from the loaded original).
+**Predicate (single source of truth):** the editor partitions
+`urlAddresses` by `value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)`.
+The matching bucket is carried through verbatim and never shown; the
+non-matching bucket is the "user URLs" the editor binds to.
 
-Tests in §"Tests" exercise every carry-through field explicitly.
+This is the **broad** prefix-match, NOT the parse-OK filter at
+`ContactDetailView.swift:278` (`SidecarKey.parseGuessWhoContactURL(...) == nil`).
+The reviewer-flagged divergence is intentional: the detail view's
+filter is correct for *display* (don't tease users with malformed
+guesswho URLs they can't usefully tap), but the editor must err on
+the side of hiding *any* `guesswho://` entry — well-formed or
+malformed — so a user can never edit/delete one. Reconcile cleans
+up malformed entries on its next pass (`GuessWhoSync.swift:538-539,
+567-568`); the editor's job is to not let them become user-editable
+in the meantime.
+
+**Merge order (preserves user ordering):** iterate the loaded
+`original.urlAddresses` in array order. For each slot:
+- If it matches the GuessWho prefix → carry the original entry to
+  the saved list (skip the visible-bucket cursor).
+- Otherwise → consume the next entry from the edited visible bucket
+  and write it to the saved list.
+
+After all original slots are consumed, append any *new* entries the
+user added in the visible bucket (these have no original index).
+This preserves the user's manually-imposed URL ordering across an
+edit; the GuessWho URL stays at its original index.
+
+Tests in §"Tests" exercise every carry-through field explicitly,
+including both a well-formed and a malformed `guesswho://` URL.
 
 ## Editor data model
 
@@ -191,11 +214,18 @@ adding the first. Resolved:
 - Singleton sections (Name, Org, Phonetic, Birthday) render
   conditionally:
   - Name: always shown.
-  - Org: shown when `contactType == .organization` OR any of
-    `organizationName / departmentName / jobTitle` is non-empty.
-  - Phonetic: collapsed `DisclosureGroup`, always available.
+  - Org: **always shown in edit mode**, regardless of contactType
+    or whether the fields are populated. Matches Contacts.app —
+    its edit view always exposes Company / Department / Job Title
+    even for a fresh person contact. (The earlier "shown when
+    contactType == .organization OR non-empty" rule created a
+    deadlock: a person contact with empty org fields had no UI to
+    add the first one.)
+  - Phonetic: a `DisclosureGroup` with label "Phonetic Name",
+    collapsed by default. Always available.
   - Birthday: always shown; row internally toggles between "Add
-    Birthday" button and editor.
+    Birthday" button and editor (with "Include year" toggle when
+    editor is open — see §"Birthday/DateComponents handling").
 
 ### Validation policy
 
@@ -238,7 +268,7 @@ NavigationStack {
         Section("Related")  { relationRows; AddRowButton(...) }
         Section("Social")   { socialRows;   AddRowButton(...) }
         Section("IM")       { imRows;       AddRowButton(...) }
-        Section { PhoneticNameRow(...) }    // collapsed by default
+        Section { PhoneticNameRow(...) }    // row is a self-collapsing DisclosureGroup (label: "Phonetic Name")
         Section { deleteButton }
     }
     .formStyle(.grouped)                      // see §"macOS specifics"
@@ -295,12 +325,21 @@ tracker should pick up "sidecar GC on contact delete" for follow-up.
 
 ### Save error contract
 
-Errors surface as an `.alert` on the editor sheet itself, with text
-matched to the error category:
+Errors surface as an `.alert` on the editor sheet itself. **On
+alert-dismiss the editor stays open with the user's `edited` state
+intact** so they can fix the field and retry Save. The editor never
+auto-dismisses on a save error.
+
+Text matched to the error category:
 
 - `CNError.authorizationDenied` / permission revoked mid-edit:
   "Couldn't save — Contacts access was revoked. Open Settings to
   re-enable."
+  - On iOS, the alert offers a secondary "Open Settings" button that
+    calls `UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!)`.
+    Wrap this button in `#if !os(macOS)`.
+  - On native macOS, no equivalent deep-link; alert is text-only.
+    User navigates to System Settings themselves.
 - `CNError.invalidFieldValue` / validation: "Couldn't save — one of
   the fields was rejected by the system: `<localizedDescription>`."
 - `CNError.recordDoesNotExist` (race: another client deleted it):
@@ -308,17 +347,53 @@ matched to the error category:
   to refresh."
 - Catch-all: `error.localizedDescription`.
 
-Codify the category mapping in a small switch in the editor
-view-model so test coverage stays straightforward.
+Codify the category mapping in `ContactEditModel.saveErrorCategory(_:)`
+so test coverage stays straightforward.
+
+### Delete error contract
+
+Same alert pipeline, with two important differences:
+
+- `CNError.recordDoesNotExist` from delete is treated as **success**,
+  not error. The contact is already gone — that's what the user
+  asked for. The editor fires `onDelete()` and the detail view
+  proceeds to pop normally.
+- All other CN errors map to the same categories as save above
+  (authorizationDenied, invalidFieldValue, catch-all) but with
+  delete-specific wording ("Couldn't delete — …").
+
+On a delete error other than `recordDoesNotExist`, the editor stays
+open. The user's edited state is preserved (delete didn't run; save
+is still available).
 
 ## Removing Catalyst, adding native macOS
 
-Catalyst goes off; native macOS is the macOS path. In the pbxproj:
+Catalyst goes off; native macOS is the macOS path.
 
-- Drop the Mac Catalyst destination from the GuessWho target.
-- Add explicit `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"`
-  and set `MACOSX_DEPLOYMENT_TARGET` (matching `IPHONEOS_DEPLOYMENT_TARGET`,
-  currently 26.2).
+The project's build settings live in `App/Config/*.xcconfig`, NOT in
+`project.pbxproj`'s `XCBuildConfiguration` blocks (those are mostly
+empty and inherit from `baseConfigurationReference`). Concrete edits:
+
+- `App/Config/GuessWho-Shared.xcconfig`:
+  - Line 22 already has `SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx` — leave as-is.
+  - Line 26 `SUPPORTS_MACCATALYST = YES` → **delete** (or set to `NO`).
+  - Line 27 `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO` → leave as-is.
+  - Line 28 `DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO` → delete (Catalyst-specific knob, no-op once Catalyst is off, but tidy).
+- `App/Config/Project-Shared.xcconfig`:
+  - Line 65 `SUPPORTED_PLATFORMS = iphoneos iphonesimulator` → grow to `iphoneos iphonesimulator macosx` so the project-level matches the target-level (currently only the target adds macosx).
+- `GuessWho.xcodeproj/xcshareddata/xcschemes/*.xcscheme`: remove the
+  Mac Catalyst destination entry from the scheme. The Xcode "Supported
+  Destinations" UI writes this here, not in the pbxproj.
+
+**Deployment-target floor:** currently `IPHONEOS_DEPLOYMENT_TARGET = 17.0`
+and `MACOSX_DEPLOYMENT_TARGET = 14.0` (in both `Project-Shared.xcconfig`
+and `GuessWho-Shared.xcconfig`). **Do not bump them as part of this
+change** — bumping is its own scope question (`.formStyle(.grouped)`,
+`.confirmationDialog`, and the other macOS specifics this plan uses
+are all available on 14.0+, so the existing floor is sufficient).
+The `@FocusState`-on-macOS Tab navigation specifics in §"SwiftUI on macOS"
+may need `@available(macOS 14.0, *)` annotations on any newer API the
+implementer reaches for; check at implementation time.
 
 In code:
 
@@ -353,14 +428,29 @@ In `Info.plist`:
   iOS scene-config rework. Worth a one-line code comment marking it
   iOS-only.
 
-Pre-flight grep before declaring the move done:
+Pre-flight grep before declaring the move done — patterns split so
+the implementer knows what each one catches:
 
 ```
-grep -rn "ContactsUI\|UIViewControllerRepresentable\|UIViewRepresentable\|topBarTrailing\|targetEnvironment(macCatalyst)" --include="*.swift" .
+# UIKit / Catalyst symbols that don't exist on native macOS:
+grep -rn "ContactsUI\|UIViewControllerRepresentable\|UIViewRepresentable\|topBarTrailing\|UIApplication\.shared\|UIWindow\|UISceneSession\|UISceneConfiguration\|presentationDetents" --include="*.swift" App/GuessWho Sources
+
+# Catalyst-only conditionals (compile and availability):
+grep -rn "targetEnvironment(macCatalyst)\|macCatalyst " --include="*.swift" App/GuessWho Sources
 ```
 
-Every hit must be either deleted, re-routed, or have a written
-justification.
+The second grep catches both `#if targetEnvironment(macCatalyst)`
+*and* the `macCatalyst 18.0` availability literal at
+`RootView.swift:115` (`if #available(iOS 18.0, macCatalyst 18.0, macOS 15.0, *)`)
+that the first round of greps missed. Delete the literal — with
+Catalyst gone, `macCatalyst 18.0` is dead.
+
+Every hit must be either deleted, re-routed, or carry a one-line
+comment justifying why it's still there. The implementer must NOT
+introduce new `#if canImport(UIKit)` guards inside
+`App/GuessWho/ContactEditor/`; any UIKit affordance reached for in
+the editor area (e.g. an `openSettingsURLString` deep-link on iOS)
+needs the guard *and* an inline comment explaining the divergence.
 
 ## SwiftUI on macOS — specifics this plan commits to
 
@@ -370,31 +460,53 @@ that defaults badly on one side.
 
 - **`.formStyle(.grouped)`** on the top-level `Form` so macOS doesn't
   render two-column settings-style. Already in the form sketch above.
-- **Sheet sizing**: SwiftUI sheets on macOS open as fixed-size
-  windows. Set `.frame(minWidth: 480, minHeight: 600)` on the
-  sheet's root view for macOS. On iOS use `.presentationDetents([.large])`.
-  Wrap in `#if os(macOS)` / `#else`.
+- **Sheet sizing**: SwiftUI sheets on macOS open at intrinsic size.
+  Set `.frame(minWidth: 480, idealWidth: 560, minHeight: 600, idealHeight: 720)`
+  on the sheet's root view inside `#if os(macOS)` so it opens at a
+  workable size and is user-resizable. On iOS, use
+  `.presentationDetents([.large])` inside `#if !os(macOS)`. `Form`
+  already provides internal scrolling on both platforms; verify on
+  macOS that it does inside the sheet, since intrinsic-size sheets
+  can otherwise grow unbounded.
 - **`@FocusState` tab navigation**: name and address rows have
-  multiple text fields. Wire `@FocusState` enums so Tab / Shift-Tab
-  advance through fields in a sensible order on macOS. iOS won't
-  notice the wiring; macOS power users will.
+  multiple text fields. Wire a `@FocusState` enum per multi-field row
+  and use `.focused($focus, equals: .field)` plus `.onSubmit { focus = next }`
+  so Tab / Shift-Tab advances through fields. Tab orders:
+  - `NameFieldsRow`: prefix → first → middle → last → suffix → nickname.
+  - `PostalAddressRow`: street → city → state → postal code → country.
+    (Carry-through sub-fields skipped.)
+  - `OrgFieldsRow`: organizationName → departmentName → jobTitle.
+  - `PhoneticNameRow`: phoneticGivenName → phoneticMiddleName → phoneticFamilyName.
 - **`DatePicker` no-year case**: handled in §"Birthday/DateComponents
-  handling".
-- **`confirmationDialog`** for unsaved-changes and delete: this is
-  rendered as a modal alert sheet on macOS and a bottom action sheet
-  on iOS. Both are acceptable; this is the intentional cross-platform
-  idiom.
+  handling". Render "Include year" as `Toggle("Include year", isOn: $hasYear)`
+  immediately below the DatePicker. Apply the same `hasYear` semantics
+  to `DateRow` (anniversary, etc.) so the behavior is consistent.
+- **`confirmationDialog`** for unsaved-changes and delete: rendered as
+  a modal alert sheet on macOS and a bottom action sheet on iOS. Both
+  acceptable; intentional cross-platform idiom. Button copy:
+  - Cancel-with-unsaved-changes: `Button("Discard Changes", role: .destructive) { dismiss() }`
+    + `Button("Keep Editing", role: .cancel) {}`.
+  - Delete-contact: `Button("Delete Contact", role: .destructive) { performDelete() }`
+    + `Button("Cancel", role: .cancel) {}`.
 - **Delete `role: .destructive`** styling differs visually between
   platforms. Verify manually on both; no code-level workaround.
 
 ## File layout
 
 ```
+Sources/GuessWhoSync/
+    ContactEditModel.swift              (pure model; testable without SwiftUI)
+
 App/GuessWho/ContactEditor/
     ContactEditView.swift               (rewritten, no UIKit; the entry View)
-    ContactEditModel.swift              (the @Observable / @State model + error mapping)
     LabelPicker.swift
-    LabelOptions.swift                  (per-field standard label sets)
+    LabelOptions.swift                  (per-field standard label sets — enumerates
+                                         CNLabel* constants per field type, e.g.
+                                         phone: [CNLabelPhoneNumberMobile,
+                                         CNLabelPhoneNumberMain, CNLabelHome,
+                                         CNLabelWork, CNLabelOther]; dates:
+                                         [CNLabelDateAnniversary, ...]; relations:
+                                         [CNLabelContactRelationFather, ...])
     Rows/
         NameFieldsRow.swift
         OrgFieldsRow.swift
@@ -407,6 +519,11 @@ App/GuessWho/ContactEditor/
         SocialProfileRow.swift
         IMRow.swift
 ```
+
+`ContactEditModel` lives in `GuessWhoSync` (not the app target) so
+it's testable from `GuessWhoSyncTests` without an app-target test
+bundle. It depends only on `Contact` and standard library types — no
+SwiftUI imports, no CN types.
 
 **Why a subdirectory and not co-located private structs.** The
 existing convention (`EventEditSheet` co-located inside
@@ -431,22 +548,28 @@ The file name `ContactEditView.swift` is kept so the call site in
 - `public func delete(localID: String) throws`. Implementation:
 
   ```swift
-  let cn = try store.unifiedContact(
-      withIdentifier: localID,
-      keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
-  )
-  guard let mutable = cn.mutableCopy() as? CNMutableContact else {
-      throw ContactStoreError.contactNotFound(localID: localID)
+  public func delete(localID: String) throws {
+      let cn: CNContact
+      do {
+          cn = try store.unifiedContact(
+              withIdentifier: localID,
+              keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+          )
+      } catch let error as CNError where error.code == .recordDoesNotExist {
+          throw ContactStoreError.contactNotFound(localID: localID)
+      }
+      // mutableCopy() on a CNContact always returns a CNMutableContact;
+      // the cast can't actually fail. Force-cast keeps the intent crisp.
+      let mutable = cn.mutableCopy() as! CNMutableContact
+      let req = CNSaveRequest()
+      req.delete(mutable)
+      try store.execute(req)
   }
-  let req = CNSaveRequest()
-  req.delete(mutable)
-  try store.execute(req)
   ```
 
-  Errors:
-  - `CNError.recordDoesNotExist` from the fetch → re-throw as
-    `ContactStoreError.contactNotFound`. Mirrors the existing pattern
-    in `loadImageData`.
+  The `do/catch` re-throws `CNError.recordDoesNotExist` as
+  `ContactStoreError.contactNotFound`, mirroring the existing pattern
+  in `loadImageData` (`CNContactStoreAdapter.swift:97-104`).
 
 `Sources/GuessWhoSync/ContactStoreProtocol.swift`:
 - Add `func delete(localID: String) throws` to the protocol so the
@@ -454,15 +577,43 @@ The file name `ContactEditView.swift` is kept so the call site in
   test described in §"Tests" cannot be written.
 
 `App/GuessWho/Support/SyncService.swift`:
-- `func saveContact(_ contact: Contact) async throws` — `await
-  contactsAdapter.save(contact)` then `await repository.reload()`.
-- `func deleteContact(localID: String) async throws` — `await
-  contactsAdapter.delete(localID: localID)` then
-  `await repository.reload()`.
+
+```swift
+func saveContact(_ contact: Contact) async throws {
+    try await contactsAdapter.save(contact)
+    await repository.reload()
+}
+
+func deleteContact(localID: String) async throws {
+    try await contactsAdapter.delete(localID: localID)
+    await repository.reload()
+}
+```
+
 - **Remove** `fetchCNContactForEditing(localID:)` and the
   `import ContactsUI` at line 3.
+- The inner `await repository.reload()` in `saveContact` is
+  intentionally redundant with `ContactDetailView.handleEditorDone`'s
+  trailing `repository.reload()` (`ContactDetailView.swift:194`). The
+  cost is one extra cache-rebuild per save; the benefit is that
+  `saveContact` is correct on its own for any future caller, not
+  only the editor. Accepted redundancy.
 
 ## Tests
+
+There is no `Tests/GuessWhoTests/` app-target test bundle today;
+creating one is its own scope. So this plan keeps the test sites
+inside the existing `Tests/GuessWhoSyncTests/` and the new editor
+model logic is **extracted into the `GuessWhoSync` module as a pure
+struct/class** (`ContactEditModel`) so it can be exercised without
+a SwiftUI / view-bundle dependency.
+
+`Sources/GuessWhoSync/ContactEditModel.swift` (new): owns the
+`edited: Contact`, the `original: Contact`, the `isDirty` flag, the
+URL partition + re-merge logic, the birthday `hasYear` conversion,
+and the save-error category mapping. The SwiftUI views in
+`App/GuessWho/ContactEditor/` bind to this model. No CN types in
+the model — it operates on `Contact` only.
 
 `Tests/GuessWhoSyncTests/`:
 
@@ -472,15 +623,14 @@ The file name `ContactEditView.swift` is kept so the call site in
   `nonGregorianBirthday`, `postalAddresses[].subLocality`,
   `socialProfiles[].userIdentifier`, and a `guesswho://` URL in
   `urlAddresses`), `load → mutate one visible field → save → load`
-  preserves every other field unchanged. **This is the single best
-  regression net for §"Data preservation".**
+  preserves every other field unchanged. This is the **floor**
+  guarantee — the adapter itself doesn't lose fields.
 - **`CNContactStoreAdapterDeleteTests`** — `delete(localID:)` removes
   the contact; subsequent `fetch(localID:)` returns nil; deleting a
   missing ID throws `contactNotFound`.
-
-`Tests/GuessWhoTests/` (app-target):
-
-- **`ContactEditModelTests`** —
+- **`ContactEditModelTests`** (new) — exercises the editor's
+  data-binding logic, NOT just the adapter floor. **This is the
+  test that protects the sidecar binding.**
   - Dirty-flag transitions on mutation; cancel-confirmation only when
     dirty.
   - Label round-trip: standard `_$!<Home>!$_` label survives unchanged
@@ -488,14 +638,24 @@ The file name `ContactEditView.swift` is kept so the call site in
   - URL section: editing a non-GuessWho URL re-merges with the
     GuessWho identity URL on save; the identity URL is never visible
     to the binding.
+  - URL section: a malformed `guesswho://contact/garbage` URL is also
+    hidden from the binding and carried through verbatim.
+  - URL ordering: a contact with `[user1, guesswho, user2]` edited to
+    rename `user1` saves as `[user1', guesswho, user2]` (positions
+    preserved, not re-shuffled).
   - Birthday no-year case: a `DateComponents` with only month/day
     survives load → no-op-save round-trip with year still absent.
 
 Manual verification (drive via the `/verify` skill before declaring
 the work merged):
 
-- iOS and native macOS destinations both build green with zero
-  `#if canImport(UIKit)` guards remaining in `App/GuessWho/ContactEditor/`.
+- iOS and native macOS destinations both build green. The
+  `App/GuessWho/ContactEditor/` directory has **no `#if canImport(UIKit)`
+  guards EXCEPT** those required for iOS-only affordances explicitly
+  named in this plan — currently just the iOS "Open Settings" deep-link
+  button in the save-error alert (see §"Save error contract"). Each
+  such guard carries a one-line inline comment naming the affordance
+  and the platform divergence.
 - Open an existing contact → Edit → change name → Save → reopen,
   confirm change persisted.
 - Open contact with a photo set → Edit → Save → reopen, confirm photo
@@ -565,4 +725,25 @@ substitutes.
 7. **Photo / name-suggestion regressions**: explicitly accepted as v1
    regressions; tracked in deferred-features for follow-up.
 8. **Sidecar-on-delete**: v1 policy is leave orphaned; explicit
-   sidecar GC is deferred work.
+   sidecar GC is deferred work. Reconcile mints fresh UUIDs (UUID
+   v4), so a deleted contact's UUID will never collide with a future
+   re-stamped contact — orphan sidecars are inert, not a
+   re-attachment hazard. A user who deletes a contact and later
+   re-adds one with the same name does NOT see the old notes/links
+   return; the binding is by UUID, not name.
+9. **URL-filter predicate**: editor partitions `urlAddresses` by
+   `value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)`. Broad
+   prefix-match — well-formed and malformed `guesswho://` URLs are
+   both hidden from the editor and carried through verbatim. NOT the
+   detail-view's narrower parse-OK filter (which is correct for
+   display but wrong for the editor's hide-and-carry-through job).
+10. **Org-section visibility**: always shown in edit mode (matches
+    Contacts.app), regardless of `contactType` or whether the fields
+    are populated. Resolves the earlier "deadlock: hidden section
+    has no way to add the first field" trap for person contacts.
+11. **`contactType` writes-through-unchanged**: the editor never
+    mutates `edited.contactType`, but `apply(_:to:)` always writes
+    `mutable.contactType`. A concurrent external change to
+    `contactType` between load and save (rare; e.g. another device
+    via iCloud) is silently reverted. Consistent with wholesale-
+    overwrite semantics elsewhere; called out so it's not surprising.
