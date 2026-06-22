@@ -165,7 +165,10 @@ struct FavoritesListView: View {
         Button(role: .destructive) {
             store.toggle(kind: favorite.kind, id: favorite.id)
         } label: {
-            Label("Remove", systemImage: "star.slash")
+            // Matches the detail-view star's accessibility label and
+            // avoids the implied-deletion reading of "Remove" against a
+            // destructive role.
+            Label("Unfavorite", systemImage: "star.slash")
         }
     }
 
