@@ -2,10 +2,10 @@ import Foundation
 
 public final class GuessWhoSync {
     private let contacts: ContactStoreProtocol
-    private let events: EventStoreProtocol
-    private let sidecars: SidecarStoreProtocol
-    private let deviceID: String
-    private let sidecarLocks = PerKeyLockTable<SidecarKey>()
+    internal let events: EventStoreProtocol
+    internal let sidecars: SidecarStoreProtocol
+    internal let deviceID: String
+    internal let sidecarLocks = PerKeyLockTable<SidecarKey>()
 
     public init(
         contacts: ContactStoreProtocol,
