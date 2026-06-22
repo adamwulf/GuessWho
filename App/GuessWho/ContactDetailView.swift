@@ -203,14 +203,14 @@ struct ContactDetailView: View {
     private func handleEditorDone() async {
         editingContact = nil
         // Reconcile runs first so it can re-stamp our x-guesswho:// URL
-        // before any other read sees the post-edit state. It calls
-        // loadContact() on its success path; an explicit loadContact()
-        // afterward catches the reconcile-error case where it doesn't.
-        // Then reload the repository so the list-view caches reflect
-        // any name/field changes.
+        // before any other read sees the post-edit state. On its success
+        // path performReconcile reloads the repository and re-loads the
+        // contact; on the error path neither happens, so reload+loadContact
+        // here pick up whatever the editor managed to save before the
+        // reconcile failed.
         await performReconcile()
-        await loadContact()
         await repository.reload()
+        await loadContact()
     }
 
     private func handleEditorDelete() async {
@@ -781,6 +781,14 @@ struct ContactDetailView: View {
             let result = try await service.reconcile(localID: localID)
             reconcileOutcome = result
             reconcileError = nil
+            // SyncService.reconcile intentionally does not poke the
+            // repository, but the trailing loadContact() below reads
+            // through the repository cache for speed. Reload first so the
+            // cache reflects the freshly-stamped GuessWho URL — otherwise
+            // a Case-A reconcile on first-open of a never-stamped contact
+            // leaves guessWhoUUID == nil in the UI until something else
+            // refreshes the cache.
+            await repository.reload()
             await loadContact()
         } catch {
             reconcileError = "\(error)"
