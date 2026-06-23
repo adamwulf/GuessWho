@@ -168,7 +168,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // tree is built automatically. The `.id()` modifier would
         // only matter if we were reusing one hosting controller and
         // mutating its rootView's localID (which is what
-        // `RootView.detailColumn` does on the SwiftUI iPhone path).
+        // `RootView.detailColumn` did on the pre-Phase-5 SwiftUI path).
+        //
+        // No `pushContactReference` / `pushEventReference` env
+        // injection here: Catalyst's secondary-column REPLACE semantics
+        // don't match a "push another detail" affordance, and the
+        // right Catalyst behaviour for drill-down from a hosted detail
+        // is TBD (Phase 6). The closures default to no-op, so
+        // SwiftUI `Button` rows fall back to today's silent behaviour
+        // — same as pre-bridge Catalyst.
         let detail = ContactDetailView(localID: contact.localID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
@@ -183,6 +191,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func showEventDetail(eventUUID: String, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
+        // See `showContactDetail` for the rationale on NOT injecting
+        // the push closures on Catalyst — Phase 6 will revisit.
         let detail = EventDetailView(eventUUID: eventUUID)
             .environment(appDelegate.service)
             .environment(appDelegate.favoritesStore)
@@ -318,16 +328,43 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// (`SyncService`, `ContactsRepository`, `FavoritesListStore`)
     /// must be injected on the rootView because the hosted SwiftUI
     /// view has no SwiftUI parent on iPhone now that RootView is gone.
+    ///
+    /// Also injects the `pushContactReference` / `pushEventReference`
+    /// env closures so SwiftUI rows inside the pushed detail (linked
+    /// events on a contact, attendees on an event, etc.) can fan out
+    /// to more details onto the same UIKit nav stack. Without those,
+    /// the original `NavigationLink(value:)` callsites silently no-op
+    /// on iPhone after Phase 5 deleted `.contactAndEventDestinations`.
     private func pushContactDetail(
         contact: Contact,
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
+        pushContactDetail(localID: contact.localID, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushContactDetail(
+        ref: ContactReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushContactDetail(localID: ref.localID, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushContactDetail(
+        localID: String,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         guard let nav else { return }
-        let detail = ContactDetailView(localID: contact.localID)
-            .environment(appDelegate.service)
-            .environment(appDelegate.contactsRepository)
-            .environment(appDelegate.favoritesStore)
+        let detail = injectIPhonePushHandlers(
+            ContactDetailView(localID: localID)
+                .environment(appDelegate.service)
+                .environment(appDelegate.contactsRepository)
+                .environment(appDelegate.favoritesStore),
+            on: nav,
+            appDelegate: appDelegate
+        )
         let hosting = UIHostingController(rootView: detail)
         nav.pushViewController(hosting, animated: true)
     }
@@ -337,11 +374,51 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
+        pushEventDetail(eventUUID: eventUUID, eventKitID: nil, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushEventDetail(
+        ref: EventReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushEventDetail(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushEventDetail(
+        eventUUID: String,
+        eventKitID: String?,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         guard let nav else { return }
-        let detail = EventDetailView(eventUUID: eventUUID)
-            .environment(appDelegate.service)
-            .environment(appDelegate.favoritesStore)
+        let detail = injectIPhonePushHandlers(
+            EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
+                .environment(appDelegate.service)
+                .environment(appDelegate.favoritesStore),
+            on: nav,
+            appDelegate: appDelegate
+        )
         let hosting = UIHostingController(rootView: detail)
         nav.pushViewController(hosting, animated: true)
+    }
+
+    /// Bind `pushContactReference` / `pushEventReference` to the SAME
+    /// nav controller this view is being pushed onto. Both closures
+    /// capture `nav` weakly so popping the stack tears down cleanly,
+    /// and `self` weakly so the closure can't keep the SceneDelegate
+    /// alive past scene teardown.
+    private func injectIPhonePushHandlers<V: View>(
+        _ view: V,
+        on nav: UINavigationController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> some View {
+        view
+            .environment(\.pushContactReference) { [weak self, weak nav] ref in
+                self?.pushContactDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushEventReference) { [weak self, weak nav] ref in
+                self?.pushEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
     }
 }

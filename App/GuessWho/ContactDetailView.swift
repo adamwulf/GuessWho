@@ -8,6 +8,12 @@ struct ContactDetailView: View {
     @Environment(ContactsRepository.self) private var repository
     @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
+    // Set by SceneDelegate when this view is pushed onto an iPhone
+    // UIKit nav stack. Defaults to a no-op closure (see
+    // `ReferenceNavigation.swift`), which is also what Catalyst gets
+    // today — that matches Catalyst's pre-bridge silent behaviour.
+    @Environment(\.pushContactReference) private var pushContactReference
+    @Environment(\.pushEventReference) private var pushEventReference
 
     let localID: String
 
@@ -642,7 +648,9 @@ struct ContactDetailView: View {
         ActivityRowLayout(systemImage: "calendar") {
             VStack(alignment: .leading, spacing: 4) {
                 if let event {
-                    NavigationLink(value: EventReference(eventUUID: other.id)) {
+                    Button {
+                        pushEventReference(EventReference(eventUUID: other.id))
+                    } label: {
                         Text(event.title.isEmpty ? "(Untitled event)" : event.title)
                             .font(.body)
                             .foregroundStyle(.tint)
@@ -1123,6 +1131,11 @@ private struct InfoRowData: Identifiable {
 
 private struct InfoRow: View {
     let data: InfoRowData
+    // Bridge to the outer UIKit nav controller (iPhone shell) for
+    // contact-link and back-reference rows — pushes a fresh
+    // ContactDetailView via SceneDelegate. Defaults to a no-op closure
+    // (see `ReferenceNavigation.swift`).
+    @Environment(\.pushContactReference) private var pushContactReference
 
     var body: some View {
         switch data.kind {
@@ -1150,7 +1163,9 @@ private struct InfoRow: View {
         // Inverse-relation row: contact name is primary tinted (the
         // tappable target) and the descriptor reads "their <label>" in
         // small caption so the relationship direction is unambiguous.
-        NavigationLink(value: ContactReference(localID: localID)) {
+        Button {
+            pushContactReference(ContactReference(localID: localID))
+        } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayName)
                     .foregroundStyle(.tint)
@@ -1165,9 +1180,11 @@ private struct InfoRow: View {
     @ViewBuilder
     private func contactLinkRow(label: String, displayName: String, localID: String) -> some View {
         // Match the tappable-row visual: label above, tinted value, whole
-        // row tappable. NavigationLink(value:) feeds the typed
-        // ContactReference navigation destination.
-        NavigationLink(value: ContactReference(localID: localID)) {
+        // row tappable. Push goes through the env-injected closure so
+        // SwiftUI rows pushed onto a UIKit nav stack still navigate.
+        Button {
+            pushContactReference(ContactReference(localID: localID))
+        } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.caption)

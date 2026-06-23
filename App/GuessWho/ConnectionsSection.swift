@@ -44,6 +44,10 @@ struct LinkRow: View {
     let onCommit: () -> Void
     let onCancel: () -> Void
     let onDelete: () -> Void
+    // Bridge to the outer UIKit nav controller (iPhone shell) so the
+    // related-contact row pushes a fresh ContactDetailView. See
+    // `ReferenceNavigation.swift` for the env-closure defaults.
+    @Environment(\.pushContactReference) private var pushContactReference
 
     var body: some View {
         ActivityRowLayout(systemImage: "person") {
@@ -74,7 +78,9 @@ struct LinkRow: View {
     @ViewBuilder
     private var otherContactView: some View {
         if let other = otherContact {
-            NavigationLink(value: ContactReference(localID: other.localID)) {
+            Button {
+                pushContactReference(ContactReference(localID: other.localID))
+            } label: {
                 Text(other.displayName)
                     .font(.body)
                     .foregroundStyle(.tint)
