@@ -1,9 +1,33 @@
 #if canImport(Contacts)
-import Contacts
+// CNContactStore is documented thread-safe ("Because CNContactStore
+// fetch methods perform I/O, it's recommended that you avoid using
+// the main thread to execute fetches") but not formally Sendable in
+// the Contacts overlay. `@preconcurrency` suppresses the Sendable
+// warnings on the cross-queue captures below; the runtime contract
+// is still met because the actor serializes all access through one
+// dedicated `.userInitiated` queue.
+@preconcurrency import Contacts
 import Foundation
 
 public actor CNContactStoreAdapter: ContactStoreProtocol {
     private let store: CNContactStore
+
+    /// Dedicated serial queue that runs every blocking CNContactStore call.
+    /// Pinned to `.userInitiated` so the actor's executor — which can be
+    /// provisioned at Background QoS by the Swift concurrency runtime when
+    /// the cooperative pool decides so — does NOT end up blocking a higher-
+    /// QoS caller (e.g. the `@MainActor` SyncService) on a lower-QoS thread.
+    ///
+    /// Without this, calling `await contactsAdapter.fetchAll()` from
+    /// `@MainActor` (User-Initiated) triggers a "Hang Risk: priority
+    /// inversion" warning from the runtime because
+    /// `CNContactStore.enumerateContacts` synchronously XPCs to a daemon
+    /// at whatever QoS the actor's thread inherits, which is sometimes
+    /// Background.
+    private let workQueue = DispatchQueue(
+        label: "guesswho.contacts-adapter",
+        qos: .userInitiated
+    )
 
     public init(store: CNContactStore = CNContactStore()) {
         self.store = store
@@ -62,70 +86,103 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         CNContactThumbnailImageDataKey as CNKeyDescriptor,
     ]
 
-    public func fetchAll() throws -> [Contact] {
-        let request = CNContactFetchRequest(keysToFetch: Self.keys)
-        var results: [Contact] = []
-        try store.enumerateContacts(with: request) { cnContact, _ in
-            results.append(Self.toContact(cnContact))
-        }
-        return results
-    }
-
-    public func fetch(localID: String) throws -> Contact? {
-        do {
-            let cnContact = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.keys)
-            return Self.toContact(cnContact)
-        } catch let error as CNError where error.code == .recordDoesNotExist {
-            return nil
+    public func fetchAll() async throws -> [Contact] {
+        try await runOnWorkQueue { store in
+            let request = CNContactFetchRequest(keysToFetch: Self.keys)
+            var results: [Contact] = []
+            try store.enumerateContacts(with: request) { cnContact, _ in
+                results.append(Self.toContact(cnContact))
+            }
+            return results
         }
     }
 
-    public func save(_ contact: Contact) throws {
-        let saveRequest = CNSaveRequest()
-        let existing = try? store.unifiedContact(withIdentifier: contact.localID, keysToFetch: Self.keys)
-        if let existing, let mutable = existing.mutableCopy() as? CNMutableContact {
-            Self.apply(contact, to: mutable)
-            saveRequest.update(mutable)
-        } else {
-            let mutable = CNMutableContact()
-            Self.apply(contact, to: mutable)
-            saveRequest.add(mutable, toContainerWithIdentifier: nil)
-        }
-        try store.execute(saveRequest)
-    }
-
-    public func delete(localID: String) throws {
-        let cn: CNContact
-        do {
-            cn = try store.unifiedContact(
-                withIdentifier: localID,
-                keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
-            )
-        } catch let error as CNError where error.code == .recordDoesNotExist {
-            throw ContactStoreError.contactNotFound(localID: localID)
-        }
-        // mutableCopy() on a CNContact always returns CNMutableContact.
-        let mutable = cn.mutableCopy() as! CNMutableContact
-        let req = CNSaveRequest()
-        req.delete(mutable)
-        try store.execute(req)
-    }
-
-    public func loadImageData(localID: String) throws -> Data? {
-        do {
-            let cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.imageKeys)
-            return cn.imageData
-        } catch let error as CNError where error.code == .recordDoesNotExist {
-            throw ContactStoreError.contactNotFound(localID: localID)
+    public func fetch(localID: String) async throws -> Contact? {
+        try await runOnWorkQueue { store in
+            do {
+                let cnContact = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.keys)
+                return Self.toContact(cnContact)
+            } catch let error as CNError where error.code == .recordDoesNotExist {
+                return nil
+            }
         }
     }
 
-    public func loadThumbnailImageData(localID: String) throws -> Data? {
-        do {
-            let cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.thumbnailKeys)
-            return cn.thumbnailImageData
-        } catch let error as CNError where error.code == .recordDoesNotExist {
-            throw ContactStoreError.contactNotFound(localID: localID)
+    public func save(_ contact: Contact) async throws {
+        try await runOnWorkQueue { store in
+            let saveRequest = CNSaveRequest()
+            let existing = try? store.unifiedContact(withIdentifier: contact.localID, keysToFetch: Self.keys)
+            if let existing, let mutable = existing.mutableCopy() as? CNMutableContact {
+                Self.apply(contact, to: mutable)
+                saveRequest.update(mutable)
+            } else {
+                let mutable = CNMutableContact()
+                Self.apply(contact, to: mutable)
+                saveRequest.add(mutable, toContainerWithIdentifier: nil)
+            }
+            try store.execute(saveRequest)
+        }
+    }
+
+    public func delete(localID: String) async throws {
+        try await runOnWorkQueue { store in
+            let cn: CNContact
+            do {
+                cn = try store.unifiedContact(
+                    withIdentifier: localID,
+                    keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+                )
+            } catch let error as CNError where error.code == .recordDoesNotExist {
+                throw ContactStoreError.contactNotFound(localID: localID)
+            }
+            // mutableCopy() on a CNContact always returns CNMutableContact.
+            let mutable = cn.mutableCopy() as! CNMutableContact
+            let req = CNSaveRequest()
+            req.delete(mutable)
+            try store.execute(req)
+        }
+    }
+
+    public func loadImageData(localID: String) async throws -> Data? {
+        try await runOnWorkQueue { store in
+            do {
+                let cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.imageKeys)
+                return cn.imageData
+            } catch let error as CNError where error.code == .recordDoesNotExist {
+                throw ContactStoreError.contactNotFound(localID: localID)
+            }
+        }
+    }
+
+    public func loadThumbnailImageData(localID: String) async throws -> Data? {
+        try await runOnWorkQueue { store in
+            do {
+                let cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.thumbnailKeys)
+                return cn.thumbnailImageData
+            } catch let error as CNError where error.code == .recordDoesNotExist {
+                throw ContactStoreError.contactNotFound(localID: localID)
+            }
+        }
+    }
+
+    /// Bridge the blocking `CNContactStore` call onto `workQueue` and
+    /// suspend the actor until it returns. The actor's thread is freed
+    /// for the duration of the synchronous CN/XPC work, so a `@MainActor`
+    /// caller no longer sees its high-QoS Task waiting on a lower-QoS
+    /// actor executor (the priority-inversion warning).
+    private func runOnWorkQueue<T>(
+        _ work: @escaping @Sendable (CNContactStore) throws -> sending T
+    ) async throws -> sending T {
+        let store = self.store
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+            workQueue.async {
+                do {
+                    let value = try work(store)
+                    continuation.resume(returning: value)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 
