@@ -55,7 +55,7 @@ GuessWhoSceneDelegate.scene(_:willConnectTo:)
 | 1.5 | `c336db2` | Catalyst entitlements file (`GuessWho-MacCatalyst.entitlements`, byte-identical iCloud); `SidebarTab.settings` case + in-app `SettingsView`; "Open System Settings" alert button using `x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts`. |
 | 2 | `ce1ef33` | UIKit `@main` cutover (`GuessWhoAppDelegate` + `GuessWhoSceneDelegate`); Catalyst `UISplitViewController(.tripleColumn)` shell with `SidebarViewController` + placeholder content/detail. |
 | 3 | `2b38333` | Real People list (`ContactsListViewController` — UITableView, diffable data source, A-Z section index, search); selection mounts `ContactDetailView` in detail column. Extracted `SidebarTab` to its own file. Hardened SceneDelegate guard. `ContactsRepository.reload()` posts `.contactsRepositoryDidReload`. |
-| 3.5 | `1c9d2b5` | Review fix: `reload()` flips `isLoading=false` BEFORE posting (synchronous observer needs the final flag); notification handler switched to `addObserver(forName:object:queue:.main, using:)` (defensive main-thread pin); dropped misleading `.id(localID)` on the hosted detail view. |
+| 3.5 | `fa26858` | Review fix: `reload()` flips `isLoading=false` BEFORE posting (synchronous observer needs the final flag); notification handler switched to `addObserver(forName:object:queue:.main, using:)` (defensive main-thread pin); dropped misleading `.id(localID)` on the hosted detail view. |
 
 ### Phase 4 — Organizations / Events / Favorites lists (next)
 
