@@ -36,4 +36,22 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         case .settings: return "gear"
         }
     }
+
+    /// Title for the Catalyst detail-column placeholder shown when this
+    /// tab is selected but no row has been picked yet.
+    var detailPlaceholderTitle: String {
+        "Nothing Selected"
+    }
+
+    /// Message body for the Catalyst detail-column placeholder shown
+    /// when this tab is selected but no row has been picked yet.
+    var detailPlaceholderMessage: String {
+        switch self {
+        case .people: return "Choose a person from the list to see details."
+        case .organizations: return "Choose an organization from the list to see details."
+        case .events: return "Choose an event from the list to see details."
+        case .favorites: return "Choose a favorite from the list to see details."
+        case .settings: return "Settings appear here."
+        }
+    }
 }

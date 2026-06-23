@@ -91,7 +91,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             message: "Pick a section from the sidebar."
         )
         split.setViewController(UINavigationController(rootViewController: initialContent), for: .supplementary)
-        installDetailPlaceholder(in: split)
+        installInitialDetailPlaceholder(in: split)
 
         return split
     }
@@ -107,7 +107,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             let nav = UINavigationController(rootViewController: list)
             split.setViewController(nav, for: .supplementary)
-            installDetailPlaceholder(in: split)
+            installDetailPlaceholder(in: split, for: .people)
 
         case .organizations:
             let list = OrganizationsListViewController(repository: appDelegate.contactsRepository)
@@ -115,7 +115,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            installDetailPlaceholder(in: split)
+            installDetailPlaceholder(in: split, for: .organizations)
 
         case .events:
             let list = EventsListViewController(
@@ -126,7 +126,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            installDetailPlaceholder(in: split)
+            installDetailPlaceholder(in: split, for: .events)
 
         case .favorites:
             let list = FavoritesListViewController(
@@ -140,13 +140,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            installDetailPlaceholder(in: split)
+            installDetailPlaceholder(in: split, for: .favorites)
 
         case .settings:
             let settings = UIHostingController(rootView: SettingsView())
             settings.title = "Settings"
             split.setViewController(UINavigationController(rootViewController: settings), for: .supplementary)
-            installDetailPlaceholder(in: split)
+            installDetailPlaceholder(in: split, for: .settings)
         }
     }
 
@@ -191,10 +191,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(nav, for: .secondary)
     }
 
-    private func installDetailPlaceholder(in split: UISplitViewController) {
+    private func installDetailPlaceholder(in split: UISplitViewController, for tab: SidebarTab) {
+        let detail = PlaceholderViewController(
+            title: tab.detailPlaceholderTitle,
+            message: tab.detailPlaceholderMessage
+        )
+        split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
+    }
+
+    /// Neutral placeholder used only at scene-connection time before the
+    /// sidebar's `selectInitialTab()` invokes `didSelectTab` and a
+    /// tab-specific placeholder takes over.
+    private func installInitialDetailPlaceholder(in split: UISplitViewController) {
         let detail = PlaceholderViewController(
             title: "Nothing Selected",
-            message: "Choose a person from the list to see details."
+            message: "Pick a section from the sidebar."
         )
         split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
     }
