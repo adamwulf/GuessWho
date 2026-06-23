@@ -89,18 +89,29 @@ struct ContactEditView: View {
                 presenting: saveError
             ) { category in
                 Button("OK", role: .cancel) { saveError = nil }
-                #if !targetEnvironment(macCatalyst)
                 if category == .authorizationDenied {
+                    #if targetEnvironment(macCatalyst)
+                    // Catalyst routes the x-apple.systempreferences:* URL
+                    // through LaunchServices, landing the user in System
+                    // Settings → Privacy & Security → Contacts so they can
+                    // re-enable access. UIApplication.openSettingsURLString
+                    // opens the host iOS Settings app on iOS but is a no-op
+                    // on Catalyst, so the URL must differ per platform.
+                    Button("Open System Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    #else
                     Button("Open Settings") {
-                        // iOS-only deep-link to the app's Settings page so
-                        // the user can re-enable Contacts access. Native
-                        // macOS has no equivalent URL; alert is text-only.
+                        // iOS deep-link to the app's Settings page so the
+                        // user can re-enable Contacts access.
                         if let url = URL(string: UIApplication.openSettingsURLString) {
                             UIApplication.shared.open(url)
                         }
                     }
+                    #endif
                 }
-                #endif
             } message: { category in
                 Text(saveErrorMessage(for: category))
             }
@@ -113,15 +124,21 @@ struct ContactEditView: View {
                 presenting: deleteError
             ) { category in
                 Button("OK", role: .cancel) { deleteError = nil }
-                #if !targetEnvironment(macCatalyst)
                 if category == .authorizationDenied {
+                    #if targetEnvironment(macCatalyst)
+                    Button("Open System Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    #else
                     Button("Open Settings") {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
                             UIApplication.shared.open(url)
                         }
                     }
+                    #endif
                 }
-                #endif
             } message: { category in
                 Text(deleteErrorMessage(for: category))
             }

@@ -15,6 +15,11 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
     /// Will be replaced by a real Organizations list view once the
     /// content-column selection pattern is proven out.
     case organizationsPlaceholder
+    /// Catalyst-only entry: Settings.bundle is ignored by Catalyst, so
+    /// the in-app SettingsView is the only way for a Mac user to reach
+    /// the Debug Mode toggle. iPhone keeps Settings out of the TabView
+    /// because iOS users reach the same toggle via System Settings.
+    case settings
 
     var id: String { rawValue }
 
@@ -22,6 +27,7 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         switch self {
         case .people: return "People"
         case .organizationsPlaceholder: return "Organizations"
+        case .settings: return "Settings"
         }
     }
 
@@ -29,6 +35,7 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         switch self {
         case .people: return "person.2.fill"
         case .organizationsPlaceholder: return "building.2.fill"
+        case .settings: return "gear"
         }
     }
 }
@@ -133,6 +140,17 @@ struct RootView: View {
         #endif
     }
 
+    /// SidebarTab list shown in the leading column. .settings is Catalyst-
+    /// only because iOS/iPadOS surface the same toggle through the system
+    /// Settings app via Settings.bundle.
+    private var sidebarTabs: [SidebarTab] {
+        #if targetEnvironment(macCatalyst)
+        return SidebarTab.allCases
+        #else
+        return SidebarTab.allCases.filter { $0 != .settings }
+        #endif
+    }
+
     /// Canonical 3-column NavigationSplitView per the SwiftUI docs:
     /// the sidebar's selection drives which list shows in the content
     /// column; the content list's selection drives which detail shows
@@ -145,7 +163,10 @@ struct RootView: View {
             // Selection type is the element's ID (SidebarTab.ID == String)
             // per Apple's three-column sample
             // (`@State private var departmentId: Department.ID?`).
-            List(SidebarTab.allCases, selection: $selectedTabID) { tab in
+            // .settings is Catalyst-only — iPad regular-width uses the same
+            // tripleColumn layout but reaches the Debug toggle via the iOS
+            // Settings app (Settings.bundle), so we hide it there.
+            List(sidebarTabs, selection: $selectedTabID) { tab in
                 Label(tab.title, systemImage: tab.systemImage)
             }
             .navigationTitle("GuessWho")
@@ -171,6 +192,8 @@ struct RootView: View {
                 systemImage: "building.2.fill",
                 description: Text("Verifying sidebar selection wiring.")
             )
+        case .settings:
+            SettingsView()
         case .none:
             ContentUnavailableView(
                 "Pick a Section",

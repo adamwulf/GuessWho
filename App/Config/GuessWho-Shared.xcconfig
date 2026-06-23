@@ -10,7 +10,16 @@ PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
 // Signing
 DEVELOPMENT_TEAM = T68Z94627S
 CODE_SIGN_STYLE = Automatic
+// Per Apple guidance, Mac Catalyst should ship its own entitlements file
+// so Catalyst-specific keys (e.g. com.apple.security.app-sandbox tuning,
+// app-group / file-access bookmarks) can diverge without disturbing the
+// iOS entitlements that the App Store / iOS provisioning expects. For
+// now the Catalyst file is byte-identical to the iOS one — same iCloud
+// container, same Contacts/Calendar entitlements — so iOS↔Mac sync
+// behaves identically. The per-sdk override only kicks in for macosx
+// builds; iOS / iPadOS continue to use GuessWho.entitlements unchanged.
 CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho.entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWho/GuessWho-MacCatalyst.entitlements
 
 // Swift
 SWIFT_VERSION = 6.0
