@@ -17,13 +17,13 @@ SWIFT_VERSION = 6.0
 SWIFT_EMIT_LOC_STRINGS = YES
 ENABLE_PREVIEWS = YES
 
-// Platforms / devices (iPhone + iPad + native macOS — Catalyst removed)
+// Platforms / devices (iPhone + iPad + Mac Catalyst)
 SDKROOT = iphoneos
 SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx
 IPHONEOS_DEPLOYMENT_TARGET = 17.0
 MACOSX_DEPLOYMENT_TARGET = 14.0
 TARGETED_DEVICE_FAMILY = 1,2
-SUPPORTS_MACCATALYST = NO
+SUPPORTS_MACCATALYST = YES
 SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO
 
 LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../Frameworks

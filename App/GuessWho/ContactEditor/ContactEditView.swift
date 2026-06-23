@@ -58,7 +58,7 @@ struct ContactEditView: View {
             }
             .formStyle(.grouped)
             .navigationTitle(navigationTitle)
-            #if !os(macOS)
+            #if !targetEnvironment(macCatalyst)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar { toolbarContent }
@@ -89,7 +89,7 @@ struct ContactEditView: View {
                 presenting: saveError
             ) { category in
                 Button("OK", role: .cancel) { saveError = nil }
-                #if !os(macOS)
+                #if !targetEnvironment(macCatalyst)
                 if category == .authorizationDenied {
                     Button("Open Settings") {
                         // iOS-only deep-link to the app's Settings page so
@@ -113,7 +113,7 @@ struct ContactEditView: View {
                 presenting: deleteError
             ) { category in
                 Button("OK", role: .cancel) { deleteError = nil }
-                #if !os(macOS)
+                #if !targetEnvironment(macCatalyst)
                 if category == .authorizationDenied {
                     Button("Open Settings") {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -126,7 +126,7 @@ struct ContactEditView: View {
                 Text(deleteErrorMessage(for: category))
             }
         }
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         .frame(minWidth: 480, idealWidth: 560, minHeight: 600, idealHeight: 720)
         #else
         .presentationDetents([.large])

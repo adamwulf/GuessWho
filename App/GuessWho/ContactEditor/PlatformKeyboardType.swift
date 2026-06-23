@@ -11,7 +11,7 @@ enum PlatformKeyboardType {
 extension View {
     @ViewBuilder
     func applyKeyboard(_ type: PlatformKeyboardType) -> some View {
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         self
         #else
         switch type {

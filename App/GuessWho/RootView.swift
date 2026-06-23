@@ -35,7 +35,7 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
 
 struct RootView: View {
     @Environment(SyncService.self) private var service
-    #if !os(macOS)
+    #if !targetEnvironment(macCatalyst)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
@@ -116,7 +116,7 @@ struct RootView: View {
 
     @ViewBuilder
     private func mainTabs(contactsRepository: ContactsRepository, eventsRepository: EventsRepository) -> some View {
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         tripleColumn(contactsRepository: contactsRepository)
         #else
         // iPad (regular size class) gets the 3-column NavigationSplitView
@@ -201,7 +201,7 @@ struct RootView: View {
         }
     }
 
-    #if !os(macOS)
+    #if !targetEnvironment(macCatalyst)
     @ViewBuilder
     private func iPhoneTabs(contactsRepository: ContactsRepository, eventsRepository: EventsRepository) -> some View {
         let tabs = TabView {

@@ -113,7 +113,7 @@ struct ContactDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         // Mirror Apple's Contacts detail pane: clamp the card width
         // and let the surrounding pane breathe at wider window sizes.
         // listStyle lives inside loadedContent — applying it on this
@@ -122,7 +122,7 @@ struct ContactDetailView: View {
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
         #endif
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         // The inline header already shows the name and subtitle, so an
         // empty nav-bar title keeps the toolbar clean (we still need the
         // toolbar itself for back-button + Edit/star).
@@ -199,7 +199,7 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func loadedContent(_ contact: Contact) -> some View {
         let list = List {
-            #if os(macOS)
+            #if targetEnvironment(macCatalyst)
             Section {
                 headerView(contact)
                     .frame(maxWidth: .infinity)
@@ -221,7 +221,7 @@ struct ContactDetailView: View {
                 debugSection(contact)
             }
         }
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         list.listStyle(.inset)
         #else
         list.listStyle(.insetGrouped)
