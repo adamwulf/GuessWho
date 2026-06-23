@@ -161,6 +161,12 @@ struct RootView: View {
                 systemImage: "calendar",
                 description: Text("Verifying sidebar selection wiring.")
             )
+        case .favorites:
+            ContentUnavailableView(
+                "Favorites Coming Soon",
+                systemImage: "star.fill",
+                description: Text("Verifying sidebar selection wiring.")
+            )
         case .settings:
             SettingsView()
         case .none:

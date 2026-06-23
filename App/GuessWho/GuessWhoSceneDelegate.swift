@@ -132,6 +132,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             contactsList = nil
             installDetailPlaceholder(in: split)
 
+        case .favorites:
+            let list = FavoritesListViewController(
+                store: appDelegate.favoritesStore,
+                service: appDelegate.service
+            )
+            list.didSelectContact = { [weak self] contact in
+                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            list.didSelectEvent = { [weak self] event in
+                self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            contactsList = nil
+            installDetailPlaceholder(in: split)
+
         case .settings:
             let settings = UIHostingController(rootView: SettingsView())
             settings.title = "Settings"
