@@ -259,21 +259,6 @@ final class SyncService {
         return try sync.linkEvent(toEventKitID: ekid, snapshot: snapshot)
     }
 
-    /// Adopt an existing manual sidecar (`uuid`) by attaching it to an EventKit
-    /// event. Requires authorized access — the orchestrator refreshes the cache
-    /// from EventKit after the link.
-    func linkExistingSidecar(uuid: String, toEventKitID ekid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
-        try sync.linkExistingSidecar(at: SidecarKey(kind: .event, id: uuid), toEventKitID: ekid)
-    }
-
-    /// Soft-delete the `eventKitID` cell on a sidecar; the EKEvent is untouched.
-    func unlinkEvent(uuid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.unlinkEvent(at: SidecarKey(kind: .event, id: uuid))
-    }
-
     /// Whole-event soft-delete on the sidecar; the EKEvent is untouched.
     func deleteEvent(uuid: String) throws {
         guard let sync else { throw SidecarUnavailableError() }

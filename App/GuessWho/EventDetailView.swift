@@ -33,12 +33,15 @@ struct EventDetailView: View {
     @State private var uuidToContact: [String: Contact] = [:]
     @State private var notes: [ContactNote] = []
     @State private var tags: [EventTag] = []
+    /// `false` until the first `reload()` finishes. The body uses it to
+    /// distinguish "still loading" from "really missing" so the
+    /// "(Unknown event)" fallback doesn't flash during the async
+    /// `fetchAll()` round-trip inside `reload()`.
+    @State private var hasLoadedOnce: Bool = false
 
     @State private var showingPicker = false
     @State private var showingEditSheet = false
-    @State private var showingUnlinkConfirm = false
     @State private var showingDeleteConfirm = false
-    @State private var showingLinkSheet = false
 
     @State private var newNoteText: String = ""
     @State private var editingNoteID: UUID?
@@ -58,9 +61,17 @@ struct EventDetailView: View {
                 guessWhoNotesSection
                 tagsSection
                 linkedContactsSection
-                linkActionsSection(event)
-            } else {
+                deleteActionSection
+            } else if hasLoadedOnce {
                 Section { Text("(Unknown event)") }
+            } else {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                }
             }
         }
         .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
@@ -112,27 +123,12 @@ struct EventDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingLinkSheet) {
-            EventLinkSheet(mode: .adopt(eventUUID: resolvedUUID, onAdopted: {
-                Task { await reload() }
-            }))
-        }
         .confirmationDialog(
-            "Unlink from Calendar?",
-            isPresented: $showingUnlinkConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Unlink", role: .destructive) { unlink() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The event stays in Calendar. GuessWho will keep your notes and tags.")
-        }
-        .confirmationDialog(
-            "Remove from GuessWho? (Won't delete from Calendar.)",
+            "Delete this event?",
             isPresented: $showingDeleteConfirm,
             titleVisibility: .visible
         ) {
-            Button("Remove", role: .destructive) { delete() }
+            Button("Delete", role: .destructive) { delete() }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -284,22 +280,8 @@ struct EventDetailView: View {
     }
 
     @ViewBuilder
-    private func linkActionsSection(_ event: Event) -> some View {
+    private var deleteActionSection: some View {
         Section {
-            if event.isLinked {
-                Button(role: .destructive) {
-                    showingUnlinkConfirm = true
-                } label: {
-                    Label("Unlink from Calendar", systemImage: "calendar.badge.minus")
-                }
-            } else {
-                Button {
-                    showingLinkSheet = true
-                } label: {
-                    Label("Link to a calendar event", systemImage: "calendar.badge.plus")
-                }
-                .disabled(service.eventsAuthorization != .authorized)
-            }
             Button(role: .destructive) {
                 showingDeleteConfirm = true
             } label: {
@@ -367,6 +349,7 @@ struct EventDetailView: View {
             }
         }
         uuidToContact = map
+        hasLoadedOnce = true
     }
 
     private func addLink(to contact: Contact, note: String) {
@@ -400,15 +383,6 @@ struct EventDetailView: View {
             )
         } catch {
             service.recordError("update event failed: \(error.localizedDescription)")
-        }
-        Task { await reload() }
-    }
-
-    private func unlink() {
-        do {
-            try service.unlinkEvent(uuid: resolvedUUID)
-        } catch {
-            service.recordError("unlink event failed: \(error.localizedDescription)")
         }
         Task { await reload() }
     }

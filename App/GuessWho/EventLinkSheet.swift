@@ -1,30 +1,24 @@
 import SwiftUI
 import GuessWhoSync
 
-/// Shared link/create sheet for events (E3). Used in three modes:
-/// - `.create` — events list "+" → mint a new event (manual or linked)
-/// - `.link`   — contact view "Add Event" → choose/create an event then link
-///               it to the caller's endpoint (contact, etc.)
-/// - `.adopt`  — manual EventDetail "Link to a calendar event" → attach an
-///               existing manual sidecar to an EventKit event
+/// Shared event picker/create sheet. Used in two modes:
+/// - `.create` — events list "+" → mint a new GuessWho event (sidecar-backed,
+///               optionally also written to Calendar.app)
+/// - `.link`   — contact view "Link Event" → choose an existing event or
+///               create a new one, then attach it to the caller's endpoint
+///
+/// There is intentionally NO "adopt an EventKit event into a sidecar" mode —
+/// see CLAUDE.md "Product principle: sidecar is an implementation detail."
+/// Adoption happens automatically on first read of an EventKit-only row via
+/// `EventDetailView.reload()`'s adopt-on-load path.
 struct EventLinkSheet: View {
     enum Mode {
         /// Create a standalone event (events list "+"). Callback returns the
         /// new event's UUID so the caller can navigate to it.
         case create(onCreated: (_ eventUUID: String) -> Void)
-        /// Link an existing event to something (contact, or a manual event
-        /// adopting EventKit). Callback returns the chosen event's UUID + note.
+        /// Link an existing event to something (contact, etc.). Callback
+        /// returns the chosen event's UUID + note.
         case link(onLinked: (_ eventUUID: String, _ note: String) -> Void)
-        /// Adopt an existing manual sidecar by attaching it to an EventKit
-        /// event the user picks. The sheet calls
-        /// `service.linkExistingSidecar(uuid: existingUUID, toEventKitID:)`
-        /// on row tap, then fires `onAdopted()` (typically a reload).
-        case adopt(eventUUID: String, onAdopted: () -> Void)
-
-        var isAdopt: Bool {
-            if case .adopt = self { return true }
-            return false
-        }
     }
 
     @Environment(SyncService.self) private var service
@@ -84,16 +78,11 @@ struct EventLinkSheet: View {
 
     private var navigationTitle: String {
         if manualEntry {
-            switch mode {
-            case .create: return "New Event"
-            case .link: return "New Event"
-            case .adopt: return "Pick Event"
-            }
+            return "New Event"
         }
         switch mode {
         case .create: return "Add Event"
         case .link: return "Pick Event"
-        case .adopt: return "Pick Event"
         }
     }
 
@@ -153,18 +142,11 @@ struct EventLinkSheet: View {
                 }
             }
 
-            // "Add Other" doesn't apply in adopt mode — you can't adopt an
-            // existing sidecar to a manual entry; the whole point is to
-            // attach an EventKit event.
-            if case .adopt = mode {
-                EmptyView()
-            } else {
-                Section {
-                    Button {
-                        manualEntry = true
-                    } label: {
-                        Label("Add Other", systemImage: "square.and.pencil")
-                    }
+            Section {
+                Button {
+                    manualEntry = true
+                } label: {
+                    Label("Add Other", systemImage: "square.and.pencil")
                 }
             }
         }
@@ -325,7 +307,6 @@ struct EventLinkSheet: View {
             manualEntry = true
             return
         }
-        // Adopt mode skips manual entry entirely — Add Other is hidden.
         let today = Calendar.current.startOfDay(for: Date())
         loadedForwardThrough = today
         loadedBackwardThrough = today
@@ -385,13 +366,9 @@ struct EventLinkSheet: View {
     }
 
     private func mergeIntoLoadedDays(_ events: [Event]) {
-        // Adopt mode only deals with EventKit-backed events; manual
-        // sidecar-only rows (eventKitID == nil) returned by the window read
-        // are un-adoptable and would hit a dead-end guard if tapped.
-        let filtered = mode.isAdopt ? events.filter { $0.eventKitID != nil } : events
         var bucket = loadedDays
         let cal = Calendar.current
-        for event in filtered {
+        for event in events {
             let day = cal.startOfDay(for: event.startDate)
             var existing = bucket[day] ?? []
             let key = dedupKey(for: event)
@@ -459,22 +436,6 @@ struct EventLinkSheet: View {
             // retry the link from the contact view (per E3.2 partial-failure
             // handling).
             onLinked(uuid, pickedRowNote.trimmingCharacters(in: .whitespacesAndNewlines))
-            dismiss()
-        case .adopt(let existingUUID, let onAdopted):
-            // Adopt: attach an existing manual sidecar to the picked EventKit
-            // event. No mint — `linkExistingSidecar` writes the eventKitID
-            // cell on the existing envelope.
-            guard let ekid = event.eventKitID else {
-                service.recordError("adopt failed: picked event has no eventKitID")
-                return
-            }
-            do {
-                try service.linkExistingSidecar(uuid: existingUUID, toEventKitID: ekid)
-            } catch {
-                service.recordError("link existing sidecar failed: \(error.localizedDescription)")
-                return
-            }
-            onAdopted()
             dismiss()
         }
     }
@@ -550,11 +511,6 @@ struct EventLinkSheet: View {
                 return
             }
             onLinked(newUUID.uuidString, draftLinkNote.trimmingCharacters(in: .whitespacesAndNewlines))
-            dismiss()
-        case .adopt:
-            // Adopt mode has no manual-entry path — Add Other is hidden in
-            // the picker, so this branch is unreachable in practice. Be
-            // defensive: do nothing.
             dismiss()
         }
     }
