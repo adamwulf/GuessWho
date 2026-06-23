@@ -79,8 +79,8 @@ final class FavoritesListViewController: UIViewController {
     // MARK: - Table view
 
     private func configureTableView() {
-        tableView = UITableView(frame: view.bounds, style: .plain)
-        tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        tableView = UITableView(frame: .zero, style: .plain)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.dragDelegate = self
         tableView.dropDelegate = self
@@ -89,6 +89,12 @@ final class FavoritesListViewController: UIViewController {
         tableView.estimatedRowHeight = 56
         tableView.register(FavoriteCell.self, forCellReuseIdentifier: CellID.favorite.rawValue)
         view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+        ])
     }
 
     private func configureEmptyState() {
@@ -102,8 +108,8 @@ final class FavoritesListViewController: UIViewController {
         view.addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
             emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
             emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
         ])
@@ -327,6 +333,16 @@ private final class FavoriteCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unsupported — FavoriteCell is code-only")
+    }
+
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        var background = UIBackgroundConfiguration.listPlainCell().updated(for: state)
+        if state.isSelected || state.isHighlighted {
+            background.backgroundColor = .tintColor
+            background.cornerRadius = 8
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12)
+        }
+        backgroundConfiguration = background
     }
 
     private func configureSubviews() {

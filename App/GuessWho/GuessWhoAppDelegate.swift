@@ -69,10 +69,16 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // on the pre-Phase-5 state where RootView built its own copy —
         // the gate needed to come back out once iPhone migrated, which
         // is now).
+        // Request access BEFORE reload so Catalyst (which has no
+        // PermissionGateViewController in its path) actually prompts;
+        // the request methods are idempotent on iPhone where the gate
+        // already asked.
         Task { @MainActor in
+            await service.requestContactsAccessIfNeeded()
             await contactsRepository.reload()
         }
         Task { @MainActor in
+            await service.requestEventsAccessIfNeeded()
             await eventsRepository.reload()
         }
 

@@ -31,6 +31,7 @@ final class EventsListViewController: UIViewController {
 
     private var bannerDismissed: Bool = false
     private var sidecarBannerHost: UIHostingController<SidecarLocationBanner>?
+    private var lastHeaderWidth: CGFloat = 0
 
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
@@ -74,13 +75,19 @@ final class EventsListViewController: UIViewController {
     // MARK: - Table view
 
     private func configureTableView() {
-        tableView = UITableView(frame: view.bounds, style: .plain)
-        tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        tableView = UITableView(frame: .zero, style: .plain)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 56
         tableView.register(EventCell.self, forCellReuseIdentifier: CellID.event.rawValue)
         view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+        ])
     }
 
     private func configureSearch() {
@@ -107,12 +114,12 @@ final class EventsListViewController: UIViewController {
         view.addSubview(activityIndicator)
 
         NSLayoutConstraint.activate([
-            emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
             emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
             emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
-            activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            activityIndicator.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
         ])
     }
 
@@ -230,18 +237,17 @@ final class EventsListViewController: UIViewController {
     private func sizeHeaderBannerIfNeeded() {
         guard let header = tableView.tableHeaderView else { return }
         let targetWidth = tableView.bounds.width
-        guard targetWidth > 0 else { return }
+        guard targetWidth > 0, abs(targetWidth - lastHeaderWidth) > 0.5 else { return }
+        lastHeaderWidth = targetWidth
         let fitting = header.systemLayoutSizeFitting(
             CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel
         )
-        if abs(header.frame.height - fitting.height) > 0.5 || abs(header.frame.width - targetWidth) > 0.5 {
-            header.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
-            // Re-assignment forces the tableView to pick up the new
-            // header height; mutating header.frame in place doesn't.
-            tableView.tableHeaderView = header
-        }
+        header.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
+        // Re-assignment forces the tableView to pick up the new
+        // header size; mutating header.frame in place doesn't.
+        tableView.tableHeaderView = header
     }
 
     private func updateHeaderBanners() {
@@ -290,7 +296,11 @@ final class EventsListViewController: UIViewController {
         }
 
         let container = UIView()
-        container.translatesAutoresizingMaskIntoConstraints = false
+        // tableHeaderView is positioned by frame, not autolayout —
+        // keep translatesAutoresizingMaskIntoConstraints true on the
+        // container and use autoresizingMask to track column resizes.
+        // Subviews still use autolayout against the container.
+        container.autoresizingMask = [.flexibleWidth]
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
@@ -299,15 +309,12 @@ final class EventsListViewController: UIViewController {
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
         ])
         // Install with a provisional frame; sizeHeaderBannerIfNeeded
-        // below (and the override in viewDidLayoutSubviews on every
-        // column resize) does the actual reflow.
-        let targetWidth = tableView.bounds.width
-        let fitting = container.systemLayoutSizeFitting(
-            CGSize(width: max(targetWidth, 1), height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        )
-        container.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
+        // (called from viewDidLayoutSubviews) does the actual reflow
+        // once tableView.bounds.width reflects the final column width.
+        container.frame = CGRect(x: 0, y: 0, width: max(tableView.bounds.width, 1), height: 1)
+        // Reset the cached width so the next sizing pass re-measures
+        // against the (possibly newly-known) tableView width.
+        lastHeaderWidth = 0
         tableView.tableHeaderView = container
         sizeHeaderBannerIfNeeded()
     }
@@ -393,6 +400,16 @@ private final class EventCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unsupported — EventCell is code-only")
+    }
+
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        var background = UIBackgroundConfiguration.listPlainCell().updated(for: state)
+        if state.isSelected || state.isHighlighted {
+            background.backgroundColor = .tintColor
+            background.cornerRadius = 8
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12)
+        }
+        backgroundConfiguration = background
     }
 
     private func configureSubviews() {
