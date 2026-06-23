@@ -105,8 +105,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
-            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            list.navigationItem.leftItemsSupplementBackButton = true
             let nav = UINavigationController(rootViewController: list)
             split.setViewController(nav, for: .supplementary)
             installDetailPlaceholder(in: split)
@@ -116,8 +114,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
-            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split)
 
@@ -129,8 +125,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectEvent = { [weak self] event in
                 self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
             }
-            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split)
 
@@ -145,16 +139,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectEvent = { [weak self] event in
                 self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
             }
-            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split)
 
         case .settings:
             let settings = UIHostingController(rootView: SettingsView())
             settings.title = "Settings"
-            settings.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            settings.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: settings), for: .supplementary)
             installDetailPlaceholder(in: split)
         }
