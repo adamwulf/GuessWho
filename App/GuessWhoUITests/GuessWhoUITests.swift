@@ -36,9 +36,22 @@ final class GuessWhoUITests: XCTestCase {
 
     func test_peopleTabIsDefault() {
         let app = launchApp()
-        // The People navigation bar title should be visible immediately
-        // after launch — People is the leading tab.
-        XCTAssertTrue(app.navigationBars["People"].waitForExistence(timeout: 5))
+        // People is the leading tab so its nav bar should be visible
+        // immediately after launch. Cold-launch performance on a
+        // freshly-cloned simulator is currently bottlenecked on
+        // `SyncService.init` running
+        // `FileManager.url(forUbiquityContainerIdentifier:)`
+        // synchronously on the main thread (see the
+        // "SyncService construction blocks main thread" open follow-up
+        // in MIGRATION_STATUS). When iCloud Drive isn't signed in on
+        // the simulator that call can stall for 20+ seconds before
+        // falling through to the local sidecar fallback. Bumping the
+        // wait from the original 5s to 30s lets that worst case
+        // resolve without papering over a genuine "People isn't the
+        // default tab" regression — such a regression would fail
+        // every run regardless of cold/hot launch. Drop this back to
+        // 5s once the iCloud resolution is hoisted off main.
+        XCTAssertTrue(app.navigationBars["People"].waitForExistence(timeout: 30))
     }
 
     func test_switchingToOrganizationsTabShowsOrganizationsTitle() {
@@ -49,12 +62,18 @@ final class GuessWhoUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Organizations"].waitForExistence(timeout: 5))
     }
 
-    func test_eventsTabShowsComingSoonPlaceholder() {
+    func test_switchingToEventsTabShowsEventsTitle() {
         let app = launchApp()
         let eventsTab = app.buttons["Events"].firstMatch
         XCTAssertTrue(eventsTab.waitForExistence(timeout: 5))
         eventsTab.tap()
-        XCTAssertTrue(app.staticTexts["Events Coming Soon"].waitForExistence(timeout: 5))
+        // The "Events Coming Soon" placeholder was retired in Phase 4B
+        // when `EventsListViewController` shipped, and the entire
+        // SwiftUI placeholder went away in Phase 5B when `RootView` was
+        // deleted. Now that the Events tab roots the real UIKit list
+        // VC, assert against its nav bar title — same shape as
+        // `test_switchingToOrganizationsTabShowsOrganizationsTitle`.
+        XCTAssertTrue(app.navigationBars["Events"].waitForExistence(timeout: 5))
     }
 
     // MARK: - Search
@@ -84,7 +103,10 @@ final class GuessWhoUITests: XCTestCase {
 
     func test_searchClearShowsAllAgain() {
         let app = launchApp()
-        XCTAssertTrue(app.navigationBars["People"].waitForExistence(timeout: 5))
+        // Same cold-launch reasoning as `test_peopleTabIsDefault` — the
+        // first couple of tests in the suite still pay the SyncService
+        // iCloud-resolution cost on the freshly-cloned simulator.
+        XCTAssertTrue(app.navigationBars["People"].waitForExistence(timeout: 15))
 
         let firstRow = app.cells.firstMatch
         if firstRow.exists {
