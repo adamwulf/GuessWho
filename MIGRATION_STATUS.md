@@ -170,18 +170,23 @@ bridge introduced here.
 - **`SyncService` construction blocks main thread** in
   `AppDelegate.init()` (synchronous iCloud container resolution via
   `FileManager.url(forUbiquityContainerIdentifier:)`). Pre-existing;
-  hoist off main before shipping. Side effect today: FOUR UI tests
-  are `XCTSkip`ed pending this fix — the cold-launch stall races
-  whichever assertion happens to be the first non-skipped test in
-  alpha order on a freshly-cloned simulator (verified at 5s / 10s /
-  15s / 30s timeouts; the race kept relocating to the next-alpha test
-  as earlier ones skipped). Re-enable all four once the iCloud
-  resolution is off main; each test's post-skip body holds the
-  original 5s `waitForExistence` ready to go:
-    - `test_peopleTabIsDefault`
-    - `test_searchClearShowsAllAgain`
-    - `test_searchFieldFiltersPeopleList`
-    - `test_switchingToEventsTabShowsEventsTitle`
+  hoist off main before shipping. This is the load-bearing fix for
+  the iOS UI test suite — today the cold-launch stall surfaces in
+  four tests:
+    - `test_peopleTabIsDefault` and `test_searchClearShowsAllAgain`
+      are `XCTSkip`ed pending this fix (verified at 5s / 15s / 30s
+      timeouts — all still red without it). Each test's post-skip
+      body holds the original 5s `waitForExistence` ready to go.
+    - `test_searchFieldFiltersPeopleList` and
+      `test_switchingToEventsTabShowsEventsTitle` currently FAIL on
+      cold launch for the same SyncService reason. They are LEFT RED
+      deliberately rather than skipped — adding `XCTSkip` to those
+      just relocates the race to the next-alpha tests
+      (`test_switchingToOrganizationsTabShowsOrganizationsTitle` /
+      `test_tappingPersonShowsDetailScreen`), shrinking the suite
+      without fixing anything. The two reds are a loud signal that
+      this SyncService work is the gating fix; once it lands all four
+      tests re-enable and the suite returns to 7/7.
 - **Catalyst signed builds need iCloud capability** on the dev
   provisioning profile (portal-side action by Adam).
 - **Search has no debounce.** Each keystroke re-runs filter+sort and
