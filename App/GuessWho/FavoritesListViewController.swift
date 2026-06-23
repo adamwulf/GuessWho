@@ -166,8 +166,10 @@ final class FavoritesListViewController: UIViewController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                // store.reload posts .favoritesDidChange, which the
+                // observer below turns into applySnapshot — no explicit
+                // apply needed here.
                 self?.store.reload()
-                self?.applySnapshot(animated: true)
             }
         }
 
@@ -279,11 +281,23 @@ extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropD
         let destination = coordinator.destinationIndexPath
             ?? IndexPath(row: tableView.numberOfRows(inSection: 0), section: 0)
 
+        // Collect every source row into one IndexSet so a single
+        // store.move call handles the reorder atomically. A per-item
+        // loop would feed each subsequent move the ORIGINAL row index
+        // even though the prior move already shifted things — fine for
+        // today's single-item drag sessions, broken the moment multi-
+        // drag gets turned on.
+        var sourceRows = IndexSet()
         for item in coordinator.items {
             guard let source = item.sourceIndexPath else { continue }
-            // store.move writes to disk and reloads `items`, so the
-            // subsequent applySnapshot picks up the new order.
-            store.move(from: IndexSet(integer: source.row), to: destination.row)
+            sourceRows.insert(source.row)
+        }
+        guard !sourceRows.isEmpty else { return }
+
+        // store.move writes to disk and reloads `items`, so the
+        // subsequent applySnapshot picks up the new order.
+        store.move(from: sourceRows, to: destination.row)
+        for item in coordinator.items {
             coordinator.drop(item.dragItem, toRowAt: destination)
         }
         applySnapshot(animated: true)
