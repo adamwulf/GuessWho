@@ -118,6 +118,20 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             contactsList = nil
             installDetailPlaceholder(in: split)
 
+        case .events:
+            let list = EventsListViewController(
+                repository: appDelegate.eventsRepository,
+                service: appDelegate.service
+            )
+            list.didSelectEvent = { [weak self] event in
+                self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            contactsList = nil
+            installDetailPlaceholder(in: split)
+
         case .settings:
             let settings = UIHostingController(rootView: SettingsView())
             settings.title = "Settings"
@@ -147,6 +161,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // setViewController REPLACES the secondary column wholesale on
         // every selection — pushing onto a stack would accumulate detail
         // views across taps.
+        split.setViewController(nav, for: .secondary)
+    }
+
+    private func showEventDetail(eventUUID: String, appDelegate: GuessWhoAppDelegate) {
+        guard let split else { return }
+        let detail = EventDetailView(eventUUID: eventUUID)
+            .environment(appDelegate.service)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(rootView: detail)
+        let nav = UINavigationController(rootViewController: hosting)
         split.setViewController(nav, for: .secondary)
     }
 

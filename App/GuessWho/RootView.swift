@@ -155,6 +155,12 @@ struct RootView: View {
                 systemImage: "building.2.fill",
                 description: Text("Verifying sidebar selection wiring.")
             )
+        case .events:
+            ContentUnavailableView(
+                "Events Coming Soon",
+                systemImage: "calendar",
+                description: Text("Verifying sidebar selection wiring.")
+            )
         case .settings:
             SettingsView()
         case .none:

@@ -7,6 +7,7 @@ import Foundation
 enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
     case people
     case organizations
+    case events
     /// Catalyst-only entry: Settings.bundle is ignored by Catalyst, so
     /// the in-app SettingsView is the only way for a Mac user to reach
     /// the Debug Mode toggle. iPhone keeps Settings out of the TabView
@@ -19,6 +20,7 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         switch self {
         case .people: return "People"
         case .organizations: return "Organizations"
+        case .events: return "Events"
         case .settings: return "Settings"
         }
     }
@@ -27,6 +29,7 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         switch self {
         case .people: return "person.2.fill"
         case .organizations: return "building.2.fill"
+        case .events: return "calendar"
         case .settings: return "gear"
         }
     }
