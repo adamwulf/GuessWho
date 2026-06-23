@@ -128,6 +128,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         guard let ekid = e.calendarItemExternalIdentifier, !ekid.isEmpty else { return nil }
         let location = (e.location?.isEmpty ?? true) ? nil : e.location
         let notes = (e.notes?.isEmpty ?? true) ? nil : e.notes
+        let attendees = (e.attendees ?? []).map(Self.toAttendee)
         return Event(
             id: Event.stableID(forEventKitID: ekid),
             eventKitID: ekid,
@@ -136,8 +137,31 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
             endDate: e.endDate,
             isAllDay: e.isAllDay,
             location: location,
-            eventKitNotes: notes
+            eventKitNotes: notes,
+            attendees: attendees
         )
+    }
+
+    /// Convert an `EKParticipant` into our `EventAttendee` model.
+    /// `participant.name` is preferred; when nil we fall back to the email
+    /// (parsed from the `mailto:` URL) so the row still has *something* to
+    /// render. Email is extracted from `participant.url` when it carries a
+    /// `mailto:` scheme — that's the only address shape EventKit exposes.
+    private static func toAttendee(_ p: EKParticipant) -> EventAttendee {
+        let email = Self.email(from: p.url)
+        let name = p.name?.isEmpty == false ? p.name! : (email ?? "")
+        return EventAttendee(name: name, email: email)
+    }
+
+    private static func email(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == "mailto" else { return nil }
+        // URL like `mailto:foo@bar.com` — `resourceSpecifier` returns the
+        // part after the scheme. Trim in case of `mailto:foo@bar.com?subject=…`.
+        let specifier = url.absoluteString
+            .dropFirst("mailto:".count)
+        let beforeQuery = specifier.split(separator: "?", maxSplits: 1).first.map(String.init) ?? String(specifier)
+        let trimmed = beforeQuery.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

@@ -21,6 +21,11 @@ public struct Event: Hashable, Sendable, Codable {
     /// distinct from GuessWho event notes (which are sidecar field-instances).
     public var eventKitNotes: String?
 
+    /// EventKit attendees mirrored from `EKEvent.attendees`. Read-only from
+    /// the calendar — GuessWho never writes these back. Empty for manual
+    /// (sidecar-only) events and for calendar events with no invitees.
+    public var attendees: [EventAttendee]
+
     public init(
         id: UUID = UUID(),
         eventKitID: String? = nil,
@@ -29,7 +34,8 @@ public struct Event: Hashable, Sendable, Codable {
         endDate: Date,
         isAllDay: Bool = false,
         location: String? = nil,
-        eventKitNotes: String? = nil
+        eventKitNotes: String? = nil,
+        attendees: [EventAttendee] = []
     ) {
         self.id = id
         self.eventKitID = eventKitID
@@ -39,6 +45,21 @@ public struct Event: Hashable, Sendable, Codable {
         self.isAllDay = isAllDay
         self.location = location
         self.eventKitNotes = eventKitNotes
+        self.attendees = attendees
+    }
+}
+
+/// One EventKit attendee. Sourced from `EKParticipant`; `name` is the
+/// participant's display name and `email` is parsed out of
+/// `participant.url` when it's a `mailto:` URL. Email is stored lowercased
+/// so attendee↔contact matching is a trivial string compare.
+public struct EventAttendee: Hashable, Sendable, Codable {
+    public var name: String
+    public var email: String?
+
+    public init(name: String, email: String? = nil) {
+        self.name = name
+        self.email = email?.lowercased()
     }
 }
 

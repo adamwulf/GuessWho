@@ -608,7 +608,10 @@ extension GuessWhoSync {
     }
 
     /// Overlay the EventKit-live values onto a cached `Event`, preserving
-    /// the sidecar UUID as `id` and the EventKit pointer.
+    /// the sidecar UUID as `id` and the EventKit pointer. Attendees are
+    /// always taken from the live EKEvent — the sidecar doesn't cache them
+    /// (they can mutate in EventKit any time and we'd rather show stale-
+    /// free truth than a cached snapshot).
     private func overlay(live: Event, onto cached: Event, ekid: String) -> Event {
         Event(
             id: cached.id,
@@ -618,7 +621,8 @@ extension GuessWhoSync {
             endDate: live.endDate,
             isAllDay: live.isAllDay,
             location: live.location,
-            eventKitNotes: live.eventKitNotes
+            eventKitNotes: live.eventKitNotes,
+            attendees: live.attendees
         )
     }
 
