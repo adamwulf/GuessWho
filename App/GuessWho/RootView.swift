@@ -149,7 +149,7 @@ struct RootView: View {
                 repository: contactsRepository,
                 selection: $selectedPersonLocalID
             )
-        case .organizationsPlaceholder:
+        case .organizations:
             ContentUnavailableView(
                 "Organizations Coming Soon",
                 systemImage: "building.2.fill",

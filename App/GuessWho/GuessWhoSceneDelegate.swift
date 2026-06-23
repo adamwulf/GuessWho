@@ -55,7 +55,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Phase-3 Catalyst shell. The sidebar's selection now drives real
     /// content/detail column swaps:
     ///   * .people → ContactsListViewController + ContactDetailView on selection
-    ///   * .organizationsPlaceholder → "Coming soon" placeholder
+    ///   * .organizations → OrganizationsListViewController + ContactDetailView on selection
     ///   * .settings → SwiftUI SettingsView hosted via UIHostingController
     /// When the user picks a tab that doesn't have a selected detail
     /// the secondary column resets to a "Nothing Selected" placeholder.
@@ -107,14 +107,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             contactsList = list
             installDetailPlaceholder(in: split)
 
-        case .organizationsPlaceholder:
-            let placeholder = PlaceholderViewController(
-                title: "Organizations",
-                message: "Coming soon — same pattern as People."
-            )
-            placeholder.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            placeholder.navigationItem.leftItemsSupplementBackButton = true
-            split.setViewController(UINavigationController(rootViewController: placeholder), for: .supplementary)
+        case .organizations:
+            let list = OrganizationsListViewController(repository: appDelegate.contactsRepository)
+            list.didSelectContact = { [weak self] contact in
+                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             contactsList = nil
             installDetailPlaceholder(in: split)
 
