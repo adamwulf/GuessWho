@@ -1,19 +1,30 @@
 # UIKit + Mac Catalyst Migration Status
 
 In-flight migration of the Mac UI from SwiftUI's NavigationSplitView
-to a UIKit `UISplitViewController` shell on Mac Catalyst. iPhone keeps
-SwiftUI.
+to a UIKit `UISplitViewController` shell on Mac Catalyst. iPhone has
+also moved off SwiftUI's TabView to a UIKit `UITabBarController`
+behind a permission gate (Phase 5). Detail views remain SwiftUI on
+both platforms, hosted via `UIHostingController`.
 
 ## Architecture
 
 ```
 GuessWhoAppDelegate (@main, UIKit)
-  owns: SyncService, FavoritesListStore, ContactsRepository
-  kicks ContactsRepository.reload() in didFinishLaunching
+  owns: SyncService, FavoritesListStore,
+        ContactsRepository, EventsRepository
+  kicks both repositories' reload() in didFinishLaunching
+  observes .CNContactStoreDidChange / .EKEventStoreChanged
+    (single owner, fans out to list VCs via the
+     .contactsRepositoryDidReload / .eventsRepositoryDidReload
+     notifications the repositories post)
 
 GuessWhoSceneDelegate.scene(_:willConnectTo:)
-  Catalyst  → UISplitViewController(.tripleColumn)
-  non-Catalyst → UIHostingController(rootView: RootView())
+  Catalyst     → UISplitViewController(.tripleColumn)
+  non-Catalyst → PermissionGateViewController
+                   ├── (gate)  UIContentUnavailableConfiguration
+                   │           for notRequested / denied / restricted
+                   └── (auth)  UITabBarController of 4 nav stacks
+                                People / Organizations / Events / Favorites
 ```
 
 ### Catalyst columns
@@ -43,14 +54,20 @@ GuessWhoSceneDelegate.scene(_:willConnectTo:)
 | Piece | Catalyst | iPhone |
 |---|---|---|
 | App entry | UIKit `GuessWhoAppDelegate` | UIKit `GuessWhoAppDelegate` |
-| Window root | UIKit `UISplitViewController` | `UIHostingController(RootView)` |
-| Sidebar | UIKit `SidebarViewController` | SwiftUI `RootView` TabView |
-| People list | UIKit `ContactsListViewController` | SwiftUI `PeopleListView` |
-| Org / Events / Favorites list | UIKit list controllers | SwiftUI list views |
-| Contact detail | SwiftUI `ContactDetailView` hosted | SwiftUI `ContactDetailView` native |
-| Event detail | SwiftUI `EventDetailView` hosted | SwiftUI `EventDetailView` native |
+| Window root | UIKit `UISplitViewController` | UIKit `PermissionGateViewController` ⇒ `UITabBarController` |
+| Sidebar / tabs | UIKit `SidebarViewController` | UIKit `UITabBarController` (4 tabs) |
+| People / Org / Events / Favorites list | UIKit list controllers | UIKit list controllers (same VCs) |
+| Detail navigation | column REPLACE (`setViewController(_:for:.secondary)`) | UIKit nav-stack PUSH from each tab |
+| Contact detail | SwiftUI `ContactDetailView` hosted | SwiftUI `ContactDetailView` hosted |
+| Event detail | SwiftUI `EventDetailView` hosted | SwiftUI `EventDetailView` hosted |
+| NavigationLink → push from hosted detail | silent no-op (TBD Phase 6) | env-injected closures bridge to outer UINavigationController |
 | Settings | SwiftUI `SettingsView` hosted | iOS Settings.bundle |
 | Edit sheet | SwiftUI `ContactEditView` | SwiftUI `ContactEditView` |
+
+iPad regular-width currently lands on the same UIKit tab shell as
+iPhone — temporary downgrade from the prior 3-column
+`NavigationSplitView` until Phase 6 stands up the Catalyst-shaped
+`UISplitViewController(.tripleColumn)` on iPad.
 
 ## Phases
 
@@ -64,34 +81,87 @@ GuessWhoSceneDelegate.scene(_:willConnectTo:)
 | 4A | `4f37447` | `OrganizationsListViewController` (mirrors People; shares `.contactsRepositoryDidReload`); renamed `SidebarTab.organizationsPlaceholder` → `.organizations`. |
 | 4B | `f2e8d6e`, `5ac3a1e` | `EventsListViewController` (single-section diffable, swipe-delete with confirm, "+" hosts SwiftUI `EventLinkSheet`, permission + sidecar header banners). `EventsRepository.reload()` posts `.eventsRepositoryDidReload` after flipping `isLoading=false`. AppDelegate gets Catalyst-only `eventsRepository`. `SceneDelegate.showEventDetail` mounts hosted `EventDetailView`. Fix commit: sheet's post-create navigation reads `repository.events` (not the VC cache, which is stale until the queue:.main observer runs); adds `SidecarLocationBanner` parity. |
 | 4C | `cdbb4ba`, `e3e544f` | `FavoritesListViewController` (two selection callbacks, 4-state cell, swipe-unfavorite, drag-reorder via `UITableViewDragDelegate`/`UITableViewDropDelegate`, async contact-uuid map). Fix commit: `FavoritesListStore.reload()` posts `.favoritesDidChange` so detail-view star toggles refresh the list (SwiftUI gets this for free via `@Observable`); drag uses empty `NSItemProvider()` to avoid leaking stableIDs externally. |
+| 5 cleanup | `664b0b7`, `3c5c2b9`, `f479a90`, `7d353c5` | Phase 4 deferred bundle: Favorites VC redundant `applySnapshot` drop + multi-drag IndexSet fix; `.favoritesDidChange` rawValue PascalCase alignment; Events VC `tableHeaderView` reflow on column resize + `.EKEventStoreChanged`/`.CNContactStoreDidChange` observers (later subsumed by AppDelegate single-owner pattern in `61e2dcf`); dropped unused `SceneDelegate.contactsList` ivar. |
+| 5A | `d5c6521` | UIKit iPhone tab shell + `PermissionGateViewController` (UIContentUnavailableConfiguration for the three Contacts-auth states, swaps to UITabBarController once `.authorized`). AppDelegate lifts `eventsRepository` off Catalyst-only gate; centralizes `migrateEventsIfNeeded` + `.CNContactStoreDidChange` / `.EKEventStoreChanged` observers. |
+| 5B | `74a2470` | Deleted dead SwiftUI iPhone path: `RootView.swift`, `PeopleListView`, `OrganizationsListView`, `EventsListView`, `FavoritesListView`, `View.contactAndEventDestinations()`. |
+| 5C | `1bc69b0` | Rewrote stale UI tests for the Phase 5 iPhone UIKit shell (`test_eventsTabShowsComingSoonPlaceholder` → `test_switchingToEventsTabShowsEventsTitle`). |
+| 5D | `61e2dcf` | Drop redundant per-VC `.EKEventStoreChanged` / `.CNContactStoreDidChange` observers in `EventsListViewController` now that AppDelegate is single owner. (Favorites VC's observers stay — they rebuild the contact-uuid map, which the AppDelegate fan-out doesn't.) |
+| 5E | `a2c03b1` | Bridge SwiftUI `NavigationLink(value: ContactReference/EventReference)` callsites (5 sites in ContactDetailView, ConnectionsSection, EventDetailView) to outer UIKit nav via env-injected `pushContactReference` / `pushEventReference` closures. `injectIPhonePushHandlers` helper binds both closures to the SAME `nav` weakly so chained drill-downs preserve the capture chain. Catalyst silent no-op preserved (Phase 6 TBD). |
+| 5F | `c117652`, `1bcebdf` | Polish: XCTSkip the two `SyncService`-cold-launch-racy UI tests with re-enable-ready post-skip bodies; refresh stale `SyncService.swift:451` comment; MIGRATION_STATUS Phase 5 update. (`3aeac96` attempted to skip 2 more tests but the race just relocated to next-alpha; manually reverted in `1bcebdf` to keep the 2 newly-racy tests RED as a deliberate-loud-signal that the SyncService follow-up is the load-bearing fix.) |
 
-### Phase 5 — iPhone UIKit migration + Catalyst cleanup
+### Phase 5 — iPhone UIKit migration + Catalyst cleanup (DONE)
 
-Destructively migrate the iPhone path off `RootView` (SwiftUI TabView)
-to a UIKit shell, then trim the now-dead Catalyst-only SwiftUI helpers
-in `RootView.swift` (`tripleColumn`, `contentColumn`, `detailColumn`,
-`sidebarTabs`, and the per-tab placeholder `ContentUnavailableView`s
-in `contentColumn` that were added during Phase 4 only to keep the
-exhaustive `switch SidebarTab` compiling on iPhone). Also drop the
-unused `SceneDelegate.contactsList` ivar (write-only since Phase 3).
+Destructively migrated the iPhone path off `RootView` (SwiftUI
+TabView) to a UIKit shell rooted on
+`PermissionGateViewController` wrapping a `UITabBarController` of the
+four UIKit list view controllers Catalyst already hosts. Tab selection
+PUSHES a `UIHostingController(rootView: ContactDetailView/EventDetailView)`
+onto the owning tab's nav stack (vs Catalyst's column REPLACE).
+
+`AppDelegate.eventsRepository` is no longer Catalyst-gated; iPhone
+consumes the same AppDelegate-owned `contactsRepository` /
+`eventsRepository` Catalyst does. `service.migrateEventsIfNeeded()`
+and the `.CNContactStoreDidChange` / `.EKEventStoreChanged` observers
+moved into the AppDelegate as a single owner; the
+`requestContactsAccessIfNeeded` / `requestEventsAccessIfNeeded` async
+calls moved into the gate VC's `viewDidAppear`.
+
+`RootView.swift`, the four SwiftUI list views (`PeopleListView`,
+`OrganizationsListView`, `EventsListView`, `FavoritesListView`), and
+the now-unused `View.contactAndEventDestinations()` modifier are
+deleted. `ContactReference` / `EventReference` types stay — still used
+inside the detail views.
+
+`SceneDelegate.contactsList` ivar dropped. Worker A landed the Phase 4
+deferred items bundle (Favorites VC redundant-apply + multi-drag
+IndexSet, Events VC banner reflow, `.favoritesDidChange` rawValue
+casing). Worker A's per-VC `.EKEventStoreChanged` /
+`.CNContactStoreDidChange` observers on EventsListVC were dropped in a
+follow-up commit — the AppDelegate's single-owner observers fan the
+reload out via `.eventsRepositoryDidReload` already.
+
+`NavigationLink(value: ContactReference|EventReference)` callsites in
+hosted detail views silently no-op'd after `.contactAndEventDestinations`
+went away (the outer container is UIKit, not a SwiftUI NavigationStack).
+Fixed in a follow-up commit: a bridge through env-injected closures
+(`EnvironmentValues.pushContactReference` / `pushEventReference` in
+`Support/ReferenceNavigation.swift`) lets SwiftUI rows call back into
+the outer `UINavigationController` to push fresh detail VCs. Five
+callsites in `ContactDetailView` / `ConnectionsSection` /
+`EventDetailView` converted from `NavigationLink(value:)` to
+`Button { push…Reference(...) }`. Catalyst intentionally does NOT
+inject the closures yet — column-replace drill-down semantics are a
+separate question, deferred to Phase 6.
+
+iPad regular-width currently lands on the iPhone tab shell —
+documented in code at `SceneDelegate.makeIPhoneRoot`. Phase 6 will
+revisit alongside the Catalyst-shaped `UISplitViewController` lift on
+iPad and the Catalyst-side NavigationLink drill-down using the same
+bridge introduced here.
 
 ## Constraints (must respect)
 
-- **iPhone behavior is preserved.** Every phase must build iOS
-  Simulator AND not change the iPhone SwiftUI flow.
+- **iPhone uses the same UIKit list VCs as Catalyst.** Phase 5 made
+  this symmetric — don't reintroduce a SwiftUI list-view path on
+  iPhone. New features land in the shared UIKit list controllers.
 - **iCloud entitlement is on both platforms.** Catalyst entitlements
   file is byte-identical to iOS — same iCloud container, same
   `CloudDocuments` service, so iOS↔Catalyst sync still works.
-- **`SyncService`, `FavoritesListStore`, `ContactsRepository` are
-  singletons** owned by the AppDelegate. SceneDelegate `guard let`s
-  the AppDelegate and `fatalError`s if missing — don't reintroduce a
-  fallback that double-constructs them.
-- **Detail-column swap REPLACES, never pushes.** Use
+- **`SyncService`, `FavoritesListStore`, `ContactsRepository`,
+  `EventsRepository` are singletons** owned by the AppDelegate.
+  SceneDelegate `guard let`s the AppDelegate and `fatalError`s if
+  missing — don't reintroduce a fallback that double-constructs them.
+- **Catalyst detail swap REPLACES, never pushes.** Use
   `split.setViewController(_:for: .secondary)`, not a navigation
-  push, or detail views accumulate.
+  push, or detail views accumulate. iPhone is the opposite: PUSH onto
+  the owning tab's nav stack so back-swipe pops naturally.
 - **`ContactDetailView` reads `@Environment` for `SyncService`,
   `ContactsRepository`, `FavoritesListStore`.** Inject all three on
-  the `UIHostingController`'s rootView when mounting.
+  the `UIHostingController`'s rootView when mounting. On iPhone,
+  ALSO inject `pushContactReference` / `pushEventReference`
+  (closures bound to the owning `UINavigationController`) so the
+  hosted SwiftUI rows can drill into linked contacts/events through
+  the outer UIKit nav stack.
 - **`UITableViewDiffableDataSource` default doesn't forward
   `titleForHeaderInSection`.** Subclass it (see
   `SectionedDataSource` in `ContactsListViewController.swift`) for
@@ -104,49 +174,43 @@ unused `SceneDelegate.contactsList` ivar (write-only since Phase 3).
 ## Open follow-ups
 
 - **`SyncService` construction blocks main thread** in
-  `AppDelegate.init()` (synchronous iCloud container resolution).
-  Pre-existing; hoist off main before shipping.
+  `AppDelegate.init()` (synchronous iCloud container resolution via
+  `FileManager.url(forUbiquityContainerIdentifier:)`). Pre-existing;
+  hoist off main before shipping. This is the load-bearing fix for
+  the iOS UI test suite — today the cold-launch stall surfaces in
+  four tests:
+    - `test_peopleTabIsDefault` and `test_searchClearShowsAllAgain`
+      are `XCTSkip`ed pending this fix (verified at 5s / 15s / 30s
+      timeouts — all still red without it). Each test's post-skip
+      body holds the original 5s `waitForExistence` ready to go.
+    - `test_searchFieldFiltersPeopleList` and
+      `test_switchingToEventsTabShowsEventsTitle` currently FAIL on
+      cold launch for the same SyncService reason. They are LEFT RED
+      deliberately rather than skipped — adding `XCTSkip` to those
+      just relocates the race to the next-alpha tests
+      (`test_switchingToOrganizationsTabShowsOrganizationsTitle` /
+      `test_tappingPersonShowsDetailScreen`), shrinking the suite
+      without fixing anything. The two reds are a loud signal that
+      this SyncService work is the gating fix; once it lands all four
+      tests re-enable and the suite returns to 7/7.
 - **Catalyst signed builds need iCloud capability** on the dev
   provisioning profile (portal-side action by Adam).
 - **Search has no debounce.** Each keystroke re-runs filter+sort and
   applies a snapshot. Fine for small address books; add a debounce
   if performance matters at scale.
-- **AppDelegate reloads `ContactsRepository` on iPhone too**, but
-  iPhone's `RootView` constructs its own `ContactsRepository` and
-  ignores the AppDelegate's. Wasted fetch on iPhone. Phase 5 cleanup:
-  either gate the eager reload behind `targetEnvironment(macCatalyst)`,
-  or have `RootView` consume the shared repo via `@Environment`.
-  (Phase 4B already gated `eventsRepository` this way.)
-- **Phase 4 deferred items (small, individually trivial; bundle in
-  Phase 5 cleanup):**
-  - `FavoritesListViewController` permission/calendar/scene-active
-    paths still call `applySnapshot` directly after `store.reload()`
-    even though `.favoritesDidChange` now drives the same apply —
-    redundant second pass. Cosmetic only (diffable no-ops the second
-    apply).
-  - `FavoritesListViewController.performDropWith` loops over
-    `coordinator.items` mutating per-item with the ORIGINAL
-    `sourceIndexPath.row` after `store.move` shifts indices. Today
-    unreachable because tableView drag sessions carry one item; if
-    multi-drag is ever enabled, the loop must collect rows into a
-    single `IndexSet` first.
-  - `EventsListViewController.installPermissionBanner` and
-    `updateHeaderBanners` size the banner against `tableView.bounds.width`
-    at install time; Catalyst column resize won't reflow it. Standard
-    "tableHeaderView auto-layout dance" fix.
-  - `EventsListViewController` and `FavoritesListViewController` don't
-    subscribe to `.EKEventStoreChanged` / `.CNContactStoreDidChange` in
-    every place SwiftUI does. SwiftUI iPhone reloads on every external
-    Calendar.app edit; UIKit Catalyst waits for scene-active or next
-    explicit reload. Acceptable for first ship.
-  - `FavoritesListStore.reload()` posts `.favoritesDidChange` once from
-    `init()` (no observers registered yet — no-op) and once on every
-    user mutation. Inconsistent rawValue casing vs
-    `.contactsRepositoryDidReload` / `.eventsRepositoryDidReload`
-    (camelCase vs PascalCase). Harmless.
+- **iPad regular-width 3-column flow lost.** Phase 5 routes iPad-
+  regular through the iPhone tab shell (temporary downgrade from the
+  prior SwiftUI `NavigationSplitView`). Phase 6 to restore via the
+  Catalyst-shaped `UISplitViewController(.tripleColumn)` on iPad.
+- **Catalyst drill-down from hosted detail views still silently
+  no-ops.** iPhone fixed via env-injected push closures in the Phase 5
+  follow-up; Catalyst intentionally doesn't inject because column-
+  replace drill-down semantics (push onto secondary-column nav vs.
+  REPLACE the whole secondary column) are TBD. Phase 6.
 - **Verify in-app on Catalyst:** SwiftUI `.toolbar` items (star +
   Edit) from `ContactDetailView` should appear in the secondary
-  column's nav bar when hosted via `UIHostingController`. Build-only
+  column's nav bar when hosted via `UIHostingController`. Same caveat
+  applies to iPhone now that push-chains exist. Build-only
   verification can't catch this; needs a real run.
 - **`ContactsListViewController.reloadObserver` is
   `nonisolated(unsafe)`** because today the only strong holder is the
@@ -155,3 +219,15 @@ unused `SceneDelegate.contactsList` ivar (write-only since Phase 3).
   ever takes a strong reference and releases it from off-main, the
   `deinit` read of `reloadObserver` becomes a data race. Re-evaluate
   if more holders appear.
+
+### Resolved in Phase 5
+
+- ~~AppDelegate reloads `ContactsRepository` on iPhone too~~ —
+  iPhone now consumes the AppDelegate-owned repo directly; the gate
+  is intentionally absent.
+- ~~Phase 4 deferred items (favorites apply / drag / events banner
+  reflow / store-changed observers / favoritesDidChange casing)~~ —
+  landed by Worker A. The EventsListVC store-changed observers
+  were subsequently dropped in a Phase 5 follow-up because the
+  AppDelegate is the single owner of those observers and fans out via
+  the `.eventsRepositoryDidReload` notification.

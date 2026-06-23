@@ -29,9 +29,9 @@ final class ContactsRepository {
     private(set) var isLoading: Bool = false
     private(set) var lastError: String?
 
-    /// Per-tab search query for People. Bound by the PeopleListView via
-    /// `.searchable($repository.peopleSearch)` so switching tabs does not
-    /// clobber the other tab's query.
+    /// Per-tab search query for People. Read by `ContactsListViewController`
+    /// (UIKit `UISearchController`) so switching tabs does not clobber
+    /// the other tab's query.
     var peopleSearch: String = ""
     /// Per-tab search query for Organizations.
     var organizationsSearch: String = ""

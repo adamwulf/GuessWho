@@ -5,6 +5,11 @@ struct EventDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
+    // Bridge to the outer UIKit nav controller (iPhone shell) so an
+    // attendee row pushes a fresh ContactDetailView. See
+    // `ReferenceNavigation.swift` for the env-closure defaults
+    // (no-op for Catalyst / SwiftUI previews).
+    @Environment(\.pushContactReference) private var pushContactReference
 
     /// Optional EventKit identifier carried so the detail view can adopt
     /// (mint or look up) the sidecar for an ephemeral EventKit row whose
@@ -252,7 +257,9 @@ struct EventDetailView: View {
         let contact = uuidToContact[other.id]
 
         if let contact {
-            NavigationLink(value: ContactReference(localID: contact.localID)) {
+            Button {
+                pushContactReference(ContactReference(localID: contact.localID))
+            } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(contact.displayName)
                     if !link.note.isEmpty {
@@ -262,6 +269,7 @@ struct EventDetailView: View {
                     }
                 }
             }
+            .buttonStyle(.plain)
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 Text("(Unknown contact)")

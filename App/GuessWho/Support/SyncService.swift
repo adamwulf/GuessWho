@@ -448,7 +448,9 @@ final class SyncService {
 
     /// Best-effort one-shot migration of legacy event sidecars to the
     /// UUID-keyed shape. Idempotent — safe to call on every launch. Does NOT
-    /// require any permission. Phase 6 wires this into RootView.task.
+    /// require any permission. Called from
+    /// `GuessWhoAppDelegate.didFinishLaunchingWithOptions` BEFORE any
+    /// permission gate so it runs even when Contacts/Events access is denied.
     func migrateEventsIfNeeded() {
         guard let sync else { return }
         _ = try? sync.migrateEventsToSidecarFirst()

@@ -1,13 +1,14 @@
 import UIKit
 import GuessWhoSync
 
-/// UIKit People list for the Catalyst 3-column shell. Backed by a
+/// UIKit People list. Used by both the Catalyst 3-column shell (as
+/// the supplementary column for `.people`) and the iPhone tab shell
+/// (rooted in the People nav stack). Backed by a
 /// `UITableViewDiffableDataSource` keyed on (section-letter, localID)
 /// so a repository reload only re-applies a snapshot rather than
-/// invalidating the entire view. Mirrors the SwiftUI `PeopleListView`
-/// in behavior: A–Z sectioning, search bound to
-/// `ContactsRepository.peopleSearch`, and a per-row layout matching
-/// the existing `ContactRow` (icon + name + caption subtitle).
+/// invalidating the entire view. A–Z sectioning, search bound to
+/// `ContactsRepository.peopleSearch`, per-row layout matching
+/// `ContactRow` (icon + name + caption subtitle).
 final class ContactsListViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can mount
     /// a fresh `UIHostingController<ContactDetailView>` in the secondary

@@ -162,6 +162,14 @@ final class EventsListViewController: UIViewController {
 
     @MainActor
     private func observeRepositoryReloads() {
+        // External Calendar.app / Contacts.app edits already drive a
+        // `repository.reload()` from the AppDelegate's single-owner
+        // `.EKEventStoreChanged` / `.CNContactStoreDidChange` observers
+        // (Phase 5A) — that reload fires `.eventsRepositoryDidReload`,
+        // which lands here. So we only need to listen to the
+        // post-reload notification and re-apply the diffable snapshot;
+        // duplicating the store-changed observers locally would just
+        // double-reload the repo.
         reloadObserver = NotificationCenter.default.addObserver(
             forName: .eventsRepositoryDidReload,
             object: nil,
@@ -207,6 +215,34 @@ final class EventsListViewController: UIViewController {
     }
 
     // MARK: - Header banners
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Catalyst column resize changes tableView.bounds.width — the
+        // banner was sized once at install time and won't reflow on
+        // its own. Recompute the fitting size; only re-assign
+        // tableHeaderView if the height actually changed (the assign
+        // itself is what nudges UITableView to relayout — just setting
+        // the frame is not enough).
+        sizeHeaderBannerIfNeeded()
+    }
+
+    private func sizeHeaderBannerIfNeeded() {
+        guard let header = tableView.tableHeaderView else { return }
+        let targetWidth = tableView.bounds.width
+        guard targetWidth > 0 else { return }
+        let fitting = header.systemLayoutSizeFitting(
+            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        if abs(header.frame.height - fitting.height) > 0.5 || abs(header.frame.width - targetWidth) > 0.5 {
+            header.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
+            // Re-assignment forces the tableView to pick up the new
+            // header height; mutating header.frame in place doesn't.
+            tableView.tableHeaderView = header
+        }
+    }
 
     private func updateHeaderBanners() {
         // Tear down the prior hosted SwiftUI banner (if any) so child-VC
@@ -254,6 +290,7 @@ final class EventsListViewController: UIViewController {
         }
 
         let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
@@ -261,14 +298,18 @@ final class EventsListViewController: UIViewController {
             stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
         ])
+        // Install with a provisional frame; sizeHeaderBannerIfNeeded
+        // below (and the override in viewDidLayoutSubviews on every
+        // column resize) does the actual reflow.
         let targetWidth = tableView.bounds.width
         let fitting = container.systemLayoutSizeFitting(
-            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+            CGSize(width: max(targetWidth, 1), height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel
         )
         container.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
         tableView.tableHeaderView = container
+        sizeHeaderBannerIfNeeded()
     }
 }
 

@@ -6,12 +6,21 @@ import GuessWhoSync
 /// and picks its root view controller based on the build target:
 ///
 /// * Mac Catalyst → a 3-column `UISplitViewController` (sidebar /
-///   content / detail) — the new UIKit shell introduced in Phase 2,
-///   wired up with the real People list + selection-driven
-///   ContactDetailView in Phase 3.
-/// * iPhone / iPad → a `UIHostingController` wrapping the existing
-///   SwiftUI `RootView` so iPhone behaviour is unchanged while the
-///   UIKit migration progresses on Catalyst.
+///   content / detail) — the UIKit shell introduced in Phase 2 and
+///   completed in Phases 3 / 4A–C with real list controllers.
+/// * iPhone (and iPad until Phase 6) → a `PermissionGateViewController`
+///   that swaps between a SwiftUI-parity ContentUnavailable gate and a
+///   `UITabBarController` of 4 navigation stacks (People /
+///   Organizations / Events / Favorites). Each tab reuses the same
+///   UIKit list controller the Catalyst columns host — selection
+///   pushes a `UIHostingController(rootView: ContactDetailView…)` or
+///   `EventDetailView` onto the tab's nav stack (iPhone uses push
+///   semantics; Catalyst uses column REPLACE).
+///
+/// iPad regular-width loses the 3-column SwiftUI flow this phase —
+/// it falls back to the same UIKit tab shell as iPhone-compact until
+/// Phase 6 stands up the Catalyst-shaped `UISplitViewController` on
+/// iPad too. Documented in MIGRATION_STATUS.
 final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
@@ -21,10 +30,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// each tab switch without us walking the split's child stack.
     private var split: UISplitViewController?
     private var sidebar: SidebarViewController?
-    /// Tracks the currently-mounted People list so we can clear it on
-    /// tab swaps. Nil while the supplementary column shows a different
-    /// section (Organizations / Settings / placeholder).
-    private var contactsList: ContactsListViewController?
     #endif
 
     func scene(
@@ -47,7 +52,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         #if targetEnvironment(macCatalyst)
         return makeCatalystSplit(appDelegate: appDelegate)
         #else
-        return makeHostingRoot(appDelegate: appDelegate)
+        return makeIPhoneRoot(appDelegate: appDelegate)
         #endif
     }
 
@@ -104,7 +109,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftItemsSupplementBackButton = true
             let nav = UINavigationController(rootViewController: list)
             split.setViewController(nav, for: .supplementary)
-            contactsList = list
             installDetailPlaceholder(in: split)
 
         case .organizations:
@@ -115,7 +119,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
 
         case .events:
@@ -129,7 +132,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
 
         case .favorites:
@@ -146,7 +148,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
 
         case .settings:
@@ -155,7 +156,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             settings.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             settings.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: settings), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
         }
     }
@@ -168,7 +168,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // tree is built automatically. The `.id()` modifier would
         // only matter if we were reusing one hosting controller and
         // mutating its rootView's localID (which is what
-        // `RootView.detailColumn` does on the SwiftUI iPhone path).
+        // `RootView.detailColumn` did on the pre-Phase-5 SwiftUI path).
+        //
+        // No `pushContactReference` / `pushEventReference` env
+        // injection here: Catalyst's secondary-column REPLACE semantics
+        // don't match a "push another detail" affordance, and the
+        // right Catalyst behaviour for drill-down from a hosted detail
+        // is TBD (Phase 6). The closures default to no-op, so
+        // SwiftUI `Button` rows fall back to today's silent behaviour
+        // — same as pre-bridge Catalyst.
         let detail = ContactDetailView(localID: contact.localID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
@@ -183,6 +191,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func showEventDetail(eventUUID: String, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
+        // See `showContactDetail` for the rationale on NOT injecting
+        // the push closures on Catalyst — Phase 6 will revisit.
         let detail = EventDetailView(eventUUID: eventUUID)
             .environment(appDelegate.service)
             .environment(appDelegate.favoritesStore)
@@ -200,10 +210,215 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
     #endif
 
-    private func makeHostingRoot(appDelegate: GuessWhoAppDelegate) -> UIViewController {
-        let root = RootView()
-            .environment(appDelegate.service)
-            .environment(appDelegate.favoritesStore)
-        return UIHostingController(rootView: root)
+    // MARK: - iPhone / iPad (non-Catalyst) shell
+
+    /// Phase-5 iPhone shell. Mirrors the Catalyst structure (the four
+    /// content sections are the same UIKit list VCs the sidebar mounts
+    /// on Mac), but the entry point is a tab bar instead of a split
+    /// view, selection PUSHES detail onto each tab's nav stack instead
+    /// of REPLACING a secondary column, and there is no Settings tab
+    /// (iOS surfaces the Debug toggle through the system Settings app
+    /// via Settings.bundle, matching the pre-Phase-5 SwiftUI behaviour
+    /// — see the `sidebarTabs` filter the SwiftUI RootView used).
+    ///
+    /// Wrapped in a `PermissionGateViewController` so the same three
+    /// Contacts-authorization ContentUnavailableView states the
+    /// SwiftUI RootView showed (notRequested / denied / restricted)
+    /// surface here as `UIContentUnavailableConfiguration`s, swapping
+    /// to the tabs only once access flips to `.authorized`.
+    ///
+    /// iPad regular-width currently also lands here — temporary
+    /// downgrade from the previous 3-column NavigationSplitView until
+    /// Phase 6 lifts iPad into the Catalyst-shaped `UISplitView` shell.
+    private func makeIPhoneRoot(appDelegate: GuessWhoAppDelegate) -> UIViewController {
+        let tabs = makeIPhoneTabs(appDelegate: appDelegate)
+        return PermissionGateViewController(service: appDelegate.service, tabs: tabs)
+    }
+
+    private func makeIPhoneTabs(appDelegate: GuessWhoAppDelegate) -> UITabBarController {
+        let peopleNav = makeIPhonePeopleTab(appDelegate: appDelegate)
+        let orgsNav = makeIPhoneOrganizationsTab(appDelegate: appDelegate)
+        let eventsNav = makeIPhoneEventsTab(appDelegate: appDelegate)
+        let favoritesNav = makeIPhoneFavoritesTab(appDelegate: appDelegate)
+
+        let tabs = UITabBarController()
+        tabs.viewControllers = [peopleNav, orgsNav, eventsNav, favoritesNav]
+
+        // iOS 18 sidebar-adaptable tab bar surfaces as a bottom tab bar
+        // on iPhone (compact) and as a leading sidebar on iPad
+        // (regular). Matches the previous SwiftUI `.sidebarAdaptable`
+        // tabViewStyle. Gated on iOS 18 — on iOS 17 the API doesn't
+        // exist and the plain bottom tab bar is the right fallback.
+        if #available(iOS 18.0, *) {
+            tabs.mode = .tabSidebar
+        }
+
+        return tabs
+    }
+
+    private func makeIPhonePeopleTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = ContactsListViewController(repository: appDelegate.contactsRepository)
+        list.didSelectContact = { [weak self] contact in
+            self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.people.title,
+            image: UIImage(systemName: SidebarTab.people.systemImage),
+            tag: 0
+        )
+        return nav
+    }
+
+    private func makeIPhoneOrganizationsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = OrganizationsListViewController(repository: appDelegate.contactsRepository)
+        list.didSelectContact = { [weak self] contact in
+            self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.organizations.title,
+            image: UIImage(systemName: SidebarTab.organizations.systemImage),
+            tag: 1
+        )
+        return nav
+    }
+
+    private func makeIPhoneEventsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = EventsListViewController(
+            repository: appDelegate.eventsRepository,
+            service: appDelegate.service
+        )
+        list.didSelectEvent = { [weak self] event in
+            self?.pushEventDetail(eventUUID: event.id.uuidString, on: list.navigationController, appDelegate: appDelegate)
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.events.title,
+            image: UIImage(systemName: SidebarTab.events.systemImage),
+            tag: 2
+        )
+        return nav
+    }
+
+    private func makeIPhoneFavoritesTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = FavoritesListViewController(
+            store: appDelegate.favoritesStore,
+            service: appDelegate.service
+        )
+        list.didSelectContact = { [weak self] contact in
+            self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
+        }
+        list.didSelectEvent = { [weak self] event in
+            self?.pushEventDetail(eventUUID: event.id.uuidString, on: list.navigationController, appDelegate: appDelegate)
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.favorites.title,
+            image: UIImage(systemName: SidebarTab.favorites.systemImage),
+            tag: 3
+        )
+        return nav
+    }
+
+    /// Push a fresh `UIHostingController<ContactDetailView>` onto the
+    /// owning tab's nav stack. Mirrors `showContactDetail` on Catalyst
+    /// but PUSHES (back-swipe pops) instead of REPLACING the secondary
+    /// column. Same three @Environment values
+    /// (`SyncService`, `ContactsRepository`, `FavoritesListStore`)
+    /// must be injected on the rootView because the hosted SwiftUI
+    /// view has no SwiftUI parent on iPhone now that RootView is gone.
+    ///
+    /// Also injects the `pushContactReference` / `pushEventReference`
+    /// env closures so SwiftUI rows inside the pushed detail (linked
+    /// events on a contact, attendees on an event, etc.) can fan out
+    /// to more details onto the same UIKit nav stack. Without those,
+    /// the original `NavigationLink(value:)` callsites silently no-op
+    /// on iPhone after Phase 5 deleted `.contactAndEventDestinations`.
+    private func pushContactDetail(
+        contact: Contact,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushContactDetail(localID: contact.localID, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushContactDetail(
+        ref: ContactReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushContactDetail(localID: ref.localID, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushContactDetail(
+        localID: String,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let detail = injectIPhonePushHandlers(
+            ContactDetailView(localID: localID)
+                .environment(appDelegate.service)
+                .environment(appDelegate.contactsRepository)
+                .environment(appDelegate.favoritesStore),
+            on: nav,
+            appDelegate: appDelegate
+        )
+        let hosting = UIHostingController(rootView: detail)
+        nav.pushViewController(hosting, animated: true)
+    }
+
+    private func pushEventDetail(
+        eventUUID: String,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushEventDetail(eventUUID: eventUUID, eventKitID: nil, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushEventDetail(
+        ref: EventReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushEventDetail(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID, on: nav, appDelegate: appDelegate)
+    }
+
+    private func pushEventDetail(
+        eventUUID: String,
+        eventKitID: String?,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let detail = injectIPhonePushHandlers(
+            EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
+                .environment(appDelegate.service)
+                .environment(appDelegate.favoritesStore),
+            on: nav,
+            appDelegate: appDelegate
+        )
+        let hosting = UIHostingController(rootView: detail)
+        nav.pushViewController(hosting, animated: true)
+    }
+
+    /// Bind `pushContactReference` / `pushEventReference` to the SAME
+    /// nav controller this view is being pushed onto. Both closures
+    /// capture `nav` weakly so popping the stack tears down cleanly,
+    /// and `self` weakly so the closure can't keep the SceneDelegate
+    /// alive past scene teardown.
+    private func injectIPhonePushHandlers<V: View>(
+        _ view: V,
+        on nav: UINavigationController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> some View {
+        view
+            .environment(\.pushContactReference) { [weak self, weak nav] ref in
+                self?.pushContactDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushEventReference) { [weak self, weak nav] ref in
+                self?.pushEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
     }
 }

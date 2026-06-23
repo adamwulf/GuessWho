@@ -7,7 +7,7 @@ extension Notification.Name {
     /// Catalyst UIKit list subscribes to this notification so it
     /// refreshes when ContactDetailView/EventDetailView toggle the
     /// star.
-    static let favoritesDidChange = Notification.Name("favoritesDidChange")
+    static let favoritesDidChange = Notification.Name("FavoritesDidChange")
 }
 
 /// Thin app-side view model that exposes the ordered favorites list as a
