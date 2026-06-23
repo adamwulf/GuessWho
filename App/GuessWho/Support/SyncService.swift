@@ -496,6 +496,23 @@ final class SyncService {
         return try await sync.reconcileContactIdentity(localID: localID)
     }
 
+    /// Returns the contact's GuessWho UUID, minting one via reconcile if the
+    /// contact has not yet been stamped. Used at sidecar/Contacts seams where
+    /// the caller needs a UUID to link/favorite/etc. but the user has not yet
+    /// opened the contact's detail view (which is the other reconcile trigger).
+    /// Throws if reconcile fails or — pathologically — fails to assign a UUID.
+    func reconcileIfNeeded(contact: Contact) async throws -> String {
+        if let existing = guessWhoUUID(in: contact) {
+            return existing
+        }
+        _ = try await reconcile(localID: contact.localID)
+        guard let fresh = await fetchAll().first(where: { $0.localID == contact.localID }),
+              let assigned = guessWhoUUID(in: fresh) else {
+            throw ReconcileAssignmentFailedError()
+        }
+        return assigned
+    }
+
     // MARK: - Edit
 
     /// Fetches a `Contact` for editing in the SwiftUI editor. Goes
@@ -781,5 +798,11 @@ final class SyncService {
 struct SidecarUnavailableError: Error, LocalizedError {
     var errorDescription: String? {
         "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+    }
+}
+
+struct ReconcileAssignmentFailedError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Could not assign an identity to this contact."
     }
 }

@@ -113,7 +113,7 @@ struct EventDetailView: View {
         }
         .sheet(isPresented: $showingPicker) {
             ContactPickerSheet { contact, note in
-                addLink(to: contact, note: note)
+                await addLink(to: contact, note: note)
             }
         }
         .sheet(isPresented: $showingEditSheet) {
@@ -352,14 +352,26 @@ struct EventDetailView: View {
         hasLoadedOnce = true
     }
 
-    private func addLink(to contact: Contact, note: String) {
-        guard let uuid = service.guessWhoUUID(in: contact) else { return }
+    /// Returns `true` when the link was created (or already existed) so the
+    /// picker sheet knows it's safe to dismiss. Reconcile failures return
+    /// `false` and surface via `service.recordError` so the user can pick a
+    /// different contact or retry without losing the sheet.
+    private func addLink(to contact: Contact, note: String) async -> Bool {
+        let uuid: String
+        do {
+            uuid = try await service.reconcileIfNeeded(contact: contact)
+        } catch {
+            service.recordError("reconcile contact failed: \(error.localizedDescription)")
+            return false
+        }
         do {
             _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: resolvedUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
+            return false
         }
-        Task { await reload() }
+        await reload()
+        return true
     }
 
     private func remove(linkID: UUID) {
@@ -530,12 +542,17 @@ private struct ContactPickerSheet: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
 
-    let onPick: (Contact, String) -> Void
+    /// Returns `true` once the link has been created (or already existed),
+    /// `false` if reconcile/link failed. On `false` the sheet stays up so the
+    /// user can pick a different contact or retry — the underlying error is
+    /// surfaced via `service.recordError` by the caller.
+    let onPick: (Contact, String) async -> Bool
 
     @State private var query: String = ""
     @State private var contacts: [Contact] = []
     @State private var selection: Contact?
     @State private var note: String = ""
+    @State private var isSubmitting: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -548,6 +565,7 @@ private struct ContactPickerSheet: View {
                                 Spacer()
                                 Button("Change") { self.selection = nil }
                                     .buttonStyle(.borderless)
+                                    .disabled(isSubmitting)
                             }
                         }
                         Section("Note") {
@@ -559,16 +577,8 @@ private struct ContactPickerSheet: View {
                         Button {
                             selection = contact
                         } label: {
-                            VStack(alignment: .leading) {
-                                Text(contact.displayName)
-                                if service.guessWhoUUID(in: contact) == nil {
-                                    Text("Not yet reconciled — open the contact first")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
+                            Text(contact.displayName)
                         }
-                        .disabled(service.guessWhoUUID(in: contact) == nil)
                     }
                     .searchable(text: $query, prompt: "Search contacts")
                 }
@@ -577,13 +587,22 @@ private struct ContactPickerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(isSubmitting)
                 }
                 if let selection {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Add") {
-                            onPick(selection, note.trimmingCharacters(in: .whitespacesAndNewlines))
-                            dismiss()
+                            Task {
+                                isSubmitting = true
+                                let didLink = await onPick(
+                                    selection,
+                                    note.trimmingCharacters(in: .whitespacesAndNewlines)
+                                )
+                                isSubmitting = false
+                                if didLink { dismiss() }
+                            }
                         }
+                        .disabled(isSubmitting)
                     }
                 }
             }
