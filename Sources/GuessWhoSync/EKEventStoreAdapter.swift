@@ -153,7 +153,12 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         return EventAttendee(name: name, email: email)
     }
 
-    private static func email(from url: URL) -> String? {
+    // `internal` (not `private`) so `EventAttendeeTests` can drive the
+    // mailto parser with synthetic URLs — `EKParticipant` has no public
+    // initializer, so testing through `toAttendee` from XCTest isn't
+    // feasible. Surface area stays small: pure URL → String? function
+    // with no side effects, marked `static`.
+    static func email(from url: URL) -> String? {
         guard let scheme = url.scheme?.lowercased(), scheme == "mailto" else { return nil }
         // mailto: URLs are opaque — `URLComponents.path` doesn't help here.
         // Strip the scheme prefix off the original `absoluteString` (using

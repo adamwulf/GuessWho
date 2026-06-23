@@ -52,6 +52,64 @@ struct EventAttendeeTests {
         #expect(a == b)
     }
 
+    // MARK: - mailto: parser
+
+    // EKEventStoreAdapter is gated on #if canImport(EventKit) — these
+    // tests only compile (and only matter) on platforms where the
+    // adapter exists. `email(from:)` is `internal static` specifically
+    // so we can exercise it with synthetic URLs (real `EKParticipant`
+    // has no public init).
+
+#if canImport(EventKit)
+    @Test("email(from:) parses a plain mailto URL")
+    func testEmailParsesPlainMailto() throws {
+        let url = try #require(URL(string: "mailto:jane@example.com"))
+        #expect(EKEventStoreAdapter.email(from: url) == "jane@example.com")
+    }
+
+    @Test("email(from:) tolerates MAILTO / Mailto scheme casing")
+    func testEmailToleratesCasing() throws {
+        let upper = try #require(URL(string: "MAILTO:bob@example.com"))
+        let mixed = try #require(URL(string: "Mailto:bob@example.com"))
+        #expect(EKEventStoreAdapter.email(from: upper) == "bob@example.com")
+        #expect(EKEventStoreAdapter.email(from: mixed) == "bob@example.com")
+    }
+
+    @Test("email(from:) percent-decodes the address so %40 round-trips to @")
+    func testEmailPercentDecodes() throws {
+        let url = try #require(URL(string: "mailto:foo%40bar.com"))
+        #expect(EKEventStoreAdapter.email(from: url) == "foo@bar.com")
+    }
+
+    @Test("email(from:) strips RFC 6068 ?headers after the address")
+    func testEmailStripsHeaders() throws {
+        let url = try #require(URL(string: "mailto:dev@example.com?subject=Hi"))
+        #expect(EKEventStoreAdapter.email(from: url) == "dev@example.com")
+    }
+
+    @Test("email(from:) returns nil for non-mailto schemes")
+    func testEmailRejectsNonMailto() throws {
+        let tel = try #require(URL(string: "tel:+15555551212"))
+        let http = try #require(URL(string: "https://example.com"))
+        #expect(EKEventStoreAdapter.email(from: tel) == nil)
+        #expect(EKEventStoreAdapter.email(from: http) == nil)
+    }
+
+    @Test("email(from:) returns nil for a mailto URL with an empty body")
+    func testEmailEmptyBodyReturnsNil() throws {
+        let url = try #require(URL(string: "mailto:"))
+        #expect(EKEventStoreAdapter.email(from: url) == nil)
+    }
+
+    @Test("email(from:) trims surrounding whitespace from the parsed address")
+    func testEmailTrimsWhitespace() throws {
+        // `mailto:%20jane%40example.com%20` — percent-decoded body is
+        // ` jane@example.com `; the parser trims back to the bare address.
+        let url = try #require(URL(string: "mailto:%20jane%40example.com%20"))
+        #expect(EKEventStoreAdapter.email(from: url) == "jane@example.com")
+    }
+#endif
+
     @Test("event(at:) overlay propagates live attendees onto the cached projection")
     func testOverlayPropagatesAttendees() throws {
         let ekid = "ek-attendee-overlay"
