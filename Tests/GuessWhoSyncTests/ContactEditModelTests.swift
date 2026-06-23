@@ -323,4 +323,26 @@ struct ContactEditModelTests {
             $0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
         }))
     }
+
+    // MARK: - New-contact seed initializer
+
+    @Test("newContactSeed initializer starts dirty so Save fires on the prefilled seed immediately")
+    func testNewContactSeedStartsDirty() {
+        let seed = Contact(
+            localID: "",
+            givenName: "Jane",
+            emailAddresses: [LabeledValue(label: "", value: "jane@example.com")]
+        )
+        let model = ContactEditModel(newContactSeed: seed)
+        #expect(model.isDirty)
+        #expect(model.edited.givenName == "Jane")
+        #expect(model.edited.emailAddresses.first?.value == "jane@example.com")
+    }
+
+    @Test("Standard original initializer starts clean (regression check that newContactSeed didn't bleed)")
+    func testOriginalInitializerStartsClean() {
+        let contact = Contact(localID: "c1", givenName: "Existing")
+        let model = ContactEditModel(original: contact)
+        #expect(!model.isDirty)
+    }
 }

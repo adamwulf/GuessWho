@@ -128,6 +128,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         guard let ekid = e.calendarItemExternalIdentifier, !ekid.isEmpty else { return nil }
         let location = (e.location?.isEmpty ?? true) ? nil : e.location
         let notes = (e.notes?.isEmpty ?? true) ? nil : e.notes
+        let attendees = (e.attendees ?? []).map(Self.toAttendee)
         return Event(
             id: Event.stableID(forEventKitID: ekid),
             eventKitID: ekid,
@@ -136,8 +137,46 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
             endDate: e.endDate,
             isAllDay: e.isAllDay,
             location: location,
-            eventKitNotes: notes
+            eventKitNotes: notes,
+            attendees: attendees
         )
+    }
+
+    /// Convert an `EKParticipant` into our `EventAttendee` model.
+    /// `participant.name` is preferred; when nil we fall back to the email
+    /// (parsed from the `mailto:` URL) so the row still has *something* to
+    /// render. Email is extracted from `participant.url` when it carries a
+    /// `mailto:` scheme — that's the only address shape EventKit exposes.
+    private static func toAttendee(_ p: EKParticipant) -> EventAttendee {
+        let email = Self.email(from: p.url)
+        let name = p.name?.isEmpty == false ? p.name! : (email ?? "")
+        return EventAttendee(name: name, email: email)
+    }
+
+    // `internal` (not `private`) so `EventAttendeeTests` can drive the
+    // mailto parser with synthetic URLs — `EKParticipant` has no public
+    // initializer, so testing through `toAttendee` from XCTest isn't
+    // feasible. Surface area stays small: pure URL → String? function
+    // with no side effects, marked `static`.
+    static func email(from url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "mailto" else { return nil }
+        // mailto: URLs are opaque — `URLComponents.path` doesn't help here.
+        // Strip the scheme prefix off the original `absoluteString` (using
+        // the actual scheme length to tolerate `MAILTO:`/`Mailto:` etc.),
+        // drop any `?headers` and/or `#fragment` after the address (RFC 6068
+        // doesn't define a mailto fragment but defensive against future
+        // producers), then percent-decode so an international invitee whose
+        // ICS payload encoded `@` as `%40` still matches a contact whose
+        // email is stored in plain ASCII.
+        let raw = url.absoluteString
+        let prefixCount = scheme.count + 1 // scheme + ":"
+        guard raw.count > prefixCount else { return nil }
+        let specifier = raw.dropFirst(prefixCount)
+        let addressEnd = specifier.firstIndex(where: { $0 == "?" || $0 == "#" }) ?? specifier.endIndex
+        let address = String(specifier[..<addressEnd])
+        let decoded = address.removingPercentEncoding ?? address
+        let trimmed = decoded.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

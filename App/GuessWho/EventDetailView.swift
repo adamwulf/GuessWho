@@ -31,8 +31,26 @@ struct EventDetailView: View {
     @State private var event: Event?
     @State private var links: [ContactLink] = []
     @State private var uuidToContact: [String: Contact] = [:]
+    /// Lowercased email → contact lookup, populated alongside `uuidToContact`
+    /// from the same `service.fetchAll()` pass. Used by the invitees section
+    /// to decide row-tap behavior (push existing vs. open new-contact sheet).
+    /// First contact wins on duplicates — the picker can still surface the
+    /// other later.
+    @State private var emailToContact: [String: Contact] = [:]
     @State private var notes: [ContactNote] = []
     @State private var tags: [EventTag] = []
+    /// Drives the "Add Contact" sheet from the invitees section. Non-nil
+    /// holds the pre-filled `Contact` seed handed to `ContactEditView`.
+    @State private var addingContactSeed: AddingContactSeed?
+
+    private struct AddingContactSeed: Identifiable {
+        // Per-presentation UUID so SwiftUI re-presents the sheet when the
+        // user picks a second unmatched invitee — both seeds have an empty
+        // `localID`, so falling back to that would collide and suppress
+        // the second presentation.
+        let id: UUID = UUID()
+        let contact: Contact
+    }
     /// `false` until the first `reload()` finishes. The body uses it to
     /// distinguish "still loading" from "really missing" so the
     /// "(Unknown event)" fallback doesn't flash during the async
@@ -60,6 +78,7 @@ struct EventDetailView: View {
                 detailsSection(event)
                 guessWhoNotesSection
                 tagsSection
+                inviteesSection(event)
                 linkedContactsSection
                 deleteActionSection
             } else if hasLoadedOnce {
@@ -122,6 +141,19 @@ struct EventDetailView: View {
                     save(updated)
                 }
             }
+        }
+        .sheet(item: $addingContactSeed) { seed in
+            // ContactEditView treats an empty `localID` as a brand-new
+            // record: `CNContactStoreAdapter.save` falls through to its
+            // `add(...)` branch when the unifiedContact lookup misses, so
+            // the editor's existing Save path mints a fresh CNContact
+            // pre-populated with the attendee's name + email. After save
+            // we reload so the invitees section can re-match against the
+            // newly-created contact.
+            ContactEditView(
+                newContactSeed: seed.contact,
+                onDone: { Task { await reload() } }
+            )
         }
         .confirmationDialog(
             "Delete this event?",
@@ -226,6 +258,93 @@ struct EventDetailView: View {
                 .disabled(newTagText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
+    }
+
+    /// Invitees mirrored from `EKEvent.attendees`. Each row resolves to one
+    /// of three states based on email match against the user's contacts:
+    /// matched → tap pushes the contact detail; unmatched (with email) →
+    /// tap opens a pre-filled new-contact editor; no email → display only.
+    /// Hidden when the event has no attendees, so manual (sidecar-only)
+    /// events show no empty section.
+    @ViewBuilder
+    private func inviteesSection(_ event: Event) -> some View {
+        if !event.attendees.isEmpty {
+            Section("Invitees") {
+                ForEach(Array(event.attendees.enumerated()), id: \.offset) { _, attendee in
+                    inviteeRow(attendee)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func inviteeRow(_ attendee: EventAttendee) -> some View {
+        if let email = attendee.email, let contact = emailToContact[email] {
+            Button {
+                pushContactReference(ContactReference(localID: contact.localID))
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(contact.displayName)
+                    if !email.isEmpty {
+                        Text(email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        } else if let email = attendee.email {
+            Button {
+                addingContactSeed = AddingContactSeed(contact: contactSeed(from: attendee, email: email))
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(attendee.name.isEmpty ? email : attendee.name)
+                        if !email.isEmpty, !attendee.name.isEmpty {
+                            Text(email)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            // No email to match on — render as plain text. The user can't
+            // do anything with this row, but hiding it would lose a real
+            // attendee the calendar event has.
+            Text(attendee.name.isEmpty ? "(Unknown invitee)" : attendee.name)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Build the seed `Contact` handed to `ContactEditView` for an
+    /// unmatched attendee. `localID` is empty so the adapter's save path
+    /// takes the brand-new-contact branch. The name is split naively on
+    /// whitespace (first token → given, remainder → family); when the
+    /// attendee name is the email itself (no display name was set), it
+    /// all lands in `givenName` rather than being split on `@`.
+    private func contactSeed(from attendee: EventAttendee, email: String) -> Contact {
+        let trimmed = attendee.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let given: String
+        let family: String
+        if trimmed.isEmpty || trimmed == email {
+            given = trimmed
+            family = ""
+        } else {
+            let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            given = parts.first.map(String.init) ?? trimmed
+            family = parts.count > 1 ? String(parts[1]) : ""
+        }
+        return Contact(
+            localID: "",
+            givenName: given,
+            familyName: family,
+            emailAddresses: [LabeledValue(label: "", value: email)]
+        )
     }
 
     @ViewBuilder
@@ -343,12 +462,19 @@ struct EventDetailView: View {
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
         var map: [String: Contact] = [:]
+        var byEmail: [String: Contact] = [:]
         for contact in await service.fetchAll() {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }
+            for entry in contact.emailAddresses {
+                let key = entry.value.lowercased()
+                guard !key.isEmpty, byEmail[key] == nil else { continue }
+                byEmail[key] = contact
+            }
         }
         uuidToContact = map
+        emailToContact = byEmail
         hasLoadedOnce = true
     }
 
