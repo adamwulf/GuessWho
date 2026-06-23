@@ -58,10 +58,19 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // yet — `fetchAll()` returns an empty array in that case, and a
         // later CNContactStoreDidChange (fired by SyncService when
         // permission flips to authorized) refreshes the list.
+        //
+        // Catalyst-only because iPhone's `RootView` constructs its own
+        // `ContactsRepository` and ignores this one — the eager reload
+        // here would be wasted I/O on iPhone. Matches the
+        // `eventsRepository` gating below.
+        //
+        // PHASE-5-RISK: if the iPhone migration starts consuming
+        // `appDelegate.contactsRepository` instead of `RootView`'s
+        // local copy, this gate needs to come back out.
+        #if targetEnvironment(macCatalyst)
         Task { @MainActor in
             await contactsRepository.reload()
         }
-        #if targetEnvironment(macCatalyst)
         Task { @MainActor in
             await eventsRepository.reload()
         }

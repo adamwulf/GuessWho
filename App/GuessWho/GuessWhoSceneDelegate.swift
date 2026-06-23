@@ -21,10 +21,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// each tab switch without us walking the split's child stack.
     private var split: UISplitViewController?
     private var sidebar: SidebarViewController?
-    /// Tracks the currently-mounted People list so we can clear it on
-    /// tab swaps. Nil while the supplementary column shows a different
-    /// section (Organizations / Settings / placeholder).
-    private var contactsList: ContactsListViewController?
     #endif
 
     func scene(
@@ -104,7 +100,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftItemsSupplementBackButton = true
             let nav = UINavigationController(rootViewController: list)
             split.setViewController(nav, for: .supplementary)
-            contactsList = list
             installDetailPlaceholder(in: split)
 
         case .organizations:
@@ -115,7 +110,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
 
         case .events:
@@ -129,7 +123,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
 
         case .favorites:
@@ -146,7 +139,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             list.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
 
         case .settings:
@@ -155,7 +147,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             settings.navigationItem.leftBarButtonItem = split.displayModeButtonItem
             settings.navigationItem.leftItemsSupplementBackButton = true
             split.setViewController(UINavigationController(rootViewController: settings), for: .supplementary)
-            contactsList = nil
             installDetailPlaceholder(in: split)
         }
     }
