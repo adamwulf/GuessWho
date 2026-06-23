@@ -55,7 +55,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Phase-3 Catalyst shell. The sidebar's selection now drives real
     /// content/detail column swaps:
     ///   * .people → ContactsListViewController + ContactDetailView on selection
-    ///   * .organizationsPlaceholder → "Coming soon" placeholder
+    ///   * .organizations → OrganizationsListViewController + ContactDetailView on selection
     ///   * .settings → SwiftUI SettingsView hosted via UIHostingController
     /// When the user picks a tab that doesn't have a selected detail
     /// the secondary column resets to a "Nothing Selected" placeholder.
@@ -107,14 +107,45 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             contactsList = list
             installDetailPlaceholder(in: split)
 
-        case .organizationsPlaceholder:
-            let placeholder = PlaceholderViewController(
-                title: "Organizations",
-                message: "Coming soon — same pattern as People."
+        case .organizations:
+            let list = OrganizationsListViewController(repository: appDelegate.contactsRepository)
+            list.didSelectContact = { [weak self] contact in
+                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            contactsList = nil
+            installDetailPlaceholder(in: split)
+
+        case .events:
+            let list = EventsListViewController(
+                repository: appDelegate.eventsRepository,
+                service: appDelegate.service
             )
-            placeholder.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-            placeholder.navigationItem.leftItemsSupplementBackButton = true
-            split.setViewController(UINavigationController(rootViewController: placeholder), for: .supplementary)
+            list.didSelectEvent = { [weak self] event in
+                self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            contactsList = nil
+            installDetailPlaceholder(in: split)
+
+        case .favorites:
+            let list = FavoritesListViewController(
+                store: appDelegate.favoritesStore,
+                service: appDelegate.service
+            )
+            list.didSelectContact = { [weak self] contact in
+                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            list.didSelectEvent = { [weak self] event in
+                self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             contactsList = nil
             installDetailPlaceholder(in: split)
 
@@ -147,6 +178,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // setViewController REPLACES the secondary column wholesale on
         // every selection — pushing onto a stack would accumulate detail
         // views across taps.
+        split.setViewController(nav, for: .secondary)
+    }
+
+    private func showEventDetail(eventUUID: String, appDelegate: GuessWhoAppDelegate) {
+        guard let split else { return }
+        let detail = EventDetailView(eventUUID: eventUUID)
+            .environment(appDelegate.service)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(rootView: detail)
+        let nav = UINavigationController(rootViewController: hosting)
         split.setViewController(nav, for: .secondary)
     }
 

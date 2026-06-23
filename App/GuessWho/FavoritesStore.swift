@@ -1,6 +1,15 @@
 import Foundation
 import GuessWhoSync
 
+extension Notification.Name {
+    /// Posted after `FavoritesListStore.reload()` writes new items.
+    /// SwiftUI views observe the store directly via @Observable; the
+    /// Catalyst UIKit list subscribes to this notification so it
+    /// refreshes when ContactDetailView/EventDetailView toggle the
+    /// star.
+    static let favoritesDidChange = Notification.Name("favoritesDidChange")
+}
+
 /// Thin app-side view model that exposes the ordered favorites list as a
 /// SwiftUI-observable property and routes mutations through SyncService.
 /// The authoritative store lives in the package
@@ -29,6 +38,7 @@ final class FavoritesListStore {
 
     func reload() {
         items = service.favorites()
+        NotificationCenter.default.post(name: .favoritesDidChange, object: self)
     }
 
     func toggle(kind: FavoriteKind, id: String) {

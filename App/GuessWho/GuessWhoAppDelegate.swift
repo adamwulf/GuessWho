@@ -25,6 +25,11 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// empty if denied" path since users have typically already granted
     /// permission by the time they're using the app on a Mac.
     let contactsRepository: ContactsRepository
+    #if targetEnvironment(macCatalyst)
+    /// Catalyst-only — iPhone's `RootView` constructs its own
+    /// `EventsRepository` so we don't duplicate the fetch there.
+    let eventsRepository: EventsRepository
+    #endif
 
     override init() {
         // Register defaults so non-@AppStorage readers and the iOS
@@ -37,6 +42,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
         self.contactsRepository = ContactsRepository(service: service)
+        #if targetEnvironment(macCatalyst)
+        self.eventsRepository = EventsRepository(service: service)
+        #endif
         super.init()
     }
 
@@ -53,6 +61,11 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         Task { @MainActor in
             await contactsRepository.reload()
         }
+        #if targetEnvironment(macCatalyst)
+        Task { @MainActor in
+            await eventsRepository.reload()
+        }
+        #endif
         return true
     }
 

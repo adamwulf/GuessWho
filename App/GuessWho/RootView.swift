@@ -149,10 +149,22 @@ struct RootView: View {
                 repository: contactsRepository,
                 selection: $selectedPersonLocalID
             )
-        case .organizationsPlaceholder:
+        case .organizations:
             ContentUnavailableView(
                 "Organizations Coming Soon",
                 systemImage: "building.2.fill",
+                description: Text("Verifying sidebar selection wiring.")
+            )
+        case .events:
+            ContentUnavailableView(
+                "Events Coming Soon",
+                systemImage: "calendar",
+                description: Text("Verifying sidebar selection wiring.")
+            )
+        case .favorites:
+            ContentUnavailableView(
+                "Favorites Coming Soon",
+                systemImage: "star.fill",
                 description: Text("Verifying sidebar selection wiring.")
             )
         case .settings:
