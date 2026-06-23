@@ -15,17 +15,30 @@ struct ContactRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 nameLabel
                     .font(.body)
-                if debugModeEnabled, hasGuessWhoUUID {
-                    Text("GuessWho ✓")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if contact.contactType == .person, !contact.jobTitle.isEmpty || !contact.organizationName.isEmpty {
-                    Text(roleSubtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                // Reserve a caption-sized second line on every row so
+                // names with a subtitle and names without one occupy
+                // the same vertical space — keeps the list rhythm even
+                // when most contacts have no job/org info.
+                subtitleLine
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var subtitleLine: some View {
+        if debugModeEnabled, hasGuessWhoUUID {
+            Text("GuessWho ✓")
+        } else if contact.contactType == .person, !contact.jobTitle.isEmpty || !contact.organizationName.isEmpty {
+            Text(roleSubtitle)
+        } else {
+            // Empty space placeholder — keeps the row's two-line
+            // height stable. `\u{00A0}` (non-breaking space) renders
+            // an invisible character with the same line metrics as a
+            // real caption, which a plain empty string does not.
+            Text("\u{00A0}")
         }
     }
 

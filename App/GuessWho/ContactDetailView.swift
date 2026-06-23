@@ -102,22 +102,34 @@ struct ContactDetailView: View {
     }
 
     var body: some View {
-        Form {
+        Group {
             if let contact {
-                infoSection(contact)
-
-                referencedBySection(contact)
-
-                activitySection
-
-                if debugModeEnabled {
-                    debugSection(contact)
-                }
+                loadedContent(contact)
             } else {
+                // Centered loading state — hoisted out of the List so
+                // it sits in the middle of the detail pane instead of
+                // landing in the top-left as the first list row.
                 ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        #if targetEnvironment(macCatalyst)
+        // Mirror Apple's Contacts detail pane: clamp the card width
+        // and let the surrounding pane breathe at wider window sizes.
+        // listStyle lives inside loadedContent — applying it on this
+        // Group (which can hold either a List or a ProgressView)
+        // wouldn't reach the List on the loaded branch.
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        #endif
+        #if targetEnvironment(macCatalyst)
+        // The inline header already shows the name and subtitle, so an
+        // empty nav-bar title keeps the toolbar clean (we still need the
+        // toolbar itself for back-button + Edit/star).
+        .navigationTitle("")
+        #else
         .navigationTitle(contact?.displayName ?? "Contact")
+        #endif
         .toolbar {
             if isEditingAnything {
                 ToolbarItem(placement: .confirmationAction) {
@@ -184,6 +196,38 @@ struct ContactDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func loadedContent(_ contact: Contact) -> some View {
+        let list = List {
+            #if targetEnvironment(macCatalyst)
+            Section {
+                headerView(contact)
+                    .frame(maxWidth: .infinity)
+                    .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            #endif
+
+            infoSection(contact)
+
+            Section { activityFooter }
+
+            referencedBySection(contact)
+
+            activitySection
+
+            if debugModeEnabled {
+                debugSection(contact)
+            }
+        }
+        #if targetEnvironment(macCatalyst)
+        list.listStyle(.inset)
+        #else
+        list.listStyle(.insetGrouped)
+        #endif
+    }
+
     // MARK: - Edit (SwiftUI editor presentation)
 
     private func presentEditor() async {
@@ -201,14 +245,14 @@ struct ContactDetailView: View {
     private func handleEditorDone() async {
         editingContact = nil
         // Reconcile runs first so it can re-stamp our x-guesswho:// URL
-        // before any other read sees the post-edit state. It calls
-        // loadContact() on its success path; an explicit loadContact()
-        // afterward catches the reconcile-error case where it doesn't.
-        // Then reload the repository so the list-view caches reflect
-        // any name/field changes.
+        // before any other read sees the post-edit state. On its success
+        // path performReconcile reloads the repository and re-loads the
+        // contact; on the error path neither happens, so reload+loadContact
+        // here pick up whatever the editor managed to save before the
+        // reconcile failed.
         await performReconcile()
-        await loadContact()
         await repository.reload()
+        await loadContact()
     }
 
     private func handleEditorDelete() async {
@@ -223,6 +267,46 @@ struct ContactDetailView: View {
         if contact == nil {
             dismiss()
         }
+    }
+
+    // MARK: - Header (macOS inline)
+
+    /// Inline detail header used on macOS: large monogram circle, name,
+    /// and a `job title · organization` subtitle. The nav-bar title is
+    /// hidden in this configuration so the name only appears once.
+    @ViewBuilder
+    private func headerView(_ contact: Contact) -> some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.secondary.opacity(0.15))
+                Text(contact.initials)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 96, height: 96)
+
+            VStack(spacing: 2) {
+                Text(contact.displayName)
+                    .font(.title2.weight(.semibold))
+                    .multilineTextAlignment(.center)
+
+                let subtitle = headerSubtitle(contact)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+    }
+
+    private func headerSubtitle(_ contact: Contact) -> String {
+        let parts = [contact.jobTitle, contact.organizationName]
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: - Sections
@@ -407,21 +491,21 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var activitySection: some View {
         let items = activityItems
-        Section("Activity") {
-            ForEach(items) { item in
-                activityRow(item)
-            }
-            .onDelete { offsets in
-                let targets = offsets.map { items[$0] }
-                for target in targets { deleteActivityItem(target) }
-            }
+        if !items.isEmpty || showingNewNoteEditor {
+            Section("Activity") {
+                ForEach(items) { item in
+                    activityRow(item)
+                }
+                .onDelete { offsets in
+                    let targets = offsets.map { items[$0] }
+                    for target in targets { deleteActivityItem(target) }
+                }
 
-            if showingNewNoteEditor {
-                TextField("Add a note", text: $newNoteText, axis: .vertical)
-                    .focused($noteFocus, equals: .newNote)
+                if showingNewNoteEditor {
+                    TextField("Add a note", text: $newNoteText, axis: .vertical)
+                        .focused($noteFocus, equals: .newNote)
+                }
             }
-
-            activityFooter
         }
     }
 
@@ -726,7 +810,12 @@ struct ContactDetailView: View {
     }
 
     private func loadContact() async {
-        let loaded = await service.fetchAll().first { $0.localID == localID }
+        let loaded: Contact?
+        if let cached = repository.contact(localID: localID) {
+            loaded = cached
+        } else {
+            loaded = await service.fetchAll().first { $0.localID == localID }
+        }
         contact = loaded
         if let loaded {
             sidecar = service.sidecar(for: loaded)
@@ -774,6 +863,14 @@ struct ContactDetailView: View {
             let result = try await service.reconcile(localID: localID)
             reconcileOutcome = result
             reconcileError = nil
+            // SyncService.reconcile intentionally does not poke the
+            // repository, but the trailing loadContact() below reads
+            // through the repository cache for speed. Reload first so the
+            // cache reflects the freshly-stamped GuessWho URL — otherwise
+            // a Case-A reconcile on first-open of a never-stamped contact
+            // leaves guessWhoUUID == nil in the UI until something else
+            // refreshes the cache.
+            await repository.reload()
             await loadContact()
         } catch {
             reconcileError = "\(error)"

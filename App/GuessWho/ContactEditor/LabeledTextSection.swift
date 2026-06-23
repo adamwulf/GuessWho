@@ -27,7 +27,7 @@ struct LabeledTextSection: View {
                         set: { items[idx] = LabeledValue(label: items[idx].label, value: $0) }
                     ))
                     .applyKeyboard(keyboardType)
-                    #if !os(macOS)
+                    #if !targetEnvironment(macCatalyst)
                     .textInputAutocapitalization(.never)
                     #endif
                 }

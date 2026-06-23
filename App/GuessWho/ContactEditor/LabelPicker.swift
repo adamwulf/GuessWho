@@ -71,7 +71,7 @@ struct CustomLabelSheet: View {
                 TextField("Label", text: $draft)
             }
             .navigationTitle("Custom Label")
-            #if !os(macOS)
+            #if !targetEnvironment(macCatalyst)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
@@ -84,7 +84,7 @@ struct CustomLabelSheet: View {
                 }
             }
         }
-        #if os(macOS)
+        #if targetEnvironment(macCatalyst)
         .frame(minWidth: 320, minHeight: 160)
         #endif
     }

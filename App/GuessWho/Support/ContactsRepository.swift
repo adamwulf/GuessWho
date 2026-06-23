@@ -1,6 +1,14 @@
 import Foundation
 import GuessWhoSync
 
+extension Notification.Name {
+    /// Posted by `ContactsRepository.reload()` after a fetch completes.
+    /// UIKit list controllers subscribe to this to re-apply a diffable
+    /// snapshot; SwiftUI consumers don't need it because `@Observable`
+    /// already drives recomputes for them.
+    static let contactsRepositoryDidReload = Notification.Name("ContactsRepositoryDidReload")
+}
+
 /// SwiftUI-facing read repository over the system Contacts store. One
 /// underlying fetch backs both the People and Organizations tabs — the
 /// `people` / `organizations` computed properties partition the same
@@ -34,8 +42,23 @@ final class ContactsRepository {
 
     func reload() async {
         isLoading = true
-        defer { isLoading = false }
         contacts = await service.fetchAll()
+        // Flip isLoading BEFORE posting so synchronous observers (the
+        // UIKit `ContactsListViewController` subscribes via
+        // `addObserver(forName:object:queue:.main, using:)`, which can
+        // deliver inside this stack frame when the posting and
+        // observing actors are both main) see the post-load state.
+        // A `defer { isLoading = false }` would fire AFTER the observer
+        // ran, leaving a UIKit list with zero contacts spinning forever
+        // waiting for the second event that flips the flag.
+        //
+        // Load-bearing assumption: `service.fetchAll()` is non-throwing
+        // (it catches internally and returns `[]` on error). If it ever
+        // becomes throwing, re-introduce a `defer { isLoading = false }`
+        // — or a `do/catch` that flips the flag in both branches — so
+        // the empty/error path still terminates the spinner.
+        isLoading = false
+        NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
     }
 
     /// People (contactType == .person) matching `peopleSearch`, sorted
