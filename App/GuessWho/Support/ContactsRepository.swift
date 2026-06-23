@@ -42,8 +42,16 @@ final class ContactsRepository {
 
     func reload() async {
         isLoading = true
-        defer { isLoading = false }
         contacts = await service.fetchAll()
+        // Flip isLoading BEFORE posting so synchronous observers (the
+        // UIKit `ContactsListViewController` subscribes via
+        // `addObserver(self, selector:, …)`, which delivers on the
+        // posting thread before this function's stack frame unwinds)
+        // see the post-load state. A `defer { isLoading = false }`
+        // would fire AFTER the observer ran, leaving a UIKit list with
+        // zero contacts spinning forever waiting for the second event
+        // that flips the flag.
+        isLoading = false
         NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
     }
 

@@ -33,6 +33,15 @@ final class ContactsListViewController: UIViewController {
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
+    /// Opaque token returned by the closure-based `addObserver` so
+    /// `deinit` can remove the specific observer (not "all observers
+    /// for self", which the selector-based form requires).
+    /// `nonisolated(unsafe)` because the property is only written once
+    /// (during setup on main) and only read from `deinit` (which is
+    /// nonisolated under Swift 6) — there is no concurrent access to
+    /// guard against.
+    private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
+
     init(repository: ContactsRepository) {
         self.repository = repository
         super.init(nibName: nil, bundle: nil)
@@ -45,7 +54,9 @@ final class ContactsListViewController: UIViewController {
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        if let reloadObserver {
+            NotificationCenter.default.removeObserver(reloadObserver)
+        }
     }
 
     override func viewDidLoad() {
@@ -136,18 +147,26 @@ final class ContactsListViewController: UIViewController {
         // simpler than `withObservationTracking` for this one-shot
         // refresh — UIKit only needs to know "the array changed",
         // not which specific property.
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(repositoryDidReload),
-            name: .contactsRepositoryDidReload,
-            object: nil
-        )
-    }
-
-    @objc
-    @MainActor
-    private func repositoryDidReload() {
-        applySnapshot(animated: true)
+        //
+        // Pinned to OperationQueue.main so a future post from an off-
+        // main context (Task.detached, a background queue, …) still
+        // applies the diffable snapshot from the main thread —
+        // UITableViewDiffableDataSource.apply is main-thread-only and
+        // would crash otherwise. Today the repository is @MainActor so
+        // posts always come from main; the queue pin is defensive.
+        reloadObserver = NotificationCenter.default.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // OperationQueue.main delivers on the main thread but Swift
+            // can't statically prove the closure is @MainActor — hop
+            // explicitly so the diffable apply runs in the right
+            // isolation context.
+            MainActor.assumeIsolated {
+                self?.applySnapshot(animated: true)
+            }
+        }
     }
 
     private func applySnapshot(animated: Bool) {

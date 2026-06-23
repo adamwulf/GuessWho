@@ -131,12 +131,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func showContactDetail(contact: Contact, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
-        // .id(contact.localID) gives ContactDetailView a fresh identity
-        // per selection so its @State (loaded Contact, sidecar,
-        // NotesStore, etc.) is rebuilt for the newly-selected contact.
-        // Mirrors what RootView.detailColumn does on the SwiftUI side.
+        // No `.id(contact.localID)` here: `setViewController(_:for:
+        // .secondary)` replaces the entire hosting controller per
+        // selection, so a fresh ContactDetailView + brand-new @State
+        // tree is built automatically. The `.id()` modifier would
+        // only matter if we were reusing one hosting controller and
+        // mutating its rootView's localID (which is what
+        // `RootView.detailColumn` does on the SwiftUI iPhone path).
         let detail = ContactDetailView(localID: contact.localID)
-            .id(contact.localID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
