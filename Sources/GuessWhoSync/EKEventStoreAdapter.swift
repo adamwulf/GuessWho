@@ -154,13 +154,20 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
     }
 
     private static func email(from url: URL) -> String? {
-        guard url.scheme?.lowercased() == "mailto" else { return nil }
-        // URL like `mailto:foo@bar.com` — `resourceSpecifier` returns the
-        // part after the scheme. Trim in case of `mailto:foo@bar.com?subject=…`.
-        let specifier = url.absoluteString
-            .dropFirst("mailto:".count)
+        guard let scheme = url.scheme?.lowercased(), scheme == "mailto" else { return nil }
+        // mailto: URLs are opaque — `URLComponents.path` doesn't help here.
+        // Strip the scheme prefix off the original `absoluteString` (using
+        // the actual scheme length to tolerate `MAILTO:`/`Mailto:` etc.),
+        // drop any `?headers` after the address, then percent-decode so
+        // an international invitee whose ICS payload encoded `@` as `%40`
+        // still matches a contact whose email is stored in plain ASCII.
+        let raw = url.absoluteString
+        let prefixCount = scheme.count + 1 // scheme + ":"
+        guard raw.count > prefixCount else { return nil }
+        let specifier = raw.dropFirst(prefixCount)
         let beforeQuery = specifier.split(separator: "?", maxSplits: 1).first.map(String.init) ?? String(specifier)
-        let trimmed = beforeQuery.trimmingCharacters(in: .whitespaces)
+        let decoded = beforeQuery.removingPercentEncoding ?? beforeQuery
+        let trimmed = decoded.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed
     }
 }

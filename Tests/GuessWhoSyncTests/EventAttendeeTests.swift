@@ -45,6 +45,13 @@ struct EventAttendeeTests {
         #expect(e.attendees.isEmpty)
     }
 
+    @Test("Equality treats two attendees with same name and case-insensitive-equivalent email as equal")
+    func testEqualityRespectsLowercasing() {
+        let a = EventAttendee(name: "Jane", email: "Jane@Example.COM")
+        let b = EventAttendee(name: "Jane", email: "jane@example.com")
+        #expect(a == b)
+    }
+
     @Test("event(at:) overlay propagates live attendees onto the cached projection")
     func testOverlayPropagatesAttendees() throws {
         let ekid = "ek-attendee-overlay"

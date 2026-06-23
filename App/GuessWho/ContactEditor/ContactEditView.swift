@@ -181,11 +181,23 @@ struct ContactEditView: View {
         return isNew ? "New Contact" : "Edit Contact"
     }
 
+    /// True when the user has any unsaved work that Cancel would lose.
+    /// For an existing-contact edit, the editor's `isDirty` flag is the
+    /// source of truth (rows flip it on user input).
+    /// For a new-contact seed, `isDirty` is true from the moment the
+    /// editor opens (it has to be, so Save enables on the seed values
+    /// without forcing the user to wiggle a field). Comparing `edited`
+    /// to `original` instead correctly reports "no user changes yet"
+    /// when the user opens the prefilled sheet and immediately Cancels.
+    private var hasUnsavedChanges: Bool {
+        isNew ? (model.edited != model.original) : model.isDirty
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
             Button("Cancel") {
-                if model.isDirty {
+                if hasUnsavedChanges {
                     showDiscardConfirm = true
                 } else {
                     dismiss()
