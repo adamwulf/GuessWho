@@ -25,12 +25,12 @@ final class EventsListViewController: UIViewController {
     private var dataSource: UITableViewDiffableDataSource<Int, UUID>!
 
     private var eventsByID: [UUID: Event] = [:]
-    private var orderedIDs: [UUID] = []
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
     private var bannerDismissed: Bool = false
+    private var sidecarBannerHost: UIHostingController<SidecarLocationBanner>?
 
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
@@ -64,7 +64,7 @@ final class EventsListViewController: UIViewController {
         configureDataSource()
         configureAddButton()
         observeRepositoryReloads()
-        updatePermissionBanner()
+        updateHeaderBanners()
 
         applySnapshot(animated: false)
 
@@ -141,11 +141,15 @@ final class EventsListViewController: UIViewController {
     private func presentLinkSheet() {
         let sheet = EventLinkSheet(mode: .create(onCreated: { [weak self] uuid in
             guard let self else { return }
-            self.presentedViewController?.dismiss(animated: true)
+            // Read from `repository.events` instead of `eventsByID`: the
+            // notification observer enqueues on OperationQueue.main and
+            // runs AFTER this continuation, so the VC's cache is still
+            // stale. The repository's array is updated synchronously
+            // inside reload() before the post.
             Task { @MainActor in
                 await self.repository.reload()
                 guard let uuid = UUID(uuidString: uuid),
-                      let event = self.eventsByID[uuid] else { return }
+                      let event = self.repository.events.first(where: { $0.id == uuid }) else { return }
                 self.didSelectEvent(event)
             }
         }))
@@ -165,7 +169,7 @@ final class EventsListViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.applySnapshot(animated: true)
-                self?.updatePermissionBanner()
+                self?.updateHeaderBanners()
             }
         }
     }
@@ -178,18 +182,17 @@ final class EventsListViewController: UIViewController {
             byID[event.id] = event
         }
         eventsByID = byID
-        orderedIDs = events.map { $0.id }
 
         var snapshot = NSDiffableDataSourceSnapshot<Int, UUID>()
         snapshot.appendSections([0])
-        snapshot.appendItems(orderedIDs, toSection: 0)
+        snapshot.appendItems(events.map { $0.id }, toSection: 0)
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()
     }
 
     private func updateEmptyState() {
-        let isEmpty = orderedIDs.isEmpty
+        let isEmpty = dataSource.snapshot().numberOfItems == 0
         emptyLabel.isHidden = !isEmpty || repository.isLoading
         if isEmpty && repository.isLoading {
             activityIndicator.startAnimating()
@@ -203,34 +206,69 @@ final class EventsListViewController: UIViewController {
         }
     }
 
-    // MARK: - Permission banner
+    // MARK: - Header banners
 
-    private func updatePermissionBanner() {
-        let needsBanner: Bool
-        switch service.eventsAuthorization {
-        case .notRequested, .denied, .restricted: needsBanner = true
-        case .authorized: needsBanner = false
+    private func updateHeaderBanners() {
+        // Tear down the prior hosted SwiftUI banner (if any) so child-VC
+        // lifecycle stays correct; the permission banner is plain UIKit
+        // and just gets dropped with the stack.
+        if let host = sidecarBannerHost {
+            host.willMove(toParent: nil)
+            host.view.removeFromSuperview()
+            host.removeFromParent()
+            sidecarBannerHost = nil
         }
-        if needsBanner && !bannerDismissed {
-            installPermissionBanner()
-        } else {
+
+        let showSidecar = service.sidecarLocation.needsBanner
+        let showPermission: Bool = {
+            switch service.eventsAuthorization {
+            case .notRequested, .denied, .restricted: return !bannerDismissed
+            case .authorized: return false
+            }
+        }()
+        guard showSidecar || showPermission else {
             tableView.tableHeaderView = nil
+            return
         }
-    }
 
-    private func installPermissionBanner() {
-        let banner = PermissionBannerView { [weak self] in
-            self?.bannerDismissed = true
-            self?.tableView.tableHeaderView = nil
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        if showSidecar {
+            let host = UIHostingController(rootView: SidecarLocationBanner(location: service.sidecarLocation))
+            host.view.backgroundColor = .clear
+            addChild(host)
+            stack.addArrangedSubview(host.view)
+            host.didMove(toParent: self)
+            sidecarBannerHost = host
         }
+
+        if showPermission {
+            let permission = PermissionBannerView { [weak self] in
+                self?.bannerDismissed = true
+                self?.updateHeaderBanners()
+            }
+            stack.addArrangedSubview(permission)
+        }
+
+        let container = UIView()
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+        ])
         let targetWidth = tableView.bounds.width
-        let fitting = banner.systemLayoutSizeFitting(
+        let fitting = container.systemLayoutSizeFitting(
             CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel
         )
-        banner.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
-        tableView.tableHeaderView = banner
+        container.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
+        tableView.tableHeaderView = container
     }
 }
 
@@ -378,11 +416,8 @@ private final class PermissionBannerView: UIView {
     }
 
     private func configureSubviews() {
-        let card = UIView()
-        card.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
-        card.layer.cornerRadius = 10
-        card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
+        backgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
+        layer.cornerRadius = 10
 
         let icon = UIImageView(image: UIImage(systemName: "calendar.badge.exclamationmark"))
         icon.tintColor = .systemOrange
@@ -391,7 +426,9 @@ private final class PermissionBannerView: UIView {
 
         let title = UILabel()
         title.text = "Calendar access disabled"
-        title.font = .preferredFont(forTextStyle: .subheadline).bold()
+        let titleFont = UIFont.preferredFont(forTextStyle: .subheadline)
+        let boldDescriptor = titleFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? titleFont.fontDescriptor
+        title.font = UIFont(descriptor: boldDescriptor, size: titleFont.pointSize)
         title.numberOfLines = 0
 
         let caption = UILabel()
@@ -416,27 +453,16 @@ private final class PermissionBannerView: UIView {
         hStack.alignment = .top
         hStack.spacing = 12
         hStack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(hStack)
+        addSubview(hStack)
 
         NSLayoutConstraint.activate([
-            card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            card.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            hStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            hStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            hStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            hStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            hStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            hStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            hStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            hStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
             icon.widthAnchor.constraint(equalToConstant: 20),
             icon.heightAnchor.constraint(equalToConstant: 20),
         ])
-    }
-}
-
-private extension UIFont {
-    func bold() -> UIFont {
-        let descriptor = fontDescriptor.withSymbolicTraits(.traitBold) ?? fontDescriptor
-        return UIFont(descriptor: descriptor, size: pointSize)
     }
 }
 
