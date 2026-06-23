@@ -102,7 +102,7 @@ struct ContactDetailView: View {
     }
 
     var body: some View {
-        Form {
+        List {
             if let contact {
                 infoSection(contact)
 
@@ -119,6 +119,15 @@ struct ContactDetailView: View {
                 ProgressView()
             }
         }
+        #if os(macOS)
+        .listStyle(.inset)
+        // Mirror Apple's Contacts detail pane: clamp the card width
+        // and let the surrounding pane breathe at wider window sizes.
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        #else
+        .listStyle(.insetGrouped)
+        #endif
         .navigationTitle(contact?.displayName ?? "Contact")
         .toolbar {
             if isEditingAnything {
