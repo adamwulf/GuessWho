@@ -1,13 +1,14 @@
 import UIKit
 import SwiftUI
+import Contacts
+import EventKit
 import GuessWhoSync
 
 /// UIKit application entry point. Replaces the previous SwiftUI `App`
 /// (`@main GuessWhoApp`) so we can drive the window with a UIKit
-/// `UIWindowSceneDelegate` and host a `UISplitViewController` as the
-/// root on Catalyst. iPhone/iPad continue to render the existing
-/// SwiftUI `RootView` — the SceneDelegate decides which root to mount
-/// based on `targetEnvironment(macCatalyst)`.
+/// `UIWindowSceneDelegate` and host a `UISplitViewController` (Catalyst)
+/// or a `UITabBarController` (iPhone/iPad-compact) as the root.
+/// SceneDelegate picks the root based on `targetEnvironment(macCatalyst)`.
 @main
 final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// Hoisted to the AppDelegate so a single instance survives every
@@ -16,20 +17,22 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// previous SwiftUI `@State` properties had under `GuessWhoApp`.
     let service: SyncService
     let favoritesStore: FavoritesListStore
-    /// Owned here so the UIKit Catalyst list controller can render
-    /// against a shared repository and reload paths (CNContactStore
-    /// change notifications, sidebar tab swaps) all see the same
-    /// instance. The SwiftUI RootView still constructs its own copy on
-    /// iPhone because that flow gates creation on Contacts auth — Phase
-    /// 3's UIKit shell intentionally takes the simpler "reload eagerly,
-    /// empty if denied" path since users have typically already granted
-    /// permission by the time they're using the app on a Mac.
+    /// Owned here so every UIKit list controller (iPhone tabs and
+    /// Catalyst columns) renders against a shared repository and reload
+    /// paths (CNContactStore notifications, list selections) all see
+    /// the same instance.
     let contactsRepository: ContactsRepository
-    #if targetEnvironment(macCatalyst)
-    /// Catalyst-only — iPhone's `RootView` constructs its own
-    /// `EventsRepository` so we don't duplicate the fetch there.
+    /// Owned here for the same reason as `contactsRepository`. After
+    /// Phase 5 the iPhone shell is also UIKit and consumes this repo,
+    /// so the gate that previously made this Catalyst-only is gone.
     let eventsRepository: EventsRepository
-    #endif
+
+    /// Opaque tokens for the store-change observers registered in
+    /// `didFinishLaunching`. Held so the AppDelegate (which lives for
+    /// the lifetime of the process) keeps them alive without needing
+    /// explicit removal.
+    private var contactStoreObserver: NSObjectProtocol?
+    private var eventStoreObserver: NSObjectProtocol?
 
     override init() {
         // Register defaults so non-@AppStorage readers and the iOS
@@ -42,9 +45,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
         self.contactsRepository = ContactsRepository(service: service)
-        #if targetEnvironment(macCatalyst)
         self.eventsRepository = EventsRepository(service: service)
-        #endif
         super.init()
     }
 
@@ -52,29 +53,65 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Kick the repository's initial fetch so the UIKit list
-        // controller has data ready when the user picks People in the
-        // sidebar. Runs even when Contacts access has not been granted
-        // yet — `fetchAll()` returns an empty array in that case, and a
-        // later CNContactStoreDidChange (fired by SyncService when
-        // permission flips to authorized) refreshes the list.
-        //
-        // Catalyst-only because iPhone's `RootView` constructs its own
-        // `ContactsRepository` and ignores this one — the eager reload
-        // here would be wasted I/O on iPhone. Matches the
-        // `eventsRepository` gating below.
-        //
-        // PHASE-5-RISK: if the iPhone migration starts consuming
-        // `appDelegate.contactsRepository` instead of `RootView`'s
-        // local copy, this gate needs to come back out.
-        #if targetEnvironment(macCatalyst)
+        // Sidecar-only migration runs BEFORE any permission prompt so it
+        // executes even when Contacts/Events access is denied. Moved out
+        // of the old SwiftUI RootView.task to keep the same "migrate
+        // before gate" ordering now that the iPhone shell is UIKit.
+        service.migrateEventsIfNeeded()
+
+        // Kick the repositories' initial fetch so the UIKit list
+        // controllers have data ready when the user picks a tab. Runs
+        // even when access has not been granted yet — fetches return
+        // empty in that case, and a later store-changed notification
+        // refreshes the list once permission flips. NO Catalyst-only
+        // gate: after Phase 5 the iPhone shell consumes this same
+        // AppDelegate-owned repo (Worker A had introduced a gate based
+        // on the pre-Phase-5 state where RootView built its own copy —
+        // the gate needed to come back out once iPhone migrated, which
+        // is now).
         Task { @MainActor in
             await contactsRepository.reload()
         }
         Task { @MainActor in
             await eventsRepository.reload()
         }
-        #endif
+
+        // Refresh both repositories on external store changes so an
+        // edit in Contacts.app / Calendar.app surfaces here without a
+        // relaunch. Lifted out of the old SwiftUI RootView observers
+        // because RootView is gone after Phase 5. Centralising at the
+        // AppDelegate (single owner of both repositories) avoids
+        // duplicating the same observer in every list controller and
+        // gives a single reload-fan-out point — each list VC then
+        // re-applies its diffable snapshot via the existing
+        // `.contactsRepositoryDidReload` / `.eventsRepositoryDidReload`
+        // notifications fired by the repository's reload().
+        contactStoreObserver = NotificationCenter.default.addObserver(
+            forName: .CNContactStoreDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                Task { @MainActor in
+                    await self.contactsRepository.reload()
+                    await self.eventsRepository.reload()
+                }
+            }
+        }
+        eventStoreObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                Task { @MainActor in
+                    await self.eventsRepository.reload()
+                }
+            }
+        }
+
         return true
     }
 
