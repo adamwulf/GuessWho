@@ -163,15 +163,18 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         // mailto: URLs are opaque — `URLComponents.path` doesn't help here.
         // Strip the scheme prefix off the original `absoluteString` (using
         // the actual scheme length to tolerate `MAILTO:`/`Mailto:` etc.),
-        // drop any `?headers` after the address, then percent-decode so
-        // an international invitee whose ICS payload encoded `@` as `%40`
-        // still matches a contact whose email is stored in plain ASCII.
+        // drop any `?headers` and/or `#fragment` after the address (RFC 6068
+        // doesn't define a mailto fragment but defensive against future
+        // producers), then percent-decode so an international invitee whose
+        // ICS payload encoded `@` as `%40` still matches a contact whose
+        // email is stored in plain ASCII.
         let raw = url.absoluteString
         let prefixCount = scheme.count + 1 // scheme + ":"
         guard raw.count > prefixCount else { return nil }
         let specifier = raw.dropFirst(prefixCount)
-        let beforeQuery = specifier.split(separator: "?", maxSplits: 1).first.map(String.init) ?? String(specifier)
-        let decoded = beforeQuery.removingPercentEncoding ?? beforeQuery
+        let addressEnd = specifier.firstIndex(where: { $0 == "?" || $0 == "#" }) ?? specifier.endIndex
+        let address = String(specifier[..<addressEnd])
+        let decoded = address.removingPercentEncoding ?? address
         let trimmed = decoded.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed
     }

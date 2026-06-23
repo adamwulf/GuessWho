@@ -87,6 +87,23 @@ struct EventAttendeeTests {
         #expect(EKEventStoreAdapter.email(from: url) == "dev@example.com")
     }
 
+    @Test("email(from:) strips an unexpected #fragment after the address")
+    func testEmailStripsFragment() throws {
+        // RFC 6068 doesn't define a mailto fragment, but a producer that
+        // emits one would otherwise leak into the address and break the
+        // contact lookup. Defensive — verifies the parser slices at
+        // either `?` or `#`, whichever appears first.
+        let url = try #require(URL(string: "mailto:dev@example.com#section"))
+        #expect(EKEventStoreAdapter.email(from: url) == "dev@example.com")
+    }
+
+    @Test("email(from:) strips both ?headers and #fragment, slicing at whichever comes first")
+    func testEmailStripsBothHeadersAndFragment() throws {
+        // Per RFC 3986 query precedes fragment, so `?` comes first here.
+        let url = try #require(URL(string: "mailto:dev@example.com?subject=Hi#section"))
+        #expect(EKEventStoreAdapter.email(from: url) == "dev@example.com")
+    }
+
     @Test("email(from:) returns nil for non-mailto schemes")
     func testEmailRejectsNonMailto() throws {
         let tel = try #require(URL(string: "tel:+15555551212"))
