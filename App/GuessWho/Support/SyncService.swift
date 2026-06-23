@@ -505,12 +505,19 @@ final class SyncService {
         if let existing = guessWhoUUID(in: contact) {
             return existing
         }
-        _ = try await reconcile(localID: contact.localID)
-        guard let fresh = await fetchAll().first(where: { $0.localID == contact.localID }),
-              let assigned = guessWhoUUID(in: fresh) else {
-            throw ReconcileAssignmentFailedError()
+        let outcome = try await reconcile(localID: contact.localID)
+        if let assigned = outcome.assignedUUID {
+            return assigned
         }
-        return assigned
+        // Reconcile finished without setting assignedUUID — Cases B/C/D may
+        // stamp the on-disk contact without populating that field (e.g. dup
+        // GuessWho URLs cleaned up on a contact whose in-memory Contact
+        // struct was stale). Re-fetch and read the freshly written UUID.
+        if let fresh = await fetchAll().first(where: { $0.localID == contact.localID }),
+           let stamped = guessWhoUUID(in: fresh) {
+            return stamped
+        }
+        throw ReconcileAssignmentFailedError()
     }
 
     // MARK: - Edit

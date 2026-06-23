@@ -543,9 +543,9 @@ private struct ContactPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     /// Returns `true` once the link has been created (or already existed),
-    /// `false` if reconcile/link failed. On `false` the sheet stays up so the
-    /// user can pick a different contact or retry — the underlying error is
-    /// surfaced via `service.recordError` by the caller.
+    /// `false` if the underlying reconcile-then-link sequence failed. The
+    /// picker surfaces its own neutral failure copy in that case — the host
+    /// view is also free to surface a richer message via `recordError`.
     let onPick: (Contact, String) async -> Bool
 
     @State private var query: String = ""
@@ -553,6 +553,7 @@ private struct ContactPickerSheet: View {
     @State private var selection: Contact?
     @State private var note: String = ""
     @State private var isSubmitting: Bool = false
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -563,13 +564,23 @@ private struct ContactPickerSheet: View {
                             HStack {
                                 Text(selection.displayName)
                                 Spacer()
-                                Button("Change") { self.selection = nil }
-                                    .buttonStyle(.borderless)
-                                    .disabled(isSubmitting)
+                                Button("Change") {
+                                    self.selection = nil
+                                    errorMessage = nil
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(isSubmitting)
                             }
                         }
                         Section("Note") {
                             TextField("Optional note", text: $note, axis: .vertical)
+                        }
+                        if let errorMessage {
+                            Section {
+                                Text(errorMessage)
+                                    .font(.callout)
+                                    .foregroundStyle(.red)
+                            }
                         }
                     }
                 } else {
@@ -585,21 +596,43 @@ private struct ContactPickerSheet: View {
             }
             .navigationTitle(selection == nil ? "Pick Contact" : "Add Link")
             .toolbar {
+                // Cancel stays enabled while submitting: if the underlying
+                // CNContactStore.save hangs (iCloud contention, write lock),
+                // disabling Cancel would trap the user. The unstructured
+                // Task continues running after dismissal — SwiftUI state
+                // mutations on the dismissed view are no-ops, so there's no
+                // crash risk; any failure still surfaces via recordError.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .disabled(isSubmitting)
                 }
                 if let selection {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Add") {
+                        Button {
+                            // Re-entry guard: a double-tap or chord can fire
+                            // the Button twice before SwiftUI re-renders.
+                            // Setting `isSubmitting` synchronously here (NOT
+                            // inside the Task body) closes that window so a
+                            // second tap can't spawn a duplicate-link Task.
+                            guard !isSubmitting else { return }
+                            errorMessage = nil
+                            isSubmitting = true
                             Task {
-                                isSubmitting = true
                                 let didLink = await onPick(
                                     selection,
                                     note.trimmingCharacters(in: .whitespacesAndNewlines)
                                 )
+                                if didLink {
+                                    dismiss()
+                                } else {
+                                    errorMessage = "Couldn't add this contact. Try again or pick another."
+                                }
                                 isSubmitting = false
-                                if didLink { dismiss() }
+                            }
+                        } label: {
+                            if isSubmitting {
+                                ProgressView()
+                            } else {
+                                Text("Add")
                             }
                         }
                         .disabled(isSubmitting)
