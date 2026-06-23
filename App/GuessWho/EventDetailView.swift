@@ -161,7 +161,7 @@ struct EventDetailView: View {
             }
             if let notes = event.eventKitNotes, !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Calendar Notes").font(.caption).foregroundStyle(.secondary)
+                    Text("Description").font(.caption).foregroundStyle(.secondary)
                     Text(notes)
                 }
             }
@@ -170,7 +170,7 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private var guessWhoNotesSection: some View {
-        Section("Notes") {
+        Section("Additional Notes") {
             ForEach(notes, id: \.id) { note in
                 noteRow(note)
             }

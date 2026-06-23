@@ -82,7 +82,7 @@ final class SyncService {
         self.deviceID = id
 
         switch location {
-        case .iCloud(let url), .localFallback(let url, _):
+        case .iCloud(let url):
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
                 contacts: adapter,
@@ -94,7 +94,25 @@ final class SyncService {
             // `contacts/`/`events/`/`links/` directories under the same
             // root the sidecar store uses.
             self.favoritesStore = FavoritesStore(root: url)
-        case .unavailable:
+        case .localFallback(let url, let reason):
+            // Worth a breadcrumb so debug builds can see when iCloud
+            // failed to provision and we fell back to Application
+            // Support. Not user-actionable here — the banner explains
+            // the trade-off (local-only, no cross-device sync).
+            NSLog("[GuessWho] storage fallback to local: %@", reason)
+            let sidecarStore = FileSystemSidecarStore(root: url)
+            self.sync = GuessWhoSync(
+                contacts: adapter,
+                events: ekAdapter,
+                sidecars: sidecarStore,
+                deviceID: id
+            )
+            self.favoritesStore = FavoritesStore(root: url)
+        case .unavailable(let reason):
+            // Hard failure — neither iCloud nor Application Support was
+            // writable. Log loudly so it surfaces in Console.app even if
+            // the user never sees the banner.
+            NSLog("[GuessWho] storage unavailable: %@", reason)
             self.sync = nil
             self.favoritesStore = nil
         }

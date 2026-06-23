@@ -383,10 +383,9 @@ extension EventsListViewController: UISearchResultsUpdating {
 
 // MARK: - Row cell
 
-/// Two-line event row mirroring the SwiftUI `EventRow`: leading
-/// calendar icon (filled for linked, badge.plus for unlinked), title
-/// label (falling back to "(Untitled event)" when blank), caption
-/// start-date subtitle.
+/// Two-line event row: leading calendar icon, title label (falling
+/// back to "(Untitled event)" when blank), caption start-date
+/// subtitle.
 private final class EventCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
@@ -451,7 +450,7 @@ private final class EventCell: UITableViewCell {
     }
 
     func configure(with event: Event) {
-        iconView.image = UIImage(systemName: event.isLinked ? "calendar" : "calendar.badge.plus")
+        iconView.image = UIImage(systemName: "calendar")
         titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
         dateLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
     }

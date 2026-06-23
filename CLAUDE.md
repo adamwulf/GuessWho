@@ -26,8 +26,18 @@ find:
   It must not present a picker over EventKit / Contacts results.
 - The detail view's title, fields, and actions read identically whether the
   record is sidecar-only, EventKit-only (ephemeral, pre-adoption), or
-  EventKit+sidecar. The only divergence allowed is the source-of-truth icon
-  used in list rows.
+  EventKit+sidecar. List rows use a single icon per kind (one icon for
+  events, one for contacts) — never branch icon on `isLinked` /
+  source-of-truth.
+- Internal vocabulary stays internal. Strings like "sidecar," "reconcile,"
+  and "GuessWho" (as a noun for our private records) MUST NOT appear in
+  any user-facing label, message, or banner. The carve-out is **debug-mode
+  surfaces** (the contact-row reconcile checkmark, the contact detail Debug
+  section, debug toggle copy in Settings, OS-level NSLog breadcrumbs) —
+  those are for the developer, not the user, and the vocabulary helps
+  diagnose issues. Anything visible without flipping the debug switch
+  must use plain-language: "contact," "event," "notes," "tags," "storage,"
+  etc.
 
 When in doubt: if a label, button, or sheet uses the word "sidecar,"
 "link," "unlink," "EventKit," "Calendar event," or "existing contact,"

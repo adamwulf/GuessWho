@@ -22,7 +22,7 @@ struct SidecarLocationBanner: View {
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
         case .unavailable(let reason):
             Label {
-                Text("Sidecar storage unavailable. Reconcile and sidecar reads are disabled. \(reason)")
+                Text("Storage is unavailable. \(reason)")
                     .font(.footnote)
             } icon: {
                 Image(systemName: "xmark.octagon.fill")

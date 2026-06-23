@@ -188,7 +188,7 @@ struct EventLinkSheet: View {
     @ViewBuilder
     private func eventRow(_ event: Event) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: event.isLinked ? "calendar" : "calendar.badge.plus")
+            Image(systemName: "calendar")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 Text(event.title.isEmpty ? "(Untitled event)" : event.title)
