@@ -102,41 +102,25 @@ struct ContactDetailView: View {
     }
 
     var body: some View {
-        List {
+        Group {
             if let contact {
-                #if os(macOS)
-                Section {
-                    headerView(contact)
-                        .frame(maxWidth: .infinity)
-                        .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                }
-                #endif
-
-                infoSection(contact)
-
-                Section { activityFooter }
-
-                referencedBySection(contact)
-
-                activitySection
-
-                if debugModeEnabled {
-                    debugSection(contact)
-                }
+                loadedContent(contact)
             } else {
+                // Centered loading state — hoisted out of the List so
+                // it sits in the middle of the detail pane instead of
+                // landing in the top-left as the first list row.
                 ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         #if os(macOS)
-        .listStyle(.inset)
         // Mirror Apple's Contacts detail pane: clamp the card width
         // and let the surrounding pane breathe at wider window sizes.
+        // listStyle lives inside loadedContent — applying it on this
+        // Group (which can hold either a List or a ProgressView)
+        // wouldn't reach the List on the loaded branch.
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
-        #else
-        .listStyle(.insetGrouped)
         #endif
         #if os(macOS)
         // The inline header already shows the name and subtitle, so an
@@ -210,6 +194,38 @@ struct ContactDetailView: View {
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
+    }
+
+    @ViewBuilder
+    private func loadedContent(_ contact: Contact) -> some View {
+        let list = List {
+            #if os(macOS)
+            Section {
+                headerView(contact)
+                    .frame(maxWidth: .infinity)
+                    .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            #endif
+
+            infoSection(contact)
+
+            Section { activityFooter }
+
+            referencedBySection(contact)
+
+            activitySection
+
+            if debugModeEnabled {
+                debugSection(contact)
+            }
+        }
+        #if os(macOS)
+        list.listStyle(.inset)
+        #else
+        list.listStyle(.insetGrouped)
+        #endif
     }
 
     // MARK: - Edit (SwiftUI editor presentation)
