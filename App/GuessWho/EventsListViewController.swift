@@ -396,6 +396,16 @@ private final class EventCell: UITableViewCell {
         fatalError("init(coder:) is unsupported — EventCell is code-only")
     }
 
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        var background = UIBackgroundConfiguration.listPlainCell().updated(for: state)
+        if state.isSelected || state.isHighlighted {
+            background.backgroundColor = .tintColor
+            background.cornerRadius = 8
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12)
+        }
+        backgroundConfiguration = background
+    }
+
     private func configureSubviews() {
         iconView.contentMode = .scaleAspectFit
         iconView.tintColor = .secondaryLabel
