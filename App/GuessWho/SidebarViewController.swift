@@ -1,0 +1,98 @@
+import UIKit
+
+/// UIKit primary-column (sidebar) for the Catalyst 3-column shell.
+/// Backed by a diffable data source so future dynamic content
+/// (favorites, tag filters, …) can drop in without rewriting the
+/// reload path. Phase 2 only needs the static `SidebarTab` rows.
+final class SidebarViewController: UIViewController {
+    /// Closure-based selection callback so the SceneDelegate can wire
+    /// the sidebar to whichever content view controller is mounted in
+    /// the supplementary column without us holding a hard reference to
+    /// the split or the content VC.
+    var didSelectTab: (SidebarTab) -> Void = { _ in }
+
+    private enum Section: Int, CaseIterable {
+        case tabs
+    }
+
+    private var collectionView: UICollectionView!
+    private var dataSource: UICollectionViewDiffableDataSource<Section, SidebarTab>!
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "GuessWho"
+        view.backgroundColor = .systemBackground
+
+        configureCollectionView()
+        configureDataSource()
+        applyInitialSnapshot()
+        selectInitialTab()
+    }
+
+    private func configureCollectionView() {
+        var config = UICollectionLayoutListConfiguration(appearance: .sidebar)
+        config.showsSeparators = false
+        let layout = UICollectionViewCompositionalLayout.list(using: config)
+
+        collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
+        collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        collectionView.delegate = self
+        view.addSubview(collectionView)
+    }
+
+    private func configureDataSource() {
+        let cellRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, SidebarTab> { cell, _, tab in
+            var content = cell.defaultContentConfiguration()
+            content.text = tab.title
+            content.image = UIImage(systemName: tab.systemImage)
+            cell.contentConfiguration = content
+        }
+
+        dataSource = UICollectionViewDiffableDataSource<Section, SidebarTab>(
+            collectionView: collectionView
+        ) { collectionView, indexPath, tab in
+            collectionView.dequeueConfiguredReusableCell(
+                using: cellRegistration,
+                for: indexPath,
+                item: tab
+            )
+        }
+    }
+
+    private func applyInitialSnapshot() {
+        var snapshot = NSDiffableDataSourceSnapshot<Section, SidebarTab>()
+        snapshot.appendSections([.tabs])
+        snapshot.appendItems(sidebarTabs, toSection: .tabs)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// `.settings` is Catalyst-only because iOS/iPadOS surface the
+    /// same toggle through the system Settings app via the bundled
+    /// `Settings.bundle`. Phase 2 only ships the Catalyst shell, so
+    /// in practice this controller always sees all three rows — the
+    /// compile-time gate keeps the iPhone hosting path honest if
+    /// it ever instantiates this VC.
+    private var sidebarTabs: [SidebarTab] {
+        #if targetEnvironment(macCatalyst)
+        return SidebarTab.allCases
+        #else
+        return SidebarTab.allCases.filter { $0 != .settings }
+        #endif
+    }
+
+    private func selectInitialTab() {
+        guard
+            let initialTab = sidebarTabs.first,
+            let indexPath = dataSource.indexPath(for: initialTab)
+        else { return }
+        collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
+        didSelectTab(initialTab)
+    }
+}
+
+extension SidebarViewController: UICollectionViewDelegate {
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard let tab = dataSource.itemIdentifier(for: indexPath) else { return }
+        didSelectTab(tab)
+    }
+}
