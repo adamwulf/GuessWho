@@ -1,0 +1,358 @@
+import UIKit
+import GuessWhoSync
+
+/// UIKit People list for the Catalyst 3-column shell. Backed by a
+/// `UITableViewDiffableDataSource` keyed on (section-letter, localID)
+/// so a repository reload only re-applies a snapshot rather than
+/// invalidating the entire view. Mirrors the SwiftUI `PeopleListView`
+/// in behavior: A–Z sectioning, search bound to
+/// `ContactsRepository.peopleSearch`, and a per-row layout matching
+/// the existing `ContactRow` (icon + name + caption subtitle).
+final class ContactsListViewController: UIViewController {
+    /// Closure-based selection callback so the SceneDelegate can mount
+    /// a fresh `UIHostingController<ContactDetailView>` in the secondary
+    /// column without us holding a strong reference to the split.
+    var didSelectContact: (Contact) -> Void = { _ in }
+
+    private let repository: ContactsRepository
+
+    private enum CellID: String {
+        case contact
+    }
+
+    private var tableView: UITableView!
+    private var searchController: UISearchController!
+    private var dataSource: SectionedDataSource!
+
+    /// Local cache so `tableView(_:cellForRowAt:)` and selection
+    /// resolve a `localID` back to a `Contact` without re-running the
+    /// repository's sort/filter pipeline on every row.
+    private var contactsByLocalID: [String: Contact] = [:]
+    private var sectionLetters: [String] = []
+
+    private let emptyLabel = UILabel()
+    private let activityIndicator = UIActivityIndicatorView(style: .medium)
+
+    init(repository: ContactsRepository) {
+        self.repository = repository
+        super.init(nibName: nil, bundle: nil)
+        title = "People"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unsupported — ContactsListViewController is code-only")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        configureTableView()
+        configureSearch()
+        configureEmptyState()
+        configureDataSource()
+        observeRepositoryReloads()
+
+        // First paint from whatever the AppDelegate's initial reload
+        // already produced — Phase 3's AppDelegate kicks
+        // `repository.reload()` from didFinishLaunching, so by the time
+        // the user picks People in the sidebar the array is usually
+        // populated. Re-applying here also covers the "navigated away
+        // and back" case where the cached snapshot still matches.
+        applySnapshot(animated: false)
+    }
+
+    // MARK: - Table view
+
+    private func configureTableView() {
+        tableView = UITableView(frame: view.bounds, style: .plain)
+        tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        tableView.delegate = self
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 56
+        tableView.sectionIndexBackgroundColor = .clear
+        tableView.register(ContactCell.self, forCellReuseIdentifier: CellID.contact.rawValue)
+        view.addSubview(tableView)
+    }
+
+    private func configureSearch() {
+        searchController = UISearchController(searchResultsController: nil)
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchResultsUpdater = self
+        searchController.searchBar.placeholder = "Search people"
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+    }
+
+    private func configureEmptyState() {
+        emptyLabel.text = "No People"
+        emptyLabel.font = .preferredFont(forTextStyle: .body)
+        emptyLabel.textColor = .secondaryLabel
+        emptyLabel.textAlignment = .center
+        emptyLabel.adjustsFontForContentSizeCategory = true
+        emptyLabel.isHidden = true
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyLabel)
+
+        activityIndicator.hidesWhenStopped = true
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(activityIndicator)
+
+        NSLayoutConstraint.activate([
+            emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
+            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
+            activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+    }
+
+    private func configureDataSource() {
+        // Capture self weakly inside the cell provider so a deinit
+        // mid-reload can't leak a strong reference cycle.
+        dataSource = SectionedDataSource(
+            tableView: tableView
+        ) { [weak self] tableView, indexPath, localID in
+            let cell = tableView.dequeueReusableCell(withIdentifier: CellID.contact.rawValue, for: indexPath)
+            guard let self, let contact = self.contactsByLocalID[localID] else { return cell }
+            (cell as? ContactCell)?.configure(with: contact)
+            return cell
+        }
+        dataSource.defaultRowAnimation = .fade
+    }
+
+    // MARK: - Snapshot wiring
+
+    @MainActor
+    private func observeRepositoryReloads() {
+        // Repository fires `.contactsRepositoryDidReload` after its
+        // async fetch lands. The notification path is intentionally
+        // simpler than `withObservationTracking` for this one-shot
+        // refresh — UIKit only needs to know "the array changed",
+        // not which specific property.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(repositoryDidReload),
+            name: .contactsRepositoryDidReload,
+            object: nil
+        )
+    }
+
+    @objc
+    @MainActor
+    private func repositoryDidReload() {
+        applySnapshot(animated: true)
+    }
+
+    private func applySnapshot(animated: Bool) {
+        let sections = repository.peopleSections
+
+        // Rebuild the localID → Contact lookup before the cell provider
+        // can ask for it. Doing this before .apply keeps any
+        // mid-snapshot dequeue from seeing stale data.
+        var byID: [String: Contact] = [:]
+        for (_, contacts) in sections {
+            for contact in contacts {
+                byID[contact.localID] = contact
+            }
+        }
+        contactsByLocalID = byID
+        sectionLetters = sections.map { $0.0 }
+
+        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+        snapshot.appendSections(sectionLetters)
+        for (letter, contacts) in sections {
+            snapshot.appendItems(contacts.map { $0.localID }, toSection: letter)
+        }
+        dataSource.apply(snapshot, animatingDifferences: animated)
+
+        updateEmptyState()
+    }
+
+    private func updateEmptyState() {
+        let isEmpty = sectionLetters.isEmpty
+        emptyLabel.isHidden = !isEmpty || repository.isLoading
+        if isEmpty && repository.isLoading {
+            activityIndicator.startAnimating()
+        } else {
+            activityIndicator.stopAnimating()
+        }
+        if isEmpty && !repository.peopleSearch.isEmpty {
+            emptyLabel.text = "No people match \"\(repository.peopleSearch)\"."
+        } else {
+            emptyLabel.text = "No People"
+        }
+    }
+}
+
+// MARK: - UITableViewDelegate
+
+extension ContactsListViewController: UITableViewDelegate {
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let contact = contactsByLocalID[localID] else { return }
+        didSelectContact(contact)
+    }
+}
+
+/// Subclasses the diffable data source to expose the section title
+/// hook. The optional `titleForHeaderInSection` lives on
+/// `UITableViewDataSource`, but the diffable data source's default
+/// implementation doesn't forward to its closure — overriding here
+/// is the documented way to add A–Z section headers + the right-side
+/// index scrubber.
+private final class SectionedDataSource: UITableViewDiffableDataSource<String, String> {
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        // The snapshot's section identifier IS the letter, so the
+        // header text is just the section identifier itself.
+        snapshot().sectionIdentifiers[safe: section]
+    }
+
+    override func sectionIndexTitles(for tableView: UITableView) -> [String]? {
+        let titles = snapshot().sectionIdentifiers
+        return titles.isEmpty ? nil : titles
+    }
+
+    override func tableView(_ tableView: UITableView, sectionForSectionIndexTitle title: String, at index: Int) -> Int {
+        // sectionIndexTitles matches the snapshot's sectionIdentifiers
+        // order 1:1, so the index is the section number.
+        index
+    }
+}
+
+private extension Array {
+    /// Safe-indexed lookup so `tableView.numberOfSections` can briefly
+    /// disagree with the snapshot during an animated apply without
+    /// crashing the section-title call.
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+// MARK: - UISearchResultsUpdating
+
+extension ContactsListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let text = searchController.searchBar.text ?? ""
+        guard repository.peopleSearch != text else { return }
+        repository.peopleSearch = text
+        // peopleSearch only re-filters the computed property; nothing
+        // re-publishes on its own, so apply a fresh snapshot here.
+        applySnapshot(animated: false)
+    }
+}
+
+// MARK: - Row cell
+
+/// Two-line contact row mirroring the SwiftUI `ContactRow`: leading
+/// circle/building icon, name with bold family name, caption-sized
+/// subtitle showing "jobTitle, organizationName" (non-breaking space
+/// when empty so every row stays the same height).
+private final class ContactCell: UITableViewCell {
+    private let iconView = UIImageView()
+    private let nameLabel = UILabel()
+    private let subtitleLabel = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: .default, reuseIdentifier: reuseIdentifier)
+        configureSubviews()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unsupported — ContactCell is code-only")
+    }
+
+    private func configureSubviews() {
+        iconView.contentMode = .scaleAspectFit
+        iconView.tintColor = .secondaryLabel
+        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .title2)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        nameLabel.font = .preferredFont(forTextStyle: .body)
+        nameLabel.adjustsFontForContentSizeCategory = true
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.numberOfLines = 1
+
+        subtitleLabel.font = .preferredFont(forTextStyle: .caption1)
+        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.adjustsFontForContentSizeCategory = true
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.numberOfLines = 1
+
+        let textStack = UIStackView(arrangedSubviews: [nameLabel, subtitleLabel])
+        textStack.axis = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(iconView)
+        contentView.addSubview(textStack)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 28),
+            iconView.heightAnchor.constraint(equalToConstant: 28),
+            textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+            textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+        ])
+    }
+
+    func configure(with contact: Contact) {
+        let symbol = contact.contactType == .organization
+            ? "building.2.crop.circle.fill"
+            : "person.crop.circle.fill"
+        iconView.image = UIImage(systemName: symbol)
+        nameLabel.attributedText = Self.nameAttributedString(for: contact)
+        // Non-breaking space keeps the row's two-line height stable
+        // when the contact has no jobTitle/organizationName — matches
+        // the SwiftUI ContactRow's subtitleLine placeholder.
+        subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
+    }
+
+    private static func nameAttributedString(for contact: Contact) -> NSAttributedString {
+        let given = contact.givenName.trimmingCharacters(in: .whitespaces)
+        let family = contact.familyName.trimmingCharacters(in: .whitespaces)
+        let bodyFont = UIFont.preferredFont(forTextStyle: .body)
+        let boldDescriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
+        let boldFont = UIFont(descriptor: boldDescriptor, size: bodyFont.pointSize)
+
+        let attributed = NSMutableAttributedString()
+        if !given.isEmpty, !family.isEmpty {
+            attributed.append(NSAttributedString(
+                string: given + " ",
+                attributes: [.font: bodyFont]
+            ))
+            attributed.append(NSAttributedString(
+                string: family,
+                attributes: [.font: boldFont]
+            ))
+            return attributed
+        }
+        if !family.isEmpty {
+            return NSAttributedString(string: family, attributes: [.font: boldFont])
+        }
+        if !given.isEmpty {
+            return NSAttributedString(string: given, attributes: [.font: bodyFont])
+        }
+        return NSAttributedString(string: contact.displayName, attributes: [.font: bodyFont])
+    }
+
+    private static func subtitle(for contact: Contact) -> String {
+        guard contact.contactType == .person else { return "" }
+        let title = contact.jobTitle
+        let org = contact.organizationName
+        if !title.isEmpty, !org.isEmpty { return "\(title), \(org)" }
+        if !title.isEmpty { return title }
+        return org
+    }
+}

@@ -1,6 +1,14 @@
 import Foundation
 import GuessWhoSync
 
+extension Notification.Name {
+    /// Posted by `ContactsRepository.reload()` after a fetch completes.
+    /// UIKit list controllers subscribe to this to re-apply a diffable
+    /// snapshot; SwiftUI consumers don't need it because `@Observable`
+    /// already drives recomputes for them.
+    static let contactsRepositoryDidReload = Notification.Name("ContactsRepositoryDidReload")
+}
+
 /// SwiftUI-facing read repository over the system Contacts store. One
 /// underlying fetch backs both the People and Organizations tabs — the
 /// `people` / `organizations` computed properties partition the same
@@ -36,6 +44,7 @@ final class ContactsRepository {
         isLoading = true
         defer { isLoading = false }
         contacts = await service.fetchAll()
+        NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
     }
 
     /// People (contactType == .person) matching `peopleSearch`, sorted

@@ -16,6 +16,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// previous SwiftUI `@State` properties had under `GuessWhoApp`.
     let service: SyncService
     let favoritesStore: FavoritesListStore
+    /// Owned here so the UIKit Catalyst list controller can render
+    /// against a shared repository and reload paths (CNContactStore
+    /// change notifications, sidebar tab swaps) all see the same
+    /// instance. The SwiftUI RootView still constructs its own copy on
+    /// iPhone because that flow gates creation on Contacts auth — Phase
+    /// 3's UIKit shell intentionally takes the simpler "reload eagerly,
+    /// empty if denied" path since users have typically already granted
+    /// permission by the time they're using the app on a Mac.
+    let contactsRepository: ContactsRepository
 
     override init() {
         // Register defaults so non-@AppStorage readers and the iOS
@@ -27,7 +36,24 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         let service = SyncService()
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
+        self.contactsRepository = ContactsRepository(service: service)
         super.init()
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Kick the repository's initial fetch so the UIKit list
+        // controller has data ready when the user picks People in the
+        // sidebar. Runs even when Contacts access has not been granted
+        // yet — `fetchAll()` returns an empty array in that case, and a
+        // later CNContactStoreDidChange (fired by SyncService when
+        // permission flips to authorized) refreshes the list.
+        Task { @MainActor in
+            await contactsRepository.reload()
+        }
+        return true
     }
 
     func application(

@@ -6,12 +6,26 @@ import GuessWhoSync
 /// and picks its root view controller based on the build target:
 ///
 /// * Mac Catalyst → a 3-column `UISplitViewController` (sidebar /
-///   content / detail) — the new UIKit shell introduced in Phase 2.
+///   content / detail) — the new UIKit shell introduced in Phase 2,
+///   wired up with the real People list + selection-driven
+///   ContactDetailView in Phase 3.
 /// * iPhone / iPad → a `UIHostingController` wrapping the existing
 ///   SwiftUI `RootView` so iPhone behaviour is unchanged while the
 ///   UIKit migration progresses on Catalyst.
 final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
+
+    #if targetEnvironment(macCatalyst)
+    /// Strong references to the Catalyst columns so the sidebar
+    /// callback can swap supplementary/secondary view controllers on
+    /// each tab switch without us walking the split's child stack.
+    private var split: UISplitViewController?
+    private var sidebar: SidebarViewController?
+    /// Tracks the currently-mounted People list so we can clear it on
+    /// tab swaps. Nil while the supplementary column shows a different
+    /// section (Organizations / Settings / placeholder).
+    private var contactsList: ContactsListViewController?
+    #endif
 
     func scene(
         _ scene: UIScene,
@@ -19,7 +33,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
-        let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else {
+            fatalError("GuessWhoAppDelegate missing during scene connection")
+        }
 
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = makeRootViewController(appDelegate: appDelegate)
@@ -27,20 +43,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
     }
 
-    private func makeRootViewController(appDelegate: GuessWhoAppDelegate?) -> UIViewController {
+    private func makeRootViewController(appDelegate: GuessWhoAppDelegate) -> UIViewController {
         #if targetEnvironment(macCatalyst)
-        return makeCatalystSplit()
+        return makeCatalystSplit(appDelegate: appDelegate)
         #else
         return makeHostingRoot(appDelegate: appDelegate)
         #endif
     }
 
     #if targetEnvironment(macCatalyst)
-    /// Phase-2 Catalyst shell. The sidebar is real (drives column
-    /// swaps via its `didSelectTab` callback); the content and detail
-    /// columns are placeholders that Phase 3+ will replace with the
-    /// existing SwiftUI lists and `ContactDetailView`.
-    private func makeCatalystSplit() -> UISplitViewController {
+    /// Phase-3 Catalyst shell. The sidebar's selection now drives real
+    /// content/detail column swaps:
+    ///   * .people → ContactsListViewController + ContactDetailView on selection
+    ///   * .organizationsPlaceholder → "Coming soon" placeholder
+    ///   * .settings → SwiftUI SettingsView hosted via UIHostingController
+    /// When the user picks a tab that doesn't have a selected detail
+    /// the secondary column resets to a "Nothing Selected" placeholder.
+    private func makeCatalystSplit(appDelegate: GuessWhoAppDelegate) -> UISplitViewController {
         let split = UISplitViewController(style: .tripleColumn)
         split.preferredDisplayMode = .twoBesideSecondary
         split.preferredSplitBehavior = .tile
@@ -49,53 +68,99 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let sidebar = SidebarViewController()
         let sidebarNav = UINavigationController(rootViewController: sidebar)
 
-        let content = PlaceholderViewController(
-            title: "Content",
-            message: "Phase 3 will host the People / Organizations / Settings lists here."
-        )
-        let contentNav = UINavigationController(rootViewController: content)
-        // displayModeButtonItem in the supplementary column gives users
-        // a way to show/hide the sidebar even when the window is too
-        // narrow for the auto-revealed sidebar handle.
-        content.navigationItem.leftBarButtonItem = split.displayModeButtonItem
-        content.navigationItem.leftItemsSupplementBackButton = true
-
-        let detail = PlaceholderViewController(
-            title: "Detail",
-            message: "Phase 3 will host the selected contact's ContactDetailView here."
-        )
-        let detailNav = UINavigationController(rootViewController: detail)
-
         split.setViewController(sidebarNav, for: .primary)
-        split.setViewController(contentNav, for: .supplementary)
-        split.setViewController(detailNav, for: .secondary)
 
-        sidebar.didSelectTab = { [weak content] tab in
-            // Phase-2 wiring only: log the selection and surface it in
-            // the content placeholder's title so we can confirm the
-            // sidebar → content column hookup visually. Phase 3 will
-            // replace this with real list-view swaps.
-            print("selected: \(tab.title)")
-            content?.update(
-                title: tab.title,
-                message: "Selected '\(tab.title)' from the sidebar. Phase 3 will render the real list here."
-            )
+        self.split = split
+        self.sidebar = sidebar
+
+        sidebar.didSelectTab = { [weak self] tab in
+            self?.handleSidebarSelection(tab, appDelegate: appDelegate)
         }
+
+        // Seed both columns with placeholders; the sidebar's
+        // selectInitialTab() will immediately invoke didSelectTab and
+        // swap supplementary to the People list, so this is only ever
+        // visible if sidebar selection somehow fails.
+        let initialContent = PlaceholderViewController(
+            title: "Content",
+            message: "Pick a section from the sidebar."
+        )
+        split.setViewController(UINavigationController(rootViewController: initialContent), for: .supplementary)
+        installDetailPlaceholder(in: split)
 
         return split
     }
+
+    private func handleSidebarSelection(_ tab: SidebarTab, appDelegate: GuessWhoAppDelegate) {
+        guard let split else { return }
+
+        switch tab {
+        case .people:
+            let list = ContactsListViewController(repository: appDelegate.contactsRepository)
+            list.didSelectContact = { [weak self] contact in
+                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            list.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            list.navigationItem.leftItemsSupplementBackButton = true
+            let nav = UINavigationController(rootViewController: list)
+            split.setViewController(nav, for: .supplementary)
+            contactsList = list
+            installDetailPlaceholder(in: split)
+
+        case .organizationsPlaceholder:
+            let placeholder = PlaceholderViewController(
+                title: "Organizations",
+                message: "Coming soon — same pattern as People."
+            )
+            placeholder.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            placeholder.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: placeholder), for: .supplementary)
+            contactsList = nil
+            installDetailPlaceholder(in: split)
+
+        case .settings:
+            let settings = UIHostingController(rootView: SettingsView())
+            settings.title = "Settings"
+            settings.navigationItem.leftBarButtonItem = split.displayModeButtonItem
+            settings.navigationItem.leftItemsSupplementBackButton = true
+            split.setViewController(UINavigationController(rootViewController: settings), for: .supplementary)
+            contactsList = nil
+            installDetailPlaceholder(in: split)
+        }
+    }
+
+    private func showContactDetail(contact: Contact, appDelegate: GuessWhoAppDelegate) {
+        guard let split else { return }
+        // .id(contact.localID) gives ContactDetailView a fresh identity
+        // per selection so its @State (loaded Contact, sidecar,
+        // NotesStore, etc.) is rebuilt for the newly-selected contact.
+        // Mirrors what RootView.detailColumn does on the SwiftUI side.
+        let detail = ContactDetailView(localID: contact.localID)
+            .id(contact.localID)
+            .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(rootView: detail)
+        let nav = UINavigationController(rootViewController: hosting)
+        // setViewController REPLACES the secondary column wholesale on
+        // every selection — pushing onto a stack would accumulate detail
+        // views across taps.
+        split.setViewController(nav, for: .secondary)
+    }
+
+    private func installDetailPlaceholder(in split: UISplitViewController) {
+        let detail = PlaceholderViewController(
+            title: "Nothing Selected",
+            message: "Choose a person from the list to see details."
+        )
+        split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
+    }
     #endif
 
-    private func makeHostingRoot(appDelegate: GuessWhoAppDelegate?) -> UIViewController {
-        // Fall back to a fresh service/store if the AppDelegate is
-        // somehow missing — keeps iPhone launchable in the unlikely
-        // case `UIApplication.shared.delegate` is nil during scene
-        // connection (e.g. an extension or test harness host).
-        let service = appDelegate?.service ?? SyncService()
-        let favoritesStore = appDelegate?.favoritesStore ?? FavoritesListStore(service: service)
+    private func makeHostingRoot(appDelegate: GuessWhoAppDelegate) -> UIViewController {
         let root = RootView()
-            .environment(service)
-            .environment(favoritesStore)
+            .environment(appDelegate.service)
+            .environment(appDelegate.favoritesStore)
         return UIHostingController(rootView: root)
     }
 }
