@@ -1,7 +1,5 @@
 import UIKit
 import SwiftUI
-import Contacts
-import EventKit
 import GuessWhoSync
 
 /// UIKit Events list for the Catalyst 3-column shell. Single-section
@@ -37,8 +35,6 @@ final class EventsListViewController: UIViewController {
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
-    private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
-    private nonisolated(unsafe) var contactsChangedObserver: NSObjectProtocol?
 
     init(repository: EventsRepository, service: SyncService) {
         self.repository = repository
@@ -53,10 +49,9 @@ final class EventsListViewController: UIViewController {
     }
 
     deinit {
-        let center = NotificationCenter.default
-        if let reloadObserver { center.removeObserver(reloadObserver) }
-        if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
-        if let contactsChangedObserver { center.removeObserver(contactsChangedObserver) }
+        if let reloadObserver {
+            NotificationCenter.default.removeObserver(reloadObserver)
+        }
     }
 
     override func viewDidLoad() {
@@ -167,9 +162,15 @@ final class EventsListViewController: UIViewController {
 
     @MainActor
     private func observeRepositoryReloads() {
-        let center = NotificationCenter.default
-
-        reloadObserver = center.addObserver(
+        // External Calendar.app / Contacts.app edits already drive a
+        // `repository.reload()` from the AppDelegate's single-owner
+        // `.EKEventStoreChanged` / `.CNContactStoreDidChange` observers
+        // (Phase 5A) — that reload fires `.eventsRepositoryDidReload`,
+        // which lands here. So we only need to listen to the
+        // post-reload notification and re-apply the diffable snapshot;
+        // duplicating the store-changed observers locally would just
+        // double-reload the repo.
+        reloadObserver = NotificationCenter.default.addObserver(
             forName: .eventsRepositoryDidReload,
             object: nil,
             queue: .main
@@ -177,39 +178,6 @@ final class EventsListViewController: UIViewController {
             MainActor.assumeIsolated {
                 self?.applySnapshot(animated: true)
                 self?.updateHeaderBanners()
-            }
-        }
-
-        // External Calendar.app edits (added/removed/edited events)
-        // post .EKEventStoreChanged. The SwiftUI iPhone path reloads
-        // on this notification via @Observable; UIKit Catalyst would
-        // otherwise have to wait for scene-active or the next explicit
-        // user action.
-        eventsChangedObserver = center.addObserver(
-            forName: .EKEventStoreChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                Task { @MainActor in
-                    await self.repository.reload()
-                }
-            }
-        }
-
-        // Events display can include linked-contact details, so a
-        // CNContactStoreDidChange invalidates the rendered rows too.
-        contactsChangedObserver = center.addObserver(
-            forName: .CNContactStoreDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                Task { @MainActor in
-                    await self.repository.reload()
-                }
             }
         }
     }
