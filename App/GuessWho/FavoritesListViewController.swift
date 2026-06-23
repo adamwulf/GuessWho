@@ -35,6 +35,7 @@ final class FavoritesListViewController: UIViewController {
     private nonisolated(unsafe) var sceneActiveObserver: NSObjectProtocol?
     private nonisolated(unsafe) var contactsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
 
     init(store: FavoritesListStore, service: SyncService) {
         self.store = store
@@ -53,6 +54,7 @@ final class FavoritesListViewController: UIViewController {
         if let sceneActiveObserver { center.removeObserver(sceneActiveObserver) }
         if let contactsChangedObserver { center.removeObserver(contactsChangedObserver) }
         if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
+        if let favoritesChangedObserver { center.removeObserver(favoritesChangedObserver) }
     }
 
     override func viewDidLoad() {
@@ -168,6 +170,20 @@ final class FavoritesListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // Catches favorite toggles from ContactDetailView /
+        // EventDetailView — the SwiftUI iPhone list re-renders via
+        // @Observable, but UIKit needs an explicit nudge. The store
+        // has already reloaded before posting, so just apply.
+        favoritesChangedObserver = center.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applySnapshot(animated: true)
+            }
+        }
     }
 
     private func refreshContactMap() async {
@@ -224,8 +240,9 @@ extension FavoritesListViewController: UITableViewDelegate {
               let favorite = favoritesByStableID[stableID] else { return nil }
         let action = UIContextualAction(style: .destructive, title: "Unfavorite") { [weak self] _, _, completion in
             guard let self else { completion(false); return }
+            // store.toggle → store.reload → posts .favoritesDidChange,
+            // which the observer turns into applySnapshot.
             self.store.toggle(kind: favorite.kind, id: favorite.id)
-            self.applySnapshot(animated: true)
             completion(true)
         }
         action.image = UIImage(systemName: "star.slash")
@@ -243,8 +260,11 @@ extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropD
         itemsForBeginning session: UIDragSession,
         at indexPath: IndexPath
     ) -> [UIDragItem] {
-        guard let stableID = dataSource.itemIdentifier(for: indexPath) else { return [] }
-        return [UIDragItem(itemProvider: NSItemProvider(object: NSString(string: stableID)))]
+        guard dataSource.itemIdentifier(for: indexPath) != nil else { return [] }
+        // Empty provider — the drop path uses item.sourceIndexPath, so
+        // there's nothing to encode. A populated provider would leak
+        // the internal stableID to external drop targets.
+        return [UIDragItem(itemProvider: NSItemProvider())]
     }
 
     func tableView(
