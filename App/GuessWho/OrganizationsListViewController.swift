@@ -239,7 +239,7 @@ private final class OrganizationCell: UITableViewCell {
         if state.isSelected || state.isHighlighted {
             background.backgroundColor = .tintColor
             background.cornerRadius = 8
-            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12)
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 20)
         }
         backgroundConfiguration = background
     }
