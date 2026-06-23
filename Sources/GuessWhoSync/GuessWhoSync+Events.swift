@@ -123,7 +123,12 @@ extension GuessWhoSync {
     /// Writes the `eventKitID` cell on the existing sidecar then refreshes
     /// the cache from EventKit so live values overwrite the manual cache
     /// (Option C live-wins-when-linked).
-    public func linkExistingSidecar(at key: SidecarKey, toEventKitID ekid: String) throws {
+    ///
+    /// `internal` (not `public`) — no UI is allowed to call this. Per the
+    /// product principle (see CLAUDE.md) the sidecar / EventKit boundary is
+    /// never user-visible; adoption happens automatically on first read.
+    /// Kept around so existing tests still exercise the write path.
+    func linkExistingSidecar(at key: SidecarKey, toEventKitID ekid: String) throws {
         guard try sidecars.read(key) != nil else {
             throw EventStoreError.eventNotFound(eventKitID: ekid)
         }
@@ -141,7 +146,11 @@ extension GuessWhoSync {
     /// Soft-delete the `eventKitID` cell so the event is no longer linked.
     /// Bumps the cell's stamps and writes `deletedAt = now`; the cell's
     /// `value` string is retained. Cache cells are NOT touched.
-    public func unlinkEvent(at key: SidecarKey) throws {
+    ///
+    /// `internal` (not `public`) — same rationale as `linkExistingSidecar`:
+    /// the user never sees a "linked vs unlinked" concept. Kept around so
+    /// existing tests still exercise the write path.
+    func unlinkEvent(at key: SidecarKey) throws {
         guard let envelope = try sidecars.read(key) else { return }
         guard let cell = envelope.fields[Self.eventKitIDCellKey] else { return }
         guard let existingType = SidecarField.type(of: cell) else { return }
