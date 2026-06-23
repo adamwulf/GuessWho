@@ -24,6 +24,13 @@ struct ContactEditView: View {
     let contact: Contact
     let onDone: () -> Void
     let onDelete: () -> Void
+    /// True when the editor was opened to create a brand-new contact (the
+    /// `contact` parameter is a seed with empty `localID`, possibly with
+    /// pre-filled name/email from an EventKit attendee). Hides the Delete
+    /// section and uses a "New Contact" fallback title; the underlying
+    /// save path is the same — `CNContactStoreAdapter.save` adds when the
+    /// unifiedContact lookup misses.
+    let isNew: Bool
 
     @State private var model: ContactEditModel
     @State private var saveError: ContactEditModel.SaveErrorCategory?
@@ -36,7 +43,20 @@ struct ContactEditView: View {
         self.contact = contact
         self.onDone = onDone
         self.onDelete = onDelete
+        self.isNew = false
         _model = State(initialValue: ContactEditModel(original: contact))
+    }
+
+    /// Brand-new-contact entry point: the `seed` ships pre-filled with
+    /// whatever the caller already knows (e.g. attendee name + email).
+    /// The model starts dirty so Save is enabled immediately and the user
+    /// doesn't have to mutate a field to enable it.
+    init(newContactSeed seed: Contact, onDone: @escaping () -> Void) {
+        self.contact = seed
+        self.onDone = onDone
+        self.onDelete = {}
+        self.isNew = true
+        _model = State(initialValue: ContactEditModel(newContactSeed: seed))
     }
 
     var body: some View {
@@ -54,7 +74,9 @@ struct ContactEditView: View {
                 SocialProfileRow(model: $model)
                 IMRow(model: $model)
                 PhoneticNameRow(model: $model)
-                DeleteSection(showConfirm: $showDeleteConfirm)
+                if !isNew {
+                    DeleteSection(showConfirm: $showDeleteConfirm)
+                }
             }
             .formStyle(.grouped)
             .navigationTitle(navigationTitle)
@@ -154,9 +176,9 @@ struct ContactEditView: View {
         let name = [model.edited.givenName, model.edited.familyName]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        return name.isEmpty
-            ? (model.edited.organizationName.isEmpty ? "Edit Contact" : model.edited.organizationName)
-            : name
+        if !name.isEmpty { return name }
+        if !model.edited.organizationName.isEmpty { return model.edited.organizationName }
+        return isNew ? "New Contact" : "Edit Contact"
     }
 
     @ToolbarContentBuilder

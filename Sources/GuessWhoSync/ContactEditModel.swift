@@ -44,6 +44,19 @@ public struct ContactEditModel: Equatable {
         self.birthdayHasYear = (original.birthday?.year != nil)
     }
 
+    /// Seed-initializer for brand-new contacts. The editor's Save button is
+    /// gated on `isDirty`, so a pre-filled (but otherwise untouched) seed
+    /// would force the user to wiggle a field before the button enabled.
+    /// Marking the model dirty up front lets Save fire immediately on the
+    /// seed values — the saved CNContact ends up exactly what the caller
+    /// prefilled with no further interaction required.
+    public init(newContactSeed seed: Contact) {
+        self.original = seed
+        self.edited = seed
+        self.isDirty = true
+        self.birthdayHasYear = (seed.birthday?.year != nil)
+    }
+
     // MARK: - URL partition
 
     /// The URLs the editor's URL section should show. Filters out any
