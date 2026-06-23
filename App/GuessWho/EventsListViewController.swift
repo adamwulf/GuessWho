@@ -1,5 +1,7 @@
 import UIKit
 import SwiftUI
+import Contacts
+import EventKit
 import GuessWhoSync
 
 /// UIKit Events list for the Catalyst 3-column shell. Single-section
@@ -35,6 +37,8 @@ final class EventsListViewController: UIViewController {
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var contactsChangedObserver: NSObjectProtocol?
 
     init(repository: EventsRepository, service: SyncService) {
         self.repository = repository
@@ -49,9 +53,10 @@ final class EventsListViewController: UIViewController {
     }
 
     deinit {
-        if let reloadObserver {
-            NotificationCenter.default.removeObserver(reloadObserver)
-        }
+        let center = NotificationCenter.default
+        if let reloadObserver { center.removeObserver(reloadObserver) }
+        if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
+        if let contactsChangedObserver { center.removeObserver(contactsChangedObserver) }
     }
 
     override func viewDidLoad() {
@@ -162,7 +167,9 @@ final class EventsListViewController: UIViewController {
 
     @MainActor
     private func observeRepositoryReloads() {
-        reloadObserver = NotificationCenter.default.addObserver(
+        let center = NotificationCenter.default
+
+        reloadObserver = center.addObserver(
             forName: .eventsRepositoryDidReload,
             object: nil,
             queue: .main
@@ -170,6 +177,39 @@ final class EventsListViewController: UIViewController {
             MainActor.assumeIsolated {
                 self?.applySnapshot(animated: true)
                 self?.updateHeaderBanners()
+            }
+        }
+
+        // External Calendar.app edits (added/removed/edited events)
+        // post .EKEventStoreChanged. The SwiftUI iPhone path reloads
+        // on this notification via @Observable; UIKit Catalyst would
+        // otherwise have to wait for scene-active or the next explicit
+        // user action.
+        eventsChangedObserver = center.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { @MainActor in
+                    await self.repository.reload()
+                }
+            }
+        }
+
+        // Events display can include linked-contact details, so a
+        // CNContactStoreDidChange invalidates the rendered rows too.
+        contactsChangedObserver = center.addObserver(
+            forName: .CNContactStoreDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { @MainActor in
+                    await self.repository.reload()
+                }
             }
         }
     }
@@ -207,6 +247,34 @@ final class EventsListViewController: UIViewController {
     }
 
     // MARK: - Header banners
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Catalyst column resize changes tableView.bounds.width — the
+        // banner was sized once at install time and won't reflow on
+        // its own. Recompute the fitting size; only re-assign
+        // tableHeaderView if the height actually changed (the assign
+        // itself is what nudges UITableView to relayout — just setting
+        // the frame is not enough).
+        sizeHeaderBannerIfNeeded()
+    }
+
+    private func sizeHeaderBannerIfNeeded() {
+        guard let header = tableView.tableHeaderView else { return }
+        let targetWidth = tableView.bounds.width
+        guard targetWidth > 0 else { return }
+        let fitting = header.systemLayoutSizeFitting(
+            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        if abs(header.frame.height - fitting.height) > 0.5 || abs(header.frame.width - targetWidth) > 0.5 {
+            header.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
+            // Re-assignment forces the tableView to pick up the new
+            // header height; mutating header.frame in place doesn't.
+            tableView.tableHeaderView = header
+        }
+    }
 
     private func updateHeaderBanners() {
         // Tear down the prior hosted SwiftUI banner (if any) so child-VC
@@ -254,6 +322,7 @@ final class EventsListViewController: UIViewController {
         }
 
         let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
@@ -261,14 +330,18 @@ final class EventsListViewController: UIViewController {
             stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
         ])
+        // Install with a provisional frame; sizeHeaderBannerIfNeeded
+        // below (and the override in viewDidLayoutSubviews on every
+        // column resize) does the actual reflow.
         let targetWidth = tableView.bounds.width
         let fitting = container.systemLayoutSizeFitting(
-            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+            CGSize(width: max(targetWidth, 1), height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel
         )
         container.frame = CGRect(x: 0, y: 0, width: targetWidth, height: fitting.height)
         tableView.tableHeaderView = container
+        sizeHeaderBannerIfNeeded()
     }
 }
 
