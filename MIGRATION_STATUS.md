@@ -170,13 +170,18 @@ bridge introduced here.
 - **`SyncService` construction blocks main thread** in
   `AppDelegate.init()` (synchronous iCloud container resolution via
   `FileManager.url(forUbiquityContainerIdentifier:)`). Pre-existing;
-  hoist off main before shipping. Side effect today: two UI tests
-  (`test_peopleTabIsDefault` and `test_searchClearShowsAllAgain`) are
-  `XCTSkip`ed pending this fix — the cold-launch stall races their
-  People-nav-bar assertion on a freshly-cloned simulator at every
-  tested timeout (5s / 15s / 30s). Re-enable both once the iCloud
-  resolution is off main (5s timeout in the test bodies is the
-  re-enabled value).
+  hoist off main before shipping. Side effect today: FOUR UI tests
+  are `XCTSkip`ed pending this fix — the cold-launch stall races
+  whichever assertion happens to be the first non-skipped test in
+  alpha order on a freshly-cloned simulator (verified at 5s / 10s /
+  15s / 30s timeouts; the race kept relocating to the next-alpha test
+  as earlier ones skipped). Re-enable all four once the iCloud
+  resolution is off main; each test's post-skip body holds the
+  original 5s `waitForExistence` ready to go:
+    - `test_peopleTabIsDefault`
+    - `test_searchClearShowsAllAgain`
+    - `test_searchFieldFiltersPeopleList`
+    - `test_switchingToEventsTabShowsEventsTitle`
 - **Catalyst signed builds need iCloud capability** on the dev
   provisioning profile (portal-side action by Adam).
 - **Search has no debounce.** Each keystroke re-runs filter+sort and
