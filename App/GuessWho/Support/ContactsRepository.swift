@@ -45,12 +45,18 @@ final class ContactsRepository {
         contacts = await service.fetchAll()
         // Flip isLoading BEFORE posting so synchronous observers (the
         // UIKit `ContactsListViewController` subscribes via
-        // `addObserver(self, selector:, …)`, which delivers on the
-        // posting thread before this function's stack frame unwinds)
-        // see the post-load state. A `defer { isLoading = false }`
-        // would fire AFTER the observer ran, leaving a UIKit list with
-        // zero contacts spinning forever waiting for the second event
-        // that flips the flag.
+        // `addObserver(forName:object:queue:.main, using:)`, which can
+        // deliver inside this stack frame when the posting and
+        // observing actors are both main) see the post-load state.
+        // A `defer { isLoading = false }` would fire AFTER the observer
+        // ran, leaving a UIKit list with zero contacts spinning forever
+        // waiting for the second event that flips the flag.
+        //
+        // Load-bearing assumption: `service.fetchAll()` is non-throwing
+        // (it catches internally and returns `[]` on error). If it ever
+        // becomes throwing, re-introduce a `defer { isLoading = false }`
+        // — or a `do/catch` that flips the flag in both branches — so
+        // the empty/error path still terminates the spinner.
         isLoading = false
         NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
     }

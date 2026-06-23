@@ -28,7 +28,7 @@ GuessWhoSceneDelegate.scene(_:willConnectTo:)
   - `.settings` → `UIHostingController(rootView: SettingsView())`
 - **Secondary (detail):** swapped by content-column selection via
   `split.setViewController(_:for: .secondary)` (REPLACES, never
-  pushes). Mounts `UIHostingController(rootView: ContactDetailView(localID:).id(localID).environment(...))`.
+  pushes). Mounts `UIHostingController(rootView: ContactDetailView(localID:).environment(...))`.
   Resets to `PlaceholderViewController("Nothing Selected")` on every
   tab swap.
 - `displayModeButtonItem` wired into the supplementary column's
@@ -117,3 +117,10 @@ since Catalyst no longer reaches them.
   Edit) from `ContactDetailView` should appear in the secondary
   column's nav bar when hosted via `UIHostingController`. Build-only
   verification can't catch this; needs a real run.
+- **`ContactsListViewController.reloadObserver` is
+  `nonisolated(unsafe)`** because today the only strong holder is the
+  SceneDelegate, which writes and releases on main. If another holder
+  (a UIKit nav-stack hold, a delayed Task, a diagnostic singleton)
+  ever takes a strong reference and releases it from off-main, the
+  `deinit` read of `reloadObserver` becomes a data race. Re-evaluate
+  if more holders appear.
