@@ -104,6 +104,16 @@ struct ContactDetailView: View {
     var body: some View {
         List {
             if let contact {
+                #if os(macOS)
+                Section {
+                    headerView(contact)
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                #endif
+
                 infoSection(contact)
 
                 Section { activityFooter }
@@ -128,7 +138,14 @@ struct ContactDetailView: View {
         #else
         .listStyle(.insetGrouped)
         #endif
+        #if os(macOS)
+        // The inline header already shows the name and subtitle, so an
+        // empty nav-bar title keeps the toolbar clean (we still need the
+        // toolbar itself for back-button + Edit/star).
+        .navigationTitle("")
+        #else
         .navigationTitle(contact?.displayName ?? "Contact")
+        #endif
         .toolbar {
             if isEditingAnything {
                 ToolbarItem(placement: .confirmationAction) {
@@ -234,6 +251,46 @@ struct ContactDetailView: View {
         if contact == nil {
             dismiss()
         }
+    }
+
+    // MARK: - Header (macOS inline)
+
+    /// Inline detail header used on macOS: large monogram circle, name,
+    /// and a `job title · organization` subtitle. The nav-bar title is
+    /// hidden in this configuration so the name only appears once.
+    @ViewBuilder
+    private func headerView(_ contact: Contact) -> some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.secondary.opacity(0.15))
+                Text(contact.initials)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 96, height: 96)
+
+            VStack(spacing: 2) {
+                Text(contact.displayName)
+                    .font(.title2.weight(.semibold))
+                    .multilineTextAlignment(.center)
+
+                let subtitle = headerSubtitle(contact)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+    }
+
+    private func headerSubtitle(_ contact: Contact) -> String {
+        let parts = [contact.jobTitle, contact.organizationName]
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: - Sections

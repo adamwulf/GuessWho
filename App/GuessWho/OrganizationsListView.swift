@@ -41,13 +41,7 @@ struct OrganizationsListView: View {
             }
         }
         .navigationTitle("Organizations")
-        .navigationDestination(for: ContactReference.self) { ref in
-            ContactDetailView(localID: ref.localID)
-                .environment(repository)
-        }
-        .navigationDestination(for: EventReference.self) { ref in
-            EventDetailView(eventUUID: ref.eventUUID)
-        }
+        .contactAndEventDestinations()
         .searchable(
             text: $repository.organizationsSearch,
             prompt: "Search organizations"
