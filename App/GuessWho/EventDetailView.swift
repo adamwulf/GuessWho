@@ -33,12 +33,15 @@ struct EventDetailView: View {
     @State private var uuidToContact: [String: Contact] = [:]
     @State private var notes: [ContactNote] = []
     @State private var tags: [EventTag] = []
+    /// `false` until the first `reload()` finishes. The body uses it to
+    /// distinguish "still loading" from "really missing" so the
+    /// "(Unknown event)" fallback doesn't flash during the async
+    /// `fetchAll()` round-trip inside `reload()`.
+    @State private var hasLoadedOnce: Bool = false
 
     @State private var showingPicker = false
     @State private var showingEditSheet = false
-    @State private var showingUnlinkConfirm = false
     @State private var showingDeleteConfirm = false
-    @State private var showingLinkSheet = false
 
     @State private var newNoteText: String = ""
     @State private var editingNoteID: UUID?
@@ -58,9 +61,17 @@ struct EventDetailView: View {
                 guessWhoNotesSection
                 tagsSection
                 linkedContactsSection
-                linkActionsSection(event)
-            } else {
+                deleteActionSection
+            } else if hasLoadedOnce {
                 Section { Text("(Unknown event)") }
+            } else {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                }
             }
         }
         .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
@@ -102,7 +113,7 @@ struct EventDetailView: View {
         }
         .sheet(isPresented: $showingPicker) {
             ContactPickerSheet { contact, note in
-                addLink(to: contact, note: note)
+                await addLink(to: contact, note: note)
             }
         }
         .sheet(isPresented: $showingEditSheet) {
@@ -112,27 +123,12 @@ struct EventDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingLinkSheet) {
-            EventLinkSheet(mode: .adopt(eventUUID: resolvedUUID, onAdopted: {
-                Task { await reload() }
-            }))
-        }
         .confirmationDialog(
-            "Unlink from Calendar?",
-            isPresented: $showingUnlinkConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Unlink", role: .destructive) { unlink() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The event stays in Calendar. GuessWho will keep your notes and tags.")
-        }
-        .confirmationDialog(
-            "Remove from GuessWho? (Won't delete from Calendar.)",
+            "Delete this event?",
             isPresented: $showingDeleteConfirm,
             titleVisibility: .visible
         ) {
-            Button("Remove", role: .destructive) { delete() }
+            Button("Delete", role: .destructive) { delete() }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -165,7 +161,7 @@ struct EventDetailView: View {
             }
             if let notes = event.eventKitNotes, !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Calendar Notes").font(.caption).foregroundStyle(.secondary)
+                    Text("Description").font(.caption).foregroundStyle(.secondary)
                     Text(notes)
                 }
             }
@@ -174,7 +170,7 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private var guessWhoNotesSection: some View {
-        Section("Notes") {
+        Section("Additional Notes") {
             ForEach(notes, id: \.id) { note in
                 noteRow(note)
             }
@@ -284,22 +280,8 @@ struct EventDetailView: View {
     }
 
     @ViewBuilder
-    private func linkActionsSection(_ event: Event) -> some View {
+    private var deleteActionSection: some View {
         Section {
-            if event.isLinked {
-                Button(role: .destructive) {
-                    showingUnlinkConfirm = true
-                } label: {
-                    Label("Unlink from Calendar", systemImage: "calendar.badge.minus")
-                }
-            } else {
-                Button {
-                    showingLinkSheet = true
-                } label: {
-                    Label("Link to a calendar event", systemImage: "calendar.badge.plus")
-                }
-                .disabled(service.eventsAuthorization != .authorized)
-            }
             Button(role: .destructive) {
                 showingDeleteConfirm = true
             } label: {
@@ -367,16 +349,29 @@ struct EventDetailView: View {
             }
         }
         uuidToContact = map
+        hasLoadedOnce = true
     }
 
-    private func addLink(to contact: Contact, note: String) {
-        guard let uuid = service.guessWhoUUID(in: contact) else { return }
+    /// Returns `true` when the link was created (or already existed) so the
+    /// picker sheet knows it's safe to dismiss. Reconcile failures return
+    /// `false` and surface via `service.recordError` so the user can pick a
+    /// different contact or retry without losing the sheet.
+    private func addLink(to contact: Contact, note: String) async -> Bool {
+        let uuid: String
+        do {
+            uuid = try await service.reconcileIfNeeded(contact: contact)
+        } catch {
+            service.recordError("reconcile contact failed: \(error.localizedDescription)")
+            return false
+        }
         do {
             _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: resolvedUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
+            return false
         }
-        Task { await reload() }
+        await reload()
+        return true
     }
 
     private func remove(linkID: UUID) {
@@ -400,15 +395,6 @@ struct EventDetailView: View {
             )
         } catch {
             service.recordError("update event failed: \(error.localizedDescription)")
-        }
-        Task { await reload() }
-    }
-
-    private func unlink() {
-        do {
-            try service.unlinkEvent(uuid: resolvedUUID)
-        } catch {
-            service.recordError("unlink event failed: \(error.localizedDescription)")
         }
         Task { await reload() }
     }
@@ -556,12 +542,18 @@ private struct ContactPickerSheet: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
 
-    let onPick: (Contact, String) -> Void
+    /// Returns `true` once the link has been created (or already existed),
+    /// `false` if the underlying reconcile-then-link sequence failed. The
+    /// picker surfaces its own neutral failure copy in that case — the host
+    /// view is also free to surface a richer message via `recordError`.
+    let onPick: (Contact, String) async -> Bool
 
     @State private var query: String = ""
     @State private var contacts: [Contact] = []
     @State private var selection: Contact?
     @State private var note: String = ""
+    @State private var isSubmitting: Bool = false
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -572,12 +564,23 @@ private struct ContactPickerSheet: View {
                             HStack {
                                 Text(selection.displayName)
                                 Spacer()
-                                Button("Change") { self.selection = nil }
-                                    .buttonStyle(.borderless)
+                                Button("Change") {
+                                    self.selection = nil
+                                    errorMessage = nil
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(isSubmitting)
                             }
                         }
                         Section("Note") {
                             TextField("Optional note", text: $note, axis: .vertical)
+                        }
+                        if let errorMessage {
+                            Section {
+                                Text(errorMessage)
+                                    .font(.callout)
+                                    .foregroundStyle(.red)
+                            }
                         }
                     }
                 } else {
@@ -585,31 +588,54 @@ private struct ContactPickerSheet: View {
                         Button {
                             selection = contact
                         } label: {
-                            VStack(alignment: .leading) {
-                                Text(contact.displayName)
-                                if service.guessWhoUUID(in: contact) == nil {
-                                    Text("Not yet reconciled — open the contact first")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
+                            Text(contact.displayName)
                         }
-                        .disabled(service.guessWhoUUID(in: contact) == nil)
                     }
                     .searchable(text: $query, prompt: "Search contacts")
                 }
             }
             .navigationTitle(selection == nil ? "Pick Contact" : "Add Link")
             .toolbar {
+                // Cancel stays enabled while submitting: if the underlying
+                // CNContactStore.save hangs (iCloud contention, write lock),
+                // disabling Cancel would trap the user. The unstructured
+                // Task continues running after dismissal — SwiftUI state
+                // mutations on the dismissed view are no-ops, so there's no
+                // crash risk; any failure still surfaces via recordError.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 if let selection {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Add") {
-                            onPick(selection, note.trimmingCharacters(in: .whitespacesAndNewlines))
-                            dismiss()
+                        Button {
+                            // Re-entry guard: a double-tap or chord can fire
+                            // the Button twice before SwiftUI re-renders.
+                            // Setting `isSubmitting` synchronously here (NOT
+                            // inside the Task body) closes that window so a
+                            // second tap can't spawn a duplicate-link Task.
+                            guard !isSubmitting else { return }
+                            errorMessage = nil
+                            isSubmitting = true
+                            Task {
+                                let didLink = await onPick(
+                                    selection,
+                                    note.trimmingCharacters(in: .whitespacesAndNewlines)
+                                )
+                                if didLink {
+                                    dismiss()
+                                } else {
+                                    errorMessage = "Couldn't add this contact. Try again or pick another."
+                                }
+                                isSubmitting = false
+                            }
+                        } label: {
+                            if isSubmitting {
+                                ProgressView()
+                            } else {
+                                Text("Add")
+                            }
                         }
+                        .disabled(isSubmitting)
                     }
                 }
             }

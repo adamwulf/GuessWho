@@ -82,7 +82,7 @@ final class SyncService {
         self.deviceID = id
 
         switch location {
-        case .iCloud(let url), .localFallback(let url, _):
+        case .iCloud(let url):
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
                 contacts: adapter,
@@ -94,7 +94,25 @@ final class SyncService {
             // `contacts/`/`events/`/`links/` directories under the same
             // root the sidecar store uses.
             self.favoritesStore = FavoritesStore(root: url)
-        case .unavailable:
+        case .localFallback(let url, let reason):
+            // Worth a breadcrumb so debug builds can see when iCloud
+            // failed to provision and we fell back to Application
+            // Support. Not user-actionable here — the banner explains
+            // the trade-off (local-only, no cross-device sync).
+            NSLog("[GuessWho] storage fallback to local: %@", reason)
+            let sidecarStore = FileSystemSidecarStore(root: url)
+            self.sync = GuessWhoSync(
+                contacts: adapter,
+                events: ekAdapter,
+                sidecars: sidecarStore,
+                deviceID: id
+            )
+            self.favoritesStore = FavoritesStore(root: url)
+        case .unavailable(let reason):
+            // Hard failure — neither iCloud nor Application Support was
+            // writable. Log loudly so it surfaces in Console.app even if
+            // the user never sees the banner.
+            NSLog("[GuessWho] storage unavailable: %@", reason)
             self.sync = nil
             self.favoritesStore = nil
         }
@@ -257,21 +275,6 @@ final class SyncService {
             throw EventStoreError.eventNotFound(eventKitID: ekid)
         }
         return try sync.linkEvent(toEventKitID: ekid, snapshot: snapshot)
-    }
-
-    /// Adopt an existing manual sidecar (`uuid`) by attaching it to an EventKit
-    /// event. Requires authorized access — the orchestrator refreshes the cache
-    /// from EventKit after the link.
-    func linkExistingSidecar(uuid: String, toEventKitID ekid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
-        try sync.linkExistingSidecar(at: SidecarKey(kind: .event, id: uuid), toEventKitID: ekid)
-    }
-
-    /// Soft-delete the `eventKitID` cell on a sidecar; the EKEvent is untouched.
-    func unlinkEvent(uuid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.unlinkEvent(at: SidecarKey(kind: .event, id: uuid))
     }
 
     /// Whole-event soft-delete on the sidecar; the EKEvent is untouched.
@@ -491,6 +494,30 @@ final class SyncService {
             throw SidecarUnavailableError()
         }
         return try await sync.reconcileContactIdentity(localID: localID)
+    }
+
+    /// Returns the contact's GuessWho UUID, minting one via reconcile if the
+    /// contact has not yet been stamped. Used at sidecar/Contacts seams where
+    /// the caller needs a UUID to link/favorite/etc. but the user has not yet
+    /// opened the contact's detail view (which is the other reconcile trigger).
+    /// Throws if reconcile fails or — pathologically — fails to assign a UUID.
+    func reconcileIfNeeded(contact: Contact) async throws -> String {
+        if let existing = guessWhoUUID(in: contact) {
+            return existing
+        }
+        let outcome = try await reconcile(localID: contact.localID)
+        if let assigned = outcome.assignedUUID {
+            return assigned
+        }
+        // Reconcile finished without setting assignedUUID — Cases B/C/D may
+        // stamp the on-disk contact without populating that field (e.g. dup
+        // GuessWho URLs cleaned up on a contact whose in-memory Contact
+        // struct was stale). Re-fetch and read the freshly written UUID.
+        if let fresh = await fetchAll().first(where: { $0.localID == contact.localID }),
+           let stamped = guessWhoUUID(in: fresh) {
+            return stamped
+        }
+        throw ReconcileAssignmentFailedError()
     }
 
     // MARK: - Edit
@@ -778,5 +805,11 @@ final class SyncService {
 struct SidecarUnavailableError: Error, LocalizedError {
     var errorDescription: String? {
         "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+    }
+}
+
+struct ReconcileAssignmentFailedError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Could not assign an identity to this contact."
     }
 }

@@ -123,7 +123,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 service: appDelegate.service
             )
             list.didSelectEvent = { [weak self] event in
-                self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
+                self?.showEventDetail(
+                    eventUUID: event.id.uuidString,
+                    eventKitID: event.eventKitID,
+                    appDelegate: appDelegate
+                )
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split, for: .events)
@@ -137,7 +141,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
             list.didSelectEvent = { [weak self] event in
-                self?.showEventDetail(eventUUID: event.id.uuidString, appDelegate: appDelegate)
+                self?.showEventDetail(
+                    eventUUID: event.id.uuidString,
+                    eventKitID: event.eventKitID,
+                    appDelegate: appDelegate
+                )
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split, for: .favorites)
@@ -179,11 +187,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(nav, for: .secondary)
     }
 
-    private func showEventDetail(eventUUID: String, appDelegate: GuessWhoAppDelegate) {
+    private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
         // See `showContactDetail` for the rationale on NOT injecting
         // the push closures on Catalyst — Phase 6 will revisit.
-        let detail = EventDetailView(eventUUID: eventUUID)
+        //
+        // `eventKitID` is carried so EventDetailView can adopt
+        // ephemeral EventKit rows whose `eventUUID` is the synthetic
+        // `Event.stableID(forEventKitID:)` and have no sidecar yet —
+        // otherwise the detail view shows "(Unknown event)".
+        let detail = EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
             .environment(appDelegate.service)
             .environment(appDelegate.favoritesStore)
         let hosting = UIHostingController(rootView: detail)
@@ -291,7 +304,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             service: appDelegate.service
         )
         list.didSelectEvent = { [weak self] event in
-            self?.pushEventDetail(eventUUID: event.id.uuidString, on: list.navigationController, appDelegate: appDelegate)
+            self?.pushEventDetail(
+                eventUUID: event.id.uuidString,
+                eventKitID: event.eventKitID,
+                on: list.navigationController,
+                appDelegate: appDelegate
+            )
         }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
@@ -311,7 +329,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
         }
         list.didSelectEvent = { [weak self] event in
-            self?.pushEventDetail(eventUUID: event.id.uuidString, on: list.navigationController, appDelegate: appDelegate)
+            self?.pushEventDetail(
+                eventUUID: event.id.uuidString,
+                eventKitID: event.eventKitID,
+                on: list.navigationController,
+                appDelegate: appDelegate
+            )
         }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
@@ -368,14 +391,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         let hosting = UIHostingController(rootView: detail)
         nav.pushViewController(hosting, animated: true)
-    }
-
-    private func pushEventDetail(
-        eventUUID: String,
-        on nav: UINavigationController?,
-        appDelegate: GuessWhoAppDelegate
-    ) {
-        pushEventDetail(eventUUID: eventUUID, eventKitID: nil, on: nav, appDelegate: appDelegate)
     }
 
     private func pushEventDetail(
