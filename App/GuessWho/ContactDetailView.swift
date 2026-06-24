@@ -145,22 +145,22 @@ struct ContactDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        #if targetEnvironment(macCatalyst)
-        // Mirror Apple's Contacts detail pane: clamp the card width
-        // and let the surrounding pane breathe at wider window sizes.
-        // listStyle lives inside loadedContent — applying it on this
-        // Group (which can hold either a List or a ProgressView)
-        // wouldn't reach the List on the loaded branch.
-        .frame(maxWidth: 560)
-        .frame(maxWidth: .infinity)
-        #endif
-        #if targetEnvironment(macCatalyst)
-        // The inline header already shows the name and subtitle, so an
-        // empty nav-bar title keeps the toolbar clean (we still need the
-        // toolbar itself for back-button + Edit/star).
+        // Width clamping is NOT applied to this Group: doing so would inset
+        // the List (and therefore its scroll view) from the pane edges,
+        // leaving inert dead space on the sides that doesn't scroll. Instead
+        // the List stays full-bleed and each row clamps + centers its own
+        // content to `ContactDetailLayout.maxContentWidth` (see
+        // `centeredRowContent`), so the scrollable region reaches the pane
+        // edges while the visible content stays in the same centered column.
+        // macCatalyst only — see `loadedContent`.
+        // The inline header (shown on every platform now) already renders the
+        // name and subtitle, so an empty nav-bar title avoids showing the name
+        // twice while keeping the toolbar itself (back button + Edit/star).
         .navigationTitle("")
-        #else
-        .navigationTitle(contact?.displayName ?? "Contact")
+        #if !targetEnvironment(macCatalyst)
+        // Inline display mode so the empty title doesn't reserve large-title
+        // space above the header on the pushed iPhone/iPad detail.
+        .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
         .confirmationDialog(
@@ -236,16 +236,26 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func loadedContent(_ contact: Contact) -> some View {
+        // `.centeredRowContent()` is applied to each ROW's content view (inside
+        // the section helpers below), NOT to the `Section`s here. A Section is a
+        // structural list element, not a laid-out view, so `.frame(maxWidth:)`
+        // on it does not reliably clamp row width; applied to the row content it
+        // does. The List itself stays full-bleed so its scroll view reaches the
+        // pane edges. See `centeredRowContent`.
         let list = List {
-            #if targetEnvironment(macCatalyst)
             Section {
+                // Inline header on every platform: monogram + name + subtitle
+                // read as a centered card, matching Apple's Contacts detail.
+                // `.frame(maxWidth: .infinity)` centers it within the row on all
+                // platforms; `.centeredRowContent(alignment: .center)` adds the
+                // 560 column clamp on Catalyst (a no-op elsewhere).
                 headerView(contact)
                     .frame(maxWidth: .infinity)
+                    .centeredRowContent(alignment: .center)
                     .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-            #endif
 
             if isEditingContact {
                 editingSections
@@ -313,6 +323,7 @@ struct ContactDetailView: View {
                 }
             }
             .disabled(isSavingEdit)
+            .centeredRowContent()
         }
     }
 
@@ -516,6 +527,7 @@ struct ContactDetailView: View {
             Section {
                 ForEach(rows) { row in
                     InfoRow(data: row)
+                        .centeredRowContent()
                 }
             }
         }
@@ -529,10 +541,13 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var recentEventsSection: some View {
         if !recentEvents.isEmpty {
-            Section("Recent Events") {
+            Section {
                 ForEach(recentEvents, id: \.id) { event in
                     recentEventRow(event)
+                        .centeredRowContent()
                 }
+            } header: {
+                Text("Recent Events").centeredSectionHeader()
             }
         }
     }
@@ -577,10 +592,13 @@ struct ContactDetailView: View {
                     localID: entry.contact.localID
                 )
             }
-            Section("Referenced By") {
+            Section {
                 ForEach(rows) { row in
                     InfoRow(data: row)
+                        .centeredRowContent()
                 }
+            } header: {
+                Text("Referenced By").centeredSectionHeader()
             }
         }
     }
@@ -588,13 +606,12 @@ struct ContactDetailView: View {
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
-        // Skip the individual name parts — the navigation title already
-        // shows the contact's name. Job title / organization are still
-        // useful here because they're not part of the displayed name.
+        // Skip the name parts (shown in the inline header) and the two fields
+        // the header's subtitle already renders — job title and organization
+        // (see `headerSubtitle`) — so they aren't duplicated. Department and
+        // phonetic organization aren't in the header, so they stay.
         let workParts: [(String, String)] = [
-            ("job title", contact.jobTitle),
             ("department", contact.departmentName),
-            ("organization", contact.organizationName),
             ("phonetic organization", contact.phoneticOrganizationName),
         ]
         for (label, value) in workParts where !value.isEmpty {
@@ -651,10 +668,13 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func debugSection(_ contact: Contact) -> some View {
         let rows = debugRows(for: contact)
-        Section("Debug") {
+        Section {
             ForEach(rows) { row in
                 InfoRow(data: row)
+                    .centeredRowContent()
             }
+        } header: {
+            Text("Debug").centeredSectionHeader()
         }
     }
 
@@ -727,9 +747,10 @@ struct ContactDetailView: View {
     private var activitySection: some View {
         let items = activityItems
         if !items.isEmpty || showingNewNoteEditor {
-            Section("Activity") {
+            Section {
                 ForEach(items) { item in
                     activityRow(item)
+                        .centeredRowContent()
                 }
                 .onDelete { offsets in
                     let targets = offsets.map { items[$0] }
@@ -739,7 +760,10 @@ struct ContactDetailView: View {
                 if showingNewNoteEditor {
                     TextField("Add a note", text: $newNoteText, axis: .vertical)
                         .focused($noteFocus, equals: .newNote)
+                        .centeredRowContent()
                 }
+            } header: {
+                Text("Activity").centeredSectionHeader()
             }
         }
     }
@@ -785,7 +809,10 @@ struct ContactDetailView: View {
                 }))
             }
         }
+        // Zero the row insets so the footer content view spans the full cell,
+        // then clamp/center that content to the same column as every other row.
         .listRowInsets(EdgeInsets())
+        .centeredRowContent()
     }
 
     @ViewBuilder

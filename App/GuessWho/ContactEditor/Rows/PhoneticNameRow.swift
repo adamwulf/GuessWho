@@ -25,6 +25,7 @@ struct PhoneticNameRow: View {
                     .focused($focus, equals: .family)
                     .onChange(of: model.edited.phoneticFamilyName) { _, _ in model.isDirty = true }
             }
+            .centeredRowContent()
         }
     }
 }

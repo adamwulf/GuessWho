@@ -16,6 +16,7 @@ struct DateRow: View {
                         }
                     )
                 )
+                .centeredRowContent()
             }
             .onDelete { offsets in
                 model.edited.dates.remove(atOffsets: offsets)
@@ -35,6 +36,7 @@ struct DateRow: View {
             } label: {
                 Label("Add Date", systemImage: "plus.circle.fill")
             }
+            .centeredRowContent()
         }
     }
 }
