@@ -120,6 +120,7 @@ fit Swift conventions):
 public func allContacts() -> [GuessWhoContact]
 public func contacts(of type: ContactType) -> [GuessWhoContact]
 public func searchContacts(query: String, type: ContactType?) -> [GuessWhoContact]
+public func contacts(matchingEmail email: String) -> [GuessWhoContact]
 public func contact(id: GuessWhoContactID) -> GuessWhoContact?
 public func contacts(named displayName: String) -> [GuessWhoContact]
 public func contactsReferencing(id: GuessWhoContactID) -> [ContactRelationMatch]
@@ -131,6 +132,12 @@ the `guesswho://` URL. It is constructed only through the existing
 package has one UUID validator and canonicalizer. `GuessWhoContact.id` is
 derived from that canonical post-reconciliation contact URL.
 
+Constructing `GuessWhoContact` is defensive: the package must verify that the
+post-reconciliation contact has exactly one distinct valid GuessWho URL before
+materializing an ID. It must never silently take `SidecarKey.forContact`'s first
+URL from an unreconciled multi-ID contact; that is an internal error that keeps
+the record out of the published snapshot and surfaces a repository error.
+
 `ContactRelationMatch` contains the referencing contact's GuessWho ID, label,
 and matched name text. It must not expose `localID`. The existing app navigation
 type keeps the distinct name `ContactReference` until Stage 3 replaces it with
@@ -141,7 +148,9 @@ localID` indexes plus a session-local loser-to-canonical alias map. They are
 rebuilt from the cached snapshot and updated atomically during incremental
 mutations. `contact(id:)` resolves aliases, so an existing navigation/favorite
 reference continues to load after a Case-D collapse. No app type may receive
-any index or alias map.
+any index or alias map. The alias map is intentionally session-scoped and may
+grow during a session; v1 address-book scale makes that bounded-in-practice
+trade-off acceptable.
 
 ## Implementation stages
 
@@ -158,6 +167,9 @@ any index or alias map.
    The full sweep can perform one write per Case A/C/D contact and must show a
    loading/error state. On first-baseline failure publish an empty, explicitly
    unavailable snapshot; on a later failure retain the prior complete snapshot.
+   A change-watcher `requiresFullReload` is also an identity-baseline invalidation:
+   it must run this sweep before publishing, never fall through to bare
+   `reload()`.
 4. Maintain private ID-to-localID and localID-to-ID indexes with the cache.
    Rebuild after a full reload; update atomically with incremental mutations;
    retain loser-to-winner aliases for the process lifetime.
@@ -167,6 +179,8 @@ any index or alias map.
    coherent snapshot so ID-keyed list rows are removed/inserted together. A
    `.deleted(localID:)` uses the cached localID-to-ID mapping to remove the
    record and its active mapping without losing existing aliases.
+   A delete followed by re-add re-enters this updated path; a dangling alias
+   whose target is not present resolves as unavailable rather than crashing.
 
 Acceptance: every `GuessWhoContact` emitted by the repository has exactly one
 canonical GuessWho ID; duplicate/malformed URL cases follow the existing
@@ -175,7 +189,8 @@ record for the session; and no partially reconciled cache state is published.
 
 ### 2. Add package query operations
 
-1. Add `allContacts`, `contacts(of:)`, `searchContacts`, and `contact(id:)` over the package
+1. Add `allContacts`, `contacts(of:)`, `searchContacts`, `contacts(matchingEmail:)`,
+   and `contact(id:)` over the package
    cache. These are synchronous cache reads on the repository's main-actor
    surface; no query is allowed to enumerate `CNContactStore`.
 2. Add `contacts(named:) -> [GuessWhoContact]`, normalized exactly once in the
@@ -184,7 +199,9 @@ record for the session; and no partially reconciled cache state is published.
    all name-text matches. Exclude self by GuessWho ID, not `localID`; allow one
    source relation to appear for every same-named target because the target is
    name-derived rather than a durable edge.
-4. Add package tests for full reload, incremental update/delete, ID lookups,
+4. Normalize email queries in the package and preserve all matching contacts so
+   attendee UI does not build an app-side email index.
+5. Add package tests for full reload, incremental update/delete, ID lookups,
    duplicate display names, self exclusion, baseline failure, per-update
    reconciliation, Case-D aliasing during an incremental update, canonical-ID
    selection, and no-store-I/O cache reads. Verify no-I/O queries with a test
@@ -209,7 +226,11 @@ or reconciliation bridge.
 4. Change connections, event attendees, and favorites to receive/load contacts
    by GuessWho ID through the repository. Remove favorites' `uuidToContact` and
    all other app-built GuessWho-ID maps, including the detail view's
-   `refreshContactMap`; use `repository.contact(id:)` instead.
+   `refreshContactMap`; use `repository.contact(id:)` instead. In
+   `EventDetailView`, remove `uuidToContact`, `emailToContact`, and copied
+   `contacts` state; resolve invitees through `contacts(matchingEmail:)` and
+   repository ID queries. In `ConnectionsSection`, replace
+   `EligibleContact.localID` with `GuessWhoContactID`.
 5. For Contacts name-only relationships: render no target as non-actionable;
    navigate directly for one match; present an explicit disambiguation UI for
    multiple matches. Never silently select a duplicate display name.
@@ -251,7 +272,9 @@ permission-state binding if that remains necessary for UI.
 3. Make `Contact.localID` non-public or otherwise unavailable to app clients
    once all migration call sites are gone.
 4. Remove obsolete `SyncService` contact wrappers. Keep/add tests for the new
-   package API; no existing repository tests need to be removed.
+   package API; no existing repository tests need to be removed. Explicitly
+   remove `SyncService.guessWhoUUID(in:)`; package callers derive identity only
+   through repository output / the package `SidecarKey` APIs.
 
 Acceptance: there is one `ContactsRepository`, located in
 `Sources/GuessWhoSync`; it is the sole production contact API used by the app.
