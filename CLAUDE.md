@@ -68,6 +68,11 @@ treatment — GuessWho ID vs. `localID`, the unified-only fetch model, the four
 reconciliation cases, and why callers must use the GuessWho ID. Read it before
 touching identity or reconciliation.
 
+Keep these concepts distinct: a Contacts **relationship** is a name-only
+`CNContactRelation` resolved best-effort for UI; a sidecar **contact link** is a
+durable `Link` between GuessWho-ID endpoints. Details and the package-caller
+identity contract are in `docs/contact-identity.md`.
+
 ## Platforms
 
 - **Mac Catalyst:** 3-column `UISplitViewController` shell driven by
