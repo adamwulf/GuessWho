@@ -112,12 +112,16 @@ no graceful-empty fallback. Verified wiring (GuessWhoSceneDelegate.swift):
   same environment — but confirm it actually has `@Environment(ContactsRepository.self)`;
   add the declaration if missing. **#4** then reads `repository.contacts`.
 - `EventDetailView` (**#6**, **#7**) is hosted by the SceneDelegate WITHOUT a
-  `ContactsRepository` in its environment today (it's constructed
-  `EventDetailView(eventUUID:eventKitID:)` at lines 195/234/466). Add
+  `ContactsRepository` in its environment today. Add
   `@Environment(ContactsRepository.self)` to `EventDetailView` AND inject
-  `.environment(appDelegate.contactsRepository)` on EVERY `EventDetailView`
-  hosting controller in GuessWhoSceneDelegate.swift (Catalyst secondary + iPhone
-  push paths). Miss one and that entry point crashes at runtime.
+  `.environment(appDelegate.contactsRepository)` at ALL THREE construction sites
+  in GuessWhoSceneDelegate.swift — miss one and that entry point crashes:
+  1. `showEventDetail` :195 — Catalyst secondary-column replace.
+  2. `pushCatalystEventDetail` :234 — Catalyst in-detail drill-down push.
+  3. the iPhone push path ~:466 — `injectIPhonePushHandlers` event detail.
+  (Each currently injects `.environment(service)` + `.environment(favoritesStore)`
+  only; add `.environment(appDelegate.contactsRepository)` alongside, matching the
+  three `ContactDetailView` sites that already do so, e.g. :220.)
 - `FavoritesListViewController` (**#8**) is a UIKit VC constructed
   `init(store:service:)` (SceneDelegate :137/:378) — it does NOT use the SwiftUI
   environment. Add a `repository:` parameter to its initializer and pass
@@ -251,8 +255,21 @@ Replace "full reload on external change" with a change-history delta read.
      `fetchAll`). Genuine thrown errors (I/O, auth) still propagate via `throws`;
      the caller falls back to a full `reload()` on throw too.
 4. `CNSaveRequest` author tagging (workstream C, in this same adapter):
-   `save`/`delete` set `saveRequest.transactionAuthor = Self.transactionAuthor`
-   (a constant, e.g. the bundle id) before `execute`.
+   **EVERY** `CNSaveRequest` this adapter executes must carry
+   `transactionAuthor = Self.transactionAuthor` (a constant, e.g. the bundle id)
+   — not just `save`/`delete`. The adapter has 7 write sites:
+   `save` (:117), `delete` (:141), `createGroup` (:190), `renameGroup` (:209),
+   `deleteGroup` (:223), `addMember` (:282), `removeMember` (:295). Group and
+   membership writes can emit `visitUpdateContactEvent` for the affected
+   contact, so an untagged one would surface as a phantom self-write in the
+   delta. Centralize via a single chokepoint — a private
+   `makeSaveRequest() -> CNSaveRequest` (or `execute(_:)` helper) that stamps the
+   author once — so no future write site can forget the tag. The group/membership
+   APIs have zero app callers today (latent), but tagging them all upholds the
+   absolute "our writes never appear in the delta" guarantee with no cost.
+   Additionally set `request.includeGroupChanges = false` on the
+   `CNChangeHistoryFetchRequest` so group-only churn never enters the contact
+   delta.
 5. `InMemoryContactStore.changes(since:)` — real op-log implementation so D is
    unit-testable: record an ordered op log (`updated`/`deleted` with a
    monotonic per-op token), honor `excludedTransactionAuthors` (track the author
@@ -306,6 +323,20 @@ device-local state stay physically separated.)
      (delta apply succeeded → save `newToken`; full `reload()` succeeded → save
      the fresh baseline `newToken`). Never persist before applying — a crash
      mid-apply must re-process, not skip.
+  4. **Empty delta → no post.** Because our own saves still fire
+     `.CNContactStoreDidChange` (the notification is not author-filtered — only
+     the change-history READ is), the observer will frequently read a delta of
+     ZERO changes (all ours, excluded). When `changes` is empty AND not
+     `requiresFullReload`, skip the snapshot post entirely (still persist the
+     advanced `newToken` — the cursor moved even though nothing user-visible
+     changed). This avoids a no-op snapshot apply on every self-write.
+  5. **Idempotent + serialized.** `applyRefresh` (replace/insert by localID) and
+     `applyRemove` (drop by localID) are idempotent, so re-processing a delta
+     after a crash (cursor not yet advanced) is safe. Overlapping invocations:
+     guard with a simple in-flight flag / serialize on the main actor so two
+     near-simultaneous `.CNContactStoreDidChange` notifications don't interleave
+     a half-applied delta; the second either coalesces or runs after the first
+     with the advanced cursor. Document the chosen guard inline.
 - AppDelegate `.CNContactStoreDidChange` observer calls
   `applyExternalChanges()` instead of `reload()`, AND still calls
   `eventsRepository.reload()` (see Integration — do NOT drop it).
@@ -423,9 +454,10 @@ standalone "C agent" — the race-prone counter is gone entirely.
    internal reconcile.
 2. Map-builders read `repository.contacts` (cache); single-record lookups use
    `service.fetch(localID:)`.
-3. A user edit patches one row (no full reload); the app's own write is excluded
-   from the change-history delta via `transactionAuthor`, so it triggers no second
-   full reload.
+3. A user edit patches one row (no full reload); EVERY adapter write (save,
+   delete, group + membership) is tagged with `transactionAuthor` and excluded
+   from the change-history delta, so a self-write triggers no second reload and an
+   all-ours delta posts nothing.
 4. External Contacts.app edits apply as an ordered delta (only the changed
    contacts), under a single batched snapshot post, with a full-reload fallback on
    DropEverything/throw; the cursor persists only after a successful apply.
