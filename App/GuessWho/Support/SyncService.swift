@@ -42,6 +42,11 @@ final class SyncService {
 
     private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
+    // Device-local persistence for the contact change-history cursor. Lives in
+    // the container's Application Support — NOT the sidecar root, which can be
+    // iCloud-backed: a CNContactStore history token is per-device, so syncing it
+    // would make another device think it was caught up and skip real edits.
+    private let contactCursorStore: ContactSyncCursorStore
     private let eventStore: EKEventStore
     private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
@@ -69,6 +74,7 @@ final class SyncService {
         self.contactStore = CNContactStore()
         let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
+        self.contactCursorStore = ContactSyncCursorStore(url: Self.contactCursorURL())
 
         let ek = EKEventStore()
         self.eventStore = ek
@@ -498,6 +504,33 @@ final class SyncService {
         }
     }
 
+    // MARK: - Contact change history (incremental external sync)
+
+    /// Reads the contact change-history delta since `token` (our own writes are
+    /// excluded at the adapter via `transactionAuthor`). Pass `nil` for the
+    /// first run — the adapter returns `requiresFullReload` plus a baseline
+    /// token. Throws on auth/I-O failure; callers fall back to a full reload.
+    func contactChanges(since token: Data?) async throws -> ContactChangeSet {
+        try await contactsAdapter.changes(since: token)
+    }
+
+    /// The persisted change-history cursor, or `nil` on first run / after loss.
+    func loadContactCursor() -> Data? {
+        contactCursorStore.load()
+    }
+
+    /// Persists the change-history cursor. Callers MUST only save AFTER a
+    /// successful apply so a crash mid-apply re-processes rather than skips.
+    /// A write failure is non-fatal — it just means the next launch re-reads
+    /// from the older cursor (idempotent re-apply), so we swallow and breadcrumb.
+    func saveContactCursor(_ token: Data) {
+        do {
+            try contactCursorStore.save(token)
+        } catch {
+            lastError = "cursor save failed: \(error.localizedDescription)"
+        }
+    }
+
     func sidecar(for contact: Contact) -> SidecarEnvelope? {
         guard let uuid = guessWhoUUID(in: contact) else { return nil }
         guard let sync else { return nil }
@@ -784,6 +817,24 @@ final class SyncService {
         let dir = support.appendingPathComponent("GuessWhoSidecars", isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Device-local file backing the contact change-history cursor. Always in
+    /// the container's Application Support (`.userDomainMask`), independent of
+    /// where the sidecar root resolves — the cursor must never ride iCloud. If
+    /// Application Support cannot be resolved, fall back to a temp-dir path so
+    /// the store is always constructible; a lost cursor just forces one full
+    /// reload, which is safe.
+    private static func contactCursorURL() -> URL {
+        let fm = FileManager.default
+        let base = (try? fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? fm.temporaryDirectory
+        let dir = base.appendingPathComponent("GuessWhoSync", isDirectory: true)
+        return dir.appendingPathComponent("contacts-change-cursor")
     }
 
     private static func stableDeviceID() -> String {

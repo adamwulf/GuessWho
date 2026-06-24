@@ -100,7 +100,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             guard let self else { return }
             MainActor.assumeIsolated {
                 Task { @MainActor in
-                    await self.contactsRepository.reload()
+                    // Incremental: re-read only the contacts that changed in
+                    // Contacts.app (our own writes are excluded via
+                    // transactionAuthor), falling back to a full reload on
+                    // first run / history truncation. Far cheaper than the old
+                    // full re-enumerate of every contact on each change.
+                    await self.contactsRepository.applyExternalChanges()
+                    // A contact change can affect event invitee/attendee
+                    // rendering, so still refresh events — PRESERVED from the
+                    // pre-incremental observer.
                     await self.eventsRepository.reload()
                 }
             }

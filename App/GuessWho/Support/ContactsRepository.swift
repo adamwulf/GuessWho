@@ -36,6 +36,14 @@ final class ContactsRepository {
     /// Per-tab search query for Organizations.
     var organizationsSearch: String = ""
 
+    /// Guards `applyExternalChanges()` against overlapping invocations. Two
+    /// `.CNContactStoreDidChange` notifications can land back-to-back; without
+    /// this, the second could interleave a half-applied delta. `@MainActor`
+    /// makes the check-and-set atomic. A skipped run is safe — the cursor only
+    /// advances after success, so the next notification re-reads from where the
+    /// in-flight run will leave off (and the OS coalesces store-change posts).
+    private var isApplyingExternalChanges = false
+
     init(service: SyncService) {
         self.service = service
     }
@@ -79,7 +87,7 @@ final class ContactsRepository {
     /// Reads the STORE (not `contacts`) because the cache is stale for the
     /// just-changed contact — this is the post-write read.
     private func applyRefresh(localID: String) async {
-        let fresh = try? await service.fetchContactForEditing(localID: localID)
+        let fresh = await service.fetch(localID: localID)
         if let fresh {
             if let index = contacts.firstIndex(where: { $0.localID == localID }) {
                 contacts[index] = fresh
@@ -109,6 +117,65 @@ final class ContactsRepository {
     func removeContact(localID: String) {
         applyRemove(localID: localID)
         postDidReload()
+    }
+
+    /// Apply the external contact-store delta since our last cursor — the
+    /// response to `.CNContactStoreDidChange`. Our own writes are tagged with a
+    /// `transactionAuthor` and excluded by the adapter, so this only sees edits
+    /// made in Contacts.app (or another app/device). Re-reads only the changed
+    /// records, not all ~1500.
+    ///
+    /// Contract (see plans/contact-reload-optimization.md):
+    /// - On `requiresFullReload` (first run / DropEverything / throw) → full
+    ///   `reload()`, then persist the fresh baseline cursor.
+    /// - Otherwise apply `changes` IN ORDER (a delete-then-readd of one localID
+    ///   must end present), under a SINGLE batched post — no per-change snapshot
+    ///   storm. An empty delta posts NOTHING (a self-write still fires
+    ///   `.CNContactStoreDidChange`, but its delta is empty after author
+    ///   exclusion) while still advancing the cursor.
+    /// - Persist the cursor ONLY after a successful apply, on BOTH branches, so a
+    ///   crash mid-apply re-processes rather than skips.
+    func applyExternalChanges() async {
+        guard !isApplyingExternalChanges else { return }
+        isApplyingExternalChanges = true
+        defer { isApplyingExternalChanges = false }
+
+        let token = service.loadContactCursor()
+        let changeSet: ContactChangeSet
+        do {
+            changeSet = try await service.contactChanges(since: token)
+        } catch {
+            // Auth / I-O failure reading history → safest recovery is a full
+            // reload; leave the cursor untouched so the next attempt retries
+            // from the same point.
+            lastError = "contact change read failed: \(error.localizedDescription)"
+            await reload()
+            return
+        }
+
+        if changeSet.requiresFullReload {
+            await reload()
+            service.saveContactCursor(changeSet.newToken)
+            return
+        }
+
+        // Apply in history order so delete-then-readd of the same localID ends
+        // with the contact present. applyRefresh/applyRemove do NOT post — we
+        // post once at the end so the diffable lists apply a single snapshot.
+        for change in changeSet.changes {
+            switch change {
+            case .updated(let localID):
+                await applyRefresh(localID: localID)
+            case .deleted(let localID):
+                applyRemove(localID: localID)
+            }
+        }
+        if !changeSet.changes.isEmpty {
+            postDidReload()
+        }
+        // Advance the cursor even on an empty delta — the history position moved
+        // (e.g. our own excluded writes), so the next read should start after it.
+        service.saveContactCursor(changeSet.newToken)
     }
 
     /// People (contactType == .person) matching `peopleSearch`, sorted
