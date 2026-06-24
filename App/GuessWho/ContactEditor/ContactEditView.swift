@@ -205,6 +205,14 @@ struct ContactEditView: View {
             }
             .disabled(isSaving)
         }
+        // EditButton flips the Form into edit mode so drag handles appear
+        // on the multi-value rows (phone, email, URL, address, etc.) and
+        // the existing .onMove handlers can reorder. Swipe-to-delete still
+        // works without edit mode; the button is only for drag-to-reorder.
+        ToolbarItem(placement: .navigation) {
+            EditButton()
+                .disabled(isSaving)
+        }
         ToolbarItem(placement: .confirmationAction) {
             Button("Save") {
                 Task { await performSave() }

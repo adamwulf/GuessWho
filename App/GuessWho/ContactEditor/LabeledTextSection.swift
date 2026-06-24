@@ -33,6 +33,7 @@ struct LabeledTextSection: View {
                 }
             }
             .onDelete { items.remove(atOffsets: $0) }
+            .onMove { items.move(fromOffsets: $0, toOffset: $1) }
             Button {
                 items.append(LabeledValue(label: labelOptions.first ?? "", value: ""))
             } label: {

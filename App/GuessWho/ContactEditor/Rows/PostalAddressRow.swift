@@ -20,6 +20,10 @@ struct PostalAddressRow: View {
                 model.edited.postalAddresses.remove(atOffsets: offsets)
                 model.isDirty = true
             }
+            .onMove { source, destination in
+                model.edited.postalAddresses.move(fromOffsets: source, toOffset: destination)
+                model.isDirty = true
+            }
             Button {
                 model.edited.postalAddresses.append(
                     LabeledPostalAddress(

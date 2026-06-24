@@ -22,6 +22,10 @@ struct IMRow: View {
                 model.edited.instantMessageAddresses.remove(atOffsets: offsets)
                 model.isDirty = true
             }
+            .onMove { source, destination in
+                model.edited.instantMessageAddresses.move(fromOffsets: source, toOffset: destination)
+                model.isDirty = true
+            }
             Button {
                 model.edited.instantMessageAddresses.append(
                     LabeledInstantMessageAddress(
