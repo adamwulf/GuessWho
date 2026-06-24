@@ -21,6 +21,7 @@ import GuessWhoSync
 /// it falls back to the same UIKit tab shell as iPhone-compact until
 /// Phase 6 stands up the Catalyst-shaped `UISplitViewController` on
 /// iPad too. Documented in MIGRATION_STATUS.
+@objc(GuessWhoSceneDelegate)
 final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
