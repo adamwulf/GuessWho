@@ -169,13 +169,13 @@ final class EventsListViewController: UIViewController {
 
     @MainActor
     private func observeRepositoryReloads() {
-        // External Calendar.app / Contacts.app edits already drive a
-        // `repository.reload()` from the AppDelegate's single-owner
-        // `.EKEventStoreChanged` / `.CNContactStoreDidChange` observers
-        // (Phase 5A) — that reload fires `.eventsRepositoryDidReload`,
-        // which lands here. So we only need to listen to the
-        // post-reload notification and re-apply the diffable snapshot;
-        // duplicating the store-changed observers locally would just
+        // External Calendar.app edits and external contact changes already
+        // drive a `repository.reload()` from `EventsRepository`'s own
+        // observers (it owns `.EKEventStoreChanged` and subscribes to the
+        // package's `.guessWhoContactsDidChange`) — that reload fires
+        // `.eventsRepositoryDidReload`, which lands here. So we only need to
+        // listen to the post-reload notification and re-apply the diffable
+        // snapshot; duplicating the store-changed observers locally would just
         // double-reload the repo.
         reloadObserver = NotificationCenter.default.addObserver(
             forName: .eventsRepositoryDidReload,

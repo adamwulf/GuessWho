@@ -79,10 +79,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // an external edit lands. The repositories subscribe to that (and
         // `EventsRepository` also owns its own `.EKEventStoreChanged` observer)
         // — so the AppDelegate no longer registers any store-change observer; it
-        // just owns the instances and kicks the watcher once at launch. Starting
-        // after the initial reload above keeps the launch baseline coming from
-        // `reload()`; any edit that lands before/after is delivered through the
-        // watcher idempotently.
+        // just owns the instances and kicks the watcher once at launch.
+        //
+        // Ordering doesn't matter: the reloads above are dispatched as Task
+        // blocks that have NOT completed by the time this synchronous call runs,
+        // so this does not gate on the baseline. It needn't — the watcher's
+        // first delta read is itself idempotent against the in-flight reload
+        // (first run yields a full-reload signal; later edits an incremental
+        // delta), so whichever finishes first, the cache converges.
         service.startContactChangeWatcher()
 
         return true
