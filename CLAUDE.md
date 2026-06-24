@@ -54,6 +54,20 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   scene delegate.
 - `Tests/GuessWhoSyncTests/` — XCTest suite for the sync package.
 
+## Identity: the GuessWho URL and unified contacts
+
+A contact is identified **only** by its GuessWho ID — a UUID the package mints
+and stores as a `guesswho://contact/<uuid>` URL on the contact. `Contact.localID`
+(Apple's unified `CNContact.identifier`) is an internal, transient lookup token;
+never persist, compare, or key GuessWho data on it. The package always works
+with Apple-unified contacts, and reconciliation collapses any contact carrying
+multiple GuessWho IDs onto one canonical ID.
+
+**See [`docs/contact-identity.md`](docs/contact-identity.md)** for the full
+treatment — GuessWho ID vs. `localID`, the unified-only fetch model, the four
+reconciliation cases, and why callers must use the GuessWho ID. Read it before
+touching identity or reconciliation.
+
 ## Platforms
 
 - **Mac Catalyst:** 3-column `UISplitViewController` shell driven by
