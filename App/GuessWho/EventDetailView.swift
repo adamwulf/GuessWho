@@ -323,26 +323,32 @@ struct EventDetailView: View {
 
     /// Build the seed `Contact` handed to `ContactEditView` for an
     /// unmatched attendee. `localID` is empty so the adapter's save path
-    /// takes the brand-new-contact branch. The name is split naively on
-    /// whitespace (first token → given, remainder → family); when the
-    /// attendee name is the email itself (no display name was set), it
-    /// all lands in `givenName` rather than being split on `@`.
+    /// takes the brand-new-contact branch. The display name is run
+    /// through Foundation's `PersonNameComponents` parse strategy so
+    /// prefix/given/middle/family/suffix all land in the right fields
+    /// (e.g. "Dr. Jane Q. Doe Jr." splits correctly). When the attendee
+    /// name is missing or is just the email itself, we leave the name
+    /// fields empty rather than letting the parser shove the email into
+    /// `givenName`. If the parser throws on an unusual display name we
+    /// fall back to dropping the trimmed string into `givenName`.
     private func contactSeed(from attendee: EventAttendee, email: String) -> Contact {
         let trimmed = attendee.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let given: String
-        let family: String
-        if trimmed.isEmpty || trimmed == email {
-            given = trimmed
-            family = ""
+        let parsed: PersonNameComponents?
+        let givenFallback: String
+        if trimmed.isEmpty || trimmed.caseInsensitiveCompare(email) == .orderedSame {
+            parsed = nil
+            givenFallback = ""
         } else {
-            let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-            given = parts.first.map(String.init) ?? trimmed
-            family = parts.count > 1 ? String(parts[1]) : ""
+            parsed = try? PersonNameComponents(trimmed, strategy: .name)
+            givenFallback = parsed == nil ? trimmed : ""
         }
         return Contact(
             localID: "",
-            givenName: given,
-            familyName: family,
+            namePrefix: parsed?.namePrefix ?? "",
+            givenName: parsed?.givenName ?? givenFallback,
+            middleName: parsed?.middleName ?? "",
+            familyName: parsed?.familyName ?? "",
+            nameSuffix: parsed?.nameSuffix ?? "",
             emailAddresses: [LabeledValue(label: "", value: email)]
         )
     }
