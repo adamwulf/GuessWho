@@ -73,30 +73,10 @@ struct ContactEditView: View {
             ) { category in
                 Button("OK", role: .cancel) { saveError = nil }
                 if category == .authorizationDenied {
-                    #if targetEnvironment(macCatalyst)
-                    // Catalyst routes the x-apple.systempreferences:* URL
-                    // through LaunchServices, landing the user in System
-                    // Settings → Privacy & Security → Contacts so they can
-                    // re-enable access. UIApplication.openSettingsURLString
-                    // opens the host iOS Settings app on iOS but is a no-op
-                    // on Catalyst, so the URL must differ per platform.
-                    Button("Open System Settings") {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
-                            UIApplication.shared.open(url)
-                        }
-                    }
-                    #else
-                    Button("Open Settings") {
-                        // iOS deep-link to the app's Settings page so the
-                        // user can re-enable Contacts access.
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
-                    }
-                    #endif
+                    OpenContactsSettingsButton()
                 }
             } message: { category in
-                Text(saveErrorMessage(for: category))
+                Text(category.saveFailureMessage)
             }
         }
         #if targetEnvironment(macCatalyst)
@@ -164,18 +144,4 @@ struct ContactEditView: View {
             saveError = ContactEditModel.saveErrorCategory(error)
         }
     }
-
-    private func saveErrorMessage(for category: ContactEditModel.SaveErrorCategory) -> String {
-        switch category {
-        case .authorizationDenied:
-            return "Contacts access was revoked. Open Settings to re-enable."
-        case .invalidField(let detail):
-            return "One of the fields was rejected by the system: \(detail)"
-        case .recordDoesNotExist:
-            return "This contact has been deleted on another device. Tap Cancel to refresh."
-        case .unknown(let detail):
-            return detail
-        }
-    }
-
 }

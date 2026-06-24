@@ -192,6 +192,36 @@ public struct ContactEditModel: Equatable {
         /// Anything else; carries the underlying error's
         /// `localizedDescription`.
         case unknown(String)
+
+        /// User-facing alert body for a save failure.
+        public var saveFailureMessage: String {
+            switch self {
+            case .authorizationDenied:
+                return "Contacts access was revoked. Open Settings to re-enable."
+            case .invalidField(let detail):
+                return "One of the fields was rejected by the system: \(detail)"
+            case .recordDoesNotExist:
+                return "This contact has been deleted on another device. Tap Cancel to refresh."
+            case .unknown(let detail):
+                return detail
+            }
+        }
+
+        /// User-facing alert body for a delete failure. Callers should
+        /// treat `.recordDoesNotExist` as success and never present this
+        /// message for that case; the fallback wording is defensive.
+        public var deleteFailureMessage: String {
+            switch self {
+            case .authorizationDenied:
+                return "Contacts access was revoked. Open Settings to re-enable."
+            case .invalidField(let detail):
+                return "The system rejected the delete: \(detail)"
+            case .recordDoesNotExist:
+                return "Contact already deleted."
+            case .unknown(let detail):
+                return detail
+            }
+        }
     }
 
     /// Map an arbitrary `Error` (typically `CNError`) into a category.

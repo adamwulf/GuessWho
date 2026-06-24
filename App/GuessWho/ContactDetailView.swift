@@ -191,10 +191,10 @@ struct ContactDetailView: View {
         ) { category in
             Button("OK", role: .cancel) { editSaveError = nil }
             if category == .authorizationDenied {
-                openSettingsButton
+                OpenContactsSettingsButton()
             }
         } message: { category in
-            Text(saveErrorMessage(for: category))
+            Text(category.saveFailureMessage)
         }
         .alert(
             "Couldn't delete",
@@ -206,10 +206,10 @@ struct ContactDetailView: View {
         ) { category in
             Button("OK", role: .cancel) { editDeleteError = nil }
             if category == .authorizationDenied {
-                openSettingsButton
+                OpenContactsSettingsButton()
             }
         } message: { category in
-            Text(deleteErrorMessage(for: category))
+            Text(category.deleteFailureMessage)
         }
         .alert("Couldn't open editor", isPresented: Binding(
             get: { editFetchErrorMessage != nil },
@@ -398,23 +398,6 @@ struct ContactDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private var openSettingsButton: some View {
-        #if targetEnvironment(macCatalyst)
-        Button("Open System Settings") {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
-                UIApplication.shared.open(url)
-            }
-        }
-        #else
-        Button("Open Settings") {
-            if let url = URL(string: UIApplication.openSettingsURLString) {
-                UIApplication.shared.open(url)
-            }
-        }
-        #endif
-    }
-
     private func beginInlineEdit() async {
         do {
             guard let loaded = try await service.fetchContactForEditing(localID: localID) else {
@@ -477,33 +460,6 @@ struct ContactDetailView: View {
             } else {
                 editDeleteError = category
             }
-        }
-    }
-
-    private func saveErrorMessage(for category: ContactEditModel.SaveErrorCategory) -> String {
-        switch category {
-        case .authorizationDenied:
-            return "Contacts access was revoked. Open Settings to re-enable."
-        case .invalidField(let detail):
-            return "One of the fields was rejected by the system: \(detail)"
-        case .recordDoesNotExist:
-            return "This contact has been deleted on another device. Tap Cancel to refresh."
-        case .unknown(let detail):
-            return detail
-        }
-    }
-
-    private func deleteErrorMessage(for category: ContactEditModel.SaveErrorCategory) -> String {
-        switch category {
-        case .authorizationDenied:
-            return "Contacts access was revoked. Open Settings to re-enable."
-        case .invalidField(let detail):
-            return "The system rejected the delete: \(detail)"
-        case .recordDoesNotExist:
-            // Shouldn't reach here — performInlineDelete treats this as success.
-            return "Contact already deleted."
-        case .unknown(let detail):
-            return detail
         }
     }
 
