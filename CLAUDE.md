@@ -54,6 +54,117 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   scene delegate.
 - `Tests/GuessWhoSyncTests/` — XCTest suite for the sync package.
 
+## Identity: the GuessWho URL and unified contacts
+
+This is how the package answers "which contact is this?" across stores and
+devices. Read this before touching reconciliation.
+
+### One identity, not one per store
+
+We do **not** treat Contacts accounts (iCloud, Exchange, Google, On-My-Mac) as
+separate. Every read returns Apple's already-unified contact, never the
+per-account "linked cards" underneath it: list reads use
+`enumerateContacts(with:)` (a `CNContactFetchRequest` returns unified results
+unless you set `unifyResults = false`, which we never do), and point reads,
+group-membership reads, saves, and deletes use
+`unifiedContact(withIdentifier:)` / `unifiedContacts(matching:)`. There is no
+use of `CNContainer`, `unifyResults`, or the non-unified
+`contact(withIdentifier:)` anywhere in the package; container is not part of
+our identity model at all. [^cnadapter]
+
+`Contact.localID` is therefore the **unified** `CNContact.identifier`. We do
+not use it as our cross-device key, because `CNContact.identifier` is
+device-local — the same logical contact has a different identifier on each
+device after iCloud sync. [^plan-identity]
+
+### The GuessWho URL is our identity
+
+For every contact we touch, we mint our own stable UUID and store it as a URL
+on the contact itself:
+
+- **label** `"GuessWho"`, **value** `guesswho://contact/<uuid>` (no query
+  string). It's the only field we add to the contact; it syncs losslessly via
+  CardDAV and is visible in Contacts.app. [^plan-url]
+
+Recovering the identity is just: scan `Contact.urlAddresses` for an entry whose
+value starts with `guesswho://contact/`, parse the suffix as a UUID, lowercase
+it (UUIDs are canonicalized to lowercase at every boundary — parse, format,
+compare, on-disk filename), and build `SidecarKey(kind: .contact, id: uuid)`.
+[^sidecarkey]
+
+### Reconciling a (possibly unified) contact
+
+`reconcileContactIdentities()` sweeps every contact;
+`reconcileContactIdentity(localID:)` does one. Both run the same per-contact
+algorithm, which inspects every `guesswho://contact/…` URL on the contact and
+sorts the distinct valid UUIDs into one of four cases: [^reconcile]
+
+- **Case A — zero valid UUIDs.** Strip any malformed `guesswho://` URLs, mint a
+  fresh UUID, append `guesswho://contact/<new>`, save. This is adopt-on-first-
+  sight. [^caseA]
+- **Case B — exactly one valid UUID, no malformed siblings.** No-op. (Fast path
+  in `reconcile(contact:)`.) [^reconcile]
+- **Case C — one valid UUID + malformed siblings.** Keep the valid one, remove
+  the malformed entries, save. [^caseC]
+- **Case D — two or more *different* valid UUIDs on one contact.** This is the
+  unification case. Sort the UUIDs as ASCII; the **lex-smallest wins**. Fold
+  each loser's sidecar into the winner's (rebase the loser envelope onto the
+  winner's `entityID`, then per-cell LWW merge — effectively a union, since
+  sidecar fields are keyed by per-instance UUIDs that can't collide), write the
+  winner sidecar, delete the loser sidecar files, strip the loser + malformed
+  URLs from the contact, save. [^caseD]
+
+Lex-smallest-wins is the package's one **FWW** (first-writer-wins) rule, the
+lone exception to LWW: two devices that independently minted a UUID for the same
+contact converge on the same winner with no further writes and no clock
+dependency. [^plan-fww]
+
+### Why a single contact ends up with multiple UUIDs (→ Case D)
+
+Case D fires whenever one unified contact carries more than one
+`guesswho://contact/<uuid>` URL. The package only ever stamps the unified
+contact, so it never produces two UUIDs on its own; multiple UUIDs always arrive
+from the outside. The documented primary cause is two devices each minting a
+UUID for the same contact offline, before CardDAV sync converges and merges both
+URLs onto one card. (A secondary path: per-account cards that were each stamped
+by some *external* writer before Contacts.app unified them — the package itself
+can't create this, since it only sees the unified contact.) Either way the
+reconciler collapses the URLs to one canonical identity. [^plan-fww]
+
+### Links follow the winner
+
+When Case D collapses loser `L` into winner `W`, any link sidecar whose
+`endpointA`/`endpointB` was `(.contact, L)` is rewritten to `(.contact, W)`.
+The rewrite runs once per pass over the union of every Case-D mapping, so a link
+straddling two collapses is written exactly once; the touched link UUIDs are
+reported in `ContactOutcome.rewrittenLinkIDs`. [^rewrite]
+
+### What is NOT reconciled here
+
+- **Orphan sidecars** (a sidecar UUID no contact carries) are *detected* and
+  reported in `IdentityReconcileReport.orphanSidecars` by the all-contacts
+  sweep, but never auto-deleted. The single-contact entry point does not
+  populate orphans — that needs the global set of carried UUIDs. [^orphan]
+- **On-disk file conflicts** are a separate concern handled by
+  `reconcileSidecars()` (NSFileVersion per-file conflict resolution), not by
+  identity reconciliation. [^sidecarrecon]
+- **Cross-iCloud-account sync and non-iCloud sources** (Exchange, Google
+  CardDAV) are explicit v1 non-goals — "best effort, may drift." [^plan-nongoals]
+
+<!-- [^cnadapter]: [CNContactStoreAdapter — every fetch uses the unified API; localID = CNContact.identifier](Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter) -->
+<!-- [^plan-identity]: [PLAN.md §3.1 — CNContact.identifier is device-local](PLAN.md:39-45) -->
+<!-- [^plan-url]: [PLAN.md §3.2 — the GuessWho URL](PLAN.md:47-54) -->
+<!-- [^sidecarkey]: [SidecarKey.parseGuessWhoContactURL / forContact](Sources/GuessWhoSync/SidecarKey.swift:SidecarKey) -->
+<!-- [^reconcile]: [GuessWhoSync.reconcile(contact:) — case dispatch on distinct valid UUID count](Sources/GuessWhoSync/GuessWhoSync.swift:reconcile) -->
+<!-- [^caseA]: [GuessWhoSync.handleCaseA](Sources/GuessWhoSync/GuessWhoSync.swift:handleCaseA) -->
+<!-- [^caseC]: [GuessWhoSync.handleCaseC](Sources/GuessWhoSync/GuessWhoSync.swift:handleCaseC) -->
+<!-- [^caseD]: [GuessWhoSync.handleCaseD — lex-smallest winner, merge + delete losers](Sources/GuessWhoSync/GuessWhoSync.swift:handleCaseD) -->
+<!-- [^plan-fww]: [PLAN.md Core Semantics §5 + §3.3 Case D — FWW lex-smallest convergence](PLAN.md:35) -->
+<!-- [^rewrite]: [GuessWhoSync.rewriteLinkEndpoints + IdentityReconcileReport.ContactOutcome.rewrittenLinkIDs](Sources/GuessWhoSync/GuessWhoSync.swift:rewriteLinkEndpoints) -->
+<!-- [^orphan]: [GuessWhoSync.reconcileContactIdentities — orphan detection](Sources/GuessWhoSync/GuessWhoSync.swift:reconcileContactIdentities) -->
+<!-- [^sidecarrecon]: [GuessWhoSync.reconcileSidecars — NSFileVersion conflict path](Sources/GuessWhoSync/GuessWhoSync.swift:reconcileSidecars) -->
+<!-- [^plan-nongoals]: [PLAN.md §2 Non-goals (v1)](PLAN.md:19-25) -->
+
 ## Platforms
 
 - **Mac Catalyst:** 3-column `UISplitViewController` shell driven by
