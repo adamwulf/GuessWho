@@ -15,6 +15,10 @@ import SwiftUI
 enum ContactDetailLayout {
     /// Max width the detail content is clamped to on macCatalyst.
     static let maxContentWidth: CGFloat = 560
+
+    /// Extra space above a styled section header, on top of the list style's
+    /// default — gives "Recent Events", "Debug", etc. room to breathe.
+    static let sectionHeaderTopPadding: CGFloat = 12
 }
 
 extension View {
@@ -53,22 +57,24 @@ extension View {
         #endif
     }
 
-    /// Inset a `Section` header's text to the same centered column the rows use.
-    /// A `List` renders section headers in its own chrome, outside the row body,
-    /// so `centeredRowContent()` on the rows doesn't reach them — the header
-    /// would otherwise hug the pane's left edge. Wrap the header view with this
-    /// so "Recent Events", "Debug", etc. line up with their rows' leading edge.
-    /// No-op off macCatalyst.
+    /// Style a `Section` header consistently across the contact detail: give it
+    /// a little extra breathing room above (every platform), and — on Catalyst —
+    /// inset it to the same centered column the rows use. A `List` renders
+    /// section headers in its own chrome, outside the row body, so
+    /// `centeredRowContent()` on the rows doesn't reach them; without this the
+    /// header would hug the pane's left edge on Catalyst. Off Catalyst only the
+    /// top padding applies (no width clamp there).
     @ViewBuilder
     func centeredSectionHeader() -> some View {
+        let withTopMargin = self.padding(.top, ContactDetailLayout.sectionHeaderTopPadding)
         #if targetEnvironment(macCatalyst)
         let maxWidth = ContactDetailLayout.maxContentWidth
-        self
+        withTopMargin
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: maxWidth)
             .frame(maxWidth: .infinity)
         #else
-        self
+        withTopMargin
         #endif
     }
 }

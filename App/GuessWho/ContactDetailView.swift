@@ -153,13 +153,14 @@ struct ContactDetailView: View {
         // `centeredRowContent`), so the scrollable region reaches the pane
         // edges while the visible content stays in the same centered column.
         // macCatalyst only — see `loadedContent`.
-        #if targetEnvironment(macCatalyst)
-        // The inline header already shows the name and subtitle, so an
-        // empty nav-bar title keeps the toolbar clean (we still need the
-        // toolbar itself for back-button + Edit/star).
+        // The inline header (shown on every platform now) already renders the
+        // name and subtitle, so an empty nav-bar title avoids showing the name
+        // twice while keeping the toolbar itself (back button + Edit/star).
         .navigationTitle("")
-        #else
-        .navigationTitle(contact?.displayName ?? "Contact")
+        #if !targetEnvironment(macCatalyst)
+        // Inline display mode so the empty title doesn't reserve large-title
+        // space above the header on the pushed iPhone/iPad detail.
+        .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
         .confirmationDialog(
@@ -242,18 +243,19 @@ struct ContactDetailView: View {
         // does. The List itself stays full-bleed so its scroll view reaches the
         // pane edges. See `centeredRowContent`.
         let list = List {
-            #if targetEnvironment(macCatalyst)
             Section {
-                // Center the header inside the 560 column (unlike the rows,
-                // which left-align): the monogram + name + subtitle read as a
-                // centered card, matching Apple's Contacts detail header.
+                // Inline header on every platform: monogram + name + subtitle
+                // read as a centered card, matching Apple's Contacts detail.
+                // `.frame(maxWidth: .infinity)` centers it within the row on all
+                // platforms; `.centeredRowContent(alignment: .center)` adds the
+                // 560 column clamp on Catalyst (a no-op elsewhere).
                 headerView(contact)
+                    .frame(maxWidth: .infinity)
                     .centeredRowContent(alignment: .center)
                     .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-            #endif
 
             if isEditingContact {
                 editingSections
@@ -604,13 +606,12 @@ struct ContactDetailView: View {
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
-        // Skip the individual name parts — the navigation title already
-        // shows the contact's name. Job title / organization are still
-        // useful here because they're not part of the displayed name.
+        // Skip the name parts (shown in the inline header) and the two fields
+        // the header's subtitle already renders — job title and organization
+        // (see `headerSubtitle`) — so they aren't duplicated. Department and
+        // phonetic organization aren't in the header, so they stay.
         let workParts: [(String, String)] = [
-            ("job title", contact.jobTitle),
             ("department", contact.departmentName),
-            ("organization", contact.organizationName),
             ("phonetic organization", contact.phoneticOrganizationName),
         ]
         for (label, value) in workParts where !value.isEmpty {
