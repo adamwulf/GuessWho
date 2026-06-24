@@ -26,6 +26,11 @@ struct ContactDetailView: View {
     @State private var didAutoReconcile = false
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
+    // EventKit events where this contact appears as an attendee (matched by
+    // any email on the contact card). Loaded async via SyncService on first
+    // contact-load and on contact reload — separate from `eventLinks` which
+    // are user-curated contact↔event links.
+    @State private var recentEvents: [Event] = []
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
@@ -221,6 +226,8 @@ struct ContactDetailView: View {
 
             referencedBySection(contact)
 
+            recentEventsSection
+
             activitySection
 
             if debugModeEnabled {
@@ -329,6 +336,45 @@ struct ContactDetailView: View {
                 }
             }
         }
+    }
+
+    /// "Recent Events": up to 10 EventKit events where this contact appears
+    /// as an attendee, matched by any email on the card. Distinct from the
+    /// user-curated linked events that surface in `activitySection`. Tapping
+    /// a row pushes the event detail; the `eventKitID` hint lets the detail
+    /// view's adopt-on-load path mint a sidecar on first open.
+    @ViewBuilder
+    private var recentEventsSection: some View {
+        if !recentEvents.isEmpty {
+            Section("Recent Events") {
+                ForEach(recentEvents, id: \.id) { event in
+                    recentEventRow(event)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func recentEventRow(_ event: Event) -> some View {
+        Button {
+            pushEventReference(
+                EventReference(eventUUID: event.id.uuidString, eventKitID: event.eventKitID)
+            )
+        } label: {
+            ActivityRowLayout(systemImage: "calendar") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                        .font(.body)
+                        .foregroundStyle(.tint)
+                    Text(event.startDate, format: .dateTime.month(.abbreviated).day().year())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -849,6 +895,7 @@ struct ContactDetailView: View {
             }
             reloadEventLinks()
             await refreshContactMap()
+            await reloadRecentEvents(for: loaded)
         } else {
             // Contact disappeared from the store (e.g. deleted via the
             // edit sheet). Tear down sidecar-bound state so nothing keeps
@@ -859,7 +906,25 @@ struct ContactDetailView: View {
             notesStore = nil
             linksStore = nil
             eventLinks = []
+            recentEvents = []
         }
+    }
+
+    /// Fetch up to 10 EventKit events where this contact appears as an
+    /// attendee (matched by any email on the card). Runs on a background
+    /// queue inside `SyncService.recentEvents`; the awaited result resumes
+    /// back on the main actor. No-op when the contact has no emails.
+    private func reloadRecentEvents(for contact: Contact) async {
+        let emails = Set(contact.emailAddresses.map { $0.value })
+        guard !emails.isEmpty else {
+            recentEvents = []
+            return
+        }
+        let fetched = await service.recentEvents(forEmails: emails, limit: 10)
+        // Stale-load guard: the user may have navigated to a different
+        // contact while the background fetch was in flight. Bail if so.
+        guard self.contact?.localID == contact.localID else { return }
+        recentEvents = fetched
     }
 
     private func performReconcile() async {

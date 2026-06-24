@@ -415,6 +415,45 @@ extension GuessWhoSync {
         return result.sorted { $0.startDate < $1.startDate }
     }
 
+    // MARK: - Attendee lookup (contact detail "Recent Events")
+
+    /// Async wrapper around `events.eventsWithAttendee(...)` for the contact
+    /// detail "Recent Events" section. Builds a window of `[asOf - 10y, asOf
+    /// + 1y]` and hops the EventKit scan to a background queue via
+    /// `withCheckedThrowingContinuation` — EventKit's `events(matching:)` is
+    /// synchronous and proportional to the calendar size of the window, so it
+    /// must NOT block the caller's actor / main thread. Returns events sorted
+    /// most-recent-first, capped at `limit`.
+    public func recentEvents(
+        matchingEmails emails: Set<String>,
+        asOf now: Date = Date(),
+        limit: Int = 10
+    ) async throws -> [Event] {
+        guard !emails.isEmpty, limit > 0 else { return [] }
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.date(byAdding: .year, value: -10, to: now) ?? now
+        let end = calendar.date(byAdding: .year, value: 1, to: now) ?? now
+        let interval = DateInterval(start: start, end: end)
+        // Capture `self` (which is `@unchecked Sendable`) rather than `events`
+        // directly — `EventStoreProtocol` doesn't conform to `Sendable`, so a
+        // bare capture would trip the `SendableClosureCaptures` warning even
+        // though every conforming adapter is internally thread-safe.
+        return try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.events.eventsWithAttendee(
+                        matchingEmails: emails,
+                        in: interval,
+                        limit: limit
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Private helpers
 
     /// Write one §5.2 cell at a fixed cell key (vs. the minted-UUID keys

@@ -14,6 +14,7 @@ final class CountingEventStore: EventStoreProtocol {
     private(set) var fetchLegacyEventIdentifierCount: Int = 0
     private(set) var fetchEventsOnDayCount: Int = 0
     private(set) var searchEventsCount: Int = 0
+    private(set) var eventsWithAttendeeCount: Int = 0
     private(set) var createEventCount: Int = 0
     private(set) var updateEventCount: Int = 0
 
@@ -54,6 +55,17 @@ final class CountingEventStore: EventStoreProtocol {
         searchEventsCount += 1
         lock.unlock()
         return try inner.searchEvents(matching: text, in: interval)
+    }
+
+    func eventsWithAttendee(
+        matchingEmails emails: Set<String>,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [Event] {
+        lock.lock()
+        eventsWithAttendeeCount += 1
+        lock.unlock()
+        return try inner.eventsWithAttendee(matchingEmails: emails, in: interval, limit: limit)
     }
 
     func createEvent(

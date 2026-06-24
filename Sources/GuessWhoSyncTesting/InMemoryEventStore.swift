@@ -73,6 +73,34 @@ public final class InMemoryEventStore: EventStoreProtocol {
         }
     }
 
+    public func eventsWithAttendee(
+        matchingEmails emails: Set<String>,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [Event] {
+        let normalized: Set<String> = Set(
+            emails
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty, limit > 0 else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        let candidates = eventsByEventKitID.values.filter { event in
+            event.startDate <= interval.end && event.endDate >= interval.start
+        }
+        let matches = candidates.filter { event in
+            event.attendees.contains { attendee in
+                guard let email = attendee.email?.lowercased() else { return false }
+                return normalized.contains(email)
+            }
+        }
+        return matches
+            .sorted { $0.startDate > $1.startDate }
+            .prefix(limit)
+            .map { $0 }
+    }
+
     // MARK: - Writes
 
     public func createEvent(
