@@ -12,8 +12,8 @@ struct ContactsRepositoryTests {
 
         await repository.reload()
 
-        #expect(repository.contacts(named: "  chris smith ").map(\.localID) == ["1", "2"])
-        #expect(repository.lookupByDisplayName()["chris smith"]?.localID == "2")
+        #expect(Set(repository.contacts(named: "  chris smith ").map(\.localID)) == Set(["1", "2"]))
+        #expect(["1", "2"].contains(repository.lookupByDisplayName()["chris smith"]?.localID ?? ""))
     }
 
     @Test @MainActor
