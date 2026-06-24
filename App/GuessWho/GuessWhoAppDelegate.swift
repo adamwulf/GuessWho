@@ -35,7 +35,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         let service = SyncService()
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
-        self.contactsRepository = ContactsRepository(service: service)
+        self.contactsRepository = service.makeContactsRepository()
         self.eventsRepository = EventsRepository(service: service)
         super.init()
     }
