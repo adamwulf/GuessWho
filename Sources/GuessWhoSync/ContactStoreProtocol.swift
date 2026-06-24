@@ -26,8 +26,11 @@ public protocol ContactStoreProtocol: Actor {
     // Lookup-by-id throws `ContactStoreError.groupNotFound` when the id does
     // not exist; `fetchGroup` returns `nil` (mirrors `fetch(localID:)`).
     // Membership mutation throws `contactNotFound` / `groupNotFound` as
-    // appropriate. Adding a contact that is already a member, or removing
-    // one that is not, is a no-op (mirrors `CNSaveRequest` semantics).
+    // appropriate. `InMemoryContactStore` treats add-already-member and
+    // remove-non-member as no-ops; `CNContactStoreAdapter` forwards directly
+    // to `CNSaveRequest.addMember` / `removeMember`, whose Apple-documented
+    // behavior on those edges is unspecified — callers that need a strict
+    // contract should query membership first.
     func fetchAllGroups() async throws -> [ContactGroup]
     func fetchGroup(localID: String) async throws -> ContactGroup?
     func createGroup(name: String) async throws -> ContactGroup

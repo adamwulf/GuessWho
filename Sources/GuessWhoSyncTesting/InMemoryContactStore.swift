@@ -65,6 +65,9 @@ public actor InMemoryContactStore: ContactStoreProtocol {
             imageSidebandAccessCount += 1
             imageSideband.removeValue(forKey: localID)
         }
+        // Models the Contacts.app behavior: group membership is a relation
+        // through the contact's existence (no junction table), so deleting
+        // a contact implicitly drops it from every group.
         for (gid, members) in groupMembers where members.contains(localID) {
             var updated = members
             updated.remove(localID)

@@ -22,6 +22,26 @@ struct AdapterSmokeTests {
     // adapter. The function bodies are never executed at test-time (no
     // EKEventStore is available in the test process); the value of this
     // suite is that it fails to compile if a method drops off the adapter.
+    // Compile-time smoke: every new ContactGroup-related method exists on the
+    // CN adapter. The function body is never executed at test-time (no
+    // Contacts authorization is granted in the test process); the value of
+    // this suite is that it fails to compile if a method drops off the adapter.
+    @Test
+    func cnAdapterExposesGroupSurface() {
+        func _useGroups(_ adapter: CNContactStoreAdapter) async throws {
+            _ = try await adapter.fetchAllGroups()
+            _ = try await adapter.fetchGroup(localID: "x")
+            _ = try await adapter.createGroup(name: "x")
+            try await adapter.renameGroup(localID: "x", to: "y")
+            try await adapter.deleteGroup(localID: "x")
+            _ = try await adapter.fetchMembers(ofGroup: "x")
+            _ = try await adapter.fetchGroupMemberships(contactLocalID: "x")
+            try await adapter.addMember(contactLocalID: "x", toGroup: "y")
+            try await adapter.removeMember(contactLocalID: "x", fromGroup: "y")
+        }
+        _ = _useGroups
+    }
+
     @Test
     func ekAdapterExposesExtendedSurface() {
         func _useReads(_ adapter: EKEventStoreAdapter) throws {
