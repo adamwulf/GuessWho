@@ -42,7 +42,6 @@ public final class ContactsRepository: NSObject {
     /// denied permission or a transient Contacts failure.
     public func reload() async {
         isLoading = true
-        defer { isLoading = false }
         do {
             contacts = try await contactsStore.fetchAll()
             lastError = nil
@@ -50,6 +49,9 @@ public final class ContactsRepository: NSObject {
             contacts = []
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
+        // NotificationCenter can deliver synchronously. Consumers must observe
+        // the settled loading state when they apply their post-reload snapshot.
+        isLoading = false
         postDidReload()
     }
 
