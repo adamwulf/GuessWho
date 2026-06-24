@@ -167,41 +167,94 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // only matter if we were reusing one hosting controller and
         // mutating its rootView's localID (which is what
         // `RootView.detailColumn` did on the pre-Phase-5 SwiftUI path).
-        //
-        // No `pushContactReference` / `pushEventReference` env
-        // injection here: Catalyst's secondary-column REPLACE semantics
-        // don't match a "push another detail" affordance, and the
-        // right Catalyst behaviour for drill-down from a hosted detail
-        // is TBD (Phase 6). The closures default to no-op, so
-        // SwiftUI `Button` rows fall back to today's silent behaviour
-        // — same as pre-bridge Catalyst.
+        let nav = UINavigationController()
         let detail = ContactDetailView(localID: contact.localID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
-        let hosting = UIHostingController(rootView: detail)
-        let nav = UINavigationController(rootViewController: hosting)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        nav.viewControllers = [hosting]
         // setViewController REPLACES the secondary column wholesale on
-        // every selection — pushing onto a stack would accumulate detail
-        // views across taps.
+        // every sidebar/list selection — a brand-new nav stack is what
+        // we want at the entry point. Drill-down from inside the hosted
+        // detail (matched attendees, linked contacts, etc.) pushes onto
+        // this same `nav` via the injected env closures.
         split.setViewController(nav, for: .secondary)
     }
 
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
-        // See `showContactDetail` for the rationale on NOT injecting
-        // the push closures on Catalyst — Phase 6 will revisit.
-        //
         // `eventKitID` is carried so EventDetailView can adopt
         // ephemeral EventKit rows whose `eventUUID` is the synthetic
         // `Event.stableID(forEventKitID:)` and have no sidecar yet —
         // otherwise the detail view shows "(Unknown event)".
+        let nav = UINavigationController()
         let detail = EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
             .environment(appDelegate.service)
             .environment(appDelegate.favoritesStore)
-        let hosting = UIHostingController(rootView: detail)
-        let nav = UINavigationController(rootViewController: hosting)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        nav.viewControllers = [hosting]
         split.setViewController(nav, for: .secondary)
+    }
+
+    /// Catalyst-side analog of `injectIPhonePushHandlers`. Pushes a
+    /// fresh hosted detail onto the SAME secondary-column nav
+    /// controller so the user can back-swipe / tap the nav-bar back
+    /// button to return to the originating detail. The list/sidebar
+    /// entry points still REPLACE the secondary column via
+    /// `setViewController(_:for: .secondary)` — only in-detail
+    /// drill-downs push.
+    private func pushCatalystContactDetail(
+        ref: ContactReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let detail = ContactDetailView(localID: ref.localID)
+            .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        nav.pushViewController(hosting, animated: true)
+    }
+
+    private func pushCatalystEventDetail(
+        ref: EventReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let detail = EventDetailView(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID)
+            .environment(appDelegate.service)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        nav.pushViewController(hosting, animated: true)
+    }
+
+    /// Bind the SwiftUI env push closures to the supplied secondary-
+    /// column nav controller. Both closures capture `nav` and `self`
+    /// weakly so popping the stack or tearing down the scene doesn't
+    /// keep this delegate or its column alive.
+    private func injectCatalystPushHandlers<V: View>(
+        _ view: V,
+        on nav: UINavigationController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> some View {
+        view
+            .environment(\.pushContactReference) { [weak self, weak nav] ref in
+                self?.pushCatalystContactDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushEventReference) { [weak self, weak nav] ref in
+                self?.pushCatalystEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
     }
 
     private func installDetailPlaceholder(in split: UISplitViewController, for tab: SidebarTab) {
