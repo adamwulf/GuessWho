@@ -42,6 +42,11 @@ final class SyncService {
 
     private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
+    // Device-local persistence for the contact change-history cursor. Lives in
+    // the container's Application Support — NOT the sidecar root, which can be
+    // iCloud-backed: a CNContactStore history token is per-device, so syncing it
+    // would make another device think it was caught up and skip real edits.
+    private let contactCursorStore: ContactSyncCursorStore
     private let eventStore: EKEventStore
     private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
@@ -69,6 +74,7 @@ final class SyncService {
         self.contactStore = CNContactStore()
         let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
+        self.contactCursorStore = ContactSyncCursorStore(url: Self.contactCursorURL())
 
         let ek = EKEventStore()
         self.eventStore = ek
@@ -484,6 +490,47 @@ final class SyncService {
         }
     }
 
+    /// Fetches one contact by localID without enumerating the whole store.
+    /// Returns nil when the contact does not exist or access is not granted.
+    /// Use instead of `fetchAll().first { $0.localID == ... }` — routes through
+    /// `unifiedContact(withIdentifier:)`, O(1) against the store.
+    func fetch(localID: String) async -> Contact? {
+        guard contactsAuthorization == .authorized else { return nil }
+        do {
+            return try await contactsAdapter.fetch(localID: localID)
+        } catch {
+            lastError = "fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    // MARK: - Contact change history (incremental external sync)
+
+    /// Reads the contact change-history delta since `token` (our own writes are
+    /// excluded at the adapter via `transactionAuthor`). Pass `nil` for the
+    /// first run — the adapter returns `requiresFullReload` plus a baseline
+    /// token. Throws on auth/I-O failure; callers fall back to a full reload.
+    func contactChanges(since token: Data?) async throws -> ContactChangeSet {
+        try await contactsAdapter.changes(since: token)
+    }
+
+    /// The persisted change-history cursor, or `nil` on first run / after loss.
+    func loadContactCursor() -> Data? {
+        contactCursorStore.load()
+    }
+
+    /// Persists the change-history cursor. Callers MUST only save AFTER a
+    /// successful apply so a crash mid-apply re-processes rather than skips.
+    /// A write failure is non-fatal — it just means the next launch re-reads
+    /// from the older cursor (idempotent re-apply), so we swallow and breadcrumb.
+    func saveContactCursor(_ token: Data) {
+        do {
+            try contactCursorStore.save(token)
+        } catch {
+            lastError = "cursor save failed: \(error.localizedDescription)"
+        }
+    }
+
     func sidecar(for contact: Contact) -> SidecarEnvelope? {
         guard let uuid = guessWhoUUID(in: contact) else { return nil }
         guard let sync else { return nil }
@@ -527,8 +574,9 @@ final class SyncService {
         // Reconcile finished without setting assignedUUID — Cases B/C/D may
         // stamp the on-disk contact without populating that field (e.g. dup
         // GuessWho URLs cleaned up on a contact whose in-memory Contact
-        // struct was stale). Re-fetch and read the freshly written UUID.
-        if let fresh = await fetchAll().first(where: { $0.localID == contact.localID }),
+        // struct was stale). Re-fetch the single record (post-write, so it
+        // must hit the store) and read the freshly written UUID.
+        if let fresh = try? await contactsAdapter.fetch(localID: contact.localID),
            let stamped = guessWhoUUID(in: fresh) {
             return stamped
         }
@@ -628,19 +676,6 @@ final class SyncService {
     func removeContactLink(id: UUID) throws {
         guard let sync else { throw SidecarUnavailableError() }
         try sync.removeLink(id: id)
-    }
-
-    /// Reverse of `guessWhoUUID(in:)`: finds the contact whose GuessWho URL
-    /// carries `uuid`. Returns nil if no current contact owns that UUID
-    /// (e.g. the contact was deleted from the address book).
-    func contact(forGuessWhoUUID uuid: String) async -> Contact? {
-        let target = uuid.lowercased()
-        for contact in await fetchAll() {
-            if let owned = guessWhoUUID(in: contact), owned == target {
-                return contact
-            }
-        }
-        return nil
     }
 
     // MARK: - Contact ↔ Event links
@@ -782,6 +817,24 @@ final class SyncService {
         let dir = support.appendingPathComponent("GuessWhoSidecars", isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Device-local file backing the contact change-history cursor. Always in
+    /// the container's Application Support (`.userDomainMask`), independent of
+    /// where the sidecar root resolves — the cursor must never ride iCloud. If
+    /// Application Support cannot be resolved, fall back to a temp-dir path so
+    /// the store is always constructible; a lost cursor just forces one full
+    /// reload, which is safe.
+    private static func contactCursorURL() -> URL {
+        let fm = FileManager.default
+        let base = (try? fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? fm.temporaryDirectory
+        let dir = base.appendingPathComponent("GuessWhoSync", isDirectory: true)
+        return dir.appendingPathComponent("contacts-change-cursor")
     }
 
     private static func stableDeviceID() -> String {

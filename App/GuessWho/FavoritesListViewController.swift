@@ -17,6 +17,9 @@ final class FavoritesListViewController: UIViewController {
 
     private let store: FavoritesListStore
     private let service: SyncService
+    /// The single app-owned in-memory contact cache. The favorites builder
+    /// reads `repository.contacts` instead of re-enumerating the whole store.
+    private let repository: ContactsRepository
 
     private enum CellID: String {
         case favorite
@@ -37,9 +40,10 @@ final class FavoritesListViewController: UIViewController {
     private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
 
-    init(store: FavoritesListStore, service: SyncService) {
+    init(store: FavoritesListStore, service: SyncService, repository: ContactsRepository) {
         self.store = store
         self.service = service
+        self.repository = repository
         super.init(nibName: nil, bundle: nil)
         title = "Favorites"
     }
@@ -196,7 +200,7 @@ final class FavoritesListViewController: UIViewController {
 
     private func refreshContactMap() async {
         var map: [String: Contact] = [:]
-        for contact in await service.fetchAll() {
+        for contact in repository.contacts {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }

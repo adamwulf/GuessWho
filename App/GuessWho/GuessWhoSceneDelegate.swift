@@ -136,7 +136,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .favorites:
             let list = FavoritesListViewController(
                 store: appDelegate.favoritesStore,
-                service: appDelegate.service
+                service: appDelegate.service,
+                repository: appDelegate.contactsRepository
             )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -194,6 +195,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let nav = UINavigationController()
         let detail = EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
             .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
@@ -233,6 +235,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let nav else { return }
         let detail = EventDetailView(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID)
             .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
@@ -377,7 +380,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func makeIPhoneFavoritesTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = FavoritesListViewController(
             store: appDelegate.favoritesStore,
-            service: appDelegate.service
+            service: appDelegate.service,
+            repository: appDelegate.contactsRepository
         )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
@@ -465,6 +469,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let detail = injectIPhonePushHandlers(
             EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
                 .environment(appDelegate.service)
+                .environment(appDelegate.contactsRepository)
                 .environment(appDelegate.favoritesStore),
             on: nav,
             appDelegate: appDelegate

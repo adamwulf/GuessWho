@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct EventDetailView: View {
     @Environment(SyncService.self) private var service
+    @Environment(ContactsRepository.self) private var repository
     @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
     // Bridge to the outer UIKit nav controller (iPhone shell) so an
@@ -469,7 +470,7 @@ struct EventDetailView: View {
         tags = service.eventTags(forEventUUID: resolvedUUID)
         var map: [String: Contact] = [:]
         var byEmail: [String: Contact] = [:]
-        for contact in await service.fetchAll() {
+        for contact in repository.contacts {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }
@@ -672,6 +673,7 @@ private struct EventEditSheet: View {
 
 private struct ContactPickerSheet: View {
     @Environment(SyncService.self) private var service
+    @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss
 
     /// Returns `true` once the link has been created (or already existed),
@@ -771,7 +773,7 @@ private struct ContactPickerSheet: View {
                     }
                 }
             }
-            .task { contacts = await service.fetchAll() }
+            .task { contacts = repository.contacts }
         }
     }
 

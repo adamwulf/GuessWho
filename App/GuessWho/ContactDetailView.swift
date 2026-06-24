@@ -422,13 +422,13 @@ struct ContactDetailView: View {
             // Reconcile runs first so it can re-stamp our x-guesswho:// URL
             // before any other read sees the post-save state.
             await performReconcile()
-            await repository.reload()
-            // Bypass the repository cache for the post-save read: on Catalyst,
-            // enumerateContacts (which repository.reload uses) can return stale
-            // data right after a CNSaveRequest.update, while unifiedContact
-            // (which fetchContactForEditing wraps) returns the fresh record.
-            // Without this hop, the detail view keeps showing pre-save fields
-            // until the next nav-away-and-back triggers a fresh fetch.
+            await repository.refreshContact(localID: localID)
+            // refreshContact re-reads just this one record via service.fetch ->
+            // unifiedContact (the fresh path; enumerateContacts can lag right
+            // after a CNSaveRequest.update on Catalyst) and patches it into the
+            // cache. loadContact(preferFresh:) then re-reads the detail fields the
+            // same way so the view shows post-save state immediately rather than
+            // waiting for a nav-away-and-back.
             await loadContact(preferFresh: true)
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
@@ -442,7 +442,7 @@ struct ContactDetailView: View {
             try await service.deleteContact(localID: localID)
             editModel = nil
             editMode = .inactive
-            await repository.reload()
+            repository.removeContact(localID: localID)
             await loadContact()
             if contact == nil {
                 dismiss()
@@ -454,7 +454,7 @@ struct ContactDetailView: View {
             if category == .recordDoesNotExist {
                 editModel = nil
                 editMode = .inactive
-                await repository.reload()
+                repository.removeContact(localID: localID)
                 await loadContact()
                 if contact == nil {
                     dismiss()
@@ -959,7 +959,7 @@ struct ContactDetailView: View {
 
     private func refreshContactMap() async {
         var map: [String: Contact] = [:]
-        for contact in await service.fetchAll() {
+        for contact in repository.contacts {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }
@@ -1056,7 +1056,7 @@ struct ContactDetailView: View {
         } else if let cached = repository.contact(localID: localID) {
             loaded = cached
         } else {
-            loaded = await service.fetchAll().first { $0.localID == localID }
+            loaded = await service.fetch(localID: localID)
         }
         contact = loaded
         if let loaded {
@@ -1131,12 +1131,14 @@ struct ContactDetailView: View {
             reconcileError = nil
             // SyncService.reconcile intentionally does not poke the
             // repository, but the trailing loadContact() below reads
-            // through the repository cache for speed. Reload first so the
-            // cache reflects the freshly-stamped GuessWho URL — otherwise
-            // a Case-A reconcile on first-open of a never-stamped contact
-            // leaves guessWhoUUID == nil in the UI until something else
-            // refreshes the cache.
-            await repository.reload()
+            // through the repository cache for speed. Refresh this one
+            // contact first so the cache reflects the freshly-stamped
+            // GuessWho URL — otherwise a Case-A reconcile on first-open of
+            // a never-stamped contact leaves guessWhoUUID == nil in the UI
+            // until something else refreshes the cache. refreshContact
+            // awaits the store re-read before returning, so the cache is
+            // current by the time loadContact() runs.
+            await repository.refreshContact(localID: localID)
             await loadContact()
         } catch {
             reconcileError = "\(error)"
