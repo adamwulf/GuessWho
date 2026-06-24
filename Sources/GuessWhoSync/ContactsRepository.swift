@@ -13,8 +13,8 @@ public extension Notification.Name {
 /// The repository is deliberately a read-model cache, not a second source of
 /// truth: Contacts remains authoritative. It owns the full reload and
 /// incremental-change mechanics so all UI clients observe one coherent view
-/// of the address book. Presentation concerns such as search text, sorting,
-/// and section headers remain in the application.
+/// of the address book. It currently also preserves the app's established list
+/// query behavior as a transitional compatibility API.
 @MainActor
 @Observable
 public final class ContactsRepository: NSObject {
@@ -79,6 +79,16 @@ public final class ContactsRepository: NSObject {
             map[key] = contact
         }
         return map
+    }
+
+    /// Returns every cached contact whose display name matches `displayName`.
+    /// Unlike the legacy `lookupByDisplayName()`, this preserves ambiguity.
+    public func contacts(named displayName: String) -> [Contact] {
+        let needle = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contacts.filter {
+            $0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+        }
     }
 
     public func contactsReferencing(contact: Contact) -> [(contact: Contact, label: String)] {

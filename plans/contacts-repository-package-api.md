@@ -154,6 +154,42 @@ trade-off acceptable.
 
 ## Implementation stages
 
+### 0. Compatibility-preserving repository move (current work)
+
+Move the existing repository and its query helpers into the package without
+changing UI behavior or the existing raw-`Contact` API. This is deliberately a
+structural move, not the identity migration described by the later stages.
+
+- The package owns the current cache, change subscription, search state,
+  filtering/sorting/section helpers, display-name lookup, and reverse
+  relationship lookup so the app extension can be deleted.
+- Existing `localID`-based methods and the current last-match display-name map
+  remain transitional compatibility APIs. Mark them as such in code; do not
+  represent them as the target package identity boundary.
+- Add direct package tests that lock down the moved behavior: display/sort/
+  section helpers, people/organization filtering, search, duplicate-name map
+  behavior, and reverse-relationship self exclusion.
+- Correct package documentation to state that this compatibility repository now
+  owns those queries. It must not claim presentation remains app-owned.
+
+Acceptance: the app extension is absent, behavior and app build remain
+unchanged, package tests cover the moved logic, and the public comments clearly
+identify this as an interim local-ID surface.
+
+### 0.1. Data-safe display-name query (next compatibility API)
+
+Add `contacts(named:) -> [Contact]` to the package repository. It normalizes a
+display name once and returns **all** matches in cache order. It never chooses a
+winner. The current `lookupByDisplayName()` dictionary remains only for existing
+UI compatibility until callers migrate; new callers must use `contacts(named:)`.
+
+The UI may make a best-effort concession—first match, last match, or a chooser—
+because it owns presentation policy. The package remains data-safe by preserving
+ambiguity rather than silently discarding duplicate contacts.
+
+Acceptance: duplicate display-name tests prove `contacts(named:)` returns every
+match while the legacy dictionary behavior remains unchanged until migration.
+
 ### 1. Establish package identity/read-model types
 
 1. Add `GuessWhoContactID`, built from `SidecarKey.forContact` rather than a
