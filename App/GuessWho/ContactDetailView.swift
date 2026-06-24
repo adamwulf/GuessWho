@@ -441,8 +441,7 @@ struct ContactDetailView: View {
             editModel = nil
             editMode = .inactive
             // Reconcile runs first so it can re-stamp our x-guesswho:// URL
-            // before any other read sees the post-save state. Mirrors the
-            // old sheet-based handleEditorDone sequence.
+            // before any other read sees the post-save state.
             await performReconcile()
             await repository.reload()
             await loadContact()
