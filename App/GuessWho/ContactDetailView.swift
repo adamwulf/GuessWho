@@ -51,6 +51,11 @@ struct ContactDetailView: View {
     @State private var isSavingEdit = false
     @State private var editSaveError: ContactEditModel.SaveErrorCategory?
     @State private var editDeleteError: ContactEditModel.SaveErrorCategory?
+    // Owned ambient edit-mode for the editing list. Without an owned binding,
+    // EditButton drives an unscoped \.editMode that stays .active after the
+    // user exits contact-edit, leaking drag-handle/delete-circle affordances
+    // into the read-only activity list. Reset to .inactive on every exit.
+    @State private var editMode: EditMode = .inactive
     @State private var showDiscardConfirm = false
     @State private var showDeleteConfirm = false
 
@@ -260,17 +265,25 @@ struct ContactDetailView: View {
                 }
             }
         }
+        // Inject the owned editMode binding so EditButton drives this view's
+        // own .editMode state instead of an ambient one we can't tear down.
+        // Reset to .inactive happens on every contact-edit exit path.
         #if targetEnvironment(macCatalyst)
-        list.listStyle(.inset)
+        list
+            .listStyle(.inset)
+            .environment(\.editMode, $editMode)
         #else
-        list.listStyle(.insetGrouped)
+        list
+            .listStyle(.insetGrouped)
+            .environment(\.editMode, $editMode)
         #endif
     }
 
     /// Editor section stack used when `isEditingContact` is true. Reuses
-    /// the same row components as the (now-removed-from-this-flow) sheet
-    /// editor; the binding goes through a force-unwrapped derivation
-    /// because the call site is gated on `editModel != nil`.
+    /// the same row components as the sheet editor. The binding falls
+    /// back to a throwaway empty model — never hit in practice because
+    /// the call site is gated on `editModel != nil`, but a nil-coalesce
+    /// keeps the binding total without a runtime trap.
     @ViewBuilder
     private var editingSections: some View {
         let binding = Binding<ContactEditModel>(
@@ -299,6 +312,7 @@ struct ContactDetailView: View {
                     Spacer()
                 }
             }
+            .disabled(isSavingEdit)
         }
     }
 
@@ -415,6 +429,7 @@ struct ContactDetailView: View {
 
     private func cancelEdit() {
         editModel = nil
+        editMode = .inactive
     }
 
     private func performInlineSave() async {
@@ -424,6 +439,7 @@ struct ContactDetailView: View {
         do {
             try await service.saveContact(model.edited)
             editModel = nil
+            editMode = .inactive
             // Reconcile runs first so it can re-stamp our x-guesswho:// URL
             // before any other read sees the post-save state. Mirrors the
             // old sheet-based handleEditorDone sequence.
@@ -441,6 +457,7 @@ struct ContactDetailView: View {
         do {
             try await service.deleteContact(localID: localID)
             editModel = nil
+            editMode = .inactive
             await repository.reload()
             await loadContact()
             if contact == nil {
@@ -452,6 +469,7 @@ struct ContactDetailView: View {
             // exactly what the user asked for. Treat as success.
             if category == .recordDoesNotExist {
                 editModel = nil
+                editMode = .inactive
                 await repository.reload()
                 await loadContact()
                 if contact == nil {
@@ -470,7 +488,7 @@ struct ContactDetailView: View {
         case .invalidField(let detail):
             return "One of the fields was rejected by the system: \(detail)"
         case .recordDoesNotExist:
-            return "This contact has been deleted on another device. Close the editor to refresh."
+            return "This contact has been deleted on another device. Tap Cancel to refresh."
         case .unknown(let detail):
             return detail
         }
