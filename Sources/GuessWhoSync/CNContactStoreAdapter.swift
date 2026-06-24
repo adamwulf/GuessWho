@@ -165,6 +165,161 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
+    // MARK: - Groups
+
+    public func fetchAllGroups() async throws -> [ContactGroup] {
+        try await runOnWorkQueue { store in
+            let cnGroups = try store.groups(matching: nil)
+            return cnGroups.map { ContactGroup(localID: $0.identifier, name: $0.name) }
+        }
+    }
+
+    public func fetchGroup(localID: String) async throws -> ContactGroup? {
+        try await runOnWorkQueue { store in
+            let predicate = CNGroup.predicateForGroups(withIdentifiers: [localID])
+            let cnGroups = try store.groups(matching: predicate)
+            guard let g = cnGroups.first else { return nil }
+            return ContactGroup(localID: g.identifier, name: g.name)
+        }
+    }
+
+    public func createGroup(name: String) async throws -> ContactGroup {
+        try await runOnWorkQueue { store in
+            let mutable = CNMutableGroup()
+            mutable.name = name
+            let req = CNSaveRequest()
+            req.add(mutable, toContainerWithIdentifier: nil)
+            try store.execute(req)
+            // `identifier` is assigned by Contacts at execute() time and is
+            // readable on the same CNMutableGroup instance afterwards.
+            return ContactGroup(localID: mutable.identifier, name: mutable.name)
+        }
+    }
+
+    public func renameGroup(localID: String, to name: String) async throws {
+        try await runOnWorkQueue { store in
+            let predicate = CNGroup.predicateForGroups(withIdentifiers: [localID])
+            let cnGroups = try store.groups(matching: predicate)
+            guard let cn = cnGroups.first else {
+                throw ContactStoreError.groupNotFound(localID: localID)
+            }
+            // mutableCopy() on a CNGroup always returns CNMutableGroup.
+            let mutable = cn.mutableCopy() as! CNMutableGroup
+            mutable.name = name
+            let req = CNSaveRequest()
+            req.update(mutable)
+            try store.execute(req)
+        }
+    }
+
+    public func deleteGroup(localID: String) async throws {
+        try await runOnWorkQueue { store in
+            let predicate = CNGroup.predicateForGroups(withIdentifiers: [localID])
+            let cnGroups = try store.groups(matching: predicate)
+            guard let cn = cnGroups.first else {
+                throw ContactStoreError.groupNotFound(localID: localID)
+            }
+            let mutable = cn.mutableCopy() as! CNMutableGroup
+            let req = CNSaveRequest()
+            req.delete(mutable)
+            try store.execute(req)
+        }
+    }
+
+    public func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] {
+        try await runOnWorkQueue { store in
+            // Verify the group exists so callers get a typed error instead
+            // of an empty array when they pass a bad id.
+            let groupPredicate = CNGroup.predicateForGroups(withIdentifiers: [groupLocalID])
+            let cnGroups = try store.groups(matching: groupPredicate)
+            guard cnGroups.first != nil else {
+                throw ContactStoreError.groupNotFound(localID: groupLocalID)
+            }
+            let membersPredicate = CNContact.predicateForContactsInGroup(withIdentifier: groupLocalID)
+            let cnContacts = try store.unifiedContacts(matching: membersPredicate, keysToFetch: Self.keys)
+            return cnContacts.map(Self.toContact)
+        }
+    }
+
+    public func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] {
+        try await runOnWorkQueue { store in
+            // Confirm the contact exists so a bad id throws instead of
+            // returning an empty list. groupsContainingContact has no built-in
+            // existence check.
+            do {
+                _ = try store.unifiedContact(
+                    withIdentifier: contactLocalID,
+                    keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+                )
+            } catch let error as CNError where error.code == .recordDoesNotExist {
+                throw ContactStoreError.contactNotFound(localID: contactLocalID)
+            }
+            // Walk all groups and filter by membership. CNGroup has no direct
+            // "groups containing contact" API, so this is the supported path.
+            let allGroups = try store.groups(matching: nil)
+            var memberships: [ContactGroup] = []
+            for g in allGroups {
+                let membersPredicate = CNContact.predicateForContactsInGroup(withIdentifier: g.identifier)
+                let members = try store.unifiedContacts(
+                    matching: membersPredicate,
+                    keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+                )
+                if members.contains(where: { $0.identifier == contactLocalID }) {
+                    memberships.append(ContactGroup(localID: g.identifier, name: g.name))
+                }
+            }
+            return memberships
+        }
+    }
+
+    public func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws {
+        try await runOnWorkQueue { store in
+            let (contact, group) = try Self.resolveContactAndGroup(
+                contactLocalID: contactLocalID,
+                groupLocalID: groupLocalID,
+                store: store
+            )
+            let req = CNSaveRequest()
+            req.addMember(contact, to: group)
+            try store.execute(req)
+        }
+    }
+
+    public func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws {
+        try await runOnWorkQueue { store in
+            let (contact, group) = try Self.resolveContactAndGroup(
+                contactLocalID: contactLocalID,
+                groupLocalID: groupLocalID,
+                store: store
+            )
+            let req = CNSaveRequest()
+            req.removeMember(contact, from: group)
+            try store.execute(req)
+        }
+    }
+
+    private static func resolveContactAndGroup(
+        contactLocalID: String,
+        groupLocalID: String,
+        store: CNContactStore
+    ) throws -> (CNContact, CNGroup) {
+        let contact: CNContact
+        do {
+            contact = try store.unifiedContact(
+                withIdentifier: contactLocalID,
+                keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+            )
+        } catch let error as CNError where error.code == .recordDoesNotExist {
+            throw ContactStoreError.contactNotFound(localID: contactLocalID)
+        }
+        let groupPredicate = CNGroup.predicateForGroups(withIdentifiers: [groupLocalID])
+        let cnGroups = try store.groups(matching: groupPredicate)
+        guard let group = cnGroups.first else {
+            throw ContactStoreError.groupNotFound(localID: groupLocalID)
+        }
+        return (contact, group)
+    }
+
     /// Bridge the blocking `CNContactStore` call onto `workQueue` and
     /// suspend the actor until it returns. The actor's thread is freed
     /// for the duration of the synchronous CN/XPC work, so a `@MainActor`

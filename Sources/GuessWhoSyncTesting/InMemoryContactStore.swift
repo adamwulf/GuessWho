@@ -4,6 +4,9 @@ import GuessWhoSync
 public actor InMemoryContactStore: ContactStoreProtocol {
     private var contactsByID: [String: Contact]
     private var imageSideband: [String: (image: Data?, thumbnail: Data?)] = [:]
+    private var groupsByID: [String: ContactGroup] = [:]
+    private var groupMembers: [String: Set<String>] = [:]
+    private var nextGroupSerial: Int = 1
 
     /// Internal-only counter used by tests to assert that bulk `fetchAll()`
     /// never peeks into the image sideband. Increments whenever the store
@@ -62,6 +65,87 @@ public actor InMemoryContactStore: ContactStoreProtocol {
             imageSidebandAccessCount += 1
             imageSideband.removeValue(forKey: localID)
         }
+        for (gid, members) in groupMembers where members.contains(localID) {
+            var updated = members
+            updated.remove(localID)
+            groupMembers[gid] = updated
+        }
+    }
+
+    // MARK: - Groups
+
+    public func fetchAllGroups() throws -> [ContactGroup] {
+        Array(groupsByID.values)
+    }
+
+    public func fetchGroup(localID: String) throws -> ContactGroup? {
+        groupsByID[localID]
+    }
+
+    public func createGroup(name: String) throws -> ContactGroup {
+        let id = "in-memory-group-\(nextGroupSerial)"
+        nextGroupSerial += 1
+        let group = ContactGroup(localID: id, name: name)
+        groupsByID[id] = group
+        groupMembers[id] = []
+        return group
+    }
+
+    public func renameGroup(localID: String, to name: String) throws {
+        guard var group = groupsByID[localID] else {
+            throw ContactStoreError.groupNotFound(localID: localID)
+        }
+        group.name = name
+        groupsByID[localID] = group
+    }
+
+    public func deleteGroup(localID: String) throws {
+        guard groupsByID[localID] != nil else {
+            throw ContactStoreError.groupNotFound(localID: localID)
+        }
+        groupsByID.removeValue(forKey: localID)
+        groupMembers.removeValue(forKey: localID)
+    }
+
+    public func fetchMembers(ofGroup groupLocalID: String) throws -> [Contact] {
+        guard groupsByID[groupLocalID] != nil else {
+            throw ContactStoreError.groupNotFound(localID: groupLocalID)
+        }
+        let memberIDs = groupMembers[groupLocalID] ?? []
+        return memberIDs.compactMap { contactsByID[$0] }
+    }
+
+    public func fetchGroupMemberships(contactLocalID: String) throws -> [ContactGroup] {
+        guard contactsByID[contactLocalID] != nil else {
+            throw ContactStoreError.contactNotFound(localID: contactLocalID)
+        }
+        return groupMembers
+            .filter { $0.value.contains(contactLocalID) }
+            .compactMap { groupsByID[$0.key] }
+    }
+
+    public func addMember(contactLocalID: String, toGroup groupLocalID: String) throws {
+        guard contactsByID[contactLocalID] != nil else {
+            throw ContactStoreError.contactNotFound(localID: contactLocalID)
+        }
+        guard groupsByID[groupLocalID] != nil else {
+            throw ContactStoreError.groupNotFound(localID: groupLocalID)
+        }
+        var members = groupMembers[groupLocalID] ?? []
+        members.insert(contactLocalID)
+        groupMembers[groupLocalID] = members
+    }
+
+    public func removeMember(contactLocalID: String, fromGroup groupLocalID: String) throws {
+        guard contactsByID[contactLocalID] != nil else {
+            throw ContactStoreError.contactNotFound(localID: contactLocalID)
+        }
+        guard groupsByID[groupLocalID] != nil else {
+            throw ContactStoreError.groupNotFound(localID: groupLocalID)
+        }
+        var members = groupMembers[groupLocalID] ?? []
+        members.remove(contactLocalID)
+        groupMembers[groupLocalID] = members
     }
 
     public func loadImageData(localID: String) throws -> Data? {

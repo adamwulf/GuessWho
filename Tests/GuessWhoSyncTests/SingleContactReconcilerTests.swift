@@ -128,6 +128,8 @@ struct SingleContactReconcilerTests {
             switch error {
             case .contactNotFound(let id):
                 #expect(id == "DOES-NOT-EXIST")
+            case .groupNotFound:
+                Issue.record("unexpected groupNotFound for contact reconcile")
             }
         }
     }
