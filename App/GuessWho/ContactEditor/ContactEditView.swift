@@ -17,7 +17,6 @@ struct ContactEditView: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
 
-    let contact: Contact
     let onDone: () -> Void
 
     @State private var model: ContactEditModel
@@ -30,7 +29,6 @@ struct ContactEditView: View {
     /// The model starts dirty so Save is enabled immediately and the user
     /// doesn't have to mutate a field to enable it.
     init(newContactSeed seed: Contact, onDone: @escaping () -> Void) {
-        self.contact = seed
         self.onDone = onDone
         _model = State(initialValue: ContactEditModel(newContactSeed: seed))
     }

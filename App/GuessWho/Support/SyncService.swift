@@ -552,7 +552,7 @@ final class SyncService {
     /// intentionally does NOT touch the repository — ContactsRepository
     /// already holds SyncService, so injecting the reverse direction
     /// adds coupling without an upside (every current caller already
-    /// reloads after its own post-save dance — `handleEditorDone` runs
+    /// reloads after its own post-save dance — `performInlineSave` runs
     /// performReconcile → loadContact → repository.reload).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
