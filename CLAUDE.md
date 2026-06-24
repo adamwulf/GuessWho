@@ -59,6 +59,11 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
 This is how the package answers "which contact is this?" across stores and
 devices. Read this before touching reconciliation.
 
+> **Full reference:** [`docs/contact-identity.md`](docs/contact-identity.md) —
+> the source of truth for GuessWho ID vs. `localID`, why callers must identify a
+> contact *only* by its GuessWho ID, and how that relates to Contacts
+> identifiers and unified contacts. The summary below is a digest of that doc.
+
 ### One identity, not one per store
 
 We do **not** treat Contacts accounts (iCloud, Exchange, Google, On-My-Mac) as
