@@ -423,12 +423,12 @@ struct ContactDetailView: View {
             // before any other read sees the post-save state.
             await performReconcile()
             await repository.refreshContact(localID: localID)
-            // Bypass the repository cache for the post-save read: on Catalyst,
-            // enumerateContacts (which repository.reload uses) can return stale
-            // data right after a CNSaveRequest.update, while unifiedContact
-            // (which fetchContactForEditing wraps) returns the fresh record.
-            // Without this hop, the detail view keeps showing pre-save fields
-            // until the next nav-away-and-back triggers a fresh fetch.
+            // refreshContact re-reads just this one record via service.fetch ->
+            // unifiedContact (the fresh path; enumerateContacts can lag right
+            // after a CNSaveRequest.update on Catalyst) and patches it into the
+            // cache. loadContact(preferFresh:) then re-reads the detail fields the
+            // same way so the view shows post-save state immediately rather than
+            // waiting for a nav-away-and-back.
             await loadContact(preferFresh: true)
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)

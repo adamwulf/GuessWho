@@ -39,10 +39,17 @@ final class ContactsRepository {
     /// Guards `applyExternalChanges()` against overlapping invocations. Two
     /// `.CNContactStoreDidChange` notifications can land back-to-back; without
     /// this, the second could interleave a half-applied delta. `@MainActor`
-    /// makes the check-and-set atomic. A skipped run is safe — the cursor only
-    /// advances after success, so the next notification re-reads from where the
-    /// in-flight run will leave off (and the OS coalesces store-change posts).
+    /// makes the check-and-set atomic.
     private var isApplyingExternalChanges = false
+
+    /// Set when a `.CNContactStoreDidChange` arrives while a run is already in
+    /// flight. Without it, a write that commits AFTER the in-flight run's
+    /// `contactChanges(since:)` read but whose notification lands DURING the
+    /// apply would be stranded until the next unrelated store change — because
+    /// the cursor advances past it. Draining this flag in the `defer` re-runs
+    /// once more to pick up exactly that window. Coalesces multiple rejected
+    /// notifications into a single re-run.
+    private var externalChangesPending = false
 
     init(service: SyncService) {
         self.service = service
@@ -135,11 +142,30 @@ final class ContactsRepository {
     ///   exclusion) while still advancing the cursor.
     /// - Persist the cursor ONLY after a successful apply, on BOTH branches, so a
     ///   crash mid-apply re-processes rather than skips.
+    ///
+    /// Overlap handling: if a notification arrives mid-run, `externalChangesPending`
+    /// is set and drained by a single extra pass after the current one finishes,
+    /// so a write whose notification lands during the apply is never stranded.
     func applyExternalChanges() async {
-        guard !isApplyingExternalChanges else { return }
+        guard !isApplyingExternalChanges else {
+            // A run is in flight. Mark that another pass is needed rather than
+            // dropping this notification — the in-flight run advances the cursor,
+            // so without a re-run a write that committed after its history read
+            // would be stranded until the next unrelated store change.
+            externalChangesPending = true
+            return
+        }
         isApplyingExternalChanges = true
         defer { isApplyingExternalChanges = false }
 
+        // Run at least once; re-run while a notification arrived mid-apply.
+        repeat {
+            externalChangesPending = false
+            await applyExternalChangesOnce()
+        } while externalChangesPending
+    }
+
+    private func applyExternalChangesOnce() async {
         let token = service.loadContactCursor()
         let changeSet: ContactChangeSet
         do {

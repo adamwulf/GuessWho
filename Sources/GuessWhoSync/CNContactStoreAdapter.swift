@@ -163,11 +163,22 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
 
     public func changes(since token: Data?) async throws -> ContactChangeSet {
         try await runOnWorkQueue { store in
-            // nil token ⇒ start from the beginning of recorded history AND
-            // baseline the caller with a full reload — the delta from the dawn
-            // of history is not a meaningful "what changed for you" set, and CN
-            // emits a DropEverything event for us anyway in that case.
-            let startFromBeginning = (token == nil)
+            // nil token ⇒ first run (or cursor loss). The delta from the dawn of
+            // history is not a meaningful "what changed for you" set — the caller
+            // baselines via a full reload regardless. So skip the history fetch
+            // entirely (which would otherwise materialize the ENTIRE recorded
+            // history just to discard it) and hand back the current token plus
+            // requiresFullReload. `currentHistoryToken` is a cheap property read,
+            // not an enumeration.
+            if token == nil {
+                let baseline = (store.currentHistoryToken as Data?) ?? Data()
+                return ContactChangeSet(
+                    changes: [],
+                    newToken: baseline,
+                    requiresFullReload: true
+                )
+            }
+
             let request = CNChangeHistoryFetchRequest()
             // The token is opaque `Data`; pass it straight through. nil here
             // means "from the beginning" per Apple's contract.
@@ -197,9 +208,12 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             // currentHistoryToken can be nil on an empty store; persist Data()
             // in that case so the cursor is still a stable, advanceable value.
             let newToken = (fetchedToken as Data?) ?? Data()
-            let requiresFullReload = startFromBeginning || visitor.droppedEverything
-            // On a drop-everything (or first run) the partial delta is
-            // meaningless; the caller rebuilds from a full reload.
+            // First-run (nil token) returned early above, so here a full reload
+            // is required only when the history stream dropped everything (token
+            // invalidation / truncation).
+            let requiresFullReload = visitor.droppedEverything
+            // On a drop-everything the partial delta is meaningless; the caller
+            // rebuilds from a full reload.
             let changes = requiresFullReload ? [] : visitor.changes
             return ContactChangeSet(
                 changes: changes,
