@@ -64,6 +64,67 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         }
     }
 
+    public func eventsWithAttendee(
+        matchingEmails emails: Set<String>,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [Event] {
+        let normalized: Set<String> = Set(
+            emails
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty, limit > 0, interval.start < interval.end else { return [] }
+
+        // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
+        // predicate at a 4-year span; longer windows silently return nothing.
+        // Chunk the requested interval into ≤4-year slices, walk each, and
+        // collapse multiple hits per `calendarItemExternalIdentifier` so:
+        //   • a multi-day event straddling a chunk boundary isn't counted
+        //     twice, and
+        //   • a recurring event (every occurrence shares the same
+        //     calendarItemExternalIdentifier) collapses to ONE row showing
+        //     the most-recent occurrence's date. A plain dict-assignment
+        //     dedupe would pick whichever occurrence happened to be visited
+        //     last — nondeterministic and almost never "most recent."
+        var dedupe: [String: Event] = [:]
+        for chunk in Self.chunked(interval: interval, maxYears: 4) {
+            let predicate = store.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: nil)
+            let ekEvents = store.events(matching: predicate)
+            for ek in ekEvents {
+                let participants = ek.attendees ?? []
+                let matches = participants.contains { p in
+                    guard let email = Self.email(from: p.url)?.lowercased() else { return false }
+                    return normalized.contains(email)
+                }
+                guard matches, let event = Self.toEvent(ek), let ekid = event.eventKitID else { continue }
+                if let existing = dedupe[ekid], existing.startDate >= event.startDate { continue }
+                dedupe[ekid] = event
+            }
+        }
+
+        return dedupe.values
+            .sorted { $0.startDate > $1.startDate }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    /// Split `interval` into back-to-back slices each no longer than `maxYears`
+    /// years. Used to walk EventKit's 4-year-per-predicate ceiling without
+    /// silently losing events past the limit.
+    private static func chunked(interval: DateInterval, maxYears: Int) -> [DateInterval] {
+        var chunks: [DateInterval] = []
+        let calendar = Calendar(identifier: .gregorian)
+        var cursor = interval.start
+        while cursor < interval.end {
+            let next = calendar.date(byAdding: .year, value: maxYears, to: cursor) ?? interval.end
+            let end = min(next, interval.end)
+            chunks.append(DateInterval(start: cursor, end: end))
+            cursor = end
+        }
+        return chunks
+    }
+
     // MARK: - Writes
 
     public func createEvent(

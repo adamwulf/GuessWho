@@ -26,6 +26,22 @@ public protocol EventStoreProtocol {
     /// all events in the interval.
     func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event]
 
+    /// EventKit events in `interval` whose `attendees` include any address in
+    /// `emails` (case-insensitive). Backs the contact detail "Recent Events"
+    /// section: pass the contact's email addresses, get back the events the
+    /// contact appears on. Results are sorted by `startDate` descending
+    /// (most-recent first) and truncated to `limit`. Returns `[]` when
+    /// `emails` is empty.
+    ///
+    /// Adapter implementations may chunk the interval internally (EventKit's
+    /// `predicateForEvents` caps each predicate at 4 years); callers may pass
+    /// a window of any length without worrying about that limit.
+    func eventsWithAttendee(
+        matchingEmails emails: Set<String>,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [Event]
+
     /// Migration-only: resolve a legacy `eventIdentifier` (the pre-pivot
     /// sidecar key shape) to an Event whose `eventKitID` is the canonical
     /// `calendarItemExternalIdentifier`. Returns nil if the EKEvent no longer
