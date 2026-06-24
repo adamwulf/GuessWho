@@ -145,15 +145,14 @@ struct ContactDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        #if targetEnvironment(macCatalyst)
-        // Mirror Apple's Contacts detail pane: clamp the card width
-        // and let the surrounding pane breathe at wider window sizes.
-        // listStyle lives inside loadedContent — applying it on this
-        // Group (which can hold either a List or a ProgressView)
-        // wouldn't reach the List on the loaded branch.
-        .frame(maxWidth: 560)
-        .frame(maxWidth: .infinity)
-        #endif
+        // Width clamping is NOT applied to this Group: doing so would inset
+        // the List (and therefore its scroll view) from the pane edges,
+        // leaving inert dead space on the sides that doesn't scroll. Instead
+        // the List stays full-bleed and each row clamps + centers its own
+        // content to `Self.maxContentWidth` (see `centeredRowContent`), so the
+        // scrollable region reaches the pane edges while the visible content
+        // stays in the same centered column. macCatalyst only — see
+        // `loadedContent`.
         #if targetEnvironment(macCatalyst)
         // The inline header already shows the name and subtitle, so an
         // empty nav-bar title keeps the toolbar clean (we still need the
@@ -234,6 +233,12 @@ struct ContactDetailView: View {
         }
     }
 
+    /// Max width the detail content is clamped to on macCatalyst. The List
+    /// itself stays full-bleed; this only bounds the centered content column
+    /// (and its separators) inside each row — see `centeredRowContent`.
+    /// `fileprivate` so the row-clamp extension below can read it.
+    fileprivate static let maxContentWidth: CGFloat = 560
+
     @ViewBuilder
     private func loadedContent(_ contact: Contact) -> some View {
         let list = List {
@@ -245,24 +250,32 @@ struct ContactDetailView: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
+            .centeredRowContent()
             #endif
 
             if isEditingContact {
                 editingSections
+                    .centeredRowContent()
             } else {
                 infoSection(contact)
+                    .centeredRowContent()
 
                 referencedBySection(contact)
+                    .centeredRowContent()
 
                 recentEventsSection
+                    .centeredRowContent()
 
                 activitySection
+                    .centeredRowContent()
 
                 if debugModeEnabled {
                     debugSection(contact)
+                        .centeredRowContent()
                 }
 
                 Section { activityFooter }
+                    .centeredRowContent()
             }
         }
         // Inject the owned editMode binding so EditButton drives this view's
@@ -1342,6 +1355,35 @@ struct ContactDetailView: View {
             }
             return "(complex)"
         }
+    }
+}
+
+private extension View {
+    /// Clamp a list row's content to `ContactDetailView.maxContentWidth` and
+    /// center it, keeping the row separators aligned to the same column. This
+    /// lets the enclosing `List` stay full-bleed (so its scroll view reaches
+    /// the pane edges) while the visible content stays in a centered column —
+    /// the look the old `.frame(maxWidth: 560)` on the whole List produced,
+    /// minus the inert non-scrolling gutters that clamp left outside the
+    /// scroll view. No-op off macCatalyst, where no width clamp ever applied.
+    @ViewBuilder
+    func centeredRowContent() -> some View {
+        #if targetEnvironment(macCatalyst)
+        let maxWidth = ContactDetailView.maxContentWidth
+        self
+            .frame(maxWidth: maxWidth)
+            .frame(maxWidth: .infinity)
+            // Pull the separators in to the centered column so they don't run
+            // the full pane width — matching the old clamped-card look.
+            .alignmentGuide(.listRowSeparatorLeading) { dimensions in
+                max(0, (dimensions.width - maxWidth) / 2)
+            }
+            .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
+                dimensions.width - max(0, (dimensions.width - maxWidth) / 2)
+            }
+        #else
+        self
+        #endif
     }
 }
 
