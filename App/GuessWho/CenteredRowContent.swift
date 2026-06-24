@@ -18,15 +18,24 @@ enum ContactDetailLayout {
 }
 
 extension View {
-    /// Clamp a list row's content to `ContactDetailLayout.maxContentWidth` and
-    /// center it, keeping the row separators aligned to the same column. Apply
-    /// this to a ROW's content view (not to a `Section`). No-op off macCatalyst,
-    /// where no width clamp ever applied.
+    /// Pin a list row's content to a `ContactDetailLayout.maxContentWidth`-wide
+    /// column, left-aligned within that column, and center the column in the
+    /// full-width cell — keeping the row separators aligned to the same column.
+    /// The content fills the column rather than collapsing to its intrinsic
+    /// width, so short rows line up with tall ones instead of floating centered.
+    /// Apply this to a ROW's content view (not to a `Section`). No-op off
+    /// macCatalyst, where no width clamp ever applied.
     @ViewBuilder
     func centeredRowContent() -> some View {
         #if targetEnvironment(macCatalyst)
         let maxWidth = ContactDetailLayout.maxContentWidth
         self
+            // 1. Stretch the content to fill the available width, left-aligned,
+            //    so a short row (e.g. "image available / no") occupies the full
+            //    column instead of shrinking to its intrinsic width and getting
+            //    centered. 2. Cap that fill at `maxWidth` → a genuine 560-wide
+            //    left-aligned block. 3. Center that block in the full-width cell.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: maxWidth)
             .frame(maxWidth: .infinity)
             // Pull the separators in to the centered column so they don't run
