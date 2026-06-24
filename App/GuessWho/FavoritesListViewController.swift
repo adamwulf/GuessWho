@@ -5,9 +5,9 @@ import GuessWhoSync
 /// UIKit Favorites list for the Catalyst 3-column shell. Single-section
 /// diffable data source keyed on `Favorite.stableID`. Mirrors the
 /// SwiftUI `FavoritesListView`: swipe-to-unfavorite, drag-to-reorder,
-/// and an async contact-uuid map rebuilt on `.guessWhoContactsDidChange`
-/// (the package's real-external-contact-change signal) and scene
-/// activation.
+/// and an async contact-uuid map rebuilt on `.contactsRepositoryDidReload`
+/// (the repository's cache-changed signal, posted after the launch reload,
+/// incremental patches, and self-writes) and scene activation.
 final class FavoritesListViewController: UIViewController {
     /// Selection callbacks — SceneDelegate routes each kind to the
     /// matching detail view (contact → ContactDetailView, event →
@@ -156,8 +156,19 @@ final class FavoritesListViewController: UIViewController {
             }
         }
 
+        // The repository posts `.contactsRepositoryDidReload` after EVERY
+        // cache change — the async launch reload (which populates an
+        // otherwise-empty cache), incremental external patches, and our own
+        // self-write refreshes/removes. The package's raw external-delta
+        // signal (`.guessWhoContactsDidChange`) deliberately does NOT fire on
+        // the launch reload, so observing it left this dumb cache reader with
+        // an empty contact map at cold launch — every contact favorite
+        // rendered "Unavailable" until an external Contacts edit happened to
+        // fire. Observing the repository's reload post fixes that and also
+        // keeps favorites in sync with incremental patches + self-writes the
+        // old signal missed.
         contactsChangedObserver = center.addObserver(
-            forName: .guessWhoContactsDidChange,
+            forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
