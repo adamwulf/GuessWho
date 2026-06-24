@@ -926,9 +926,7 @@ struct ContactDetailView: View {
         recentEventsLoadID = myLoadID
         let emails = Set(contact.emailAddresses.map { $0.value })
         guard !emails.isEmpty else {
-            // Clear under the same token check so a later in-flight load
-            // can't resurrect a previous result for this same load slot.
-            guard recentEventsLoadID == myLoadID else { return }
+            // Synchronous from the token bump above — no suspension, no race.
             recentEvents = []
             return
         }
