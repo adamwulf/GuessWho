@@ -24,6 +24,10 @@ struct SocialProfileRow: View {
                 model.edited.socialProfiles.remove(atOffsets: offsets)
                 model.isDirty = true
             }
+            .onMove { source, destination in
+                model.edited.socialProfiles.move(fromOffsets: source, toOffset: destination)
+                model.isDirty = true
+            }
             Button {
                 model.edited.socialProfiles.append(
                     LabeledSocialProfile(

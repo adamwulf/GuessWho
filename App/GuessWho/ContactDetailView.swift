@@ -41,13 +41,23 @@ struct ContactDetailView: View {
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
-    @State private var editingContact: EditingContact?
     @State private var editFetchErrorMessage: String?
 
-    private struct EditingContact: Identifiable {
-        let contact: Contact
-        var id: String { contact.localID }
-    }
+    // Inline contact-edit state. Non-nil `editModel` means the detail view
+    // has flipped into editing mode in-place (no sheet). The model is
+    // seeded from a fresh `fetchContactForEditing` call when the user taps
+    // Edit; nilled out on Cancel/Save.
+    @State private var editModel: ContactEditModel?
+    @State private var isSavingEdit = false
+    @State private var editSaveError: ContactEditModel.SaveErrorCategory?
+    @State private var editDeleteError: ContactEditModel.SaveErrorCategory?
+    // Owned ambient edit-mode for the editing list. Without an owned binding,
+    // EditButton drives an unscoped \.editMode that stays .active after the
+    // user exits contact-edit, leaking drag-handle/delete-circle affordances
+    // into the read-only activity list. Reset to .inactive on every exit.
+    @State private var editMode: EditMode = .inactive
+    @State private var showDiscardConfirm = false
+    @State private var showDeleteConfirm = false
 
     // Focus identity covers both the bottom new-note editor and any row
     // currently being edited. Hoisted here so a single nav-bar checkmark
@@ -76,6 +86,10 @@ struct ContactDetailView: View {
 
     private var isEditingAnything: Bool {
         noteFocus != nil
+    }
+
+    private var isEditingContact: Bool {
+        editModel != nil
     }
 
     private enum ActivityItem: Identifiable {
@@ -148,48 +162,54 @@ struct ContactDetailView: View {
         #else
         .navigationTitle(contact?.displayName ?? "Contact")
         #endif
-        .toolbar {
-            if isEditingAnything {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        commitActiveEdit()
-                    } label: {
-                        Image(systemName: "checkmark")
-                            .font(.subheadline.weight(.bold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.circle)
-                    .controlSize(.small)
-                    .accessibilityLabel("Done")
-                }
-            }
-            if !isEditingAnything, contact != nil {
-                // Star sits BEFORE Edit so the toolbar reads star, Edit.
-                // Disabled until reconcile has stamped a real GuessWho UUID
-                // onto the contact (matches `referencedBySection`'s gate
-                // and `contactLinks` footer button).
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        toggleFavorite()
-                    } label: {
-                        Image(systemName: isContactFavorited ? "star.fill" : "star")
-                    }
-                    .disabled(contactUUID == nil)
-                    .accessibilityLabel(isContactFavorited ? "Unfavorite" : "Favorite")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Edit") {
-                        Task { await presentEditor() }
-                    }
-                }
-            }
+        .toolbar { toolbarContent }
+        .confirmationDialog(
+            "Discard changes?",
+            isPresented: $showDiscardConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Changes", role: .destructive) { cancelEdit() }
+            Button("Keep Editing", role: .cancel) {}
         }
-        .sheet(item: $editingContact) { wrapper in
-            ContactEditView(
-                contact: wrapper.contact,
-                onDone: { Task { await handleEditorDone() } },
-                onDelete: { Task { await handleEditorDelete() } }
-            )
+        .confirmationDialog(
+            "Delete contact?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Contact", role: .destructive) {
+                Task { await performInlineDelete() }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert(
+            "Couldn't save",
+            isPresented: Binding(
+                get: { editSaveError != nil },
+                set: { if !$0 { editSaveError = nil } }
+            ),
+            presenting: editSaveError
+        ) { category in
+            Button("OK", role: .cancel) { editSaveError = nil }
+            if category == .authorizationDenied {
+                OpenContactsSettingsButton()
+            }
+        } message: { category in
+            Text(category.saveFailureMessage)
+        }
+        .alert(
+            "Couldn't delete",
+            isPresented: Binding(
+                get: { editDeleteError != nil },
+                set: { if !$0 { editDeleteError = nil } }
+            ),
+            presenting: editDeleteError
+        ) { category in
+            Button("OK", role: .cancel) { editDeleteError = nil }
+            if category == .authorizationDenied {
+                OpenContactsSettingsButton()
+            }
+        } message: { category in
+            Text(category.deleteFailureMessage)
         }
         .alert("Couldn't open editor", isPresented: Binding(
             get: { editFetchErrorMessage != nil },
@@ -227,65 +247,221 @@ struct ContactDetailView: View {
             }
             #endif
 
-            infoSection(contact)
+            if isEditingContact {
+                editingSections
+            } else {
+                infoSection(contact)
 
-            Section { activityFooter }
+                referencedBySection(contact)
 
-            referencedBySection(contact)
+                recentEventsSection
 
-            recentEventsSection
+                activitySection
 
-            activitySection
+                if debugModeEnabled {
+                    debugSection(contact)
+                }
 
-            if debugModeEnabled {
-                debugSection(contact)
+                Section { activityFooter }
             }
         }
+        // Inject the owned editMode binding so EditButton drives this view's
+        // own .editMode state instead of an ambient one we can't tear down.
+        // Reset to .inactive happens on every contact-edit exit path.
         #if targetEnvironment(macCatalyst)
-        list.listStyle(.inset)
+        list
+            .listStyle(.inset)
+            .environment(\.editMode, $editMode)
         #else
-        list.listStyle(.insetGrouped)
+        list
+            .listStyle(.insetGrouped)
+            .environment(\.editMode, $editMode)
         #endif
     }
 
-    // MARK: - Edit (SwiftUI editor presentation)
+    /// Editor section stack used when `isEditingContact` is true. Reuses
+    /// the same row components as the sheet editor. The binding falls
+    /// back to a throwaway empty model — never hit in practice because
+    /// the call site is gated on `editModel != nil`, but a nil-coalesce
+    /// keeps the binding total without a runtime trap.
+    @ViewBuilder
+    private var editingSections: some View {
+        let binding = Binding<ContactEditModel>(
+            get: { editModel ?? ContactEditModel(original: contact ?? Contact(localID: "")) },
+            set: { editModel = $0 }
+        )
+        NameFieldsRow(model: binding)
+        OrgFieldsRow(model: binding)
+        PhoneRow(model: binding)
+        EmailRow(model: binding)
+        URLRow(model: binding)
+        PostalAddressRow(model: binding)
+        BirthdayRow(model: binding)
+        DateRow(model: binding)
+        RelationRow(model: binding)
+        SocialProfileRow(model: binding)
+        IMRow(model: binding)
+        PhoneticNameRow(model: binding)
+        Section {
+            Button(role: .destructive) {
+                showDeleteConfirm = true
+            } label: {
+                HStack {
+                    Spacer()
+                    Text("Delete Contact")
+                    Spacer()
+                }
+            }
+            .disabled(isSavingEdit)
+        }
+    }
 
-    private func presentEditor() async {
+    // MARK: - Inline edit (no sheet — flips this view into edit mode)
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if isEditingContact {
+            editingToolbarContent
+        }
+        if !isEditingContact, isEditingAnything {
+            inlineNoteDoneToolbarContent
+        }
+        if !isEditingContact, !isEditingAnything, contact != nil {
+            readOnlyToolbarContent
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var editingToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel") {
+                if editModel?.isDirty == true {
+                    showDiscardConfirm = true
+                } else {
+                    cancelEdit()
+                }
+            }
+            .disabled(isSavingEdit)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Save") {
+                Task { await performInlineSave() }
+            }
+            .disabled(editModel?.isDirty != true || isSavingEdit)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var inlineNoteDoneToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .confirmationAction) {
+            Button {
+                commitActiveEdit()
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.subheadline.weight(.bold))
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            .accessibilityLabel("Done")
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var readOnlyToolbarContent: some ToolbarContent {
+        // Star sits BEFORE Edit so the toolbar reads star, Edit.
+        // Disabled until reconcile has stamped a real GuessWho UUID
+        // onto the contact (matches `referencedBySection`'s gate
+        // and `contactLinks` footer button).
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                toggleFavorite()
+            } label: {
+                Image(systemName: isContactFavorited ? "star.fill" : "star")
+            }
+            .disabled(contactUUID == nil)
+            .accessibilityLabel(isContactFavorited ? "Unfavorite" : "Favorite")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button("Edit") {
+                Task { await beginInlineEdit() }
+            }
+        }
+    }
+
+    private func beginInlineEdit() async {
         do {
             guard let loaded = try await service.fetchContactForEditing(localID: localID) else {
                 editFetchErrorMessage = "Contact could not be found."
                 return
             }
-            editingContact = EditingContact(contact: loaded)
+            editModel = ContactEditModel(original: loaded)
+            // Pin the list into edit mode for the duration of contact-edit so
+            // .onMove drag handles appear on multi-value rows without needing
+            // a separate EditButton in the toolbar — matches Apple Contacts.app
+            // where reordering is always-on while you're editing.
+            editMode = .active
         } catch {
             editFetchErrorMessage = error.localizedDescription
         }
     }
 
-    private func handleEditorDone() async {
-        editingContact = nil
-        // Reconcile runs first so it can re-stamp our x-guesswho:// URL
-        // before any other read sees the post-edit state. On its success
-        // path performReconcile reloads the repository and re-loads the
-        // contact; on the error path neither happens, so reload+loadContact
-        // here pick up whatever the editor managed to save before the
-        // reconcile failed.
-        await performReconcile()
-        await repository.reload()
-        await loadContact()
+    private func cancelEdit() {
+        editModel = nil
+        editMode = .inactive
     }
 
-    private func handleEditorDelete() async {
-        editingContact = nil
-        await repository.reload()
-        await loadContact()
-        // If the underlying contact really is gone, pop. If reload didn't
-        // confirm the delete (rare; the editor may have signaled
-        // completion before the save propagated to fetchAll), keep the
-        // view up — the user can hit back manually instead of getting
-        // bounced.
-        if contact == nil {
-            dismiss()
+    private func performInlineSave() async {
+        guard let model = editModel else { return }
+        isSavingEdit = true
+        defer { isSavingEdit = false }
+        do {
+            try await service.saveContact(model.edited)
+            editModel = nil
+            editMode = .inactive
+            // Reconcile runs first so it can re-stamp our x-guesswho:// URL
+            // before any other read sees the post-save state.
+            await performReconcile()
+            await repository.reload()
+            // Bypass the repository cache for the post-save read: on Catalyst,
+            // enumerateContacts (which repository.reload uses) can return stale
+            // data right after a CNSaveRequest.update, while unifiedContact
+            // (which fetchContactForEditing wraps) returns the fresh record.
+            // Without this hop, the detail view keeps showing pre-save fields
+            // until the next nav-away-and-back triggers a fresh fetch.
+            await loadContact(preferFresh: true)
+        } catch {
+            editSaveError = ContactEditModel.saveErrorCategory(error)
+        }
+    }
+
+    private func performInlineDelete() async {
+        isSavingEdit = true
+        defer { isSavingEdit = false }
+        do {
+            try await service.deleteContact(localID: localID)
+            editModel = nil
+            editMode = .inactive
+            await repository.reload()
+            await loadContact()
+            if contact == nil {
+                dismiss()
+            }
+        } catch {
+            let category = ContactEditModel.saveErrorCategory(error)
+            // recordDoesNotExist means the contact is already gone —
+            // exactly what the user asked for. Treat as success.
+            if category == .recordDoesNotExist {
+                editModel = nil
+                editMode = .inactive
+                await repository.reload()
+                await loadContact()
+                if contact == nil {
+                    dismiss()
+                }
+            } else {
+                editDeleteError = category
+            }
         }
     }
 
@@ -870,9 +1046,14 @@ struct ContactDetailView: View {
         return false
     }
 
-    private func loadContact() async {
+    private func loadContact(preferFresh: Bool = false) async {
         let loaded: Contact?
-        if let cached = repository.contact(localID: localID) {
+        if preferFresh, let fresh = try? await service.fetchContactForEditing(localID: localID) {
+            // Post-save read: route through unifiedContact(withIdentifier:)
+            // which is more consistent than the enumerate path the
+            // repository cache uses on Catalyst right after a write.
+            loaded = fresh
+        } else if let cached = repository.contact(localID: localID) {
             loaded = cached
         } else {
             loaded = await service.fetchAll().first { $0.localID == localID }

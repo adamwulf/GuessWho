@@ -36,6 +36,10 @@ struct RelationRow: View {
                 model.edited.contactRelations.remove(atOffsets: offsets)
                 model.isDirty = true
             }
+            .onMove { source, destination in
+                model.edited.contactRelations.move(fromOffsets: source, toOffset: destination)
+                model.isDirty = true
+            }
             Button {
                 model.edited.contactRelations.append(
                     LabeledContactRelation(

@@ -21,6 +21,10 @@ struct DateRow: View {
                 model.edited.dates.remove(atOffsets: offsets)
                 model.isDirty = true
             }
+            .onMove { source, destination in
+                model.edited.dates.move(fromOffsets: source, toOffset: destination)
+                model.isDirty = true
+            }
             Button {
                 // New entries default to with-year (today's date).
                 let dc = Calendar.current.dateComponents([.year, .month, .day], from: Date())
