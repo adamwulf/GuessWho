@@ -15,25 +15,31 @@ struct NameFieldsRow: View {
                 .focused($focus, equals: .prefix)
                 .onSubmit { focus = .given }
                 .onChange(of: model.edited.namePrefix) { _, _ in model.isDirty = true }
+                .centeredRowContent()
             TextField("First", text: $model.edited.givenName)
                 .focused($focus, equals: .given)
                 .onSubmit { focus = .middle }
                 .onChange(of: model.edited.givenName) { _, _ in model.isDirty = true }
+                .centeredRowContent()
             TextField("Middle", text: $model.edited.middleName)
                 .focused($focus, equals: .middle)
                 .onSubmit { focus = .family }
                 .onChange(of: model.edited.middleName) { _, _ in model.isDirty = true }
+                .centeredRowContent()
             TextField("Last", text: $model.edited.familyName)
                 .focused($focus, equals: .family)
                 .onSubmit { focus = .suffix }
                 .onChange(of: model.edited.familyName) { _, _ in model.isDirty = true }
+                .centeredRowContent()
             TextField("Suffix", text: $model.edited.nameSuffix)
                 .focused($focus, equals: .suffix)
                 .onSubmit { focus = .nickname }
                 .onChange(of: model.edited.nameSuffix) { _, _ in model.isDirty = true }
+                .centeredRowContent()
             TextField("Nickname", text: $model.edited.nickname)
                 .focused($focus, equals: .nickname)
                 .onChange(of: model.edited.nickname) { _, _ in model.isDirty = true }
+                .centeredRowContent()
         }
     }
 }

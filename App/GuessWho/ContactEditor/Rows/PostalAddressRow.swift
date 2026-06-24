@@ -15,6 +15,7 @@ struct PostalAddressRow: View {
                         }
                     )
                 )
+                .centeredRowContent()
             }
             .onDelete { offsets in
                 model.edited.postalAddresses.remove(atOffsets: offsets)
@@ -35,6 +36,7 @@ struct PostalAddressRow: View {
             } label: {
                 Label("Add Address", systemImage: "plus.circle.fill")
             }
+            .centeredRowContent()
         }
     }
 }

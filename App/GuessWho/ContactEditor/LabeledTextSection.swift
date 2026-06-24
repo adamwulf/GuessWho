@@ -31,6 +31,7 @@ struct LabeledTextSection: View {
                     .textInputAutocapitalization(.never)
                     #endif
                 }
+                .centeredRowContent()
             }
             .onDelete { items.remove(atOffsets: $0) }
             .onMove { items.move(fromOffsets: $0, toOffset: $1) }
@@ -39,6 +40,7 @@ struct LabeledTextSection: View {
             } label: {
                 Label("Add \(title)", systemImage: "plus.circle.fill")
             }
+            .centeredRowContent()
         }
     }
 }

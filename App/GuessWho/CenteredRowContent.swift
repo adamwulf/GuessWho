@@ -1,0 +1,44 @@
+import SwiftUI
+
+/// Width clamp for the Mac Catalyst contact-detail column.
+///
+/// On Catalyst the contact-detail `List` stays full-bleed so its scroll view
+/// (and scrollbar) reach the pane edges, while each row's *content* is clamped
+/// to a centered column of this width. This is the look the old
+/// `.frame(maxWidth: 560)` on the whole `List` produced, minus the inert
+/// non-scrolling side gutters that clamp left outside the scroll view.
+///
+/// The clamp is applied per ROW (see `centeredRowContent()`), never per
+/// `Section`: a `Section` is a structural list element, not a laid-out view, so
+/// `.frame(maxWidth:)` on it does not reliably bound row width. Row-content is a
+/// real view, so the frame is honored there.
+enum ContactDetailLayout {
+    /// Max width the detail content is clamped to on macCatalyst.
+    static let maxContentWidth: CGFloat = 560
+}
+
+extension View {
+    /// Clamp a list row's content to `ContactDetailLayout.maxContentWidth` and
+    /// center it, keeping the row separators aligned to the same column. Apply
+    /// this to a ROW's content view (not to a `Section`). No-op off macCatalyst,
+    /// where no width clamp ever applied.
+    @ViewBuilder
+    func centeredRowContent() -> some View {
+        #if targetEnvironment(macCatalyst)
+        let maxWidth = ContactDetailLayout.maxContentWidth
+        self
+            .frame(maxWidth: maxWidth)
+            .frame(maxWidth: .infinity)
+            // Pull the separators in to the centered column so they don't run
+            // the full pane width — matching the old clamped-card look.
+            .alignmentGuide(.listRowSeparatorLeading) { dimensions in
+                max(0, (dimensions.width - maxWidth) / 2)
+            }
+            .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
+                dimensions.width - max(0, (dimensions.width - maxWidth) / 2)
+            }
+        #else
+        self
+        #endif
+    }
+}

@@ -31,6 +31,7 @@ struct RelationRow: View {
                         }
                     ))
                 }
+                .centeredRowContent()
             }
             .onDelete { offsets in
                 model.edited.contactRelations.remove(atOffsets: offsets)
@@ -51,6 +52,7 @@ struct RelationRow: View {
             } label: {
                 Label("Add Related", systemImage: "plus.circle.fill")
             }
+            .centeredRowContent()
         }
     }
 }

@@ -19,6 +19,7 @@ struct SocialProfileRow: View {
                     TextField("Username", text: socialBinding(\.username, idx: idx))
                     TextField("URL", text: socialBinding(\.urlString, idx: idx))
                 }
+                .centeredRowContent()
             }
             .onDelete { offsets in
                 model.edited.socialProfiles.remove(atOffsets: offsets)
@@ -44,6 +45,7 @@ struct SocialProfileRow: View {
             } label: {
                 Label("Add Social Profile", systemImage: "plus.circle.fill")
             }
+            .centeredRowContent()
         }
     }
 

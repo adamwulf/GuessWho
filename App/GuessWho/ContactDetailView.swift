@@ -149,10 +149,10 @@ struct ContactDetailView: View {
         // the List (and therefore its scroll view) from the pane edges,
         // leaving inert dead space on the sides that doesn't scroll. Instead
         // the List stays full-bleed and each row clamps + centers its own
-        // content to `Self.maxContentWidth` (see `centeredRowContent`), so the
-        // scrollable region reaches the pane edges while the visible content
-        // stays in the same centered column. macCatalyst only — see
-        // `loadedContent`.
+        // content to `ContactDetailLayout.maxContentWidth` (see
+        // `centeredRowContent`), so the scrollable region reaches the pane
+        // edges while the visible content stays in the same centered column.
+        // macCatalyst only — see `loadedContent`.
         #if targetEnvironment(macCatalyst)
         // The inline header already shows the name and subtitle, so an
         // empty nav-bar title keeps the toolbar clean (we still need the
@@ -233,49 +233,44 @@ struct ContactDetailView: View {
         }
     }
 
-    /// Max width the detail content is clamped to on macCatalyst. The List
-    /// itself stays full-bleed; this only bounds the centered content column
-    /// (and its separators) inside each row — see `centeredRowContent`.
-    /// `fileprivate` so the row-clamp extension below can read it.
-    fileprivate static let maxContentWidth: CGFloat = 560
-
     @ViewBuilder
     private func loadedContent(_ contact: Contact) -> some View {
+        // `.centeredRowContent()` is applied to each ROW's content view (inside
+        // the section helpers below), NOT to the `Section`s here. A Section is a
+        // structural list element, not a laid-out view, so `.frame(maxWidth:)`
+        // on it does not reliably clamp row width; applied to the row content it
+        // does. The List itself stays full-bleed so its scroll view reaches the
+        // pane edges. See `centeredRowContent`.
         let list = List {
             #if targetEnvironment(macCatalyst)
             Section {
+                // centeredRowContent() clamps to 560 and re-expands to full
+                // width so the centered header column matches every other row.
+                // The header's own VStack is already center-aligned.
                 headerView(contact)
-                    .frame(maxWidth: .infinity)
+                    .centeredRowContent()
                     .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-            .centeredRowContent()
             #endif
 
             if isEditingContact {
                 editingSections
-                    .centeredRowContent()
             } else {
                 infoSection(contact)
-                    .centeredRowContent()
 
                 referencedBySection(contact)
-                    .centeredRowContent()
 
                 recentEventsSection
-                    .centeredRowContent()
 
                 activitySection
-                    .centeredRowContent()
 
                 if debugModeEnabled {
                     debugSection(contact)
-                        .centeredRowContent()
                 }
 
                 Section { activityFooter }
-                    .centeredRowContent()
             }
         }
         // Inject the owned editMode binding so EditButton drives this view's
@@ -326,6 +321,7 @@ struct ContactDetailView: View {
                 }
             }
             .disabled(isSavingEdit)
+            .centeredRowContent()
         }
     }
 
@@ -529,6 +525,7 @@ struct ContactDetailView: View {
             Section {
                 ForEach(rows) { row in
                     InfoRow(data: row)
+                        .centeredRowContent()
                 }
             }
         }
@@ -545,6 +542,7 @@ struct ContactDetailView: View {
             Section("Recent Events") {
                 ForEach(recentEvents, id: \.id) { event in
                     recentEventRow(event)
+                        .centeredRowContent()
                 }
             }
         }
@@ -593,6 +591,7 @@ struct ContactDetailView: View {
             Section("Referenced By") {
                 ForEach(rows) { row in
                     InfoRow(data: row)
+                        .centeredRowContent()
                 }
             }
         }
@@ -667,6 +666,7 @@ struct ContactDetailView: View {
         Section("Debug") {
             ForEach(rows) { row in
                 InfoRow(data: row)
+                    .centeredRowContent()
             }
         }
     }
@@ -743,6 +743,7 @@ struct ContactDetailView: View {
             Section("Activity") {
                 ForEach(items) { item in
                     activityRow(item)
+                        .centeredRowContent()
                 }
                 .onDelete { offsets in
                     let targets = offsets.map { items[$0] }
@@ -752,6 +753,7 @@ struct ContactDetailView: View {
                 if showingNewNoteEditor {
                     TextField("Add a note", text: $newNoteText, axis: .vertical)
                         .focused($noteFocus, equals: .newNote)
+                        .centeredRowContent()
                 }
             }
         }
@@ -798,7 +800,10 @@ struct ContactDetailView: View {
                 }))
             }
         }
+        // Zero the row insets so the footer content view spans the full cell,
+        // then clamp/center that content to the same column as every other row.
         .listRowInsets(EdgeInsets())
+        .centeredRowContent()
     }
 
     @ViewBuilder
@@ -1355,35 +1360,6 @@ struct ContactDetailView: View {
             }
             return "(complex)"
         }
-    }
-}
-
-private extension View {
-    /// Clamp a list row's content to `ContactDetailView.maxContentWidth` and
-    /// center it, keeping the row separators aligned to the same column. This
-    /// lets the enclosing `List` stay full-bleed (so its scroll view reaches
-    /// the pane edges) while the visible content stays in a centered column —
-    /// the look the old `.frame(maxWidth: 560)` on the whole List produced,
-    /// minus the inert non-scrolling gutters that clamp left outside the
-    /// scroll view. No-op off macCatalyst, where no width clamp ever applied.
-    @ViewBuilder
-    func centeredRowContent() -> some View {
-        #if targetEnvironment(macCatalyst)
-        let maxWidth = ContactDetailView.maxContentWidth
-        self
-            .frame(maxWidth: maxWidth)
-            .frame(maxWidth: .infinity)
-            // Pull the separators in to the centered column so they don't run
-            // the full pane width — matching the old clamped-card look.
-            .alignmentGuide(.listRowSeparatorLeading) { dimensions in
-                max(0, (dimensions.width - maxWidth) / 2)
-            }
-            .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
-                dimensions.width - max(0, (dimensions.width - maxWidth) / 2)
-            }
-        #else
-        self
-        #endif
     }
 }
 

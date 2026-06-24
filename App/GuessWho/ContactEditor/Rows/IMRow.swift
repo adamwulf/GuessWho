@@ -17,6 +17,7 @@ struct IMRow: View {
                     )
                     TextField("Username", text: imBinding(\.username, idx: idx))
                 }
+                .centeredRowContent()
             }
             .onDelete { offsets in
                 model.edited.instantMessageAddresses.remove(atOffsets: offsets)
@@ -40,6 +41,7 @@ struct IMRow: View {
             } label: {
                 Label("Add IM", systemImage: "plus.circle.fill")
             }
+            .centeredRowContent()
         }
     }
 

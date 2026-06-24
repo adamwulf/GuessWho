@@ -23,6 +23,7 @@ struct BirthdayRow: View {
                     displayedComponents: [.date]
                 )
                 .labelsHidden()
+                .centeredRowContent()
                 // When "Include year" is off, the year shown above is
                 // a sentinel (2000) and is dropped on save. The toggle
                 // is how the user signals intent; the picker itself
@@ -37,11 +38,13 @@ struct BirthdayRow: View {
                         }
                     }
                 ))
+                .centeredRowContent()
                 Button(role: .destructive) {
                     model.clearBirthday()
                 } label: {
                     Label("Remove Birthday", systemImage: "minus.circle")
                 }
+                .centeredRowContent()
             } else {
                 Button {
                     let dc = Calendar.current.dateComponents([.year, .month, .day], from: Date())
@@ -51,6 +54,7 @@ struct BirthdayRow: View {
                 } label: {
                     Label("Add Birthday", systemImage: "plus.circle.fill")
                 }
+                .centeredRowContent()
             }
         }
     }
