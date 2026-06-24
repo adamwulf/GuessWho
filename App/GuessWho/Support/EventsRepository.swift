@@ -1,4 +1,5 @@
 import Foundation
+import EventKit
 import GuessWhoSync
 
 extension Notification.Name {
@@ -10,7 +11,7 @@ extension Notification.Name {
 
 @MainActor
 @Observable
-final class EventsRepository {
+final class EventsRepository: NSObject {
     private let service: SyncService
 
     private(set) var events: [Event] = []
@@ -20,6 +21,26 @@ final class EventsRepository {
 
     init(service: SyncService) {
         self.service = service
+        super.init()
+        // Refresh on any external store change that can affect the events list:
+        // a Calendar.app edit (`.EKEventStoreChanged`) or a contact change
+        // (`.guessWhoContactsDidChange`, which can alter attendee rendering).
+        // The repo owns its own refresh path; the AppDelegate registers no
+        // observers. Selector-based registrations are held weakly and auto-
+        // cleaned on release (this repo lives for the whole process), so there
+        // is no `deinit` or token bookkeeping.
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(storeDidChange(_:)), name: .EKEventStoreChanged, object: nil)
+        center.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoContactsDidChange, object: nil)
+    }
+
+    /// Reloads the events list. `nonisolated` because the selector API delivers
+    /// on the posting thread; hops to the main actor to do the work.
+    @objc
+    private nonisolated func storeDidChange(_ note: Notification) {
+        Task { @MainActor [weak self] in
+            await self?.reload()
+        }
     }
 
     func reload() async {

@@ -1,7 +1,5 @@
 import UIKit
 import SwiftUI
-import Contacts
-import EventKit
 import GuessWhoSync
 
 /// UIKit application entry point. Replaces the previous SwiftUI `App`
@@ -19,20 +17,13 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     let favoritesStore: FavoritesListStore
     /// Owned here so every UIKit list controller (iPhone tabs and
     /// Catalyst columns) renders against a shared repository and reload
-    /// paths (CNContactStore notifications, list selections) all see
+    /// paths (external-change notifications, list selections) all see
     /// the same instance.
     let contactsRepository: ContactsRepository
     /// Owned here for the same reason as `contactsRepository`. After
     /// Phase 5 the iPhone shell is also UIKit and consumes this repo,
     /// so the gate that previously made this Catalyst-only is gone.
     let eventsRepository: EventsRepository
-
-    /// Opaque tokens for the store-change observers registered in
-    /// `didFinishLaunching`. Held so the AppDelegate (which lives for
-    /// the lifetime of the process) keeps them alive without needing
-    /// explicit removal.
-    private var contactStoreObserver: NSObjectProtocol?
-    private var eventStoreObserver: NSObjectProtocol?
 
     override init() {
         // Register defaults so non-@AppStorage readers and the iOS
@@ -82,49 +73,21 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             await eventsRepository.reload()
         }
 
-        // Refresh both repositories on external store changes so an
-        // edit in Contacts.app / Calendar.app surfaces here without a
-        // relaunch. Lifted out of the old SwiftUI RootView observers
-        // because RootView is gone after Phase 5. Centralising at the
-        // AppDelegate (single owner of both repositories) avoids
-        // duplicating the same observer in every list controller and
-        // gives a single reload-fan-out point — each list VC then
-        // re-applies its diffable snapshot via the existing
-        // `.contactsRepositoryDidReload` / `.eventsRepositoryDidReload`
-        // notifications fired by the repository's reload().
-        contactStoreObserver = NotificationCenter.default.addObserver(
-            forName: .CNContactStoreDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            MainActor.assumeIsolated {
-                Task { @MainActor in
-                    // Incremental: re-read only the contacts that changed in
-                    // Contacts.app (our own writes are excluded via
-                    // transactionAuthor), falling back to a full reload on
-                    // first run / history truncation. Far cheaper than the old
-                    // full re-enumerate of every contact on each change.
-                    await self.contactsRepository.applyExternalChanges()
-                    // A contact change can affect event invitee/attendee
-                    // rendering, so still refresh events — PRESERVED from the
-                    // pre-incremental observer.
-                    await self.eventsRepository.reload()
-                }
-            }
-        }
-        eventStoreObserver = NotificationCenter.default.addObserver(
-            forName: .EKEventStoreChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            MainActor.assumeIsolated {
-                Task { @MainActor in
-                    await self.eventsRepository.reload()
-                }
-            }
-        }
+        // Start the package-owned external-contact-change watcher. The package
+        // now owns the `.CNContactStoreDidChange` observer, the change-history
+        // cursor, and the coalescing; it posts `.guessWhoContactsDidChange` when
+        // an external edit lands. The repositories subscribe to that (and
+        // `EventsRepository` also owns its own `.EKEventStoreChanged` observer)
+        // — so the AppDelegate no longer registers any store-change observer; it
+        // just owns the instances and kicks the watcher once at launch.
+        //
+        // Ordering doesn't matter: the reloads above are dispatched as Task
+        // blocks that have NOT completed by the time this synchronous call runs,
+        // so this does not gate on the baseline. It needn't — the watcher's
+        // first delta read is itself idempotent against the in-flight reload
+        // (first run yields a full-reload signal; later edits an incremental
+        // delta), so whichever finishes first, the cache converges.
+        service.startContactChangeWatcher()
 
         return true
     }

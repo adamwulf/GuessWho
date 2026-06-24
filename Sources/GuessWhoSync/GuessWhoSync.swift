@@ -13,16 +13,51 @@ public final class GuessWhoSync: @unchecked Sendable {
     internal let deviceID: String
     internal let sidecarLocks = PerKeyLockTable<SidecarKey>()
 
+    /// Device-local persistence for the external-contact-change cursor. Present
+    /// only when a host wants this instance to own the change watcher; `nil`
+    /// disables `startContactChangeWatcher()` (it becomes a no-op). Tests and
+    /// non-UI contexts pass `nil` so nothing observes by default.
+    private let contactCursorStore: ContactSyncCursorStore?
+
+    /// The package-owned external-contact-change watcher. Created lazily by
+    /// `startContactChangeWatcher()` and held for the instance's lifetime so the
+    /// `.CNContactStoreDidChange` registration stays alive. Touched ONLY from the
+    /// `@MainActor` start/stop methods, which is what makes the unchecked
+    /// isolation safe.
+    private nonisolated(unsafe) var contactChangeWatcher: ContactChangeWatcher?
+
     public init(
         contacts: ContactStoreProtocol,
         events: EventStoreProtocol,
         sidecars: SidecarStoreProtocol,
-        deviceID: String
+        deviceID: String,
+        contactCursorStore: ContactSyncCursorStore? = nil
     ) {
         self.contacts = contacts
         self.events = events
         self.sidecars = sidecars
         self.deviceID = deviceID
+        self.contactCursorStore = contactCursorStore
+    }
+
+    // MARK: - External contact-change watcher
+
+    /// Start observing external contact-store changes and posting
+    /// `.guessWhoContactsDidChange`. Opt-in: a no-op unless this instance was
+    /// constructed with a `contactCursorStore`. Idempotent — a second call while
+    /// already watching does nothing. Call once at launch, after the app has
+    /// kicked its initial reload, so the watcher begins observing for subsequent
+    /// edits made in Contacts.app / on another device.
+    @MainActor
+    public func startContactChangeWatcher() {
+        guard let contactCursorStore else { return }
+        if contactChangeWatcher == nil {
+            contactChangeWatcher = ContactChangeWatcher(
+                contacts: contacts,
+                cursorStore: contactCursorStore
+            )
+        }
+        contactChangeWatcher?.start()
     }
 
     public func sidecar(at key: SidecarKey) throws -> SidecarEnvelope? {

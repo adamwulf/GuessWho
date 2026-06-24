@@ -1,13 +1,13 @@
 import UIKit
-import Contacts
 import EventKit
 import GuessWhoSync
 
 /// UIKit Favorites list for the Catalyst 3-column shell. Single-section
 /// diffable data source keyed on `Favorite.stableID`. Mirrors the
 /// SwiftUI `FavoritesListView`: swipe-to-unfavorite, drag-to-reorder,
-/// and an async contact-uuid map rebuilt on `.CNContactStoreDidChange`
-/// and scene activation.
+/// and an async contact-uuid map rebuilt on `.contactsRepositoryDidReload`
+/// (the repository's cache-changed signal, posted after the launch reload,
+/// incremental patches, and self-writes) and scene activation.
 final class FavoritesListViewController: UIViewController {
     /// Selection callbacks — SceneDelegate routes each kind to the
     /// matching detail view (contact → ContactDetailView, event →
@@ -156,8 +156,19 @@ final class FavoritesListViewController: UIViewController {
             }
         }
 
+        // The repository posts `.contactsRepositoryDidReload` after EVERY
+        // cache change — the async launch reload (which populates an
+        // otherwise-empty cache), incremental external patches, and our own
+        // self-write refreshes/removes. The package's raw external-delta
+        // signal (`.guessWhoContactsDidChange`) deliberately does NOT fire on
+        // the launch reload, so observing it left this dumb cache reader with
+        // an empty contact map at cold launch — every contact favorite
+        // rendered "Unavailable" until an external Contacts edit happened to
+        // fire. Observing the repository's reload post fixes that and also
+        // keeps favorites in sync with incremental patches + self-writes the
+        // old signal missed.
         contactsChangedObserver = center.addObserver(
-            forName: .CNContactStoreDidChange,
+            forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -217,9 +228,28 @@ final class FavoritesListViewController: UIViewController {
         }
         favoritesByStableID = byStableID
 
+        // A favorite's identity is its stableID, but the cell provider
+        // resolves the row's CONTENT (display name, "Unavailable" state)
+        // from `uuidToContact` at build time. When the item SET is
+        // unchanged but that resolved content changed — the cold-launch
+        // case where the map flips empty→populated, plus any later
+        // display-name edit — the diff is empty, so the data source never
+        // re-invokes the cell provider for rows already on screen and the
+        // stale "Unavailable" cell sticks. Explicitly reconfigure the
+        // items that already exist so they re-run the provider against the
+        // current map. Newly inserted items are guard-excluded: they're
+        // not yet in the data source's snapshot and the insert builds them
+        // fresh anyway (reconfiguring an absent item would crash).
+        let existingIDs = Set(dataSource.snapshot().itemIdentifiers)
+
         var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
         snapshot.appendSections([0])
-        snapshot.appendItems(items.map { $0.stableID }, toSection: 0)
+        let itemIDs = items.map { $0.stableID }
+        snapshot.appendItems(itemIDs, toSection: 0)
+        let reconfigureIDs = itemIDs.filter { existingIDs.contains($0) }
+        if !reconfigureIDs.isEmpty {
+            snapshot.reconfigureItems(reconfigureIDs)
+        }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         emptyLabel.isHidden = !items.isEmpty
