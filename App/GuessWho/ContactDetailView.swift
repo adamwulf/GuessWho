@@ -252,8 +252,6 @@ struct ContactDetailView: View {
             } else {
                 infoSection(contact)
 
-                Section { activityFooter }
-
                 referencedBySection(contact)
 
                 recentEventsSection
@@ -263,6 +261,8 @@ struct ContactDetailView: View {
                 if debugModeEnabled {
                     debugSection(contact)
                 }
+
+                Section { activityFooter }
             }
         }
         // Inject the owned editMode binding so EditButton drives this view's
