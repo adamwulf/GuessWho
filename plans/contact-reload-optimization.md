@@ -83,44 +83,93 @@ The adapter's `fetch(localID:)` already exists (CNContactStoreAdapter:100,
 InMemoryContactStore:32) and is in `ContactStoreProtocol`. Do **not** remove the
 existing throwing `fetchContactForEditing` — the editor relies on its shape.
 
-Convert sites #2, #5, #9 to single fetch. #5 and #9 are post-write so they MUST
-hit the store (`service.fetch`), not the cache.
+Convert sites to single fetch. #2 and #9 are post-write so they MUST hit the
+store (`service.fetch`), not the cache:
+- **#2** `ContactDetailView.loadContact` cache-miss fallback → `service.fetch(localID:)`.
+- **#9** `SyncService.reconcileIfNeeded` :531 `fetchAll().first{id}` → adapter
+  `fetch(localID:)` (in-package single fetch).
+- **#5** `ConnectionsSection.save` :272 does reconcile-then-`fetchAll().first{id}`
+  — this DUPLICATES `SyncService.reconcileIfNeeded` (review finding). Collapse it:
+  replace the manual `reconcile` + `fetchAll().first` + `guessWhoUUID` dance with
+  a single `try await service.reconcileIfNeeded(contact:)` call (which, after #9,
+  internally uses `fetch(localID:)`). Net: one fewer full enumeration AND less
+  duplicated logic.
+- **#10** `SyncService.contact(forGuessWhoUUID:)` :636 is **DEAD CODE** —
+  verified zero callers across App/Sources/Tests. It hides a full `fetchAll()`.
+  **Delete the method** rather than convert it.
 
 ### A′ — cache reads (app-only)
 
 Point the map-builders (#3, #4, #6, #7, #8) at `repository.contacts` instead of
-`service.fetchAll()`. Open design question per site: the SwiftUI views
-(`ContactDetailView`, `ConnectionsSection`, `EventDetailView`) and
-`FavoritesListViewController` must have `ContactsRepository` available.
-- `ContactDetailView` already holds `repository` (it calls `repository.reload()`
-  / `repository.contact(localID:)`), so #3 is a direct swap.
-- `ConnectionsSection`, `EventDetailView`, `FavoritesListViewController`: confirm
-  whether `repository` is already injected; if not, inject it. Do NOT construct a
-  second `ContactsRepository` — there is ONE app-owned instance (AppDelegate).
-  Thread the existing one through.
+`service.fetchAll()`. **Injection is mandatory, not optional** (both reviewers):
+these views read `repository` from the SwiftUI environment, so a view that starts
+using `repository` without it being injected **crashes/won't compile** — there is
+no graceful-empty fallback. Verified wiring (GuessWhoSceneDelegate.swift):
+- `ContactDetailView` already declares `@Environment(ContactsRepository.self) private var repository`
+  and the SceneDelegate injects it on the `ContactDetailView` hosting controllers.
+  So **#3** (`refreshContactMap`) is a direct swap to `repository.contacts`.
+- `ConnectionsSection` is a subview of `ContactDetailView`, so it inherits the
+  same environment — but confirm it actually has `@Environment(ContactsRepository.self)`;
+  add the declaration if missing. **#4** then reads `repository.contacts`.
+- `EventDetailView` (**#6**, **#7**) is hosted by the SceneDelegate WITHOUT a
+  `ContactsRepository` in its environment today (it's constructed
+  `EventDetailView(eventUUID:eventKitID:)` at lines 195/234/466). Add
+  `@Environment(ContactsRepository.self)` to `EventDetailView` AND inject
+  `.environment(appDelegate.contactsRepository)` on EVERY `EventDetailView`
+  hosting controller in GuessWhoSceneDelegate.swift (Catalyst secondary + iPhone
+  push paths). Miss one and that entry point crashes at runtime.
+- `FavoritesListViewController` (**#8**) is a UIKit VC constructed
+  `init(store:service:)` (SceneDelegate :137/:378) — it does NOT use the SwiftUI
+  environment. Add a `repository:` parameter to its initializer and pass
+  `appDelegate.contactsRepository` at both construction sites; its :199 builder
+  reads `repository.contacts`.
 
-If a consumer can be reached before the repository's first `reload()` completes
-(empty cache), it must tolerate an empty list gracefully (it already does today
-for the "access not yet granted" case). The cache is refreshed on launch and on
-every change, so staleness window is small; acceptable for these map-builders.
+Do NOT construct a second `ContactsRepository` — there is ONE app-owned instance
+(`appDelegate.contactsRepository`). Thread that exact instance through.
+**GuessWhoSceneDelegate.swift is in scope for this workstream** (the injection
+edits) — note its overlap with the manager-owned integration is nil (manager
+only edits the AppDelegate observer, not the SceneDelegate).
+
+Cold cache: the cache is populated on launch and kept fresh by reloads + D's
+delta; the staleness window for these map-builders is small and acceptable. An
+empty cache renders an empty map (no crash) — the crash risk is the MISSING
+injection above, which this workstream fixes.
 
 ### B — in-place repository patch (app-only)
 
-Add to `ContactsRepository`:
+Add to `ContactsRepository`. To let workstream D's `applyExternalChanges` apply
+many changes under a SINGLE post (no snapshot storm), split each op into a
+non-posting mutator + a public post-once wrapper:
 
 ```swift
-/// Refresh a single contact from the store and splice it into the cache,
-/// then notify list controllers. Cheap alternative to a full reload() when
-/// exactly one contact changed (our own save) — re-reads ONE record, not all.
-func refreshContact(localID: String) async { ... }   // fetch → replace/insert → post
+// Non-posting cache mutators — caller decides when to post.
+private func applyRefresh(localID: String) async { ... }  // fetch ONE → replace/insert
+private func applyRemove(localID: String) { ... }         // drop from array
 
-/// Remove a contact from the cache (our own delete) and notify. No store I/O.
-func removeContact(localID: String) { ... }           // drop from array → post
+/// Refresh one contact from the store and notify list controllers. For our own
+/// save of a known localID — re-reads ONE record, not all ~1500.
+func refreshContact(localID: String) async {
+    await applyRefresh(localID: localID)
+    postDidReload()
+}
+
+/// Remove one contact from the cache and notify. For our own delete. No store I/O.
+func removeContact(localID: String) {
+    applyRemove(localID: localID)
+    postDidReload()
+}
 ```
 
-Both post `.contactsRepositoryDidReload` exactly as `reload()` does, so the
-diffable list controllers re-apply a snapshot. The `reconfigureItems` diff added
-in commit 6dbb90c then repaints exactly the changed row.
+`postDidReload()` is the single shared post helper (`@MainActor`, posts
+`.contactsRepositoryDidReload`). `applyExternalChanges` (D) calls the private
+`applyRefresh`/`applyRemove` in order for the whole delta, then `postDidReload()`
+ONCE. The public single-shot wrappers post once each (fine for a lone edit).
+
+All posts run on the main actor exactly as `reload()` does, so the diffable list
+controllers re-apply a snapshot on the main thread. The `reconfigureItems` diff
+added in commit 6dbb90c then repaints exactly the changed rows. `applyRefresh`
+hits the STORE for one record (the cache is stale for the just-changed contact);
+`applyRemove` is pure in-memory.
 
 Rewire post-save / post-delete paths to call these instead of full `reload()`:
 - `ContactDetailView` inline-save path(s) (~:425, :445, :457, :1139) — after a
@@ -133,20 +182,29 @@ Caution: the reconcile path (#9-adjacent, ContactDetailView:1139) reloads so the
 cache reflects a freshly-stamped GuessWho URL. `refreshContact(localID:)` covers
 that — it re-reads that one contact, which is exactly what changed.
 
-### C — suppress self-inflicted reload (app-only)
+### C — exclude our own writes from the delta (via transactionAuthor)
 
-The AppDelegate `.CNContactStoreDidChange` observer (GuessWhoAppDelegate:95-107)
-currently full-reloads on every store change, including our own writes. Add a
-suppression token: when the app performs a `save`/`delete` (and patches the cache
-via B), set a flag/generation so the next `.CNContactStoreDidChange` that
-corresponds to our own write is ignored (or downgraded to "already handled").
+**Revised after review.** The original counter/debounce idea is race-prone:
+`.CNContactStoreDidChange` is async + coalesced, so a real EXTERNAL change can
+land in the same window as a self-write and be wrongly dropped, and a self-write
+notification can arrive after the token is cleared (redundant reload) or never
+(stuck counter). Both reviewers flagged this.
 
-Design note: `.CNContactStoreDidChange` is coalesced and async — a naive boolean
-can race (the notification can arrive after the flag is cleared, or batch several
-writes). Prefer a small "expected self-change" counter or a short
-debounce/coalesce window, and document the chosen approach inline. This
-interacts with D (the observer is the same code site), so **C's observer change
-is integrated together with D's wiring** — see Integration.
+The correct mechanism is built into Contacts: **tag our writes with a
+`transactionAuthor`, then exclude that author when reading change history.**
+- `CNContactStoreAdapter.save`/`delete` set `saveRequest.transactionAuthor` to a
+  constant app identifier (e.g. the bundle id) before `store.execute`.
+- `CNChangeHistoryFetchRequest.excludedTransactionAuthors = [ourAuthor]` so the
+  delta read in D simply never reports our own edits.
+
+This makes D's delta the single correctness path and **dissolves the separate
+C+D integration seam** — there is no race-prone self-suppression counter and no
+special-casing in the observer. Our own edits are handled by B (in-place patch)
+and are invisible to the change-history read by construction; external edits flow
+through D. The observer just calls `applyExternalChanges()`.
+
+Note: `transactionAuthor` is itself meaningful only at write time; it is NOT
+persisted state. The author string is a compile-time constant, not stored.
 
 ### D — incremental external sync (PACKAGE + app wiring)
 
@@ -161,9 +219,12 @@ Replace "full reload on external change" with a change-history delta read.
        case deleted(localID: String)
    }
    public struct ContactChangeSet: Sendable {
+       /// Ordered as the history reported them — apply IN ORDER. Do NOT
+       /// bucket into updated-then-deleted: a delete followed by a re-add of
+       /// the same localID (unify/unlink) must apply delete then update.
        public var changes: [ContactChange]
-       public var newToken: Data        // opaque cursor to persist
-       public var requiresFullReload: Bool  // true on token-invalid / first run
+       public var newToken: Data        // opaque cursor to persist after apply
+       public var requiresFullReload: Bool  // DropEverything / first run
    }
    ```
 2. New `ContactStoreProtocol` method:
@@ -171,20 +232,37 @@ Replace "full reload on external change" with a change-history delta read.
    func changes(since token: Data?) async throws -> ContactChangeSet
    ```
 3. `CNContactStoreAdapter.changes(since:)` — implement with
-   `CNChangeHistoryFetchRequest` (set `startingToken`; `currentHistoryToken`
-   when nil). Enumerate `CNChangeHistoryEvent` subclasses
-   (`CNChangeHistoryAddContactEvent`, `...UpdateContactEvent`,
-   `...DeleteContactEvent`; treat others as no-ops). On a thrown
-   token-invalid / unsupported error, return `requiresFullReload: true` with a
-   fresh `currentHistoryToken`. Run on the existing `workQueue` (same
-   priority-inversion bridge as `fetchAll`).
-4. `InMemoryContactStore.changes(since:)` — a test-friendly implementation:
-   track a monotonic op log so tests can assert delta behavior, OR return
-   `requiresFullReload: true` always (document which; a real op log is preferred
-   so D can be unit-tested).
-5. Package tests in `Tests/GuessWhoSyncTests` covering: first call (nil token →
-   full-reload or baseline), add/update/delete deltas, and token-invalid →
-   `requiresFullReload`.
+   `CNChangeHistoryFetchRequest`:
+   - Set `request.startingToken` to the decoded prior token (nil ⇒ from the
+     beginning; we then also return `requiresFullReload: true` to baseline).
+   - Set `request.excludedTransactionAuthors = [Self.transactionAuthor]` so our
+     own writes (tagged in `save`/`delete`, workstream C) never surface.
+   - Enumerate via the **`CNChangeHistoryEventVisitor` protocol** (NOT `is/as`
+     class casts — the reviewer-correct, Apple-documented path). Implement a
+     small visitor that appends `.updated`/`.deleted` in the order visited:
+     `visitAddContactEvent` → `.updated`, `visitUpdateContactEvent` → `.updated`,
+     `visitDeleteContactEvent` → `.deleted`, others → no-op.
+   - **`visitDropEverythingEvent` ⇒ `requiresFullReload = true`** and clear any
+     accumulated partial changes. Per TN3149, token invalidation / first-run /
+     history-truncation is delivered AS A DROP-EVERYTHING EVENT in the stream —
+     it is NOT a thrown error. (Original plan was wrong here.)
+   - Read `result.currentHistoryToken` for `newToken`.
+   - Run on the existing `workQueue` (same priority-inversion bridge as
+     `fetchAll`). Genuine thrown errors (I/O, auth) still propagate via `throws`;
+     the caller falls back to a full `reload()` on throw too.
+4. `CNSaveRequest` author tagging (workstream C, in this same adapter):
+   `save`/`delete` set `saveRequest.transactionAuthor = Self.transactionAuthor`
+   (a constant, e.g. the bundle id) before `execute`.
+5. `InMemoryContactStore.changes(since:)` — real op-log implementation so D is
+   unit-testable: record an ordered op log (`updated`/`deleted` with a
+   monotonic per-op token), honor `excludedTransactionAuthors` (track the author
+   passed to a test save), return ordered changes since the given token, and
+   emit `requiresFullReload` on a nil token or a token older than the retained
+   log. Add a test-only `setTransactionAuthor`/save-with-author hook as needed.
+6. Package tests in `Tests/GuessWhoSyncTests` covering: nil token → baseline +
+   `requiresFullReload`; add/update/delete deltas in order; a delete-then-readd
+   of the same localID preserves order; excluded-author writes are NOT reported;
+   drop-everything ⇒ `requiresFullReload`.
 
 **Token persistence:** the change-history token is meaningful, device-local sync
 state — it must NOT live in `UserDefaults` (no meaningful data state in
@@ -213,45 +291,85 @@ device-local state stay physically separated.)
 **App wiring** (integrated by manager — see Integration):
 - `SyncService.contactChanges(since:)` passthrough + cursor load/save via the
   device-local `ContactSyncCursorStore` (NOT UserDefaults, NOT the synced sidecar).
-- `ContactsRepository.applyExternalChanges()` — fetch delta; if
-  `requiresFullReload`, call `reload()`; else for each `updated` localID
-  `refreshContact`, each `deleted` `removeContact`; persist `newToken`.
+- `ContactsRepository.applyExternalChanges()` — fetch delta and apply with these
+  REQUIRED properties (both reviewers):
+  1. **Batch the post.** Mutate the cached `contacts` array for ALL changes
+     first, then post `.contactsRepositoryDidReload` EXACTLY ONCE — no
+     per-change post, or the diffable lists get a snapshot storm.
+     `refreshContact`/`removeContact` (workstream B) therefore need a
+     non-posting internal variant (e.g. private `applyOne(...)`) so the batch
+     can post a single time; the public single-shot versions still post once.
+  2. **Honor change order.** Apply `changeSet.changes` IN ORDER (delete-then-
+     readd of the same localID must not be reordered into updated-then-deleted
+     buckets). For `requiresFullReload`, call `reload()` instead.
+  3. **Persist the cursor only AFTER a successful apply, on BOTH branches**
+     (delta apply succeeded → save `newToken`; full `reload()` succeeded → save
+     the fresh baseline `newToken`). Never persist before applying — a crash
+     mid-apply must re-process, not skip.
 - AppDelegate `.CNContactStoreDidChange` observer calls
-  `applyExternalChanges()` instead of `reload()`.
+  `applyExternalChanges()` instead of `reload()`, AND still calls
+  `eventsRepository.reload()` (see Integration — do NOT drop it).
 
 ### Integration (manager-owned, after subagents land)
 
-The AppDelegate observer + repository delta-apply is where **C** and **D**
-collide (same observer, same repository). The manager assembles this last so the
-self-suppression (C) and the change-history delta (D) are designed as one
-coherent observer:
+With C reimplemented via `transactionAuthor`/`excludedTransactionAuthors`, there
+is **no race-prone self-suppression in the observer** — our own writes are
+invisible to the change-history read by construction, and are already reflected
+in the cache by B. The observer is therefore simple, but it MUST preserve the
+existing events refresh (the current observer at GuessWhoAppDelegate:95-107 kicks
+BOTH `contactsRepository.reload()` and `eventsRepository.reload()`; the rewrite
+keeps the events call):
 
 ```
-on .CNContactStoreDidChange:
-    if this change was caused by our own recent write (C): consume the token, skip
-    else: await repository.applyExternalChanges()   // D: delta or full-reload fallback
+on .CNContactStoreDidChange (MainActor):
+    Task { @MainActor in
+        await contactsRepository.applyExternalChanges()  // D: delta, or reload() on requiresFullReload/throw
+        await eventsRepository.reload()                   // PRESERVED from today's observer
+    }
 ```
+
+`.EKEventStoreChanged` observer is unchanged (events-only). The manager owns this
+file (`GuessWhoAppDelegate.swift`) plus `SyncService` cursor helpers and
+`ContactsRepository.applyExternalChanges()`, assembled after Agents 1–3 land.
 
 ---
 
 ## Parallelization
 
-- **Agent 1 — package (D core):** ContactStoreProtocol, CNContactStoreAdapter,
-  InMemoryContactStore, package tests. **Zero app-file overlap.** Largest /
-  riskiest; start first.
-- **Agent 2 — app reads (A + A′):** `SyncService.fetch`, convert single-record
-  lookups (#2,#5,#9-app-side), convert map-builders to `repository.contacts`
-  (#3,#4,#6,#7,#8), inject repository where missing.
-- **Agent 3 — app writes (B):** `ContactsRepository.refreshContact/removeContact`,
-  rewire post-save/delete paths to patch-in-place.
-- **Manager — integration (C + D wiring):** SyncService passthrough + token
-  persistence, `applyExternalChanges`, the unified AppDelegate observer.
+- **Agent 1 — package (D core + C author tag):** `ContactStoreProtocol.changes(since:)`,
+  `ContactChange`/`ContactChangeSet`, `CNContactStoreAdapter` (visitor-based
+  `changes(since:)` + `transactionAuthor`/`excludedTransactionAuthors` on
+  save/delete), `InMemoryContactStore` op-log impl, `ContactSyncCursorStore`
+  (device-local, injected URL, `isExcludedFromBackup`), package tests. **Zero
+  app-file overlap.** Largest / riskiest; start first.
+- **Agent 2 — app reads (A + A′):** add `SyncService.fetch`; convert #2/#9 to
+  single fetch and collapse #5 into `reconcileIfNeeded`; DELETE dead #10
+  `contact(forGuessWhoUUID:)`; convert map-builders #3/#4/#6/#7/#8 to
+  `repository.contacts`; **inject the repository** into `EventDetailView` (env)
+  and `FavoritesListViewController` (init param), editing
+  **GuessWhoSceneDelegate.swift** at every `EventDetailView`/`FavoritesListViewController`
+  construction site.
+- **Agent 3 — app writes (B):** `ContactsRepository` non-posting mutators +
+  `refreshContact`/`removeContact`/`postDidReload`; rewire `ContactDetailView`
+  post-save → `refreshContact`, post-delete → `removeContact`, reconcile reload →
+  `refreshContact`.
+- **Manager — integration (C+D wiring):** `SyncService.contactChanges(since:)` +
+  cursor load/save, `ContactsRepository.applyExternalChanges()` (batched,
+  ordered, cursor-after-success), the rewritten AppDelegate `.CNContactStoreDidChange`
+  observer that ALSO preserves `eventsRepository.reload()`.
 
-Conflict management: Agents 1 & 2 are conflict-free. Agent 3 overlaps Agent 2 on
-`SyncService.swift` / `ContactDetailView.swift` but in different functions (git
-auto-merges non-adjacent hunks). The AppDelegate observer is touched only by the
-manager. Merge order: Agent 1, then Agent 2, then Agent 3, then manager
-integration.
+Conflict management: Agent 1 (package) is conflict-free with all app agents.
+Agent 2 owns GuessWhoSceneDelegate.swift; the manager does NOT touch it (manager
+edits only GuessWhoAppDelegate.swift), so no overlap there. Agent 2 & Agent 3
+both touch `SyncService.swift` (Agent 2 adds `fetch`, deletes #10; Agent 3 none —
+B is repository-only) and `ContactDetailView.swift` (Agent 2: `loadContact`
+fallback + `refreshContactMap`; Agent 3: save/delete/reconcile paths) — different
+functions, git auto-merges non-adjacent hunks. `ContactsRepository.swift` is
+Agent 3 (B mutators) + manager (`applyExternalChanges`) — sequence manager after
+Agent 3. Merge order: Agent 1 → Agent 2 → Agent 3 → manager integration.
+
+Note: with C folded into Agent 1 (author tag) + the manager observer, there is no
+standalone "C agent" — the race-prone counter is gone entirely.
 
 ---
 
@@ -260,22 +378,28 @@ integration.
 - **Empty/cold cache:** A′ consumers reached before first `reload()` see an empty
   list. Acceptable (matches today's pre-permission behavior) but each site must
   not crash on empty.
-- **Stale cache for post-write reads:** #5/#9 read immediately after a reconcile
-  write — they MUST use `service.fetch` (store), never the cache.
-- **`.CNContactStoreDidChange` coalescing/races (C):** notification is async and
-  batched; the self-suppression must not drop a real external change that arrives
-  in the same window. Favor a counter/coalesce over a bare boolean; document.
-- **Change-history token invalidation (D):** OS can invalidate the token (store
-  reset, OS migration). Must detect and fall back to full `reload()` —
-  `requiresFullReload`.
+- **Stale cache for post-write reads:** #2/#5/#9 read immediately after a write —
+  they MUST use `service.fetch`/adapter `fetch` (store), never the cache. Likewise
+  B's `applyRefresh` re-reads the one changed contact from the store.
+- **Self-writes via `transactionAuthor` (C), not a counter:** our `save`/`delete`
+  tag `transactionAuthor`; the change-history read sets `excludedTransactionAuthors`
+  so our own edits never appear in the delta — no async/coalescing race, no stuck
+  counter. Our edits are reflected in the cache by B; external edits by D. The
+  earlier counter design is REMOVED.
+- **Change-history "DropEverything" (D):** token invalidation / first-run /
+  history truncation arrives as a `visitDropEverythingEvent` callback (TN3149),
+  NOT a thrown error → set `requiresFullReload` and fall back to full `reload()`.
+  Genuine thrown errors (I/O, auth) also fall back to `reload()`.
 - **Token must stay device-local (D):** the cursor is per-device contact-store
   state. It must NOT be in UserDefaults (no meaningful state there) and must NOT
   ride iCloud via the sidecar root — a synced token would make device B skip real
   edits. Persist device-local in Application Support, `isExcludedFromBackup`. Loss
   is safe: one full reload re-baselines it.
-- **Unified contacts (D):** change-history events are keyed on contact
-  identifiers; a unify/unlink in Contacts.app can surface as delete+add. The
-  delta-apply (remove then refresh) handles this; verify in the adapter.
+- **Unified contacts / event ordering (D):** change-history events are keyed on
+  contact identifiers; a unify/unlink in Contacts.app can surface as delete+add of
+  the same id. The delta-apply MUST process events IN HISTORY ORDER (not bucketed
+  updated-then-deleted), so a delete-then-readd ends with the contact present.
+  Covered by a package test (delete-then-readd preserves order).
 - **Single app-owned repository:** never construct a second `ContactsRepository`.
   Thread the AppDelegate's instance through; injecting it into the SwiftUI views
   is part of A′.
@@ -288,9 +412,10 @@ integration.
   (commit 6dbb90c, pending its own review).
 - Image/thumbnail loading paths (already on-demand).
 - Event (EKEventStore) reload optimization — parallel but separate; this plan is
-  contacts-only. (Note `.CNContactStoreDidChange` observer also kicks
-  `eventsRepository.reload()` today; leave that behavior unless it falls out of
-  the observer rewrite — if so, preserve it.)
+  contacts-only. The `.CNContactStoreDidChange` observer rewrite MUST preserve the
+  existing `eventsRepository.reload()` call (a contact change can affect event
+  invitee/attendee rendering) — this is a requirement of the integration, not an
+  optional carry-over.
 
 ## Success criteria
 
@@ -298,10 +423,19 @@ integration.
    internal reconcile.
 2. Map-builders read `repository.contacts` (cache); single-record lookups use
    `service.fetch(localID:)`.
-3. A user edit patches one row (no full reload) and does not trigger a second
-   full reload from the self-change observer.
-4. External Contacts.app edits apply as a delta (add/update/delete of only the
-   changed contacts), with a full-reload fallback on token invalidation.
-5. Package gains `changes(since:)` on the protocol + both store impls, with tests.
-6. Mac Catalyst build succeeds; package tests pass.
-7. No user-facing string regresses the product principle.
+3. A user edit patches one row (no full reload); the app's own write is excluded
+   from the change-history delta via `transactionAuthor`, so it triggers no second
+   full reload.
+4. External Contacts.app edits apply as an ordered delta (only the changed
+   contacts), under a single batched snapshot post, with a full-reload fallback on
+   DropEverything/throw; the cursor persists only after a successful apply.
+5. Package gains `changes(since:)` on the protocol + both store impls, the
+   device-local `ContactSyncCursorStore`, and the `transactionAuthor` tagging,
+   all with tests.
+6. Dead code `SyncService.contact(forGuessWhoUUID:)` removed; #5 collapsed into
+   `reconcileIfNeeded`.
+7. `EventDetailView` + `FavoritesListViewController` receive the single app-owned
+   `ContactsRepository` (env / init) at every SceneDelegate construction site.
+8. The `.CNContactStoreDidChange` observer still refreshes `eventsRepository`.
+9. Mac Catalyst build succeeds; package tests pass.
+10. No user-facing string regresses the product principle.
