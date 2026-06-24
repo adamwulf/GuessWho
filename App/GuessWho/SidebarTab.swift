@@ -9,11 +9,6 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
     case organizations
     case events
     case favorites
-    /// Catalyst-only entry: Settings.bundle is ignored by Catalyst, so
-    /// the in-app SettingsView is the only way for a Mac user to reach
-    /// the Debug Mode toggle. iPhone keeps Settings out of the TabView
-    /// because iOS users reach the same toggle via System Settings.
-    case settings
 
     var id: String { rawValue }
 
@@ -23,7 +18,6 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         case .organizations: return "Organizations"
         case .events: return "Events"
         case .favorites: return "Favorites"
-        case .settings: return "Settings"
         }
     }
 
@@ -33,7 +27,6 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         case .organizations: return "building.2.fill"
         case .events: return "calendar"
         case .favorites: return "star.fill"
-        case .settings: return "gear"
         }
     }
 
@@ -51,7 +44,6 @@ enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
         case .organizations: return "Choose an organization from the list to see details."
         case .events: return "Choose an event from the list to see details."
         case .favorites: return "Choose a favorite from the list to see details."
-        case .settings: return "Settings appear here."
         }
     }
 }

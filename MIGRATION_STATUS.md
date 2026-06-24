@@ -38,7 +38,6 @@ GuessWhoSceneDelegate.scene(_:willConnectTo:)
   - `.organizations` → `OrganizationsListViewController(repository:)`
   - `.events` → `EventsListViewController(repository:service:)`
   - `.favorites` → `FavoritesListViewController(store:service:)`
-  - `.settings` → `UIHostingController(rootView: SettingsView())`
 - **Secondary (detail):** swapped by content-column selection via
   `split.setViewController(_:for: .secondary)` (REPLACES, never
   pushes). Mounts a `UIHostingController` wrapping
@@ -61,7 +60,7 @@ GuessWhoSceneDelegate.scene(_:willConnectTo:)
 | Contact detail | SwiftUI `ContactDetailView` hosted | SwiftUI `ContactDetailView` hosted |
 | Event detail | SwiftUI `EventDetailView` hosted | SwiftUI `EventDetailView` hosted |
 | NavigationLink → push from hosted detail | silent no-op (TBD Phase 6) | env-injected closures bridge to outer UINavigationController |
-| Settings | SwiftUI `SettingsView` hosted | iOS Settings.bundle |
+| Settings | `Settings.bundle` auto-rendered into the ⌘, window (no sidebar row) | `Settings.bundle` in system Settings.app (no tab) |
 | Edit sheet | SwiftUI `ContactEditView` | SwiftUI `ContactEditView` |
 
 iPad regular-width currently lands on the same UIKit tab shell as
@@ -88,6 +87,7 @@ iPhone — temporary downgrade from the prior 3-column
 | 5D | `61e2dcf` | Drop redundant per-VC `.EKEventStoreChanged` / `.CNContactStoreDidChange` observers in `EventsListViewController` now that AppDelegate is single owner. (Favorites VC's observers stay — they rebuild the contact-uuid map, which the AppDelegate fan-out doesn't.) |
 | 5E | `a2c03b1` | Bridge SwiftUI `NavigationLink(value: ContactReference/EventReference)` callsites (5 sites in ContactDetailView, ConnectionsSection, EventDetailView) to outer UIKit nav via env-injected `pushContactReference` / `pushEventReference` closures. `injectIPhonePushHandlers` helper binds both closures to the SAME `nav` weakly so chained drill-downs preserve the capture chain. Catalyst silent no-op preserved (Phase 6 TBD). |
 | 5F | `c117652`, `1bcebdf` | Polish: XCTSkip the two `SyncService`-cold-launch-racy UI tests with re-enable-ready post-skip bodies; refresh stale `SyncService.swift:451` comment; MIGRATION_STATUS Phase 5 update. (`3aeac96` attempted to skip 2 more tests but the race just relocated to next-alpha; manually reverted in `1bcebdf` to keep the 2 newly-racy tests RED as a deliberate-loud-signal that the SyncService follow-up is the load-bearing fix.) |
+| 5G | `0989b18` | Removed the Catalyst sidebar Settings row: deleted `SidebarTab.settings` + the dead in-app `SettingsView.swift`, dropped the `.settings` SceneDelegate switch arm, and simplified `SidebarViewController.sidebarTabs` to `allCases` (the platform filter is gone). Settings now lives ONLY in `Settings.bundle` on both platforms — Catalyst auto-renders it into the ⌘, preferences window; iOS/iPadOS show it in system Settings.app. |
 
 ### Phase 5 — iPhone UIKit migration + Catalyst cleanup (DONE)
 

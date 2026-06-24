@@ -54,6 +54,44 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   scene delegate.
 - `Tests/GuessWhoSyncTests/` — XCTest suite for the sync package.
 
+## Building & testing
+
+All commands are verified to build/pass on the current tree.
+
+### App target (`xcodebuild`)
+
+Build the app target from the `App/` directory. Use a local
+`.build/DerivedData` so the package checkouts land alongside the build
+products (easier dependency analysis).
+
+- **Mac Catalyst:**
+  ```sh
+  xcodebuild -project App/GuessWho.xcodeproj -scheme GuessWho \
+    -destination 'platform=macOS,variant=Mac Catalyst' \
+    -derivedDataPath .build/DerivedData build
+  ```
+- **iPhone simulator** (pick an installed simulator name/OS from
+  `xcrun simctl list devices available`):
+  ```sh
+  xcodebuild -project App/GuessWho.xcodeproj -scheme GuessWho \
+    -destination 'platform=iOS Simulator,name=iPhone 17,OS=27.0' \
+    -derivedDataPath .build/DerivedData build
+  ```
+
+### Sync package (`swift`)
+
+The `GuessWhoSync` package (storage + sync engine, no app shell) builds
+and tests straight from the repo root with SwiftPM:
+
+```sh
+swift build          # compile GuessWhoSync + GuessWhoSyncTesting
+swift test           # run Tests/GuessWhoSyncTests (XCTest + swift-testing)
+```
+
+Run a single test or suite with `swift test --filter <name>`. The same
+targets are also exposed as the `GuessWhoSync` / `GuessWhoSyncTesting`
+Xcode schemes.
+
 ## Identity: the GuessWho URL and unified contacts
 
 A contact is identified **only** by its GuessWho ID — a UUID the package mints

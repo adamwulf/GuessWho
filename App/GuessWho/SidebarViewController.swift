@@ -66,18 +66,12 @@ final class SidebarViewController: UIViewController {
         dataSource.apply(snapshot, animatingDifferences: false)
     }
 
-    /// `.settings` is Catalyst-only because iOS/iPadOS surface the
-    /// same toggle through the system Settings app via the bundled
-    /// `Settings.bundle`. Phase 2 only ships the Catalyst shell, so
-    /// in practice this controller always sees all three rows — the
-    /// compile-time gate keeps the iPhone hosting path honest if
-    /// it ever instantiates this VC.
+    /// Settings has no sidebar row on any platform: every user reaches
+    /// the Debug Mode toggle through the system Settings app via the
+    /// bundled `Settings.bundle` (Catalyst auto-renders it into the
+    /// ⌘, preferences window; iOS/iPadOS show it in Settings.app).
     private var sidebarTabs: [SidebarTab] {
-        #if targetEnvironment(macCatalyst)
-        return SidebarTab.allCases
-        #else
-        return SidebarTab.allCases.filter { $0 != .settings }
-        #endif
+        SidebarTab.allCases
     }
 
     private func selectInitialTab() {

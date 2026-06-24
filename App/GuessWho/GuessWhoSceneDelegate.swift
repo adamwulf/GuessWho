@@ -62,7 +62,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// content/detail column swaps:
     ///   * .people → ContactsListViewController + ContactDetailView on selection
     ///   * .organizations → OrganizationsListViewController + ContactDetailView on selection
-    ///   * .settings → SwiftUI SettingsView hosted via UIHostingController
+    /// Settings has no sidebar row: the Debug Mode toggle is reached
+    /// through the system Settings app via the bundled `Settings.bundle`
+    /// (Catalyst auto-renders it into the ⌘, preferences window).
     /// When the user picks a tab that doesn't have a selected detail
     /// the secondary column resets to a "Nothing Selected" placeholder.
     private func makeCatalystSplit(appDelegate: GuessWhoAppDelegate) -> UISplitViewController {
@@ -151,12 +153,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split, for: .favorites)
-
-        case .settings:
-            let settings = UIHostingController(rootView: SettingsView())
-            settings.title = "Settings"
-            split.setViewController(UINavigationController(rootViewController: settings), for: .supplementary)
-            installDetailPlaceholder(in: split, for: .settings)
         }
     }
 
