@@ -244,11 +244,11 @@ struct ContactDetailView: View {
         let list = List {
             #if targetEnvironment(macCatalyst)
             Section {
-                // centeredRowContent() clamps to 560 and re-expands to full
-                // width so the centered header column matches every other row.
-                // The header's own VStack is already center-aligned.
+                // Center the header inside the 560 column (unlike the rows,
+                // which left-align): the monogram + name + subtitle read as a
+                // centered card, matching Apple's Contacts detail header.
                 headerView(contact)
-                    .centeredRowContent()
+                    .centeredRowContent(alignment: .center)
                     .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
@@ -539,11 +539,13 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var recentEventsSection: some View {
         if !recentEvents.isEmpty {
-            Section("Recent Events") {
+            Section {
                 ForEach(recentEvents, id: \.id) { event in
                     recentEventRow(event)
                         .centeredRowContent()
                 }
+            } header: {
+                Text("Recent Events").centeredSectionHeader()
             }
         }
     }
@@ -588,11 +590,13 @@ struct ContactDetailView: View {
                     localID: entry.contact.localID
                 )
             }
-            Section("Referenced By") {
+            Section {
                 ForEach(rows) { row in
                     InfoRow(data: row)
                         .centeredRowContent()
                 }
+            } header: {
+                Text("Referenced By").centeredSectionHeader()
             }
         }
     }
@@ -663,11 +667,13 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func debugSection(_ contact: Contact) -> some View {
         let rows = debugRows(for: contact)
-        Section("Debug") {
+        Section {
             ForEach(rows) { row in
                 InfoRow(data: row)
                     .centeredRowContent()
             }
+        } header: {
+            Text("Debug").centeredSectionHeader()
         }
     }
 
@@ -740,7 +746,7 @@ struct ContactDetailView: View {
     private var activitySection: some View {
         let items = activityItems
         if !items.isEmpty || showingNewNoteEditor {
-            Section("Activity") {
+            Section {
                 ForEach(items) { item in
                     activityRow(item)
                         .centeredRowContent()
@@ -755,6 +761,8 @@ struct ContactDetailView: View {
                         .focused($noteFocus, equals: .newNote)
                         .centeredRowContent()
                 }
+            } header: {
+                Text("Activity").centeredSectionHeader()
             }
         }
     }
