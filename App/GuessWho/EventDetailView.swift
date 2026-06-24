@@ -387,14 +387,18 @@ struct EventDetailView: View {
             Button {
                 pushContactReference(ContactReference(localID: contact.localID))
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(contact.displayName)
-                    if !link.note.isEmpty {
-                        Text(link.note)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contact.displayName)
+                        if !link.note.isEmpty {
+                            Text(link.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    Spacer()
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } else {
