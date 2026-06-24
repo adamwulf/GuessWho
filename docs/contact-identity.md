@@ -26,9 +26,9 @@ GuessWho ID.
 | What it is | A UUID we mint | Apple's unified `CNContact.identifier` |
 | Where it lives | A `guesswho://contact/<uuid>` URL on the contact | The `localID` field of `Contact` |
 | Stable across devices? | **Yes** — same on every device after sync | **No** — different on each device |
-| Stable across time on one device? | **Yes** | **No** — changes when Apple re-unifies |
+| Persistable on one device? | **Yes** | **Yes**, but it may later resolve to a *different* unified contact (or stop resolving) when linked cards change |
 | Who owns it | GuessWhoSync | The Contacts framework |
-| Callers use it for | Identity, sidecar keys, links, dedup | **Nothing** — it's a transient lookup token |
+| Callers use it for | Identity, sidecar keys, links, dedup | **Nothing** — it's a transient lookup token. (The Contacts adapter and the reconcile bridge consume it internally; *application* callers never should.) |
 
 ### Why `localID` cannot be identity
 
@@ -36,15 +36,21 @@ GuessWho ID.
 framework. [^localid-source] Two properties make it unusable as a durable
 identifier:
 
-1. **It is device-local.** The same logical contact has a *different*
-   `identifier` on each device after iCloud/CardDAV sync. A `localID` saved on
-   your iPhone means nothing on your Mac. [^plan-device-local]
-2. **It is a *unified* identifier, and unification is not permanent.** Apple
-   merges the per-account cards of one person (e.g. an iCloud card and an
-   Exchange card) into a single *unified contact* with its own identifier. When
-   the set of linked cards changes — a card is added, removed, or re-linked —
-   the unified identifier can change. So even on a single device, `localID` is
-   not guaranteed to be the same token tomorrow.
+1. **It is device-local.** Apple documents `CNContact.identifier` as uniquely
+   identifying the contact *"on the current device"* only — the same logical
+   contact has a *different* `identifier` on each device after iCloud/CardDAV
+   sync. A `localID` saved on your iPhone means nothing on your Mac. This alone
+   is a complete reason it cannot be a cross-device key.
+   [^plan-device-local][^apple-identifier]
+2. **It is a *unified* identifier, and unification is not stable.** Apple does
+   let you persist `CNContact.identifier` between launches on one device — but a
+   `localID` is the identifier of a unified contact assembled from the
+   per-account cards of one person (e.g. an iCloud card and an Exchange card).
+   When the set of linked cards changes, a persisted `localID` may resolve to a
+   *different* unified contact or stop resolving altogether; Apple even warns
+   that `unifiedContact(withIdentifier:)` "may have a different identifier than
+   you specify." So `localID` is safe to use only for an *immediate* re-fetch,
+   never as a durable handle you store and compare. [^apple-unified]
 
 The GuessWho ID solves both: it is minted once, written into the contact as a
 URL that syncs losslessly via CardDAV, and chosen deterministically so every
@@ -140,7 +146,9 @@ data.
 
 - **To get a contact's identity:** `SidecarKey.forContact(contact)` → a
   `SidecarKey`. If it returns `nil`, the contact has not been reconciled yet —
-  run reconciliation first.
+  the host should have run `reconcileContactIdentities()` (e.g. at launch and on
+  foreground) so every contact carries an ID before you read it. Callers don't
+  thread a `localID` to do this.
 - **To attach GuessWho data:** call the `addField` / `setField` / `addLink`
   family with that `SidecarKey`. Never with `localID`.
 - **To persist a reference to a contact** (e.g. in your own storage): store the
@@ -156,9 +164,11 @@ data.
 
 ---
 
-<!-- Citations — code symbols (not line numbers) and PLAN.md section line ranges. -->
-<!-- [^localid-source]: [CNContactStoreAdapter.toContact maps c.identifier -> Contact.localID](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter) -->
-<!-- [^plan-device-local]: [PLAN.md §3.1 — CNContact.identifier is device-local](../PLAN.md:39-45) -->
+<!-- Citations — code symbols (not line numbers), PLAN.md section line ranges, and Apple docs (external URLs). -->
+<!-- [^localid-source]: [CNContactStoreAdapter.toContact maps c.identifier -> Contact.localID](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.toContact) -->
+<!-- [^plan-device-local]: [PLAN.md §3.1 — CNContact.identifier is device-local](../PLAN.md:41-43) -->
+<!-- [^apple-identifier]: [Apple — CNContact.identifier: "uniquely identifies a contact on the device"; "can be persisted between the app launches"](https://developer.apple.com/documentation/contacts/cncontact/identifier) -->
+<!-- [^apple-unified]: [Apple — unifiedContact(withIdentifier:keysToFetch:): "Due to unification, the returned contact may have a different identifier than you specify"](https://developer.apple.com/documentation/contacts/cncontactstore/unifiedcontact(withidentifier:keystofetch:)) -->
 <!-- [^plan-url]: [PLAN.md §3.2 — the GuessWho URL](../PLAN.md:47-54) -->
 <!-- [^sidecarkey]: [SidecarKey.forContact / parseGuessWhoContactURL](../Sources/GuessWhoSync/SidecarKey.swift:SidecarKey) -->
 <!-- [^cnadapter]: [CNContactStoreAdapter — fetchAll uses enumerateContacts (unified by default); all other reads use unifiedContact/unifiedContacts](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter) -->
