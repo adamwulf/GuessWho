@@ -182,6 +182,7 @@ final class ContactsListViewController: UIViewController {
         // Rebuild the localID → Contact lookup before the cell provider
         // can ask for it. Doing this before .apply keeps any
         // mid-snapshot dequeue from seeing stale data.
+        let previousByID = contactsByLocalID
         var byID: [String: Contact] = [:]
         for (_, contacts) in sections {
             for contact in contacts {
@@ -196,6 +197,25 @@ final class ContactsListViewController: UIViewController {
         for (letter, contacts) in sections {
             snapshot.appendItems(contacts.map { $0.localID }, toSection: letter)
         }
+
+        // The snapshot keys rows on `localID`, so the diff treats a row
+        // with an unchanged localID as identical even when the contact's
+        // displayed fields (name, jobTitle, organizationName) changed —
+        // it would keep the stale cell until recycling. Explicitly
+        // reconfigure rows whose Contact value differs from the previous
+        // snapshot so an in-place edit repaints immediately. Contact is
+        // Equatable (via Hashable), so the comparison is a cheap value
+        // check. Brand-new and removed rows are handled by `apply` itself
+        // and must be excluded here — reconfiguring an item not present in
+        // the new snapshot would trap.
+        let changedIDs = byID.compactMap { localID, contact -> String? in
+            guard let previous = previousByID[localID] else { return nil }
+            return previous == contact ? nil : localID
+        }
+        if !changedIDs.isEmpty {
+            snapshot.reconfigureItems(changedIDs)
+        }
+
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()

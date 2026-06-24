@@ -140,6 +140,7 @@ final class OrganizationsListViewController: UIViewController {
     private func applySnapshot(animated: Bool) {
         let sections = repository.organizationsSections
 
+        let previousByID = contactsByLocalID
         var byID: [String: Contact] = [:]
         for (_, contacts) in sections {
             for contact in contacts {
@@ -154,6 +155,20 @@ final class OrganizationsListViewController: UIViewController {
         for (letter, contacts) in sections {
             snapshot.appendItems(contacts.map { $0.localID }, toSection: letter)
         }
+
+        // See ContactsListViewController.applySnapshot — rows keyed on
+        // localID don't repaint on an in-place content change, so
+        // reconfigure the rows whose Contact value differs. New/removed
+        // rows are handled by `apply` and must be excluded (reconfiguring
+        // an item absent from the new snapshot traps).
+        let changedIDs = byID.compactMap { localID, contact -> String? in
+            guard let previous = previousByID[localID] else { return nil }
+            return previous == contact ? nil : localID
+        }
+        if !changedIDs.isEmpty {
+            snapshot.reconfigureItems(changedIDs)
+        }
+
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()
