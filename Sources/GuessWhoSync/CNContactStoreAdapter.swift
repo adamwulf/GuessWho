@@ -8,6 +8,8 @@
 // dedicated `.userInitiated` queue.
 @preconcurrency import Contacts
 import Foundation
+// Bridges the Swift-unavailable enumeratorForChangeHistoryFetchRequest call.
+import GuessWhoSyncObjC
 
 public actor CNContactStoreAdapter: ContactStoreProtocol {
     private let store: CNContactStore
@@ -31,6 +33,22 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
 
     public init(store: CNContactStore = CNContactStore()) {
         self.store = store
+    }
+
+    /// Stamped on every `CNSaveRequest` this adapter executes so our own writes
+    /// can be excluded from the change-history delta read in `changes(since:)`.
+    /// A fixed compile-time constant (the app's bundle id) — it is meaningful
+    /// only at write time and is never persisted.
+    static let transactionAuthor = "com.milestonemade.guesswho"
+
+    /// Single chokepoint for constructing a write request: every save/delete/
+    /// group/membership mutation goes through here so none can forget to tag
+    /// the author. An untagged write would surface as a phantom self-edit in
+    /// the delta.
+    private static func makeSaveRequest() -> CNSaveRequest {
+        let request = CNSaveRequest()
+        request.transactionAuthor = transactionAuthor
+        return request
     }
 
     private static let keys: [CNKeyDescriptor] = [
@@ -110,7 +128,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
 
     public func save(_ contact: Contact) async throws {
         try await runOnWorkQueue { store in
-            let saveRequest = CNSaveRequest()
+            let saveRequest = Self.makeSaveRequest()
             let existing = try? store.unifiedContact(withIdentifier: contact.localID, keysToFetch: Self.keys)
             if let existing, let mutable = existing.mutableCopy() as? CNMutableContact {
                 Self.apply(contact, to: mutable)
@@ -137,9 +155,57 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             }
             // mutableCopy() on a CNContact always returns CNMutableContact.
             let mutable = cn.mutableCopy() as! CNMutableContact
-            let req = CNSaveRequest()
+            let req = Self.makeSaveRequest()
             req.delete(mutable)
             try store.execute(req)
+        }
+    }
+
+    public func changes(since token: Data?) async throws -> ContactChangeSet {
+        try await runOnWorkQueue { store in
+            // nil token ⇒ start from the beginning of recorded history AND
+            // baseline the caller with a full reload — the delta from the dawn
+            // of history is not a meaningful "what changed for you" set, and CN
+            // emits a DropEverything event for us anyway in that case.
+            let startFromBeginning = (token == nil)
+            let request = CNChangeHistoryFetchRequest()
+            // The token is opaque `Data`; pass it straight through. nil here
+            // means "from the beginning" per Apple's contract.
+            request.startingToken = token
+            // Our own writes are tagged with this author (every CNSaveRequest
+            // routes through makeSaveRequest), so they never surface in the
+            // delta.
+            request.excludedTransactionAuthors = [Self.transactionAuthor]
+            // Group / membership churn must never enter the contact delta.
+            request.includeGroupChanges = false
+
+            // Per TN3149 the enumeration is driven by a visitor; token
+            // invalidation / first-run / truncation arrives as a
+            // DropEverything event in the stream, NOT a thrown error. Genuine
+            // I/O / auth failures still throw and propagate to the caller. The
+            // fetch itself goes through the ObjC shim because the underlying
+            // enumeratorForChangeHistoryFetchRequest call is Swift-unavailable.
+            let visitor = ChangeHistoryVisitor()
+            var fetchedToken: NSData?
+            let events = try Self.runChangeHistoryFetch(store: store, request: request, token: &fetchedToken)
+            // Each event dispatches itself to the matching visitor method via
+            // `acceptEventVisitor:`, preserving history order.
+            for event in events {
+                event.accept(visitor)
+            }
+
+            // currentHistoryToken can be nil on an empty store; persist Data()
+            // in that case so the cursor is still a stable, advanceable value.
+            let newToken = (fetchedToken as Data?) ?? Data()
+            let requiresFullReload = startFromBeginning || visitor.droppedEverything
+            // On a drop-everything (or first run) the partial delta is
+            // meaningless; the caller rebuilds from a full reload.
+            let changes = requiresFullReload ? [] : visitor.changes
+            return ContactChangeSet(
+                changes: changes,
+                newToken: newToken,
+                requiresFullReload: requiresFullReload
+            )
         }
     }
 
@@ -187,7 +253,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         try await runOnWorkQueue { store in
             let mutable = CNMutableGroup()
             mutable.name = name
-            let req = CNSaveRequest()
+            let req = Self.makeSaveRequest()
             req.add(mutable, toContainerWithIdentifier: nil)
             try store.execute(req)
             // `identifier` is assigned by Contacts at execute() time and is
@@ -206,7 +272,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             // mutableCopy() on a CNGroup always returns CNMutableGroup.
             let mutable = cn.mutableCopy() as! CNMutableGroup
             mutable.name = name
-            let req = CNSaveRequest()
+            let req = Self.makeSaveRequest()
             req.update(mutable)
             try store.execute(req)
         }
@@ -220,7 +286,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 throw ContactStoreError.groupNotFound(localID: localID)
             }
             let mutable = cn.mutableCopy() as! CNMutableGroup
-            let req = CNSaveRequest()
+            let req = Self.makeSaveRequest()
             req.delete(mutable)
             try store.execute(req)
         }
@@ -279,7 +345,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 groupLocalID: groupLocalID,
                 store: store
             )
-            let req = CNSaveRequest()
+            let req = Self.makeSaveRequest()
             req.addMember(contact, to: group)
             try store.execute(req)
         }
@@ -292,7 +358,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 groupLocalID: groupLocalID,
                 store: store
             )
-            let req = CNSaveRequest()
+            let req = Self.makeSaveRequest()
             req.removeMember(contact, from: group)
             try store.execute(req)
         }
@@ -318,6 +384,23 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             throw ContactStoreError.groupNotFound(localID: groupLocalID)
         }
         return (contact, group)
+    }
+
+    /// Calls the Objective-C shim that performs the Swift-unavailable
+    /// `enumeratorForChangeHistoryFetchRequest:error:` fetch, translating the
+    /// C-style `NSError` out-parameter into a Swift throw. Returns the ordered
+    /// change-history events; `token` is set to the resulting history token.
+    private static func runChangeHistoryFetch(
+        store: CNContactStore,
+        request: CNChangeHistoryFetchRequest,
+        token: inout NSData?
+    ) throws -> [CNChangeHistoryEvent] {
+        var error: NSError?
+        let events = GWSyncFetchContactChangeHistory(store, request, &token, &error)
+        if let error {
+            throw error
+        }
+        return events ?? []
     }
 
     /// Bridge the blocking `CNContactStore` call onto `workQueue` and
@@ -479,6 +562,37 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         // here so a round-trip read/modify/write preserves whatever bytes
         // already exist on the contact (mirrors the §10.5 partial-update
         // guarantee for `note`).
+    }
+}
+
+/// Accumulates a contact change delta from the change-history enumeration.
+/// Each `CNChangeHistoryEvent.accept(_:)` dispatches to the matching `visit`
+/// method below, so events are recorded in history order. Add and update both
+/// collapse to `.updated`; delete becomes `.deleted`; drop-everything sets the
+/// `droppedEverything` flag (the caller then forces a full reload). Group and
+/// membership visitor callbacks are intentionally not implemented — the fetch
+/// request sets `includeGroupChanges = false`, so they never fire.
+private final class ChangeHistoryVisitor: NSObject, CNChangeHistoryEventVisitor {
+    private(set) var changes: [ContactChange] = []
+    private(set) var droppedEverything = false
+
+    func visit(_ event: CNChangeHistoryAddContactEvent) {
+        changes.append(.updated(localID: event.contact.identifier))
+    }
+
+    func visit(_ event: CNChangeHistoryUpdateContactEvent) {
+        changes.append(.updated(localID: event.contact.identifier))
+    }
+
+    func visit(_ event: CNChangeHistoryDeleteContactEvent) {
+        changes.append(.deleted(localID: event.contactIdentifier))
+    }
+
+    func visit(_ event: CNChangeHistoryDropEverythingEvent) {
+        // Token invalidation / first-run / history truncation. The partial
+        // delta is meaningless from here; clear it and signal a full reload.
+        droppedEverything = true
+        changes.removeAll()
     }
 }
 

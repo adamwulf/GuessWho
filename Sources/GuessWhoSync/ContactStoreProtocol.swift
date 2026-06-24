@@ -12,6 +12,14 @@ public protocol ContactStoreProtocol: Actor {
     func save(_ contact: Contact) async throws
     func delete(localID: String) async throws
 
+    // Reads the change history since `token` (an opaque cursor previously
+    // returned in `ContactChangeSet.newToken`). A `nil` token means "from the
+    // beginning" — the result baselines with `requiresFullReload == true`.
+    // Our own writes are excluded from the delta (tagged with a transaction
+    // author at write time); only external mutations surface. See
+    // `ContactChangeSet` for the ordering and full-reload contract.
+    func changes(since token: Data?) async throws -> ContactChangeSet
+
     // Image bytes are loaded on demand so bulk fetches don't pay the cost.
     // - Contact does not exist          → throws ContactStoreError.contactNotFound
     // - Contact exists, no image bytes  → returns nil

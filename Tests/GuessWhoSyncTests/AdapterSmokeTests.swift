@@ -42,6 +42,18 @@ struct AdapterSmokeTests {
         _ = _useGroups
     }
 
+    // Compile-time smoke: the change-history delta read exists on the adapter.
+    // The body never runs (no Contacts authorization in the test process); the
+    // value is that it fails to compile if `changes(since:)` drops off.
+    @Test
+    func cnAdapterExposesChangeHistorySurface() {
+        func _useChanges(_ adapter: CNContactStoreAdapter) async throws {
+            _ = try await adapter.changes(since: nil)
+            _ = try await adapter.changes(since: Data())
+        }
+        _ = _useChanges
+    }
+
     @Test
     func ekAdapterExposesExtendedSurface() {
         func _useReads(_ adapter: EKEventStoreAdapter) throws {
