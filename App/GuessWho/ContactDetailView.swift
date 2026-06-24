@@ -343,15 +343,6 @@ struct ContactDetailView: View {
             }
             .disabled(isSavingEdit)
         }
-        // EditButton flips the list into edit mode so .onMove drag handles
-        // appear on the multi-value rows (phone, email, …). Sits between
-        // Cancel and Save so the toolbar reads Cancel | … | Edit · Save —
-        // same layout the ContactEditView sheet used before this view
-        // absorbed inline editing.
-        ToolbarItem(placement: .primaryAction) {
-            EditButton()
-                .disabled(isSavingEdit)
-        }
         ToolbarItem(placement: .confirmationAction) {
             Button("Save") {
                 Task { await performInlineSave() }
@@ -405,6 +396,11 @@ struct ContactDetailView: View {
                 return
             }
             editModel = ContactEditModel(original: loaded)
+            // Pin the list into edit mode for the duration of contact-edit so
+            // .onMove drag handles appear on multi-value rows without needing
+            // a separate EditButton in the toolbar — matches Apple Contacts.app
+            // where reordering is always-on while you're editing.
+            editMode = .active
         } catch {
             editFetchErrorMessage = error.localizedDescription
         }
