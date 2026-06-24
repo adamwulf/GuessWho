@@ -31,6 +31,13 @@ struct ContactDetailView: View {
     // contact-load and on contact reload — separate from `eventLinks` which
     // are user-curated contact↔event links.
     @State private var recentEvents: [Event] = []
+    // Monotonic token bumped at the start of every `reloadRecentEvents` call.
+    // The async load captures the token at the call site and bails on result
+    // assignment when it no longer matches — so a stale in-flight fetch (after
+    // a navigation, a contact-emails edit, or rapid reloads) can't overwrite
+    // the freshest result. Stronger than a localID-only check, which can't
+    // distinguish two same-localID reloads in quick succession.
+    @State private var recentEventsLoadID: UUID = UUID()
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var uuidToContact: [String: Contact] = [:]
@@ -915,15 +922,22 @@ struct ContactDetailView: View {
     /// queue inside `SyncService.recentEvents`; the awaited result resumes
     /// back on the main actor. No-op when the contact has no emails.
     private func reloadRecentEvents(for contact: Contact) async {
+        let myLoadID = UUID()
+        recentEventsLoadID = myLoadID
         let emails = Set(contact.emailAddresses.map { $0.value })
         guard !emails.isEmpty else {
+            // Clear under the same token check so a later in-flight load
+            // can't resurrect a previous result for this same load slot.
+            guard recentEventsLoadID == myLoadID else { return }
             recentEvents = []
             return
         }
         let fetched = await service.recentEvents(forEmails: emails, limit: 10)
-        // Stale-load guard: the user may have navigated to a different
-        // contact while the background fetch was in flight. Bail if so.
-        guard self.contact?.localID == contact.localID else { return }
+        // Bail if a newer reload started while this fetch was in flight —
+        // covers navigation away, contact-emails edit, and rapid reloads on
+        // the same localID. Stronger than a localID compare, which can't
+        // distinguish two same-localID reloads in quick succession.
+        guard recentEventsLoadID == myLoadID else { return }
         recentEvents = fetched
     }
 

@@ -42,14 +42,39 @@ struct EventsWithAttendeeTests {
     // MARK: - Adapter-level filter behaviour
 
     @Test
-    func filtersByAttendeeEmailCaseInsensitively() throws {
+    func normalizesQueryEmailsCaseAndWhitespace() throws {
+        // EventAttendee.init lowercases on the way in, so attendee storage is
+        // always normalized. The interesting case-insensitive path is on the
+        // QUERY side: callers may pass raw user-typed addresses with mixed
+        // case or leading/trailing whitespace, and the adapter must normalize
+        // those before comparing against the lowercased attendee storage.
         let now = Date()
-        let alice = EventAttendee(name: "Alice", email: "Alice@Example.COM")
+        let alice = EventAttendee(name: "Alice", email: "alice@example.com")
         let bob = EventAttendee(name: "Bob", email: "bob@example.com")
         let store = InMemoryEventStore(events: [
             event(ekid: "1", title: "with alice", startDate: now.addingTimeInterval(-86400), attendees: [alice]),
             event(ekid: "2", title: "with bob", startDate: now.addingTimeInterval(-172800), attendees: [bob]),
             event(ekid: "3", title: "no match", startDate: now.addingTimeInterval(-86400), attendees: []),
+        ])
+        let result = try store.eventsWithAttendee(
+            matchingEmails: ["  Alice@Example.COM  "],
+            in: DateInterval(start: now.addingTimeInterval(-86400 * 30), end: now),
+            limit: 10
+        )
+        #expect(result.map(\.eventKitID) == ["1"])
+    }
+
+    @Test
+    func filtersWhenAttendeeStorageIsNotLowercase() throws {
+        // EventAttendee's stored `email` is normally lowercased by init, but
+        // it's a `var` and the type is Codable — a decoded attendee could
+        // arrive with mixed-case storage. The filter must still match, since
+        // both sides are lowercased on compare.
+        let now = Date()
+        var alice = EventAttendee(name: "Alice", email: nil)
+        alice.email = "Alice@Example.COM" // bypasses init's lowercasing
+        let store = InMemoryEventStore(events: [
+            event(ekid: "1", title: "with alice", startDate: now.addingTimeInterval(-86400), attendees: [alice])
         ])
         let result = try store.eventsWithAttendee(
             matchingEmails: ["alice@example.com"],
@@ -182,5 +207,33 @@ struct EventsWithAttendeeTests {
         ])
         let result = try await sync.recentEvents(matchingEmails: [], asOf: now, limit: 10)
         #expect(result.isEmpty)
+    }
+
+    @Test
+    func recentEventsAsyncMakesOneAdapterCall() async throws {
+        // Guards against the wrapper accidentally fanning out into multiple
+        // adapter invocations (e.g. one per email or one per chunk) — the
+        // 4-year predicate chunking happens INSIDE the adapter and is opaque
+        // to the package-level call count.
+        let now = Date()
+        let alice = EventAttendee(name: "Alice", email: "alice@example.com")
+        let inner = InMemoryEventStore(events: [
+            event(ekid: "1", title: "yesterday", startDate: now.addingTimeInterval(-86400), attendees: [alice])
+        ])
+        let counting = CountingEventStore(wrapping: inner)
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: counting,
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-A"
+        )
+
+        let before = counting.eventsWithAttendeeCount
+        _ = try await sync.recentEvents(
+            matchingEmails: ["alice@example.com", "alice@personal.com"],
+            asOf: now,
+            limit: 10
+        )
+        #expect(counting.eventsWithAttendeeCount == before + 1)
     }
 }

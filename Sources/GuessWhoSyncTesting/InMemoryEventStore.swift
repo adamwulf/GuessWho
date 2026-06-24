@@ -86,11 +86,9 @@ public final class InMemoryEventStore: EventStoreProtocol {
         guard !normalized.isEmpty, limit > 0 else { return [] }
         lock.lock()
         defer { lock.unlock() }
-        let candidates = eventsByEventKitID.values.filter { event in
-            event.startDate <= interval.end && event.endDate >= interval.start
-        }
-        let matches = candidates.filter { event in
-            event.attendees.contains { attendee in
+        let matches = eventsByEventKitID.values.filter { event in
+            guard event.startDate <= interval.end, event.endDate >= interval.start else { return false }
+            return event.attendees.contains { attendee in
                 guard let email = attendee.email?.lowercased() else { return false }
                 return normalized.contains(email)
             }

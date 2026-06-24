@@ -79,8 +79,14 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
         // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
         // predicate at a 4-year span; longer windows silently return nothing.
         // Chunk the requested interval into ≤4-year slices, walk each, and
-        // dedupe by `calendarItemExternalIdentifier` so a multi-day event
-        // straddling a chunk boundary doesn't get counted twice.
+        // collapse multiple hits per `calendarItemExternalIdentifier` so:
+        //   • a multi-day event straddling a chunk boundary isn't counted
+        //     twice, and
+        //   • a recurring event (every occurrence shares the same
+        //     calendarItemExternalIdentifier) collapses to ONE row showing
+        //     the most-recent occurrence's date. A plain dict-assignment
+        //     dedupe would pick whichever occurrence happened to be visited
+        //     last — nondeterministic and almost never "most recent."
         var dedupe: [String: Event] = [:]
         for chunk in Self.chunked(interval: interval, maxYears: 4) {
             let predicate = store.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: nil)
@@ -92,6 +98,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol {
                     return normalized.contains(email)
                 }
                 guard matches, let event = Self.toEvent(ek), let ekid = event.eventKitID else { continue }
+                if let existing = dedupe[ekid], existing.startDate >= event.startDate { continue }
                 dedupe[ekid] = event
             }
         }
