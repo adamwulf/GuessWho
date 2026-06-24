@@ -284,14 +284,18 @@ struct EventDetailView: View {
             Button {
                 pushContactReference(ContactReference(localID: contact.localID))
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(contact.displayName)
-                    if !email.isEmpty {
-                        Text(email)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contact.displayName)
+                        if !email.isEmpty {
+                            Text(email)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    Spacer()
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } else if let email = attendee.email {
@@ -311,6 +315,7 @@ struct EventDetailView: View {
                     Image(systemName: "person.crop.circle.badge.plus")
                         .foregroundStyle(.secondary)
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } else {
