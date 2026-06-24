@@ -23,6 +23,8 @@ public final class ContactsRepository: NSObject {
     public private(set) var contacts: [Contact] = []
     public private(set) var isLoading = false
     public private(set) var lastError: String?
+    public var peopleSearch = ""
+    public var organizationsSearch = ""
 
     public init(contacts: ContactStoreProtocol) {
         self.contactsStore = contacts
@@ -56,6 +58,41 @@ public final class ContactsRepository: NSObject {
     /// must not be persisted or used as application identity.
     public func contact(localID: String) -> Contact? {
         contacts.first { $0.localID == localID }
+    }
+
+    public var people: [Contact] {
+        filtered(matching: peopleSearch, where: { $0.contactType == .person })
+    }
+
+    public var organizations: [Contact] {
+        filtered(matching: organizationsSearch, where: { $0.contactType == .organization })
+    }
+
+    public var peopleSections: [(String, [Contact])] { sectioned(people) }
+    public var organizationsSections: [(String, [Contact])] { sectioned(organizations) }
+
+    public func lookupByDisplayName() -> [String: Contact] {
+        var map: [String: Contact] = [:]
+        for contact in contacts {
+            let key = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty else { continue }
+            map[key] = contact
+        }
+        return map
+    }
+
+    public func contactsReferencing(contact: Contact) -> [(contact: Contact, label: String)] {
+        let needle = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contacts.flatMap { other in
+            guard other.localID != contact.localID else {
+                return [(contact: Contact, label: String)]()
+            }
+            return other.contactRelations.compactMap { relation in
+                let name = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return name == needle ? (contact: other, label: relation.label) : nil
+            }
+        }
     }
 
     /// Re-read one Contacts record and reconcile it into the cache.
@@ -121,4 +158,23 @@ public final class ContactsRepository: NSObject {
             postDidReload()
         }
     }
+
+    private func filtered(matching query: String, where predicate: (Contact) -> Bool) -> [Contact] {
+        contacts.filter(predicate).filter { $0.matches(searchQuery: query) }.sorted {
+            let primary = $0.lastNameSortKey.localizedCaseInsensitiveCompare($1.lastNameSortKey)
+            if primary != .orderedSame { return primary == .orderedAscending }
+            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private func sectioned(_ contacts: [Contact]) -> [(String, [Contact])] {
+        Dictionary(grouping: contacts, by: \.sectionLetter).map { ($0.key, $0.value) }.sorted {
+            switch ($0.0, $1.0) {
+            case ("#", _): return false
+            case (_, "#"): return true
+            default: return $0.0 < $1.0
+            }
+        }
+    }
+
 }
