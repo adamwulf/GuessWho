@@ -228,9 +228,28 @@ final class FavoritesListViewController: UIViewController {
         }
         favoritesByStableID = byStableID
 
+        // A favorite's identity is its stableID, but the cell provider
+        // resolves the row's CONTENT (display name, "Unavailable" state)
+        // from `uuidToContact` at build time. When the item SET is
+        // unchanged but that resolved content changed — the cold-launch
+        // case where the map flips empty→populated, plus any later
+        // display-name edit — the diff is empty, so the data source never
+        // re-invokes the cell provider for rows already on screen and the
+        // stale "Unavailable" cell sticks. Explicitly reconfigure the
+        // items that already exist so they re-run the provider against the
+        // current map. Newly inserted items are guard-excluded: they're
+        // not yet in the data source's snapshot and the insert builds them
+        // fresh anyway (reconfiguring an absent item would crash).
+        let existingIDs = Set(dataSource.snapshot().itemIdentifiers)
+
         var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
         snapshot.appendSections([0])
-        snapshot.appendItems(items.map { $0.stableID }, toSection: 0)
+        let itemIDs = items.map { $0.stableID }
+        snapshot.appendItems(itemIDs, toSection: 0)
+        let reconfigureIDs = itemIDs.filter { existingIDs.contains($0) }
+        if !reconfigureIDs.isEmpty {
+            snapshot.reconfigureItems(reconfigureIDs)
+        }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         emptyLabel.isHidden = !items.isEmpty
