@@ -58,7 +58,57 @@ final class ContactsRepository {
         // — or a `do/catch` that flips the flag in both branches — so
         // the empty/error path still terminates the spinner.
         isLoading = false
+        postDidReload()
+    }
+
+    // MARK: - Incremental cache mutation
+
+    /// The single shared post that wakes the UIKit list controllers. Matches
+    /// the post `reload()` makes — all incremental mutators below funnel through
+    /// here so there is exactly one place that names the notification.
+    private func postDidReload() {
         NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
+    }
+
+    /// Re-read ONE contact from the store and reconcile it into the cache —
+    /// replace the existing entry (matched by `localID`), append if it is new,
+    /// or drop it if the store no longer has it (deleted between change events).
+    /// Does NOT post; the caller decides when so a batch of changes can land
+    /// under a single snapshot apply.
+    ///
+    /// Reads the STORE (not `contacts`) because the cache is stale for the
+    /// just-changed contact — this is the post-write read.
+    private func applyRefresh(localID: String) async {
+        let fresh = try? await service.fetchContactForEditing(localID: localID)
+        if let fresh {
+            if let index = contacts.firstIndex(where: { $0.localID == localID }) {
+                contacts[index] = fresh
+            } else {
+                contacts.append(fresh)
+            }
+        } else {
+            contacts.removeAll { $0.localID == localID }
+        }
+    }
+
+    /// Drop one contact from the cache (matched by `localID`). Pure in-memory,
+    /// no store I/O. Does NOT post; the caller decides when.
+    private func applyRemove(localID: String) {
+        contacts.removeAll { $0.localID == localID }
+    }
+
+    /// Refresh one contact from the store and notify list controllers. For our
+    /// own save of a known `localID` — re-reads ONE record, not all of them.
+    func refreshContact(localID: String) async {
+        await applyRefresh(localID: localID)
+        postDidReload()
+    }
+
+    /// Remove one contact from the cache and notify. For our own delete. No
+    /// store I/O.
+    func removeContact(localID: String) {
+        applyRemove(localID: localID)
+        postDidReload()
     }
 
     /// People (contactType == .person) matching `peopleSearch`, sorted

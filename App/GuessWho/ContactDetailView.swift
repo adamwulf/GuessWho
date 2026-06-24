@@ -422,7 +422,7 @@ struct ContactDetailView: View {
             // Reconcile runs first so it can re-stamp our x-guesswho:// URL
             // before any other read sees the post-save state.
             await performReconcile()
-            await repository.reload()
+            await repository.refreshContact(localID: localID)
             // Bypass the repository cache for the post-save read: on Catalyst,
             // enumerateContacts (which repository.reload uses) can return stale
             // data right after a CNSaveRequest.update, while unifiedContact
@@ -442,7 +442,7 @@ struct ContactDetailView: View {
             try await service.deleteContact(localID: localID)
             editModel = nil
             editMode = .inactive
-            await repository.reload()
+            repository.removeContact(localID: localID)
             await loadContact()
             if contact == nil {
                 dismiss()
@@ -454,7 +454,7 @@ struct ContactDetailView: View {
             if category == .recordDoesNotExist {
                 editModel = nil
                 editMode = .inactive
-                await repository.reload()
+                repository.removeContact(localID: localID)
                 await loadContact()
                 if contact == nil {
                     dismiss()
@@ -1131,12 +1131,14 @@ struct ContactDetailView: View {
             reconcileError = nil
             // SyncService.reconcile intentionally does not poke the
             // repository, but the trailing loadContact() below reads
-            // through the repository cache for speed. Reload first so the
-            // cache reflects the freshly-stamped GuessWho URL — otherwise
-            // a Case-A reconcile on first-open of a never-stamped contact
-            // leaves guessWhoUUID == nil in the UI until something else
-            // refreshes the cache.
-            await repository.reload()
+            // through the repository cache for speed. Refresh this one
+            // contact first so the cache reflects the freshly-stamped
+            // GuessWho URL — otherwise a Case-A reconcile on first-open of
+            // a never-stamped contact leaves guessWhoUUID == nil in the UI
+            // until something else refreshes the cache. refreshContact
+            // awaits the store re-read before returning, so the cache is
+            // current by the time loadContact() runs.
+            await repository.refreshContact(localID: localID)
             await loadContact()
         } catch {
             reconcileError = "\(error)"
