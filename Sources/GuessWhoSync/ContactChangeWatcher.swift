@@ -142,7 +142,12 @@ public final class ContactChangeWatcher: NSObject {
         } catch {
             // Auth / I-O failure reading history → tell the subscriber to do a
             // full reload; leave the cursor untouched so the next attempt
-            // retries from the same point.
+            // retries from the same point. The watcher has no UI-visible error
+            // channel (it is not the old @Observable repository), so leave an
+            // OS-level breadcrumb: without it, a transient "read failed but the
+            // recovery reload succeeded" is otherwise invisible. Developer-facing
+            // — internal vocabulary is fine in NSLog.
+            NSLog("[GuessWho] contact change read failed: %@", String(describing: error))
             postFullReload()
             return
         }
