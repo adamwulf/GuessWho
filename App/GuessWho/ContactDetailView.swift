@@ -959,7 +959,7 @@ struct ContactDetailView: View {
 
     private func refreshContactMap() async {
         var map: [String: Contact] = [:]
-        for contact in await service.fetchAll() {
+        for contact in repository.contacts {
             if let uuid = service.guessWhoUUID(in: contact) {
                 map[uuid] = contact
             }
@@ -1056,7 +1056,7 @@ struct ContactDetailView: View {
         } else if let cached = repository.contact(localID: localID) {
             loaded = cached
         } else {
-            loaded = await service.fetchAll().first { $0.localID == localID }
+            loaded = await service.fetch(localID: localID)
         }
         contact = loaded
         if let loaded {

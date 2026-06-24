@@ -484,6 +484,20 @@ final class SyncService {
         }
     }
 
+    /// Fetches one contact by localID without enumerating the whole store.
+    /// Returns nil when the contact does not exist or access is not granted.
+    /// Use instead of `fetchAll().first { $0.localID == ... }` — routes through
+    /// `unifiedContact(withIdentifier:)`, O(1) against the store.
+    func fetch(localID: String) async -> Contact? {
+        guard contactsAuthorization == .authorized else { return nil }
+        do {
+            return try await contactsAdapter.fetch(localID: localID)
+        } catch {
+            lastError = "fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     func sidecar(for contact: Contact) -> SidecarEnvelope? {
         guard let uuid = guessWhoUUID(in: contact) else { return nil }
         guard let sync else { return nil }
@@ -527,8 +541,9 @@ final class SyncService {
         // Reconcile finished without setting assignedUUID — Cases B/C/D may
         // stamp the on-disk contact without populating that field (e.g. dup
         // GuessWho URLs cleaned up on a contact whose in-memory Contact
-        // struct was stale). Re-fetch and read the freshly written UUID.
-        if let fresh = await fetchAll().first(where: { $0.localID == contact.localID }),
+        // struct was stale). Re-fetch the single record (post-write, so it
+        // must hit the store) and read the freshly written UUID.
+        if let fresh = try? await contactsAdapter.fetch(localID: contact.localID),
            let stamped = guessWhoUUID(in: fresh) {
             return stamped
         }
@@ -628,19 +643,6 @@ final class SyncService {
     func removeContactLink(id: UUID) throws {
         guard let sync else { throw SidecarUnavailableError() }
         try sync.removeLink(id: id)
-    }
-
-    /// Reverse of `guessWhoUUID(in:)`: finds the contact whose GuessWho URL
-    /// carries `uuid`. Returns nil if no current contact owns that UUID
-    /// (e.g. the contact was deleted from the address book).
-    func contact(forGuessWhoUUID uuid: String) async -> Contact? {
-        let target = uuid.lowercased()
-        for contact in await fetchAll() {
-            if let owned = guessWhoUUID(in: contact), owned == target {
-                return contact
-            }
-        }
-        return nil
     }
 
     // MARK: - Contact ↔ Event links

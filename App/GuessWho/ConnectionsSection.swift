@@ -156,6 +156,7 @@ struct ActivityRowLayout<Content: View>: View {
 
 struct AddLinkSheet: View {
     @Environment(SyncService.self) private var service
+    @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss
 
     let currentContactUUID: String
@@ -234,19 +235,19 @@ struct AddLinkSheet: View {
     private struct EligibleContact {
         let contact: Contact
         let localID: String
-        let existingUUID: String?
     }
 
     private func loadEligibleContacts() async -> [EligibleContact] {
         var result: [EligibleContact] = []
         let target = currentContactUUID.lowercased()
-        for contact in await service.fetchAll() {
-            let existing = service.guessWhoUUID(in: contact)
-            if let existing, existing == target { continue }
+        for contact in repository.contacts {
+            // Skip the contact we're linking from; everything else is eligible.
+            // The link target's UUID is resolved on save via reconcileIfNeeded,
+            // so we don't need to carry a precomputed UUID on each row.
+            if let existing = service.guessWhoUUID(in: contact), existing == target { continue }
             result.append(EligibleContact(
                 contact: contact,
-                localID: contact.localID,
-                existingUUID: existing
+                localID: contact.localID
             ))
         }
         return result.sorted { lhs, rhs in
@@ -264,18 +265,11 @@ struct AddLinkSheet: View {
         guard let localID = selectedLocalID,
               let entry = eligible.first(where: { $0.localID == localID }) else { return }
         do {
-            let toUUID: String
-            if let existing = entry.existingUUID {
-                toUUID = existing
-            } else {
-                _ = try await service.reconcile(localID: localID)
-                guard let fresh = await service.fetchAll().first(where: { $0.localID == localID }),
-                      let assigned = service.guessWhoUUID(in: fresh) else {
-                    saveError = "Could not assign an identity to this contact."
-                    return
-                }
-                toUUID = assigned
-            }
+            // reconcileIfNeeded short-circuits on an already-stamped contact
+            // and otherwise reconciles + re-reads the freshly stamped UUID via
+            // a single-record fetch — same result the manual reconcile +
+            // fetchAll().first dance produced, without the full enumeration.
+            let toUUID = try await service.reconcileIfNeeded(contact: entry.contact)
             onSave(toUUID, noteText)
             dismiss()
         } catch {
