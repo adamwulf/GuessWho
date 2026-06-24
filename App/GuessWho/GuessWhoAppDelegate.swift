@@ -120,21 +120,4 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
 
         return true
     }
-
-    func application(
-        _ application: UIApplication,
-        configurationForConnecting connectingSceneSession: UISceneSession,
-        options: UIScene.ConnectionOptions
-    ) -> UISceneConfiguration {
-        // Hand-built config so we don't need a matching entry under
-        // UIApplicationSceneManifest.UISceneConfigurations — the
-        // Info.plist entry would otherwise need to repeat the same
-        // delegate class name and we'd own two sources of truth.
-        let configuration = UISceneConfiguration(
-            name: "Default",
-            sessionRole: connectingSceneSession.role
-        )
-        configuration.delegateClass = GuessWhoSceneDelegate.self
-        return configuration
-    }
 }
