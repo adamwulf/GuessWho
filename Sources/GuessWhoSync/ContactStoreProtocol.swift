@@ -18,4 +18,26 @@ public protocol ContactStoreProtocol: Actor {
     // - Contact exists, bytes available → returns the bytes
     func loadImageData(localID: String) async throws -> Data?
     func loadThumbnailImageData(localID: String) async throws -> Data?
+
+    // Groups — mirror Contacts.app groups. The sidecar does not mirror group
+    // metadata; these methods read/write Contacts directly. Group identity
+    // is the `localID` issued by Contacts at create time.
+    //
+    // Lookup-by-id throws `ContactStoreError.groupNotFound` when the id does
+    // not exist; `fetchGroup` returns `nil` (mirrors `fetch(localID:)`).
+    // Membership mutation throws `contactNotFound` / `groupNotFound` as
+    // appropriate. `InMemoryContactStore` treats add-already-member and
+    // remove-non-member as no-ops; `CNContactStoreAdapter` forwards directly
+    // to `CNSaveRequest.addMember` / `removeMember`, whose Apple-documented
+    // behavior on those edges is unspecified — callers that need a strict
+    // contract should query membership first.
+    func fetchAllGroups() async throws -> [ContactGroup]
+    func fetchGroup(localID: String) async throws -> ContactGroup?
+    func createGroup(name: String) async throws -> ContactGroup
+    func renameGroup(localID: String, to name: String) async throws
+    func deleteGroup(localID: String) async throws
+    func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact]
+    func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup]
+    func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws
+    func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws
 }
