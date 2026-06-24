@@ -71,6 +71,8 @@ public final class ContactsRepository: NSObject {
     public var peopleSections: [(String, [Contact])] { sectioned(people) }
     public var organizationsSections: [(String, [Contact])] { sectioned(organizations) }
 
+    /// Transitional compatibility lookup. Duplicate display names collapse to
+    /// the last cached contact; new callers should use `contacts(named:)`.
     public func lookupByDisplayName() -> [String: Contact] {
         var map: [String: Contact] = [:]
         for contact in contacts {
