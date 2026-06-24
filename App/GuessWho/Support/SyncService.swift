@@ -492,6 +492,13 @@ final class SyncService {
         }
     }
 
+    /// Builds the package-owned contact read repository over the same adapter
+    /// used by this service for authorization and writes. UI clients should
+    /// retain and read this repository instead of fetching Contacts directly.
+    func makeContactsRepository() -> ContactsRepository {
+        ContactsRepository(contacts: contactsAdapter)
+    }
+
     /// Fetches one contact by localID without enumerating the whole store.
     /// Returns nil when the contact does not exist or access is not granted.
     /// Use instead of `fetchAll().first { $0.localID == ... }` — routes through

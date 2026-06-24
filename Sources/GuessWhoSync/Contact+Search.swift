@@ -1,6 +1,32 @@
 import Foundation
 
 extension Contact {
+    /// Stable display label shared by package queries and app presentation.
+    public var displayName: String {
+        let personName = "\(givenName) \(familyName)".trimmingCharacters(in: .whitespaces)
+        if !personName.isEmpty { return personName }
+        if !organizationName.isEmpty { return organizationName }
+        if !nickname.isEmpty { return nickname }
+        return "(Unnamed)"
+    }
+
+    public var lastNameSortKey: String {
+        for candidate in [familyName, organizationName, givenName, nickname] {
+            let trimmed = candidate.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return ""
+    }
+
+    public var sectionLetter: String {
+        guard let scalar = lastNameSortKey.unicodeScalars.first(where: { !CharacterSet.whitespaces.contains($0) }) else {
+            return "#"
+        }
+        let folded = String(scalar).folding(options: .diacriticInsensitive, locale: .current).uppercased()
+        guard let first = folded.first, ("A"..."Z").contains(first) else { return "#" }
+        return String(first)
+    }
+
     /// Case-insensitive substring match across every field a user would
     /// reasonably search to find a contact: every name component, the
     /// organization/department/job, and the raw values of every email,

@@ -19,6 +19,53 @@ If you find yourself storing a `localID`, using it as a dictionary key for
 GuessWho data, or comparing two contacts by `localID`, that is a bug. Use the
 GuessWho ID.
 
+### Package-caller contract
+
+The package's contact identity is the canonical lowercase UUID carried in the
+contact's `guesswho://contact/<uuid>` URL. When an API requires a contact
+identity, callers must provide that GuessWho UUID—normally wrapped in
+`SidecarKey(kind: .contact, id: uuid)`—and must retain that UUID for navigation,
+favorites, sidecar data, and any other durable reference.
+
+`Contact.localID` exists because the Contacts adapter must use
+`CNContact.identifier` to perform an immediate framework operation. It is not
+part of the package's public identity contract, even though it is currently
+visible on the transport `Contact` struct during the migration to the
+package-owned repository API. Package consumers must treat it as opaque and
+must not store it, compare it, use it as a collection key, or pass it between
+application layers.
+
+## Three distinct concepts: identity, relationships, and links
+
+These terms deliberately describe different mechanisms. Do not use one as a
+substitute for another.
+
+### Contact identity
+
+The **GuessWho ID** is the durable identity of a contact. It is written into a
+Contacts URL field, syncs with the contact, and is reconciled by GuessWhoSync
+when linked cards introduce zero, malformed, or competing IDs. It is the only
+identity callers use for a contact.
+
+### Contacts relationships
+
+A **Contacts relationship** is an Apple `CNContactRelation` value, such as a
+field labelled “spouse” whose value is “Chris Smith.” Its target is only a
+name string—there is no contact identifier in the Contacts data. GuessWho may
+perform a best-effort lookup against cached contacts to make that relation
+actionable in the UI, but the lookup can have zero, one, or several matches.
+It does not create, imply, or persist a GuessWho-ID relationship.
+
+### Sidecar contact links
+
+A **sidecar contact link** is a package `Link` record joining two endpoints of
+the form `SidecarKey(kind: .contact, id: <GuessWho UUID>)`. It is a durable,
+specific hard link between two identified contacts. It is unrelated to
+`CNContactRelation` name matching. If identity reconciliation collapses two
+GuessWho IDs on one unified contact, GuessWhoSync rewrites affected sidecar
+link endpoints from the losing ID to the canonical winning ID; it never rewrites
+or interprets name-only Contacts relationships as hard links.
+
 ## The two identifiers
 
 | | **GuessWho ID** | **localID** |
