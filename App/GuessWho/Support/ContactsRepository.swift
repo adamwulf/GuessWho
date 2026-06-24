@@ -22,7 +22,7 @@ extension Notification.Name {
 /// fetches with `CNContact.predicateForContacts(matchingName:)`.
 @MainActor
 @Observable
-final class ContactsRepository {
+final class ContactsRepository: NSObject {
     private let service: SyncService
 
     private(set) var contacts: [Contact] = []
@@ -36,23 +36,22 @@ final class ContactsRepository {
     /// Per-tab search query for Organizations.
     var organizationsSearch: String = ""
 
-    /// Guards `applyExternalChanges()` against overlapping invocations. Two
-    /// `.CNContactStoreDidChange` notifications can land back-to-back; without
-    /// this, the second could interleave a half-applied delta. `@MainActor`
-    /// makes the check-and-set atomic.
-    private var isApplyingExternalChanges = false
-
-    /// Set when a `.CNContactStoreDidChange` arrives while a run is already in
-    /// flight. Without it, a write that commits AFTER the in-flight run's
-    /// `contactChanges(since:)` read but whose notification lands DURING the
-    /// apply would be stranded until the next unrelated store change — because
-    /// the cursor advances past it. Draining this flag in the `defer` re-runs
-    /// once more to pick up exactly that window. Coalesces multiple rejected
-    /// notifications into a single re-run.
-    private var externalChangesPending = false
-
     init(service: SyncService) {
         self.service = service
+        super.init()
+        // Dumb subscriber: the package's `ContactChangeWatcher` owns the
+        // `.CNContactStoreDidChange` observer, the cursor, and the coalescing,
+        // and posts `.guessWhoContactsDidChange` only when there is real work.
+        // The selector-based registration is held weakly by NotificationCenter
+        // and auto-cleaned when this repository is released (this repo lives for
+        // the whole process, so that never actually happens) — no `deinit`,
+        // no token bookkeeping.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(contactsDidChange(_:)),
+            name: .guessWhoContactsDidChange,
+            object: nil
+        )
     }
 
     func reload() async {
@@ -126,68 +125,33 @@ final class ContactsRepository {
         postDidReload()
     }
 
-    /// Apply the external contact-store delta since our last cursor — the
-    /// response to `.CNContactStoreDidChange`. Our own writes are tagged with a
-    /// `transactionAuthor` and excluded by the adapter, so this only sees edits
-    /// made in Contacts.app (or another app/device). Re-reads only the changed
-    /// records, not all ~1500.
-    ///
-    /// Contract (see plans/contact-reload-optimization.md):
-    /// - On `requiresFullReload` (first run / DropEverything / throw) → full
-    ///   `reload()`, then persist the fresh baseline cursor.
-    /// - Otherwise apply `changes` IN ORDER (a delete-then-readd of one localID
-    ///   must end present), under a SINGLE batched post — no per-change snapshot
-    ///   storm. An empty delta posts NOTHING (a self-write still fires
-    ///   `.CNContactStoreDidChange`, but its delta is empty after author
-    ///   exclusion) while still advancing the cursor.
-    /// - Persist the cursor ONLY after a successful apply, on BOTH branches, so a
-    ///   crash mid-apply re-processes rather than skips.
-    ///
-    /// Overlap handling: if a notification arrives mid-run, `externalChangesPending`
-    /// is set and drained by a single extra pass after the current one finishes,
-    /// so a write whose notification lands during the apply is never stranded.
-    func applyExternalChanges() async {
-        guard !isApplyingExternalChanges else {
-            // A run is in flight. Mark that another pass is needed rather than
-            // dropping this notification — the in-flight run advances the cursor,
-            // so without a re-run a write that committed after its history read
-            // would be stranded until the next unrelated store change.
-            externalChangesPending = true
-            return
-        }
-        isApplyingExternalChanges = true
-        defer { isApplyingExternalChanges = false }
+    // MARK: - External change subscription
 
-        // Run at least once; re-run while a notification arrived mid-apply.
-        repeat {
-            externalChangesPending = false
-            await applyExternalChangesOnce()
-        } while externalChangesPending
+    /// Handles the package's `.guessWhoContactsDidChange`. The watcher only posts
+    /// when there is real work — an empty self-write delta is swallowed there and
+    /// never reaches us — so every post is either an incremental delta to apply
+    /// or a full-reload signal. `nonisolated` because the selector API delivers on
+    /// the posting thread; we read the Sendable `userInfo` payload, then hop to
+    /// the main actor to apply.
+    @objc
+    private nonisolated func contactsDidChange(_ note: Notification) {
+        let changeSet = note.userInfo?[GuessWhoContactsDidChangeKey.changeSet] as? ContactChangeSet
+        let requiresFullReload = note.userInfo?[GuessWhoContactsDidChangeKey.requiresFullReload] as? Bool ?? false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if requiresFullReload {
+                await self.reload()
+            } else if let changeSet {
+                await self.applyChangeSet(changeSet)
+            }
+        }
     }
 
-    private func applyExternalChangesOnce() async {
-        let token = service.loadContactCursor()
-        let changeSet: ContactChangeSet
-        do {
-            changeSet = try await service.contactChanges(since: token)
-        } catch {
-            // Auth / I-O failure reading history → safest recovery is a full
-            // reload; leave the cursor untouched so the next attempt retries
-            // from the same point.
-            lastError = "contact change read failed: \(error.localizedDescription)"
-            await reload()
-            return
-        }
-
-        if changeSet.requiresFullReload {
-            await reload()
-            service.saveContactCursor(changeSet.newToken)
-            return
-        }
-
-        // Apply in history order so delete-then-readd of the same localID ends
-        // with the contact present. applyRefresh/applyRemove do NOT post — we
-        // post once at the end so the diffable lists apply a single snapshot.
+    /// Apply an incremental external delta into the cache. Applies `changes` IN
+    /// ORDER (a delete-then-readd of one localID must end present), under a
+    /// SINGLE batched post — `applyRefresh`/`applyRemove` do NOT post, so the
+    /// diffable lists apply one snapshot. Posts only when something changed.
+    private func applyChangeSet(_ changeSet: ContactChangeSet) async {
         for change in changeSet.changes {
             switch change {
             case .updated(let localID):
@@ -199,9 +163,6 @@ final class ContactsRepository {
         if !changeSet.changes.isEmpty {
             postDidReload()
         }
-        // Advance the cursor even on an empty delta — the history position moved
-        // (e.g. our own excluded writes), so the next read should start after it.
-        service.saveContactCursor(changeSet.newToken)
     }
 
     /// People (contactType == .person) matching `peopleSearch`, sorted
