@@ -1,13 +1,13 @@
 import UIKit
-import Contacts
 import EventKit
 import GuessWhoSync
 
 /// UIKit Favorites list for the Catalyst 3-column shell. Single-section
 /// diffable data source keyed on `Favorite.stableID`. Mirrors the
 /// SwiftUI `FavoritesListView`: swipe-to-unfavorite, drag-to-reorder,
-/// and an async contact-uuid map rebuilt on `.CNContactStoreDidChange`
-/// and scene activation.
+/// and an async contact-uuid map rebuilt on `.guessWhoContactsDidChange`
+/// (the package's real-external-contact-change signal) and scene
+/// activation.
 final class FavoritesListViewController: UIViewController {
     /// Selection callbacks — SceneDelegate routes each kind to the
     /// matching detail view (contact → ContactDetailView, event →
@@ -157,7 +157,7 @@ final class FavoritesListViewController: UIViewController {
         }
 
         contactsChangedObserver = center.addObserver(
-            forName: .CNContactStoreDidChange,
+            forName: .guessWhoContactsDidChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
