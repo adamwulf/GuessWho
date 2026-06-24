@@ -40,7 +40,9 @@ extension ContactsRepository {
         let needle = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return [] }
         return contacts.flatMap { other in
-            guard other.localID != contact.localID else { return [] }
+            guard other.localID != contact.localID else {
+                return [(contact: Contact, label: String)]()
+            }
             return other.contactRelations.compactMap { relation in
                 let name = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 return name == needle ? (contact: other, label: relation.label) : nil
