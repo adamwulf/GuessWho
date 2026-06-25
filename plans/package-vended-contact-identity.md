@@ -11,9 +11,12 @@
   `fad00f1`). `init` no longer reads system status; the properties default to
   `.notDetermined` and the launch-time `await request…IfNeeded()` populates them
   (commit `ff18113`).
-- **Stage 1.5 (O(1) contact index in the repository): NOT STARTED** — makes
-  `contact(id:)` an O(1) synchronous lookup and lets Stages 3–4 delete the five
-  hand-rolled UI-layer contact maps.
+- **Stage 1.5 (O(1) contact index in the repository): DONE** (`557b8d7`,
+  `f4b4031`). `contact(id:)`/`contact(localID:)`/`contactIDs(matchingEmail:)` are
+  O(1) synchronous reads over private `contactsByEffectiveID`/`contactsByLocalID`/
+  `contactsByEmail` indexes; all `contacts` mutations funnel through one
+  `setContacts(_:)`; the delta path rebuilds once per batch. Lets Stages 3–4
+  delete the five hand-rolled UI-layer contact maps.
 - **Stage 3 (list VCs), Stage 4 (navigation/detail/connections/favorites),
   Stage 5 (visibility tighten): NOT STARTED.**
 
@@ -256,7 +259,7 @@ Each stage ends green (`swift test` + Catalyst build) before the next begins.
 Acceptance: package vends `ContactID`-addressed reads; `localID` is not public;
 no query enumerates `CNContactStore` (cache reads only).
 
-### Stage 1.5 — O(1) contact index inside the repository — NOT STARTED
+### Stage 1.5 — O(1) contact index inside the repository — DONE (`557b8d7`, `f4b4031`)
 
 **Goal:** make `contact(id:)` (and `contact(localID:)`) O(1) so the app can get
 a `Contact` back from a `ContactID` immediately, and so the five hand-rolled
