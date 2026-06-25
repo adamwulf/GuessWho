@@ -44,7 +44,8 @@
   PLANNED, reviewed twice, ready to implement.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6c (`prepareContactForDetail`) → 6d (migrate app
-  consumers) → 6e (audit). Concurrency: accept double-mint, Case-D collapses it.
+  consumers) → 6e (audit). Concurrency: accept double-mint (a practical non-event;
+  single-device = harmless orphan, multi-device = Case-D heals).
   Favoriting an unreconciled contact becomes allowed (package reconciles then
   saves). Debug reconcile/sidecar readout dropped (no new retained package state).
 - **Stage 7 (EventID + event-identity boundary): DEFERRED** — the events analogue
@@ -531,8 +532,9 @@ Stage 6 is large — split it so each piece is independently buildable, testable
 and reviewable. The Design / call-surface / tests sections below are the detail;
 this is the sequencing:
 
-- **6a — Foundation (package only).** Wire the `GuessWhoSync` engine into
-  `ContactsRepository` (Design step 0) and add the internal resolve-or-mint /
+- **6a — Foundation (package only).** Wire the `GuessWhoSync` engine AND the
+  standalone `FavoritesStore` into `ContactsRepository` (Design step 0, both
+  `Optional`) and add the internal resolve-or-mint /
   reconcile-on-write primitive (Design step 2, incl. the accept-double-mint /
   Case-D-collapses-it concurrency stance). No public API change, no app change yet. Flip
   `reconcileContactIdentity` to `internal` here, keeping the existing direct-call
@@ -549,14 +551,14 @@ this is the sequencing:
   `SyncService` contact-sidecar method: `NotesStore` → `ContactLinksStore` →
   contact-favorite path → `ContactDetailView` → `ConnectionsSection` /
   `EventDetailView` (drop their `reconcileIfNeeded`). Depends on 6b (+6c for the
-  detail view). The per-consumer pieces are largely independent once the shared
-  deletions are staged — can parallelize like Stage 4 did. CAVEAT: the couplings
-  are bigger than "one store at a time" implies — changing `NotesStore`/
-  `ContactLinksStore` constructors (they currently take a `contactUUID: String`)
-  drags `ContactDetailView.reload()` (which builds them), and `ConnectionsSection`'s
-  `onSave` callback must change to carry a `ContactID` not a UUID string. Treat
-  each store + the views that construct it as one migration unit, not independent
-  files.
+  detail view). CAVEAT — less parallelizable than Stage 4: `NotesStore`/
+  `ContactLinksStore` take `init(service:contactUUID:String)`, and BOTH are built
+  by `ContactDetailView.reload()`, so changing either constructor drags the detail
+  view; `ConnectionsSection`'s `onSave` callback signature must change to carry a
+  `ContactID`. `ContactDetailView` is the shared serialization point — treat each
+  store + the detail view as ONE migration unit. Realistically 6d is mostly serial
+  (the detail view touches everything); only the leaf views (Connections, Event)
+  parallelize once the detail view lands.
 - **6e — Tighten + audit.** Final identity audit with the corrected acceptance
   grep (below), confirm `SyncService` holds no contact-identity translation,
   remove any now-dead wrappers.
@@ -643,12 +645,20 @@ sees it.
    real architecture (a new dependency on the repository), not a relocation — it
    must land before any reconcile-on-write / sidecar method can exist on the
    repository. Package-only; no app behavior change yet.
-   THE ENGINE IS OPTIONAL: `SyncService.sync` is `GuessWhoSync?` — nil in the
-   `.unavailable` storage state (no writable sidecar root). So the repository takes
-   `GuessWhoSync?`, and EVERY new sidecar method must graceful-degrade when it's
-   nil: reads return empty/false, writes no-op (or surface the existing
-   `SidecarUnavailableError` path), `prepareContactForDetail` does nothing. Mirror
-   how `SyncService` already guards its sidecar calls on `guard let sync`.
+   ALSO WIRE FAVORITES: the contact-favorite path needs the `FavoritesStore`, which
+   is STANDALONE (`FavoritesStore(root: URL)`, not on the engine) and held
+   SEPARATELY by `SyncService`. So Step 0 injects BOTH the engine AND the
+   favorites store into `ContactsRepository` (else `repository.toggleFavorite(_:)`/
+   `isFavorite(_:)` in step 6 have nothing to call). Both are `Optional` and nil in
+   `.unavailable`.
+   THE DEPENDENCIES ARE OPTIONAL: `SyncService.sync` is `GuessWhoSync?` and
+   `favoritesStore` is `FavoritesStore?` — nil in the `.unavailable` storage state
+   (no writable sidecar root). So the repository takes `GuessWhoSync?` +
+   `FavoritesStore?`, and EVERY new method must degrade when nil: READS return
+   empty/false; WRITES (notes/links/favorite-toggle) THROW the existing
+   `SidecarUnavailableError` (match `SyncService:722`'s behavior — do NOT silently
+   no-op a write, the caller expects a thrown error); `prepareContactForDetail`
+   does nothing. Mirror how `SyncService` already guards on `guard let sync`.
 
 1. **Repository vends a `ContactID`-keyed contact API (plain verbs, no "sidecar"
    in the name).** On `ContactsRepository`, add the contact operations keyed on
@@ -677,21 +687,29 @@ sees it.
    trigger fires through the public write API; do NOT replace the direct tests
    with write-routed ones (that would lose Case-D coverage).
 
-   CONCURRENCY (decision: ACCEPT double-mint; Case-D collapses it — do NOT try to
-   lock across the await). Two truly-concurrent writes to the SAME unreconciled
+   CONCURRENCY (decision: ACCEPT double-mint as a practical non-event — do NOT try
+   to lock across the await). Two truly-concurrent writes to the SAME unreconciled
    `ContactID` could each mint a UUID before the other's write lands, because
    resolve-or-mint must `await contacts.fetch` before minting and the orchestrator's
    per-key locks (`PerKeyLockTable.withLock`, `withCaseDLocks`) are SYNCHRONOUS
-   `NSLock`s — you CANNOT hold one across that `await`, so "hold the per-key lock
-   across read-check-reconcile-write" is impossible. Rather than add async
-   serialization machinery (a per-contact actor / in-flight `Task` dedup), we
-   ACCEPT the rare double-mint: it requires two genuinely-simultaneous writes to a
-   never-reconciled contact, and the system's existing **Case-D reconciliation**
-   is exactly the mechanism that collapses a contact carrying multiple GuessWho
-   UUIDs onto one canonical ID (and rewrites any link endpoints). So a double-mint
-   is self-healing by design. The plan makes NO "no double-mint" guarantee; it
-   guarantees convergence via Case-D. (A future phase may add async serialization
-   if double-mint churn ever proves measurable; not now.)
+   `NSLock`s — you CANNOT hold one across that `await`. Why accept it: a double-mint
+   needs a NEVER-reconciled contact AND two genuinely-simultaneous writes from
+   different surfaces — effectively only Catalyst multi-window; the detail-open
+   reconcile is latched (`didAutoReconcile`) and the link reconcile short-circuits
+   once a URL exists, so there is no deterministic codepath that produces it.
+   ⚠️ ACCURATE OUTCOME (do NOT claim "Case-D self-heals it" unconditionally — that
+   is FALSE single-device): `CNContactStoreAdapter.apply()` replaces a contact's
+   `urlAddresses` WHOLESALE (`CNContactStoreAdapter.swift:593`), so on ONE device
+   the second write CLOBBERS the first's URL (last-write-wins) → one minted UUID
+   wins, the other's sidecar is ORPHANED (not two co-resident URLs). Case-D only
+   heals the MULTI-DEVICE case, where iCloud merges BOTH URLs onto the card so the
+   contact genuinely carries two GuessWho UUIDs for Case-D to collapse. The
+   orphan-recovery sweep `reconcileContactIdentities()` currently has NO app caller
+   (no launch/foreground sweep), so a single-device orphan is not auto-cleaned —
+   but it is harmless (a stray unreferenced sidecar file) and the race is a
+   practical non-event. The plan makes NO "no double-mint" guarantee. (A future
+   phase may add async serialization, or wire a periodic orphan sweep, if it ever
+   proves measurable; not now.)
 
 3. **Reads do NOT reconcile; writes DO.** READS — `notes(for:)` / `links(for:)` /
    `isFavorite(_:)` — return empty/false when `id.guessWhoID` is nil (an
@@ -700,13 +718,16 @@ sees it.
    reconcile firing ONLY on write and satisfies the "no silent write-sweep on read"
    Non-goal for free.
 
-   FAVORITING AN UNRECONCILED CONTACT IS ALLOWED (Adam — intended behavior CHANGE,
-   not a silent one). Today the favorite button is gated
-   `.disabled(contactUUID == nil)`, so you cannot favorite a never-touched contact.
-   Under reconcile-on-write that gate is REMOVED: `toggleFavorite(_:)` is a write,
-   so the package reconciles (mints the UUID) THEN saves the favorite, transparent
-   to the caller. The app always allows favoriting; the package handles identity.
-   Call this out as a deliberate UX improvement in the 6d commit.
+   WRITING TO AN UNRECONCILED CONTACT IS ALLOWED (Adam — intended behavior CHANGE,
+   not silent). Today THREE detail-view actions are gated `.disabled(contactUUID
+   == nil)` so you can't act on a never-touched contact: the FAVORITE button, "Link
+   Contact" (`AddLinkSheet`), and "Link Event" (`EventLinkSheet`). All three are
+   WRITES, so reconcile-on-write mints for them. REMOVE all three gates:
+   `toggleFavorite(_:)` / `addLink(from:to:)` / `addEventLink(contactID:)` each
+   reconcile (mint the UUID) THEN write, transparent to the caller. Re-key the
+   `AddLinkSheet`/`EventLinkSheet` construction (which currently takes the contact
+   UUID string) to take a `ContactID`. Call this out as a deliberate UX improvement
+   in the 6d commit.
 
 4. **Detail-open reconcile stays — moved behind a package call (decision A).**
    `ContactDetailView.performReconcile()` exists so OPENING a never-touched
@@ -714,11 +735,19 @@ sees it.
    with no write. This is a legitimate REPAIR trigger that should not wait for a
    write. Replace `performReconcile()` + `service.reconcile(localID:)` with ONE
    opaque package call — `repository.prepareContactForDetail(_: ContactID) async`
-   — that runs the same reconcile internally and refreshes the cache. The app
-   calls it blindly on load; it never sees `localID`, the report, or the word
-   reconcile (except the debug section, below). This preserves today's
-   open-without-writing repair behavior; if instead you want "ONLY writes
-   reconcile," dropping this call is the alternative — decision A picks KEEP.
+   — that runs the same reconcile internally and refreshes the repository cache.
+   The app calls it blindly on load; it never sees `localID`, a report, or the word
+   reconcile. This preserves today's open-without-writing repair behavior; if
+   instead you want "ONLY writes reconcile," dropping this call is the alternative —
+   decision A picks KEEP.
+   SEQUENCING: today `performReconcile()` does reconcile → `refreshContact` →
+   `loadContact`. `prepareContactForDetail` covers the first two (reconcile +
+   cache refresh); the view STILL runs its own `loadContact()` afterward to pull
+   the now-canonical record into its `@State`. Make the call `await`-then-reload so
+   the view doesn't render a pre-reconcile snapshot. A reconcile that changes the
+   effective identity means the view's nav `ContactID` (`id`) may no longer resolve
+   — re-derive from the loaded contact (as Stage 4/5 already do via
+   `resolvedLocalID`), or show the non-crashing unavailable state.
 
 5. **Package owns the post-write cache update (decision B), for SIDECAR writes.**
    Today the sidecar write paths deliberately do NOT poke the repository
@@ -807,13 +836,31 @@ violations):
   the word `reconcile` appearing in CODE COMMENTS (e.g. `ContactsListViewController`/
   `OrganizationsListViewController`/`ContactEditView` comments that merely mention
   reconciliation) — grep for `reconcile` as an IDENTIFIER/call, not in comments;
-- `guessWhoID`/`localID` appear ONLY as: the sanctioned repository accessors
-  (`contact(guessWhoID:)`, `guessWhoID(in:)`), the blessed boundary tokens
-  (`boundaryLocalID`/`resolvedLocalID` threaded into package calls), the empty
-  new-contact seed (`localID: ""`), and the debug-section display — enumerate
-  these as the allowed set and grep that nothing else matches;
+- `guessWhoID`/`localID` appear ONLY as the enumerated allowed set; grep that
+  nothing else matches:
+  - `guessWhoID(in:)` (the opened contact's own UUID, Stage 5);
+  - `contact(guessWhoID:)` ONLY at the surviving FAVORITE-resolution sites
+    (`FavoritesListViewController` cell-provider + selection). The
+    LINK-ENDPOINT-resolution uses of `contact(guessWhoID:)` (`ContactDetailView`'s
+    `otherContact`, `ConnectionsSection`, `EventDetailView`'s linked-contact tap)
+    MUST move behind the repository link API and are DEFECTS if they survive — do
+    NOT bless all `contact(guessWhoID:)` calls or the grep hides that regression;
+  - the blessed boundary tokens (`boundaryLocalID`/`resolvedLocalID`,
+    `model.edited.localID`/`saveLocalID`, the `lookupLocalID` load token) threaded
+    into package/SyncService calls;
+  - the `SyncService` contact-LIFECYCLE `localID:` params that survive by design
+    (`fetch`/`fetchContactForEditing`/`deleteContact`/`reconcileIfNeeded`-removal aside);
+  - the empty new-contact seed (`localID: ""`);
+  - the debug-section display (incl. `SidecarKey.guessWhoContactURLPrefix` used to
+    render the debug uuid row);
 - `reconcileContactIdentity` is `internal` to the package, with its EXISTING
   direct-call tests kept AND new write-routed trigger tests added;
+- the list VCs' `effectiveID` snapshot DE-DUPE guard
+  (`ContactsListViewController`/`OrganizationsListViewController`, before
+  `appendItems`) is PRESERVED — it is load-bearing: a Stage-6 reconcile can
+  momentarily put two contacts under the same `effectiveID`, and that guard is the
+  only thing keeping `appendItems` from trapping (the one crash risk). A Stage-6
+  snapshot re-key must not remove it;
 - `SyncService` contains no contact-sidecar or contact-identity-translation
   method (favorites' shared `FavoriteKind` surface may remain — see step 6);
 - opening a never-written contact still stamps/repairs its identity; writing a
