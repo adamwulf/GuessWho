@@ -41,7 +41,7 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  PLANNED, reviewed three times, ready to implement.** Split into sub-phases 6a
+  IN PROGRESS — 6a DONE (`7ddd05e`, `0476402`).** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6c (`prepareContactForDetail`) → 6d (migrate app
   consumers) → 6e (audit). 6a wires the engine + favorites store into the
@@ -533,7 +533,8 @@ Stage 6 is large — split it so each piece is independently buildable, testable
 and reviewable. The Design / call-surface / tests sections below are the detail;
 this is the sequencing:
 
-- **6a — Foundation (package only).** Wire the `GuessWhoSync` engine AND the
+- **6a — Foundation (package only) — DONE (`7ddd05e`, `0476402`).** Wire the
+  `GuessWhoSync` engine AND the
   standalone `FavoritesStore` into `ContactsRepository` (Design step 0, both
   `Optional`) and add the internal resolve-or-mint /
   reconcile-on-write primitive (Design step 2, incl. the accept-double-mint /
