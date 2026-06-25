@@ -311,23 +311,19 @@ final class SyncService {
         }
     }
 
-    /// Silent refresh for every event linked to `contactUUID`. Uses the same
-    /// debounce window as `refreshEvent`. Initial-load-only pattern — callers
-    /// invoke this once when the contact loads, not on every redraw.
-    func refreshLinkedEvents(forContactUUID contactUUID: String) {
-        guard let sync else { return }
-        let endpoint = SidecarKey(kind: .contact, id: contactUUID)
-        let links: [Link]
-        do {
-            links = try sync.links(at: endpoint).filter { $0.deletedAt == nil }
-        } catch {
-            lastError = "refresh linked events failed: \(error.localizedDescription)"
-            return
-        }
-        for link in links {
-            let other = Self.otherEndpoint(of: link, from: endpoint)
-            guard other.kind == .event else { continue }
-            refreshEvent(uuid: other.id)
+    /// Silent refresh of every event sidecar in `eventUUIDs`. Uses the same
+    /// per-event debounce window as `refreshEvent`. Initial-load-only pattern —
+    /// callers invoke this once when a contact loads, not on every redraw.
+    ///
+    /// The contact endpoint is resolved by the repository
+    /// (`ContactsRepository.linkedEventUUIDs(for:)`) so the bare event UUIDs
+    /// arrive pre-resolved here — SyncService no longer builds a `.contact`
+    /// `SidecarKey` to walk the links. This is an event-cache concern that stays
+    /// on SyncService until the deferred event-identity migration.
+    func refreshLinkedEvents(eventUUIDs: [String]) {
+        guard sync != nil else { return }
+        for uuid in eventUUIDs {
+            refreshEvent(uuid: uuid)
         }
     }
 
@@ -489,63 +485,16 @@ final class SyncService {
         sync?.startContactChangeWatcher()
     }
 
-    func sidecar(for contact: Contact) -> SidecarEnvelope? {
-        guard let uuid = guessWhoUUID(in: contact) else { return nil }
-        guard let sync else { return nil }
-        do {
-            return try sync.sidecar(at: SidecarKey(kind: .contact, id: uuid))
-        } catch {
-            lastError = "sidecar read failed: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    /// SyncService-internal: the GuessWho UUID stamped on `contact`, or nil if it
-    /// carries no `guesswho://` URL. `private` — the VIEW reads the opened
-    /// contact's UUID through `ContactsRepository.guessWhoID(in:)` (the package's
-    /// identity model); the only remaining callers are this file's own sidecar /
-    /// reconcile seams (`sidecar(for:)`, `reconcileIfNeeded(contact:)`), which run
-    /// inside SyncService where holding a repository isn't available.
-    private func guessWhoUUID(in contact: Contact) -> String? {
-        for url in contact.urlAddresses {
-            if let uuid = SidecarKey.parseGuessWhoContactURL(url.value) {
-                return uuid
-            }
-        }
-        return nil
-    }
-
-    func reconcile(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
-        guard let sync else {
-            throw SidecarUnavailableError()
-        }
-        return try await sync.reconcileContactIdentity(localID: localID)
-    }
-
-    /// Returns the contact's GuessWho UUID, minting one via reconcile if the
-    /// contact has not yet been stamped. Used at sidecar/Contacts seams where
-    /// the caller needs a UUID to link/favorite/etc. but the user has not yet
-    /// opened the contact's detail view (which is the other reconcile trigger).
-    /// Throws if reconcile fails or — pathologically — fails to assign a UUID.
-    func reconcileIfNeeded(contact: Contact) async throws -> String {
-        if let existing = guessWhoUUID(in: contact) {
-            return existing
-        }
-        let outcome = try await reconcile(localID: contact.localID)
-        if let assigned = outcome.assignedUUID {
-            return assigned
-        }
-        // Reconcile finished without setting assignedUUID — Cases B/C/D may
-        // stamp the on-disk contact without populating that field (e.g. dup
-        // GuessWho URLs cleaned up on a contact whose in-memory Contact
-        // struct was stale). Re-fetch the single record (post-write, so it
-        // must hit the store) and read the freshly written UUID.
-        if let fresh = try? await contactsAdapter.fetch(localID: contact.localID),
-           let stamped = guessWhoUUID(in: fresh) {
-            return stamped
-        }
-        throw ReconcileAssignmentFailedError()
-    }
+    // The CONTACT-sidecar surface (`sidecar(for:)`, the bare-UUID
+    // notes/links/event-link methods) and the CONTACT-identity translation
+    // (`guessWhoUUID(in:)`, `reconcile(localID:)`, `reconcileIfNeeded(contact:)`)
+    // were removed in Stage 6: the app now keys every contact-sidecar operation
+    // on a `ContactID` through `ContactsRepository`, and reconcile is a
+    // package-INTERNAL side effect of a write (resolve-or-mint) or of the
+    // detail-open `prepareContactForDetail` call. SyncService performs no
+    // contact-identity translation. (The EVENT sidecar surface and the SHARED
+    // favorites methods remain — events are out of Stage 6 scope, and favorites
+    // are contact+event shared via `FavoriteKind`.)
 
     // MARK: - Edit
 
@@ -578,85 +527,14 @@ final class SyncService {
         try await contactsAdapter.delete(localID: localID)
     }
 
-    // MARK: - Notes
-
-    func notes(forContactUUID uuid: String) -> [ContactNote] {
-        guard let sync else { return [] }
-        do {
-            return try sync.notes(at: SidecarKey(kind: .contact, id: uuid))
-        } catch {
-            lastError = "notes read failed: \(error.localizedDescription)"
-            return []
-        }
-    }
-
-    @discardableResult
-    func addNote(body: String, forContactUUID uuid: String) throws -> UUID {
-        guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addNote(at: SidecarKey(kind: .contact, id: uuid), body: body)
-    }
-
-    func editNote(id: UUID, newBody: String, forContactUUID uuid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.editNote(at: SidecarKey(kind: .contact, id: uuid), id: id, newBody: newBody)
-    }
-
-    func deleteNote(id: UUID, forContactUUID uuid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.deleteNote(at: SidecarKey(kind: .contact, id: uuid), id: id)
-    }
-
-    // MARK: - Contact Links
-
-    func contactLinks(forContactUUID uuid: String) -> [Link] {
-        guard let sync else { return [] }
-        let endpoint = SidecarKey(kind: .contact, id: uuid)
-        do {
-            let all = try sync.links(at: endpoint)
-            return all.filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
-            }
-        } catch {
-            lastError = "links read failed: \(error.localizedDescription)"
-            return []
-        }
-    }
-
-    @discardableResult
-    func addContactLink(fromUUID: String, toUUID: String, note: String) throws -> Link {
-        guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addLink(
-            from: SidecarKey(kind: .contact, id: fromUUID),
-            to: SidecarKey(kind: .contact, id: toUUID),
-            note: note
-        )
-    }
-
-    func setContactLinkNote(id: UUID, note: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.setLinkNote(id: id, note: note)
-    }
-
-    func removeContactLink(id: UUID) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.removeLink(id: id)
-    }
-
-    // MARK: - Contact ↔ Event links
-
-    func eventLinks(forContactUUID uuid: String) -> [Link] {
-        guard let sync else { return [] }
-        let endpoint = SidecarKey(kind: .contact, id: uuid)
-        do {
-            let all = try sync.links(at: endpoint)
-            return all.filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
-            }
-        } catch {
-            lastError = "event links read failed: \(error.localizedDescription)"
-            return []
-        }
-    }
+    // MARK: - Contact ↔ Event links (event side)
+    //
+    // The CONTACT-keyed notes/links/event-link methods (`notes/addNote/editNote/
+    // deleteNote(forContactUUID:)`, `contactLinks/addContactLink/
+    // setContactLinkNote/removeContactLink`, `eventLinks(forContactUUID:)`,
+    // `addContactEventLink(contactUUID:)`) moved onto `ContactsRepository` keyed
+    // on `ContactID` in Stage 6. The EVENT-side reads below stay here until the
+    // deferred event-identity migration.
 
     func contactLinks(forEventUUID uuid: String) -> [Link] {
         guard let sync else { return [] }
@@ -670,16 +548,6 @@ final class SyncService {
             lastError = "contact links read failed: \(error.localizedDescription)"
             return []
         }
-    }
-
-    @discardableResult
-    func addContactEventLink(contactUUID: String, eventUUID: String, note: String) throws -> Link {
-        guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addLink(
-            from: SidecarKey(kind: .contact, id: contactUUID),
-            to: SidecarKey(kind: .event, id: eventUUID),
-            note: note
-        )
     }
 
     func removeLink(id: UUID) throws {

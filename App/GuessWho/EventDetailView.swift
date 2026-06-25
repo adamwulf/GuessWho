@@ -491,19 +491,21 @@ struct EventDetailView: View {
     }
 
     /// Returns `true` when the link was created (or already existed) so the
-    /// picker sheet knows it's safe to dismiss. Reconcile failures return
-    /// `false` and surface via `service.recordError` so the user can pick a
-    /// different contact or retry without losing the sheet.
+    /// picker sheet knows it's safe to dismiss. A write failure returns `false`
+    /// and surfaces via `service.recordError` so the user can pick a different
+    /// contact or retry without losing the sheet.
     private func addLink(to contact: Contact, note: String) async -> Bool {
-        let uuid: String
         do {
-            uuid = try await service.reconcileIfNeeded(contact: contact)
-        } catch {
-            service.recordError("reconcile contact failed: \(error.localizedDescription)")
-            return false
-        }
-        do {
-            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: resolvedUUID, note: note)
+            // The link WRITE resolves-or-mints the CONTACT endpoint's GuessWho
+            // UUID internally (linking a never-touched contact reconciles +
+            // mints, transparent here), so there is no app-side reconcile. The
+            // EVENT endpoint is the bare `resolvedUUID` until the deferred
+            // event-identity migration.
+            _ = try await repository.addEventLink(
+                for: repository.contactID(for: contact),
+                eventUUID: resolvedUUID,
+                note: note
+            )
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
             return false

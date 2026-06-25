@@ -158,12 +158,17 @@ struct ActivityRowLayout<Content: View>: View {
 }
 
 struct AddLinkSheet: View {
-    @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss
 
-    let currentContactUUID: String
-    let onSave: (_ toUUID: String, _ note: String) -> Void
+    /// The opaque ContactID of the contact we're linking FROM. Keyed on the
+    /// stable identity, not a bare UUID — the from-contact may be unreconciled
+    /// (the gate dropped in 6d), and the link WRITE reconciles + mints both
+    /// endpoints internally, so no UUID is needed here.
+    let currentContactID: ContactID
+    /// Hands back the far endpoint's ContactID (not a bare UUID): the store's
+    /// async `addLink(to:note:)` resolves-or-mints both endpoints.
+    let onSave: (_ other: ContactID, _ note: String) -> Void
 
     @State private var noteText: String = ""
     // Picker selection keyed on the opaque ContactID, not a raw localID — the
@@ -172,7 +177,6 @@ struct AddLinkSheet: View {
     @State private var pickerSearch: String = ""
     @State private var eligible: [EligibleContact] = []
     @State private var didLoad = false
-    @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
@@ -210,12 +214,6 @@ struct AddLinkSheet: View {
                         }
                     }
                 }
-
-                if let saveError {
-                    Section {
-                        Text(saveError).foregroundStyle(.red)
-                    }
-                }
             }
             .searchable(text: $pickerSearch, prompt: "Search contacts")
             .navigationTitle("Add Link")
@@ -224,7 +222,7 @@ struct AddLinkSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
+                    Button("Save") { save() }
                         .disabled(selectedContactID == nil)
                 }
             }
@@ -244,17 +242,13 @@ struct AddLinkSheet: View {
 
     private func loadEligibleContacts() async -> [EligibleContact] {
         var result: [EligibleContact] = []
-        // The contact we're linking FROM, resolved to its ContactID through the
-        // bare GuessWho UUID. The "Link Contact" button is disabled until this
-        // UUID exists (the from-contact is reconciled), so this resolves.
-        let fromID = repository.contact(guessWhoID: currentContactUUID).map { repository.contactID(for: $0) }
         for contact in repository.contacts {
             // Skip the contact we're linking from; everything else is eligible.
             // Exclude by ContactID (effective GuessWho identity), not a raw
             // guessWhoUUID compare. The link target's UUID is resolved on save
-            // via reconcileIfNeeded, so we don't precompute a UUID per row.
+            // inside the link WRITE, so we don't precompute a UUID per row.
             let id = repository.contactID(for: contact)
-            if let fromID, id == fromID { continue }
+            if id == currentContactID { continue }
             result.append(EligibleContact(contact: contact, id: id))
         }
         return result.sorted { lhs, rhs in
@@ -268,19 +262,13 @@ struct AddLinkSheet: View {
         return eligible.filter { $0.contact.matches(searchQuery: query) }
     }
 
-    private func save() async {
-        guard let selectedContactID,
-              let entry = eligible.first(where: { $0.id == selectedContactID }) else { return }
-        do {
-            // reconcileIfNeeded short-circuits on an already-stamped contact
-            // and otherwise reconciles + re-reads the freshly stamped UUID via
-            // a single-record fetch — same result the manual reconcile +
-            // fetchAll().first dance produced, without the full enumeration.
-            let toUUID = try await service.reconcileIfNeeded(contact: entry.contact)
-            onSave(toUUID, noteText)
-            dismiss()
-        } catch {
-            saveError = "Failed to save link: \(error.localizedDescription)"
-        }
+    private func save() {
+        guard let selectedContactID else { return }
+        // Hand the far endpoint's ContactID straight back — the link WRITE
+        // (`ContactsRepository.addLink`) resolves-or-mints BOTH endpoints
+        // internally, so there is no app-side reconcile here. Any write failure
+        // surfaces through the store's reload, not this sheet.
+        onSave(selectedContactID, noteText)
+        dismiss()
     }
 }
