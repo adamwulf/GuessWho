@@ -495,7 +495,13 @@ final class SyncService {
         }
     }
 
-    func guessWhoUUID(in contact: Contact) -> String? {
+    /// SyncService-internal: the GuessWho UUID stamped on `contact`, or nil if it
+    /// carries no `guesswho://` URL. `private` — the VIEW reads the opened
+    /// contact's UUID through `ContactsRepository.guessWhoID(in:)` (the package's
+    /// identity model); the only remaining callers are this file's own sidecar /
+    /// reconcile seams (`sidecar(for:)`, `reconcileIfNeeded(contact:)`), which run
+    /// inside SyncService where holding a repository isn't available.
+    private func guessWhoUUID(in contact: Contact) -> String? {
         for url in contact.urlAddresses {
             if let uuid = SidecarKey.parseGuessWhoContactURL(url.value) {
                 return uuid

@@ -442,9 +442,13 @@ struct ContactDetailView: View {
 
     private func performInlineSave() async {
         guard let model = editModel else { return }
-        // The save targets the localID embedded in the edit model's contact —
-        // the same record we loaded. Capture it for the post-save boundary
-        // calls so a reconcile-driven identity re-key can't strand them.
+        // localID exception (boundary token): the save targets the localID
+        // embedded in the edit model's contact — the same record we loaded.
+        // Captured purely to thread into the post-save SyncService/repository
+        // boundary calls (`saveContact` → `refreshContact(localID:)` /
+        // `removeContact(localID:)`), so a reconcile-driven identity re-key can't
+        // strand them. Never used as app identity — not a key, comparison, or nav
+        // payload.
         let saveLocalID = model.edited.localID
         isSavingEdit = true
         defer { isSavingEdit = false }
@@ -710,11 +714,14 @@ struct ContactDetailView: View {
     private func debugRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
+        // localID exception (debug-only display): surfacing the raw
+        // CNContact.identifier is a developer diagnostic inside the debug-gated
+        // Debug section (per CLAUDE.md's debug-mode carve-out), NOT app identity.
         rows.append(.text(label: "localID", value: contact.localID, monospaced: true))
         rows.append(.text(label: "contact type", value: contact.contactType.rawValue))
         rows.append(.text(label: "image available", value: contact.imageDataAvailable ? "yes" : "no"))
 
-        if let uuid = service.guessWhoUUID(in: contact) {
+        if let uuid = repository.guessWhoID(in: contact) {
             rows.append(.text(label: "guesswho uuid", value: uuid, monospaced: true))
         } else if let reason = sidecarUnavailableReason {
             rows.append(.text(label: "guesswho uuid", value: "none — \(reason)"))
@@ -1018,9 +1025,19 @@ struct ContactDetailView: View {
         return repository.contact(guessWhoID: endpoint.id)
     }
 
+    /// The opened contact's own reconciled GuessWho UUID, or nil before it gains
+    /// a `guesswho://` URL. Resolved through the repository's identity model
+    /// (`guessWhoID(in:)`) off the LOADED `contact` — NOT the nav `id` — because
+    /// `id` is captured at selection time and does not re-key when an on-open
+    /// reconcile mints the UUID, whereas `self.contact` is tracked via the stable
+    /// `resolvedLocalID` and reflects the post-reconcile record. Semantics are
+    /// identical to the former `service.guessWhoUUID(in:)`: nil for an
+    /// un-reconciled contact (NEVER the localID fallback), so favorites/notes/
+    /// links/tags binding stands down until the contact is stamped. Drives ALL
+    /// sidecar binding for the detail view.
     private var contactUUID: String? {
         guard let contact else { return nil }
-        return service.guessWhoUUID(in: contact)
+        return repository.guessWhoID(in: contact)
     }
 
     private var isContactFavorited: Bool {
@@ -1137,7 +1154,7 @@ struct ContactDetailView: View {
             // later load/boundary call threads the stable identifier.
             resolvedLocalID = loaded.localID
             sidecar = service.sidecar(for: loaded)
-            let uuid = service.guessWhoUUID(in: loaded)
+            let uuid = repository.guessWhoID(in: loaded)
             if let uuid {
                 // Rebuild the store if the contact's GuessWho UUID changed
                 // since last load — a Case D reconcile picks a winner UUID
