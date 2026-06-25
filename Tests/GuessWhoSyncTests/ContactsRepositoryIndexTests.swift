@@ -340,7 +340,12 @@ struct ContactsRepositoryIndexTests {
         let keep = Contact(localID: "keep", givenName: "Keep")
         let drop = Contact(localID: "drop", givenName: "Drop")
         let store = InMemoryContactStore(contacts: [keep, drop])
-        let repository = ContactsRepository(contacts: store)
+        // A PER-TEST center so this test's `.guessWhoContactsDidChange` post
+        // cannot fire another parallel test's repository observer (the 6d
+        // test-isolation defect). Both the inbound change notification and the
+        // outbound `.contactsRepositoryDidReload` flow through this one center.
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
         await repository.reload()
         #expect(repository.contact(localID: "drop")?.localID == "drop")
 
@@ -356,7 +361,6 @@ struct ContactsRepositoryIndexTests {
             requiresFullReload: false
         )
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let center = NotificationCenter.default
             var token: NSObjectProtocol?
             token = center.addObserver(forName: .contactsRepositoryDidReload, object: repository, queue: nil) { _ in
                 if let token { center.removeObserver(token) }

@@ -34,6 +34,28 @@ public final class ContactsRepository: NSObject {
     private let sync: GuessWhoSync?
     private let favorites: FavoritesStore?
 
+    /// The center this repository observes `.guessWhoContactsDidChange` on AND
+    /// the one a write-side refresh would notify. Defaults to `.default` so
+    /// production wiring is unchanged: the live `ContactChangeWatcher` posts on
+    /// `.default`, so a real external contact change still refreshes this repo.
+    ///
+    /// It is INJECTABLE solely for test isolation. The watcher posts the change
+    /// notification with `object: self`, but the repository is constructed
+    /// separately from (and holds no reference to) its watcher, so it must
+    /// observe with `object: nil` to hear that process-wide "contacts changed"
+    /// signal. In production that is correct — there is exactly one repository,
+    /// so `object: nil` is harmless. In tests, though, many repositories live at
+    /// once on the shared `.default` center; a single `object: nil` observer on
+    /// each means ONE test's post of `.guessWhoContactsDidChange` fires EVERY
+    /// live repository's `contactsDidChange`, so a parallel test's repo applies a
+    /// change set for localIDs it never owned and its assertions corrupt. Giving
+    /// each test repository a fresh `NotificationCenter()` confines its observer
+    /// to posts made on that same center — the production refresh behavior is
+    /// preserved (still `.default`), and parallel `swift test` becomes
+    /// deterministic. (Found in the 6d review: `swift test` PARALLEL flaked,
+    /// `--no-parallel` always passed.)
+    private let notificationCenter: NotificationCenter
+
     public private(set) var contacts: [Contact] = []
     public private(set) var isLoading = false
     public private(set) var lastError: String?
@@ -74,16 +96,23 @@ public final class ContactsRepository: NSObject {
     /// `contactIDs(matchingEmail:)`.
     private var contactsByEmail: [String: [Contact]] = [:]
 
+    /// - Parameter notificationCenter: the center to observe
+    ///   `.guessWhoContactsDidChange` on. Defaults to `.default` (production
+    ///   wiring); tests pass a fresh `NotificationCenter()` per instance so a
+    ///   post from one repository's test cannot fire another's observer. See the
+    ///   `notificationCenter` property doc for the full root cause.
     public init(
         contacts: ContactStoreProtocol,
         sync: GuessWhoSync? = nil,
-        favorites: FavoritesStore? = nil
+        favorites: FavoritesStore? = nil,
+        notificationCenter: NotificationCenter = .default
     ) {
         self.contactsStore = contacts
         self.sync = sync
         self.favorites = favorites
+        self.notificationCenter = notificationCenter
         super.init()
-        NotificationCenter.default.addObserver(
+        notificationCenter.addObserver(
             self,
             selector: #selector(contactsDidChange(_:)),
             name: .guessWhoContactsDidChange,
@@ -718,7 +747,13 @@ public final class ContactsRepository: NSObject {
     }
 
     private func postDidReload() {
-        NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
+        // Routed through the injected center (defaults to `.default`, so the
+        // app's list controllers still observe it) — the outbound reload and the
+        // inbound change observer share one center so a test on a fresh center
+        // sees its own repository's reload and nothing else's. The `object: self`
+        // scope already keeps this signal per-repository; the injected center is
+        // what isolates the inbound `object: nil` change observer (see init).
+        notificationCenter.post(name: .contactsRepositoryDidReload, object: self)
     }
 
     /// The SINGLE funnel for every `contacts` mutation. Reassigns the array
