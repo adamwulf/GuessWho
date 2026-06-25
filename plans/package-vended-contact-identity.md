@@ -1054,14 +1054,36 @@ carve-out; no new retained package state is added. This deletes the
 Acceptance (the grep must EXCLUDE the sanctioned Stage-4/5 accessors and blessed
 boundary tokens, or it can't pass — those are the agreed identity surface, not
 violations):
-- zero `forContactUUID` in the app target;
+- zero `forContactUUID` in the app target, EXCLUDED (allowed): code COMMENTS
+  that merely name the moved methods, and the BLESSED link-direction carve-out
+  `ContactLink.direction(forContactUUID:)` (`ConnectionsSection.swift`) plus its
+  one caller (`ContactDetailView.connectionRow`). See the `LinkDirection`
+  carve-out in the next bullet — this `forContactUUID:` takes the OPENED
+  contact's own blessed `guessWhoID` (the Stage-5 `guessWhoID(in:)` value) purely
+  to label which end of an already-fetched `ContactLink` is the far contact; it
+  constructs no `SidecarKey` and translates no identity;
 - zero app-side `SidecarKey(.contact …)` CONSTRUCTION and zero app-side
   CONTACT-side `SidecarKey`-typed values / `LinkDirection`-style endpoint enums.
   EXCLUDED from the count (allowed): `SidecarKey.parseGuessWhoContactURL` (not
   construction); and `SidecarKey(.event …)` construction on the OUT-OF-SCOPE
   event surface (e.g. in `EventDetailView`) — the event identity boundary is
   DEFERRED TO PHASE 7 (see below), so event-side `SidecarKey` survives Stage 6 by
-  design;
+  design; AND the BLESSED `LinkDirection` enum + `direction(forContactUUID:)` +
+  `ContactDetailView.otherContact(for:)` (6e, Task-C decision). DECISION: 6d kept
+  these as a soft target; 6e formally blesses them rather than building the
+  cleaner resolved `links(for:)` API, because Option (1) — a package method
+  vending the far-endpoint `Contact`/`ContactID` + direction — is MORE than modest
+  (it re-keys `LinkRow`, the `ActivityItem.connection` rendering, the
+  `editingLinkID`/`draftLinkNote` edit state, and the begin/commit/delete/setNote
+  callbacks in `ContactDetailView`, and needs a new package resolved-link type),
+  while these sites are NOT an identity-translation defect: `LinkDirection` wraps
+  the package `ContactLink`'s already-resolved `SidecarKey` endpoints (it READS
+  `endpointA`/`endpointB`, constructs none), `direction(forContactUUID:)`
+  classifies near/far using the opened contact's OWN blessed `guessWhoID` (per
+  6b2's `contact(guessWhoID:)` ruling, a legitimate app-side UUID), and
+  `otherContact(for:)` resolves the far endpoint through the blessed public
+  `contact(guessWhoID:)` resolver. No `.contact` `SidecarKey` is constructed and
+  no identity is translated, so the audit MUST NOT fail on them;
 - zero `reconcile` in app contact CODE outside the debug carve-out. EXCLUDED:
   the word `reconcile` appearing in CODE COMMENTS (e.g. `ContactsListViewController`/
   `OrganizationsListViewController`/`ContactEditView` comments that merely mention
@@ -1073,12 +1095,14 @@ violations):
     persist guessWhoIDs across devices; `ContactID` is not Codable). FAVORITE-
     resolution uses (`FavoritesListViewController` cell-provider + selection) are
     allowed permanently. The LINK-ENDPOINT-resolution uses (`ContactDetailView`'s
-    `otherContact`, `ConnectionsSection`, `EventDetailView`'s linked-contact tap)
-    SHOULD move behind a resolved `links(for:)` that vends the far-endpoint
-    `Contact`/`ContactID` + direction (cleaner end-state — the app never
-    hand-resolves an endpoint) — but per 6b2 this is a TARGET, not a hard identity
-    defect (a surviving link use is acceptable, just less clean). Decide during 6d;
-    do NOT fail the audit solely on a link-path `contact(guessWhoID:)`;
+    `otherContact`, `EventDetailView`'s linked-contact tap) COULD move behind a
+    resolved `links(for:)` that vends the far-endpoint `Contact`/`ContactID` +
+    direction (cleaner end-state — the app never hand-resolves an endpoint) — but
+    per 6b2 this is a TARGET, not a hard identity defect (a surviving link use is
+    acceptable, just less clean). DECIDED in 6e (Task C): KEPT as-is — Option (1)
+    is more than modest and these uses translate no identity (see the
+    `LinkDirection` carve-out above). The audit does NOT fail on a link-path
+    `contact(guessWhoID:)`;
   - the blessed boundary tokens (`boundaryLocalID`/`resolvedLocalID`,
     `model.edited.localID`/`saveLocalID`, the `lookupLocalID` load token) threaded
     into package/SyncService calls;
