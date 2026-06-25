@@ -106,6 +106,26 @@ public final class ContactsRepository: NSObject {
         contactsByEffectiveID[id.effectiveID]
     }
 
+    /// The reconciled GuessWho UUID carried by `contact`, or `nil` when the
+    /// contact has no valid `guesswho://` URL yet (un-reconciled). This is the
+    /// EFFECTIVE GuessWho identity — `ContactID(contact:).guessWhoID` — NOT the
+    /// `localID` fallback: a contact with no GuessWho URL has no sidecar data to
+    /// key on, so callers binding favorites/notes/links/tags must get `nil` (and
+    /// stand down) rather than a transient `localID`.
+    ///
+    /// A PURE function of the passed contact — no cache read — so it reads the
+    /// UUID off the live record the caller already holds, with no cache-miss
+    /// window. Identity comes from `SidecarKey` exactly as `contactID(for:)` and
+    /// `contact(id:)` resolve it. The sanctioned way for the app to read an OPENED
+    /// contact's own GuessWho UUID without reaching into `ContactID.guessWhoID`
+    /// (which is `package`): the detail view holds the loaded `Contact` and binds
+    /// its sidecar stores on this. Semantics match the former
+    /// `SyncService.guessWhoUUID(in:)` byte-for-byte (it walked the same
+    /// `urlAddresses` via the same `SidecarKey` parser).
+    public func guessWhoID(in contact: Contact) -> String? {
+        ContactID(contact: contact).guessWhoID
+    }
+
     /// Vends the `ContactID` for a `Contact` the caller already holds — the
     /// only sanctioned way for the app to obtain a navigation/identity token
     /// from a `Contact`, since `ContactID.init(contact:)` is `package` and the

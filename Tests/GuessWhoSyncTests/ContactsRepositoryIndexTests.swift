@@ -72,6 +72,49 @@ struct ContactsRepositoryIndexTests {
         #expect(repository.contact(localID: "bare-local-id")?.localID == "bare-local-id")
     }
 
+    // MARK: - guessWhoID(in:) — the opened contact's own GuessWho UUID
+
+    @Test @MainActor
+    func guessWhoIDInReturnsReconciledUUIDAndNilOtherwise() async {
+        let uuid = "77777777-7777-7777-7777-777777777777"
+        // `reconciled` carries a GuessWho URL → its effective identity IS the UUID.
+        let reconciled = reconciledContact(localID: "r", uuid: uuid, givenName: "Reconciled")
+        // `bare` has no URL → its effective identity is its localID, NOT a UUID.
+        let bare = Contact(localID: "bare-local-id", givenName: "Bare")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [reconciled, bare]))
+
+        // PURE function of the passed contact — no reload/cache needed.
+
+        // A reconciled contact yields its canonical (lowercase) GuessWho UUID...
+        #expect(repository.guessWhoID(in: reconciled) == uuid)
+
+        // ...and an un-reconciled contact yields nil — NEVER the localID fallback.
+        // This matches the former `service.guessWhoUUID(in:)` semantics exactly: a
+        // contact with no GuessWho URL has no sidecar UUID, so favorites/notes/
+        // links bind on nil and stand down rather than keying on a transient
+        // localID. (`bare.localID` is non-empty, proving no fallback leaks.)
+        #expect(repository.guessWhoID(in: bare) == nil)
+    }
+
+    @Test @MainActor
+    func guessWhoIDInIsPureAndIndependentOfTheCache() async {
+        // Because it reads off the passed contact directly (no cache lookup), a
+        // contact that was NEVER loaded into this repository still resolves — the
+        // property the detail view relies on, since `self.contact` may have been
+        // fetched via service.fetch (not the cache) right after a write.
+        let uuid = "88888888-8888-8888-8888-888888888888"
+        let neverCached = reconciledContact(localID: "never", uuid: uuid)
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: []))
+        await repository.reload()                 // empty cache
+
+        #expect(repository.contact(localID: "never") == nil)        // not in cache
+        #expect(repository.guessWhoID(in: neverCached) == uuid)     // still resolves
+
+        // Canonicalizes to lowercase, mirroring SidecarKey's parser.
+        let mixed = reconciledContact(localID: "m", uuid: uuid.uppercased())
+        #expect(repository.guessWhoID(in: mixed) == uuid)
+    }
+
     @Test @MainActor
     func contactIDForRoundTripsThroughContactByID() async {
         let uuid = "66666666-6666-6666-6666-666666666666"
