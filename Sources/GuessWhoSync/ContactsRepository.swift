@@ -351,6 +351,43 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// The bare EVENT-endpoint UUIDs of every live contact↔event link on the
+    /// contact identified by `id`. The package resolves the far (event) endpoint
+    /// internally so the app never constructs a `.contact` `SidecarKey` to walk
+    /// a link — it hands its `ContactID` and gets back the event UUIDs it then
+    /// asks the event surface to refresh (an out-of-scope event-cache concern
+    /// that still lives on `SyncService`). Returns `[]` when the contact is
+    /// unreconciled or the engine is unavailable. (The EVENT endpoint stays a
+    /// bare UUID until the deferred event-identity migration.)
+    public func linkedEventUUIDs(for id: ContactID) -> [String] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        do {
+            return try sync.links(at: endpoint).compactMap { link in
+                guard link.deletedAt == nil else { return nil }
+                let other = Self.otherEndpoint(of: link, from: endpoint)
+                return other.kind == .event ? other.id : nil
+            }
+        } catch {
+            lastError = "linked event UUIDs read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// The bare EVENT-endpoint UUID of a single contact↔event `link`, relative to
+    /// the contact identified by `id`. The package classifies the link's
+    /// endpoints internally (resolving `id` to the contact endpoint) so a row
+    /// rendering one linked event never constructs a `.contact` `SidecarKey`.
+    /// Returns `nil` when the contact is unreconciled (it can hold no link) or
+    /// when neither endpoint is the contact (defensive). The EVENT endpoint stays
+    /// a bare UUID until the deferred event-identity migration.
+    public func eventEndpointUUID(of link: Link, for id: ContactID) -> String? {
+        guard let guessWhoID = id.guessWhoID else { return nil }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        let other = Self.otherEndpoint(of: link, from: endpoint)
+        return other.kind == .event ? other.id : nil
+    }
+
     /// Whether the contact identified by `id` is favorited. Returns `false` when
     /// the contact is unreconciled (no GuessWho UUID to key the favorite on) or
     /// the favorites store is unavailable. Mirrors
