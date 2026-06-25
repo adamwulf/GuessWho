@@ -15,7 +15,22 @@ struct ContactDetailView: View {
     @Environment(\.pushContactReference) private var pushContactReference
     @Environment(\.pushEventReference) private var pushEventReference
 
-    let localID: String
+    /// The view's identity is the opaque, package-vended `ContactID` — NEVER a
+    /// raw `localID`. It is the nav identity the scene delegate hands in; the
+    /// view resolves it to a `Contact` via `repository.contact(id:)` and reads
+    /// `localID` off the loaded contact ONLY at the boundary into SyncService /
+    /// repository methods that require Apple's `CNContact.identifier`.
+    let id: ContactID
+
+    /// The loaded contact's `localID`, captured on first successful load and
+    /// kept thereafter. `localID` is STABLE across a reconcile (reconcile stamps
+    /// a URL onto the same `CNContact`; the identifier doesn't change), whereas
+    /// the contact's EFFECTIVE identity can flip `localID → guessWhoID`, which
+    /// would re-key `repository.contact(id:)`. So once we know the localID we
+    /// resolve the live contact through `repository.contact(localID:)` and pass
+    /// the same localID to every SyncService boundary call — the view stays
+    /// pointed at the right record even after the reconcile re-keys identity.
+    @State private var resolvedLocalID: String?
 
     @State private var contact: Contact?
     @State private var sidecar: SidecarEnvelope?
@@ -40,7 +55,6 @@ struct ContactDetailView: View {
     @State private var recentEventsLoadID: UUID = UUID()
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
-    @State private var uuidToContact: [String: Contact] = [:]
     @State private var editFetchErrorMessage: String?
 
     // Inline contact-edit state. Non-nil `editModel` means the detail view
@@ -401,8 +415,12 @@ struct ContactDetailView: View {
     }
 
     private func beginInlineEdit() async {
+        guard let boundaryLocalID else {
+            editFetchErrorMessage = "Contact could not be found."
+            return
+        }
         do {
-            guard let loaded = try await service.fetchContactForEditing(localID: localID) else {
+            guard let loaded = try await service.fetchContactForEditing(localID: boundaryLocalID) else {
                 editFetchErrorMessage = "Contact could not be found."
                 return
             }
@@ -424,6 +442,10 @@ struct ContactDetailView: View {
 
     private func performInlineSave() async {
         guard let model = editModel else { return }
+        // The save targets the localID embedded in the edit model's contact —
+        // the same record we loaded. Capture it for the post-save boundary
+        // calls so a reconcile-driven identity re-key can't strand them.
+        let saveLocalID = model.edited.localID
         isSavingEdit = true
         defer { isSavingEdit = false }
         do {
@@ -433,7 +455,7 @@ struct ContactDetailView: View {
             // Reconcile runs first so it can re-stamp our x-guesswho:// URL
             // before any other read sees the post-save state.
             await performReconcile()
-            await repository.refreshContact(localID: localID)
+            await repository.refreshContact(localID: saveLocalID)
             // refreshContact re-reads just this one record via service.fetch ->
             // unifiedContact (the fresh path; enumerateContacts can lag right
             // after a CNSaveRequest.update on Catalyst) and patches it into the
@@ -447,13 +469,14 @@ struct ContactDetailView: View {
     }
 
     private func performInlineDelete() async {
+        guard let boundaryLocalID else { return }
         isSavingEdit = true
         defer { isSavingEdit = false }
         do {
-            try await service.deleteContact(localID: localID)
+            try await service.deleteContact(localID: boundaryLocalID)
             editModel = nil
             editMode = .inactive
-            repository.removeContact(localID: localID)
+            repository.removeContact(localID: boundaryLocalID)
             await loadContact()
             if contact == nil {
                 dismiss()
@@ -465,7 +488,7 @@ struct ContactDetailView: View {
             if category == .recordDoesNotExist {
                 editModel = nil
                 editMode = .inactive
-                repository.removeContact(localID: localID)
+                repository.removeContact(localID: boundaryLocalID)
                 await loadContact()
                 if contact == nil {
                     dismiss()
@@ -589,7 +612,7 @@ struct ContactDetailView: View {
                 InfoRowData.backReference(
                     displayName: entry.contact.displayName,
                     descriptor: "their \(localizedLabel(entry.label))",
-                    localID: entry.contact.localID
+                    contactID: repository.contactID(for: entry.contact)
                 )
             }
             Section {
@@ -649,13 +672,17 @@ struct ContactDetailView: View {
             rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
         }
         let lookup = repository.lookupByDisplayName()
+        let selfID = repository.contactID(for: contact)
         for item in contact.contactRelations {
             let key = item.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !key.isEmpty, let match = lookup[key], match.localID != contact.localID {
+            // Compare by ContactID (effective GuessWho identity), not raw
+            // localID, so a relation pointing at this very contact is excluded
+            // by stable identity rather than the transient identifier.
+            if !key.isEmpty, let match = lookup[key], repository.contactID(for: match) != selfID {
                 rows.append(.contactLink(
                     label: localizedLabel(item.label),
                     displayName: match.displayName,
-                    localID: match.localID
+                    contactID: repository.contactID(for: match)
                 ))
             } else {
                 rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
@@ -789,8 +816,11 @@ struct ContactDetailView: View {
             .sheet(isPresented: $showingAddLinkSheet) {
                 if let uuid = contactUUID, let linksStore {
                     AddLinkSheet(currentContactUUID: uuid) { toUUID, note in
+                        // linksStore is @Observable, so adding the link re-renders
+                        // the connection rows; each row resolves its other endpoint
+                        // on demand via repository.contact(guessWhoID:) — no app-held
+                        // uuid→Contact map to refresh anymore.
                         linksStore.addLink(toUUID: toUUID, note: note)
-                        Task { await refreshContactMap() }
                     }
                 }
             }
@@ -981,17 +1011,9 @@ struct ContactDetailView: View {
     private func otherContact(for direction: LinkDirection) -> Contact? {
         let endpoint = direction.other
         guard endpoint.kind == .contact else { return nil }
-        return uuidToContact[endpoint.id]
-    }
-
-    private func refreshContactMap() async {
-        var map: [String: Contact] = [:]
-        for contact in repository.contacts {
-            if let uuid = service.guessWhoUUID(in: contact) {
-                map[uuid] = contact
-            }
-        }
-        uuidToContact = map
+        // The link endpoint id IS a bare GuessWho UUID; resolve it through the
+        // repository's O(1) index instead of an app-held uuid→Contact map.
+        return repository.contact(guessWhoID: endpoint.id)
     }
 
     private var contactUUID: String? {
@@ -1073,20 +1095,45 @@ struct ContactDetailView: View {
         return false
     }
 
+    /// The localID for crossing into a SyncService/repository boundary method.
+    /// Prefers the localID captured on first load (`resolvedLocalID`, stable
+    /// across a reconcile re-key); before that, resolves the initial `ContactID`
+    /// to its cached contact. nil only when neither is available (a stale id
+    /// that never resolved) — boundary callers guard on it and surface the
+    /// non-crashing "unavailable" path.
+    private var boundaryLocalID: String? {
+        resolvedLocalID ?? repository.contact(id: id)?.localID
+    }
+
     private func loadContact(preferFresh: Bool = false) async {
+        // Resolve the live contact. We KEY the view on the ContactID, but read
+        // through the localID once known: localID is stable across a reconcile
+        // re-key (the CNContact identifier doesn't change), whereas the contact's
+        // effective identity — and therefore `repository.contact(id:)` — can flip
+        // `localID → guessWhoID`. Threading the localID keeps us on the same
+        // record after that flip.
+        let lookupLocalID = resolvedLocalID
         let loaded: Contact?
-        if preferFresh, let fresh = try? await service.fetchContactForEditing(localID: localID) {
+        if preferFresh, let lookupLocalID, let fresh = try? await service.fetchContactForEditing(localID: lookupLocalID) {
             // Post-save read: route through unifiedContact(withIdentifier:)
             // which is more consistent than the enumerate path the
             // repository cache uses on Catalyst right after a write.
             loaded = fresh
-        } else if let cached = repository.contact(localID: localID) {
+        } else if let lookupLocalID, let cached = repository.contact(localID: lookupLocalID) {
             loaded = cached
+        } else if let lookupLocalID {
+            loaded = await service.fetch(localID: lookupLocalID)
         } else {
-            loaded = await service.fetch(localID: localID)
+            // First load (or after a re-key dropped resolvedLocalID): resolve the
+            // ContactID to its cached contact. This is how we bootstrap the
+            // localID we then keep for the lifetime of the view.
+            loaded = repository.contact(id: id)
         }
         contact = loaded
         if let loaded {
+            // Capture the localID now that we have the live record, so every
+            // later load/boundary call threads the stable identifier.
+            resolvedLocalID = loaded.localID
             sidecar = service.sidecar(for: loaded)
             let uuid = service.guessWhoUUID(in: loaded)
             if let uuid {
@@ -1109,7 +1156,6 @@ struct ContactDetailView: View {
                 linksStore = nil
             }
             reloadEventLinks()
-            await refreshContactMap()
             await reloadRecentEvents(for: loaded)
         } else {
             // Contact disappeared from the store (e.g. deleted via the
@@ -1152,8 +1198,16 @@ struct ContactDetailView: View {
             reconcileError = sidecarUnavailableReason ?? "Sidecar storage unavailable"
             return
         }
+        // reconcile() crosses into SyncService keyed on the CNContact localID.
+        // It's stable across the reconcile this very call performs (reconcile
+        // stamps a URL onto the same record), so the captured value stays valid
+        // for the refresh + reload below.
+        guard let reconcileLocalID = boundaryLocalID else {
+            reconcileError = "Contact could not be found."
+            return
+        }
         do {
-            let result = try await service.reconcile(localID: localID)
+            let result = try await service.reconcile(localID: reconcileLocalID)
             reconcileOutcome = result
             reconcileError = nil
             // SyncService.reconcile intentionally does not poke the
@@ -1165,7 +1219,7 @@ struct ContactDetailView: View {
             // until something else refreshes the cache. refreshContact
             // awaits the store re-read before returning, so the cache is
             // current by the time loadContact() runs.
-            await repository.refreshContact(localID: localID)
+            await repository.refreshContact(localID: reconcileLocalID)
             await loadContact()
         } catch {
             reconcileError = "\(error)"
@@ -1380,8 +1434,8 @@ private struct InfoRowData: Identifiable {
         case url(urlString: String)
         case address(PostalAddress)
         case date(components: DateComponents, formatted: String)
-        case contactLink(displayName: String, localID: String)
-        case backReference(displayName: String, descriptor: String, localID: String)
+        case contactLink(displayName: String, contactID: ContactID)
+        case backReference(displayName: String, descriptor: String, contactID: ContactID)
     }
 
     let id = UUID()
@@ -1406,13 +1460,13 @@ private struct InfoRowData: Identifiable {
     static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
         InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
     }
-    static func contactLink(label: String, displayName: String, localID: String) -> InfoRowData {
-        InfoRowData(label: label, kind: .contactLink(displayName: displayName, localID: localID))
+    static func contactLink(label: String, displayName: String, contactID: ContactID) -> InfoRowData {
+        InfoRowData(label: label, kind: .contactLink(displayName: displayName, contactID: contactID))
     }
-    static func backReference(displayName: String, descriptor: String, localID: String) -> InfoRowData {
+    static func backReference(displayName: String, descriptor: String, contactID: ContactID) -> InfoRowData {
         // No top-line label here — the back-ref row's primary text is
         // the contact name, with the descriptor as a small caption.
-        InfoRowData(label: "", kind: .backReference(displayName: displayName, descriptor: descriptor, localID: localID))
+        InfoRowData(label: "", kind: .backReference(displayName: displayName, descriptor: descriptor, contactID: contactID))
     }
 }
 
@@ -1438,20 +1492,20 @@ private struct InfoRow: View {
             AddressRow(label: data.label, address: address)
         case .date(let components, let formatted):
             tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
-        case .contactLink(let displayName, let localID):
-            contactLinkRow(label: data.label, displayName: displayName, localID: localID)
-        case .backReference(let displayName, let descriptor, let localID):
-            backReferenceRow(displayName: displayName, descriptor: descriptor, localID: localID)
+        case .contactLink(let displayName, let contactID):
+            contactLinkRow(label: data.label, displayName: displayName, contactID: contactID)
+        case .backReference(let displayName, let descriptor, let contactID):
+            backReferenceRow(displayName: displayName, descriptor: descriptor, contactID: contactID)
         }
     }
 
     @ViewBuilder
-    private func backReferenceRow(displayName: String, descriptor: String, localID: String) -> some View {
+    private func backReferenceRow(displayName: String, descriptor: String, contactID: ContactID) -> some View {
         // Inverse-relation row: contact name is primary tinted (the
         // tappable target) and the descriptor reads "their <label>" in
         // small caption so the relationship direction is unambiguous.
         Button {
-            pushContactReference(ContactReference(localID: localID))
+            pushContactReference(ContactReference(id: contactID))
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayName)
@@ -1465,12 +1519,12 @@ private struct InfoRow: View {
     }
 
     @ViewBuilder
-    private func contactLinkRow(label: String, displayName: String, localID: String) -> some View {
+    private func contactLinkRow(label: String, displayName: String, contactID: ContactID) -> some View {
         // Match the tappable-row visual: label above, tinted value, whole
         // row tappable. Push goes through the env-injected closure so
         // SwiftUI rows pushed onto a UIKit nav stack still navigate.
         Button {
-            pushContactReference(ContactReference(localID: localID))
+            pushContactReference(ContactReference(id: contactID))
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)

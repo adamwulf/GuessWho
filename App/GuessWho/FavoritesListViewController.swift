@@ -29,7 +29,6 @@ final class FavoritesListViewController: UIViewController {
     private var dataSource: UITableViewDiffableDataSource<Int, String>!
 
     private var favoritesByStableID: [String: Favorite] = [:]
-    private var uuidToContact: [String: Contact] = [:]
 
     private let emptyLabel = UILabel()
 
@@ -70,14 +69,13 @@ final class FavoritesListViewController: UIViewController {
         configureDataSource()
         observeNotifications()
 
-        // Initial paint may show "Unavailable" rows briefly until the
-        // contact map populates — the async refresh below replaces them.
+        // Rows resolve their contact on demand from the repository's O(1) index
+        // in the cell provider, so a single apply paints the right state. If the
+        // repository's launch reload hasn't landed yet, a contact favorite shows
+        // "Unavailable" until the `.contactsRepositoryDidReload` observer below
+        // re-applies (the reconfigure pass repaints it).
         store.reload()
         applySnapshot(animated: false)
-        Task { @MainActor in
-            await refreshContactMap()
-            applySnapshot(animated: false)
-        }
     }
 
     // MARK: - Table view
@@ -127,7 +125,10 @@ final class FavoritesListViewController: UIViewController {
             guard let self, let favorite = self.favoritesByStableID[stableID] else { return cell }
             (cell as? FavoriteCell)?.configure(
                 with: favorite,
-                contact: self.uuidToContact[favorite.id],
+                // A contact favorite's id IS a bare GuessWho UUID; resolve it on
+                // demand through the repository's O(1) index rather than an
+                // app-held uuid→Contact map.
+                contact: favorite.kind == .contact ? self.repository.contact(guessWhoID: favorite.id) : nil,
                 event: favorite.kind == .event ? self.service.event(uuid: favorite.id) : nil
             )
             return cell
@@ -149,10 +150,9 @@ final class FavoritesListViewController: UIViewController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.store.reload()
-                Task { @MainActor in
-                    await self.refreshContactMap()
-                    self.applySnapshot(animated: true)
-                }
+                // Rows resolve their contact on demand; the apply's reconfigure
+                // pass repaints any rows whose resolved content changed.
+                self.applySnapshot(animated: true)
             }
         }
 
@@ -161,23 +161,21 @@ final class FavoritesListViewController: UIViewController {
         // otherwise-empty cache), incremental external patches, and our own
         // self-write refreshes/removes. The package's raw external-delta
         // signal (`.guessWhoContactsDidChange`) deliberately does NOT fire on
-        // the launch reload, so observing it left this dumb cache reader with
-        // an empty contact map at cold launch — every contact favorite
+        // the launch reload, so observing it left contact favorites resolving
+        // against an empty cache at cold launch — every contact favorite
         // rendered "Unavailable" until an external Contacts edit happened to
-        // fire. Observing the repository's reload post fixes that and also
-        // keeps favorites in sync with incremental patches + self-writes the
-        // old signal missed.
+        // fire. Observing the repository's reload post fixes that: re-applying
+        // here re-runs the cell provider (via the reconfigure pass) so each row
+        // re-resolves its contact through the now-populated repository index. It
+        // also keeps favorites in sync with incremental patches + self-writes
+        // the old signal missed.
         contactsChangedObserver = center.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                Task { @MainActor in
-                    await self.refreshContactMap()
-                    self.applySnapshot(animated: true)
-                }
+                self?.applySnapshot(animated: true)
             }
         }
 
@@ -209,16 +207,6 @@ final class FavoritesListViewController: UIViewController {
         }
     }
 
-    private func refreshContactMap() async {
-        var map: [String: Contact] = [:]
-        for contact in repository.contacts {
-            if let uuid = service.guessWhoUUID(in: contact) {
-                map[uuid] = contact
-            }
-        }
-        uuidToContact = map
-    }
-
     private func applySnapshot(animated: Bool) {
         let items = store.items
 
@@ -229,17 +217,18 @@ final class FavoritesListViewController: UIViewController {
         favoritesByStableID = byStableID
 
         // A favorite's identity is its stableID, but the cell provider
-        // resolves the row's CONTENT (display name, "Unavailable" state)
-        // from `uuidToContact` at build time. When the item SET is
-        // unchanged but that resolved content changed — the cold-launch
-        // case where the map flips empty→populated, plus any later
-        // display-name edit — the diff is empty, so the data source never
-        // re-invokes the cell provider for rows already on screen and the
-        // stale "Unavailable" cell sticks. Explicitly reconfigure the
-        // items that already exist so they re-run the provider against the
-        // current map. Newly inserted items are guard-excluded: they're
-        // not yet in the data source's snapshot and the insert builds them
-        // fresh anyway (reconfiguring an absent item would crash).
+        // resolves the row's CONTENT (display name, "Unavailable" state) on
+        // demand via `repository.contact(guessWhoID:)` / `service.event(uuid:)`
+        // at build time. When the item SET is unchanged but that resolved
+        // content changed — the cold-launch case where the repository cache
+        // flips empty→populated, plus any later display-name edit — the diff is
+        // empty, so the data source never re-invokes the cell provider for rows
+        // already on screen and the stale "Unavailable" cell sticks. Explicitly
+        // reconfigure the items that already exist so they re-run the provider
+        // and re-resolve against the current repository index. Newly inserted
+        // items are guard-excluded: they're not yet in the data source's
+        // snapshot and the insert builds them fresh anyway (reconfiguring an
+        // absent item would crash).
         let existingIDs = Set(dataSource.snapshot().itemIdentifiers)
 
         var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
@@ -264,7 +253,7 @@ extension FavoritesListViewController: UITableViewDelegate {
               let favorite = favoritesByStableID[stableID] else { return }
         switch favorite.kind {
         case .contact:
-            if let contact = uuidToContact[favorite.id] {
+            if let contact = repository.contact(guessWhoID: favorite.id) {
                 didSelectContact(contact)
             }
         case .event:

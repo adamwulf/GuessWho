@@ -48,6 +48,9 @@ struct LinkRow: View {
     // related-contact row pushes a fresh ContactDetailView. See
     // `ReferenceNavigation.swift` for the env-closure defaults.
     @Environment(\.pushContactReference) private var pushContactReference
+    // Needed to re-key the row's `Contact` to its opaque `ContactID` for the
+    // navigation push — the app can't mint a ContactID itself.
+    @Environment(ContactsRepository.self) private var repository
 
     var body: some View {
         ActivityRowLayout(systemImage: "person") {
@@ -79,7 +82,7 @@ struct LinkRow: View {
     private var otherContactView: some View {
         if let other = otherContact {
             Button {
-                pushContactReference(ContactReference(localID: other.localID))
+                pushContactReference(ContactReference(id: repository.contactID(for: other)))
             } label: {
                 Text(other.displayName)
                     .font(.body)
@@ -163,7 +166,9 @@ struct AddLinkSheet: View {
     let onSave: (_ toUUID: String, _ note: String) -> Void
 
     @State private var noteText: String = ""
-    @State private var selectedLocalID: String?
+    // Picker selection keyed on the opaque ContactID, not a raw localID — the
+    // app never uses localID as an identity/selection token.
+    @State private var selectedContactID: ContactID?
     @State private var pickerSearch: String = ""
     @State private var eligible: [EligibleContact] = []
     @State private var didLoad = false
@@ -186,15 +191,15 @@ struct AddLinkSheet: View {
                             description: Text("No other contacts are available to link.")
                         )
                     } else {
-                        ForEach(filtered(eligible: eligible), id: \.localID) { entry in
+                        ForEach(filtered(eligible: eligible), id: \.id) { entry in
                             Button {
-                                selectedLocalID = entry.localID
+                                selectedContactID = entry.id
                             } label: {
                                 HStack {
                                     Text(entry.contact.displayName)
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    if selectedLocalID == entry.localID {
+                                    if selectedContactID == entry.id {
                                         Image(systemName: "checkmark")
                                             .foregroundStyle(.tint)
                                     }
@@ -220,7 +225,7 @@ struct AddLinkSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(selectedLocalID == nil)
+                        .disabled(selectedContactID == nil)
                 }
             }
             .task {
@@ -234,21 +239,23 @@ struct AddLinkSheet: View {
 
     private struct EligibleContact {
         let contact: Contact
-        let localID: String
+        let id: ContactID
     }
 
     private func loadEligibleContacts() async -> [EligibleContact] {
         var result: [EligibleContact] = []
-        let target = currentContactUUID.lowercased()
+        // The contact we're linking FROM, resolved to its ContactID through the
+        // bare GuessWho UUID. The "Link Contact" button is disabled until this
+        // UUID exists (the from-contact is reconciled), so this resolves.
+        let fromID = repository.contact(guessWhoID: currentContactUUID).map { repository.contactID(for: $0) }
         for contact in repository.contacts {
             // Skip the contact we're linking from; everything else is eligible.
-            // The link target's UUID is resolved on save via reconcileIfNeeded,
-            // so we don't need to carry a precomputed UUID on each row.
-            if let existing = service.guessWhoUUID(in: contact), existing == target { continue }
-            result.append(EligibleContact(
-                contact: contact,
-                localID: contact.localID
-            ))
+            // Exclude by ContactID (effective GuessWho identity), not a raw
+            // guessWhoUUID compare. The link target's UUID is resolved on save
+            // via reconcileIfNeeded, so we don't precompute a UUID per row.
+            let id = repository.contactID(for: contact)
+            if let fromID, id == fromID { continue }
+            result.append(EligibleContact(contact: contact, id: id))
         }
         return result.sorted { lhs, rhs in
             lhs.contact.displayName.localizedCaseInsensitiveCompare(rhs.contact.displayName) == .orderedAscending
@@ -262,8 +269,8 @@ struct AddLinkSheet: View {
     }
 
     private func save() async {
-        guard let localID = selectedLocalID,
-              let entry = eligible.first(where: { $0.localID == localID }) else { return }
+        guard let selectedContactID,
+              let entry = eligible.first(where: { $0.id == selectedContactID }) else { return }
         do {
             // reconcileIfNeeded short-circuits on an already-stamped contact
             // and otherwise reconciles + re-reads the freshly stamped UUID via
