@@ -20,7 +20,7 @@ struct ContactDetailView: View {
     /// view resolves it to a `Contact` via `repository.contact(id:)`. Since 6b2
     /// made `contact(id:)` reconcile-stable (it falls back to the `ContactID`'s
     /// always-present `localID` when the captured token's `guessWhoID` is still
-    /// nil after an on-open reconcile), the view re-loads off this same captured
+    /// nil after a first-write reconcile), the view re-loads off this same captured
     /// `id` and needs no separately-threaded `localID` token. The handful of
     /// contact-LIFECYCLE boundary calls that genuinely need a
     /// `CNContact.identifier` (edit/save/delete/fetch) read it from the loaded
@@ -1002,9 +1002,9 @@ struct ContactDetailView: View {
     /// The opened contact's own reconciled GuessWho UUID, or nil before it gains
     /// a `guesswho://` URL. Resolved through the repository's identity model
     /// (`guessWhoID(in:)`) off the LOADED `contact` — NOT the nav `id` — because
-    /// `id` is captured at selection time and does not re-key when an on-open
+    /// `id` is captured at selection time and does not re-key when a first-write
     /// reconcile mints the UUID, whereas `self.contact` reflects the
-    /// post-reconcile record. Semantics are identical to the former
+    /// post-mint record. Semantics are identical to the former
     /// `service.guessWhoUUID(in:)`: nil for an un-reconciled contact (NEVER the
     /// localID fallback). Still needed for the bare-UUID seams that have no
     /// repository home: link-direction classification, the event-link cache
@@ -1015,7 +1015,7 @@ struct ContactDetailView: View {
     }
 
     /// The ContactID derived from the LOADED contact, carrying its current
-    /// `guessWhoID` (which the nav `id` lacks after an on-open/first-write mint).
+    /// `guessWhoID` (which the nav `id` lacks after a first-write mint).
     /// The repository's sidecar reads (`eventLinks(for:)`) key on the passed
     /// ContactID's `guessWhoID`, so reads must use THIS, not the stale nav `id`.
     /// nil only before the first load resolves a contact.
@@ -1058,7 +1058,7 @@ struct ContactDetailView: View {
     private func reloadEventLinks() {
         // The contact↔event link READS go through the repository, keyed on the
         // LOADED contact's ContactID (which carries the current guessWhoID; the
-        // nav `id` lacks it after an on-open mint). Empty for an unreconciled
+        // nav `id` lacks it after a first-write mint). Empty for an unreconciled
         // contact — it has no links yet.
         let linkID = loadedContactID ?? id
         eventLinks = repository.eventLinks(for: linkID)
@@ -1124,7 +1124,7 @@ struct ContactDetailView: View {
         // Resolve the live contact off the view's captured `ContactID`. Since
         // 6b2 made `contact(id:)` reconcile-stable (it chases the guessWhoID
         // pointer when present, else falls back to the token's always-present
-        // `localID`), the captured `id` keeps resolving even after an on-open
+        // `localID`), the captured `id` keeps resolving even after a first-write
         // reconcile re-keys the contact's effective identity — no separately
         // threaded `localID` needed.
         let loaded: Contact?
@@ -1157,7 +1157,7 @@ struct ContactDetailView: View {
 
     /// (Re)build the notes/links stores keyed on the ContactID derived from the
     /// LOADED contact — NOT the nav `id`, whose `guessWhoID` is still nil after
-    /// an on-open/first-write mint: `repository.notes(for:)` / `links(for:)` read
+    /// a first-write mint: `repository.notes(for:)` / `links(for:)` read
     /// the `guessWhoID` directly off the passed ContactID. Rebuild a store when
     /// that identity changes — a first-write/Case-A mint stamps a fresh UUID, and
     /// a Case-D reconcile picks a winner UUID and deletes the loser's sidecar, so
