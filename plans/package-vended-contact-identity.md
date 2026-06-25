@@ -43,7 +43,7 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  IN PROGRESS — 6a + 6b DONE.** Split into sub-phases 6a
+  IN PROGRESS — 6a + 6b + 6b2 DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6b2 (one `Contact` cache `contactsByLocalID` + a
   `guessWhoIDToLocalID` pointer index — no duplicate `Contact` copies — so
@@ -551,7 +551,7 @@ this is the sequencing:
   write internally, package owns the post-write cache update (decision B). Package
   tests (Tests section). Still no app migration.
 - **6b2 — One `Contact` cache + a guessWhoID→localID pointer index; make
-  `contact(id:)` reconcile-stable** (package only; depends on 6a, independent of
+  `contact(id:)` reconcile-stable — DONE (`2acdfab`, `7d96963`).** (package only; depends on 6a, independent of
   6b — can land in parallel). Replace the mixed-key `contactsByEffectiveID` with
   the SINGLE `Contact` cache `contactsByLocalID` (every contact, one copy of each
   struct) plus a lightweight `guessWhoIDToLocalID: [String: String]` POINTER index
