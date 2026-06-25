@@ -17,8 +17,12 @@
   `contactsByEmail` indexes; all `contacts` mutations funnel through one
   `setContacts(_:)`; the delta path rebuilds once per batch. Lets Stages 3–4
   delete the five hand-rolled UI-layer contact maps.
-- **Stage 3 (list VCs), Stage 4 (navigation/detail/connections/favorites),
-  Stage 5 (visibility tighten): NOT STARTED.**
+- **Stage 3 (list VCs): IN REVIEW** — first attempt (`f2087ff`) rejected
+  (relied on undocumented diffable `==`-reconfigure + an `appendItems` crash);
+  redesign in progress: identity-only `ContactID` + explicit `reconfigureItems`
+  pass + snapshot dedup.
+- **Stage 4 (navigation/detail/connections/favorites), Stage 5 (visibility
+  tighten): NOT STARTED.**
 
 Two design decisions taken during Stages 1–2 changed the shape below from the
 original draft — they are folded into the sections that follow:
@@ -31,11 +35,16 @@ original draft — they are folded into the sections that follow:
 2. **The reconciliation transition (`localID`-keyed → `guessWhoID`-keyed) is an
    accepted diffable delete+insert**, rare (once per contact) and symmetric with
    how events adopt a sidecar (`Event.stableID(forEventKitID:)`). No alias map.
-3. **`ContactID` is a FULLY OPAQUE token — every stored property is `package`,
-   zero public.** The app can hold/compare/fetch-with it but cannot read any
-   field, so it can't be misused as a "contact-light". Diffing still works (the
-   `==`/`hash` run inside the package); the cell provider renders from the
-   `Contact` it fetches via the synchronous `repository.contact(id:)` cache read.
+3. **`ContactID` is a FULLY OPAQUE, IDENTITY-ONLY token** — its only stored
+   properties are `guessWhoID`/`localID`, both `package` (zero public), and `==`
+   AND `hash` both key on `effectiveID` only (consistent `Hashable`). The app
+   holds/compares/fetches-with it but cannot read any field, so it can't be a
+   "contact-light". It carries NO display fields: an earlier draft did, betting
+   diffable `apply()` would reconfigure on `==`-difference, but Apple's docs say
+   it won't (you must call `reconfigureItems` explicitly), so the fields earned
+   nothing and made `Hashable` inconsistent. Content repaint is the VC's explicit
+   reconfigure pass; rows render from the `Contact` fetched via the synchronous
+   O(1) `repository.contact(id:)`.
 
 ## Why
 
@@ -69,76 +78,77 @@ grow.
 
 ## Core idea
 
-As shipped (`Sources/GuessWhoSync/ContactID.swift`). `ContactID` is a FULLY
-OPAQUE token — EVERY stored property is `package`, ZERO public. The app holds it,
-compares it (for diffing), and hands it back to fetch the real `Contact`; it
+`ContactID` is a FULLY OPAQUE, IDENTITY-ONLY token. EVERY stored property is
+`package`, ZERO public, and there are only two — the identity, nothing else. The
+app holds it, compares it, and hands it back to fetch the real `Contact`; it
 CANNOT read any field off it, so the token can't be misused as a "contact-light".
 The conformances are public so the app can put it in a diffable snapshot / `Set`;
-the DATA is sealed.
+the data is sealed.
 
 ```swift
 public struct ContactID: Hashable, Sendable {
-    // Identity (package — not readable by the app):
+    // The ONLY two stored properties — both package, both identity:
     package let guessWhoID: String?   // canonical bare UUID, nil until reconciled
     package let localID: String       // CNContact.identifier, always present
-
-    // Display fields (package — carried ONLY so the package-internal `==` can
-    // drive diffable change-detection; the app renders from the fetched Contact,
-    // never from these):
-    package let displayName, givenName, familyName, jobTitle, organizationName: String
-    package let contactType: ContactType
-    package let imageDataAvailable: Bool
 
     var effectiveID: String { guessWhoID ?? localID }   // the single identity
 
     /// NON-failing — `localID` is always available, so a row can be vended
     /// before reconciliation. `guessWhoID` is nil when there's no valid URL.
-    package init(contact: Contact) { /* … */ }
+    package init(contact: Contact) { /* sets guessWhoID via SidecarKey, localID */ }
 
+    // CONSISTENT Hashable: == and hash BOTH key on effectiveID, nothing else.
     public static func == (lhs: ContactID, rhs: ContactID) -> Bool {
-        // effectiveID AND all display fields → an edit is "same row, changed
-        // contents"; a reconciliation transition (effectiveID itself changes)
-        // is a delete + insert, by design. Runs inside the package, where the
-        // fields are visible.
-        lhs.effectiveID == rhs.effectiveID /* && all display fields … */
+        lhs.effectiveID == rhs.effectiveID
     }
-
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(effectiveID)   // identity only
+        hasher.combine(effectiveID)
     }
 }
 ```
 
-### Why this exact `Equatable`/`Hashable` split
+### Why identity-only (and NOT "== carries display fields for free diffing")
 
-A `UITableViewDiffableDataSource` decides "same row vs different row" by
-`Hashable`, and "reconfigure in place vs leave alone" by `Equatable` on the item
-identifier. Splitting them as above gives us, for free, the behavior the app
-currently hand-rolls at `ContactsListViewController.swift:195-217`:
+An earlier draft put the display fields on `ContactID` and made `==` compare
+them while `hash` stayed identity-only, betting that
+`UITableViewDiffableDataSource.apply()` would re-check `==` on a same-identity
+row and auto-reconfigure it. **It does not.** Apple's docs (the `reconfigureItems`
+discussion) are explicit: `apply()` identifies items by their `Hashable`
+identifier ONLY; to repaint an existing row's CONTENTS you must EXPLICITLY call
+`reconfigureItems`/`reloadItems`. A `==`/`hash` that disagree is also a
+`Hashable`-contract smell, and two contacts sharing a `guessWhoID` in the
+transient pre-reconcile window produced two EQUAL `ContactID`s → `appendItems`
+trap (crash). So:
 
-- **hash on identity only** → an edited contact keeps its row (no flicker, no
-  scroll jump, no delete+insert animation).
-- **`==` includes display fields** → an edited contact's row is reported as
-  *changed*, so the data source reconfigures the cell. This deletes the manual
-  `previousByID` snapshot diff + `reconfigureItems` pass and the entire
-  `contactsByLocalID` side-dictionary.
+- `ContactID` is identity-only (consistent `Hashable`).
+- The list VCs do their OWN explicit `reconfigureItems` pass: keep a
+  `[ContactID: Contact]` map of what each row last rendered, and on each snapshot
+  reconfigure the rows whose `Contact` (fetched via `repository.contact(id:)`)
+  differs from the last-rendered one. Identity stays stable (no flicker); only
+  changed contents reload. This is documented behavior, in the layer Apple says
+  owns it.
+- The snapshot is DE-DUPED by `effectiveID` so the transient duplicate-guessWhoID
+  window can't trap `appendItems`.
+
+This still deletes the app's `contactsByLocalID` side-dictionary (rows key on
+`ContactID`, content fetched O(1) via `repository.contact(id:)`); it just keeps
+the content-change detection explicit in the VC instead of (incorrectly) leaning
+on diffable internals.
 
 The snapshot becomes `NSDiffableDataSourceSnapshot<Section, ContactID>`. Because
-`ContactID` is fully sealed, the cell provider fetches the full `Contact` via
-`repository.contact(id:)` to render the row (the existing cells already take a
-`Contact` — `ContactCell.configure(with: Contact)` — so this costs nothing). The
-sealed display fields drive only the diff, never the render.
+`ContactID` is identity-only and sealed, the cell provider fetches the full
+`Contact` via `repository.contact(id:)` to render the row (the existing cells
+already take a `Contact` — `ContactCell.configure(with: Contact)` — so this costs
+nothing). Content-change repaint is driven by the VC's explicit `reconfigureItems`
+pass (above), comparing the fetched `Contact` against the last rendered one.
 
-### Display fields (DECIDED: raw components, sealed `package`)
+### No display fields on `ContactID` (DECIDED)
 
-`ContactID` carries the raw components a list cell renders — `displayName`,
-`contactType`, `givenName`, `familyName`, `jobTitle`, `organizationName`,
-`imageDataAvailable` — as `package` fields, used ONLY by the package-internal
-`==` for diffing. The app does not read them; it renders from the `Contact` it
-fetches via `repository.contact(id:)`. (Raw components, not a pre-rendered
-`secondaryText`, so the equality comparison is exact.) Notes/tags/links never
-belong on `ContactID` — they are not part of a row's visual identity and change
-far more often.
+`ContactID` carries NO display data — only its identity (`guessWhoID` /
+`localID`). An earlier draft carried the row's raw components for "free" diffing;
+that was removed because `apply()` does not reconfigure on `==`-difference (see
+above), so the fields earned nothing and made `Hashable` inconsistent. Row
+content always comes from the `Contact` fetched via `repository.contact(id:)`.
 
 ## What the app stops doing
 
@@ -148,7 +158,11 @@ Direct consequences once `ContactID` lands and the app migrates to it:
   `OrganizationsListViewController` snapshot `ContactID` directly; the cell
   provider fetches the row's `Contact` via `repository.contact(id:)` (a cache
   hit) — no app-maintained side dictionary.
-- **No manual `reconfigureItems` diff.** `Equatable` on `ContactID` drives it.
+- **An EXPLICIT `reconfigureItems` pass stays** (keyed on `ContactID` now, not
+  `localID`): the VC compares each row's fetched `Contact` against the last
+  rendered one and reconfigures the changed rows. `ContactID` identity keeps the
+  row in place; this pass repaints its contents. (Not "for free" via `==` — see
+  "Why identity-only" above.)
 - **No `localID` in navigation.** `ContactReference` (`NavigationReferences.swift`)
   is re-keyed on `ContactID` (carry the whole value, or just `guessWhoID`).
 - **No `localID` identity comparisons.** `ContactDetailView.swift:654` and
@@ -326,17 +340,30 @@ status-binding/`.notDetermined`-seed refinements (`6b463c2`, `fad00f1`,
 in the app target; Catalyst + iPhone-simulator builds green; permission flow
 intact.
 
-### Stage 3 — Migrate list view controllers
+### Stage 3 — Migrate list view controllers — IN REVIEW
 
 1. `ContactsListViewController` and `OrganizationsListViewController` snapshot
    `NSDiffableDataSourceSnapshot<String, ContactID>`. Cell provider fetches the
    row's `Contact` via `repository.contact(id:)` — a SYNCHRONOUS main-actor,
    O(1) index read after Stage 1.5 (no store I/O, no `await`) — and passes it to
-   the existing `configure(with: Contact)`. Delete `contactsByLocalID` and the
-   manual `previousByID`/`reconfigureItems` pass.
-2. Delete `contactsByLocalID`, the `previousByID` diff, and the manual
-   `reconfigureItems` pass — `ContactID`'s `Equatable`/`Hashable` replaces them.
-3. `didSelectRowAt` reads the `ContactID` item identifier directly.
+   the existing `configure(with: Contact)`. Delete `contactsByLocalID`.
+2. `ContactID` is identity-only, so keep an EXPLICIT content-change pass: a
+   `[ContactID: Contact]` last-rendered map; on each snapshot, `reconfigureItems`
+   the rows whose fetched `Contact` differs from the last-rendered one (exclude
+   rows absent from the new snapshot — reconfiguring an absent item traps). This
+   replaces the old `localID`-keyed `previousByID`/`reconfigureItems` pass with a
+   `ContactID`-keyed one; it does NOT rely on `ContactID`'s `==`.
+3. DE-DUPE the snapshot by `effectiveID` (a `Set<ContactID>` as you append; first
+   wins) so the transient duplicate-`guessWhoID` window can't trap `appendItems`.
+4. `didSelectRowAt` reads the `ContactID` item identifier and resolves via
+   `repository.contact(id:)`. `didSelectContact: (Contact)` stays unchanged so
+   `GuessWhoSceneDelegate` is untouched (navigation re-keying is Stage 4).
+
+NOTE: the FIRST attempt (commit `f2087ff`) leaned on `ContactID`'s `==` to drive
+reconfigure-for-free and was rejected in review — `apply()` does not reconfigure
+on `==`-difference (Apple docs), and equal duplicate `ContactID`s trapped
+`appendItems`. The redesign above (identity-only `ContactID` + explicit pass +
+dedup) is the corrected approach.
 
 Acceptance: list VCs hold no `localID` and no side `[String: Contact]`
 dictionary; in-place edits still repaint via reconfigure; selection still
