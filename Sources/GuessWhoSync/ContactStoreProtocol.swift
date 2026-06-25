@@ -24,8 +24,10 @@ public protocol ContactStoreProtocol: Actor {
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus
 
     /// Prompt for contacts access (no-op at the OS level if already decided)
-    /// and return the resulting status. Runs the request on this store.
-    func requestContactsAccess() async -> StoreAuthorizationStatus
+    /// and return the resulting `StoreAccessResult`. Runs the request on this
+    /// store. A thrown request surfaces as `.denied` with a non-nil
+    /// `failureDescription` so the caller can restore its error-state write.
+    func requestContactsAccess() async -> StoreAccessResult
 
     // Reads the change history since `token` (an opaque cursor previously
     // returned in `ContactChangeSet.newToken`). A `nil` token means "from the

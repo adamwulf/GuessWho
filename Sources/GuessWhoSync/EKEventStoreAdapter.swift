@@ -3,12 +3,13 @@ import EventKit
 import Foundation
 
 // `@unchecked Sendable`: the adapter holds a single immutable `let store`,
-// adds no mutable state of its own, and EventKit documents `EKEventStore` as
-// safe to share across threads for the read/request/save calls used here. The
-// unchecked conformance lets `requestEventsAccess()` be `async` (it awaits
-// EventKit's permission prompt) without the caller's `sending`-check flagging a
-// data race when it hops off the caller's actor. Mirrors the rationale behind
-// `GuessWhoSync`'s own `@unchecked Sendable`.
+// adds no mutable state of its own, and only ever issues read / request / save
+// calls on that store — it never mutates shared adapter state across threads.
+// That is the basis for the unchecked conformance; it lets
+// `requestEventsAccess()` be `async` (it awaits EventKit's permission prompt)
+// without the caller's `sending`-check flagging a data race when it hops off
+// the caller's actor. Mirrors the rationale behind `GuessWhoSync`'s own
+// `@unchecked Sendable`.
 public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable {
     private let store: EKEventStore
 
@@ -27,27 +28,29 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     }
 
     /// Prompt for events access on this adapter's store and return the
-    /// resulting status. Preserves the prior `SyncService` semantics: only
-    /// `.notDetermined` triggers a prompt; `requestFullAccessToEvents()` is
-    /// used on iOS 17 / macOS 14+, the legacy `requestAccess(to:)` before
-    /// that. A thrown error surfaces as `.denied`.
-    public func requestEventsAccess() async -> StoreAuthorizationStatus {
+    /// resulting `StoreAccessResult`. Preserves the prior `SyncService`
+    /// semantics: only `.notDetermined` triggers a prompt;
+    /// `requestFullAccessToEvents()` is used on iOS 17 / macOS 14+, the legacy
+    /// `requestAccess(to:)` before that. A thrown error surfaces as `.denied`
+    /// with a non-nil `failureDescription` (the error's `localizedDescription`)
+    /// so the caller can restore its error-state write.
+    public func requestEventsAccess() async -> StoreAccessResult {
         let status = EKEventStore.authorizationStatus(for: .event)
         switch status {
         case .notDetermined:
             do {
+                let granted: Bool
                 if #available(iOS 17.0, macOS 14.0, *) {
-                    let granted = try await store.requestFullAccessToEvents()
-                    return granted ? .authorized : .denied
+                    granted = try await store.requestFullAccessToEvents()
                 } else {
-                    let granted = try await store.requestAccess(to: .event)
-                    return granted ? .authorized : .denied
+                    granted = try await store.requestAccess(to: .event)
                 }
+                return StoreAccessResult(status: granted ? .authorized : .denied)
             } catch {
-                return .denied
+                return StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
             }
         default:
-            return Self.mapAuthorization(status)
+            return StoreAccessResult(status: Self.mapAuthorization(status))
         }
     }
 

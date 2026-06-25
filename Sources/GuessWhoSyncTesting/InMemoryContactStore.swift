@@ -62,18 +62,31 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         authorizationStatus
     }
 
-    public func requestContactsAccess() async -> StoreAuthorizationStatus {
+    public func requestContactsAccess() async -> StoreAccessResult {
+        // Model a thrown OS request when the test asked for one.
+        if let description = requestFailureDescription {
+            return StoreAccessResult(status: .denied, failureDescription: description)
+        }
         // Model the OS: a `.notDetermined` store grants on request; an
         // already-decided store returns its existing verdict unchanged.
         if authorizationStatus == .notDetermined {
             authorizationStatus = .authorized
         }
-        return authorizationStatus
+        return StoreAccessResult(status: authorizationStatus)
     }
 
     /// Test hook — drive the simulated contacts authorization state.
     public func setAuthorizationStatus(_ status: StoreAuthorizationStatus) {
         authorizationStatus = status
+    }
+
+    /// Test hook — when non-nil, the next `requestContactsAccess()` models a
+    /// thrown OS request: it returns `.denied` carrying this description and
+    /// leaves the stored status untouched. Mirrors the real adapter's
+    /// catch-block behavior.
+    private var requestFailureDescription: String?
+    public func setRequestFailure(_ description: String?) {
+        requestFailureDescription = description
     }
 
     public func fetchAll() throws -> [Contact] {

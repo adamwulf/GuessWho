@@ -134,9 +134,14 @@ final class SyncService {
     func requestContactsAccessIfNeeded() async {
         // The adapter owns the CNContactStore and runs the request on it,
         // returning a neutral status (`.limited` already collapsed to
-        // `.authorized`). SyncService just maps it to its UI-facing enum.
-        let status = await contactsAdapter.requestContactsAccess()
-        contactsAuthorization = Self.mapContacts(status)
+        // `.authorized`). SyncService maps it to its UI-facing enum and — when
+        // the request THREW (not a plain user-denial) — restores the same
+        // `lastError` write the pre-adapter code made.
+        let result = await contactsAdapter.requestContactsAccess()
+        contactsAuthorization = Self.mapContacts(result.status)
+        if let description = result.failureDescription {
+            lastError = "Contacts access request failed: \(description)"
+        }
     }
 
     func requestEventsAccessIfNeeded() async {
@@ -144,8 +149,12 @@ final class SyncService {
         // preserving the prior semantics internally (fullAccess / pre-17
         // authorized → authorized, writeOnly → denied, the iOS17/macOS14
         // `requestFullAccessToEvents` vs legacy `requestAccess(to:)` branch).
-        let status = await eventsAdapter.requestEventsAccess()
-        eventsAuthorization = Self.mapEvents(status)
+        // A thrown request restores the same `lastError` write as before.
+        let result = await eventsAdapter.requestEventsAccess()
+        eventsAuthorization = Self.mapEvents(result.status)
+        if let description = result.failureDescription {
+            lastError = "Events access request failed: \(description)"
+        }
     }
 
     // Routes the windowed read through the orchestrator's Option-C projection

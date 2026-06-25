@@ -116,25 +116,27 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     }
 
     /// Prompt for contacts access on this actor's store and return the
-    /// resulting status. `requestAccess(for:)` is a no-op once the user has
-    /// already decided; a thrown error is surfaced as `.denied`.
-    public func requestContactsAccess() async -> StoreAuthorizationStatus {
+    /// resulting `StoreAccessResult`. `requestAccess(for:)` is a no-op once the
+    /// user has already decided; a thrown error is surfaced as `.denied` with a
+    /// non-nil `failureDescription` (the error's `localizedDescription`) so the
+    /// caller can restore its error-state write.
+    public func requestContactsAccess() async -> StoreAccessResult {
         switch CNContactStore.authorizationStatus(for: .contacts) {
         case .notDetermined:
             do {
                 let granted = try await store.requestAccess(for: .contacts)
-                return granted ? .authorized : .denied
+                return StoreAccessResult(status: granted ? .authorized : .denied)
             } catch {
-                return .denied
+                return StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
             }
         case .authorized, .limited:
-            return .authorized
+            return StoreAccessResult(status: .authorized)
         case .denied:
-            return .denied
+            return StoreAccessResult(status: .denied)
         case .restricted:
-            return .restricted
+            return StoreAccessResult(status: .restricted)
         @unknown default:
-            return .denied
+            return StoreAccessResult(status: .denied)
         }
     }
 

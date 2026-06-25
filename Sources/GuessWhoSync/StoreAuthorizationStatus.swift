@@ -20,3 +20,24 @@ public enum StoreAuthorizationStatus: Sendable, Equatable {
     case denied
     case restricted
 }
+
+/// Outcome of a permission *request*. Carries the resulting status plus an
+/// optional failure description so a caller can distinguish "the user said no"
+/// (`status == .denied`, `failureDescription == nil`) from "the request itself
+/// threw" (`status == .denied`, `failureDescription` set to the error's
+/// `localizedDescription`).
+///
+/// The pre-adapter `SyncService` wrote `lastError` only on a thrown request, not
+/// on a plain user-denial; this type preserves that distinction so the same
+/// `lastError` write survives the move behind the adapters.
+public struct StoreAccessResult: Sendable, Equatable {
+    public let status: StoreAuthorizationStatus
+    /// Non-nil ONLY when the underlying request threw. Holds the thrown error's
+    /// `localizedDescription`.
+    public let failureDescription: String?
+
+    public init(status: StoreAuthorizationStatus, failureDescription: String? = nil) {
+        self.status = status
+        self.failureDescription = failureDescription
+    }
+}

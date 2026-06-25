@@ -14,9 +14,11 @@ public protocol EventStoreProtocol {
     func eventsAuthorizationStatus() -> StoreAuthorizationStatus
 
     /// Prompt for events access on this adapter's store and return the
-    /// resulting status. Uses `requestFullAccessToEvents()` on iOS 17 / macOS
-    /// 14+, falling back to the legacy `requestAccess(to:)` before that.
-    func requestEventsAccess() async -> StoreAuthorizationStatus
+    /// resulting `StoreAccessResult`. Uses `requestFullAccessToEvents()` on iOS
+    /// 17 / macOS 14+, falling back to the legacy `requestAccess(to:)` before
+    /// that. A thrown request surfaces as `.denied` with a non-nil
+    /// `failureDescription` so the caller can restore its error-state write.
+    func requestEventsAccess() async -> StoreAccessResult
 
     // MARK: - Reads (EventKit-keyed)
 

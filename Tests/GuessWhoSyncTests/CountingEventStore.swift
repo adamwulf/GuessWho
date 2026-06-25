@@ -26,7 +26,7 @@ final class CountingEventStore: EventStoreProtocol {
         inner.eventsAuthorizationStatus()
     }
 
-    func requestEventsAccess() async -> StoreAuthorizationStatus {
+    func requestEventsAccess() async -> StoreAccessResult {
         await inner.requestEventsAccess()
     }
 
