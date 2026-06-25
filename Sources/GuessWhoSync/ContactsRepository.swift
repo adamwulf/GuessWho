@@ -244,6 +244,247 @@ public final class ContactsRepository: NSObject {
         throw ReconcileAssignmentFailedError()
     }
 
+    // MARK: - ContactID-keyed contact API (notes / links / favorites)
+    //
+    // Sub-phase 6b — the PUBLIC contact-sidecar surface the app speaks, keyed
+    // exclusively on `ContactID`. Plain verbs (no "sidecar" in any name): the
+    // app never constructs a `SidecarKey` or sees the word — the repository
+    // translates a `ContactID` to `SidecarKey(kind: .contact, id: guessWhoID)`
+    // internally and calls the engine. Semantics mirror today's app
+    // `SyncService` contact-sidecar methods byte-for-byte (so 6d can repoint the
+    // app onto these with no behavior change).
+    //
+    // READS are SYNCHRONOUS: `id.guessWhoID` is already on the value, so no
+    // reconcile and no `await`. An UNRECONCILED contact (`id.guessWhoID == nil`)
+    // has no sidecar yet, so reads return empty/false and MINT NOTHING — reads
+    // never reconcile (Design step 3).
+    //
+    // WRITES are `async`: they resolve-or-mint the GuessWho UUID first (6a's
+    // `resolveOrMintGuessWhoID`, which `await`s reconcile), then call the engine,
+    // then — if the resolve MINTED (decision B) — refresh the affected contact
+    // in the cache so the app needs no post-write reload. When the engine (or,
+    // for favorites, the favorites store) is nil — the `.unavailable` storage
+    // state — writes THROW `SidecarUnavailableError` rather than silently no-op,
+    // matching `SyncService`'s throw behavior.
+
+    /// Live (non-deleted) notes on the contact identified by `id`, oldest first.
+    /// Returns `[]` when the contact is unreconciled (no sidecar yet) or the
+    /// engine is unavailable; a read NEVER reconciles. Mirrors
+    /// `SyncService.notes(forContactUUID:)`.
+    public func notes(for id: ContactID) -> [ContactNote] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        do {
+            return try sync.notes(at: SidecarKey(kind: .contact, id: guessWhoID))
+        } catch {
+            lastError = "notes read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Live contact↔contact links on the contact identified by `id`. Excludes
+    /// soft-deleted links and links whose FAR endpoint is not a contact (those
+    /// are event links — see `eventLinks(for:)`). Returns `[]` when the contact
+    /// is unreconciled or the engine is unavailable. Mirrors
+    /// `SyncService.contactLinks(forContactUUID:)`.
+    public func links(for id: ContactID) -> [Link] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        do {
+            return try sync.links(at: endpoint).filter { link in
+                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
+            }
+        } catch {
+            lastError = "links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Live contact↔event links on the contact identified by `id`. Excludes
+    /// soft-deleted links and links whose FAR endpoint is not an event. Returns
+    /// `[]` when the contact is unreconciled or the engine is unavailable.
+    /// Mirrors `SyncService.eventLinks(forContactUUID:)`. (The CONTACT endpoint
+    /// is keyed on `ContactID`; the EVENT endpoint stays a bare UUID until the
+    /// deferred event-identity migration — events are out of scope for Stage 6.)
+    public func eventLinks(for id: ContactID) -> [Link] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        do {
+            return try sync.links(at: endpoint).filter { link in
+                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
+            }
+        } catch {
+            lastError = "event links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Whether the contact identified by `id` is favorited. Returns `false` when
+    /// the contact is unreconciled (no GuessWho UUID to key the favorite on) or
+    /// the favorites store is unavailable. Mirrors
+    /// `SyncService.isFavorite(kind: .contact, id:)`.
+    public func isFavorite(_ id: ContactID) -> Bool {
+        guard let favorites, let guessWhoID = id.guessWhoID else { return false }
+        do {
+            return try favorites.isFavorite(kind: .contact, id: guessWhoID)
+        } catch {
+            lastError = "favorites lookup failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Append a note to the contact identified by `id`, returning the new note's
+    /// UUID. Resolves-or-mints the GuessWho UUID first (the FIRST write to an
+    /// unreconciled contact reconciles + mints, transparent to the caller), then
+    /// writes the note, then refreshes the cache if the write minted (decision
+    /// B). Throws `SidecarUnavailableError` when the engine is unavailable.
+    /// Mirrors `SyncService.addNote(body:forContactUUID:)`.
+    @discardableResult
+    public func addNote(for id: ContactID, body: String) async throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let noteID = try sync.addNote(at: SidecarKey(kind: .contact, id: guessWhoID), body: body)
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        return noteID
+    }
+
+    /// Edit an existing note's body on the contact identified by `id`. The two
+    /// `id`s are disambiguated: `id` is the CONTACT, `noteID` is the note. (No
+    /// mint can happen via an edit in practice — you can only edit a note that
+    /// exists, which means the contact is already reconciled — but resolve-or-
+    /// mint is still routed for consistency with the other writes, and the cache
+    /// is refreshed in the impossible-mint case for safety.) Throws when the
+    /// engine is unavailable. Mirrors `SyncService.editNote(id:newBody:forContactUUID:)`.
+    public func editNote(for id: ContactID, id noteID: UUID, newBody: String) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        try sync.editNote(at: SidecarKey(kind: .contact, id: guessWhoID), id: noteID, newBody: newBody)
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
+    /// Soft-delete a note on the contact identified by `id`. `id` is the
+    /// CONTACT, `noteID` the note. Throws when the engine is unavailable.
+    /// Mirrors `SyncService.deleteNote(id:forContactUUID:)`.
+    public func deleteNote(for id: ContactID, id noteID: UUID) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        try sync.deleteNote(at: SidecarKey(kind: .contact, id: guessWhoID), id: noteID)
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
+    /// Create a durable contact↔contact link between `a` and `b`, returning the
+    /// minted `Link`. Resolves-or-mints BOTH endpoints first (so the link is
+    /// keyed on their canonical GuessWho UUIDs even if either was unreconciled),
+    /// then writes the link, then refreshes the cache for whichever endpoint(s)
+    /// minted. Throws `SidecarUnavailableError` when the engine is unavailable.
+    /// Mirrors `SyncService.addContactLink(fromUUID:toUUID:note:)`.
+    @discardableResult
+    public func addLink(from a: ContactID, to b: ContactID, note: String) async throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        let aMinted = a.guessWhoID == nil
+        let bMinted = b.guessWhoID == nil
+        let aID = try await resolveOrMintGuessWhoID(for: a)
+        let bID = try await resolveOrMintGuessWhoID(for: b)
+        let link = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: aID),
+            to: SidecarKey(kind: .contact, id: bID),
+            note: note
+        )
+        await refreshCacheIfMinted(aMinted, localID: a.localID)
+        await refreshCacheIfMinted(bMinted, localID: b.localID)
+        return link
+    }
+
+    /// Mutate the note on an existing link. The link is identified by its own
+    /// UUID (`linkID`), so no contact resolve-or-mint is needed — but it is a
+    /// WRITE, so it throws `SidecarUnavailableError` when the engine is
+    /// unavailable, consistent with the other writes. Mirrors
+    /// `SyncService.setContactLinkNote(id:note:)`.
+    public func setLinkNote(id linkID: UUID, note: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.setLinkNote(id: linkID, note: note)
+    }
+
+    /// Soft-delete a link by its own UUID. No contact resolve-or-mint needed;
+    /// throws `SidecarUnavailableError` when the engine is unavailable. Mirrors
+    /// `SyncService.removeContactLink(id:)` (and the shared `removeLink(id:)`).
+    public func removeLink(id linkID: UUID) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.removeLink(id: linkID)
+    }
+
+    /// Create a durable contact↔event link between the contact identified by
+    /// `id` and the event identified by `eventUUID`, returning the minted
+    /// `Link`. Resolves-or-mints the CONTACT endpoint; the EVENT endpoint is a
+    /// bare UUID (`SidecarKey(kind: .event, id: eventUUID)`) until the deferred
+    /// event-identity migration. Refreshes the cache if the contact minted.
+    /// Throws `SidecarUnavailableError` when the engine is unavailable. Mirrors
+    /// `SyncService.addContactEventLink(contactUUID:eventUUID:note:)`.
+    @discardableResult
+    public func addEventLink(for id: ContactID, eventUUID: String, note: String) async throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let link = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: guessWhoID),
+            to: SidecarKey(kind: .event, id: eventUUID),
+            note: note
+        )
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        return link
+    }
+
+    /// Toggle the favorite state of the contact identified by `id`, returning
+    /// the NEW state (`true` if just favorited, `false` if unfavorited).
+    /// Resolves-or-mints the GuessWho UUID first (favoriting a never-touched
+    /// contact reconciles + mints, transparent to the caller — the deliberate
+    /// UX change that lets the favorite gate drop in 6d), then toggles the
+    /// CONTACT favorite, then refreshes the cache if it minted. Throws
+    /// `SidecarUnavailableError` when EITHER the engine (needed to mint) OR the
+    /// favorites store is unavailable. Mirrors
+    /// `SyncService.toggleFavorite(kind: .contact, id:)`.
+    @discardableResult
+    public func toggleFavorite(_ id: ContactID) async throws -> Bool {
+        guard let favorites else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let newState = try favorites.toggle(kind: .contact, id: guessWhoID, now: Date())
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        return newState
+    }
+
+    // MARK: - Decision B helper
+    //
+    // Notes/links/favorite writes do NOT alter the cached `Contact` record —
+    // they live in the sidecar / favorites file, not on the `CNContact`. So the
+    // ONLY write that changes the cached Contact is the FIRST write to an
+    // unreconciled contact, where resolve-or-mint stamped a fresh `guesswho://`
+    // URL onto its `urlAddresses` (changing its `guessWhoID` and thus its
+    // effective identity). In that case — and ONLY that case — re-read the one
+    // record so the cache reflects the new identity and the app needs no
+    // post-write reload. `refreshContact(localID:)` re-fetches the single record
+    // and rebuilds the indexes, automatically re-keying it under the new
+    // effective id. When nothing minted, the cached Contact is unchanged and we
+    // skip the fetch.
+
+    /// Re-read the one record into the cache iff the preceding resolve-or-mint
+    /// minted a UUID (the contact's `guessWhoID` was nil going in). No-op
+    /// otherwise — the cached `Contact` is untouched by a sidecar/favorite write.
+    private func refreshCacheIfMinted(_ minted: Bool, localID: String) async {
+        guard minted else { return }
+        await refreshContact(localID: localID)
+    }
+
+    /// Far endpoint of `link` relative to `endpoint` (the one that is NOT
+    /// `endpoint`). Used to classify a link as contact↔contact vs contact↔event
+    /// by inspecting the FAR endpoint's `kind`. Mirrors
+    /// `SyncService.otherEndpoint(of:from:)`.
+    private static func otherEndpoint(of link: Link, from endpoint: SidecarKey) -> SidecarKey {
+        link.endpointA == endpoint ? link.endpointB : link.endpointA
+    }
+
     /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors
     /// `peopleSections`. EVERY cached person yields a row — a contact without a
     /// GuessWho URL is still vended, identified by its `localID` fallback, so
