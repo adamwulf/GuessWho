@@ -299,4 +299,116 @@ struct ContactsRepositoryContactAPITests {
             _ = try await repository.toggleFavorite(id)
         }
     }
+
+    // MARK: - Linked-event UUID accessors (6d)
+    //
+    // `linkedEventUUIDs(for:)` and `eventEndpointUUID(of:for:)` resolve the FAR
+    // (event) endpoint of a contact↔event link INTERNALLY so the app never
+    // constructs a `.contact` SidecarKey to walk the links. These exercise the
+    // happy path, the contact↔contact exclusion, and the unreconciled/nil-engine
+    // degradation.
+
+    // After linking two events to a contact, `linkedEventUUIDs(for:)` returns
+    // exactly those event UUIDs (the far endpoints), and `eventEndpointUUID`
+    // resolves each individual link to its event UUID.
+    @Test @MainActor
+    func linkedEventAccessors_resolveFarEventEndpoints() async throws {
+        let target = Contact(localID: "TARGET", givenName: "Ada")
+        let store = InMemoryContactStore(contacts: [target])
+        let sync = makeSync(contacts: store)
+        let repository = ContactsRepository(contacts: store, sync: sync)
+        await repository.reload()
+
+        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        // `SidecarKey` canonicalizes ids to lowercase, so the stored event
+        // endpoints (and what the accessors return) are lowercased.
+        let link1 = try await repository.addEventLink(for: id, eventUUID: "evt-1", note: "a")
+        // Re-resolve: the first link minted the contact's GuessWho UUID, so the
+        // captured `id` (guessWhoID nil) is stale. The second write resolves it
+        // again off the now-reconciled record.
+        let reconciledID = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let link2 = try await repository.addEventLink(for: reconciledID, eventUUID: "evt-2", note: "b")
+
+        // The bulk accessor returns both event endpoints (order-independent).
+        #expect(Set(repository.linkedEventUUIDs(for: reconciledID)) == Set(["evt-1", "evt-2"]))
+
+        // The single-link accessor resolves each link to its event endpoint.
+        #expect(repository.eventEndpointUUID(of: link1, for: reconciledID) == "evt-1")
+        #expect(repository.eventEndpointUUID(of: link2, for: reconciledID) == "evt-2")
+    }
+
+    // A contact↔CONTACT link is NOT an event link: it is excluded from
+    // `linkedEventUUIDs(for:)`, and `eventEndpointUUID(of:for:)` returns nil for
+    // it (the far endpoint is a contact, not an event).
+    @Test @MainActor
+    func linkedEventAccessors_excludeContactToContactLinks() async throws {
+        let a = Contact(localID: "A", givenName: "Ada")
+        let b = Contact(localID: "B", givenName: "Bob")
+        let store = InMemoryContactStore(contacts: [a, b])
+        let sync = makeSync(contacts: store)
+        let repository = ContactsRepository(contacts: store, sync: sync)
+        await repository.reload()
+
+        let idA = repository.contactID(for: try #require(repository.contact(localID: "A")))
+        let idB = repository.contactID(for: try #require(repository.contact(localID: "B")))
+
+        // A contact↔contact link plus a contact↔event link, both on A. (Event
+        // UUIDs are canonicalized to lowercase by `SidecarKey`.)
+        let contactLink = try await repository.addLink(from: idA, to: idB, note: "colleagues")
+        let reconciledA = repository.contactID(for: try #require(repository.contact(localID: "A")))
+        let eventLink = try await repository.addEventLink(for: reconciledA, eventUUID: "evt-x", note: "x")
+
+        // Only the event endpoint surfaces in the bulk accessor.
+        #expect(repository.linkedEventUUIDs(for: reconciledA) == ["evt-x"])
+
+        // Per-link: the event link resolves; the contact↔contact link is nil.
+        #expect(repository.eventEndpointUUID(of: eventLink, for: reconciledA) == "evt-x")
+        #expect(repository.eventEndpointUUID(of: contactLink, for: reconciledA) == nil)
+    }
+
+    // An UNRECONCILED ContactID (no guessWhoID) can hold no link, so both
+    // accessors degrade: `[]` and `nil`. They MINT NOTHING (a read).
+    @Test @MainActor
+    func linkedEventAccessors_onUnreconciledContact_degrade() async throws {
+        let target = Contact(localID: "TARGET", givenName: "Ada")
+        let store = InMemoryContactStore(contacts: [target])
+        let sync = makeSync(contacts: store)
+        let repository = ContactsRepository(contacts: store, sync: sync)
+        await repository.reload()
+
+        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        #expect(id.guessWhoID == nil)
+
+        #expect(repository.linkedEventUUIDs(for: id).isEmpty)
+        // A synthesized link object: `eventEndpointUUID` returns nil because the
+        // passed `id` is unreconciled (no guessWhoID), so it can hold no link.
+        let stray = Link(
+            id: UUID(),
+            endpointA: SidecarKey(kind: .contact, id: "00000000-0000-0000-0000-000000000001"),
+            endpointB: SidecarKey(kind: .event, id: "EVT-1"),
+            note: "",
+            createdAt: Date(),
+            modifiedAt: Date(),
+            modifiedBy: "device-test"
+        )
+        #expect(repository.eventEndpointUUID(of: stray, for: id) == nil)
+
+        // The read minted nothing — the contact still has no GuessWho URL.
+        let saved = try #require(try await store.fetch(localID: "TARGET"))
+        #expect(guessWhoURLs(in: saved).isEmpty)
+    }
+
+    // With a nil engine (`.unavailable` storage state) the bulk accessor returns
+    // `[]`. (`eventEndpointUUID` needs no engine; it is covered above and via the
+    // unreconciled case.)
+    @Test @MainActor
+    func linkedEventUUIDs_nilEngine_returnsEmpty() async throws {
+        let target = Contact(localID: "TARGET", givenName: "Ada")
+        let store = InMemoryContactStore(contacts: [target])
+        let repository = ContactsRepository(contacts: store)
+        await repository.reload()
+
+        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        #expect(repository.linkedEventUUIDs(for: id).isEmpty)
+    }
 }

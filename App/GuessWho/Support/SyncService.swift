@@ -508,13 +508,13 @@ final class SyncService {
 
     /// Writes the edited contact back through the adapter.
     ///
-    /// **Caller contract:** `await repository.reload()` after this
-    /// returns so the list-view caches reflect the changes. SyncService
-    /// intentionally does NOT touch the repository — ContactsRepository
-    /// already holds SyncService, so injecting the reverse direction
-    /// adds coupling without an upside (every current caller already
-    /// reloads after its own post-save dance — `performInlineSave` runs
-    /// performReconcile → loadContact → repository.reload).
+    /// **Caller contract:** refresh the repository cache after this returns so
+    /// the list-view caches reflect the changes. SyncService intentionally does
+    /// NOT touch the repository — ContactsRepository already holds SyncService,
+    /// so injecting the reverse direction adds coupling without an upside (every
+    /// current caller already refreshes after its own post-save dance — Stage 6's
+    /// `performInlineSave` runs `prepareContactForDetail` → `refreshContact(localID:)`
+    /// → `loadContact(preferFresh:)`).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }
@@ -684,11 +684,5 @@ final class SyncService {
 struct SidecarUnavailableError: Error, LocalizedError {
     var errorDescription: String? {
         "Sidecar storage is unavailable. Cannot read or write GuessWho data."
-    }
-}
-
-struct ReconcileAssignmentFailedError: Error, LocalizedError {
-    var errorDescription: String? {
-        "Could not assign an identity to this contact."
     }
 }

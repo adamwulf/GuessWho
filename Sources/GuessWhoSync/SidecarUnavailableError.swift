@@ -26,7 +26,9 @@ public struct SidecarUnavailableError: Error, LocalizedError {
 /// Thrown by the resolve-or-mint primitive when reconcile completed without
 /// leaving a readable GuessWho UUID on the contact — a pathological state
 /// (the reconcile neither reported an `assignedUUID` nor stamped a URL we can
-/// read back). The package twin of the app's `ReconcileAssignmentFailedError`.
+/// read back). Lives in the package now that reconcile is package-internal; the
+/// app no longer declares a twin (removed in Stage 6e — the app never triggers
+/// or names reconcile).
 public struct ReconcileAssignmentFailedError: Error, LocalizedError {
     public init() {}
 

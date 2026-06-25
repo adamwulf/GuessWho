@@ -1044,8 +1044,11 @@ struct ContactDetailView: View {
         do {
             _ = try await repository.toggleFavorite(id)
         } catch {
-            // Sidecar storage unavailable or write failed — the reload + refresh
-            // below show what's actually on disk.
+            // Sidecar storage unavailable or write failed. Record it to the
+            // service's error state (the same surface `addEventLink` uses) rather
+            // than swallowing it silently; the reload + refresh below still show
+            // what actually landed on disk.
+            service.recordError("toggle favorite failed: \(error.localizedDescription)")
         }
         await loadContact()
         favoritesStore.reload()
