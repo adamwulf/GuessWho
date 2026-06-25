@@ -27,6 +27,16 @@ final class ContactsListViewController: UIViewController {
 
     private var sectionLetters: [String] = []
 
+    /// The `Contact` each `ContactID` row last rendered. `ContactID` is an
+    /// identity-only token (its `==`/`hash` key on effective identity alone), so
+    /// the diffable apply keeps a same-identity row in place but does NOT repaint
+    /// its contents on an in-place edit — Apple's `apply(_:)` reconfigures items
+    /// by `Hashable` identity only, never by re-checking `==`. We detect content
+    /// changes ourselves by comparing this map's `Contact` against the freshly
+    /// fetched one and call `snapshot.reconfigureItems(_:)` explicitly. Keyed by
+    /// `ContactID` so it survives reloads; rebuilt to the current rows each apply.
+    private var renderedContacts: [ContactID: Contact] = [:]
+
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
@@ -178,19 +188,44 @@ final class ContactsListViewController: UIViewController {
 
         var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
+        // De-dupe by effective identity across the WHOLE snapshot. Two ContactIDs
+        // sharing an effectiveID are now EQUAL (identity-only), and appendItems
+        // traps on a duplicate item. Duplicates only occur in the transient
+        // pre-reconcile window where two contacts momentarily carry the same
+        // guessWhoID; reconciliation collapses them. First occurrence wins.
+        var seen = Set<ContactID>()
         for (letter, contactIDs) in sections {
-            snapshot.appendItems(contactIDs, toSection: letter)
+            let unique = contactIDs.filter { seen.insert($0).inserted }
+            snapshot.appendItems(unique, toSection: letter)
         }
 
-        // No manual previousByID/reconfigureItems pass: the snapshot keys
-        // rows on `ContactID`, whose `==` includes the contact's display
-        // fields (name, jobTitle, organizationName, photo availability)
-        // while `hash` is identity-only. So the diffable apply hashes an
-        // edited row to the SAME identity (keeping its place — no flicker,
-        // no scroll jump) yet sees `==` return false (changed contents)
-        // and reconfigures the cell in place. Brand-new/removed rows are
-        // inserts/deletes and a reconciliation transition (effectiveID
-        // itself changes) is a delete+insert — all handled by `apply`.
+        // ContactID is identity-only, so the diffable apply keeps a same-identity
+        // row in place but will NOT repaint its contents on an in-place edit
+        // (Apple's apply(_:) reconfigures by Hashable identity only, never by
+        // re-checking ==). Detect content changes explicitly: for each row
+        // present in BOTH the last render and the new snapshot, compare the
+        // Contact we last rendered against the freshly fetched one (Contact is
+        // Equatable) and reconfigure the ones that differ. Brand-new/removed rows
+        // are inserts/deletes handled by apply and must be excluded — only
+        // reconfigure IDs present in the new snapshot, else apply traps.
+        let currentIDs = Set(snapshot.itemIdentifiers)
+        let changed = currentIDs.filter { id in
+            guard let previous = renderedContacts[id] else { return false }
+            return previous != repository.contact(id: id)
+        }
+        if !changed.isEmpty {
+            snapshot.reconfigureItems(Array(changed))
+        }
+
+        // Rebuild the render map to exactly the rows in this snapshot so a
+        // removed row's stale Contact can't linger and a re-added row compares
+        // fresh next time.
+        var rendered: [ContactID: Contact] = [:]
+        for id in currentIDs {
+            rendered[id] = repository.contact(id: id)
+        }
+        renderedContacts = rendered
+
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()

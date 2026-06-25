@@ -143,8 +143,11 @@ public final class ContactsRepository: NSObject {
     /// so a contact that relates to its own name doesn't appear in its own
     /// reverse-relation list.
     public func contactsReferencing(id: ContactID) -> [(id: ContactID, label: String)] {
-        let needle = id.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
+        // ContactID is identity-only, so resolve it to its cached Contact (O(1)
+        // index hit) to read the display name we match relations against.
+        guard let needle = contact(id: id)?.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            !needle.isEmpty else { return [] }
         return contacts.flatMap { other -> [(id: ContactID, label: String)] in
             let otherID = ContactID(contact: other)
             guard otherID.effectiveID != id.effectiveID else { return [] }

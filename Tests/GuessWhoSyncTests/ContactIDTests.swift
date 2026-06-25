@@ -124,7 +124,11 @@ struct ContactIDIdentityTests {
     }
 
     @Test
-    func editedContactIsSameRowChangedContents() {
+    func editedContactIsSameRowSameIdentity() {
+        // An in-place edit (same effectiveID, different display content) yields
+        // EQUAL ContactIDs — identity-only equality. The row keeps its place in
+        // a diffable snapshot; repainting its CONTENTS is the VC's explicit
+        // reconfigure pass, not ContactID's `==`.
         let original = ContactID(contact: contact(
             localID: "1", uuid: uuidA, givenName: "Ada", familyName: "Lovelace", jobTitle: "Mathematician"
         ))
@@ -132,59 +136,28 @@ struct ContactIDIdentityTests {
             localID: "1", uuid: uuidA, givenName: "Ada", familyName: "Lovelace", jobTitle: "Countess"
         ))
 
-        // NOT equal (display delta) but HASH-equal (same effective identity ⇒
-        // same bucket). A diffable data source reads this as "same row,
-        // reconfigure" rather than delete + insert.
-        #expect(original != edited)
+        #expect(original == edited)
         #expect(original.hashValue == edited.hashValue)
     }
 
     @Test
-    func equalsFalseWhenNameDiffers() {
-        let lhs = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada", familyName: "Lovelace"))
-        let rhs = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Augusta", familyName: "Lovelace"))
-        #expect(lhs != rhs)
-    }
-
-    @Test
-    func equalsFalseWhenJobDiffers() {
-        let lhs = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada", jobTitle: "Mathematician"))
-        let rhs = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada", jobTitle: "Engineer"))
-        #expect(lhs != rhs)
-    }
-
-    @Test
-    func equalsFalseWhenOrgDiffers() {
+    func equalWhenDisplayFieldsDifferButEffectiveIDMatches() {
+        // Identity-only equality: two ContactIDs built from contacts that share a
+        // guessWhoID are EQUAL even when EVERY display field (name, job, org,
+        // photo, contactType) and the carrier localID differ. Proves ContactID
+        // carries no display content — effectiveID is the whole identity.
         let lhs = ContactID(contact: contact(
-            localID: "1", uuid: uuidA, contactType: .organization, organizationName: "Analytical Engine"
+            localID: "carrier-A", uuid: uuidA, contactType: .person,
+            givenName: "Ada", familyName: "Lovelace",
+            jobTitle: "Mathematician", organizationName: "Analytical Engine", imageDataAvailable: false
         ))
         let rhs = ContactID(contact: contact(
-            localID: "1", uuid: uuidA, contactType: .organization, organizationName: "Difference Engine"
-        ))
-        #expect(lhs != rhs)
-    }
-
-    @Test
-    func equalsFalseWhenPhotoPresenceDiffers() {
-        let lhs = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada", imageDataAvailable: false))
-        let rhs = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada", imageDataAvailable: true))
-        #expect(lhs != rhs)
-    }
-
-    @Test
-    func equalsTrueWhenAllDisplayFieldsMatch() {
-        // Same guessWhoID AND all display fields ⇒ ==. localID differing must NOT
-        // break equality (effective identity is the GuessWho UUID, not the
-        // carrier, when the UUID is present).
-        let lhs = ContactID(contact: contact(
-            localID: "carrier-A", uuid: uuidA, givenName: "Ada", familyName: "Lovelace",
-            jobTitle: "Mathematician", organizationName: "Analytical Engine", imageDataAvailable: true
-        ))
-        let rhs = ContactID(contact: contact(
-            localID: "carrier-B", uuid: uuidA, givenName: "Ada", familyName: "Lovelace",
-            jobTitle: "Mathematician", organizationName: "Analytical Engine", imageDataAvailable: true
+            localID: "carrier-B", uuid: uuidA, contactType: .organization,
+            givenName: "Augusta", familyName: "King",
+            jobTitle: "Countess", organizationName: "Difference Engine", imageDataAvailable: true
         ))
         #expect(lhs == rhs)
+        #expect(lhs.hashValue == rhs.hashValue)
     }
 
     @Test

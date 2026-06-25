@@ -1,6 +1,6 @@
 import Foundation
 
-/// Opaque, stable identity for a contact as the UI sees it.
+/// Opaque, stable IDENTITY for a contact as the UI sees it.
 ///
 /// A `ContactID` wraps BOTH identifiers and always materializes:
 ///
@@ -13,28 +13,35 @@ import Foundation
 ///   identity, `guessWhoID` populates and BECOMES the identity.
 ///
 /// The *effective* identity is therefore `guessWhoID ?? localID`. Both `==` and
-/// `hash(into:)` key on it (via `effectiveID`) so they cannot drift.
+/// `hash(into:)` key on it (via `effectiveID`) and ONLY on it, so they cannot
+/// drift — `ContactID` is a consistent `Hashable`.
 ///
-/// Equality and hashing are split so a diffable data source treats an edited
-/// contact as the *same row with changed contents*, not a delete + insert:
+/// `ContactID` is a PURE IDENTITY token: it carries no display content. Two
+/// `ContactID` values with the same effective identity are EQUAL regardless of
+/// what the underlying contact looks like — repainting a row whose CONTENTS
+/// changed is the view controller's job, not this token's.
 ///
-/// - `hash(into:)` combines ONLY the effective identity. Two `ContactID` values
-///   for the same contact — even with different display fields — land in the
-///   same bucket, so a `UITableViewDiffableDataSource` keeps the row in place
-///   across reloads and across any display-field edit.
-/// - `==` compares the effective identity AND the (package-private) display
-///   fields. An edited contact compares *unequal*, so the data source reports
-///   the item as changed and reconfigures the cell in place. This replaces the
-///   app's hand-rolled `previousByID` snapshot diff + `reconfigureItems` pass
-///   and the `contactsByLocalID` side-dictionary. The comparison runs inside the
-///   package, where the fields are visible; the app never reads them.
+/// WHY no display fields. An earlier design carried the row's display fields
+/// (name, job, org, photo) on `ContactID` and made `==` compare them while
+/// `hash` stayed identity-only, on the assumption that a diffable data source's
+/// `apply(_:)` re-checks `==` on a same-identity item and reconfigures the cell
+/// when it differs. Apple's docs are explicit that it does NOT: `apply(_:)`
+/// identifies items SOLELY by their `Hashable` identifier; to repaint an
+/// existing row's contents you MUST call `reconfigureItems(_:)` /
+/// `reloadItems(_:)` yourself. So that `==` did nothing for reconfigure (the
+/// row stayed stale) and left `ContactID` with an inconsistent `Hashable`
+/// (`a == b` could be false while `a.hashValue == b.hashValue`), which violates
+/// the `Hashable` contract and risked subtle `Set`/`Dictionary` bugs.
+/// `ContactsListViewController` / `OrganizationsListViewController` now drive
+/// reconfigure explicitly by comparing the `Contact` they last rendered against
+/// the freshly-fetched one (keyed by `ContactID`), which is the documented path.
 ///
 /// THE RECONCILIATION TRANSITION (localID-keyed → guessWhoID-keyed) is a
-/// genuine diffable delete + insert, NOT a reconfigure: the effective identity
-/// changes from `localID` to `guessWhoID`, so the old row drops and a new row
-/// appears. This is correct and rare (it happens at most once per contact, when
-/// it first gains a GuessWho URL) and is symmetric with how an event adopts a
-/// sidecar (`Event.stableID(forEventKitID:)`). A reload does NOT reconcile, so
+/// genuine diffable delete + insert: the effective identity changes from
+/// `localID` to `guessWhoID`, so the old-identity row drops and a new-identity
+/// row appears. This is correct and rare (it happens at most once per contact,
+/// when it first gains a GuessWho URL) and is symmetric with how an event adopts
+/// a sidecar (`Event.stableID(forEventKitID:)`). A reload does NOT reconcile, so
 /// this transition is driven by the reconciler, not by `reload()` — do not
 /// assume identity is "settled" merely because a value was vended.
 ///
@@ -45,12 +52,6 @@ import Foundation
 /// `repository.contact(id:)` to render a row, so there is one source of truth for
 /// contact data. The conformances (`Hashable`, `Sendable`) are public so the app
 /// can put the token in a diffable snapshot / `Set`; the DATA stays sealed.
-///
-/// The display fields are carried only so the package-internal `==` can drive
-/// diffable change-detection (an edit makes two tokens compare unequal → the
-/// cell reconfigures). They are NOT identity and are not readable by the app.
-/// Notes/tags/links are deliberately absent — they are not part of a row's
-/// visual identity and change far more often.
 public struct ContactID: Hashable, Sendable {
     /// Canonical lowercase bare UUID string (NOT the `guesswho://contact/` URL).
     /// Produced exclusively by `SidecarKey`'s validator/canonicalizer. Nil until
@@ -67,61 +68,36 @@ public struct ContactID: Hashable, Sendable {
     /// `effectiveID`).
     package let localID: String
 
-    // MARK: Display fields (package — for diffing only, never read by the app)
-    //
-    // Carried so the package-internal `==` can drive diffable change-detection.
-    // These are the exact fields a list row renders (see the Catalyst/iPhone
-    // contact + organization cells), but the app reads them off the `Contact`
-    // it fetches via `repository.contact(id:)`, NOT off this token. Raw
-    // components (not a pre-rendered string) so the comparison is exact.
-    package let displayName: String
-    package let contactType: ContactType
-    package let givenName: String
-    package let familyName: String
-    package let jobTitle: String
-    package let organizationName: String
-    package let imageDataAvailable: Bool
-
     /// The single identity `==` and `hash(into:)` agree on: the GuessWho UUID
     /// once present, otherwise the `localID` fallback. Both members must use
-    /// this — never one of the raw fields — so they cannot diverge.
+    /// this — never `guessWhoID`/`localID` independently — so they cannot diverge.
     var effectiveID: String { guessWhoID ?? localID }
 
     /// Materialize a `ContactID` from a cached contact. ALWAYS succeeds —
     /// `localID` is always available, so a row can be vended before the contact
     /// is reconciled. `guessWhoID` is built ONLY via `SidecarKey.forContact`
     /// (the single validator/canonicalizer, never a parallel UUID parser) and is
-    /// nil when the contact carries no valid GuessWho URL.
+    /// nil when the contact carries no valid GuessWho URL. No display content is
+    /// copied — this is an identity token (see the type doc).
     package init(contact: Contact) {
         self.guessWhoID = SidecarKey.forContact(contact)?.id
         self.localID = contact.localID
-        self.displayName = contact.displayName
-        self.contactType = contact.contactType
-        self.givenName = contact.givenName
-        self.familyName = contact.familyName
-        self.jobTitle = contact.jobTitle
-        self.organizationName = contact.organizationName
-        self.imageDataAvailable = contact.imageDataAvailable
     }
 
     public static func == (lhs: ContactID, rhs: ContactID) -> Bool {
+        // Identity ONLY. Two values for the same contact are equal regardless of
+        // display content; a content change is repainted by the VC's explicit
+        // reconfigure pass, not here. A reconciliation transition changes the
+        // effective identity itself — that IS a delete + insert, by design.
         lhs.effectiveID == rhs.effectiveID
-            && lhs.displayName == rhs.displayName
-            && lhs.contactType == rhs.contactType
-            && lhs.givenName == rhs.givenName
-            && lhs.familyName == rhs.familyName
-            && lhs.jobTitle == rhs.jobTitle
-            && lhs.organizationName == rhs.organizationName
-            && lhs.imageDataAvailable == rhs.imageDataAvailable
     }
 
     public func hash(into hasher: inout Hasher) {
-        // Hash on the effective identity ONLY. Two values for the same contact
-        // with different display fields must land in the same bucket so a
-        // diffable snapshot treats them as the same row (reconfigured), never as
-        // a delete + insert. `==` then catches the field delta and the data
-        // source reconfigures in place. (The reconciliation transition changes
-        // the effective identity itself — that IS a delete + insert, by design.)
+        // Hash on the effective identity ONLY — consistent with `==`. Two values
+        // for the same contact land in the same bucket so a diffable snapshot
+        // treats them as the same row across reloads. (The reconciliation
+        // transition changes the effective identity itself — different bucket,
+        // a delete + insert, by design.)
         hasher.combine(effectiveID)
     }
 }

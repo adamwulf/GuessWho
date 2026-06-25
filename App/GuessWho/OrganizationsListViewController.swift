@@ -20,6 +20,13 @@ final class OrganizationsListViewController: UIViewController {
 
     private var sectionLetters: [String] = []
 
+    /// See `ContactsListViewController.renderedContacts`. `ContactID` is
+    /// identity-only, so the diffable apply does not repaint a same-identity
+    /// row's contents on an in-place edit; we drive `reconfigureItems(_:)`
+    /// ourselves by comparing the `Contact` each row last rendered against the
+    /// freshly fetched one.
+    private var renderedContacts: [ContactID: Contact] = [:]
+
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
@@ -142,17 +149,38 @@ final class OrganizationsListViewController: UIViewController {
 
         var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
+        // De-dupe by effective identity across the whole snapshot (see
+        // ContactsListViewController.applySnapshot): equal ContactIDs trap in
+        // appendItems; the transient pre-reconcile duplicate-guessWhoID window
+        // is the only source, and reconciliation collapses it. First wins.
+        var seen = Set<ContactID>()
         for (letter, contactIDs) in sections {
-            snapshot.appendItems(contactIDs, toSection: letter)
+            let unique = contactIDs.filter { seen.insert($0).inserted }
+            snapshot.appendItems(unique, toSection: letter)
         }
 
-        // See ContactsListViewController.applySnapshot — no manual
-        // previousByID/reconfigureItems pass. The snapshot keys rows on
-        // `ContactID`, whose `==` includes display fields while `hash` is
-        // identity-only, so the diffable apply reconfigures an edited row
-        // in place automatically. New/removed rows and a reconciliation
-        // transition (effectiveID changes) are inserts/deletes handled by
-        // `apply`.
+        // See ContactsListViewController.applySnapshot — ContactID is
+        // identity-only, so apply() keeps a same-identity row in place but does
+        // NOT repaint its contents on an in-place edit. Drive reconfigure
+        // explicitly: reconfigure rows present in BOTH the last render and the
+        // new snapshot whose fetched Contact differs from the one we last
+        // rendered (exclude inserts/removes — apply handles those, and
+        // reconfiguring an absent item traps).
+        let currentIDs = Set(snapshot.itemIdentifiers)
+        let changed = currentIDs.filter { id in
+            guard let previous = renderedContacts[id] else { return false }
+            return previous != repository.contact(id: id)
+        }
+        if !changed.isEmpty {
+            snapshot.reconfigureItems(Array(changed))
+        }
+
+        var rendered: [ContactID: Contact] = [:]
+        for id in currentIDs {
+            rendered[id] = repository.contact(id: id)
+        }
+        renderedContacts = rendered
+
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()
