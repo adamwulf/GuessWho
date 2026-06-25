@@ -528,9 +528,11 @@ public final class ContactsRepository: NSObject {
             // pointer, so the view's captured `ContactID` resolves afterward.
             await refreshContact(localID: id.localID)
         } catch {
-            // Reconcile/refresh failure is non-fatal for a detail OPEN — the view
-            // still renders the contact (just not repaired). Record `lastError`
-            // for diagnostics, do not throw (the app calls this blindly on load).
+            // Only `reconcileContactIdentity` can throw here — `refreshContact`
+            // swallows and records its own errors — and a reconcile failure is
+            // non-fatal for a detail OPEN: the view still renders the contact
+            // (just not repaired). Record `lastError` for diagnostics, do not
+            // throw (the app calls this blindly on load).
             lastError = "prepare-for-detail failed: \(error.localizedDescription)"
         }
     }
