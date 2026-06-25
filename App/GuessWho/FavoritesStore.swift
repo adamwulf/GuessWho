@@ -51,8 +51,8 @@ final class FavoritesListStore {
         reload()
     }
 
-    func toggle(stableID: String) {
-        guard let favorite = items.first(where: { $0.stableID == stableID }) else { return }
+    func toggle(_ id: FavoriteListItem.ID) {
+        guard let favorite = items.first(where: { $0.matches(id) }) else { return }
         toggle(kind: favorite.kind, id: favorite.id)
     }
 

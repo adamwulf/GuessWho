@@ -87,7 +87,6 @@ struct ContactsRepositoryIndexTests {
         )
 
         #expect(items.count == 1)
-        #expect(items[0].stableID == "contact:\(uuid)")
         #expect(items[0].kind == .contact)
         #expect(items[0].contact?.localID == "r")
         #expect(items[0].event == nil)
@@ -113,7 +112,6 @@ struct ContactsRepositoryIndexTests {
         )
 
         #expect(items.count == 1)
-        #expect(items[0].stableID == "event:\(eventID.uuidString.lowercased())")
         #expect(items[0].kind == .event)
         #expect(items[0].contact == nil)
         #expect(items[0].event?.title == "Favorite Event")

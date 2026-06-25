@@ -431,13 +431,13 @@ public final class ContactsRepository: NSObject {
             switch favorite.kind {
             case .contact:
                 FavoriteListItem(
-                    stableID: favorite.stableID,
+                    id: FavoriteListItem.ID(favorite.stableID),
                     kind: favorite.kind,
                     contact: contact(guessWhoID: favorite.id)
                 )
             case .event:
                 FavoriteListItem(
-                    stableID: favorite.stableID,
+                    id: FavoriteListItem.ID(favorite.stableID),
                     kind: favorite.kind,
                     event: event(favorite.id)
                 )

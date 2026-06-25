@@ -59,4 +59,10 @@ public struct Favorite: Codable, Sendable, Hashable {
     public func matches(_ contactID: ContactID) -> Bool {
         kind == .contact && id == contactID.guessWhoID
     }
+
+    /// Whether this favorite backs the app-facing favorite row identity. The
+    /// raw stable string stays package-owned.
+    public func matches(_ itemID: FavoriteListItem.ID) -> Bool {
+        stableID == itemID.rawValue
+    }
 }
