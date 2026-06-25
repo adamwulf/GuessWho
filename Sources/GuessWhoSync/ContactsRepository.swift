@@ -140,10 +140,17 @@ public final class ContactsRepository: NSObject {
     /// carries the `localID` the view used to thread by hand).
     ///
     /// The Case-D-loser subtlety the old doc raised (a stale `localID` re-
-    /// resolving to a merged-away duplicate) is MOOT for any RECONCILED token:
-    /// guessWhoID-first ordering hits the pointer index and never reaches the
-    /// `localID` branch. The `localID` branch is reached ONLY when the token has
-    /// no `guessWhoID`, where `localID` legitimately IS the only identity.
+    /// resolving to a merged-away duplicate) is MOOT, but for two reasons, not
+    /// one. A RECONCILED token (`guessWhoID` set) whose UUID is still in the book
+    /// hits the pointer index and returns the canonical contact — it does not
+    /// reach the `localID` branch. A reconciled token whose `guessWhoID` was
+    /// REMOVED from the book (deleted, or a Case-D loser whose UUID was retired)
+    /// DOES fall through to the `localID` branch — but that is safe because Apple
+    /// never reuses a deleted record's `CNContact.identifier` for a different
+    /// unified contact, so that token's `localID` slot is empty and we return nil
+    /// (the "unavailable" contract), never a wrong contact. Only an UNRECONCILED
+    /// token (no `guessWhoID`) reaches the `localID` branch to find a real
+    /// contact, where `localID` legitimately IS the only identity.
     public func contact(id: ContactID) -> Contact? {
         if let gw = id.guessWhoID, let lid = guessWhoIDToLocalID[gw] {
             return contactsByLocalID[lid]
