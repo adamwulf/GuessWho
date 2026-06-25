@@ -26,6 +26,32 @@ public final class ContactsRepository: NSObject {
     public var peopleSearch = ""
     public var organizationsSearch = ""
 
+    // MARK: - Point-lookup indexes (private; rebuilt from `contacts`)
+    //
+    // These make `contact(id:)`, `contact(localID:)`, and
+    // `contactIDs(matchingEmail:)` O(1) synchronous main-actor reads. They are
+    // NEVER mutated directly — every `contacts` assignment routes through
+    // `setContacts(_:)`, which reassigns the array AND rebuilds all three
+    // indexes wholesale, so the array and indexes cannot drift. A wholesale
+    // rebuild (rather than an in-place patch) is what makes the reconciliation
+    // transition — a contact's effective identity flipping `localID →
+    // guessWhoID` — re-key automatically: the new array yields the new key and
+    // the old key simply isn't reproduced.
+
+    /// Keyed on `ContactID(contact:).effectiveID` (`guessWhoID ?? localID`).
+    /// One entry per contact; backs `contact(id:)`.
+    private var contactsByEffectiveID: [String: Contact] = [:]
+
+    /// Keyed on `localID` (Apple's `CNContact.identifier`). One entry per
+    /// contact; backs the `contact(localID:)` Contacts-boundary accessor.
+    private var contactsByLocalID: [String: Contact] = [:]
+
+    /// Keyed on each lowercased+trimmed email address a contact carries; a
+    /// contact appears under EVERY email it has, and one email can map to
+    /// MULTIPLE contacts (duplicates are preserved). Backs
+    /// `contactIDs(matchingEmail:)`.
+    private var contactsByEmail: [String: [Contact]] = [:]
+
     public init(contacts: ContactStoreProtocol) {
         self.contactsStore = contacts
         super.init()
@@ -43,10 +69,10 @@ public final class ContactsRepository: NSObject {
     public func reload() async {
         isLoading = true
         do {
-            contacts = try await contactsStore.fetchAll()
+            setContacts(try await contactsStore.fetchAll())
             lastError = nil
         } catch {
-            contacts = []
+            setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
         // NotificationCenter can deliver synchronously. Consumers must observe
@@ -59,7 +85,7 @@ public final class ContactsRepository: NSObject {
     /// `localID` is intentionally confined to this Contacts-boundary API; it
     /// must not be persisted or used as application identity.
     public func contact(localID: String) -> Contact? {
-        contacts.first { $0.localID == localID }
+        contactsByLocalID[localID]
     }
 
     // MARK: - ContactID-addressed reads
@@ -77,7 +103,7 @@ public final class ContactsRepository: NSObject {
     /// cached contact matches (deleted, or a retired/unknown id) — the
     /// "unavailable" contract the UI renders, never a wrong-contact fallback.
     public func contact(id: ContactID) -> Contact? {
-        contacts.first { ContactID(contact: $0).effectiveID == id.effectiveID }
+        contactsByEffectiveID[id.effectiveID]
     }
 
     /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors
@@ -104,12 +130,11 @@ public final class ContactsRepository: NSObject {
     public func contactIDs(matchingEmail email: String) -> [ContactID] {
         let needle = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return [] }
-        return contacts.compactMap { contact in
-            let hit = contact.emailAddresses.contains {
-                $0.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
-            }
-            return hit ? ContactID(contact: contact) : nil
-        }
+        // O(1) index hit. `contactsByEmail` lists matches in cache-array order
+        // (the funnel appends per contact as it walks the array), so this
+        // preserves the previous `contacts.compactMap` ordering and returns
+        // ALL matches.
+        return (contactsByEmail[needle] ?? []).map { ContactID(contact: $0) }
     }
 
     /// Cached contacts that reference the contact identified by `id` through a
@@ -185,7 +210,9 @@ public final class ContactsRepository: NSObject {
 
     /// Remove a just-deleted record from the in-memory cache.
     public func removeContact(localID: String) {
-        contacts.removeAll { $0.localID == localID }
+        var updated = contacts
+        updated.removeAll { $0.localID == localID }
+        setContacts(updated)
         postDidReload()
     }
 
@@ -193,18 +220,56 @@ public final class ContactsRepository: NSObject {
         NotificationCenter.default.post(name: .contactsRepositoryDidReload, object: self)
     }
 
+    /// The SINGLE funnel for every `contacts` mutation. Reassigns the array
+    /// (preserving `@Observable` tracking of the stored property) and rebuilds
+    /// all three point-lookup indexes from the new array so they can never
+    /// drift from it. Incremental sites (refresh / remove / delta-apply) mutate
+    /// a local copy and call this once; a wholesale index rebuild at v1
+    /// address-book scale is cheap and eliminates a whole class of patch-drift
+    /// bugs — including the reconciliation re-key, which is automatic here
+    /// because the new array yields the new effective-id key and never
+    /// reproduces the stale one.
+    private func setContacts(_ newValue: [Contact]) {
+        contacts = newValue
+
+        var byEffectiveID: [String: Contact] = [:]
+        var byLocalID: [String: Contact] = [:]
+        var byEmail: [String: [Contact]] = [:]
+        byEffectiveID.reserveCapacity(newValue.count)
+        byLocalID.reserveCapacity(newValue.count)
+        for contact in newValue {
+            byEffectiveID[ContactID(contact: contact).effectiveID] = contact
+            byLocalID[contact.localID] = contact
+            // Index under each DISTINCT email key the contact carries. A contact
+            // listing the same address under two labels must still appear only
+            // once per key — matching the old `contacts.compactMap` semantics
+            // where a per-contact `.contains` yielded one row, not one per label.
+            var seenKeys: Set<String> = []
+            for email in contact.emailAddresses {
+                let key = email.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !key.isEmpty, seenKeys.insert(key).inserted else { continue }
+                byEmail[key, default: []].append(contact)
+            }
+        }
+        contactsByEffectiveID = byEffectiveID
+        contactsByLocalID = byLocalID
+        contactsByEmail = byEmail
+    }
+
     private func applyRefresh(localID: String) async {
         do {
             let fresh = try await contactsStore.fetch(localID: localID)
+            var updated = contacts
             if let fresh {
-                if let index = contacts.firstIndex(where: { $0.localID == localID }) {
-                    contacts[index] = fresh
+                if let index = updated.firstIndex(where: { $0.localID == localID }) {
+                    updated[index] = fresh
                 } else {
-                    contacts.append(fresh)
+                    updated.append(fresh)
                 }
             } else {
-                contacts.removeAll { $0.localID == localID }
+                updated.removeAll { $0.localID == localID }
             }
+            setContacts(updated)
             lastError = nil
         } catch {
             // A failed individual re-read cannot establish whether the record
@@ -233,7 +298,9 @@ public final class ContactsRepository: NSObject {
             case .updated(let localID):
                 await applyRefresh(localID: localID)
             case .deleted(let localID):
-                contacts.removeAll { $0.localID == localID }
+                var updated = contacts
+                updated.removeAll { $0.localID == localID }
+                setContacts(updated)
             }
         }
         if !changeSet.changes.isEmpty {
