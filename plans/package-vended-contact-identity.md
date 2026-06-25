@@ -23,8 +23,23 @@
   identity-only and the VCs drive reconfigure explicitly (a `[ContactID: Contact]`
   last-rendered map) with the snapshot deduped by `effectiveID`. `contactsByLocalID`
   is gone from both VCs. 428 tests + Catalyst + iPhone-sim builds green.
-- **Stage 4 (navigation/detail/connections/favorites), Stage 5 (visibility
-  tighten): NOT STARTED.**
+- **Stage 4 (navigation/detail/connections/favorites): DONE** (`fc50b7e`,
+  `4496320`). `ContactReference` carries a `ContactID` (not a `localID`);
+  `ContactDetailView`'s identity is a `ContactID` with `localID` confined to a
+  `boundaryLocalID`/`resolvedLocalID` token threaded only into SyncService/
+  repository methods (stable across a reconcile re-key). The three hand-rolled
+  maps (`uuidToContact` in ContactDetailView / EventDetailView /
+  FavoritesListViewController, plus `emailToContact`) are DELETED; resolution
+  goes through `repository.contact(id:)` / `contactIDs(matchingEmail:)` and a
+  small new package accessor `contact(guessWhoID:)` (bare link-endpoint /
+  favorite UUID → Contact, O(1), guessWhoID-confirmed) alongside
+  `contactID(for:)` (the only sanctioned way for the app to mint a navigation
+  token from a Contact, since `ContactID.init` is `package`). Connections,
+  attendee/linked-contact taps, and favorites resolve on demand;
+  `service.guessWhoUUID(in:)` survives only for the OPENED contact's own UUID
+  (favorites/notes/links binding) and the debug section — Stage 5 owns its
+  removal. 430 tests + Catalyst + iPhone-sim builds green.
+- **Stage 5 (visibility tighten): NOT STARTED.**
 
 Two design decisions taken during Stages 1–2 changed the shape below from the
 original draft — they are folded into the sections that follow:
@@ -371,7 +386,17 @@ Acceptance: list VCs hold no `localID` and no side `[String: Contact]`
 dictionary; in-place edits still repaint via reconfigure; selection still
 navigates.
 
-### Stage 4 — Migrate navigation + detail + connections + favorites
+### Stage 4 — Migrate navigation + detail + connections + favorites — DONE (`fc50b7e`, `4496320`)
+
+Shipped as described below. Two small package accessors were added to bridge the
+app off the deleted maps: `contactID(for: Contact) -> ContactID` (mint a nav
+token from a held Contact, since `ContactID.init` is `package`) and
+`contact(guessWhoID: String) -> Contact?` (resolve a bare link-endpoint /
+favorite UUID, O(1) over `contactsByEffectiveID`, confirmed by `guessWhoID` so a
+localID coincidence can't mis-resolve). `ContactDetailView` keeps a
+`resolvedLocalID`/`boundaryLocalID` token (stable across a reconcile re-key) for
+its SyncService/repository boundary calls. `service.guessWhoUUID(in:)` remains
+only for the opened contact's own UUID + the debug section (Stage 5 removes it).
 
 1. Re-key `ContactReference` (`NavigationReferences.swift`) on `ContactID` (or
    `guessWhoID`). Update every `pushContactReference(...)` site and the
