@@ -43,7 +43,10 @@
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
   IN PROGRESS — 6a + 6b DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
-  ContactID-keyed API) → 6c (`prepareContactForDetail`) → 6d (migrate app
+  ContactID-keyed API) → 6b2 (one `Contact` cache `contactsByLocalID` + a
+  `guessWhoIDToLocalID` pointer index — no duplicate `Contact` copies — so
+  `contact(id:)` survives a reconcile re-key and `ContactDetailView.resolvedLocalID`
+  can be deleted) → 6c (`prepareContactForDetail`) → 6d (migrate app
   consumers) → 6e (audit). 6a wires the engine + favorites store into the
   repository. Concurrency: accept double-mint (a practical non-event;
   single-device = harmless orphan, multi-device = Case-D heals).
@@ -545,9 +548,28 @@ this is the sequencing:
   step 1) — `notes/links/eventLinks/favorite` verbs, plain-named, reconcile-on-
   write internally, package owns the post-write cache update (decision B). Package
   tests (Tests section). Still no app migration.
+- **6b2 — One `Contact` cache + a guessWhoID→localID pointer index; make
+  `contact(id:)` reconcile-stable** (package only; depends on 6a, independent of
+  6b — can land in parallel). Replace the mixed-key `contactsByEffectiveID` with
+  the SINGLE `Contact` cache `contactsByLocalID` (every contact, one copy of each
+  struct) plus a lightweight `guessWhoIDToLocalID: [String: String]` POINTER index
+  (reconciled only — no second copy of any `Contact`, so the two cannot drift).
+  Resolve `contact(id:)` guessWhoID-first (chase the pointer) else by localID
+  (load-bearing for the captured-pre-reconcile token), and on a reconcile-on-write
+  mint update the cache struct AND add the pointer. `contact(guessWhoID:)` STAYS
+  PUBLIC — favorites/links sync guessWhoIDs to disk, so the app legitimately writes
+  and resolves bare UUIDs; `ContactID` is NOT `Codable` for persistence (it carries
+  the transient `localID`). This is the prerequisite that lets 6d DELETE
+  `ContactDetailView.resolvedLocalID` / `boundaryLocalID`: once `contact(id:)`
+  survives a reconcile re-key, the view keys purely on its captured `ContactID`.
+  Full detail in the "Stage 6b2" section below. No public signature change, no app
+  change yet. **6c and 6d's detail-view `resolvedLocalID` removal depend on 6b2.**
 - **6c — `prepareContactForDetail` (decision A).** Self-contained package
   addition; depends on 6a. (The prior draft's debug `lastReconcileOutcome` vend is
-  DROPPED — see Debug section.)
+  DROPPED — see Debug section.) Pairs with 6b2: `prepareContactForDetail` runs the
+  on-open reconcile and 6b2's cache poke keeps the view's captured `ContactID`
+  resolving afterward, so the view re-loads off the same `id` rather than a
+  threaded `localID`.
 - **6d — Migrate the app consumers, one at a time** (Stage-4-style sweep), each
   repointing a store/view at the repository API and deleting the matching
   `SyncService` contact-sidecar method: `NotesStore` → `ContactLinksStore` →
@@ -560,7 +582,13 @@ this is the sequencing:
   `ContactID`. `ContactDetailView` is the shared serialization point — treat each
   store + the detail view as ONE migration unit. Realistically 6d is mostly serial
   (the detail view touches everything); only the leaf views (Connections, Event)
-  parallelize once the detail view lands.
+  parallelize once the detail view lands. ALSO in 6d (needs 6b2 first): DELETE
+  `ContactDetailView.resolvedLocalID` / `boundaryLocalID` and the localID-threaded
+  `loadContact` path — the view keys boundary reads on its captured `ContactID`
+  via the now-reconcile-stable `contact(id:)`. (The contact-LIFECYCLE boundary
+  calls that genuinely need a `CNContact.identifier` — `fetchContactForEditing` /
+  `deleteContact` / `fetch` — read it from the loaded `Contact` at the call site;
+  they do not need a retained `resolvedLocalID` token.)
 - **6e — Tighten + audit.** Final identity audit with the corrected acceptance
   grep (below), confirm `SyncService` holds no contact-identity translation,
   remove any now-dead wrappers.
@@ -786,6 +814,167 @@ sees it.
    translating `ContactID → guessWhoID` and calling through; the shared
    `FavoritesStore` surface remains on `SyncService` for the event path until the
    event migration. Do not delete the shared favorites methods.
+
+#### Stage 6b2 — one `Contact` cache + guessWhoID→localID pointer; reconcile-stable `contact(id:)`
+
+**Problem.** `ContactsRepository` indexes contacts in `contactsByEffectiveID`
+(`ContactsRepository.swift:57`), keyed on `ContactID(contact:).effectiveID`
+(`guessWhoID ?? localID`). That is a MIXED-KEY index: an unreconciled contact is
+stored under its `localID`, a reconciled one under its `guessWhoID`, in one
+`[String: Contact]`. Two consequences:
+
+1. **A captured `ContactID` stops resolving across a reconcile re-key.**
+   `ContactDetailView` holds a `let id: ContactID` captured at navigation. When an
+   on-open reconcile (Case A) mints the contact's `guessWhoID`, the next
+   `setContacts` rebuild re-keys the contact from `contactsByEffectiveID["<localID>"]`
+   to `contactsByEffectiveID["<guessWhoID>"]`. The captured `id` is immutable —
+   its `effectiveID` is still the old `localID` — so `contact(id: id)` now MISSES.
+   This is the ONLY reason `ContactDetailView` retains `resolvedLocalID` /
+   `boundaryLocalID` (`:33`, `:1123`): `localID` is the one identifier that does
+   NOT move across the flip, so the view threads it to re-find its record. That
+   token is a blessed Stage-5 boundary token, but it exists solely to paper over
+   the mixed-key index — the information needed (the `localID`) is ALREADY inside
+   the captured `ContactID` (`ContactID.localID`, always present even once
+   `guessWhoID` populates), the repository just doesn't consult it.
+2. **`contact(guessWhoID:)` (`:176`) abuses the same index** — it looks a bare
+   UUID up in `contactsByEffectiveID` then needs a confirm-guard
+   (`ContactID(contact: candidate).guessWhoID == needle`, `:179`) precisely
+   because a query string could coincide with some unreconciled contact's
+   `localID` slot. A pure guessWhoID keyspace removes the need for that guard.
+
+**Fix — ONE `Contact` cache + a lightweight guessWhoID→localID pointer index.**
+
+Do NOT keep two `Contact` dictionaries. `Contact` is a value type; storing each
+struct in both a localID map and a guessWhoID map duplicates the value and lets
+the two copies drift (an edit applied to one but not the other). Instead keep the
+SINGLE source-of-truth `Contact` cache and add a string→string POINTER index:
+
+```swift
+private var contactsByLocalID:   [String: Contact]   // THE cache — one copy of each Contact struct
+private var guessWhoIDToLocalID: [String: String]    // index: guessWhoID → localID (RECONCILED contacts only)
+// DELETE contactsByEffectiveID — nothing needs a fused-key dictionary, and no
+// second copy of the Contact structs is kept anywhere.
+```
+
+- `contactsByLocalID` already exists (`:61`) and stays as-is (every contact, one
+  copy of each struct — the sole `Contact` store).
+- `guessWhoIDToLocalID` is new and holds ONLY `String` localIDs, never a `Contact`.
+  An entry is added in the `setContacts` funnel ONLY for contacts where
+  `ContactID(contact:).guessWhoID != nil`. Because it points INTO the one cache,
+  the contact data cannot diverge — a guessWhoID lookup chases the pointer into
+  `contactsByLocalID`, so there is exactly one `Contact` value per contact.
+- `effectiveID` STAYS on `ContactID` (`ContactID.swift:74`) as the diffable
+  IDENTITY — that single fused value is correct for `Hashable`/diffing. The bug is
+  using it as a STORAGE key. Identity-for-diffing wants one fused value;
+  storage-for-lookup wants two clean namespaces. Do not remove `effectiveID` from
+  `ContactID`; only remove the fused index from the repository.
+
+`contact(id:)` resolves guessWhoID first (canonical identity wins; a stale localID
+can never override a real UUID match) via the pointer, else by localID directly
+(always present, stable across the reconcile re-key):
+
+```swift
+public func contact(id: ContactID) -> Contact? {
+    if let gw = id.guessWhoID, let lid = guessWhoIDToLocalID[gw] {
+        return contactsByLocalID[lid]
+    }
+    return contactsByLocalID[id.localID]
+}
+```
+
+The localID branch is LOAD-BEARING, not a mere fallback: it is exactly the
+captured-pre-reconcile-token case (the view's `id.guessWhoID` is still nil after
+the contact reconciled, so resolution MUST go by `id.localID`). Comment it as
+such so a future reader doesn't "simplify" it away. Add the symmetric subtlety
+the old `:120-124` doc raised — a Case-D loser `localID` could in principle still
+resolve to a merged-away duplicate — but note guessWhoID-first ordering makes it
+moot for any RECONCILED token (it hits the pointer index and never reaches the
+localID branch); the localID branch is only reached when there is no `guessWhoID`,
+where `localID` legitimately IS the only identity.
+
+`contact(guessWhoID:)` STAYS PUBLIC and becomes a clean pointer hop, NO
+confirm-guard — see "Why `contact(guessWhoID:)` survives" below:
+
+```swift
+public func contact(guessWhoID: String) -> Contact? {
+    guard let lid = guessWhoIDToLocalID[guessWhoID.lowercased()] else { return nil }
+    return contactsByLocalID[lid]
+}
+```
+
+(The `:179` confirm-guard existed only to reject a localID-coincidence in the
+mixed index; `guessWhoIDToLocalID` is keyed ONLY on real guessWhoIDs, so it cannot
+return a localID-coincidence — the index IS the guarantee.)
+
+**Why `contact(guessWhoID:)` survives (and `ContactID` is NOT `Codable` for
+persistence).** Favorites and links SYNC BETWEEN DEVICES, so their durable records
+must be keyed on the stable GuessWho UUID, NOT a `ContactID`. `ContactID` carries
+the transient `localID` (`CNContact.identifier`), which Apple re-mints across
+unification / new-device / re-added-account — persisting a `ContactID` would write
+that transient string to disk and dangle the favorite/link after the next
+re-unification (this is a durability invariant, NOT a one-time migration — being
+the sole user does not exempt it; Apple still re-mints the identifier). Therefore
+the favorites/links durable endpoint stays the guessWhoID (`Favorite.id` /
+`SidecarKey`), the APP legitimately writes and resolves bare guessWhoID strings
+for that path, and `contact(guessWhoID:)` remains a PUBLIC app-facing resolver.
+This REVISES the Stage 6 acceptance clause that flagged app-side
+`contact(guessWhoID:)` as a defect: FAVORITE resolution was always blessed and
+stays; LINK-ENDPOINT resolution should still move behind a `links(for:)` that
+vends the resolved far-endpoint `Contact`/`ContactID` + direction (the cleaner
+end-state — so the app doesn't construct a `SidecarKey`), but a surviving
+`contact(guessWhoID:)` link use is no longer a hard defect. (OPEN — links: keep on
+`contact(guessWhoID:)` vs. move behind a resolved `links(for:)`. Plan keeps the
+resolved-`links(for:)` target; revisit during 6d if it adds friction.)
+
+**Update BOTH maps on reconcile-on-write (the cache-update-on-reconcile point).**
+`resolveOrMintGuessWhoID` (`:221`) mints a UUID but does NOT currently refresh the
+cache — so immediately after a Case-A write-reconcile, `contactsByLocalID` still
+holds the PRE-reconcile contact (`guessWhoID` nil) and `guessWhoIDToLocalID` has
+NO entry for it. A subsequent `contact(guessWhoID:)` / `contact(id:)` guessWhoID
+hop would then miss until the next full `setContacts`. Decision B already says the
+package owns the post-write cache update; 6b2 makes that concrete for the identity
+flip: after a mint, re-fetch the now-canonical record
+(`contactsStore.fetch(localID:)`), write it into `contactsByLocalID[localID]`
+(replacing the stale struct — one copy, no drift), and add
+`guessWhoIDToLocalID[minted] = localID`. One struct write + one pointer add, both
+through the single `setContacts`/rebuild funnel where practical (a one-contact
+in-place update is also fine as long as it touches both maps). Re-entrancy is safe
+for the same reason decision B is: reconcile's own `CNContact` write is tagged with
+our `transactionAuthor` and the change-watcher self-excludes it, so the package's
+own poke is not double-applied by an inbound delta.
+
+**Tests (add to the Stage 6 set):**
+- `contact(id:)` round-trips a contact BEFORE and AFTER a reconcile re-key using
+  the SAME captured `ContactID` (guessWhoID still nil on the token) — the localID
+  branch keeps it resolving. This is the test that pins the `resolvedLocalID`
+  removal.
+- `contact(id:)` on a reconciled token resolves via the guessWhoID branch even if
+  a different contact occupies the token's `localID` slot (guessWhoID-first
+  ordering; no wrong-contact fallback).
+- `contact(guessWhoID:)` returns nil for a string that is only some contact's
+  `localID` (pure-namespace correctness; the dropped confirm-guard's invariant
+  still holds).
+- After a reconcile-on-WRITE mints a UUID, `contact(guessWhoID: minted)` and
+  `contact(id: capturedPreReconcileID)` BOTH resolve to the canonical record
+  WITHOUT an intervening full `reload()` (the post-mint cache poke updated
+  `contactsByLocalID` AND added the `guessWhoIDToLocalID` pointer).
+- Single-source-of-truth: after an edit applied through the funnel, the contact
+  fetched via `contact(id:)` (guessWhoID branch), `contact(guessWhoID:)`, and
+  `contact(localID:)` are the SAME value — there is one `Contact` struct, the
+  guessWhoID path only chases a pointer into the localID cache, so no stale copy.
+- Parity: the index results equal the old `effectiveID`-index results for a
+  fully-reconciled book (no behavior change for the steady state).
+
+**Acceptance (6b2):** `contactsByEffectiveID` is gone; the repository holds
+exactly ONE `Contact` cache (`contactsByLocalID`) plus the `guessWhoIDToLocalID`
+POINTER index (+ `contactsByEmail`) — no second copy of any `Contact` struct;
+`contact(id:)` resolves a captured `ContactID` across a reconcile re-key with no
+`localID` threaded by the caller; `contact(guessWhoID:)` stays PUBLIC (favorites/
+links resolve bare guessWhoIDs read off disk) and has no confirm-guard; a
+reconcile-on-write updates the cache struct AND adds the pointer. No public
+signature changes; the diffable list layer is untouched (`ContactID.effectiveID`
+still drives snapshot identity). This UNBLOCKS the 6d deletion of
+`ContactDetailView.resolvedLocalID` / `boundaryLocalID`.
 
 #### What remains of `SyncService` (it shrinks, it does not vanish)
 
