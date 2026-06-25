@@ -51,6 +51,11 @@ final class FavoritesListStore {
         reload()
     }
 
+    func toggle(stableID: String) {
+        guard let favorite = items.first(where: { $0.stableID == stableID }) else { return }
+        toggle(kind: favorite.kind, id: favorite.id)
+    }
+
     func setOrder(_ items: [Favorite]) {
         do {
             try service.setFavoritesOrder(items)

@@ -72,6 +72,53 @@ struct ContactsRepositoryIndexTests {
         #expect(repository.contact(localID: "bare-local-id")?.localID == "bare-local-id")
     }
 
+    @Test @MainActor
+    func favoriteListItemsResolveContactFavoritesThroughRepository() async {
+        let uuid = "55555555-5555-5555-5555-555555555555"
+        let contact = reconciledContact(localID: "r", uuid: uuid, givenName: "Favorite")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [contact]))
+        await repository.reload()
+
+        let items = repository.favoriteListItems(
+            from: [
+                Favorite(kind: .contact, id: uuid.uppercased(), addedAt: Date())
+            ],
+            event: { _ in nil }
+        )
+
+        #expect(items.count == 1)
+        #expect(items[0].stableID == "contact:\(uuid)")
+        #expect(items[0].kind == .contact)
+        #expect(items[0].contact?.localID == "r")
+        #expect(items[0].event == nil)
+    }
+
+    @Test @MainActor
+    func favoriteListItemsResolveEventsWithSuppliedResolver() async throws {
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: []))
+        await repository.reload()
+        let eventID = try #require(UUID(uuidString: "66666666-6666-6666-6666-666666666666"))
+        let event = Event(
+            id: eventID,
+            title: "Favorite Event",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_003_600)
+        )
+
+        let items = repository.favoriteListItems(
+            from: [
+                Favorite(kind: .event, id: eventID.uuidString, addedAt: Date())
+            ],
+            event: { id in id == eventID.uuidString.lowercased() ? event : nil }
+        )
+
+        #expect(items.count == 1)
+        #expect(items[0].stableID == "event:\(eventID.uuidString.lowercased())")
+        #expect(items[0].kind == .event)
+        #expect(items[0].contact == nil)
+        #expect(items[0].event?.title == "Favorite Event")
+    }
+
     // MARK: - guessWhoID(in:) — the opened contact's own GuessWho UUID
 
     @Test @MainActor

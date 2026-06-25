@@ -419,6 +419,32 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// Project persisted favorites into app-facing rows without exposing contact
+    /// favorite UUIDs. Contact favorites resolve through this repository's
+    /// GuessWhoID index; event favorites use the supplied resolver until the
+    /// deferred EventID migration moves event identity behind the package too.
+    public func favoriteListItems(
+        from favorites: [Favorite],
+        event: (String) -> Event?
+    ) -> [FavoriteListItem] {
+        favorites.map { favorite in
+            switch favorite.kind {
+            case .contact:
+                FavoriteListItem(
+                    stableID: favorite.stableID,
+                    kind: favorite.kind,
+                    contact: contact(guessWhoID: favorite.id)
+                )
+            case .event:
+                FavoriteListItem(
+                    stableID: favorite.stableID,
+                    kind: favorite.kind,
+                    event: event(favorite.id)
+                )
+            }
+        }
+    }
+
     /// Append a note to the contact identified by `id`, returning the new note's
     /// UUID. Resolves-or-mints the GuessWho UUID first (the FIRST write to an
     /// unreconciled contact reconciles + mints, transparent to the caller), then
