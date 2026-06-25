@@ -143,9 +143,17 @@ struct ContactsRepositoryIndexTests {
         let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [a, b]))
         await repository.reload()
 
-        // ALL matches, case-insensitive, trimmed needle.
+        // ALL matches, case-insensitive, trimmed needle — and in CACHE-ARRAY
+        // ORDER. The store's fetchAll returns dictionary order, so we assert the
+        // result equals the order those contacts appear in `repository.contacts`
+        // (the order `contactsByEmail` preserves by construction), not a
+        // hardcoded order.
         let shared = repository.contactIDs(matchingEmail: "  SHARED@example.com ")
-        #expect(Set(shared.map(\.localID)) == Set(["a", "b"]))
+        let expectedSharedOrder = repository.contacts
+            .filter { ["a", "b"].contains($0.localID) }
+            .map(\.localID)
+        #expect(shared.map(\.localID) == expectedSharedOrder)
+        #expect(Set(shared.map(\.localID)) == Set(["a", "b"]))   // and ALL matches present
 
         let only = repository.contactIDs(matchingEmail: "bert@other.test")
         #expect(only.map(\.localID) == ["b"])
@@ -168,6 +176,29 @@ struct ContactsRepositoryIndexTests {
 
         // The contact appears ONCE, not once per label.
         #expect(repository.contactIDs(matchingEmail: "dup@x.test").map(\.localID) == ["d"])
+    }
+
+    @Test @MainActor
+    func matchingEmailSkipsBlankEmailAddresses() async {
+        // A contact whose email is blank/whitespace exercises the
+        // `guard !key.isEmpty` skip in the byEmail index build: it must NOT be
+        // indexed under an empty-string key, and an empty-needle query (already
+        // guarded) returns [].
+        let blank = Contact(localID: "blank", givenName: "Blank", emailAddresses: [
+            LabeledValue(label: "home", value: "   "),
+            LabeledValue(label: "work", value: "")
+        ])
+        let real = Contact(localID: "real", givenName: "Real", emailAddresses: [
+            LabeledValue(label: "home", value: "real@x.test")
+        ])
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [blank, real]))
+        await repository.reload()
+
+        // The blank-email contact is not reachable under an empty key...
+        #expect(repository.contactIDs(matchingEmail: "").isEmpty)
+        #expect(repository.contactIDs(matchingEmail: "   ").isEmpty)
+        // ...and a real address still resolves, unaffected by the blank entries.
+        #expect(repository.contactIDs(matchingEmail: "real@x.test").map(\.localID) == ["real"])
     }
 
     // MARK: - Parity: index reads equal a manual O(n) scan

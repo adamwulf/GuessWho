@@ -237,7 +237,16 @@ public final class ContactsRepository: NSObject {
         var byEmail: [String: [Contact]] = [:]
         byEffectiveID.reserveCapacity(newValue.count)
         byLocalID.reserveCapacity(newValue.count)
+        // byEmail intentionally omits reserveCapacity: its key count is the
+        // number of DISTINCT email addresses across the book, not the contact
+        // count, so newValue.count is the wrong hint.
         for contact in newValue {
+            // Last-writer-wins on a duplicate effectiveID: if two cached contacts
+            // somehow share an effectiveID, the later one in the array overwrites.
+            // This diverges from the old `contacts.first { … }` (first-match-wins)
+            // ONLY inside a transient, un-collapsed duplicate-guessWhoID window
+            // that reconciliation owns and resolves onto one canonical id — so the
+            // divergence is user-invisible and acceptable.
             byEffectiveID[ContactID(contact: contact).effectiveID] = contact
             byLocalID[contact.localID] = contact
             // Index under each DISTINCT email key the contact carries. A contact
@@ -257,19 +266,30 @@ public final class ContactsRepository: NSObject {
     }
 
     private func applyRefresh(localID: String) async {
+        var updated = contacts
+        await refetch(localID: localID, into: &updated)
+        setContacts(updated)
+    }
+
+    /// Re-reads ONE Contacts record and applies the result to `working` WITHOUT
+    /// committing (no `setContacts`). Splitting the fetch from the commit lets
+    /// the batch `apply(_:)` path apply many changes to one local copy and
+    /// rebuild the indexes exactly once. A successful fetch replaces/inserts the
+    /// fresh record (or removes it when the store reports it gone); a thrown
+    /// re-read leaves the prior cached projection in place — error is isolated to
+    /// this one `localID`, never aborting a batch or leaving indexes half-built.
+    private func refetch(localID: String, into working: inout [Contact]) async {
         do {
             let fresh = try await contactsStore.fetch(localID: localID)
-            var updated = contacts
             if let fresh {
-                if let index = updated.firstIndex(where: { $0.localID == localID }) {
-                    updated[index] = fresh
+                if let index = working.firstIndex(where: { $0.localID == localID }) {
+                    working[index] = fresh
                 } else {
-                    updated.append(fresh)
+                    working.append(fresh)
                 }
             } else {
-                updated.removeAll { $0.localID == localID }
+                working.removeAll { $0.localID == localID }
             }
-            setContacts(updated)
             lastError = nil
         } catch {
             // A failed individual re-read cannot establish whether the record
@@ -293,19 +313,23 @@ public final class ContactsRepository: NSObject {
     }
 
     private func apply(_ changeSet: ContactChangeSet) async {
+        guard !changeSet.changes.isEmpty else { return }
+        // Coalesce the whole delta into ONE index rebuild: apply every change to
+        // a single local copy (re-fetching `.updated` records from the store as
+        // we go, in history order — a delete then re-add of the same localID must
+        // settle as present), then commit once. A delta of M changes costs one
+        // rebuild per BATCH, not M.
+        var updated = contacts
         for change in changeSet.changes {
             switch change {
             case .updated(let localID):
-                await applyRefresh(localID: localID)
+                await refetch(localID: localID, into: &updated)
             case .deleted(let localID):
-                var updated = contacts
                 updated.removeAll { $0.localID == localID }
-                setContacts(updated)
             }
         }
-        if !changeSet.changes.isEmpty {
-            postDidReload()
-        }
+        setContacts(updated)
+        postDidReload()
     }
 
     private func filtered(matching query: String, where predicate: (Contact) -> Bool) -> [Contact] {
