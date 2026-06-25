@@ -999,22 +999,6 @@ struct ContactDetailView: View {
         return repository.contact(guessWhoID: endpoint.id)
     }
 
-    /// The opened contact's own reconciled GuessWho UUID, or nil before it gains
-    /// a `guesswho://` URL. Resolved through the repository's identity model
-    /// (`guessWhoID(in:)`) off the LOADED `contact` — NOT the nav `id` — because
-    /// `id` is captured at selection time and does not re-key when a first-write
-    /// reconcile mints the UUID, whereas `self.contact` reflects the
-    /// post-mint record. Semantics are identical to the former
-    /// `service.guessWhoUUID(in:)`: nil for an un-reconciled contact (NEVER the
-    /// localID fallback). Still needed for the favorite observable read — the
-    /// @Observable favorites cache is keyed on the bare UUID, so swapping it for
-    /// a ContactID would lose star reactivity (link-direction classification no
-    /// longer reads this; it compares via the package's `SidecarKey.matches`).
-    private var contactUUID: String? {
-        guard let contact else { return nil }
-        return repository.guessWhoID(in: contact)
-    }
-
     /// The ContactID derived from the LOADED contact, carrying its current
     /// `guessWhoID` (which the nav `id` lacks after a first-write mint).
     /// The repository's sidecar reads (`eventLinks(for:)`) key on the passed
@@ -1026,23 +1010,22 @@ struct ContactDetailView: View {
     }
 
     private var isContactFavorited: Bool {
-        // Read through the @Observable app-side favorites cache (keyed on the
-        // contact's own UUID) so the star reacts to a toggle. An unreconciled
-        // contact has no UUID yet → not favorited (it can't be, until a toggle
-        // mints one).
-        guard let uuid = contactUUID else { return false }
-        return favoritesStore.isFavorite(kind: .contact, id: uuid)
+        // Read through the @Observable app-side favorites cache so the star
+        // reacts to a toggle. The cache asks package `Favorite.matches(_:)` to
+        // compare the opaque ContactID to the stored GuessWho UUID.
+        guard let id = loadedContactID else { return false }
+        return favoritesStore.isFavorite(id)
     }
 
     private func toggleFavorite() async {
         // Route through the repository, which resolves-or-mints the GuessWho UUID
         // first (favoriting a never-touched contact reconciles + mints,
         // transparent here) then toggles the CONTACT favorite and pokes its
-        // cache. We then reload the contact so `contactUUID` reflects a just-
-        // minted UUID, and refresh the @Observable app-side favorites cache so
-        // the star + the favorites list update (the repository writes the same
-        // on-disk file the app-side store mirrors, but doesn't drive its
-        // observable state).
+        // cache. We then reload the contact so its `ContactID` carries the
+        // just-minted `guessWhoID`, and refresh the @Observable app-side
+        // favorites cache so the star + the favorites list update (the
+        // repository writes the same on-disk file the app-side store mirrors,
+        // but doesn't drive its observable state).
         do {
             _ = try await repository.toggleFavorite(id)
         } catch {
@@ -1660,5 +1643,4 @@ private struct AddressRow: View {
         item.openInMaps(launchOptions: nil)
     }
 }
-
 
