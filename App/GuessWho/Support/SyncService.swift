@@ -490,9 +490,9 @@ final class SyncService {
     // (`guessWhoUUID(in:)`, `reconcile(localID:)`, `reconcileIfNeeded(contact:)`)
     // were removed in Stage 6: the app now keys every contact-sidecar operation
     // on a `ContactID` through `ContactsRepository`, and reconcile is a
-    // package-INTERNAL side effect of a write (resolve-or-mint) or of the
-    // detail-open `prepareContactForDetail` call. SyncService performs no
-    // contact-identity translation. (The EVENT sidecar surface and the SHARED
+    // package-INTERNAL, WRITE-ONLY side effect of a sidecar/favorite write
+    // (resolve-or-mint). SyncService performs no contact-identity translation.
+    // (The EVENT sidecar surface and the SHARED
     // favorites methods remain — events are out of Stage 6 scope, and favorites
     // are contact+event shared via `FavoriteKind`.)
 
@@ -513,8 +513,9 @@ final class SyncService {
     /// NOT touch the repository — ContactsRepository already holds SyncService,
     /// so injecting the reverse direction adds coupling without an upside (every
     /// current caller already refreshes after its own post-save dance — Stage 6's
-    /// `performInlineSave` runs `prepareContactForDetail` → `refreshContact(localID:)`
-    /// → `loadContact(preferFresh:)`).
+    /// `performInlineSave` runs `refreshContact(localID:)` →
+    /// `loadContact(preferFresh:)`; no reconcile, since a CONTACT-field edit is
+    /// not a sidecar write — 6f).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }

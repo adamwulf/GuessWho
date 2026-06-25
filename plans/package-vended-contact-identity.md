@@ -43,7 +43,8 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  DONE — 6a + 6b + 6b2 + 6c + 6d + 6e all DONE.** Split into sub-phases 6a
+  DONE — 6a + 6b + 6b2 + 6c + 6d + 6e all DONE; 6f (post-6e cleanup,
+  reverses 6c) DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6b2 (one `Contact` cache `contactsByLocalID` + a
   `guessWhoIDToLocalID` pointer index — no duplicate `Contact` copies — so
@@ -67,6 +68,24 @@
   `SidecarKey` construction, zero `forContactUUID`/`reconcile`/`guessWhoID` hits
   outside the enumerated allowed set + the blessed carve-outs. 460 tests +
   Catalyst + iPhone-17-sim green.
+- **6f (post-6e cleanup — REVERSE 6c; reconcile is WRITE-ONLY): DONE.**
+  Decision A was reversed (2026-06-25 per Adam): displaying a contact needs no
+  GuessWho URL, so there is NO reconcile on open. DELETED the package's
+  `ContactsRepository.prepareContactForDetail(_:)` and its 5 `prepare_*` tests
+  (`ContactsRepositoryPrepareForDetailTests.swift`). `ContactDetailView` dropped
+  its on-open reconcile (`.task` → `performReconcile` → `didAutoReconcile`, all
+  removed) and the redundant post-save `prepareContactForDetail(id)` call in
+  `performInlineSave` (a CONTACT-field edit is not a sidecar write, so it must
+  not stamp a URL); the view now just `loadContact()`s by its `ContactID`.
+  `resolveOrMintGuessWhoID` / `reconcileContactIdentity` (write-path, still
+  internal) UNTOUCHED — reconcile fires ONLY on the first note/link/favorite
+  write, which mints and reloads so `contactUUID` lights up. The
+  `contactUUID == nil` bindings (favorite → not-favorited, links → empty, debug
+  → "none") confirmed to degrade correctly for an unstamped contact. Grep for
+  `prepareContactForDetail`/`performReconcile`/`didAutoReconcile` across App/ +
+  Sources/ + Tests/ = zero code refs (one historical comment in
+  `GuessWhoSync.swift` noting the 6f reversal). 455 tests (was 460, −5 deleted
+  `prepare_*`) + Catalyst + iPhone-17-sim green.
 - **Stage 7 (EventID + event-identity boundary): DEFERRED** — the events analogue
   of Stages 1–6; the `EventsRepository`-into-package migration given a stage
   number. Not started; scope TBD after Stage 6 lands.
@@ -1200,11 +1219,15 @@ design TBD when Stage 6 lands.
   resolve-or-mint the GuessWho UUID internally; reads do not reconcile.
   `reconcileContactIdentity` becomes `internal` and is tested through the public
   write API. See Stage 6.
-- **DECIDED — keep a detail-open reconcile trigger, behind a package call
-  (Stage 6, decision A).** `prepareContactForDetail(_: ContactID)` preserves
-  today's open-without-writing URL stamp + Case-B/C/D repair, but the app calls it
-  blindly and never sees `localID`/the report. Alternative ("only writes
-  reconcile") was rejected so first-open repairs don't wait for a write.
+- **DECIDED → REVERSED (2026-06-25, sub-phase 6f) — NO detail-open reconcile;
+  reconcile is WRITE-ONLY (Stage 6, decision A REVERSED).** The original
+  decision A kept a `prepareContactForDetail(_: ContactID)` detail-open trigger
+  (open-without-writing URL stamp + Case-B/C/D repair). Adam reversed it:
+  displaying a contact needs no GuessWho URL (the UI holds a reconcile-stable
+  `ContactID`), and Case-D repair is fine to defer to the next write. So
+  `prepareContactForDetail` was DELETED in 6f and the alternative ("only writes
+  reconcile") now holds. See the reversal block above ("decision A, REVERSED")
+  and the 6f Status bullet.
 - **DECIDED — package owns the post-write cache update (Stage 6, decision B).**
   Reverses the "sidecar writes don't poke the repository" decoupling (the sidecar
   methods at `SyncService.swift:576+`); the package's write methods update

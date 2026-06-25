@@ -30,7 +30,6 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var notesStore: NotesStore?
     @State private var linksStore: ContactLinksStore?
-    @State private var didAutoReconcile = false
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
     // EventKit events where this contact appears as an attendee (matched by
@@ -226,11 +225,12 @@ struct ContactDetailView: View {
             Text(editFetchErrorMessage ?? "")
         }
         .task {
+            // Just load the contact by its `ContactID` — no reconcile on open.
+            // Reconcile is WRITE-ONLY (6f reverses the 6c detail-open reconcile):
+            // displaying a contact needs no GuessWho URL, an unstamped contact
+            // has no sidecar data to show (correct), and the FIRST write mints
+            // via the package's resolve-or-mint primitive.
             await loadContact()
-            if !didAutoReconcile {
-                didAutoReconcile = true
-                await performReconcile()
-            }
         }
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop
@@ -449,10 +449,11 @@ struct ContactDetailView: View {
             try await service.saveContact(model.edited)
             editModel = nil
             editMode = .inactive
-            // Reconcile/repair runs first so it can re-stamp our guesswho:// URL
-            // before any other read sees the post-save state. `prepareContactForDetail`
-            // reconciles INTERNALLY and pokes the repository cache (decision B).
-            await repository.prepareContactForDetail(id)
+            // No reconcile here (6f): editing a contact's CONTACT fields is not a
+            // GuessWho-sidecar write, so it must not stamp a guesswho:// URL — an
+            // unstamped contact stays unstamped until the user adds notes/tags/
+            // links/favorites, each of which mints via resolve-or-mint. Just
+            // re-read the one record into the cache.
             await repository.refreshContact(localID: saveLocalID)
             // refreshContact re-reads just this one record via service.fetch ->
             // unifiedContact (the fresh path; enumerateContacts can lag right
@@ -1198,20 +1199,6 @@ struct ContactDetailView: View {
         // distinguish two same-localID reloads in quick succession.
         guard recentEventsLoadID == myLoadID else { return }
         recentEvents = fetched
-    }
-
-    /// Detail-open reconcile/repair. The package's `prepareContactForDetail`
-    /// runs the four-case reconcile INTERNALLY (stamping a never-touched
-    /// contact's `guesswho://` URL on first open, repairing malformed/duplicate
-    /// URLs) and pokes the repository cache (decision B) so the view's captured
-    /// `ContactID` re-resolves to the now-canonical record. We hand it our `id`
-    /// blindly, await, then reload off the SAME `id` — never seeing a `localID`,
-    /// a report, or the word reconcile. It is `async` but not `throws`: a failed
-    /// reconcile is non-fatal for an open (the view still renders the contact),
-    /// so there is no error path to surface here.
-    private func performReconcile() async {
-        await repository.prepareContactForDetail(id)
-        await loadContact()
     }
 
     // MARK: - Notes
