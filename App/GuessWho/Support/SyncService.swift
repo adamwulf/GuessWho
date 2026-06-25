@@ -455,7 +455,12 @@ final class SyncService {
     /// used by this service for authorization and writes. UI clients should
     /// retain and read this repository instead of fetching Contacts directly.
     func makeContactsRepository() -> ContactsRepository {
-        ContactsRepository(contacts: contactsAdapter)
+        // Stage 6, Step 0: hand the repository the SAME sidecar engine and
+        // favorites store this service holds (both Optional — nil in the
+        // `.unavailable` storage state) so it can reconcile-on-write and key
+        // the contact-favorite path itself. Pure wiring; no behavior change yet
+        // (no repository write callers exist until sub-phase 6b).
+        ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
     }
 
     /// Fetches one contact by localID without enumerating the whole store.

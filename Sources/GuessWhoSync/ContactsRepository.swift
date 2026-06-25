@@ -20,6 +20,18 @@ public extension Notification.Name {
 public final class ContactsRepository: NSObject {
     private let contactsStore: ContactStoreProtocol
 
+    // The sidecar write engine and the standalone favorites store. BOTH are
+    // Optional and nil in the `.unavailable` storage state (no writable
+    // sidecar root) — exactly mirroring `SyncService.sync` / `.favoritesStore`.
+    // They are wired in here (Stage 6, Step 0) so the repository can reconcile
+    // and write a sidecar itself; pre-Stage-6 it held ONLY `contactsStore` and
+    // could not. `GuessWhoSync` is a `final class @unchecked Sendable`, so a
+    // `@MainActor` reference is safe; `FavoritesStore` is likewise a value-like
+    // package store. New methods that depend on either MUST degrade when nil:
+    // reads return empty/false, writes throw `SidecarUnavailableError`.
+    private let sync: GuessWhoSync?
+    private let favorites: FavoritesStore?
+
     public private(set) var contacts: [Contact] = []
     public private(set) var isLoading = false
     public private(set) var lastError: String?
@@ -52,8 +64,14 @@ public final class ContactsRepository: NSObject {
     /// `contactIDs(matchingEmail:)`.
     private var contactsByEmail: [String: [Contact]] = [:]
 
-    public init(contacts: ContactStoreProtocol) {
+    public init(
+        contacts: ContactStoreProtocol,
+        sync: GuessWhoSync? = nil,
+        favorites: FavoritesStore? = nil
+    ) {
         self.contactsStore = contacts
+        self.sync = sync
+        self.favorites = favorites
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -158,6 +176,70 @@ public final class ContactsRepository: NSObject {
         guard let candidate = contactsByEffectiveID[needle],
               ContactID(contact: candidate).guessWhoID == needle else { return nil }
         return candidate
+    }
+
+    // MARK: - Reconcile-on-write (resolve-or-mint)
+    //
+    // The INTERNAL plumbing every WRITE entry point (notes/links/favorite —
+    // landing in sub-phase 6b) routes through to obtain the GuessWho UUID it
+    // writes the sidecar at. Reconcile is a package-INTERNAL side effect of a
+    // write: the app never triggers, sees, or names it.
+
+    /// Resolves the GuessWho UUID a sidecar WRITE for `id` must key on, MINTING
+    /// one via reconcile IFF the contact has none yet.
+    ///
+    /// - If `id.guessWhoID` is already present, returns it directly — NO
+    ///   reconcile, no re-stamp. An already-reconciled contact's identity is
+    ///   stable; a write must not perturb it.
+    /// - Otherwise reconcile fires on `id.localID`. With no valid GuessWho URL
+    ///   on the contact, reconcile hits Case A and mints a fresh UUID
+    ///   (`assignedUUID`). The defensive fall-through re-reads the now-canonical
+    ///   record's URL for the pathological Case B/C/D path where reconcile
+    ///   stamped a URL without populating `assignedUUID` (mirrors the app's
+    ///   former `SyncService.reconcileIfNeeded`).
+    ///
+    /// DEGRADES when the engine is nil (the `.unavailable` storage state): a
+    /// write to an unreconciled contact has nowhere to mint, so it THROWS
+    /// `SidecarUnavailableError` rather than silently no-op — matching the
+    /// existing app write behavior the caller expects.
+    ///
+    /// CONCURRENCY — accepts a rare double-mint by design; does NOT serialize.
+    /// Two truly-concurrent writes to the SAME never-reconciled `ContactID`
+    /// could each mint before the other's write lands, because resolve-or-mint
+    /// must `await` the reconcile (which `await`s `contacts.fetch`) and the
+    /// engine's per-key locks (`PerKeyLockTable`) are SYNCHRONOUS `NSLock`s that
+    /// CANNOT be held across that `await`. This is accepted as a practical
+    /// non-event (it needs a never-reconciled contact AND two simultaneous
+    /// writes from different surfaces — effectively only Catalyst multi-window);
+    /// no async-serialization machinery is added here. See the Stage 6
+    /// "CONCURRENCY (decision: ACCEPT double-mint...)" paragraph in
+    /// `plans/package-vended-contact-identity.md` for the full rationale,
+    /// including why single-device last-write-wins orphans a sidecar (harmless)
+    /// and only the multi-device case self-heals via Case-D.
+    internal func resolveOrMintGuessWhoID(for id: ContactID) async throws -> String {
+        // Fast path: already reconciled — return the stable UUID, mint nothing.
+        if let existing = id.guessWhoID {
+            return existing
+        }
+        // Mint path: a write needs the engine. Nil ⇒ no writable sidecar root,
+        // so a write cannot proceed (no place to mint or persist) → throw.
+        guard let sync else {
+            throw SidecarUnavailableError()
+        }
+        let outcome = try await sync.reconcileContactIdentity(localID: id.localID)
+        if let assigned = outcome.assignedUUID {
+            return assigned
+        }
+        // Reconcile finished without an `assignedUUID` — Cases B/C/D may stamp
+        // the on-disk contact's URL without populating that field (e.g. a stale
+        // in-memory snapshot of a contact that already carried a valid URL).
+        // Re-fetch the single record post-write so we read the freshly written
+        // UUID, then derive it via the same `SidecarKey` parser `ContactID` uses.
+        if let fresh = try? await contactsStore.fetch(localID: id.localID),
+           let stamped = ContactID(contact: fresh).guessWhoID {
+            return stamped
+        }
+        throw ReconcileAssignmentFailedError()
     }
 
     /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors
