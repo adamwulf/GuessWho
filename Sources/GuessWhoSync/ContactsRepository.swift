@@ -42,23 +42,31 @@ public final class ContactsRepository: NSObject {
 
     // MARK: - Point-lookup indexes (private; rebuilt from `contacts`)
     //
-    // These make `contact(id:)`, `contact(localID:)`, and
-    // `contactIDs(matchingEmail:)` O(1) synchronous main-actor reads. They are
-    // NEVER mutated directly — every `contacts` assignment routes through
+    // These make `contact(id:)`, `contact(guessWhoID:)`, `contact(localID:)`,
+    // and `contactIDs(matchingEmail:)` O(1) synchronous main-actor reads. They
+    // are NEVER mutated directly — every `contacts` assignment routes through
     // `setContacts(_:)`, which reassigns the array AND rebuilds all three
     // indexes wholesale, so the array and indexes cannot drift. A wholesale
     // rebuild (rather than an in-place patch) is what makes the reconciliation
-    // transition — a contact's effective identity flipping `localID →
-    // guessWhoID` — re-key automatically: the new array yields the new key and
-    // the old key simply isn't reproduced.
-
-    /// Keyed on `ContactID(contact:).effectiveID` (`guessWhoID ?? localID`).
-    /// One entry per contact; backs `contact(id:)`.
-    private var contactsByEffectiveID: [String: Contact] = [:]
+    // transition — a contact gaining a `guessWhoID` — re-key automatically: the
+    // new array yields a fresh `guessWhoIDToLocalID` pointer (and drops any
+    // stale one) while the contact's `localID` slot is unchanged.
 
     /// Keyed on `localID` (Apple's `CNContact.identifier`). One entry per
-    /// contact; backs the `contact(localID:)` Contacts-boundary accessor.
+    /// contact; backs the `contact(localID:)` Contacts-boundary accessor AND is
+    /// the SOLE `Contact` cache — every other identity lookup chases a pointer
+    /// into this map, so there is exactly one `Contact` value per contact and
+    /// the copies cannot drift.
     private var contactsByLocalID: [String: Contact] = [:]
+
+    /// Pointer index: canonical (lowercase) `guessWhoID` → that contact's
+    /// `localID`. Holds ONLY RECONCILED contacts (those whose
+    /// `ContactID(contact:).guessWhoID != nil`); it stores no `Contact` value,
+    /// just the `localID` to chase back into `contactsByLocalID`. Backs the
+    /// guessWhoID branch of `contact(id:)` and all of `contact(guessWhoID:)`.
+    /// `guessWhoID` keys are already canonical-lowercase off `ContactID`, but we
+    /// are explicit about it everywhere this map is written/read.
+    private var guessWhoIDToLocalID: [String: String] = [:]
 
     /// Keyed on each lowercased+trimmed email address a contact carries; a
     /// contact appears under EVERY email it has, and one email can map to
@@ -116,14 +124,31 @@ public final class ContactsRepository: NSObject {
     // `refreshContact(localID:)`. The UI keys exclusively on `ContactID`; the
     // `localID` carrier inside the value is consumed only by `contact(id:)`.
 
-    /// Resolves a `ContactID` back to its cached `Contact` by EFFECTIVE identity
-    /// (`guessWhoID ?? localID`), never by raw `localID` alone: a stale `localID`
-    /// could re-resolve to the wrong contact after a unification / Case-D change,
-    /// whereas the GuessWho UUID is stable once minted. Returns `nil` when no
-    /// cached contact matches (deleted, or a retired/unknown id) — the
-    /// "unavailable" contract the UI renders, never a wrong-contact fallback.
+    /// Resolves a `ContactID` back to its cached `Contact`, GuessWho UUID FIRST
+    /// (canonical identity wins; a stale `localID` can never override a real
+    /// UUID match), else by `localID`. Returns `nil` when no cached contact
+    /// matches (deleted, or a retired/unknown id) — the "unavailable" contract
+    /// the UI renders, never a wrong-contact fallback.
+    ///
+    /// The `localID` branch is LOAD-BEARING, not a mere fallback: it is exactly
+    /// the captured-pre-reconcile-token case — a view holds an immutable
+    /// `ContactID` minted at navigation whose `guessWhoID` is still nil, and the
+    /// contact then reconciled. `localID` is the one identifier that does NOT
+    /// move across the reconcile re-key, so resolution MUST go by `id.localID`
+    /// there. Do NOT "simplify" this branch away — it is the reason 6d can
+    /// delete `ContactDetailView.resolvedLocalID` (the captured token already
+    /// carries the `localID` the view used to thread by hand).
+    ///
+    /// The Case-D-loser subtlety the old doc raised (a stale `localID` re-
+    /// resolving to a merged-away duplicate) is MOOT for any RECONCILED token:
+    /// guessWhoID-first ordering hits the pointer index and never reaches the
+    /// `localID` branch. The `localID` branch is reached ONLY when the token has
+    /// no `guessWhoID`, where `localID` legitimately IS the only identity.
     public func contact(id: ContactID) -> Contact? {
-        contactsByEffectiveID[id.effectiveID]
+        if let gw = id.guessWhoID, let lid = guessWhoIDToLocalID[gw] {
+            return contactsByLocalID[lid]
+        }
+        return contactsByLocalID[id.localID]
     }
 
     /// The reconciled GuessWho UUID carried by `contact`, or `nil` when the
@@ -159,25 +184,26 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Resolves a BARE GuessWho UUID (a `SidecarKey` endpoint id, a
-    /// `Favorite.id`, etc.) to its cached `Contact`. A reconciled contact's
-    /// EFFECTIVE identity IS its `guessWhoID`, so this hits the same O(1)
-    /// `contactsByEffectiveID` index `contact(id:)` uses, then CONFIRMS the
-    /// resolved contact's `guessWhoID` actually equals the input. The confirm
-    /// matters: `effectiveID` is `guessWhoID ?? localID`, so a not-yet-reconciled
-    /// contact is keyed under its `localID`; without the guard, a query string
-    /// coinciding with some bare contact's `localID` would wrongly resolve to it.
-    /// We promise `guessWhoID` semantics, so only a true `guessWhoID` match
-    /// returns a contact. Input is lowercased to match the canonical lowercase
-    /// keys (`SidecarKey` / `Favorite` already lowercase their ids — defensive).
-    /// Returns `nil` for an unknown/retired UUID, or for a string that is only a
-    /// `localID` — the "unavailable" contract, never a wrong-contact fallback.
-    /// The bridge that lets the app resolve a link endpoint / favorite (keyed by
-    /// bare UUID) without re-introducing an app-side `uuid → Contact` map.
+    /// `Favorite.id`, etc.) to its cached `Contact` via a clean pointer hop:
+    /// `guessWhoIDToLocalID[uuid]` → `contactsByLocalID[localID]`. NO confirm-
+    /// guard — `guessWhoIDToLocalID` is keyed ONLY on real `guessWhoID`s (it
+    /// excludes unreconciled contacts entirely), so it can never return a
+    /// `localID`-coincidence; the pure guessWhoID keyspace IS the guarantee the
+    /// old confirm-guard provided. Input is lowercased to match the canonical
+    /// lowercase keys (`SidecarKey` / `Favorite` already lowercase their ids —
+    /// defensive). Returns `nil` for an unknown/retired UUID, or for a string
+    /// that is only some contact's `localID` — the "unavailable" contract, never
+    /// a wrong-contact fallback.
+    ///
+    /// STAYS PUBLIC: favorites and links sync between devices and so persist the
+    /// stable GuessWho UUID (not a `ContactID`, which carries the transient
+    /// `localID` and is not `Codable` for that reason). The app legitimately
+    /// reads bare guessWhoID strings off disk and resolves them here — the
+    /// bridge that lets it resolve a link endpoint / favorite without an app-side
+    /// `uuid → Contact` map.
     public func contact(guessWhoID: String) -> Contact? {
-        let needle = guessWhoID.lowercased()
-        guard let candidate = contactsByEffectiveID[needle],
-              ContactID(contact: candidate).guessWhoID == needle else { return nil }
-        return candidate
+        guard let lid = guessWhoIDToLocalID[guessWhoID.lowercased()] else { return nil }
+        return contactsByLocalID[lid]
     }
 
     // MARK: - Reconcile-on-write (resolve-or-mint)
@@ -614,23 +640,31 @@ public final class ContactsRepository: NSObject {
     private func setContacts(_ newValue: [Contact]) {
         contacts = newValue
 
-        var byEffectiveID: [String: Contact] = [:]
         var byLocalID: [String: Contact] = [:]
+        var byGuessWhoID: [String: String] = [:]
         var byEmail: [String: [Contact]] = [:]
-        byEffectiveID.reserveCapacity(newValue.count)
         byLocalID.reserveCapacity(newValue.count)
-        // byEmail intentionally omits reserveCapacity: its key count is the
-        // number of DISTINCT email addresses across the book, not the contact
-        // count, so newValue.count is the wrong hint.
+        // byGuessWhoID intentionally omits reserveCapacity: it holds only
+        // RECONCILED contacts (a subset of newValue), so newValue.count over-
+        // reserves. byEmail likewise omits it: its key count is the number of
+        // DISTINCT email addresses across the book, not the contact count.
         for contact in newValue {
-            // Last-writer-wins on a duplicate effectiveID: if two cached contacts
-            // somehow share an effectiveID, the later one in the array overwrites.
-            // This diverges from the old `contacts.first { … }` (first-match-wins)
-            // ONLY inside a transient, un-collapsed duplicate-guessWhoID window
-            // that reconciliation owns and resolves onto one canonical id — so the
-            // divergence is user-invisible and acceptable.
-            byEffectiveID[ContactID(contact: contact).effectiveID] = contact
             byLocalID[contact.localID] = contact
+            // Pointer entry for RECONCILED contacts only — guessWhoID → localID
+            // (canonical lowercase guessWhoID off `ContactID`). Last-writer-wins
+            // on a duplicate guessWhoID: if two cached contacts momentarily share
+            // one, the later one in the array overwrites the pointer. This is the
+            // pointer analogue of today's last-writer-wins on the old fused index,
+            // and it occurs ONLY inside a transient, un-collapsed duplicate-
+            // guessWhoID window that reconciliation owns and resolves onto one
+            // canonical id. Consistent resolution there is what the list VCs'
+            // `effectiveID` dedup guard relies on to render one stable row.
+            // Rebuilding from scratch on every funnel call also drops a stale
+            // guessWhoID/localID pointer automatically (delete, Case-D retire,
+            // etc. are all handled by rebuild-from-scratch, no targeted eviction).
+            if let gw = ContactID(contact: contact).guessWhoID {
+                byGuessWhoID[gw] = contact.localID
+            }
             // Index under each DISTINCT email key the contact carries. A contact
             // listing the same address under two labels must still appear only
             // once per key — matching the old `contacts.compactMap` semantics
@@ -642,8 +676,8 @@ public final class ContactsRepository: NSObject {
                 byEmail[key, default: []].append(contact)
             }
         }
-        contactsByEffectiveID = byEffectiveID
         contactsByLocalID = byLocalID
+        guessWhoIDToLocalID = byGuessWhoID
         contactsByEmail = byEmail
     }
 

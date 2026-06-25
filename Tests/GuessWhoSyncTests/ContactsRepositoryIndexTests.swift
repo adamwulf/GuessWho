@@ -3,13 +3,13 @@ import Foundation
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
 
-/// Stage 1.5 — the repository's private point-lookup indexes
-/// (`contactsByEffectiveID`, `contactsByLocalID`, `contactsByEmail`) must stay
-/// coherent with the `contacts` array through EVERY mutation path, since all
-/// mutations funnel through the single `setContacts(_:)` rebuild. These tests
-/// drive each public mutation entry point and assert the O(1) reads agree with
-/// a manual O(n) scan over the same array (the parity invariant), plus the
-/// reconciliation re-key subtlety.
+/// Stage 1.5 — the repository's private point-lookup indexes (the SOLE
+/// `contactsByLocalID` `Contact` cache plus the `guessWhoIDToLocalID` pointer
+/// index and `contactsByEmail`) must stay coherent with the `contacts` array
+/// through EVERY mutation path, since all mutations funnel through the single
+/// `setContacts(_:)` rebuild. These tests drive each public mutation entry
+/// point and assert the O(1) reads agree with a manual O(n) scan over the same
+/// array (the parity invariant), plus the reconciliation re-key subtlety.
 @Suite("ContactsRepository O(1) indexes")
 struct ContactsRepositoryIndexTests {
 
@@ -207,6 +207,7 @@ struct ContactsRepositoryIndexTests {
 
         let localIDEffective = ContactID(contact: preReconcile)
         #expect(localIDEffective.effectiveID == "k")              // falls back to localID
+        #expect(localIDEffective.guessWhoID == nil)              // no UUID on the captured token
         #expect(repository.contact(id: localIDEffective)?.localID == "k")
 
         // Now the SAME localID gains a valid GuessWho URL — identity flips to the UUID.
@@ -218,10 +219,16 @@ struct ContactsRepositoryIndexTests {
         let uuidEffective = ContactID(contact: postReconcile)
         #expect(uuidEffective.effectiveID == uuid)               // now the bare UUID
 
-        // Found under the NEW (guessWhoID-effective) ContactID...
+        // Found under the NEW (guessWhoID-effective) ContactID via the pointer...
         #expect(repository.contact(id: uuidEffective)?.localID == "k")
-        // ...and the OLD (localID-effective) ContactID no longer resolves to it.
-        #expect(repository.contact(id: localIDEffective) == nil)
+        // ...AND the OLD (localID-effective) captured token STILL resolves — 6b2
+        // reconcile-stability: that token's guessWhoID is still nil, so it goes
+        // through the LOAD-BEARING localID branch, and the localID slot is
+        // unchanged across the re-key. (Under the OLD fused index this token
+        // missed; the whole point of 6b2 is that a captured pre-reconcile token
+        // keeps resolving, which is why ContactDetailView no longer needs to
+        // thread a separate localID.)
+        #expect(repository.contact(id: localIDEffective)?.localID == "k")
         // The localID boundary accessor still works (localID itself is unchanged).
         #expect(repository.contact(localID: "k")?.localID == "k")
     }
