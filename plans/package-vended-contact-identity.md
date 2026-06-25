@@ -511,8 +511,38 @@ flip is low-value churn. Defer Stage 5.5 unless a concrete need to seal
 
 ### Stage 6 — `ContactID`-keyed contact sidecar API; internalize reconcile
 
-**Depends on Stage 5 landing first** (Stage 5 removes `guessWhoUUID(in:)` and runs
-the `localID` audit; Stage 6 then moves the rest of the contact-sidecar boundary).
+**Depends on Stage 5 landing first** (Stage 5 made `guessWhoUUID(in:)` private and
+ran the `localID` audit; Stage 6 then moves the rest of the contact-sidecar
+boundary).
+
+#### Sub-phases (land in order; 6c and 6d can overlap after 6b)
+
+Stage 6 is large — split it so each piece is independently buildable, testable,
+and reviewable. The Design / call-surface / tests sections below are the detail;
+this is the sequencing:
+
+- **6a — Foundation (package only).** Wire the `GuessWhoSync` engine into
+  `ContactsRepository` (Design step 0) and add the internal resolve-or-mint /
+  reconcile-on-write primitive (Design step 2, incl. the per-key locking +
+  concurrency guard). No public API change, no app change yet. Flip
+  `reconcileContactIdentity` to `internal` here, keeping the existing direct-call
+  tests. **Everything else depends on 6a.**
+- **6b — Vend the `ContactID`-keyed read/write API** on the repository (Design
+  step 1) — `notes/links/eventLinks/favorite` verbs, plain-named, reconcile-on-
+  write internally, package owns the post-write cache update (decision B). Package
+  tests (Tests section). Still no app migration.
+- **6c — `prepareContactForDetail` (decision A) + the debug `lastReconcileOutcome`
+  vend.** Self-contained package additions; depends on 6a.
+- **6d — Migrate the app consumers, one at a time** (Stage-4-style sweep), each
+  repointing a store/view at the repository API and deleting the matching
+  `SyncService` contact-sidecar method: `NotesStore` → `ContactLinksStore` →
+  contact-favorite path → `ContactDetailView` → `ConnectionsSection` /
+  `EventDetailView` (drop their `reconcileIfNeeded`). Depends on 6b (+6c for the
+  detail view). The per-consumer pieces are largely independent once the shared
+  deletions are staged — can parallelize like Stage 4 did.
+- **6e — Tighten + audit.** Final identity audit with the corrected acceptance
+  grep (below), confirm `SyncService` holds no contact-identity translation,
+  remove any now-dead wrappers.
 
 **Goal.** Finish the identity collapse: the app speaks ONLY `Contact` and
 `ContactID`. Every contact-sidecar operation the app calls takes a `ContactID`,
@@ -522,10 +552,12 @@ the words `guessWhoID`, `localID`, `SidecarKey`, and `reconcile` do not appear i
 the app target outside the debug carve-out.
 
 **Why now.** The bare-UUID `forContactUUID: String` boundary and the
-`Contact → UUID` translation helpers (`reconcileIfNeeded`, the deleted
-`guessWhoUUID(in:)`) live in `SyncService` — APP code (`App/GuessWho/Support/
-SyncService.swift`), a thin `SidecarKey`-wrap-and-forward facade over the package
-`sync` engine. Keeping identity translation app-side is the last violation of the
+`Contact → UUID` translation helper `reconcileIfNeeded` live in `SyncService` —
+APP code (`App/GuessWho/Support/SyncService.swift`), a thin
+`SidecarKey`-wrap-and-forward facade over the package `sync` engine. (Stage 5
+already made `SyncService.guessWhoUUID(in:)` `private` and added the package twin
+`ContactsRepository.guessWhoID(in:)`; Stage 6 removes the REMAINING app-side
+translation.) Keeping identity translation app-side is the last violation of the
 "app keys on `ContactID` only" contract. The hard part — the four-case algorithm
 `sync.reconcileContactIdentity(localID:)` — is ALREADY in the package; Stage 6
 relocates the TRIGGER and the bare-string boundary, not the algorithm.
@@ -559,17 +591,51 @@ App stores / views that bind to the contact-sidecar methods today:
 - **`EventDetailView`** (`:500,506`) — `reconcileIfNeeded(contact:)` +
   `addContactEventLink` (contact endpoint only; see scope note).
 
+ALSO in scope (the reviewer found these missing from the first draft — they're
+app-side `SidecarKey`/endpoint handling the acceptance grep will flag): the
+`SidecarKey`-constructing / endpoint-resolving sites — `ContactDetailView`'s
+`otherEndpoint`/`otherContact` (which build a `SidecarKey` and resolve the far
+endpoint) and the `LinkDirection`-style endpoint enum in `ConnectionsSection`;
+and the bare-GuessWho-UUID resolution via `repository.contact(guessWhoID:)` in
+`EventDetailView`, `FavoritesListViewController`, and `ContactDetailView`. These
+move behind the repository link API (which should vend the resolved far-endpoint
+`Contact`/`ContactID` and the direction, so the app never touches a `SidecarKey`).
+NOTE: all the line numbers in this enumeration were captured pre-Stage-5 and have
+drifted — re-grep for the METHODS at implementation time, don't trust the refs.
+
 #### Design
 
-1. **Package vends a `ContactID`-keyed contact-sidecar API.** Add to the package
-   (on `ContactsRepository`, or a new `package`-public `ContactSidecar` type it
-   owns) the contact-sidecar operations keyed on `ContactID`:
-   `notes(contactID:)`, `addNote(contactID:body:)`, `editNote`, `deleteNote`,
-   `contactLinks(contactID:)`, `addContactLink(from:to:note:)` (both endpoints
-   `ContactID`), `setContactLinkNote`, `removeContactLink`, `eventLinks(contactID:)`,
-   `addContactEventLink(contactID:eventUUID:note:)`, `isFavoriteContact(_:)`,
-   `toggleFavoriteContact(_:)`. Internally each maps `ContactID → SidecarKey`; the
-   app never constructs a `SidecarKey`.
+**No app-facing "sidecar" type or vocabulary.** Per `CLAUDE.md`, the sidecar is
+an implementation detail the app never names. There is NO public `ContactSidecar`
+type the app imports. The app works with `Contact` + `ContactID` + plain-verb
+methods on the one object it already uses — `ContactsRepository` — and whether a
+note/link/favorite is persisted in `CNContactStore` or a sidecar file is entirely
+the package's business. Method names stay plain (`notes(for:)`, not
+`sidecarNotes(for:)`). If a `package`/`internal` helper type owns the
+sidecar+engine plumbing, it is named in implementation terms and the app never
+sees it.
+
+0. **PREREQUISITE — give `ContactsRepository` the engine.** Today
+   `ContactsRepository` holds ONLY `contactsStore: ContactStoreProtocol`
+   (`ContactsRepository.swift:21`); its `init(contacts:)` (`:55`) gets just the
+   adapter, and `makeContactsRepository()` (`SyncService.swift:457`) passes only
+   that. The `GuessWhoSync` engine lives PRIVATELY in `SyncService` (`:33`). So the
+   repository currently CANNOT reconcile or write a sidecar — the engine isn't
+   wired to it. Step 0 changes `ContactsRepository.init` to also take the
+   `GuessWhoSync` engine (a `private let`), and updates `makeContactsRepository()`
+   to pass it. This is real architecture (a new dependency on the repository), not
+   a relocation — it must land before any reconcile-on-write / sidecar method can
+   exist on the repository. Package-only; no app behavior change yet.
+
+1. **Repository vends a `ContactID`-keyed contact API (plain verbs, no "sidecar"
+   in the name).** On `ContactsRepository`, add the contact operations keyed on
+   `ContactID`: `notes(for:)`, `addNote(for:body:)`, `editNote`, `deleteNote`,
+   `links(for:)`, `addLink(from:to:note:)` (both endpoints `ContactID`),
+   `setLinkNote`, `removeLink`, `eventLinks(for:)`,
+   `addEventLink(contactID:eventUUID:note:)`, `isFavorite(_:)`,
+   `toggleFavorite(_:)` — for the CONTACT favorite path only (see the favorites
+   scope note below). Internally each maps `ContactID → SidecarKey` and calls the
+   engine; the app never constructs a `SidecarKey` or sees the word.
 
 2. **Reconcile-on-WRITE, internal (the core change).** Every WRITE entry point
    resolves-or-mints the GuessWho UUID internally:
@@ -579,10 +645,23 @@ App stores / views that bind to the contact-sidecar methods today:
    update the repository cache   // package pokes its own cache (see decision B)
    ```
    `reconcileContactIdentity` and the resolve-or-mint helper become `internal`
-   (NOT `package`): the package's own tests drive them THROUGH the public write
-   API (proving the trigger fires), not by calling reconcile directly. `internal`
-   and `package` both hide from the app target — `internal` is chosen as the
-   tighter bound that matches "reconcile is an invisible side effect of a write."
+   (NOT `package`). `internal` and `package` both hide from the app target —
+   `internal` is the tighter bound that matches "reconcile is an invisible side
+   effect of a write." KEEP the existing DIRECT-call reconcile unit tests
+   (`SingleContactReconcilerTests` etc., incl. Case-D collapse) — they stay valid
+   under `@testable import` after the visibility flip and are the ONLY place the
+   four-case algorithm is covered in isolation. ADD new tests that prove the
+   trigger fires through the public write API; do NOT replace the direct tests
+   with write-routed ones (that would lose Case-D coverage).
+
+   CONCURRENCY: two concurrent writes to the SAME unreconciled `ContactID` must
+   not double-mint across the `await` in resolve-or-mint. The orchestrator already
+   serializes per-key via `PerKeyLockTable`/`withCaseDLocks`; the resolve-or-mint
+   must hold the per-(contact-key) lock across the read-check-reconcile-write so a
+   second writer sees the freshly-minted UUID, not nil. The exposed path is the
+   contact-link write (reconciles BOTH endpoints) — order the two endpoint locks
+   deterministically (as Case-D already does) to avoid deadlock. Call this out;
+   add a concurrent-write test.
 
 3. **Reads do NOT reconcile.** `notes(contactID:)` / `contactLinks(contactID:)` /
    `isFavoriteContact` return empty/false when `id.guessWhoID` is nil — an
@@ -602,24 +681,38 @@ App stores / views that bind to the contact-sidecar methods today:
    open-without-writing repair behavior; if instead you want "ONLY writes
    reconcile," dropping this call is the alternative — decision A picks KEEP.
 
-5. **Package owns the post-write cache update (decision B).** Today
-   `SyncService.saveContact`/`reconcile` deliberately do NOT poke the repository
+5. **Package owns the post-write cache update (decision B), for SIDECAR writes.**
+   Today the sidecar write paths deliberately do NOT poke the repository
    (documented at `SyncService.swift:551-557`), so every app caller runs its own
-   `reconcile → loadContact → repository.reload` dance. Stage 6 REVERSES that
-   decision: the package's write/`prepareContactForDetail` methods update
+   `reconcile → loadContact → repository.reload` dance. Stage 6 REVERSES that for
+   the new `ContactID`-keyed SIDECAR methods + `prepareContactForDetail`: after
+   Step 0 wires the engine in (the coupling that comment deferred), they update
    `ContactsRepository` after writing, so the app does no post-write reload
-   choreography. `ContactsRepository` already holds the engine, so this is the
-   coupling that comment consciously deferred — internalizing reconcile is the
-   reason to now accept it. Call this out in the commit.
+   choreography. SCOPE: this covers SIDECAR writes (notes/links/favorite/reconcile)
+   ONLY — the `saveContact` CONTACT-RECORD path is out of scope (it stays on
+   `SyncService` and keeps its existing `refreshContact`/`loadContact` flow); do
+   not claim it loses its dance.
+   RE-ENTRANCY (state this — it's why decision B is race-safe): reconcile's own
+   `CNContact` write is tagged with our `transactionAuthor` and the change-watcher
+   self-excludes those (`CNContactStoreAdapter.swift:42,235`), so the write
+   produces an EMPTY delta that is NOT posted — the watcher does NOT double-rebuild
+   the cache against the package's own poke. Call decision B out in the commit.
 
-6. **Delete the contact-sidecar surface from `SyncService`.** Remove the
-   `forContactUUID:` notes/links/favorite/event-link methods and
+6. **Delete the CONTACT-sidecar surface from `SyncService` (favorites stay).**
+   Remove the `forContactUUID:` notes/links/event-link methods and
    `reconcileIfNeeded`/`reconcile`/`sidecar(for:)` from `SyncService`; repoint
-   `NotesStore`/`ContactLinksStore`/`FavoritesStore`/`ContactDetailView`/
-   `ConnectionsSection`/`EventDetailView` at the package API. `ConnectionsSection`
-   and `EventDetailView` drop their `reconcileIfNeeded` calls entirely — the link
-   WRITE now reconciles internally, so the app just calls
-   `addContactLink(from:to:)` / `addContactEventLink(contactID:)` with `ContactID`s.
+   `NotesStore`/`ContactLinksStore`/`ContactDetailView`/`ConnectionsSection`/
+   `EventDetailView` at the repository API. `ConnectionsSection` and
+   `EventDetailView` drop their `reconcileIfNeeded` calls entirely — the link WRITE
+   now reconciles internally, so the app just calls `addLink(from:to:)` /
+   `addEventLink(contactID:)` with `ContactID`s.
+   FAVORITES STAY ON `SyncService`: `favorites()`/`toggleFavorite(kind:id:)`/
+   `setFavoritesOrder` are SHARED contact+event (the `FavoriteKind` discriminator
+   selects which), so they cannot move to a contacts-only repository API. The
+   repository's `isFavorite(_:)`/`toggleFavorite(_:)` cover the CONTACT path by
+   translating `ContactID → guessWhoID` and calling through; the shared
+   `FavoritesStore` surface remains on `SyncService` for the event path until the
+   event migration. Do not delete the shared favorites methods.
 
 #### What remains of `SyncService` (it shrinks, it does not vanish)
 
@@ -657,13 +750,26 @@ user-facing path.
 - A contact-link write across two `ContactID`s reconciles BOTH endpoints and the
   durable `Link` is keyed on their GuessWho UUIDs.
 
-Acceptance: `grep` over the app target finds zero `forContactUUID`, zero
-`SidecarKey` construction, and zero `reconcile`/`guessWhoID`/`localID` in contact
-code outside the debug carve-out; `reconcileContactIdentity` is `internal` to the
-package and exercised only through public write APIs; `SyncService` contains no
-contact-sidecar or contact-identity-translation method; opening a never-written
-contact still stamps/repairs its identity; writing a note/link/favorite to a
-fresh contact still works end-to-end with no app-side reconcile or reload dance.
+Acceptance (the grep must EXCLUDE the sanctioned Stage-4/5 accessors and blessed
+boundary tokens, or it can't pass — those are the agreed identity surface, not
+violations):
+- zero `forContactUUID` in the app target;
+- zero app-side `SidecarKey(` CONSTRUCTION (calls to `SidecarKey.parseGuessWhoContactURL`
+  and the like are not construction — exclude them) and zero app-side
+  `SidecarKey`-typed values / `LinkDirection`-style endpoint enums;
+- zero `reconcile` in contact code outside the debug carve-out;
+- `guessWhoID`/`localID` appear ONLY as: the sanctioned repository accessors
+  (`contact(guessWhoID:)`, `guessWhoID(in:)`), the blessed boundary tokens
+  (`boundaryLocalID`/`resolvedLocalID` threaded into package calls), the empty
+  new-contact seed (`localID: ""`), and the debug-section display — enumerate
+  these as the allowed set and grep that nothing else matches;
+- `reconcileContactIdentity` is `internal` to the package, with its EXISTING
+  direct-call tests kept AND new write-routed trigger tests added;
+- `SyncService` contains no contact-sidecar or contact-identity-translation
+  method (favorites' shared `FavoriteKind` surface may remain — see step 6);
+- opening a never-written contact still stamps/repairs its identity; writing a
+  note/link/contact-favorite to a fresh contact works end-to-end with no app-side
+  reconcile or reload dance.
 
 ## Verification
 
@@ -675,8 +781,10 @@ fresh contact still works end-to-end with no app-side reconcile or reload dance.
 3. iPhone simulator build (`platform=iOS Simulator`) so the tab-bar/gate path is
    covered.
 4. Static `localID` audit per Stage 5 acceptance, plus the Stage 6 audit:
-   `grep` the app target for `forContactUUID`, `SidecarKey(`, `reconcile`, and
-   `guessWhoID` — zero hits outside the contact-detail debug carve-out.
+   `grep` the app target for `forContactUUID`, app-side `SidecarKey(` construction,
+   `reconcile`, and `guessWhoID` — every hit must fall in the ALLOWED set
+   enumerated in the Acceptance above (sanctioned accessors, blessed boundary
+   tokens, empty seed, debug carve-out); anything outside that set is a defect.
 5. Review cycle: identity correctness (one canonical UUID per row, Case-D
    collapse re-keys cleanly), diffable change-detection (edit repaints without
    flicker, no delete+insert), concurrency/actor isolation, permission-flow
