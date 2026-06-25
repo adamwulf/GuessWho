@@ -117,6 +117,51 @@ struct ContactsRepositoryIndexTests {
         #expect(items[0].event?.title == "Favorite Event")
     }
 
+    @Test @MainActor
+    func linkedContactResolvesFarContactForContactLink() async throws {
+        let aUUID = "11111111-1111-1111-1111-111111111111"
+        let bUUID = "22222222-2222-2222-2222-222222222222"
+        let a = reconciledContact(localID: "a", uuid: aUUID, givenName: "A")
+        let b = reconciledContact(localID: "b", uuid: bUUID, givenName: "B")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [a, b]))
+        await repository.reload()
+        let link = Link(
+            id: try #require(UUID(uuidString: "33333333-3333-3333-3333-333333333333")),
+            endpointA: SidecarKey(kind: .contact, id: aUUID),
+            endpointB: SidecarKey(kind: .contact, id: bUUID),
+            note: "",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedBy: "test"
+        )
+
+        #expect(repository.linkedContact(of: link, for: a.contactID)?.localID == "b")
+        #expect(repository.linkedContact(of: link, for: b.contactID)?.localID == "a")
+        #expect(repository.linkedContact(of: link, for: Contact(localID: "bare").contactID) == nil)
+    }
+
+    @Test @MainActor
+    func linkedContactResolvesContactEndpointForEventLink() async throws {
+        let contactUUID = "11111111-1111-1111-1111-111111111111"
+        let eventUUID = "22222222-2222-2222-2222-222222222222"
+        let contact = reconciledContact(localID: "c", uuid: contactUUID, givenName: "Contact")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [contact]))
+        await repository.reload()
+        let link = Link(
+            id: try #require(UUID(uuidString: "33333333-3333-3333-3333-333333333333")),
+            endpointA: SidecarKey(kind: .contact, id: contactUUID),
+            endpointB: SidecarKey(kind: .event, id: eventUUID),
+            note: "",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedBy: "test"
+        )
+
+        #expect(repository.linkedContact(of: link, forEventUUID: eventUUID)?.localID == "c")
+        #expect(repository.linkedContact(of: link, forEventUUID: eventUUID.uppercased())?.localID == "c")
+        #expect(repository.linkedContact(of: link, forEventUUID: "44444444-4444-4444-4444-444444444444") == nil)
+    }
+
     // MARK: - guessWhoID(in:) — the opened contact's own GuessWho UUID
 
     @Test @MainActor

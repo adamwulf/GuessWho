@@ -794,10 +794,10 @@ struct ContactDetailView: View {
             .sheet(isPresented: $showingAddLinkSheet) {
                 if let linksStore {
                     // The picker hands back the far endpoint's ContactID; the
-                    // store's async addLink resolves-or-mints BOTH endpoints. The
-                    // store is @Observable, so adding the link re-renders the
-                    // connection rows; each row resolves its other endpoint on
-                    // demand via repository.contact(guessWhoID:).
+                    // store's async addLink resolves-or-mints BOTH endpoints.
+                    // The store is @Observable, so adding the link re-renders
+                    // the connection rows; each row asks the package to resolve
+                    // the other endpoint.
                     AddLinkSheet(currentContactID: id) { otherID, note in
                         Task { await linksStore.addLink(to: otherID, note: note) }
                     }
@@ -889,10 +889,10 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func connectionRow(_ link: ContactLink) -> some View {
-        if let contact, let direction = link.direction(for: contact.contactID) {
+        if let contact, link.direction(for: contact.contactID) != nil {
             LinkRow(
                 link: link,
-                otherContact: otherContact(for: direction),
+                otherContact: repository.linkedContact(of: link, for: loadedContactID ?? id),
                 isEditing: editingLinkID == link.id,
                 draftNote: $draftLinkNote,
                 noteFocus: $noteFocus,
@@ -989,14 +989,6 @@ struct ContactDetailView: View {
         guard notesStore != nil else { return }
         showingNewNoteEditor = true
         noteFocus = .newNote
-    }
-
-    private func otherContact(for direction: LinkDirection) -> Contact? {
-        let endpoint = direction.other
-        guard endpoint.kind == .contact else { return nil }
-        // The link endpoint id IS a bare GuessWho UUID; resolve it through the
-        // repository's O(1) index instead of an app-held uuid→Contact map.
-        return repository.contact(guessWhoID: endpoint.id)
     }
 
     /// The ContactID derived from the LOADED contact, carrying its current
@@ -1643,4 +1635,3 @@ private struct AddressRow: View {
         item.openInMaps(launchOptions: nil)
     }
 }
-

@@ -405,6 +405,27 @@ public final class ContactsRepository: NSObject {
         return other.kind == .event ? other.id : nil
     }
 
+    /// The far CONTACT endpoint of a contact↔contact `link`, relative to the
+    /// contact identified by `id`. The app gets the resolved `Contact` without
+    /// reading the far endpoint's bare GuessWho UUID.
+    public func linkedContact(of link: Link, for id: ContactID) -> Contact? {
+        guard let guessWhoID = id.guessWhoID else { return nil }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
+        let other = Self.otherEndpoint(of: link, from: endpoint)
+        return other.kind == .contact ? contact(guessWhoID: other.id) : nil
+    }
+
+    /// The CONTACT endpoint of a contact↔event `link`, relative to the event
+    /// sidecar UUID. The event UUID remains the deferred EventID migration's
+    /// boundary; the contact endpoint UUID stays inside the package.
+    public func linkedContact(of link: Link, forEventUUID eventUUID: String) -> Contact? {
+        let endpoint = SidecarKey(kind: .event, id: eventUUID)
+        guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
+        let other = Self.otherEndpoint(of: link, from: endpoint)
+        return other.kind == .contact ? contact(guessWhoID: other.id) : nil
+    }
+
     /// Whether the contact identified by `id` is favorited. Returns `false` when
     /// the contact is unreconciled (no GuessWho UUID to key the favorite on) or
     /// the favorites store is unavailable. Mirrors
