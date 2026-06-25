@@ -39,7 +39,24 @@
   `service.guessWhoUUID(in:)` survives only for the OPENED contact's own UUID
   (favorites/notes/links binding) and the debug section — Stage 5 owns its
   removal. 430 tests + Catalyst + iPhone-sim builds green.
-- **Stage 5 (visibility tighten): NOT STARTED.**
+- **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
+  The VIEW no longer calls `service.guessWhoUUID(in:)`: a new package accessor
+  `ContactsRepository.guessWhoID(in: Contact) -> String?` (a PURE function of the
+  passed contact returning `ContactID(contact:).guessWhoID` — nil when
+  un-reconciled, never the localID fallback) backs `contactUUID`, the debug
+  section, and the post-load UUID read. It reads off the LOADED `contact` (tracked
+  via the stable `resolvedLocalID`), NOT the nav `id`, because `id` does not
+  re-key when an on-open Case-A reconcile mints the UUID — keying on `id` would
+  null the binding right after reconcile. `SyncService.guessWhoUUID(in:)` is now
+  `private` (SyncService doesn't retain a repository, so its own sidecar/reconcile
+  seams keep using it). Static `localID` audit: every app `localID` is a
+  boundary token, the empty new-contact seed, the debug display, or a comment —
+  no identity/dict-key/nav use remains. **Stage 5.5** (`Contact.localID`
+  `public → package`) was ASSESSED ONLY, not implemented: app sites still READ
+  `Contact.localID` (debug display, edit-save boundary, boundary-token capture,
+  and SyncService's reconcile seams), so a blind flip would break them. See the
+  Stage 5.5 assessment for the package additions a clean flip would require.
+  432 tests + Catalyst + iPhone-sim builds green.
 
 Two design decisions taken during Stages 1–2 changed the shape below from the
 original draft — they are folded into the sections that follow:
@@ -431,6 +448,66 @@ resolvable canonical) yields a non-crashing "unavailable" state, never a
 Acceptance: `grep` over the app target finds no `localID` identity use outside
 the enumerated debug/bridge exceptions; one `ContactsRepository` in the package
 is the sole contact API the app uses.
+
+#### Shipped
+
+- **New package accessor** `ContactsRepository.guessWhoID(in: Contact) -> String?`
+  returns `ContactID(contact:).guessWhoID` — the reconciled GuessWho UUID, or nil
+  when un-reconciled (NEVER the `localID` fallback). It is a PURE function of the
+  passed contact (no cache read → no cache-miss window), so it reads the UUID off
+  the live record the caller already holds. Covered by two package tests
+  (`guessWhoIDInReturnsReconciledUUIDAndNilOtherwise`,
+  `guessWhoIDInIsPureAndIndependentOfTheCache`).
+- **The VIEW no longer calls `service.guessWhoUUID(in:)`.** `contactUUID` (which
+  drives ALL favorites/notes/links/tags binding), the debug section, and the
+  post-load UUID read all go through `repository.guessWhoID(in: <loaded contact>)`.
+  Crucially it reads off the LOADED `self.contact` (tracked via the stable
+  `resolvedLocalID`), NOT the nav `id`: `id` is captured at selection time and is
+  never re-keyed, so an on-open Case-A reconcile that mints the UUID would leave
+  `repository.contact(id: id)` resolving to nil — keying `contactUUID` on `id`
+  would null the binding right after reconcile. Reading off `self.contact`
+  reproduces the former `service.guessWhoUUID(in:)` semantics byte-for-byte.
+- **`SyncService.guessWhoUUID(in:)` is now `private`** (not deleted). SyncService
+  does not retain a `ContactsRepository` (it builds one for the app but doesn't
+  hold it), so its own sidecar/reconcile seams (`sidecar(for:)`,
+  `reconcileIfNeeded(contact:)`) keep calling the private helper — the lowest-churn
+  option, and the helper is identical to `repository.guessWhoID(in:)`.
+- **Static `localID` audit (app target).** Every `.localID` read is one of:
+  (a) a boundary token threaded INTO a SyncService/repository method —
+  `ContactDetailView.performInlineSave` (`saveLocalID`, commented),
+  `ContactDetailView.boundaryLocalID` (`repository.contact(id:)?.localID`),
+  `ContactDetailView.loadContact` (`resolvedLocalID = loaded.localID`),
+  `SyncService.reconcileIfNeeded` (`contact.localID` → `reconcile`/`fetch`);
+  (b) the empty new-contact seed `Contact(localID: "")` in `ContactDetailView`
+  and `EventDetailView`; (c) the debug-section display in
+  `ContactDetailView.debugRows` (commented); (d) comments
+  (`GuessWhoSceneDelegate`, `SyncService` doc, `ConnectionsSection`,
+  `NavigationReferences`). NO `localID` is used as `@State` identity, a
+  dict/set key, an identity comparison, or a navigation payload — Stage 4
+  cleared them; verified.
+
+#### Stage 5.5 assessment (Contact.localID visibility) — ASSESSED, NOT IMPLEMENTED
+
+A blind `Contact.localID` `public → package` flip would BREAK these app reads:
+
+| App site | Reads `Contact.localID` for | Could go through a package method? |
+| --- | --- | --- |
+| `ContactDetailView.debugRows` (`contact.localID` display) | Debug-only diagnostic display of the raw `CNContact.identifier` | NO clean substitute — it must surface the literal identifier string. A package accessor like `debugLocalID(for: Contact) -> String` could front it, but that just re-exports the same field under a new name purely for one debug row. |
+| `ContactDetailView.performInlineSave` (`model.edited.localID`) | Capture the save target localID for post-save boundary calls | The localID rides on the `ContactEditModel.edited` Contact; the save path already takes a `Contact`. Could thread the captured token differently, but the edit model holds a `Contact` whose `localID` it legitimately needs. |
+| `ContactDetailView.loadContact` (`loaded.localID` → `resolvedLocalID`) | Capture the stable boundary token on first load | Could be replaced by a package accessor `boundaryToken(for: Contact)`, but that is exactly `Contact.localID` re-exported. |
+| `SyncService.reconcileIfNeeded` (`contact.localID`) | Pass into `reconcile(localID:)` / `contactsAdapter.fetch(localID:)` | These ARE the Contacts-boundary calls; the localID is the boundary token by definition. |
+
+Recommendation: **keep `Contact.localID` `public`** as the documented
+Contacts-boundary token, OR — if the flip is judged worth it — it requires the
+package to add accessors that re-export the same string (`debugLocalID(for:)` for
+the debug row, plus a boundary-token vendor for the save/load capture and the
+SyncService reconcile seams). That trades a single well-documented public field
+for several thin pass-through accessors whose only job is to hand back
+`contact.localID`. Given `Contact.localID` is already documented as the transient
+Contacts-boundary identifier (and `ContactID.localID` — the carrier the UI keys
+on — is already `package`), the public field earns its keep at the boundary; the
+flip is low-value churn. Defer Stage 5.5 unless a concrete need to seal
+`Contact.localID` arises.
 
 ## Verification
 
