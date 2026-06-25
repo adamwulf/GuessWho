@@ -467,15 +467,14 @@ public final class GuessWhoSync: @unchecked Sendable {
     // every contact to be meaningful. Use reconcileContactIdentities() when
     // that information is needed.
     //
-    // VISIBILITY (Stage 6): this is destined to become `internal` — reconcile
-    // is meant to be an invisible side effect of a sidecar write, not a public
-    // API. The package already routes its internal resolve-or-mint primitive
-    // (`ContactsRepository.resolveOrMintGuessWhoID`) through it (sub-phase 6a).
-    // The flip to `internal` is DEFERRED to sub-phase 6e because the app's
-    // `SyncService.reconcile(localID:)` still calls this directly; that caller
-    // is removed in sub-phase 6d, and only then can the visibility tighten
-    // without breaking the app build. Keep `public` until 6d lands.
-    public func reconcileContactIdentity(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
+    // VISIBILITY (Stage 6e): now `internal` — reconcile is an invisible side
+    // effect of a sidecar write, not a public API. The package routes its
+    // internal resolve-or-mint primitive (`ContactsRepository.resolveOrMint…`)
+    // and `prepareContactForDetail` through it; the last app caller
+    // (`SyncService.reconcile(localID:)`) was removed in sub-phase 6d, so 6e
+    // tightens the visibility. The existing direct-call reconcile tests use
+    // `@testable import GuessWhoSync`, so `internal` keeps them compiling.
+    func reconcileContactIdentity(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
         guard let contact = try await contacts.fetch(localID: localID) else {
             throw ContactStoreError.contactNotFound(localID: localID)
         }
