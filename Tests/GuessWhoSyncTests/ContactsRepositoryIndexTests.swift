@@ -43,6 +43,58 @@ struct ContactsRepositoryIndexTests {
         #expect(repository.contact(id: ContactID(contact: b))?.localID == "b")
     }
 
+    // MARK: - Bare guessWhoID lookup (Stage 4 navigation/resolution bridge)
+
+    @Test @MainActor
+    func contactByGuessWhoIDResolvesReconciledContactsOnly() async {
+        let uuid = "55555555-5555-5555-5555-555555555555"
+        // `reconciled` carries a GuessWho URL → reachable by bare UUID.
+        let reconciled = reconciledContact(localID: "r", uuid: uuid, givenName: "Reconciled")
+        // `bare` has no URL → its effective identity is its localID, NOT a UUID,
+        // so it is NOT reachable through the guessWhoID accessor.
+        let bare = Contact(localID: "bare-local-id", givenName: "Bare")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [reconciled, bare]))
+        await repository.reload()
+
+        // Reconciled contact resolves by its bare UUID...
+        #expect(repository.contact(guessWhoID: uuid)?.localID == "r")
+        // ...case-insensitively (callers may hand an upper/mixed-case UUID; keys
+        // are canonical lowercase).
+        #expect(repository.contact(guessWhoID: uuid.uppercased())?.localID == "r")
+
+        // Unknown/retired UUID → nil (the "unavailable" contract, never a
+        // wrong-contact fallback).
+        #expect(repository.contact(guessWhoID: "99999999-9999-9999-9999-999999999999") == nil)
+
+        // A bare (un-reconciled) contact's localID is NOT a guessWhoID, so the
+        // accessor does not resolve it — only `contact(localID:)` does.
+        #expect(repository.contact(guessWhoID: "bare-local-id") == nil)
+        #expect(repository.contact(localID: "bare-local-id")?.localID == "bare-local-id")
+    }
+
+    @Test @MainActor
+    func contactIDForRoundTripsThroughContactByID() async {
+        let uuid = "66666666-6666-6666-6666-666666666666"
+        let reconciled = reconciledContact(localID: "r", uuid: uuid, givenName: "Reconciled")
+        let bare = Contact(localID: "b", givenName: "Bare")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [reconciled, bare]))
+        await repository.reload()
+
+        // The app obtains a ContactID via `contactID(for:)` and hands it back to
+        // `contact(id:)` — the navigation round-trip Stage 4 relies on.
+        let reconciledID = repository.contactID(for: reconciled)
+        #expect(repository.contact(id: reconciledID)?.localID == "r")
+        #expect(reconciledID.effectiveID == uuid)                 // keyed on the UUID
+
+        let bareID = repository.contactID(for: bare)
+        #expect(repository.contact(id: bareID)?.localID == "b")
+        #expect(bareID.effectiveID == "b")                        // falls back to localID
+
+        // And `contactID(for:)` for a reconciled contact agrees with the bare
+        // guessWhoID resolution.
+        #expect(repository.contact(guessWhoID: reconciledID.effectiveID)?.localID == "r")
+    }
+
     // MARK: - Incremental refresh
 
     @Test @MainActor

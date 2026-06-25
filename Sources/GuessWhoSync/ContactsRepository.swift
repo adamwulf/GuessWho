@@ -106,6 +106,40 @@ public final class ContactsRepository: NSObject {
         contactsByEffectiveID[id.effectiveID]
     }
 
+    /// Vends the `ContactID` for a `Contact` the caller already holds — the
+    /// only sanctioned way for the app to obtain a navigation/identity token
+    /// from a `Contact`, since `ContactID.init(contact:)` is `package` and the
+    /// app cannot mint one itself. Used by the navigation layer to re-key a
+    /// `ContactReference` off a list-selected `Contact` and by detail views
+    /// that hold a `Contact` and need to push to it. Pure function of the
+    /// passed contact (no cache read); identity comes from `SidecarKey` exactly
+    /// as `contact(id:)` resolves it back.
+    public func contactID(for contact: Contact) -> ContactID {
+        ContactID(contact: contact)
+    }
+
+    /// Resolves a BARE GuessWho UUID (a `SidecarKey` endpoint id, a
+    /// `Favorite.id`, etc.) to its cached `Contact`. A reconciled contact's
+    /// EFFECTIVE identity IS its `guessWhoID`, so this hits the same O(1)
+    /// `contactsByEffectiveID` index `contact(id:)` uses, then CONFIRMS the
+    /// resolved contact's `guessWhoID` actually equals the input. The confirm
+    /// matters: `effectiveID` is `guessWhoID ?? localID`, so a not-yet-reconciled
+    /// contact is keyed under its `localID`; without the guard, a query string
+    /// coinciding with some bare contact's `localID` would wrongly resolve to it.
+    /// We promise `guessWhoID` semantics, so only a true `guessWhoID` match
+    /// returns a contact. Input is lowercased to match the canonical lowercase
+    /// keys (`SidecarKey` / `Favorite` already lowercase their ids — defensive).
+    /// Returns `nil` for an unknown/retired UUID, or for a string that is only a
+    /// `localID` — the "unavailable" contract, never a wrong-contact fallback.
+    /// The bridge that lets the app resolve a link endpoint / favorite (keyed by
+    /// bare UUID) without re-introducing an app-side `uuid → Contact` map.
+    public func contact(guessWhoID: String) -> Contact? {
+        let needle = guessWhoID.lowercased()
+        guard let candidate = contactsByEffectiveID[needle],
+              ContactID(contact: candidate).guessWhoID == needle else { return nil }
+        return candidate
+    }
+
     /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors
     /// `peopleSections`. EVERY cached person yields a row — a contact without a
     /// GuessWho URL is still vended, identified by its `localID` fallback, so
