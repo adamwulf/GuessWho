@@ -43,7 +43,7 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  IN PROGRESS — 6a + 6b + 6b2 + 6c DONE.** Split into sub-phases 6a
+  IN PROGRESS — 6a + 6b + 6b2 + 6c + 6d DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6b2 (one `Contact` cache `contactsByLocalID` + a
   `guessWhoIDToLocalID` pointer index — no duplicate `Contact` copies — so
@@ -572,6 +572,26 @@ this is the sequencing:
   on-open reconcile and 6b2's cache poke keeps the view's captured `ContactID`
   resolving afterward, so the view re-loads off the same `id` rather than a
   threaded `localID`.
+- **6d — Migrate the app consumers — DONE (`fc50cd2`, `ce2c81e`).**
+  `NotesStore`/`ContactLinksStore` re-keyed on `ContactID` (`init(repository:id:)`,
+  async writes, `reresolve()` post-write so a first-write mint re-keys the store);
+  `ContactDetailView` deletes `resolvedLocalID`/`boundaryLocalID` and re-loads off
+  its captured `ContactID`, `performReconcile` → `prepareContactForDetail`, the
+  three `.disabled(contactUUID == nil)` gates dropped (favorite/link a never-
+  touched contact now mints on write), the debug reconcile-report + raw-sidecar
+  readouts removed; `ConnectionsSection`/`EventDetailView` drop their
+  `reconcileIfNeeded`. The migrated `SyncService` contact-sidecar + identity-
+  translation methods are deleted (favorites' shared `FavoriteKind` surface, the
+  EVENT surface, and contact LIFECYCLE stay); `refreshLinkedEvents` re-keyed off
+  pre-resolved event UUIDs so no app-side `.contact` `SidecarKey` remains. No app
+  caller of `sync.reconcileContactIdentity` remains (still public — 6e flips it).
+  Two package accessors added for the event-link refresh path
+  (`linkedEventUUIDs(for:)`, `eventEndpointUUID(of:for:)`). NOTE: the
+  link-direction/far-endpoint resolution (`ConnectionsSection.LinkDirection`,
+  `direction(forContactUUID:)`, `contact(guessWhoID:)` link uses) is KEPT — per
+  6b2 it is a soft target, not a hard defect, and moving it behind a resolved
+  `links(for:)` was not low-friction. 456 tests + Catalyst + iPhone-sim green.
+  Original sub-phase plan:
 - **6d — Migrate the app consumers, one at a time** (Stage-4-style sweep), each
   repointing a store/view at the repository API and deleting the matching
   `SyncService` contact-sidecar method: `NotesStore` → `ContactLinksStore` →
