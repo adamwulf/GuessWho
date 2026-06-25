@@ -11,6 +11,9 @@
   `fad00f1`). `init` no longer reads system status; the properties default to
   `.notDetermined` and the launch-time `await request…IfNeeded()` populates them
   (commit `ff18113`).
+- **Stage 1.5 (O(1) contact index in the repository): NOT STARTED** — makes
+  `contact(id:)` an O(1) synchronous lookup and lets Stages 3–4 delete the five
+  hand-rolled UI-layer contact maps.
 - **Stage 3 (list VCs), Stage 4 (navigation/detail/connections/favorites),
   Stage 5 (visibility tighten): NOT STARTED.**
 
@@ -213,9 +216,12 @@ Result: `grep` finds zero `CNContactStore(` / `EKEventStore(` in the app target.
 - No session-scoped loser→canonical alias map. (The deleted plan's mechanism.)
 - No `bootstrapIdentityBaseline()` that makes `reload()` a write-sweep. Keep the
   existing reconcile triggers; do not silently turn every reload into a write.
-- No parallel app-side or repository `ID↔localID` index dictionaries surviving
-  the migration. The only `localID` carrier is the private field inside
-  `ContactID`, consumed exclusively by package fetch methods.
+- No parallel APP-SIDE contact maps surviving the migration, and no
+  session-scoped loser→canonical alias index. (A repository-INTERNAL
+  `[effectiveID: Contact]` performance index IS wanted — see Stage 1.5 — but it
+  is a private cache rebuilt from the snapshot, not an alias map and not exposed
+  to the app. The only `localID` carrier the app sees is the sealed field inside
+  `ContactID`.)
 - No change to how relationships vs links work, and no new
   pick-from-existing-contact UI. (Honors `CLAUDE.md`.)
 - Not bundled here: moving `EventsRepository` into the package, the
@@ -250,6 +256,65 @@ Each stage ends green (`swift test` + Catalyst build) before the next begins.
 Acceptance: package vends `ContactID`-addressed reads; `localID` is not public;
 no query enumerates `CNContactStore` (cache reads only).
 
+### Stage 1.5 — O(1) contact index inside the repository — NOT STARTED
+
+**Goal:** make `contact(id:)` (and `contact(localID:)`) O(1) so the app can get
+a `Contact` back from a `ContactID` immediately, and so the five hand-rolled
+UI-layer maps (below) can be deleted in Stages 3–4 with nothing to replace them.
+
+**Where the maps live today (all in the UI, all O(n)-to-build, all duplicated):**
+`contactsByLocalID` in `ContactsListViewController` and
+`OrganizationsListViewController`; `uuidToContact` in `FavoritesListViewController`,
+`ContactDetailView`, and `EventDetailView` (the last also keeps `emailToContact`).
+Each is rebuilt independently from `repository.contacts`. The package's
+`ContactsRepository` currently holds only a flat `[Contact]` and does O(n)
+`contacts.first { … }` scans (`contact(localID:)`, `contact(id:)`).
+
+**Design — the cache already lives on the right actor; just index it.**
+`ContactsRepository` is ALREADY `@MainActor @Observable` (not an `actor`). It
+holds `contacts` on the main actor and only `await`s when it reaches into the
+store (`contactsStore.fetch…`) to REFRESH. So the structure Adam described —
+"a `@MainActor` cache the UI works with directly, while the package `await`s as
+it updates the cache" — already exists; we do NOT need a separate cache object.
+Add private indexes as stored properties on the repository:
+
+- `private var contactsByEffectiveID: [String: Contact]` — keyed on
+  `ContactID(contact:).effectiveID` (`guessWhoID ?? localID`).
+- `private var contactsByLocalID: [String: Contact]` — for the existing
+  `contact(localID:)` boundary accessor.
+- `private var contactsByEmail: [String: [Contact]]` — lowercased email →
+  contacts, so attendee resolution (`contacts(matchingEmail:)`) is O(1) and
+  `EventDetailView`'s `emailToContact` can go.
+
+Maintain them at EVERY site that assigns `contacts` — `reload()` (`:46`),
+`applyRefresh` (`:200-206`), `removeContact` (`:188`), and the change-watcher
+delta apply (`:236`). Funnel ALL mutations through ONE private
+`setContacts(_:)` / `rebuildIndexes()` helper so the array and indexes cannot
+drift. `contact(id:)` becomes `contactsByEffectiveID[id.effectiveID]` — a
+synchronous main-actor dictionary hit, NO `async`, no new type, no actor hop.
+
+**Subtlety — the reconciliation transition re-keys.** When a contact's effective
+identity flips `localID → guessWhoID`, its key in `contactsByEffectiveID` moves.
+Because the indexes are rebuilt wholesale from the snapshot at each mutation
+(not patched in place), this is automatic — but a reviewer must confirm a
+re-keying contact is found under its NEW key and not stale under the old one.
+
+Tasks:
+1. Add the three private indexes + a single `setContacts(_:)` funnel; route
+   `reload`/`applyRefresh`/`removeContact`/delta-apply through it.
+2. Rewrite `contact(id:)`, `contact(localID:)`, and `contacts(matchingEmail:)`
+   as O(1) index reads. Public signatures UNCHANGED (still synchronous,
+   non-`async`).
+3. Tests: O(1) lookup correctness after full reload, after an incremental
+   update, after a delete, and ACROSS a reconciliation transition (a contact
+   gains a `guessWhoID` and is then found under the new effective id, not the
+   old). Plus a parity test: index results equal the old O(n)-scan results for
+   the same cache.
+
+Acceptance: `contact(id:)` is O(1) and synchronous; one funnel maintains all
+indexes; no public signature changed; the UI-layer maps are deletable in
+Stages 3–4 (they are removed there, not here).
+
 ### Stage 2 — Package permission API — DONE (`fa79533`, `13851e0`, `6a7fba9`)
 
 Shipped as described in the "Permission API" section above, plus the
@@ -262,12 +327,10 @@ intact.
 
 1. `ContactsListViewController` and `OrganizationsListViewController` snapshot
    `NSDiffableDataSourceSnapshot<String, ContactID>`. Cell provider fetches the
-   row's `Contact` via `repository.contact(id:)` — a SYNCHRONOUS main-actor cache
-   read (the repository holds contacts in memory; no store I/O, no `await`) — and
-   passes it to the existing `configure(with: Contact)`. (If a very large address
-   book ever makes the O(n) `contacts.first { … }` lookup show up in a profile,
-   add a repository-internal `[effectiveID: Contact]` index — no API change. Not
-   needed at v1 address-book scale.)
+   row's `Contact` via `repository.contact(id:)` — a SYNCHRONOUS main-actor,
+   O(1) index read after Stage 1.5 (no store I/O, no `await`) — and passes it to
+   the existing `configure(with: Contact)`. Delete `contactsByLocalID` and the
+   manual `previousByID`/`reconfigureItems` pass.
 2. Delete `contactsByLocalID`, the `previousByID` diff, and the manual
    `reconfigureItems` pass — `ContactID`'s `Equatable`/`Hashable` replaces them.
 3. `didSelectRowAt` reads the `ContactID` item identifier directly.
