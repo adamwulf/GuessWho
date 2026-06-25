@@ -1,5 +1,31 @@
 # Plan: package-vended `Contact` + opaque `ContactID`
 
+## Status (2026-06-24)
+
+- **Stage 1 — vend `ContactID`: DONE** (commits `79337de`, `ed57ae4`).
+- **Stage 2 — package permission API: DONE** (commits `fa79533`, `13851e0`;
+  integration fix `6a7fba9`).
+- **Permission-status refinements (beyond original plan): DONE** — the app's
+  `ContactsAuthorization`/`EventsAuthorization` enums were deleted; the UI binds
+  to the package's `StoreAuthorizationStatus` directly (commits `6b463c2`,
+  `fad00f1`). `init` no longer reads system status; the properties default to
+  `.notDetermined` and the launch-time `await request…IfNeeded()` populates them
+  (commit `ff18113`).
+- **Stage 3 (list VCs), Stage 4 (navigation/detail/connections/favorites),
+  Stage 5 (visibility tighten): NOT STARTED.**
+
+Two design decisions taken during Stages 1–2 changed the shape below from the
+original draft — they are folded into the sections that follow:
+
+1. **`ContactID` carries BOTH an OPTIONAL `guessWhoID` and the `localID`;
+   identity = `guessWhoID ?? localID`.** A not-yet-reconciled contact (no
+   `guesswho://` URL) is identified by its `localID` and still appears in the
+   list — it is NOT dropped. The original draft's "materialize only after
+   reconciliation, identity is the GuessWho UUID only" is superseded.
+2. **The reconciliation transition (`localID`-keyed → `guessWhoID`-keyed) is an
+   accepted diffable delete+insert**, rare (once per contact) and symmetric with
+   how events adopt a sidecar (`Event.stableID(forEventKitID:)`). No alias map.
+
 ## Why
 
 Today the app keys its entire contact UI on `localID` (Apple's
@@ -32,45 +58,59 @@ grow.
 
 ## Core idea
 
+As shipped (`Sources/GuessWhoSync/ContactID.swift`):
+
 ```swift
 /// Opaque, stable identity for a contact as the UI sees it.
 ///
-/// Equality and hashing are defined ONLY on the GuessWho UUID, so the same
-/// contact compares equal across reloads, across a Case-D canonical-ID
-/// collapse (the package re-mints the value with the surviving UUID), and
-/// regardless of any change to its display fields. The bare display fields
-/// ride along so a diffable data source can detect a name/job/org/photo
-/// change without the app keeping a parallel `[ID: Contact]` dictionary.
+/// A `ContactID` wraps BOTH identifiers and ALWAYS materializes:
+/// - `localID` (always present) is the fallback identity before a contact is
+///   reconciled — a contact with no `guesswho://` URL has no sidecar data to
+///   key on, so keying its row on the transient `localID` is harmless and lets
+///   it appear in the list immediately.
+/// - `guessWhoID` (OPTIONAL) is nil until the contact carries a valid GuessWho
+///   URL; once reconciliation mints/collapses identity it populates and BECOMES
+///   the identity.
+///
+/// Effective identity = `guessWhoID ?? localID`. Both `==` and `hash(into:)`
+/// key on it (via `effectiveID`) so they cannot drift. The display fields ride
+/// along so a diffable data source can detect a name/job/org/photo change
+/// without the app keeping a parallel `[ID: Contact]` dictionary.
 public struct ContactID: Hashable, Sendable {
-    /// Canonical lowercase bare UUID string (NOT the `guesswho://` URL).
-    /// The only identity the package or the UI ever compares.
-    public let guessWhoID: String
+    /// Canonical lowercase bare UUID (NOT the `guesswho://` URL), or nil until
+    /// reconciled. Produced only via `SidecarKey.forContact`.
+    public let guessWhoID: String?
 
-    /// Apple's unified-contact identifier. INTERNAL to the package's fetch
-    /// path — the UI must never read, compare, or persist it. `package`
-    /// (or `internal` + same-module) visibility; not `public`.
-    let localID: String
+    /// Apple's unified-contact identifier. INTERNAL to the package's fetch path
+    /// — the UI never reads/compares/persists it. `package` visibility.
+    package let localID: String
 
-    // Bare display fields — present so `Hashable` can drive diffable
-    // change-detection. They are NOT identity: see `==`/`hash` below.
+    // Raw display components a list row renders (row policy stays in the app).
     public let displayName: String
-    public let secondaryText: String   // job title / org, per row policy
+    public let contactType: ContactType
+    public let givenName: String
+    public let familyName: String
+    public let jobTitle: String
+    public let organizationName: String
     public let imageDataAvailable: Bool
 
+    /// The single identity `==` and `hash` agree on.
+    var effectiveID: String { guessWhoID ?? localID }
+
+    /// NON-failing — `localID` is always available, so a row can be vended
+    /// before the contact is reconciled. `guessWhoID` is nil when there's no
+    /// valid GuessWho URL.
+    package init(contact: Contact) { /* … */ }
+
     public static func == (lhs: ContactID, rhs: ContactID) -> Bool {
-        lhs.guessWhoID == rhs.guessWhoID
-            && lhs.displayName == rhs.displayName
-            && lhs.secondaryText == rhs.secondaryText
-            && lhs.imageDataAvailable == rhs.imageDataAvailable
+        // effectiveID AND all display fields → an edit is "same row, changed
+        // contents"; a reconciliation transition (effectiveID itself changes)
+        // is a delete + insert, by design.
+        lhs.effectiveID == rhs.effectiveID /* && all display fields … */
     }
 
     public func hash(into hasher: inout Hasher) {
-        // Hash on identity ONLY. Two values for the same contact with
-        // different display fields must land in the same bucket so a
-        // diffable snapshot treats them as the same row (moved/reconfigured),
-        // never as a delete + insert. `==` then catches the field delta and
-        // the data source reconfigures in place.
-        hasher.combine(guessWhoID)
+        hasher.combine(effectiveID)   // identity only
     }
 }
 ```
@@ -93,15 +133,13 @@ The snapshot becomes `NSDiffableDataSourceSnapshot<Section, ContactID>` and the
 cell provider reads display fields straight off the `ContactID` (or fetches the
 full `Contact` by ID for richer cells — see Stage 3).
 
-### What goes in `secondaryText`
+### Display fields (DECIDED: raw components)
 
-Row rendering policy stays in the app, but the *fields* must come from the
-package so the value is self-describing for diffing. Vend the raw components
-(`displayName`, `jobTitle`, `organizationName`) on `ContactID` if a single
-`secondaryText` is too lossy for both People and Organizations rows. Keep the
-set minimal: only fields that appear in a list cell. Notes/tags/links never
-belong on `ContactID` — they are not part of a row's visual identity and change
-far more often.
+Row rendering policy stays in the app, so `ContactID` vends the raw components
+a list cell renders — `displayName`, `contactType`, `givenName`, `familyName`,
+`jobTitle`, `organizationName`, `imageDataAvailable` — not a single
+pre-rendered `secondaryText`. Notes/tags/links never belong on `ContactID` —
+they are not part of a row's visual identity and change far more often.
 
 ## What the app stops doing
 
@@ -114,7 +152,8 @@ Direct consequences once `ContactID` lands and the app migrates to it:
 - **No `localID` in navigation.** `ContactReference` (`NavigationReferences.swift`)
   is re-keyed on `ContactID` (carry the whole value, or just `guessWhoID`).
 - **No `localID` identity comparisons.** `ContactDetailView.swift:654` and
-  `ConnectionsSection.swift:266` compare `guessWhoID`.
+  `ConnectionsSection.swift:266` compare `ContactID`s (i.e. effective identity),
+  not raw `localID`.
 - **No app-built GuessWho-UUID maps.** The 3 duplicated
   `for c in repository.contacts { map[guessWhoUUID(in: c)] = c }` builders
   (`EventDetailView:482`, `FavoritesListViewController:213`,
@@ -125,44 +164,55 @@ Direct consequences once `ContactID` lands and the app migrates to it:
 
 ## Identity construction (where the UUID comes from)
 
-`ContactID.guessWhoID` is always the canonical lowercase bare UUID produced by
-the existing single validator/canonicalizer in `SidecarKey`
-(`parseGuessWhoContactURL` / `forContact`) — never a parallel parser. The
-package materializes a `ContactID` only for a contact that has exactly one
-distinct valid GuessWho URL *after* reconciliation. A contact with zero or
-multiple URLs is reconciled first (mint / Case-D collapse) so that by the time
-the UI sees a `ContactID`, identity is settled and stable.
+When a contact carries a valid GuessWho URL, `ContactID.guessWhoID` is the
+canonical lowercase bare UUID produced by the existing single
+validator/canonicalizer in `SidecarKey` (`parseGuessWhoContactURL` /
+`forContact`) — never a parallel parser. When it carries no URL (not yet
+reconciled), `guessWhoID` is nil and identity falls back to `localID`; the
+`ContactID` still materializes, so the row appears in the list immediately
+(`reload()` does NOT reconcile — see Non-goals).
 
-Because identity is settled before the value is vended, a Case-D collapse simply
-causes the package to publish a new snapshot where the affected contact's
-`ContactID` now carries the surviving UUID. The old row (old UUID) drops and the
-new row (canonical UUID) appears — handled by the diffable apply, no alias map
-required. A navigation reference or favorite holding the retired UUID resolves
-through the repository, which can map a known-retired UUID to its canonical one
-*from the sidecar link-rewrite record the reconciler already writes* — i.e. the
-durable on-disk record, not an in-memory session map. (If that lookup is more
-than a thin read, it is a follow-up, not a blocker: a stale reference resolving
-to a non-crashing "unavailable" state is acceptable for v1.)
+Once reconciliation mints a URL (or a Case-D collapse settles the canonical
+UUID), the contact's `ContactID` gains/changes its `guessWhoID`, so its
+effective identity changes. The diffable apply renders that as a delete of the
+old-identity row + insert of the new-identity row — correct, rare (once per
+contact), and requiring no alias map. A navigation reference or favorite holding
+a retired UUID resolves through the repository; if it cannot resolve it returns
+nil → a non-crashing "unavailable" state. (Actively mapping a known-retired
+Case-D UUID to its canonical record from the durable on-disk link-rewrite record
+the reconciler already writes is a clean follow-up, not a blocker for v1.)
 
-## Permission API (removes the app's `CNContactStore`)
+## Permission API (removes the app's `CNContactStore`) — DONE
 
-`SyncService.swift:69` constructs a second `CNContactStore` solely to call
-`requestAccess(for: .contacts)` on the main actor, and owns the `EKEventStore`
-at `:79`. Move both behind the package:
+`SyncService` formerly constructed a second `CNContactStore` (for the main-actor
+`requestAccess`) and owned the `EKEventStore`. Both are gone. As shipped:
 
-- Add `requestContactsAccess() async -> CNAuthorizationStatus` (or a package
-  enum that doesn't leak `CN*`) and `contactsAuthorizationStatus` to the
-  Contacts adapter / a small package auth surface. The adapter already owns the
-  one true `CNContactStore`; the request runs there.
-- Do the same for events on the EventKit adapter
-  (`requestEventsAccess()` / `eventsAuthorizationStatus`).
-- `SyncService` keeps only the *app-level* authorization-state binding the UI
-  observes (e.g. for `PermissionGateViewController`); it owns zero Apple store
-  objects.
+- The package vends two neutral types (`Sources/GuessWhoSync/StoreAuthorizationStatus.swift`):
+  - `StoreAuthorizationStatus { notDetermined, authorized, denied, restricted }`
+    — the adapters collapse platform statuses into it (Contacts `.limited` →
+    `.authorized`; Events `.fullAccess`/pre-17 `.authorized` → `.authorized`,
+    `.writeOnly` → `.denied`).
+  - `StoreAccessResult { status, failureDescription? }` — `failureDescription`
+    is non-nil ONLY when the request threw, so `SyncService` restores the same
+    `lastError` write the pre-adapter code made on a thrown request.
+- `ContactStoreProtocol` gained `contactsAuthorizationStatus()` /
+  `requestContactsAccess() -> StoreAccessResult`; `EventStoreProtocol` gained the
+  event equivalents. The adapters own the one true store and run the request
+  there. The `EKEventStoreAdapter` constructs its own store via a defaulted
+  `init()`; `SyncService` owns zero Apple stores.
+- **The app's `ContactsAuthorization`/`EventsAuthorization` enums were deleted.**
+  They were isomorphic to `StoreAuthorizationStatus` (only `.notRequested` vs
+  `.notDetermined` differed), so the mapping carried no information. The UI binds
+  to `StoreAuthorizationStatus` directly; `PermissionGateViewController` /
+  `EventsListViewController` switch on `.notDetermined` etc.
+- `SyncService.contactsAuthorization` / `eventsAuthorization` default to
+  `.notDetermined`; `init` does NOT read system status (an init can't `await`).
+  `GuessWhoAppDelegate` awaits `requestContactsAccessIfNeeded()` /
+  `requestEventsAccessIfNeeded()` right after construction, which populates the
+  real status before first interaction. Tradeoff accepted: an already-authorized
+  user may see the "Requesting…" gate for one frame at launch.
 
-Authorization *status* may still be surfaced to the UI as a package-vended enum;
-the goal is no `CNContactStore()` / `EKEventStore()` instantiation in the app
-target, not hiding the concept of permission.
+Result: `grep` finds zero `CNContactStore(` / `EKEventStore(` in the app target.
 
 ## Non-goals / explicitly out of scope
 
@@ -183,7 +233,7 @@ target, not hiding the concept of permission.
 
 Each stage ends green (`swift test` + Catalyst build) before the next begins.
 
-### Stage 1 — Vend `ContactID` from the package
+### Stage 1 — Vend `ContactID` from the package — DONE (`79337de`, `ed57ae4`)
 
 1. Add `ContactID` (above) to `Sources/GuessWhoSync/`. `localID` is `package`
    visibility (or `internal`), never `public`.
@@ -195,8 +245,9 @@ Each stage ends green (`swift test` + Catalyst build) before the next begins.
    - `contacts(matchingEmail:)`, `contacts(named:)`, `contactsReferencing(id:)`
      return results keyed by `ContactID`. `contacts(named:)` returns ALL matches
      (no silent last-writer pick); the UI owns disambiguation.
-3. `ContactID` is built only via `SidecarKey` from a fully-reconciled contact
-   with exactly one valid URL.
+3. `ContactID` is built via a NON-failing `init(contact:)`: `guessWhoID` comes
+   only via `SidecarKey.forContact` (nil when no valid URL); `localID` is always
+   set. Section accessors `.map` (not `.compactMap`) so no contact is dropped.
 4. Package tests: identity equality across display-field changes; hash stability
    across a field edit; `==` inequality on a name/job/org/photo change;
    `contact(id:)` round-trip; duplicate display-name returns all matches;
@@ -205,18 +256,13 @@ Each stage ends green (`swift test` + Catalyst build) before the next begins.
 Acceptance: package vends `ContactID`-addressed reads; `localID` is not public;
 no query enumerates `CNContactStore` (cache reads only).
 
-### Stage 2 — Package permission API
+### Stage 2 — Package permission API — DONE (`fa79533`, `13851e0`, `6a7fba9`)
 
-1. Add `requestContactsAccess()` / `contactsAuthorizationStatus` to the Contacts
-   adapter (runs on its existing store) and event equivalents on the EventKit
-   adapter.
-2. `SyncService` calls the package API; delete its `CNContactStore()` (`:69`).
-   `EKEventStore` is already constructed for the adapter — keep one instance,
-   owned by the adapter, none owned by `SyncService` directly.
-3. `PermissionGateViewController` observes the package-vended auth state.
-
-Acceptance: grep shows zero `CNContactStore(` / `EKEventStore(` in the app
-target; permission flow still works on iPhone (gate) and Catalyst.
+Shipped as described in the "Permission API" section above, plus the
+status-binding/`.notDetermined`-seed refinements (`6b463c2`, `fad00f1`,
+`ff18113`). Acceptance met: grep shows zero `CNContactStore(` / `EKEventStore(`
+in the app target; Catalyst + iPhone-simulator builds green; permission flow
+intact.
 
 ### Stage 3 — Migrate list view controllers
 
@@ -284,16 +330,14 @@ is the sole contact API the app uses.
 
 ## Open questions for review
 
-- **`secondaryText` vs raw components on `ContactID`.** Single pre-rendered
-  string is simplest for diffing but couples row policy to the package. Vending
-  `displayName` + `jobTitle` + `organizationName` keeps policy in the app at the
-  cost of a slightly wider value. Lean toward raw components.
-- **Retired-UUID resolution.** Whether `repository.contact(id:)` should actively
-  resolve a known-retired Case-D loser UUID to its canonical record, or simply
-  return nil (→ "unavailable"). v1 can ship with nil; durable link-rewrite
-  records already on disk make active resolution a clean follow-up if desired.
-- **Does `Contact` keep `localID` at all?** Stage 5 can make it non-public, but
-  the package still needs it on the fetch path. Confirm `ContactID.localID` is
-  the single carrier and `Contact.localID` can be dropped from the public value
-  entirely, or whether internal package code still reads `Contact.localID`
-  directly.
+- **DECIDED — display fields:** raw components on `ContactID` (not a single
+  `secondaryText`). See "Display fields" above.
+- **Retired-UUID resolution (still open, Stage 4).** Whether
+  `repository.contact(id:)` should actively resolve a known-retired Case-D loser
+  UUID to its canonical record, or simply return nil (→ "unavailable"). Shipped
+  Stage 1 returns nil for an unknown id; active resolution from the durable
+  on-disk link-rewrite record is a clean follow-up if desired.
+- **`Contact.localID` visibility (still open, Stage 5).** `ContactID.localID` is
+  the carrier the UI uses, but `Contact.localID` is still `public` and read by
+  package fetch paths. Stage 5 decides whether it can be made non-public once no
+  app caller reads it.
