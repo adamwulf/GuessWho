@@ -13,23 +13,13 @@ final class SyncService {
         case unavailable(reason: String)
     }
 
-    enum ContactsAuthorization: Equatable {
-        case notRequested
-        case denied
-        case restricted
-        case authorized
-    }
-
-    enum EventsAuthorization: Equatable {
-        case notRequested
-        case denied
-        case restricted
-        case authorized
-    }
-
     private(set) var sidecarLocation: SidecarLocation
-    private(set) var contactsAuthorization: ContactsAuthorization
-    private(set) var eventsAuthorization: EventsAuthorization
+    // The package's neutral `StoreAuthorizationStatus` is the UI-facing
+    // authorization type directly — its four cases (`.notDetermined`,
+    // `.authorized`, `.denied`, `.restricted`) are exactly what the gate and
+    // banners switch on, so there is no app-side enum or mapping to maintain.
+    private(set) var contactsAuthorization: StoreAuthorizationStatus
+    private(set) var eventsAuthorization: StoreAuthorizationStatus
     private(set) var lastError: String?
 
     // Exposed so view-models that mint records carrying a writer ID
@@ -127,8 +117,8 @@ final class SyncService {
         // adapter's is `nonisolated` so it needs no actor hop, and the events
         // adapter is a plain class. The launch-time request methods refine
         // this once the user responds.
-        self.contactsAuthorization = Self.mapContacts(adapter.contactsAuthorizationStatus())
-        self.eventsAuthorization = Self.mapEvents(ekAdapter.eventsAuthorizationStatus())
+        self.contactsAuthorization = adapter.contactsAuthorizationStatus()
+        self.eventsAuthorization = ekAdapter.eventsAuthorizationStatus()
     }
 
     func requestContactsAccessIfNeeded() async {
@@ -138,7 +128,7 @@ final class SyncService {
         // the request THREW (not a plain user-denial) — restores the same
         // `lastError` write the pre-adapter code made.
         let result = await contactsAdapter.requestContactsAccess()
-        contactsAuthorization = Self.mapContacts(result.status)
+        contactsAuthorization = result.status
         if let description = result.failureDescription {
             lastError = "Contacts access request failed: \(description)"
         }
@@ -151,7 +141,7 @@ final class SyncService {
         // `requestFullAccessToEvents` vs legacy `requestAccess(to:)` branch).
         // A thrown request restores the same `lastError` write as before.
         let result = await eventsAdapter.requestEventsAccess()
-        eventsAuthorization = Self.mapEvents(result.status)
+        eventsAuthorization = result.status
         if let description = result.failureDescription {
             lastError = "Events access request failed: \(description)"
         }
@@ -811,30 +801,6 @@ final class SyncService {
         let fresh = UUID().uuidString.lowercased()
         defaults.set(fresh, forKey: key)
         return fresh
-    }
-
-    /// Map the package-vended neutral status onto the UI-facing contacts enum.
-    /// `.notDetermined` becomes `.notRequested`; the adapter has already
-    /// collapsed `.limited` into `.authorized`.
-    private static func mapContacts(_ status: StoreAuthorizationStatus) -> ContactsAuthorization {
-        switch status {
-        case .authorized: return .authorized
-        case .denied: return .denied
-        case .restricted: return .restricted
-        case .notDetermined: return .notRequested
-        }
-    }
-
-    /// Map the package-vended neutral status onto the UI-facing events enum.
-    /// The adapter has already collapsed `.fullAccess` / pre-17 `.authorized`
-    /// into `.authorized` and `.writeOnly` into `.denied`.
-    private static func mapEvents(_ status: StoreAuthorizationStatus) -> EventsAuthorization {
-        switch status {
-        case .authorized: return .authorized
-        case .denied: return .denied
-        case .restricted: return .restricted
-        case .notDetermined: return .notRequested
-        }
     }
 }
 

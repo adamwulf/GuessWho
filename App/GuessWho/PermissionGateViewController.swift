@@ -4,7 +4,7 @@ import GuessWhoSync
 /// Thin container that mirrors the SwiftUI `RootView` permission gate
 /// in UIKit: while `SyncService.contactsAuthorization` is not
 /// `.authorized` it presents a `UIContentUnavailableConfiguration`
-/// describing the state (notRequested / denied / restricted); once
+/// describing the state (notDetermined / denied / restricted); once
 /// access flips to `.authorized` it swaps its child to the iPhone tab
 /// bar VC handed in at init.
 ///
@@ -73,7 +73,7 @@ final class PermissionGateViewController: UIViewController {
         case .authorized:
             installChild(tabs)
             contentUnavailableConfiguration = nil
-        case .notRequested:
+        case .notDetermined:
             installChild(nil)
             var config = UIContentUnavailableConfiguration.empty()
             config.image = UIImage(systemName: "person.2.fill")

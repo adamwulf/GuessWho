@@ -290,7 +290,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// Wrapped in a `PermissionGateViewController` so the same three
     /// Contacts-authorization ContentUnavailableView states the
-    /// SwiftUI RootView showed (notRequested / denied / restricted)
+    /// SwiftUI RootView showed (notDetermined / denied / restricted)
     /// surface here as `UIContentUnavailableConfiguration`s, swapping
     /// to the tabs only once access flips to `.authorized`.
     ///
