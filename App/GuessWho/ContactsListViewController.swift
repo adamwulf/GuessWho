@@ -4,7 +4,7 @@ import GuessWhoSync
 /// UIKit People list. Used by both the Catalyst 3-column shell (as
 /// the supplementary column for `.people`) and the iPhone tab shell
 /// (rooted in the People nav stack). Backed by a
-/// `UITableViewDiffableDataSource` keyed on (section-letter, localID)
+/// `UITableViewDiffableDataSource` keyed on (section-letter, ContactID)
 /// so a repository reload only re-applies a snapshot rather than
 /// invalidating the entire view. A–Z sectioning, search bound to
 /// `ContactsRepository.peopleSearch`, per-row layout matching
@@ -25,10 +25,6 @@ final class ContactsListViewController: UIViewController {
     private var searchController: UISearchController!
     private var dataSource: SectionedDataSource!
 
-    /// Local cache so `tableView(_:cellForRowAt:)` and selection
-    /// resolve a `localID` back to a `Contact` without re-running the
-    /// repository's sort/filter pipeline on every row.
-    private var contactsByLocalID: [String: Contact] = [:]
     private var sectionLetters: [String] = []
 
     private let emptyLabel = UILabel()
@@ -136,9 +132,9 @@ final class ContactsListViewController: UIViewController {
         // mid-reload can't leak a strong reference cycle.
         dataSource = SectionedDataSource(
             tableView: tableView
-        ) { [weak self] tableView, indexPath, localID in
+        ) { [weak self] tableView, indexPath, id in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.contact.rawValue, for: indexPath)
-            guard let self, let contact = self.contactsByLocalID[localID] else { return cell }
+            guard let self, let contact = self.repository.contact(id: id) else { return cell }
             (cell as? ContactCell)?.configure(with: contact)
             return cell
         }
@@ -177,45 +173,24 @@ final class ContactsListViewController: UIViewController {
     }
 
     private func applySnapshot(animated: Bool) {
-        let sections = repository.peopleSections
-
-        // Rebuild the localID → Contact lookup before the cell provider
-        // can ask for it. Doing this before .apply keeps any
-        // mid-snapshot dequeue from seeing stale data.
-        let previousByID = contactsByLocalID
-        var byID: [String: Contact] = [:]
-        for (_, contacts) in sections {
-            for contact in contacts {
-                byID[contact.localID] = contact
-            }
-        }
-        contactsByLocalID = byID
+        let sections = repository.peopleSectionIDs
         sectionLetters = sections.map { $0.0 }
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+        var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
-        for (letter, contacts) in sections {
-            snapshot.appendItems(contacts.map { $0.localID }, toSection: letter)
+        for (letter, contactIDs) in sections {
+            snapshot.appendItems(contactIDs, toSection: letter)
         }
 
-        // The snapshot keys rows on `localID`, so the diff treats a row
-        // with an unchanged localID as identical even when the contact's
-        // displayed fields (name, jobTitle, organizationName) changed —
-        // it would keep the stale cell until recycling. Explicitly
-        // reconfigure rows whose Contact value differs from the previous
-        // snapshot so an in-place edit repaints immediately. Contact is
-        // Equatable (via Hashable), so the comparison is a cheap value
-        // check. Brand-new and removed rows are handled by `apply` itself
-        // and must be excluded here — reconfiguring an item not present in
-        // the new snapshot would trap.
-        let changedIDs = byID.compactMap { localID, contact -> String? in
-            guard let previous = previousByID[localID] else { return nil }
-            return previous == contact ? nil : localID
-        }
-        if !changedIDs.isEmpty {
-            snapshot.reconfigureItems(changedIDs)
-        }
-
+        // No manual previousByID/reconfigureItems pass: the snapshot keys
+        // rows on `ContactID`, whose `==` includes the contact's display
+        // fields (name, jobTitle, organizationName, photo availability)
+        // while `hash` is identity-only. So the diffable apply hashes an
+        // edited row to the SAME identity (keeping its place — no flicker,
+        // no scroll jump) yet sees `==` return false (changed contents)
+        // and reconfigures the cell in place. Brand-new/removed rows are
+        // inserts/deletes and a reconciliation transition (effectiveID
+        // itself changes) is a delete+insert — all handled by `apply`.
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()
@@ -241,8 +216,8 @@ final class ContactsListViewController: UIViewController {
 
 extension ContactsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let localID = dataSource.itemIdentifier(for: indexPath),
-              let contact = contactsByLocalID[localID] else { return }
+        guard let id = dataSource.itemIdentifier(for: indexPath),
+              let contact = repository.contact(id: id) else { return }
         didSelectContact(contact)
     }
 }
@@ -253,7 +228,7 @@ extension ContactsListViewController: UITableViewDelegate {
 /// implementation doesn't forward to its closure — overriding here
 /// is the documented way to add A–Z section headers + the right-side
 /// index scrubber.
-private final class SectionedDataSource: UITableViewDiffableDataSource<String, String> {
+private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         // The snapshot's section identifier IS the letter, so the
         // header text is just the section identifier itself.
