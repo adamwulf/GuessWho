@@ -264,7 +264,7 @@ final class EventsListViewController: UIViewController {
         let showSidecar = service.sidecarLocation.needsBanner
         let showPermission: Bool = {
             switch service.eventsAuthorization {
-            case .notRequested, .denied, .restricted: return !bannerDismissed
+            case .notDetermined, .denied, .restricted: return !bannerDismissed
             case .authorized: return false
             }
         }()

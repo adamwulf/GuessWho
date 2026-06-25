@@ -1,6 +1,4 @@
 import Foundation
-import Contacts
-import EventKit
 import GuessWhoSync
 
 @MainActor
@@ -15,23 +13,13 @@ final class SyncService {
         case unavailable(reason: String)
     }
 
-    enum ContactsAuthorization: Equatable {
-        case notRequested
-        case denied
-        case restricted
-        case authorized
-    }
-
-    enum EventsAuthorization: Equatable {
-        case notRequested
-        case denied
-        case restricted
-        case authorized
-    }
-
     private(set) var sidecarLocation: SidecarLocation
-    private(set) var contactsAuthorization: ContactsAuthorization
-    private(set) var eventsAuthorization: EventsAuthorization
+    // The package's neutral `StoreAuthorizationStatus` is the UI-facing
+    // authorization type directly — its four cases (`.notDetermined`,
+    // `.authorized`, `.denied`, `.restricted`) are exactly what the gate and
+    // banners switch on, so there is no app-side enum or mapping to maintain.
+    private(set) var contactsAuthorization: StoreAuthorizationStatus = .notDetermined
+    private(set) var eventsAuthorization: StoreAuthorizationStatus = .notDetermined
     private(set) var lastError: String?
 
     // Exposed so view-models that mint records carrying a writer ID
@@ -40,9 +28,7 @@ final class SyncService {
     // with. Same source, same value — avoids drifting writer-ID schemes.
     let deviceID: String
 
-    private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
-    private let eventStore: EKEventStore
     private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
     // nil only when `sidecarLocation == .unavailable` — favorites need a
@@ -60,13 +46,11 @@ final class SyncService {
     // mid-session has implications (in-flight ops, cache state) that
     // are out of scope for the v1 sample.
     init() {
-        // SyncService keeps its own CNContactStore for the main-actor
-        // `requestAccess(for:)` call; the adapter (isolated to its own
-        // actor) owns a separate CNContactStore for off-main fetch/save
-        // work. The two never touch each other — they only share the
-        // process-global authorization status, which CNContactStore reads
-        // off system state, not per-instance.
-        self.contactStore = CNContactStore()
+        // The Contacts adapter (isolated to its own actor) owns the one true
+        // CNContactStore for fetch/save work AND for the permission request —
+        // SyncService no longer constructs an Apple store of its own. The
+        // adapter vends a neutral `StoreAuthorizationStatus`, so this target
+        // never imports `Contacts` to reason about permission state.
         let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
         // Device-local persistence for the contact change-history cursor, handed
@@ -76,9 +60,10 @@ final class SyncService {
         // it would make another device think it was caught up and skip real edits.
         let cursorStore = ContactSyncCursorStore(url: Self.contactCursorURL())
 
-        let ek = EKEventStore()
-        self.eventStore = ek
-        let ekAdapter = EKEventStoreAdapter(store: ek)
+        // The EventKit adapter constructs and owns its own EKEventStore (its
+        // `init()` defaults `store:` to a fresh EKEventStore) and runs the
+        // events permission request itself. SyncService holds no EKEventStore.
+        let ekAdapter = EKEventStoreAdapter()
         self.eventsAdapter = ekAdapter
 
         let location = Self.resolveSidecarLocation()
@@ -125,64 +110,38 @@ final class SyncService {
             self.favoritesStore = nil
         }
 
-        self.contactsAuthorization = Self.readAuthorization()
-        self.eventsAuthorization = Self.readEventsAuthorization()
+        // Authorization starts at `.notDetermined`; `init` does NOT read system
+        // status (an init can't `await`, and an instance-independent status read
+        // here would only buy a single frame before the launch-time request
+        // methods run anyway). `GuessWhoAppDelegate` awaits
+        // `requestContactsAccessIfNeeded()` / `requestEventsAccessIfNeeded()`
+        // immediately after construction, which populates the real status before
+        // first interaction.
     }
 
     func requestContactsAccessIfNeeded() async {
-        switch CNContactStore.authorizationStatus(for: .contacts) {
-        case .authorized, .limited:
-            contactsAuthorization = .authorized
-        case .notDetermined:
-            do {
-                let granted = try await contactStore.requestAccess(for: .contacts)
-                contactsAuthorization = granted ? .authorized : .denied
-            } catch {
-                contactsAuthorization = .denied
-                lastError = "Contacts access request failed: \(error.localizedDescription)"
-            }
-        case .denied:
-            contactsAuthorization = .denied
-        case .restricted:
-            contactsAuthorization = .restricted
-        @unknown default:
-            contactsAuthorization = .denied
+        // The adapter owns the CNContactStore and runs the request on it,
+        // returning the neutral `StoreAuthorizationStatus` the UI binds to
+        // directly (`.limited` already collapsed to `.authorized`). When the
+        // request THREW (not a plain user-denial) we restore the same
+        // `lastError` write the pre-adapter code made.
+        let result = await contactsAdapter.requestContactsAccess()
+        contactsAuthorization = result.status
+        if let description = result.failureDescription {
+            lastError = "Contacts access request failed: \(description)"
         }
     }
 
     func requestEventsAccessIfNeeded() async {
-        let status = EKEventStore.authorizationStatus(for: .event)
-        switch status {
-        case .fullAccess:
-            eventsAuthorization = .authorized
-        case .authorized:
-            // Pre-iOS-17 grant. Treat as authorized for read.
-            eventsAuthorization = .authorized
-        case .writeOnly:
-            // Write-only access does not let us read events; surface as denied.
-            // Under the new write path (E2.2), write-only users are routed to
-            // manual-only events — `createLinkedEvent` is gated on .authorized,
-            // so write-only callers fall through to `createManualEvent`.
-            eventsAuthorization = .denied
-        case .notDetermined:
-            do {
-                if #available(iOS 17.0, macOS 14.0, *) {
-                    let granted = try await eventStore.requestFullAccessToEvents()
-                    eventsAuthorization = granted ? .authorized : .denied
-                } else {
-                    let granted = try await eventStore.requestAccess(to: .event)
-                    eventsAuthorization = granted ? .authorized : .denied
-                }
-            } catch {
-                eventsAuthorization = .denied
-                lastError = "Events access request failed: \(error.localizedDescription)"
-            }
-        case .denied:
-            eventsAuthorization = .denied
-        case .restricted:
-            eventsAuthorization = .restricted
-        @unknown default:
-            eventsAuthorization = .denied
+        // The adapter owns the EKEventStore and runs the request on it,
+        // preserving the prior semantics internally (fullAccess / pre-17
+        // authorized → authorized, writeOnly → denied, the iOS17/macOS14
+        // `requestFullAccessToEvents` vs legacy `requestAccess(to:)` branch).
+        // A thrown request restores the same `lastError` write as before.
+        let result = await eventsAdapter.requestEventsAccess()
+        eventsAuthorization = result.status
+        if let description = result.failureDescription {
+            lastError = "Events access request failed: \(description)"
         }
     }
 
@@ -352,23 +311,19 @@ final class SyncService {
         }
     }
 
-    /// Silent refresh for every event linked to `contactUUID`. Uses the same
-    /// debounce window as `refreshEvent`. Initial-load-only pattern — callers
-    /// invoke this once when the contact loads, not on every redraw.
-    func refreshLinkedEvents(forContactUUID contactUUID: String) {
-        guard let sync else { return }
-        let endpoint = SidecarKey(kind: .contact, id: contactUUID)
-        let links: [Link]
-        do {
-            links = try sync.links(at: endpoint).filter { $0.deletedAt == nil }
-        } catch {
-            lastError = "refresh linked events failed: \(error.localizedDescription)"
-            return
-        }
-        for link in links {
-            let other = Self.otherEndpoint(of: link, from: endpoint)
-            guard other.kind == .event else { continue }
-            refreshEvent(uuid: other.id)
+    /// Silent refresh of every event sidecar in `eventUUIDs`. Uses the same
+    /// per-event debounce window as `refreshEvent`. Initial-load-only pattern —
+    /// callers invoke this once when a contact loads, not on every redraw.
+    ///
+    /// The contact endpoint is resolved by the repository
+    /// (`ContactsRepository.linkedEventUUIDs(for:)`) so the bare event UUIDs
+    /// arrive pre-resolved here — SyncService no longer builds a `.contact`
+    /// `SidecarKey` to walk the links. This is an event-cache concern that stays
+    /// on SyncService until the deferred event-identity migration.
+    func refreshLinkedEvents(eventUUIDs: [String]) {
+        guard sync != nil else { return }
+        for uuid in eventUUIDs {
+            refreshEvent(uuid: uuid)
         }
     }
 
@@ -496,7 +451,12 @@ final class SyncService {
     /// used by this service for authorization and writes. UI clients should
     /// retain and read this repository instead of fetching Contacts directly.
     func makeContactsRepository() -> ContactsRepository {
-        ContactsRepository(contacts: contactsAdapter)
+        // Stage 6, Step 0: hand the repository the SAME sidecar engine and
+        // favorites store this service holds (both Optional — nil in the
+        // `.unavailable` storage state) so it can reconcile-on-write and key
+        // the contact-favorite path itself. Pure wiring; no behavior change yet
+        // (no repository write callers exist until sub-phase 6b).
+        ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
     }
 
     /// Fetches one contact by localID without enumerating the whole store.
@@ -525,57 +485,16 @@ final class SyncService {
         sync?.startContactChangeWatcher()
     }
 
-    func sidecar(for contact: Contact) -> SidecarEnvelope? {
-        guard let uuid = guessWhoUUID(in: contact) else { return nil }
-        guard let sync else { return nil }
-        do {
-            return try sync.sidecar(at: SidecarKey(kind: .contact, id: uuid))
-        } catch {
-            lastError = "sidecar read failed: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    func guessWhoUUID(in contact: Contact) -> String? {
-        for url in contact.urlAddresses {
-            if let uuid = SidecarKey.parseGuessWhoContactURL(url.value) {
-                return uuid
-            }
-        }
-        return nil
-    }
-
-    func reconcile(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
-        guard let sync else {
-            throw SidecarUnavailableError()
-        }
-        return try await sync.reconcileContactIdentity(localID: localID)
-    }
-
-    /// Returns the contact's GuessWho UUID, minting one via reconcile if the
-    /// contact has not yet been stamped. Used at sidecar/Contacts seams where
-    /// the caller needs a UUID to link/favorite/etc. but the user has not yet
-    /// opened the contact's detail view (which is the other reconcile trigger).
-    /// Throws if reconcile fails or — pathologically — fails to assign a UUID.
-    func reconcileIfNeeded(contact: Contact) async throws -> String {
-        if let existing = guessWhoUUID(in: contact) {
-            return existing
-        }
-        let outcome = try await reconcile(localID: contact.localID)
-        if let assigned = outcome.assignedUUID {
-            return assigned
-        }
-        // Reconcile finished without setting assignedUUID — Cases B/C/D may
-        // stamp the on-disk contact without populating that field (e.g. dup
-        // GuessWho URLs cleaned up on a contact whose in-memory Contact
-        // struct was stale). Re-fetch the single record (post-write, so it
-        // must hit the store) and read the freshly written UUID.
-        if let fresh = try? await contactsAdapter.fetch(localID: contact.localID),
-           let stamped = guessWhoUUID(in: fresh) {
-            return stamped
-        }
-        throw ReconcileAssignmentFailedError()
-    }
+    // The CONTACT-sidecar surface (`sidecar(for:)`, the bare-UUID
+    // notes/links/event-link methods) and the CONTACT-identity translation
+    // (`guessWhoUUID(in:)`, `reconcile(localID:)`, `reconcileIfNeeded(contact:)`)
+    // were removed in Stage 6: the app now keys every contact-sidecar operation
+    // on a `ContactID` through `ContactsRepository`, and reconcile is a
+    // package-INTERNAL, WRITE-ONLY side effect of a sidecar/favorite write
+    // (resolve-or-mint). SyncService performs no contact-identity translation.
+    // (The EVENT sidecar surface and the SHARED
+    // favorites methods remain — events are out of Stage 6 scope, and favorites
+    // are contact+event shared via `FavoriteKind`.)
 
     // MARK: - Edit
 
@@ -589,13 +508,14 @@ final class SyncService {
 
     /// Writes the edited contact back through the adapter.
     ///
-    /// **Caller contract:** `await repository.reload()` after this
-    /// returns so the list-view caches reflect the changes. SyncService
-    /// intentionally does NOT touch the repository — ContactsRepository
-    /// already holds SyncService, so injecting the reverse direction
-    /// adds coupling without an upside (every current caller already
-    /// reloads after its own post-save dance — `performInlineSave` runs
-    /// performReconcile → loadContact → repository.reload).
+    /// **Caller contract:** refresh the repository cache after this returns so
+    /// the list-view caches reflect the changes. SyncService intentionally does
+    /// NOT touch the repository — ContactsRepository already holds SyncService,
+    /// so injecting the reverse direction adds coupling without an upside (every
+    /// current caller already refreshes after its own post-save dance — Stage 6's
+    /// `performInlineSave` runs `refreshContact(localID:)` →
+    /// `loadContact(preferFresh:)`; no reconcile, since a CONTACT-field edit is
+    /// not a sidecar write — 6f).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }
@@ -608,85 +528,14 @@ final class SyncService {
         try await contactsAdapter.delete(localID: localID)
     }
 
-    // MARK: - Notes
-
-    func notes(forContactUUID uuid: String) -> [ContactNote] {
-        guard let sync else { return [] }
-        do {
-            return try sync.notes(at: SidecarKey(kind: .contact, id: uuid))
-        } catch {
-            lastError = "notes read failed: \(error.localizedDescription)"
-            return []
-        }
-    }
-
-    @discardableResult
-    func addNote(body: String, forContactUUID uuid: String) throws -> UUID {
-        guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addNote(at: SidecarKey(kind: .contact, id: uuid), body: body)
-    }
-
-    func editNote(id: UUID, newBody: String, forContactUUID uuid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.editNote(at: SidecarKey(kind: .contact, id: uuid), id: id, newBody: newBody)
-    }
-
-    func deleteNote(id: UUID, forContactUUID uuid: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.deleteNote(at: SidecarKey(kind: .contact, id: uuid), id: id)
-    }
-
-    // MARK: - Contact Links
-
-    func contactLinks(forContactUUID uuid: String) -> [Link] {
-        guard let sync else { return [] }
-        let endpoint = SidecarKey(kind: .contact, id: uuid)
-        do {
-            let all = try sync.links(at: endpoint)
-            return all.filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
-            }
-        } catch {
-            lastError = "links read failed: \(error.localizedDescription)"
-            return []
-        }
-    }
-
-    @discardableResult
-    func addContactLink(fromUUID: String, toUUID: String, note: String) throws -> Link {
-        guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addLink(
-            from: SidecarKey(kind: .contact, id: fromUUID),
-            to: SidecarKey(kind: .contact, id: toUUID),
-            note: note
-        )
-    }
-
-    func setContactLinkNote(id: UUID, note: String) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.setLinkNote(id: id, note: note)
-    }
-
-    func removeContactLink(id: UUID) throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        try sync.removeLink(id: id)
-    }
-
-    // MARK: - Contact ↔ Event links
-
-    func eventLinks(forContactUUID uuid: String) -> [Link] {
-        guard let sync else { return [] }
-        let endpoint = SidecarKey(kind: .contact, id: uuid)
-        do {
-            let all = try sync.links(at: endpoint)
-            return all.filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
-            }
-        } catch {
-            lastError = "event links read failed: \(error.localizedDescription)"
-            return []
-        }
-    }
+    // MARK: - Contact ↔ Event links (event side)
+    //
+    // The CONTACT-keyed notes/links/event-link methods (notes/addNote/editNote/
+    // deleteNote, contactLinks/addContactLink/setContactLinkNote/
+    // removeContactLink, eventLinks, addContactEventLink) moved onto
+    // `ContactsRepository` keyed on `ContactID` in Stage 6 — they no longer take
+    // a bare contact UUID. The EVENT-side reads below stay here until the
+    // deferred event-identity migration.
 
     func contactLinks(forEventUUID uuid: String) -> [Link] {
         guard let sync else { return [] }
@@ -700,16 +549,6 @@ final class SyncService {
             lastError = "contact links read failed: \(error.localizedDescription)"
             return []
         }
-    }
-
-    @discardableResult
-    func addContactEventLink(contactUUID: String, eventUUID: String, note: String) throws -> Link {
-        guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addLink(
-            from: SidecarKey(kind: .contact, id: contactUUID),
-            to: SidecarKey(kind: .event, id: eventUUID),
-            note: note
-        )
     }
 
     func removeLink(id: UUID) throws {
@@ -841,37 +680,10 @@ final class SyncService {
         defaults.set(fresh, forKey: key)
         return fresh
     }
-
-    private static func readAuthorization() -> ContactsAuthorization {
-        switch CNContactStore.authorizationStatus(for: .contacts) {
-        case .authorized, .limited: return .authorized
-        case .denied: return .denied
-        case .restricted: return .restricted
-        case .notDetermined: return .notRequested
-        @unknown default: return .denied
-        }
-    }
-
-    private static func readEventsAuthorization() -> EventsAuthorization {
-        switch EKEventStore.authorizationStatus(for: .event) {
-        case .fullAccess, .authorized: return .authorized
-        case .writeOnly: return .denied
-        case .denied: return .denied
-        case .restricted: return .restricted
-        case .notDetermined: return .notRequested
-        @unknown default: return .denied
-        }
-    }
 }
 
 struct SidecarUnavailableError: Error, LocalizedError {
     var errorDescription: String? {
         "Sidecar storage is unavailable. Cannot read or write GuessWho data."
-    }
-}
-
-struct ReconcileAssignmentFailedError: Error, LocalizedError {
-    var errorDescription: String? {
-        "Could not assign an identity to this contact."
     }
 }

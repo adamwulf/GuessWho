@@ -31,13 +31,6 @@ struct EventDetailView: View {
 
     @State private var event: Event?
     @State private var links: [ContactLink] = []
-    @State private var uuidToContact: [String: Contact] = [:]
-    /// Lowercased email → contact lookup, populated alongside `uuidToContact`
-    /// from the same `service.fetchAll()` pass. Used by the invitees section
-    /// to decide row-tap behavior (push existing vs. open new-contact sheet).
-    /// First contact wins on duplicates — the picker can still surface the
-    /// other later.
-    @State private var emailToContact: [String: Contact] = [:]
     @State private var notes: [ContactNote] = []
     @State private var tags: [EventTag] = []
     /// Drives the "Add Contact" sheet from the invitees section. Non-nil
@@ -280,9 +273,10 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private func inviteeRow(_ attendee: EventAttendee) -> some View {
-        if let email = attendee.email, let contact = emailToContact[email] {
+        if let email = attendee.email, let contactID = matchedContactID(forEmail: email),
+           let contact = repository.contact(id: contactID) {
             Button {
-                pushContactReference(ContactReference(localID: contact.localID))
+                pushContactReference(ContactReference(id: contactID))
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -325,6 +319,16 @@ struct EventDetailView: View {
             Text(attendee.name.isEmpty ? "(Unknown invitee)" : attendee.name)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// First contact (in cache order) whose card lists `email`, addressed by
+    /// `ContactID`. Resolved on demand through the repository's O(1) email
+    /// index — replaces the old per-reload `emailToContact` map. "First wins"
+    /// matches the previous behavior; the picker can still surface another
+    /// match later. Returns nil when no contact lists the address (the row
+    /// then offers the add-new-contact flow).
+    private func matchedContactID(forEmail email: String) -> ContactID? {
+        repository.contactIDs(matchingEmail: email).first
     }
 
     /// Build the seed `Contact` handed to `ContactEditView` for an
@@ -381,11 +385,13 @@ struct EventDetailView: View {
     private func linkedContactRow(_ link: ContactLink) -> some View {
         let endpoint = SidecarKey(kind: .event, id: resolvedUUID)
         let other = SyncService.otherEndpoint(of: link, from: endpoint)
-        let contact = uuidToContact[other.id]
+        // The other endpoint id IS a bare GuessWho UUID; resolve it through the
+        // repository's O(1) index instead of an app-held uuid→Contact map.
+        let contact = repository.contact(guessWhoID: other.id)
 
         if let contact {
             Button {
-                pushContactReference(ContactReference(localID: contact.localID))
+                pushContactReference(ContactReference(id: contact.contactID))
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -477,37 +483,29 @@ struct EventDetailView: View {
         links = service.contactLinks(forEventUUID: resolvedUUID)
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
-        var map: [String: Contact] = [:]
-        var byEmail: [String: Contact] = [:]
-        for contact in repository.contacts {
-            if let uuid = service.guessWhoUUID(in: contact) {
-                map[uuid] = contact
-            }
-            for entry in contact.emailAddresses {
-                let key = entry.value.lowercased()
-                guard !key.isEmpty, byEmail[key] == nil else { continue }
-                byEmail[key] = contact
-            }
-        }
-        uuidToContact = map
-        emailToContact = byEmail
+        // Attendee→contact and linked-contact→contact resolution now happen on
+        // demand in the rows via repository.contactIDs(matchingEmail:) /
+        // repository.contact(guessWhoID:) — the O(1) indexes mean we no longer
+        // build (or hold) an app-side uuid/email→Contact map here.
         hasLoadedOnce = true
     }
 
     /// Returns `true` when the link was created (or already existed) so the
-    /// picker sheet knows it's safe to dismiss. Reconcile failures return
-    /// `false` and surface via `service.recordError` so the user can pick a
-    /// different contact or retry without losing the sheet.
+    /// picker sheet knows it's safe to dismiss. A write failure returns `false`
+    /// and surfaces via `service.recordError` so the user can pick a different
+    /// contact or retry without losing the sheet.
     private func addLink(to contact: Contact, note: String) async -> Bool {
-        let uuid: String
         do {
-            uuid = try await service.reconcileIfNeeded(contact: contact)
-        } catch {
-            service.recordError("reconcile contact failed: \(error.localizedDescription)")
-            return false
-        }
-        do {
-            _ = try service.addContactEventLink(contactUUID: uuid, eventUUID: resolvedUUID, note: note)
+            // The link WRITE resolves-or-mints the CONTACT endpoint's GuessWho
+            // UUID internally (linking a never-touched contact reconciles +
+            // mints, transparent here), so there is no app-side reconcile. The
+            // EVENT endpoint is the bare `resolvedUUID` until the deferred
+            // event-identity migration.
+            _ = try await repository.addEventLink(
+                for: contact.contactID,
+                eventUUID: resolvedUUID,
+                note: note
+            )
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
             return false
@@ -727,11 +725,11 @@ private struct ContactPickerSheet: View {
                         }
                     }
                 } else {
-                    List(filteredContacts, id: \.localID) { contact in
+                    List(filteredContacts, id: \.id) { entry in
                         Button {
-                            selection = contact
+                            selection = entry.contact
                         } label: {
-                            Text(contact.displayName)
+                            Text(entry.contact.displayName)
                         }
                     }
                     .searchable(text: $query, prompt: "Search contacts")
@@ -786,13 +784,21 @@ private struct ContactPickerSheet: View {
         }
     }
 
-    private var filteredContacts: [Contact] {
+    /// Picker rows keyed by opaque `ContactID` (not raw `localID`) so the List's
+    /// diffing identity is the app's stable GuessWho identity. `selection` stays
+    /// a `Contact` because that's what `onPick` consumes.
+    private var filteredContacts: [(id: ContactID, contact: Contact)] {
         let sorted = contacts.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return sorted }
-        let needle = trimmed.lowercased()
-        return sorted.filter { $0.displayName.lowercased().contains(needle) }
+        let matched: [Contact]
+        if trimmed.isEmpty {
+            matched = sorted
+        } else {
+            let needle = trimmed.lowercased()
+            matched = sorted.filter { $0.displayName.lowercased().contains(needle) }
+        }
+        return matched.map { (id: $0.contactID, contact: $0) }
     }
 }

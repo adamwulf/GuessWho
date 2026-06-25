@@ -20,6 +20,60 @@ public final class InMemoryEventStore: EventStoreProtocol {
         self.eventsByEventKitID = initial
     }
 
+    // MARK: - Authorization
+
+    /// Simulated authorization state. Defaults to `.authorized` so existing
+    /// tests that never opt into a permission flow see a granted store. Tests
+    /// that exercise the gate can drive it via `setAuthorizationStatus`.
+    private var authorizationStatus: StoreAuthorizationStatus = .authorized
+
+    public func eventsAuthorizationStatus() -> StoreAuthorizationStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        return authorizationStatus
+    }
+
+    public func requestEventsAccess() async -> StoreAccessResult {
+        // Delegate the locked mutation to a synchronous helper that keeps the
+        // lock strictly synchronous: the lock is taken and released entirely
+        // inside `grantIfNeeded()`, with no suspension point in between.
+        grantIfNeeded()
+    }
+
+    /// Synchronous, lock-guarded request side-effect. Models the OS: a thrown
+    /// request (when the test asked for one) returns `.denied` carrying the
+    /// description; otherwise a `.notDetermined` store grants and an
+    /// already-decided store returns its existing verdict unchanged.
+    private func grantIfNeeded() -> StoreAccessResult {
+        lock.lock()
+        defer { lock.unlock() }
+        if let description = requestFailureDescription {
+            return StoreAccessResult(status: .denied, failureDescription: description)
+        }
+        if authorizationStatus == .notDetermined {
+            authorizationStatus = .authorized
+        }
+        return StoreAccessResult(status: authorizationStatus)
+    }
+
+    /// Test hook — drive the simulated events authorization state.
+    public func setAuthorizationStatus(_ status: StoreAuthorizationStatus) {
+        lock.lock()
+        defer { lock.unlock() }
+        authorizationStatus = status
+    }
+
+    /// Test hook — when non-nil, the next `requestEventsAccess()` models a
+    /// thrown OS request: it returns `.denied` carrying this description and
+    /// leaves the stored status untouched. Mirrors the real adapter's
+    /// catch-block behavior.
+    private var requestFailureDescription: String?
+    public func setRequestFailure(_ description: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        requestFailureDescription = description
+    }
+
     // MARK: - Reads
 
     public func fetchEvents(in interval: DateInterval) throws -> [Event] {

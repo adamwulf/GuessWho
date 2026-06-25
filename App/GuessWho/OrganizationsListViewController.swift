@@ -18,8 +18,14 @@ final class OrganizationsListViewController: UIViewController {
     private var searchController: UISearchController!
     private var dataSource: SectionedDataSource!
 
-    private var contactsByLocalID: [String: Contact] = [:]
     private var sectionLetters: [String] = []
+
+    /// See `ContactsListViewController.renderedContacts`. `ContactID` is
+    /// identity-only, so the diffable apply does not repaint a same-identity
+    /// row's contents on an in-place edit; we drive `reconfigureItems(_:)`
+    /// ourselves by comparing the `Contact` each row last rendered against the
+    /// freshly fetched one.
+    private var renderedContacts: [ContactID: Contact] = [:]
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
@@ -113,9 +119,9 @@ final class OrganizationsListViewController: UIViewController {
     private func configureDataSource() {
         dataSource = SectionedDataSource(
             tableView: tableView
-        ) { [weak self] tableView, indexPath, localID in
+        ) { [weak self] tableView, indexPath, id in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.organization.rawValue, for: indexPath)
-            guard let self, let contact = self.contactsByLocalID[localID] else { return cell }
+            guard let self, let contact = self.repository.contact(id: id) else { return cell }
             (cell as? OrganizationCell)?.configure(with: contact)
             return cell
         }
@@ -138,36 +144,42 @@ final class OrganizationsListViewController: UIViewController {
     }
 
     private func applySnapshot(animated: Bool) {
-        let sections = repository.organizationsSections
-
-        let previousByID = contactsByLocalID
-        var byID: [String: Contact] = [:]
-        for (_, contacts) in sections {
-            for contact in contacts {
-                byID[contact.localID] = contact
-            }
-        }
-        contactsByLocalID = byID
+        let sections = repository.organizationsSectionIDs
         sectionLetters = sections.map { $0.0 }
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+        var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
-        for (letter, contacts) in sections {
-            snapshot.appendItems(contacts.map { $0.localID }, toSection: letter)
+        // De-dupe by effective identity across the whole snapshot (see
+        // ContactsListViewController.applySnapshot): equal ContactIDs trap in
+        // appendItems; the transient pre-reconcile duplicate-guessWhoID window
+        // is the only source, and reconciliation collapses it. First wins.
+        var seen = Set<ContactID>()
+        for (letter, contactIDs) in sections {
+            let unique = contactIDs.filter { seen.insert($0).inserted }
+            snapshot.appendItems(unique, toSection: letter)
         }
 
-        // See ContactsListViewController.applySnapshot — rows keyed on
-        // localID don't repaint on an in-place content change, so
-        // reconfigure the rows whose Contact value differs. New/removed
-        // rows are handled by `apply` and must be excluded (reconfiguring
-        // an item absent from the new snapshot traps).
-        let changedIDs = byID.compactMap { localID, contact -> String? in
-            guard let previous = previousByID[localID] else { return nil }
-            return previous == contact ? nil : localID
+        // See ContactsListViewController.applySnapshot — ContactID is
+        // identity-only, so apply() keeps a same-identity row in place but does
+        // NOT repaint its contents on an in-place edit. Drive reconfigure
+        // explicitly: reconfigure rows present in BOTH the last render and the
+        // new snapshot whose fetched Contact differs from the one we last
+        // rendered (exclude inserts/removes — apply handles those, and
+        // reconfiguring an absent item traps).
+        let currentIDs = Set(snapshot.itemIdentifiers)
+        let changed = currentIDs.filter { id in
+            guard let previous = renderedContacts[id] else { return false }
+            return previous != repository.contact(id: id)
         }
-        if !changedIDs.isEmpty {
-            snapshot.reconfigureItems(changedIDs)
+        if !changed.isEmpty {
+            snapshot.reconfigureItems(Array(changed))
         }
+
+        var rendered: [ContactID: Contact] = [:]
+        for id in currentIDs {
+            rendered[id] = repository.contact(id: id)
+        }
+        renderedContacts = rendered
 
         dataSource.apply(snapshot, animatingDifferences: animated)
 
@@ -194,8 +206,8 @@ final class OrganizationsListViewController: UIViewController {
 
 extension OrganizationsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let localID = dataSource.itemIdentifier(for: indexPath),
-              let contact = contactsByLocalID[localID] else { return }
+        guard let id = dataSource.itemIdentifier(for: indexPath),
+              let contact = repository.contact(id: id) else { return }
         didSelectContact(contact)
     }
 }
@@ -203,7 +215,7 @@ extension OrganizationsListViewController: UITableViewDelegate {
 /// Diffable data source subclass that forwards A–Z section headers
 /// and the index scrubber. Same rationale as
 /// `ContactsListViewController.SectionedDataSource`.
-private final class SectionedDataSource: UITableViewDiffableDataSource<String, String> {
+private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         let ids = snapshot().sectionIdentifiers
         return ids.indices.contains(section) ? ids[section] : nil

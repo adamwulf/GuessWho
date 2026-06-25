@@ -166,7 +166,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // mutating its rootView's localID (which is what
         // `RootView.detailColumn` did on the pre-Phase-5 SwiftUI path).
         let nav = UINavigationController()
-        let detail = ContactDetailView(localID: contact.localID)
+        // The list VCs vend a `Contact` on selection; re-key it to the opaque
+        // `ContactID` the detail view now roots on — the app never threads a
+        // raw `localID` through navigation.
+        let detail = ContactDetailView(id: contact.contactID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
@@ -213,7 +216,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         appDelegate: GuessWhoAppDelegate
     ) {
         guard let nav else { return }
-        let detail = ContactDetailView(localID: ref.localID)
+        let detail = ContactDetailView(id: ref.id)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
@@ -290,7 +293,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// Wrapped in a `PermissionGateViewController` so the same three
     /// Contacts-authorization ContentUnavailableView states the
-    /// SwiftUI RootView showed (notRequested / denied / restricted)
+    /// SwiftUI RootView showed (notDetermined / denied / restricted)
     /// surface here as `UIContentUnavailableConfiguration`s, swapping
     /// to the tabs only once access flips to `.authorized`.
     ///
@@ -418,7 +421,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
-        pushContactDetail(localID: contact.localID, on: nav, appDelegate: appDelegate)
+        // List selection vends a `Contact`; re-key it to its opaque `ContactID`
+        // so the pushed detail roots on stable GuessWho identity, not localID.
+        pushContactDetail(id: contact.contactID, on: nav, appDelegate: appDelegate)
     }
 
     private func pushContactDetail(
@@ -426,17 +431,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
-        pushContactDetail(localID: ref.localID, on: nav, appDelegate: appDelegate)
+        pushContactDetail(id: ref.id, on: nav, appDelegate: appDelegate)
     }
 
     private func pushContactDetail(
-        localID: String,
+        id: ContactID,
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
         guard let nav else { return }
         let detail = injectIPhonePushHandlers(
-            ContactDetailView(localID: localID)
+            ContactDetailView(id: id)
                 .environment(appDelegate.service)
                 .environment(appDelegate.contactsRepository)
                 .environment(appDelegate.favoritesStore),

@@ -26,6 +26,30 @@ struct AdapterSmokeTests {
     // CN adapter. The function body is never executed at test-time (no
     // Contacts authorization is granted in the test process); the value of
     // this suite is that it fails to compile if a method drops off the adapter.
+    // Compile-time smoke: the Stage-2 permission methods exist on each adapter
+    // with the expected return types. Bodies never run at test-time (no
+    // Contacts/Events authorization in the test process); the value is that
+    // these fail to compile if a method drops off or changes shape.
+    @Test
+    func cnAdapterExposesAuthorizationSurface() {
+        func _useAuth(_ adapter: CNContactStoreAdapter) async {
+            // `contactsAuthorizationStatus()` is `nonisolated` (a static
+            // system-state read), so no actor hop / `await` is needed.
+            let _: StoreAuthorizationStatus = adapter.contactsAuthorizationStatus()
+            let _: StoreAccessResult = await adapter.requestContactsAccess()
+        }
+        _ = _useAuth
+    }
+
+    @Test
+    func ekAdapterExposesAuthorizationSurface() {
+        func _useAuth(_ adapter: EKEventStoreAdapter) async {
+            let _: StoreAuthorizationStatus = adapter.eventsAuthorizationStatus()
+            let _: StoreAccessResult = await adapter.requestEventsAccess()
+        }
+        _ = _useAuth
+    }
+
     @Test
     func cnAdapterExposesGroupSurface() {
         func _useGroups(_ adapter: CNContactStoreAdapter) async throws {

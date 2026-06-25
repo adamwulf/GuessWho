@@ -104,6 +104,52 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         CNContactThumbnailImageDataKey as CNKeyDescriptor,
     ]
 
+    // MARK: - Authorization
+
+    /// Current contacts authorization. `CNContactStore.authorizationStatus`
+    /// is a static system-state read (not per-instance), so this witness is
+    /// `nonisolated` — it touches no actor state, so it does no async work and
+    /// satisfies the `async` protocol requirement without a suspension point.
+    /// `.limited` collapses to `.authorized`.
+    public nonisolated func contactsAuthorizationStatus() -> StoreAuthorizationStatus {
+        Self.mapAuthorization(CNContactStore.authorizationStatus(for: .contacts))
+    }
+
+    /// Prompt for contacts access on this actor's store and return the
+    /// resulting `StoreAccessResult`. `requestAccess(for:)` is a no-op once the
+    /// user has already decided; a thrown error is surfaced as `.denied` with a
+    /// non-nil `failureDescription` (the error's `localizedDescription`) so the
+    /// caller can restore its error-state write.
+    public func requestContactsAccess() async -> StoreAccessResult {
+        switch CNContactStore.authorizationStatus(for: .contacts) {
+        case .notDetermined:
+            do {
+                let granted = try await store.requestAccess(for: .contacts)
+                return StoreAccessResult(status: granted ? .authorized : .denied)
+            } catch {
+                return StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
+            }
+        case .authorized, .limited:
+            return StoreAccessResult(status: .authorized)
+        case .denied:
+            return StoreAccessResult(status: .denied)
+        case .restricted:
+            return StoreAccessResult(status: .restricted)
+        @unknown default:
+            return StoreAccessResult(status: .denied)
+        }
+    }
+
+    private static func mapAuthorization(_ status: CNAuthorizationStatus) -> StoreAuthorizationStatus {
+        switch status {
+        case .authorized, .limited: return .authorized
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default: return .denied
+        }
+    }
+
     public func fetchAll() async throws -> [Contact] {
         try await runOnWorkQueue { store in
             let request = CNContactFetchRequest(keysToFetch: Self.keys)

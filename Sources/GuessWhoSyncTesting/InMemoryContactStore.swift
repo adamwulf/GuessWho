@@ -51,6 +51,44 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         self.contactsByID = initial
     }
 
+    // MARK: - Authorization
+
+    /// Simulated authorization state. Defaults to `.authorized` so existing
+    /// tests that never opt into a permission flow see a granted store. Tests
+    /// that exercise the gate can drive it via `setAuthorizationStatus`.
+    private var authorizationStatus: StoreAuthorizationStatus = .authorized
+
+    public func contactsAuthorizationStatus() -> StoreAuthorizationStatus {
+        authorizationStatus
+    }
+
+    public func requestContactsAccess() async -> StoreAccessResult {
+        // Model a thrown OS request when the test asked for one.
+        if let description = requestFailureDescription {
+            return StoreAccessResult(status: .denied, failureDescription: description)
+        }
+        // Model the OS: a `.notDetermined` store grants on request; an
+        // already-decided store returns its existing verdict unchanged.
+        if authorizationStatus == .notDetermined {
+            authorizationStatus = .authorized
+        }
+        return StoreAccessResult(status: authorizationStatus)
+    }
+
+    /// Test hook — drive the simulated contacts authorization state.
+    public func setAuthorizationStatus(_ status: StoreAuthorizationStatus) {
+        authorizationStatus = status
+    }
+
+    /// Test hook — when non-nil, the next `requestContactsAccess()` models a
+    /// thrown OS request: it returns `.denied` carrying this description and
+    /// leaves the stored status untouched. Mirrors the real adapter's
+    /// catch-block behavior.
+    private var requestFailureDescription: String?
+    public func setRequestFailure(_ description: String?) {
+        requestFailureDescription = description
+    }
+
     public func fetchAll() throws -> [Contact] {
         // §7.4 — bulk path must NOT peek at the sideband. Return whatever the
         // persisted flag says, full stop.

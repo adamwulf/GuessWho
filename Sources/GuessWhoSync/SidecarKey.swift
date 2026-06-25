@@ -66,3 +66,17 @@ extension SidecarKey {
         SidecarKey(kind: .event, id: event.id.uuidString)
     }
 }
+
+extension SidecarKey {
+    /// True iff this key is the CONTACT endpoint identifying `contactID` — i.e.
+    /// `kind == .contact` and `id` equals the contact's reconciled GuessWho UUID.
+    /// A contact-link endpoint is ALWAYS keyed on the GuessWho UUID (never the
+    /// localID), so this compares against `contactID.guessWhoID`; an unreconciled
+    /// contact (`guessWhoID == nil`) can't be a link endpoint, so it returns false.
+    /// Lives in the package because `ContactID.guessWhoID` is `package` — the app
+    /// must not do this identity-string comparison itself.
+    public func matches(_ contactID: ContactID) -> Bool {
+        guard kind == .contact, let gw = contactID.guessWhoID else { return false }
+        return id == gw   // both canonical-lowercase (SidecarKey.init lowercases; guessWhoID is canonical)
+    }
+}

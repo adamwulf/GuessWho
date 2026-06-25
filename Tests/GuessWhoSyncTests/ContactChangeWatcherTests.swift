@@ -358,6 +358,8 @@ actor ScriptableContactStore: ContactStoreProtocol {
 
     // MARK: - Unused protocol surface (never called by ContactChangeWatcher)
 
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus { unused() }
+    func requestContactsAccess() async -> StoreAccessResult { unused() }
     func fetchAll() async throws -> [Contact] { unused() }
     func fetch(localID: String) async throws -> Contact? { unused() }
     func save(_ contact: Contact) async throws { unused() }

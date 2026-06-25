@@ -22,6 +22,14 @@ final class CountingEventStore: EventStoreProtocol {
         self.inner = inner
     }
 
+    func eventsAuthorizationStatus() -> StoreAuthorizationStatus {
+        inner.eventsAuthorizationStatus()
+    }
+
+    func requestEventsAccess() async -> StoreAccessResult {
+        await inner.requestEventsAccess()
+    }
+
     func fetchEvents(in interval: DateInterval) throws -> [Event] {
         lock.lock()
         fetchEventsInIntervalCount += 1

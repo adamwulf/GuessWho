@@ -12,6 +12,23 @@ public protocol ContactStoreProtocol: Actor {
     func save(_ contact: Contact) async throws
     func delete(localID: String) async throws
 
+    // MARK: - Authorization
+    //
+    // The store owns the one true backing object (`CNContactStore`), so the
+    // permission request runs here rather than in a second store the app
+    // constructs. Both surface a neutral `StoreAuthorizationStatus` so the app
+    // target never imports `Contacts` just to read permission state.
+
+    /// Current contacts authorization, with `.limited` collapsed to
+    /// `.authorized`. A cheap system-state read; does not enumerate the store.
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus
+
+    /// Prompt for contacts access (no-op at the OS level if already decided)
+    /// and return the resulting `StoreAccessResult`. Runs the request on this
+    /// store. A thrown request surfaces as `.denied` with a non-nil
+    /// `failureDescription` so the caller can restore its error-state write.
+    func requestContactsAccess() async -> StoreAccessResult
+
     // Reads the change history since `token` (an opaque cursor previously
     // returned in `ContactChangeSet.newToken`). A `nil` token means "from the
     // beginning" — the result baselines with `requiresFullReload == true`.

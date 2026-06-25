@@ -1,6 +1,25 @@
 import Foundation
 
 public protocol EventStoreProtocol {
+    // MARK: - Authorization
+    //
+    // The adapter owns the one true `EKEventStore`, so the permission request
+    // runs here rather than in a store the app constructs. Both surface a
+    // neutral `StoreAuthorizationStatus` (the adapter collapses EventKit's
+    // `.fullAccess` / pre-17 `.authorized` to `.authorized` and `.writeOnly`
+    // to `.denied`) so the app target never imports `EventKit` to read state.
+
+    /// Current events authorization, collapsed to the neutral status. A cheap
+    /// system-state read; does not enumerate the store.
+    func eventsAuthorizationStatus() -> StoreAuthorizationStatus
+
+    /// Prompt for events access on this adapter's store and return the
+    /// resulting `StoreAccessResult`. Uses `requestFullAccessToEvents()` on iOS
+    /// 17 / macOS 14+, falling back to the legacy `requestAccess(to:)` before
+    /// that. A thrown request surfaces as `.denied` with a non-nil
+    /// `failureDescription` so the caller can restore its error-state write.
+    func requestEventsAccess() async -> StoreAccessResult
+
     // MARK: - Reads (EventKit-keyed)
 
     /// All EventKit events intersecting `interval`. Each returned Event has

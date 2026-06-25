@@ -1,7 +1,15 @@
 import Foundation
+import GuessWhoSync
 
+/// Navigation payload for "show this contact's detail." Carries the opaque,
+/// package-vended `ContactID` — NEVER a raw `localID` — so the app's whole
+/// navigation layer keys on stable GuessWho identity (`guessWhoID ?? localID`)
+/// rather than Apple's transient `CNContact.identifier`. The scene delegate
+/// resolves it back to a `Contact` via `repository.contact(id:)` when it builds
+/// the detail view; an unresolvable id (deleted / retired) yields the detail
+/// view's non-crashing "unavailable" state.
 struct ContactReference: Hashable {
-    let localID: String
+    let id: ContactID
 }
 
 struct EventReference: Hashable {
