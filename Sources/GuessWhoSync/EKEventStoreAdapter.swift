@@ -2,11 +2,69 @@
 import EventKit
 import Foundation
 
-public final class EKEventStoreAdapter: EventStoreProtocol {
+// `@unchecked Sendable`: the adapter holds a single immutable `let store`,
+// adds no mutable state of its own, and EventKit documents `EKEventStore` as
+// safe to share across threads for the read/request/save calls used here. The
+// unchecked conformance lets `requestEventsAccess()` be `async` (it awaits
+// EventKit's permission prompt) without the caller's `sending`-check flagging a
+// data race when it hops off the caller's actor. Mirrors the rationale behind
+// `GuessWhoSync`'s own `@unchecked Sendable`.
+public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable {
     private let store: EKEventStore
 
     public init(store: EKEventStore = EKEventStore()) {
         self.store = store
+    }
+
+    // MARK: - Authorization
+
+    /// Current events authorization, collapsed to the neutral status.
+    /// `EKEventStore.authorizationStatus` is a static system-state read, so
+    /// this does not touch the instance store; it lives here to keep the auth
+    /// surface behind the adapter port.
+    public func eventsAuthorizationStatus() -> StoreAuthorizationStatus {
+        Self.mapAuthorization(EKEventStore.authorizationStatus(for: .event))
+    }
+
+    /// Prompt for events access on this adapter's store and return the
+    /// resulting status. Preserves the prior `SyncService` semantics: only
+    /// `.notDetermined` triggers a prompt; `requestFullAccessToEvents()` is
+    /// used on iOS 17 / macOS 14+, the legacy `requestAccess(to:)` before
+    /// that. A thrown error surfaces as `.denied`.
+    public func requestEventsAccess() async -> StoreAuthorizationStatus {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        switch status {
+        case .notDetermined:
+            do {
+                if #available(iOS 17.0, macOS 14.0, *) {
+                    let granted = try await store.requestFullAccessToEvents()
+                    return granted ? .authorized : .denied
+                } else {
+                    let granted = try await store.requestAccess(to: .event)
+                    return granted ? .authorized : .denied
+                }
+            } catch {
+                return .denied
+            }
+        default:
+            return Self.mapAuthorization(status)
+        }
+    }
+
+    /// Collapse EventKit's status to the neutral package status. `.fullAccess`
+    /// and the pre-iOS-17 `.authorized` map to `.authorized`; `.writeOnly`
+    /// maps to `.denied` because write-only access cannot read events, which
+    /// the app treats as no access for its read-driven UI.
+    private static func mapAuthorization(_ status: EKAuthorizationStatus) -> StoreAuthorizationStatus {
+        switch status {
+        case .fullAccess: return .authorized
+        case .authorized: return .authorized
+        case .writeOnly: return .denied
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default: return .denied
+        }
     }
 
     // MARK: - Reads

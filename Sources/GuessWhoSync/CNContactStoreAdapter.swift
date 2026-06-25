@@ -104,6 +104,50 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         CNContactThumbnailImageDataKey as CNKeyDescriptor,
     ]
 
+    // MARK: - Authorization
+
+    /// Current contacts authorization. `CNContactStore.authorizationStatus`
+    /// is a static system-state read (not per-instance), so this is
+    /// `nonisolated` — it touches no actor state and so can be read
+    /// synchronously (e.g. for an initial UI render) without hopping onto the
+    /// actor. `.limited` collapses to `.authorized`.
+    public nonisolated func contactsAuthorizationStatus() -> StoreAuthorizationStatus {
+        Self.mapAuthorization(CNContactStore.authorizationStatus(for: .contacts))
+    }
+
+    /// Prompt for contacts access on this actor's store and return the
+    /// resulting status. `requestAccess(for:)` is a no-op once the user has
+    /// already decided; a thrown error is surfaced as `.denied`.
+    public func requestContactsAccess() async -> StoreAuthorizationStatus {
+        switch CNContactStore.authorizationStatus(for: .contacts) {
+        case .notDetermined:
+            do {
+                let granted = try await store.requestAccess(for: .contacts)
+                return granted ? .authorized : .denied
+            } catch {
+                return .denied
+            }
+        case .authorized, .limited:
+            return .authorized
+        case .denied:
+            return .denied
+        case .restricted:
+            return .restricted
+        @unknown default:
+            return .denied
+        }
+    }
+
+    private static func mapAuthorization(_ status: CNAuthorizationStatus) -> StoreAuthorizationStatus {
+        switch status {
+        case .authorized, .limited: return .authorized
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default: return .denied
+        }
+    }
+
     public func fetchAll() async throws -> [Contact] {
         try await runOnWorkQueue { store in
             let request = CNContactFetchRequest(keysToFetch: Self.keys)

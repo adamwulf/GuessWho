@@ -1,6 +1,4 @@
 import Foundation
-import Contacts
-import EventKit
 import GuessWhoSync
 
 @MainActor
@@ -40,9 +38,7 @@ final class SyncService {
     // with. Same source, same value — avoids drifting writer-ID schemes.
     let deviceID: String
 
-    private let contactStore: CNContactStore
     private let contactsAdapter: CNContactStoreAdapter
-    private let eventStore: EKEventStore
     private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
     // nil only when `sidecarLocation == .unavailable` — favorites need a
@@ -60,13 +56,11 @@ final class SyncService {
     // mid-session has implications (in-flight ops, cache state) that
     // are out of scope for the v1 sample.
     init() {
-        // SyncService keeps its own CNContactStore for the main-actor
-        // `requestAccess(for:)` call; the adapter (isolated to its own
-        // actor) owns a separate CNContactStore for off-main fetch/save
-        // work. The two never touch each other — they only share the
-        // process-global authorization status, which CNContactStore reads
-        // off system state, not per-instance.
-        self.contactStore = CNContactStore()
+        // The Contacts adapter (isolated to its own actor) owns the one true
+        // CNContactStore for fetch/save work AND for the permission request —
+        // SyncService no longer constructs an Apple store of its own. The
+        // adapter vends a neutral `StoreAuthorizationStatus`, so this target
+        // never imports `Contacts` to reason about permission state.
         let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
         // Device-local persistence for the contact change-history cursor, handed
@@ -76,9 +70,10 @@ final class SyncService {
         // it would make another device think it was caught up and skip real edits.
         let cursorStore = ContactSyncCursorStore(url: Self.contactCursorURL())
 
-        let ek = EKEventStore()
-        self.eventStore = ek
-        let ekAdapter = EKEventStoreAdapter(store: ek)
+        // The EventKit adapter constructs and owns its own EKEventStore (its
+        // `init()` defaults `store:` to a fresh EKEventStore) and runs the
+        // events permission request itself. SyncService holds no EKEventStore.
+        let ekAdapter = EKEventStoreAdapter()
         self.eventsAdapter = ekAdapter
 
         let location = Self.resolveSidecarLocation()
@@ -125,65 +120,32 @@ final class SyncService {
             self.favoritesStore = nil
         }
 
-        self.contactsAuthorization = Self.readAuthorization()
-        self.eventsAuthorization = Self.readEventsAuthorization()
+        // Seed the UI-facing state from the adapters' current system status so
+        // the first render is accurate (e.g. a previously-denied user sees the
+        // denied gate immediately, not a flash of "Requesting…"). Both reads
+        // are cheap, instance-independent system-state lookups: the contacts
+        // adapter's is `nonisolated` so it needs no actor hop, and the events
+        // adapter is a plain class. The launch-time request methods refine
+        // this once the user responds.
+        self.contactsAuthorization = Self.mapContacts(adapter.contactsAuthorizationStatus())
+        self.eventsAuthorization = Self.mapEvents(ekAdapter.eventsAuthorizationStatus())
     }
 
     func requestContactsAccessIfNeeded() async {
-        switch CNContactStore.authorizationStatus(for: .contacts) {
-        case .authorized, .limited:
-            contactsAuthorization = .authorized
-        case .notDetermined:
-            do {
-                let granted = try await contactStore.requestAccess(for: .contacts)
-                contactsAuthorization = granted ? .authorized : .denied
-            } catch {
-                contactsAuthorization = .denied
-                lastError = "Contacts access request failed: \(error.localizedDescription)"
-            }
-        case .denied:
-            contactsAuthorization = .denied
-        case .restricted:
-            contactsAuthorization = .restricted
-        @unknown default:
-            contactsAuthorization = .denied
-        }
+        // The adapter owns the CNContactStore and runs the request on it,
+        // returning a neutral status (`.limited` already collapsed to
+        // `.authorized`). SyncService just maps it to its UI-facing enum.
+        let status = await contactsAdapter.requestContactsAccess()
+        contactsAuthorization = Self.mapContacts(status)
     }
 
     func requestEventsAccessIfNeeded() async {
-        let status = EKEventStore.authorizationStatus(for: .event)
-        switch status {
-        case .fullAccess:
-            eventsAuthorization = .authorized
-        case .authorized:
-            // Pre-iOS-17 grant. Treat as authorized for read.
-            eventsAuthorization = .authorized
-        case .writeOnly:
-            // Write-only access does not let us read events; surface as denied.
-            // Under the new write path (E2.2), write-only users are routed to
-            // manual-only events — `createLinkedEvent` is gated on .authorized,
-            // so write-only callers fall through to `createManualEvent`.
-            eventsAuthorization = .denied
-        case .notDetermined:
-            do {
-                if #available(iOS 17.0, macOS 14.0, *) {
-                    let granted = try await eventStore.requestFullAccessToEvents()
-                    eventsAuthorization = granted ? .authorized : .denied
-                } else {
-                    let granted = try await eventStore.requestAccess(to: .event)
-                    eventsAuthorization = granted ? .authorized : .denied
-                }
-            } catch {
-                eventsAuthorization = .denied
-                lastError = "Events access request failed: \(error.localizedDescription)"
-            }
-        case .denied:
-            eventsAuthorization = .denied
-        case .restricted:
-            eventsAuthorization = .restricted
-        @unknown default:
-            eventsAuthorization = .denied
-        }
+        // The adapter owns the EKEventStore and runs the request on it,
+        // preserving the prior semantics internally (fullAccess / pre-17
+        // authorized → authorized, writeOnly → denied, the iOS17/macOS14
+        // `requestFullAccessToEvents` vs legacy `requestAccess(to:)` branch).
+        let status = await eventsAdapter.requestEventsAccess()
+        eventsAuthorization = Self.mapEvents(status)
     }
 
     // Routes the windowed read through the orchestrator's Option-C projection
@@ -842,24 +804,27 @@ final class SyncService {
         return fresh
     }
 
-    private static func readAuthorization() -> ContactsAuthorization {
-        switch CNContactStore.authorizationStatus(for: .contacts) {
-        case .authorized, .limited: return .authorized
+    /// Map the package-vended neutral status onto the UI-facing contacts enum.
+    /// `.notDetermined` becomes `.notRequested`; the adapter has already
+    /// collapsed `.limited` into `.authorized`.
+    private static func mapContacts(_ status: StoreAuthorizationStatus) -> ContactsAuthorization {
+        switch status {
+        case .authorized: return .authorized
         case .denied: return .denied
         case .restricted: return .restricted
         case .notDetermined: return .notRequested
-        @unknown default: return .denied
         }
     }
 
-    private static func readEventsAuthorization() -> EventsAuthorization {
-        switch EKEventStore.authorizationStatus(for: .event) {
-        case .fullAccess, .authorized: return .authorized
-        case .writeOnly: return .denied
+    /// Map the package-vended neutral status onto the UI-facing events enum.
+    /// The adapter has already collapsed `.fullAccess` / pre-17 `.authorized`
+    /// into `.authorized` and `.writeOnly` into `.denied`.
+    private static func mapEvents(_ status: StoreAuthorizationStatus) -> EventsAuthorization {
+        switch status {
+        case .authorized: return .authorized
         case .denied: return .denied
         case .restricted: return .restricted
         case .notDetermined: return .notRequested
-        @unknown default: return .denied
         }
     }
 }

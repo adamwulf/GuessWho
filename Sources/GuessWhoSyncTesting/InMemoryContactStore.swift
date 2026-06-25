@@ -51,6 +51,31 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         self.contactsByID = initial
     }
 
+    // MARK: - Authorization
+
+    /// Simulated authorization state. Defaults to `.authorized` so existing
+    /// tests that never opt into a permission flow see a granted store. Tests
+    /// that exercise the gate can drive it via `setAuthorizationStatus`.
+    private var authorizationStatus: StoreAuthorizationStatus = .authorized
+
+    public func contactsAuthorizationStatus() -> StoreAuthorizationStatus {
+        authorizationStatus
+    }
+
+    public func requestContactsAccess() async -> StoreAuthorizationStatus {
+        // Model the OS: a `.notDetermined` store grants on request; an
+        // already-decided store returns its existing verdict unchanged.
+        if authorizationStatus == .notDetermined {
+            authorizationStatus = .authorized
+        }
+        return authorizationStatus
+    }
+
+    /// Test hook — drive the simulated contacts authorization state.
+    public func setAuthorizationStatus(_ status: StoreAuthorizationStatus) {
+        authorizationStatus = status
+    }
+
     public func fetchAll() throws -> [Contact] {
         // §7.4 — bulk path must NOT peek at the sideband. Return whatever the
         // persisted flag says, full stop.
