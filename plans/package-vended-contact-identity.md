@@ -32,7 +32,9 @@
   FavoritesListViewController, plus `emailToContact`) are DELETED; resolution
   goes through `repository.contact(id:)` / `contactIDs(matchingEmail:)` and a
   small new package accessor `contact(guessWhoID:)` (bare link-endpoint /
-  favorite UUID → Contact, O(1), guessWhoID-confirmed) alongside
+  favorite UUID → Contact, O(1) via the `guessWhoIDToLocalID` pointer index after
+  6b2 — no confirm-guard needed, the index is keyed only on real guessWhoIDs)
+  alongside
   `contactID(for:)` (the only sanctioned way for the app to mint a navigation
   token from a Contact, since `ContactID.init` is `package`). Connections,
   attendee/linked-contact taps, and favorites resolve on demand;
@@ -933,12 +935,16 @@ holds the PRE-reconcile contact (`guessWhoID` nil) and `guessWhoIDToLocalID` has
 NO entry for it. A subsequent `contact(guessWhoID:)` / `contact(id:)` guessWhoID
 hop would then miss until the next full `setContacts`. Decision B already says the
 package owns the post-write cache update; 6b2 makes that concrete for the identity
-flip: after a mint, re-fetch the now-canonical record
-(`contactsStore.fetch(localID:)`), write it into `contactsByLocalID[localID]`
-(replacing the stale struct — one copy, no drift), and add
-`guessWhoIDToLocalID[minted] = localID`. One struct write + one pointer add, both
-through the single `setContacts`/rebuild funnel where practical (a one-contact
-in-place update is also fine as long as it touches both maps). Re-entrancy is safe
+flip: after a mint, refresh the affected contact THROUGH THE EXISTING FUNNEL
+(`refreshContact(localID:)` → re-fetch the now-canonical record → `setContacts`/
+rebuild), which re-keys ALL indexes — `contactsByLocalID`, the new
+`guessWhoIDToLocalID`, AND `contactsByEmail` — and fires `@Observable` tracking,
+in one place. Do NOT hand-roll a partial in-place poke that touches only the two
+identity maps (it would skip `contactsByEmail` and the observation). IMPLEMENTATION
+NOTE: 6b's mint writes ALREADY refresh through `refreshContact` after a mint
+(`refreshCacheIfMinted`), so 6b2 adds NO new poke code — it only changes what
+`setContacts` builds (drop the fused index, add the pointer index). Re-entrancy is
+safe
 for the same reason decision B is: reconcile's own `CNContact` write is tagged with
 our `transactionAuthor` and the change-watcher self-excludes it, so the package's
 own poke is not double-applied by an inbound delta.
@@ -964,10 +970,20 @@ own poke is not double-applied by an inbound delta.
   guessWhoID path only chases a pointer into the localID cache, so no stale copy.
 - Parity: the index results equal the old `effectiveID`-index results for a
   fully-reconciled book (no behavior change for the steady state).
+- Transient duplicate-guessWhoID window: when two contacts momentarily share a
+  guessWhoID (pre-Case-D-collapse), `contact(guessWhoID:)` / the guessWhoID branch
+  of `contact(id:)` resolve CONSISTENTLY (last-writer-wins on the pointer — the
+  same last-writer-wins semantics today's mixed index has), so the list-VC
+  `effectiveID` dedup guard still renders one stable row. This pins the one case
+  the steady-state parity test doesn't cover (the window the dedup guard exists to
+  survive).
 
-**Acceptance (6b2):** `contactsByEffectiveID` is gone; the repository holds
-exactly ONE `Contact` cache (`contactsByLocalID`) plus the `guessWhoIDToLocalID`
-POINTER index (+ `contactsByEmail`) — no second copy of any `Contact` struct;
+**Acceptance (6b2):** `contactsByEffectiveID` is gone; the repository's IDENTITY
+lookup holds ONE `Contact` cache (`contactsByLocalID`) plus the
+`guessWhoIDToLocalID` string→string POINTER index — no second guessWhoID-keyed
+copy of a `Contact` (the `contactsByEmail` index still holds Contact copies by
+email, rebuilt wholesale by `setContacts` so it can't drift — that's a separate
+existing index, not part of the identity-lookup duplication 6b2 removes);
 `contact(id:)` resolves a captured `ContactID` across a reconcile re-key with no
 `localID` threaded by the caller; `contact(guessWhoID:)` stays PUBLIC (favorites/
 links resolve bare guessWhoIDs read off disk) and has no confirm-guard; a
@@ -1033,12 +1049,16 @@ violations):
 - `guessWhoID`/`localID` appear ONLY as the enumerated allowed set; grep that
   nothing else matches:
   - `guessWhoID(in:)` (the opened contact's own UUID, Stage 5);
-  - `contact(guessWhoID:)` ONLY at the surviving FAVORITE-resolution sites
-    (`FavoritesListViewController` cell-provider + selection). The
-    LINK-ENDPOINT-resolution uses of `contact(guessWhoID:)` (`ContactDetailView`'s
+  - `contact(guessWhoID:)` is a BLESSED public resolver (6b2: favorites/links
+    persist guessWhoIDs across devices; `ContactID` is not Codable). FAVORITE-
+    resolution uses (`FavoritesListViewController` cell-provider + selection) are
+    allowed permanently. The LINK-ENDPOINT-resolution uses (`ContactDetailView`'s
     `otherContact`, `ConnectionsSection`, `EventDetailView`'s linked-contact tap)
-    MUST move behind the repository link API and are DEFECTS if they survive — do
-    NOT bless all `contact(guessWhoID:)` calls or the grep hides that regression;
+    SHOULD move behind a resolved `links(for:)` that vends the far-endpoint
+    `Contact`/`ContactID` + direction (cleaner end-state — the app never
+    hand-resolves an endpoint) — but per 6b2 this is a TARGET, not a hard identity
+    defect (a surviving link use is acceptable, just less clean). Decide during 6d;
+    do NOT fail the audit solely on a link-path `contact(guessWhoID:)`;
   - the blessed boundary tokens (`boundaryLocalID`/`resolvedLocalID`,
     `model.edited.localID`/`saveLocalID`, the `lookupLocalID` load token) threaded
     into package/SyncService calls;
