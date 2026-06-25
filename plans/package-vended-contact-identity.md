@@ -17,10 +17,12 @@
   `contactsByEmail` indexes; all `contacts` mutations funnel through one
   `setContacts(_:)`; the delta path rebuilds once per batch. Lets Stages 3–4
   delete the five hand-rolled UI-layer contact maps.
-- **Stage 3 (list VCs): IN REVIEW** — first attempt (`f2087ff`) rejected
-  (relied on undocumented diffable `==`-reconfigure + an `appendItems` crash);
-  redesign in progress: identity-only `ContactID` + explicit `reconfigureItems`
-  pass + snapshot dedup.
+- **Stage 3 (list VCs): DONE** (`d3f1a83`, `97c0cb8`, NIT `a2d6bb0`). First
+  attempt relied on undocumented diffable `==`-reconfigure + had an `appendItems`
+  crash and was rejected in review; the shipped redesign makes `ContactID`
+  identity-only and the VCs drive reconfigure explicitly (a `[ContactID: Contact]`
+  last-rendered map) with the snapshot deduped by `effectiveID`. `contactsByLocalID`
+  is gone from both VCs. 428 tests + Catalyst + iPhone-sim builds green.
 - **Stage 4 (navigation/detail/connections/favorites), Stage 5 (visibility
   tighten): NOT STARTED.**
 
@@ -340,7 +342,7 @@ status-binding/`.notDetermined`-seed refinements (`6b463c2`, `fad00f1`,
 in the app target; Catalyst + iPhone-simulator builds green; permission flow
 intact.
 
-### Stage 3 — Migrate list view controllers — IN REVIEW
+### Stage 3 — Migrate list view controllers — DONE (`d3f1a83`, `97c0cb8`, `a2d6bb0`)
 
 1. `ContactsListViewController` and `OrganizationsListViewController` snapshot
    `NSDiffableDataSourceSnapshot<String, ContactID>`. Cell provider fetches the
