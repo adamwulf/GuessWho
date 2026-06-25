@@ -530,11 +530,11 @@ final class SyncService {
 
     // MARK: - Contact ↔ Event links (event side)
     //
-    // The CONTACT-keyed notes/links/event-link methods (`notes/addNote/editNote/
-    // deleteNote(forContactUUID:)`, `contactLinks/addContactLink/
-    // setContactLinkNote/removeContactLink`, `eventLinks(forContactUUID:)`,
-    // `addContactEventLink(contactUUID:)`) moved onto `ContactsRepository` keyed
-    // on `ContactID` in Stage 6. The EVENT-side reads below stay here until the
+    // The CONTACT-keyed notes/links/event-link methods (notes/addNote/editNote/
+    // deleteNote, contactLinks/addContactLink/setContactLinkNote/
+    // removeContactLink, eventLinks, addContactEventLink) moved onto
+    // `ContactsRepository` keyed on `ContactID` in Stage 6 — they no longer take
+    // a bare contact UUID. The EVENT-side reads below stay here until the
     // deferred event-identity migration.
 
     func contactLinks(forEventUUID uuid: String) -> [Link] {

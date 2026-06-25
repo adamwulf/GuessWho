@@ -889,7 +889,7 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func connectionRow(_ link: ContactLink) -> some View {
-        if let uuid = contactUUID, let direction = link.direction(forContactUUID: uuid) {
+        if let contact, let direction = link.direction(for: contact.contactID) {
             LinkRow(
                 link: link,
                 otherContact: otherContact(for: direction),
@@ -1006,9 +1006,10 @@ struct ContactDetailView: View {
     /// reconcile mints the UUID, whereas `self.contact` reflects the
     /// post-mint record. Semantics are identical to the former
     /// `service.guessWhoUUID(in:)`: nil for an un-reconciled contact (NEVER the
-    /// localID fallback). Still needed for the bare-UUID seams that have no
-    /// repository home: link-direction classification, the event-link cache
-    /// refresh (an event-surface call), and the favorite observable read.
+    /// localID fallback). Still needed for the favorite observable read — the
+    /// @Observable favorites cache is keyed on the bare UUID, so swapping it for
+    /// a ContactID would lose star reactivity (link-direction classification no
+    /// longer reads this; it compares via the package's `SidecarKey.matches`).
     private var contactUUID: String? {
         guard let contact else { return nil }
         return repository.guessWhoID(in: contact)

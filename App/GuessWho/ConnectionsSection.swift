@@ -18,27 +18,19 @@ enum LinkDirection {
 }
 
 extension ContactLink {
-    /// Classifies this link relative to a contact UUID. Returns nil if the
-    /// contact is neither endpoint (shouldn't happen for links surfaced
+    /// Classifies this link relative to the opened `contactID`. Returns nil if
+    /// the contact is neither endpoint (shouldn't happen for links surfaced
     /// from `links(at:)`, defensive guard).
     ///
-    /// IDENTITY CARVE-OUT (Stage 6e, Task C — blessed, NOT a defect): `uuid` is
-    /// the OPENED contact's OWN reconciled `guessWhoID` (the Stage-5
-    /// `repository.guessWhoID(in:)` value — a legitimate app-side UUID per 6b2's
-    /// `contact(guessWhoID:)` ruling), used purely to label which end of this
-    /// already-fetched `ContactLink` is the far contact. It READS the package's
-    /// `SidecarKey` endpoints (`endpointA`/`endpointB`) and constructs NONE; it
-    /// translates no identity. Moving this behind a resolved `links(for:)` API was
-    /// assessed in 6e and rejected as more than modest — see the plan's Acceptance
-    /// `LinkDirection` carve-out.
-    func direction(forContactUUID uuid: String) -> LinkDirection? {
-        let target = uuid.lowercased()
-        if endpointA.kind == .contact, endpointA.id == target {
-            return .outgoing(other: endpointB)
-        }
-        if endpointB.kind == .contact, endpointB.id == target {
-            return .incoming(other: endpointA)
-        }
+    /// NO app-side identity compare (the former Stage-6e carve-out is RETIRED):
+    /// the identity comparison lives in the package via `SidecarKey.matches(_:)`,
+    /// which compares the endpoint key against `contactID.guessWhoID` (a `package`
+    /// field the app can't read). This method only READS the package's already-
+    /// fetched `SidecarKey` endpoints (`endpointA`/`endpointB`) to label which end
+    /// is the far contact — it constructs no key and reads no bare UUID.
+    func direction(for contactID: ContactID) -> LinkDirection? {
+        if endpointA.matches(contactID) { return .outgoing(other: endpointB) }
+        if endpointB.matches(contactID) { return .incoming(other: endpointA) }
         return nil
     }
 }

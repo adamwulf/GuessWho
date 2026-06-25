@@ -194,6 +194,14 @@ GuessWho IDs on one unified contact, GuessWhoSync rewrites affected sidecar
 link endpoints from the losing ID to the canonical winning ID; it never rewrites
 or interprets name-only Contacts relationships as hard links.
 
+To classify which end of a fetched link is the OPENED contact (near) and which
+is the far contact, the app asks the package — `SidecarKey.matches(_ contactID:)`
+tests an endpoint key against `contactID.guessWhoID` (a `package` field). The app
+never reads a bare GuessWho UUID to do this comparison itself; it passes a
+`ContactID` and the package answers. (The app still resolves the FAR endpoint's
+GuessWho UUID to a `Contact` via `contact(guessWhoID:)` — a durable link-endpoint
+read, per the table above.)
+
 ## The two package-internal identifiers
 
 These are the two identifiers the **package** works with underneath a

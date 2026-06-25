@@ -86,6 +86,25 @@
   Sources/ + Tests/ = zero code refs (one historical comment in
   `GuessWhoSync.swift` noting the 6f reversal). 455 tests (was 460, −5 deleted
   `prepare_*`) + Catalyst + iPhone-17-sim green.
+- **Cleanup #2 (retire the link-direction `forContactUUID` carve-out): DONE
+  (2026-06-25).** Built on cleanup #1's `Contact.contactID`. Moved the contact-link
+  near/far IDENTITY compare INTO the package: added `SidecarKey.matches(_
+  contactID:)` (public; `kind == .contact` && `id == contactID.guessWhoID`, both
+  canonical-lowercase; false for an unreconciled `ContactID` or an `.event`/`.link`
+  kind — lives in the package because `ContactID.guessWhoID` is `package`) + 6 new
+  `SidecarKeyTests` (`matches` true for the right contact key/reconciled ID incl.
+  case-insensitivity; false for a different UUID, an unreconciled ID, and `.event`/
+  `.link` kinds). Re-keyed `ContactLink.direction(forContactUUID: String)` →
+  `direction(for contactID: ContactID)`, body now `endpointA.matches(contactID)` /
+  `endpointB.matches(contactID)` — NO app-side identity-string compare. Call site
+  `ContactDetailView.connectionRow` passes `contact.contactID` (was
+  `contactUUID`); `contactUUID` STAYS for favorites (its only remaining consumer).
+  `grep -rn "forContactUUID" App/` is now ZERO (also reworded one stale `SyncService`
+  comment that named a dead `forContactUUID:` signature). Acceptance/audit bullets
+  above updated: the `forContactUUID` carve-out is RETIRED; only favorites' bare-UUID
+  read (`guessWhoID(in:)`/`contactUUID`) + far-endpoint `contact(guessWhoID:)`
+  resolution remain. Favorites/`isContactFavorited` UNTOUCHED (deferred — swapping
+  it for a `ContactID` would lose @Observable star reactivity).
 - **Stage 7 (EventID + event-identity boundary): DEFERRED** — the events analogue
   of Stages 1–6; the `EventsRepository`-into-package migration given a stage
   number. Not started; scope TBD after Stage 6 lands.
@@ -620,9 +639,13 @@ this is the sequencing:
   Two package accessors added for the event-link refresh path
   (`linkedEventUUIDs(for:)`, `eventEndpointUUID(of:for:)`). NOTE: the
   link-direction/far-endpoint resolution (`ConnectionsSection.LinkDirection`,
-  `direction(forContactUUID:)`, `contact(guessWhoID:)` link uses) is KEPT — per
-  6b2 it is a soft target, not a hard defect, and moving it behind a resolved
-  `links(for:)` was not low-friction. 456 tests + Catalyst + iPhone-sim green.
+  `direction(forContactUUID:)`, `contact(guessWhoID:)` link uses) was KEPT at 6e
+  — per 6b2 a soft target, not a hard defect. SUPERSEDED by cleanup #2: the
+  near/far IDENTITY compare moved INTO the package (`SidecarKey.matches(_
+  contactID:)`); `direction(forContactUUID:)` → `direction(for contactID:)`, so
+  the app no longer reads a bare UUID for link direction (far-endpoint resolution
+  via `contact(guessWhoID:)` and the favorites UUID read remain). 456 tests +
+  Catalyst + iPhone-sim green.
   Original sub-phase plan:
 - **6d — Migrate the app consumers, one at a time** (Stage-4-style sweep), each
   repointing a store/view at the repository API and deleting the matching
@@ -1095,43 +1118,46 @@ carve-out; no new retained package state is added. This deletes the
 Acceptance (the grep must EXCLUDE the sanctioned Stage-4/5 accessors and blessed
 boundary tokens, or it can't pass — those are the agreed identity surface, not
 violations):
-- zero `forContactUUID` in the app target, EXCLUDED (allowed): code COMMENTS
-  that merely name the moved methods, and the BLESSED link-direction carve-out
-  `ContactLink.direction(forContactUUID:)` (`ConnectionsSection.swift`) plus its
-  one caller (`ContactDetailView.connectionRow`). See the `LinkDirection`
-  carve-out in the next bullet — this `forContactUUID:` takes the OPENED
-  contact's own blessed `guessWhoID` (the Stage-5 `guessWhoID(in:)` value) purely
-  to label which end of an already-fetched `ContactLink` is the far contact; it
-  constructs no `SidecarKey` and translates no identity;
+- zero `forContactUUID` in the app target — now LITERALLY zero (no carve-out).
+  Cleanup #2 RETIRED the last `forContactUUID` use: `ContactLink.direction(
+  forContactUUID:)` was re-keyed to `direction(for contactID:)` and compares via
+  the new package `SidecarKey.matches(_ contactID:)`, which tests the endpoint key
+  against `contactID.guessWhoID` (a `package` field the app can't read). The
+  former "code COMMENTS that name the moved methods" exception is also gone — the
+  one stale `SyncService` comment was reworded to not name a dead `forContactUUID:`
+  signature. `grep -rn "forContactUUID" App/` MUST be 0;
 - zero app-side `SidecarKey(.contact …)` CONSTRUCTION and zero app-side
   CONTACT-side `SidecarKey`-typed values / `LinkDirection`-style endpoint enums.
   EXCLUDED from the count (allowed): `SidecarKey.parseGuessWhoContactURL` (not
   construction); and `SidecarKey(.event …)` construction on the OUT-OF-SCOPE
   event surface (e.g. in `EventDetailView`) — the event identity boundary is
   DEFERRED TO PHASE 7 (see below), so event-side `SidecarKey` survives Stage 6 by
-  design; AND the BLESSED `LinkDirection` enum + `direction(forContactUUID:)` +
-  `ContactDetailView.otherContact(for:)` (6e, Task-C decision). DECISION: 6d kept
-  these as a soft target; 6e formally blesses them rather than building the
-  cleaner resolved `links(for:)` API, because Option (1) — a package method
-  vending the far-endpoint `Contact`/`ContactID` + direction — is MORE than modest
-  (it re-keys `LinkRow`, the `ActivityItem.connection` rendering, the
-  `editingLinkID`/`draftLinkNote` edit state, and the begin/commit/delete/setNote
-  callbacks in `ContactDetailView`, and needs a new package resolved-link type),
-  while these sites are NOT an identity-translation defect: `LinkDirection` wraps
-  the package `ContactLink`'s already-resolved `SidecarKey` endpoints (it READS
-  `endpointA`/`endpointB`, constructs none), `direction(forContactUUID:)`
-  classifies near/far using the opened contact's OWN blessed `guessWhoID` (per
-  6b2's `contact(guessWhoID:)` ruling, a legitimate app-side UUID), and
-  `otherContact(for:)` resolves the far endpoint through the blessed public
-  `contact(guessWhoID:)` resolver. No `.contact` `SidecarKey` is constructed and
-  no identity is translated, so the audit MUST NOT fail on them;
+  design; AND the `LinkDirection` enum + `direction(for contactID:)` +
+  `ContactDetailView.otherContact(for:)`. UPDATE (cleanup #2): the link-direction
+  PATH IS NOW CLEAN — the former app-side near/far identity compare moved INTO the
+  package via `SidecarKey.matches(_ contactID:)`. `direction(for contactID:)` takes
+  a `ContactID` and calls `endpointA.matches(contactID)` / `endpointB.matches(
+  contactID)`; the app NEVER reads a bare contact UUID for this and NEVER compares
+  identity strings. The `LinkDirection` enum still wraps the package `ContactLink`'s
+  already-resolved `SidecarKey` endpoints (it READS `endpointA`/`endpointB`,
+  constructs none) purely to name which end is far. `otherContact(for:)` still
+  resolves the far endpoint through the blessed public `contact(guessWhoID:)`
+  resolver (favorites/link resolution, see below). No `.contact` `SidecarKey` is
+  constructed and no identity is translated app-side, so the audit MUST NOT fail
+  on them;
 - zero `reconcile` in app contact CODE outside the debug carve-out. EXCLUDED:
   the word `reconcile` appearing in CODE COMMENTS (e.g. `ContactsListViewController`/
   `OrganizationsListViewController`/`ContactEditView` comments that merely mention
   reconciliation) — grep for `reconcile` as an IDENTIFIER/call, not in comments;
 - `guessWhoID`/`localID` appear ONLY as the enumerated allowed set; grep that
   nothing else matches:
-  - `guessWhoID(in:)` (the opened contact's own UUID, Stage 5);
+  - `guessWhoID(in:)` (the opened contact's own UUID, Stage 5). After cleanup #2
+    its ONLY app consumer is the FAVORITE observable read in `ContactDetailView`
+    (`contactUUID` → `favoritesStore.isFavorite(kind:.contact, id:)`): the
+    @Observable favorites cache is keyed on the bare UUID, so swapping it for a
+    `ContactID` would lose star reactivity — a separate, deferred task. Link-
+    direction NO LONGER reads `guessWhoID(in:)` (it compares via the package
+    `SidecarKey.matches`);
   - `contact(guessWhoID:)` is a BLESSED public resolver (6b2: favorites/links
     persist guessWhoIDs across devices; `ContactID` is not Codable). FAVORITE-
     resolution uses (`FavoritesListViewController` cell-provider + selection) are
@@ -1140,10 +1166,11 @@ violations):
     resolved `links(for:)` that vends the far-endpoint `Contact`/`ContactID` +
     direction (cleaner end-state — the app never hand-resolves an endpoint) — but
     per 6b2 this is a TARGET, not a hard identity defect (a surviving link use is
-    acceptable, just less clean). DECIDED in 6e (Task C): KEPT as-is — Option (1)
-    is more than modest and these uses translate no identity (see the
-    `LinkDirection` carve-out above). The audit does NOT fail on a link-path
-    `contact(guessWhoID:)`;
+    acceptable, just less clean). KEPT as-is — Option (1) is more than modest and
+    these uses translate no identity. NOTE: the NEAR/FAR CLASSIFICATION that used
+    to ride alongside this (`direction(forContactUUID:)`) is RETIRED by cleanup #2
+    — it now compares via the package `SidecarKey.matches`. The audit does NOT fail
+    on a link-path `contact(guessWhoID:)` (far-endpoint resolution only);
   - the blessed boundary tokens (`boundaryLocalID`/`resolvedLocalID`,
     `model.edited.localID`/`saveLocalID`, the `lookupLocalID` load token) threaded
     into package/SyncService calls;
@@ -1191,7 +1218,9 @@ design TBD when Stage 6 lands.
    covered.
 4. Static `localID` audit per Stage 5 acceptance, plus the Stage 6 audit:
    `grep` the app target for `forContactUUID`, app-side `SidecarKey(` construction,
-   `reconcile`, and `guessWhoID` — every hit must fall in the ALLOWED set
+   `reconcile`, and `guessWhoID`. `forContactUUID` must now be LITERALLY ZERO
+   (cleanup #2 retired the last use — it is `direction(for contactID:)` now); every
+   `SidecarKey(`/`reconcile`/`guessWhoID` hit must fall in the ALLOWED set
    enumerated in the Acceptance above (sanctioned accessors, blessed boundary
    tokens, empty seed, debug carve-out); anything outside that set is a defect.
 5. Review cycle: identity correctness (one canonical UUID per row, Case-D
