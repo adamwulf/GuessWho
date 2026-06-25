@@ -40,6 +40,16 @@
   (favorites/notes/links binding) and the debug section — Stage 5 owns its
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
+- **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
+  PLANNED, reviewed twice, ready to implement.** Split into sub-phases 6a
+  (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
+  ContactID-keyed API) → 6c (`prepareContactForDetail`) → 6d (migrate app
+  consumers) → 6e (audit). Concurrency: accept double-mint, Case-D collapses it.
+  Favoriting an unreconciled contact becomes allowed (package reconciles then
+  saves). Debug reconcile/sidecar readout dropped (no new retained package state).
+- **Stage 7 (EventID + event-identity boundary): DEFERRED** — the events analogue
+  of Stages 1–6; the `EventsRepository`-into-package migration given a stage
+  number. Not started; scope TBD after Stage 6 lands.
   The VIEW no longer calls `service.guessWhoUUID(in:)`: a new package accessor
   `ContactsRepository.guessWhoID(in: Contact) -> String?` (a PURE function of the
   passed contact returning `ContactID(contact:).guessWhoID` — nil when
@@ -523,23 +533,30 @@ this is the sequencing:
 
 - **6a — Foundation (package only).** Wire the `GuessWhoSync` engine into
   `ContactsRepository` (Design step 0) and add the internal resolve-or-mint /
-  reconcile-on-write primitive (Design step 2, incl. the per-key locking +
-  concurrency guard). No public API change, no app change yet. Flip
+  reconcile-on-write primitive (Design step 2, incl. the accept-double-mint /
+  Case-D-collapses-it concurrency stance). No public API change, no app change yet. Flip
   `reconcileContactIdentity` to `internal` here, keeping the existing direct-call
   tests. **Everything else depends on 6a.**
 - **6b — Vend the `ContactID`-keyed read/write API** on the repository (Design
   step 1) — `notes/links/eventLinks/favorite` verbs, plain-named, reconcile-on-
   write internally, package owns the post-write cache update (decision B). Package
   tests (Tests section). Still no app migration.
-- **6c — `prepareContactForDetail` (decision A) + the debug `lastReconcileOutcome`
-  vend.** Self-contained package additions; depends on 6a.
+- **6c — `prepareContactForDetail` (decision A).** Self-contained package
+  addition; depends on 6a. (The prior draft's debug `lastReconcileOutcome` vend is
+  DROPPED — see Debug section.)
 - **6d — Migrate the app consumers, one at a time** (Stage-4-style sweep), each
   repointing a store/view at the repository API and deleting the matching
   `SyncService` contact-sidecar method: `NotesStore` → `ContactLinksStore` →
   contact-favorite path → `ContactDetailView` → `ConnectionsSection` /
   `EventDetailView` (drop their `reconcileIfNeeded`). Depends on 6b (+6c for the
   detail view). The per-consumer pieces are largely independent once the shared
-  deletions are staged — can parallelize like Stage 4 did.
+  deletions are staged — can parallelize like Stage 4 did. CAVEAT: the couplings
+  are bigger than "one store at a time" implies — changing `NotesStore`/
+  `ContactLinksStore` constructors (they currently take a `contactUUID: String`)
+  drags `ContactDetailView.reload()` (which builds them), and `ConnectionsSection`'s
+  `onSave` callback must change to carry a `ContactID` not a UUID string. Treat
+  each store + the views that construct it as one migration unit, not independent
+  files.
 - **6e — Tighten + audit.** Final identity audit with the corrected acceptance
   grep (below), confirm `SyncService` holds no contact-identity translation,
   remove any now-dead wrappers.
@@ -622,10 +639,16 @@ sees it.
    that. The `GuessWhoSync` engine lives PRIVATELY in `SyncService` (`:33`). So the
    repository currently CANNOT reconcile or write a sidecar — the engine isn't
    wired to it. Step 0 changes `ContactsRepository.init` to also take the
-   `GuessWhoSync` engine (a `private let`), and updates `makeContactsRepository()`
-   to pass it. This is real architecture (a new dependency on the repository), not
-   a relocation — it must land before any reconcile-on-write / sidecar method can
-   exist on the repository. Package-only; no app behavior change yet.
+   `GuessWhoSync` engine and updates `makeContactsRepository()` to pass it. This is
+   real architecture (a new dependency on the repository), not a relocation — it
+   must land before any reconcile-on-write / sidecar method can exist on the
+   repository. Package-only; no app behavior change yet.
+   THE ENGINE IS OPTIONAL: `SyncService.sync` is `GuessWhoSync?` — nil in the
+   `.unavailable` storage state (no writable sidecar root). So the repository takes
+   `GuessWhoSync?`, and EVERY new sidecar method must graceful-degrade when it's
+   nil: reads return empty/false, writes no-op (or surface the existing
+   `SidecarUnavailableError` path), `prepareContactForDetail` does nothing. Mirror
+   how `SyncService` already guards its sidecar calls on `guard let sync`.
 
 1. **Repository vends a `ContactID`-keyed contact API (plain verbs, no "sidecar"
    in the name).** On `ContactsRepository`, add the contact operations keyed on
@@ -654,20 +677,36 @@ sees it.
    trigger fires through the public write API; do NOT replace the direct tests
    with write-routed ones (that would lose Case-D coverage).
 
-   CONCURRENCY: two concurrent writes to the SAME unreconciled `ContactID` must
-   not double-mint across the `await` in resolve-or-mint. The orchestrator already
-   serializes per-key via `PerKeyLockTable`/`withCaseDLocks`; the resolve-or-mint
-   must hold the per-(contact-key) lock across the read-check-reconcile-write so a
-   second writer sees the freshly-minted UUID, not nil. The exposed path is the
-   contact-link write (reconciles BOTH endpoints) — order the two endpoint locks
-   deterministically (as Case-D already does) to avoid deadlock. Call this out;
-   add a concurrent-write test.
+   CONCURRENCY (decision: ACCEPT double-mint; Case-D collapses it — do NOT try to
+   lock across the await). Two truly-concurrent writes to the SAME unreconciled
+   `ContactID` could each mint a UUID before the other's write lands, because
+   resolve-or-mint must `await contacts.fetch` before minting and the orchestrator's
+   per-key locks (`PerKeyLockTable.withLock`, `withCaseDLocks`) are SYNCHRONOUS
+   `NSLock`s — you CANNOT hold one across that `await`, so "hold the per-key lock
+   across read-check-reconcile-write" is impossible. Rather than add async
+   serialization machinery (a per-contact actor / in-flight `Task` dedup), we
+   ACCEPT the rare double-mint: it requires two genuinely-simultaneous writes to a
+   never-reconciled contact, and the system's existing **Case-D reconciliation**
+   is exactly the mechanism that collapses a contact carrying multiple GuessWho
+   UUIDs onto one canonical ID (and rewrites any link endpoints). So a double-mint
+   is self-healing by design. The plan makes NO "no double-mint" guarantee; it
+   guarantees convergence via Case-D. (A future phase may add async serialization
+   if double-mint churn ever proves measurable; not now.)
 
-3. **Reads do NOT reconcile.** `notes(contactID:)` / `contactLinks(contactID:)` /
-   `isFavoriteContact` return empty/false when `id.guessWhoID` is nil — an
-   unreconciled contact has no sidecar yet, so there is nothing to read. This
-   keeps reconcile firing ONLY on write and satisfies the existing "no silent
-   write-sweep on read" Non-goal for free.
+3. **Reads do NOT reconcile; writes DO.** READS — `notes(for:)` / `links(for:)` /
+   `isFavorite(_:)` — return empty/false when `id.guessWhoID` is nil (an
+   unreconciled contact has no sidecar yet, nothing to read). WRITES —
+   `addNote`/`addLink`/`toggleFavorite(_:)` — resolve-or-mint (step 2). This keeps
+   reconcile firing ONLY on write and satisfies the "no silent write-sweep on read"
+   Non-goal for free.
+
+   FAVORITING AN UNRECONCILED CONTACT IS ALLOWED (Adam — intended behavior CHANGE,
+   not a silent one). Today the favorite button is gated
+   `.disabled(contactUUID == nil)`, so you cannot favorite a never-touched contact.
+   Under reconcile-on-write that gate is REMOVED: `toggleFavorite(_:)` is a write,
+   so the package reconciles (mints the UUID) THEN saves the favorite, transparent
+   to the caller. The app always allows favoriting; the package handles identity.
+   Call this out as a deliberate UX improvement in the 6d commit.
 
 4. **Detail-open reconcile stays — moved behind a package call (decision A).**
    `ContactDetailView.performReconcile()` exists so OPENING a never-touched
@@ -728,15 +767,18 @@ deferred `EventsRepository` migration and a home for the observable permission
 state — NOT this stage. Stage 6's claim is narrower and exact: `SyncService` no
 longer performs ANY contact-identity translation.
 
-#### Debug carve-out (the one thread that can't be cut)
+#### Debug section
 
-The contact-detail Debug section reads `IdentityReconcileReport` (`:729-752`) and
-the raw sidecar envelope (`sidecar(for:)`). Per `CLAUDE.md` the debug surface is
-an explicit carve-out where `reconcile`/`sidecar` vocabulary is allowed. Since the
-app no longer kicks off reconcile, the package must VEND the last outcome for a
-`ContactID` for debug display (e.g. `package func lastReconcileOutcome(for: ContactID)`)
-rather than returning it from an app-initiated call. Debug-only; not on any
-user-facing path.
+DECISION (Adam): DROP the debug-only reconcile/sidecar readout in Stage 6. Today
+the contact-detail Debug section shows the `IdentityReconcileReport.ContactOutcome`
+of the reconcile the VIEW kicked off, plus the raw sidecar envelope (`sidecar(for:)`).
+Once reconcile is a package-internal side effect the app no longer drives, that
+report has no app-side source — and rather than retain new per-contact package
+state (`lastReconcileOutcome`) just to feed a debug row, we simply remove those
+debug rows. The cheap, stateless debug bits that don't depend on an app-driven
+reconcile (e.g. the `localID` display) MAY stay as-is under the `CLAUDE.md` debug
+carve-out; no new retained package state is added. This deletes the
+`lastReconcileOutcome` API the prior draft proposed and its lifecycle question.
 
 #### Tests
 
@@ -754,10 +796,17 @@ Acceptance (the grep must EXCLUDE the sanctioned Stage-4/5 accessors and blessed
 boundary tokens, or it can't pass — those are the agreed identity surface, not
 violations):
 - zero `forContactUUID` in the app target;
-- zero app-side `SidecarKey(` CONSTRUCTION (calls to `SidecarKey.parseGuessWhoContactURL`
-  and the like are not construction — exclude them) and zero app-side
-  `SidecarKey`-typed values / `LinkDirection`-style endpoint enums;
-- zero `reconcile` in contact code outside the debug carve-out;
+- zero app-side `SidecarKey(.contact …)` CONSTRUCTION and zero app-side
+  CONTACT-side `SidecarKey`-typed values / `LinkDirection`-style endpoint enums.
+  EXCLUDED from the count (allowed): `SidecarKey.parseGuessWhoContactURL` (not
+  construction); and `SidecarKey(.event …)` construction on the OUT-OF-SCOPE
+  event surface (e.g. in `EventDetailView`) — the event identity boundary is
+  DEFERRED TO PHASE 7 (see below), so event-side `SidecarKey` survives Stage 6 by
+  design;
+- zero `reconcile` in app contact CODE outside the debug carve-out. EXCLUDED:
+  the word `reconcile` appearing in CODE COMMENTS (e.g. `ContactsListViewController`/
+  `OrganizationsListViewController`/`ContactEditView` comments that merely mention
+  reconciliation) — grep for `reconcile` as an IDENTIFIER/call, not in comments;
 - `guessWhoID`/`localID` appear ONLY as: the sanctioned repository accessors
   (`contact(guessWhoID:)`, `guessWhoID(in:)`), the blessed boundary tokens
   (`boundaryLocalID`/`resolvedLocalID` threaded into package calls), the empty
@@ -770,6 +819,20 @@ violations):
 - opening a never-written contact still stamps/repairs its identity; writing a
   note/link/contact-favorite to a fresh contact works end-to-end with no app-side
   reconcile or reload dance.
+
+### Stage 7 — `EventID` + event-identity boundary (DEFERRED, the events analogue)
+
+Stage 6 deliberately leaves the EVENT identity boundary half-migrated: the app
+still constructs `SidecarKey(.event …)`, the contact↔event link keeps a bare
+event-UUID endpoint, and event sidecar ops (`eventNotes`/`eventTags`/event links/
+event lifecycle) stay on `SyncService` keyed on UUID strings. The Stage 6
+acceptance grep ALLOWS the event-side `SidecarKey`/UUID surface for exactly this
+reason. Stage 7 does for events what Stages 1–6 did for contacts: vend an opaque
+`EventID`, move `EventsRepository` into the package, internalize event reconcile/
+adoption, and re-key the event sidecar API on `EventID` so the app speaks only
+`Event` + `EventID`. This is the separately-tracked `EventsRepository`-into-package
+migration (Non-goals) given a stage number; it is NOT part of Stage 6. Scope and
+design TBD when Stage 6 lands.
 
 ## Verification
 
