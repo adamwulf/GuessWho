@@ -488,6 +488,53 @@ public final class ContactsRepository: NSObject {
         return newState
     }
 
+    // MARK: - Detail-open reconcile (Stage 6c, decision A)
+    //
+    // The on-OPEN reconcile/repair trigger. The app calls this BLINDLY on detail
+    // open (replacing `ContactDetailView.performReconcile()`, which did
+    // `service.reconcile(localID:)` → `repository.refreshContact` → reload). It
+    // runs the four-case `reconcileContactIdentity` INTERNALLY — stamping a
+    // never-touched contact's `guesswho://` URL (Case A) and repairing
+    // malformed/duplicate URLs (Cases B/C/D) — then pokes the cache through the
+    // `setContacts` funnel so the view's captured `ContactID` re-resolves (6b2:
+    // a reconcile-on-open mint re-keys the single `Contact` cache + pointer index,
+    // and `contact(id:)` chases the guessWhoID pointer or falls back to localID).
+    // The app never passes or sees a `localID`, never receives a reconcile report,
+    // and never names "reconcile": it hands its `ContactID`, awaits, then reloads
+    // off the SAME `id`.
+
+    /// Reconcile/repair the contact identified by `id` on detail OPEN, then
+    /// refresh the repository cache so a subsequent `contact(id:)` with the
+    /// (possibly newly-reconciled) `ContactID` resolves to the canonical record.
+    ///
+    /// Uses `id.localID` (the Contacts-boundary token) INTERNALLY only — the
+    /// caller never constructs or sees a `localID`. `async` but NOT `throws`: the
+    /// app calls it blindly on load, so it degrades gracefully rather than
+    /// requiring a `try` at the call site —
+    /// - engine nil (`.unavailable` storage): nothing to reconcile/repair → no-op;
+    /// - reconcile/refresh error: non-fatal for an OPEN (the view still renders the
+    ///   contact, just not repaired) → record `lastError` for diagnostics, do not
+    ///   throw.
+    ///
+    /// Vends NO reconcile report: the debug `lastReconcileOutcome` readout is
+    /// DROPPED per the plan's Debug section.
+    public func prepareContactForDetail(_ id: ContactID) async {
+        // Engine nil (`.unavailable` storage) → nothing to reconcile/repair; no-op.
+        guard let sync else { return }
+        do {
+            _ = try await sync.reconcileContactIdentity(localID: id.localID)
+            // Funnel poke → cache reflects the new identity (6b2): a Case-A mint
+            // re-keys the single `Contact` cache + adds the guessWhoID→localID
+            // pointer, so the view's captured `ContactID` resolves afterward.
+            await refreshContact(localID: id.localID)
+        } catch {
+            // Reconcile/refresh failure is non-fatal for a detail OPEN — the view
+            // still renders the contact (just not repaired). Record `lastError`
+            // for diagnostics, do not throw (the app calls this blindly on load).
+            lastError = "prepare-for-detail failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Decision B helper
     //
     // Notes/links/favorite writes do NOT alter the cached `Contact` record —
