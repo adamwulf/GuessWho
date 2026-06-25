@@ -25,6 +25,11 @@ private actor FailAfterSeedContactStore: ContactStoreProtocol {
         return seed
     }
 
+    // The authorization surface is never consulted by these no-I/O cache tests;
+    // this double models an unavailable store, so it reports "never asked".
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus { .notDetermined }
+    func requestContactsAccess() async -> StoreAccessResult { StoreAccessResult(status: .denied) }
+
     func fetch(localID: String) async throws -> Contact? { throw StoreUnavailable() }
     func save(_ contact: Contact) async throws { throw StoreUnavailable() }
     func delete(localID: String) async throws { throw StoreUnavailable() }
