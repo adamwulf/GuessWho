@@ -1,9 +1,103 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.76471,0.81569,1.00000"
+    "solid" : "srgb:0.89271,0.92847,1.00000,1.00000"
   },
   "groups" : [
-
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "solid" : "display-p3:0.15294,0.14902,0.14118,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "tie.svg",
+          "name" : "tie",
+          "position" : {
+            "scale" : 3,
+            "translation-in-points" : [
+              0,
+              16
+            ]
+          }
+        }
+      ],
+      "position" : {
+        "scale" : 2.45,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.06667,0.24414,0.80000,1.00000"
+          },
+          "hidden" : false,
+          "image-name" : "lapel-hole.svg",
+          "name" : "lapel-hole",
+          "position" : {
+            "scale" : 2.95,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "position" : {
+        "scale" : 2.45,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "solid" : "display-p3:0.15294,0.14902,0.14118,1.00000"
+          },
+          "image-name" : "lapels 2.svg",
+          "name" : "lapels 2",
+          "position" : {
+            "scale" : 7.45,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
   ],
   "supported-platforms" : {
     "circles" : [

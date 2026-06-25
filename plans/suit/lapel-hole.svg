@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 150">
+<!-- Fills the entire canvas EXCEPT the inner lapel shape, which is cut out as a hole (fill-rule: evenodd). -->
+  <path fill="#0B0A0B" fill-rule="evenodd" d="M0 0 H150 V150 H0 Z M47.9 4.7 L102.1 4.7 C102.5 8.5 103 15.5 103 20.1 C103.2 35.8 101.6 44 98.7 56.2 L77.1 145.3 L72.9 145.3 L51.3 56.2 C46.8 35.8 48.4 44 47 20.1 C47 15.5 47.5 8.5 47.9 4.7 Z"/>
+</svg>
