@@ -192,7 +192,10 @@ final class ContactsListViewController: UIViewController {
         // sharing an effectiveID are now EQUAL (identity-only), and appendItems
         // traps on a duplicate item. Duplicates only occur in the transient
         // pre-reconcile window where two contacts momentarily carry the same
-        // guessWhoID; reconciliation collapses them. First occurrence wins.
+        // guessWhoID; reconciliation collapses them. First occurrence wins for
+        // which token is KEPT, but the cell renders whatever
+        // `repository.contact(id:)` resolves (the index's last-writer for that
+        // effectiveID) — the VC doesn't pick which duplicate contact shows.
         var seen = Set<ContactID>()
         for (letter, contactIDs) in sections {
             let unique = contactIDs.filter { seen.insert($0).inserted }
