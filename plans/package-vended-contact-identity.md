@@ -41,7 +41,7 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  IN PROGRESS — 6a DONE (`7ddd05e`, `0476402`).** Split into sub-phases 6a
+  IN PROGRESS — 6a + 6b DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6c (`prepareContactForDetail`) → 6d (migrate app
   consumers) → 6e (audit). 6a wires the engine + favorites store into the
@@ -541,7 +541,7 @@ this is the sequencing:
   Case-D-collapses-it concurrency stance). No public API change, no app change yet. Flip
   `reconcileContactIdentity` to `internal` here, keeping the existing direct-call
   tests. **Everything else depends on 6a.**
-- **6b — Vend the `ContactID`-keyed read/write API** on the repository (Design
+- **6b — Vend the `ContactID`-keyed read/write API — DONE (`bf20afd`).** On the repository (Design
   step 1) — `notes/links/eventLinks/favorite` verbs, plain-named, reconcile-on-
   write internally, package owns the post-write cache update (decision B). Package
   tests (Tests section). Still no app migration.
