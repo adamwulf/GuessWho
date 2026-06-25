@@ -43,17 +43,30 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  IN PROGRESS — 6a + 6b + 6b2 + 6c + 6d DONE.** Split into sub-phases 6a
+  DONE — 6a + 6b + 6b2 + 6c + 6d + 6e all DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6b2 (one `Contact` cache `contactsByLocalID` + a
   `guessWhoIDToLocalID` pointer index — no duplicate `Contact` copies — so
   `contact(id:)` survives a reconcile re-key and `ContactDetailView.resolvedLocalID`
   can be deleted) → 6c (`prepareContactForDetail`) → 6d (migrate app
-  consumers) → 6e (audit). 6a wires the engine + favorites store into the
-  repository. Concurrency: accept double-mint (a practical non-event;
+  consumers) → 6e (tighten + audit). 6a wires the engine + favorites store into
+  the repository. Concurrency: accept double-mint (a practical non-event;
   single-device = harmless orphan, multi-device = Case-D heals).
   Favoriting an unreconciled contact becomes allowed (package reconciles then
   saves). Debug reconcile/sidecar readout dropped (no new retained package state).
+  **6e (`789df6f`, `0625b2c`, `c02cdc9`, `279b02d`) — FINALE:**
+  flipped `reconcileContactIdentity` to `internal` (no app caller remains);
+  fixed the ContactsRepository parallel-test-isolation defect by injecting the
+  NotificationCenter (default `.default`, production refresh unchanged; tests
+  pass a fresh center per instance) — `swift test` parallel now 460/460 reliable
+  across 3 runs; blessed the `LinkDirection` link-path carve-out (Task C
+  decision = Option 2, acceptance bullets updated); NIT cleanups (dead
+  `ReconcileAssignmentFailedError` deleted, stale `saveContact` comment fixed,
+  `toggleFavorite` empty catch now records the error, two new linked-event
+  accessor test cases). FINAL IDENTITY AUDIT PASSES: zero app-side `.contact`
+  `SidecarKey` construction, zero `forContactUUID`/`reconcile`/`guessWhoID` hits
+  outside the enumerated allowed set + the blessed carve-outs. 460 tests +
+  Catalyst + iPhone-17-sim green.
 - **Stage 7 (EventID + event-identity boundary): DEFERRED** — the events analogue
   of Stages 1–6; the `EventsRepository`-into-package migration given a stage
   number. Not started; scope TBD after Stage 6 lands.
@@ -611,9 +624,15 @@ this is the sequencing:
   calls that genuinely need a `CNContact.identifier` — `fetchContactForEditing` /
   `deleteContact` / `fetch` — read it from the loaded `Contact` at the call site;
   they do not need a retained `resolvedLocalID` token.)
-- **6e — Tighten + audit.** Final identity audit with the corrected acceptance
-  grep (below), confirm `SyncService` holds no contact-identity translation,
-  remove any now-dead wrappers.
+- **6e — Tighten + audit — DONE (`789df6f`, `0625b2c`, `c02cdc9`, `279b02d`).**
+  Final identity audit with the corrected acceptance grep (below) PASSES;
+  `reconcileContactIdentity` flipped to `internal` (no app caller); confirmed
+  `SyncService` holds no contact-identity translation; fixed the
+  ContactsRepository parallel-test-isolation defect (injected NotificationCenter,
+  production refresh unchanged, fresh center per test); blessed the
+  `LinkDirection` link-path carve-out (Task C = Option 2); removed the dead
+  `ReconcileAssignmentFailedError` wrapper + other NITs; added linked-event
+  accessor tests. 460 tests + Catalyst + iPhone-sim green.
 
 **Goal.** Finish the identity collapse: the app speaks ONLY `Contact` and
 `ContactID`. Every contact-sidecar operation the app calls takes a `ContactID`,
