@@ -107,10 +107,10 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     // MARK: - Authorization
 
     /// Current contacts authorization. `CNContactStore.authorizationStatus`
-    /// is a static system-state read (not per-instance), so this is
-    /// `nonisolated` — it touches no actor state and so can be read
-    /// synchronously (e.g. for an initial UI render) without hopping onto the
-    /// actor. `.limited` collapses to `.authorized`.
+    /// is a static system-state read (not per-instance), so this witness is
+    /// `nonisolated` — it touches no actor state, so it does no async work and
+    /// satisfies the `async` protocol requirement without a suspension point.
+    /// `.limited` collapses to `.authorized`.
     public nonisolated func contactsAuthorizationStatus() -> StoreAuthorizationStatus {
         Self.mapAuthorization(CNContactStore.authorizationStatus(for: .contacts))
     }

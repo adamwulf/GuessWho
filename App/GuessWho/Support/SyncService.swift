@@ -18,8 +18,8 @@ final class SyncService {
     // authorization type directly — its four cases (`.notDetermined`,
     // `.authorized`, `.denied`, `.restricted`) are exactly what the gate and
     // banners switch on, so there is no app-side enum or mapping to maintain.
-    private(set) var contactsAuthorization: StoreAuthorizationStatus
-    private(set) var eventsAuthorization: StoreAuthorizationStatus
+    private(set) var contactsAuthorization: StoreAuthorizationStatus = .notDetermined
+    private(set) var eventsAuthorization: StoreAuthorizationStatus = .notDetermined
     private(set) var lastError: String?
 
     // Exposed so view-models that mint records carrying a writer ID
@@ -110,21 +110,13 @@ final class SyncService {
             self.favoritesStore = nil
         }
 
-        // Seed the UI-facing state from the adapters' current system status so
-        // the first render is accurate (e.g. a previously-denied user sees the
-        // denied gate immediately, not a flash of "Requesting…"). Both reads
-        // are cheap, instance-independent system-state lookups: the contacts
-        // adapter's is `nonisolated` so it needs no actor hop, and the events
-        // adapter is a plain class. The launch-time request methods refine
-        // this once the user responds.
-        //
-        // Load-bearing: `adapter` MUST be the concrete `CNContactStoreAdapter`
-        // here, not `any ContactStoreProtocol`. The protocol requirement is
-        // `async` (the port is an `Actor`); only the concrete adapter's
-        // `nonisolated` witness lets this non-`async` init read it without
-        // `await`. Retyping `adapter` to the existential would break this call.
-        self.contactsAuthorization = adapter.contactsAuthorizationStatus()
-        self.eventsAuthorization = ekAdapter.eventsAuthorizationStatus()
+        // Authorization starts at `.notDetermined`; `init` does NOT read system
+        // status (an init can't `await`, and an instance-independent status read
+        // here would only buy a single frame before the launch-time request
+        // methods run anyway). `GuessWhoAppDelegate` awaits
+        // `requestContactsAccessIfNeeded()` / `requestEventsAccessIfNeeded()`
+        // immediately after construction, which populates the real status before
+        // first interaction.
     }
 
     func requestContactsAccessIfNeeded() async {
