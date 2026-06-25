@@ -117,15 +117,21 @@ final class SyncService {
         // adapter's is `nonisolated` so it needs no actor hop, and the events
         // adapter is a plain class. The launch-time request methods refine
         // this once the user responds.
+        //
+        // Load-bearing: `adapter` MUST be the concrete `CNContactStoreAdapter`
+        // here, not `any ContactStoreProtocol`. The protocol requirement is
+        // `async` (the port is an `Actor`); only the concrete adapter's
+        // `nonisolated` witness lets this non-`async` init read it without
+        // `await`. Retyping `adapter` to the existential would break this call.
         self.contactsAuthorization = adapter.contactsAuthorizationStatus()
         self.eventsAuthorization = ekAdapter.eventsAuthorizationStatus()
     }
 
     func requestContactsAccessIfNeeded() async {
         // The adapter owns the CNContactStore and runs the request on it,
-        // returning a neutral status (`.limited` already collapsed to
-        // `.authorized`). SyncService maps it to its UI-facing enum and — when
-        // the request THREW (not a plain user-denial) — restores the same
+        // returning the neutral `StoreAuthorizationStatus` the UI binds to
+        // directly (`.limited` already collapsed to `.authorized`). When the
+        // request THREW (not a plain user-denial) we restore the same
         // `lastError` write the pre-adapter code made.
         let result = await contactsAdapter.requestContactsAccess()
         contactsAuthorization = result.status

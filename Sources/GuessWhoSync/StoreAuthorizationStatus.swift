@@ -12,8 +12,9 @@ import Foundation
 ///   `.writeOnly` → `.denied` (write-only access cannot read events, which the
 ///   app treats as no access for its read-driven UI).
 ///
-/// `.notDetermined` is the "never asked" state the app surfaces as
-/// `notRequested` in its UI-facing authorization enums.
+/// `.notDetermined` is the "never asked" state. The app binds to these cases
+/// directly (its gate renders a "Requesting…" placeholder for `.notDetermined`),
+/// so there is no separate UI-facing authorization enum to keep in sync.
 public enum StoreAuthorizationStatus: Sendable, Equatable {
     case notDetermined
     case authorized
