@@ -25,6 +25,11 @@ original draft — they are folded into the sections that follow:
 2. **The reconciliation transition (`localID`-keyed → `guessWhoID`-keyed) is an
    accepted diffable delete+insert**, rare (once per contact) and symmetric with
    how events adopt a sidecar (`Event.stableID(forEventKitID:)`). No alias map.
+3. **`ContactID` is a FULLY OPAQUE token — every stored property is `package`,
+   zero public.** The app can hold/compare/fetch-with it but cannot read any
+   field, so it can't be misused as a "contact-light". Diffing still works (the
+   `==`/`hash` run inside the package); the cell provider renders from the
+   `Contact` it fetches via the synchronous `repository.contact(id:)` cache read.
 
 ## Why
 
@@ -58,54 +63,37 @@ grow.
 
 ## Core idea
 
-As shipped (`Sources/GuessWhoSync/ContactID.swift`):
+As shipped (`Sources/GuessWhoSync/ContactID.swift`). `ContactID` is a FULLY
+OPAQUE token — EVERY stored property is `package`, ZERO public. The app holds it,
+compares it (for diffing), and hands it back to fetch the real `Contact`; it
+CANNOT read any field off it, so the token can't be misused as a "contact-light".
+The conformances are public so the app can put it in a diffable snapshot / `Set`;
+the DATA is sealed.
 
 ```swift
-/// Opaque, stable identity for a contact as the UI sees it.
-///
-/// A `ContactID` wraps BOTH identifiers and ALWAYS materializes:
-/// - `localID` (always present) is the fallback identity before a contact is
-///   reconciled — a contact with no `guesswho://` URL has no sidecar data to
-///   key on, so keying its row on the transient `localID` is harmless and lets
-///   it appear in the list immediately.
-/// - `guessWhoID` (OPTIONAL) is nil until the contact carries a valid GuessWho
-///   URL; once reconciliation mints/collapses identity it populates and BECOMES
-///   the identity.
-///
-/// Effective identity = `guessWhoID ?? localID`. Both `==` and `hash(into:)`
-/// key on it (via `effectiveID`) so they cannot drift. The display fields ride
-/// along so a diffable data source can detect a name/job/org/photo change
-/// without the app keeping a parallel `[ID: Contact]` dictionary.
 public struct ContactID: Hashable, Sendable {
-    /// Canonical lowercase bare UUID (NOT the `guesswho://` URL), or nil until
-    /// reconciled. Produced only via `SidecarKey.forContact`.
-    public let guessWhoID: String?
+    // Identity (package — not readable by the app):
+    package let guessWhoID: String?   // canonical bare UUID, nil until reconciled
+    package let localID: String       // CNContact.identifier, always present
 
-    /// Apple's unified-contact identifier. INTERNAL to the package's fetch path
-    /// — the UI never reads/compares/persists it. `package` visibility.
-    package let localID: String
+    // Display fields (package — carried ONLY so the package-internal `==` can
+    // drive diffable change-detection; the app renders from the fetched Contact,
+    // never from these):
+    package let displayName, givenName, familyName, jobTitle, organizationName: String
+    package let contactType: ContactType
+    package let imageDataAvailable: Bool
 
-    // Raw display components a list row renders (row policy stays in the app).
-    public let displayName: String
-    public let contactType: ContactType
-    public let givenName: String
-    public let familyName: String
-    public let jobTitle: String
-    public let organizationName: String
-    public let imageDataAvailable: Bool
-
-    /// The single identity `==` and `hash` agree on.
-    var effectiveID: String { guessWhoID ?? localID }
+    var effectiveID: String { guessWhoID ?? localID }   // the single identity
 
     /// NON-failing — `localID` is always available, so a row can be vended
-    /// before the contact is reconciled. `guessWhoID` is nil when there's no
-    /// valid GuessWho URL.
+    /// before reconciliation. `guessWhoID` is nil when there's no valid URL.
     package init(contact: Contact) { /* … */ }
 
     public static func == (lhs: ContactID, rhs: ContactID) -> Bool {
         // effectiveID AND all display fields → an edit is "same row, changed
         // contents"; a reconciliation transition (effectiveID itself changes)
-        // is a delete + insert, by design.
+        // is a delete + insert, by design. Runs inside the package, where the
+        // fields are visible.
         lhs.effectiveID == rhs.effectiveID /* && all display fields … */
     }
 
@@ -129,17 +117,22 @@ currently hand-rolls at `ContactsListViewController.swift:195-217`:
   `previousByID` snapshot diff + `reconfigureItems` pass and the entire
   `contactsByLocalID` side-dictionary.
 
-The snapshot becomes `NSDiffableDataSourceSnapshot<Section, ContactID>` and the
-cell provider reads display fields straight off the `ContactID` (or fetches the
-full `Contact` by ID for richer cells — see Stage 3).
+The snapshot becomes `NSDiffableDataSourceSnapshot<Section, ContactID>`. Because
+`ContactID` is fully sealed, the cell provider fetches the full `Contact` via
+`repository.contact(id:)` to render the row (the existing cells already take a
+`Contact` — `ContactCell.configure(with: Contact)` — so this costs nothing). The
+sealed display fields drive only the diff, never the render.
 
-### Display fields (DECIDED: raw components)
+### Display fields (DECIDED: raw components, sealed `package`)
 
-Row rendering policy stays in the app, so `ContactID` vends the raw components
-a list cell renders — `displayName`, `contactType`, `givenName`, `familyName`,
-`jobTitle`, `organizationName`, `imageDataAvailable` — not a single
-pre-rendered `secondaryText`. Notes/tags/links never belong on `ContactID` —
-they are not part of a row's visual identity and change far more often.
+`ContactID` carries the raw components a list cell renders — `displayName`,
+`contactType`, `givenName`, `familyName`, `jobTitle`, `organizationName`,
+`imageDataAvailable` — as `package` fields, used ONLY by the package-internal
+`==` for diffing. The app does not read them; it renders from the `Contact` it
+fetches via `repository.contact(id:)`. (Raw components, not a pre-rendered
+`secondaryText`, so the equality comparison is exact.) Notes/tags/links never
+belong on `ContactID` — they are not part of a row's visual identity and change
+far more often.
 
 ## What the app stops doing
 
@@ -147,7 +140,8 @@ Direct consequences once `ContactID` lands and the app migrates to it:
 
 - **No `contactsByLocalID` dictionaries.** `ContactsListViewController` and
   `OrganizationsListViewController` snapshot `ContactID` directly; the cell
-  provider needs no side lookup for list rendering.
+  provider fetches the row's `Contact` via `repository.contact(id:)` (a cache
+  hit) — no app-maintained side dictionary.
 - **No manual `reconfigureItems` diff.** `Equatable` on `ContactID` drives it.
 - **No `localID` in navigation.** `ContactReference` (`NavigationReferences.swift`)
   is re-keyed on `ContactID` (carry the whole value, or just `guessWhoID`).
@@ -267,8 +261,13 @@ intact.
 ### Stage 3 — Migrate list view controllers
 
 1. `ContactsListViewController` and `OrganizationsListViewController` snapshot
-   `NSDiffableDataSourceSnapshot<String, ContactID>`. Cell provider renders from
-   `ContactID` display fields (or `repository.contact(id:)` for full cells).
+   `NSDiffableDataSourceSnapshot<String, ContactID>`. Cell provider fetches the
+   row's `Contact` via `repository.contact(id:)` — a SYNCHRONOUS main-actor cache
+   read (the repository holds contacts in memory; no store I/O, no `await`) — and
+   passes it to the existing `configure(with: Contact)`. (If a very large address
+   book ever makes the O(n) `contacts.first { … }` lookup show up in a profile,
+   add a repository-internal `[effectiveID: Contact]` index — no API change. Not
+   needed at v1 address-book scale.)
 2. Delete `contactsByLocalID`, the `previousByID` diff, and the manual
    `reconfigureItems` pass — `ContactID`'s `Equatable`/`Hashable` replaces them.
 3. `didSelectRowAt` reads the `ContactID` item identifier directly.

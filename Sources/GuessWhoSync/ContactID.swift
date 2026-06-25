@@ -22,11 +22,12 @@ import Foundation
 ///   for the same contact — even with different display fields — land in the
 ///   same bucket, so a `UITableViewDiffableDataSource` keeps the row in place
 ///   across reloads and across any display-field edit.
-/// - `==` compares the effective identity AND the bare display fields. An edited
-///   contact compares *unequal*, so the data source reports the item as changed
-///   and reconfigures the cell in place. This replaces the app's hand-rolled
-///   `previousByID` snapshot diff + `reconfigureItems` pass and the
-///   `contactsByLocalID` side-dictionary.
+/// - `==` compares the effective identity AND the (package-private) display
+///   fields. An edited contact compares *unequal*, so the data source reports
+///   the item as changed and reconfigures the cell in place. This replaces the
+///   app's hand-rolled `previousByID` snapshot diff + `reconfigureItems` pass
+///   and the `contactsByLocalID` side-dictionary. The comparison runs inside the
+///   package, where the fields are visible; the app never reads them.
 ///
 /// THE RECONCILIATION TRANSITION (localID-keyed → guessWhoID-keyed) is a
 /// genuine diffable delete + insert, NOT a reconfigure: the effective identity
@@ -37,46 +38,49 @@ import Foundation
 /// this transition is driven by the reconciler, not by `reload()` — do not
 /// assume identity is "settled" merely because a value was vended.
 ///
-/// The display fields ride along so the cell provider can render a row straight
-/// off the `ContactID` without keeping a parallel `[ID: Contact]` dictionary.
-/// They are NOT identity. Notes/tags/links are deliberately absent — they are
-/// not part of a row's visual identity and change far more often.
+/// `ContactID` is a fully OPAQUE token: every stored property is `package`, so
+/// the app target can hold it, compare it (for diffing), and hand it back to the
+/// repository to fetch the real `Contact` — but it CANNOT read any field off it.
+/// It is deliberately NOT a "contact-light": the app must go through
+/// `repository.contact(id:)` to render a row, so there is one source of truth for
+/// contact data. The conformances (`Hashable`, `Sendable`) are public so the app
+/// can put the token in a diffable snapshot / `Set`; the DATA stays sealed.
+///
+/// The display fields are carried only so the package-internal `==` can drive
+/// diffable change-detection (an edit makes two tokens compare unequal → the
+/// cell reconfigures). They are NOT identity and are not readable by the app.
+/// Notes/tags/links are deliberately absent — they are not part of a row's
+/// visual identity and change far more often.
 public struct ContactID: Hashable, Sendable {
     /// Canonical lowercase bare UUID string (NOT the `guesswho://contact/` URL).
     /// Produced exclusively by `SidecarKey`'s validator/canonicalizer. Nil until
     /// the contact carries a valid GuessWho URL (i.e. is reconciled); once
-    /// present it is the identity the package and UI compare.
-    public let guessWhoID: String?
+    /// present it is the identity the package compares. `package` — not readable
+    /// by the app.
+    package let guessWhoID: String?
 
     /// Apple's unified-contact identifier (`CNContact.identifier`). Always
-    /// present. INTERNAL to the package's fetch path — the UI must never read,
-    /// compare, or persist it. `package` visibility keeps it out of the app
-    /// target's reach while still letting repository fetch methods resolve a
-    /// `ContactID` back to the cached `Contact`. It is the EFFECTIVE identity
-    /// only as a pre-reconciliation fallback (see `effectiveID`).
+    /// present. INTERNAL to the package's fetch path — `package` visibility keeps
+    /// it out of the app target's reach while still letting repository fetch
+    /// methods resolve a `ContactID` back to the cached `Contact`. It is the
+    /// EFFECTIVE identity only as a pre-reconciliation fallback (see
+    /// `effectiveID`).
     package let localID: String
 
-    // MARK: Bare display fields
+    // MARK: Display fields (package — for diffing only, never read by the app)
     //
-    // Present so `Hashable`/`Equatable` can drive diffable change-detection.
+    // Carried so the package-internal `==` can drive diffable change-detection.
     // These are the exact fields a list row renders (see the Catalyst/iPhone
-    // contact + organization cells): the icon keys on `contactType`, the name
-    // line builds from `givenName`/`familyName` (falling back to
-    // `displayName`), and the subtitle is `jobTitle`/`organizationName`. The
-    // photo presence flag rounds out the visual identity of the row. Raw
-    // components are vended (not a single pre-rendered `secondaryText`) so row
-    // policy stays in the app.
-
-    /// Stable display label (matches `Contact.displayName`), used as the name
-    /// line's fallback when given/family name are both empty.
-    public let displayName: String
-    public let contactType: ContactType
-    public let givenName: String
-    public let familyName: String
-    public let jobTitle: String
-    public let organizationName: String
-    /// Whether the contact has photo bytes available (drives any row image).
-    public let imageDataAvailable: Bool
+    // contact + organization cells), but the app reads them off the `Contact`
+    // it fetches via `repository.contact(id:)`, NOT off this token. Raw
+    // components (not a pre-rendered string) so the comparison is exact.
+    package let displayName: String
+    package let contactType: ContactType
+    package let givenName: String
+    package let familyName: String
+    package let jobTitle: String
+    package let organizationName: String
+    package let imageDataAvailable: Bool
 
     /// The single identity `==` and `hash(into:)` agree on: the GuessWho UUID
     /// once present, otherwise the `localID` fallback. Both members must use
