@@ -650,7 +650,7 @@ struct ContactDetailView: View {
         for item in contact.emailAddresses {
             rows.append(.email(label: localizedLabel(item.label), address: item.value))
         }
-        for item in contact.urlAddresses where SidecarKey.parseGuessWhoContactURL(item.value) == nil {
+        for item in contact.userVisibleURLAddresses {
             rows.append(.url(label: localizedLabel(item.label), urlString: item.value))
         }
 
@@ -712,15 +712,13 @@ struct ContactDetailView: View {
 
     private func debugRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
+        let debugInfo = repository.identityDebugInfo(for: contact)
 
-        // localID exception (debug-only display): surfacing the raw
-        // CNContact.identifier is a developer diagnostic inside the debug-gated
-        // Debug section (per CLAUDE.md's debug-mode carve-out), NOT app identity.
-        rows.append(.text(label: "localID", value: contact.localID, monospaced: true))
+        rows.append(.text(label: "localID", value: debugInfo.localID, monospaced: true))
         rows.append(.text(label: "contact type", value: contact.contactType.rawValue))
         rows.append(.text(label: "image available", value: contact.imageDataAvailable ? "yes" : "no"))
 
-        if let uuid = repository.guessWhoID(in: contact) {
+        if let uuid = debugInfo.guessWhoID {
             rows.append(.text(label: "guesswho uuid", value: uuid, monospaced: true))
         } else if let reason = sidecarUnavailableReason {
             rows.append(.text(label: "guesswho uuid", value: "none — \(reason)"))
@@ -728,7 +726,7 @@ struct ContactDetailView: View {
             rows.append(.text(label: "guesswho uuid", value: "none"))
         }
 
-        for item in contact.urlAddresses where item.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) {
+        for item in debugInfo.guessWhoURLs {
             rows.append(.text(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true))
         }
 
@@ -736,8 +734,8 @@ struct ContactDetailView: View {
         // dropped in Stage 6: reconcile is now a package-internal side effect
         // the view no longer drives (so there's no app-side outcome to show),
         // and surfacing it would mean retaining new per-contact package state
-        // purely for a debug row. The cheap, stateless identity bits above
-        // (localID, guesswho uuid/url) remain under the debug carve-out.
+        // purely for a debug row. The package-vended identity diagnostics above
+        // remain under the debug carve-out.
 
         return rows
     }

@@ -162,6 +162,38 @@ struct ContactsRepositoryIndexTests {
         #expect(repository.linkedContact(of: link, forEventUUID: "44444444-4444-4444-4444-444444444444") == nil)
     }
 
+    @Test @MainActor
+    func contactVisibleURLsHideGuessWhoIdentityURLs() {
+        let contact = Contact(
+            localID: "c",
+            urlAddresses: [
+                LabeledValue(label: "home", value: "https://example.com"),
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/11111111-1111-1111-1111-111111111111")
+            ]
+        )
+
+        #expect(contact.userVisibleURLAddresses == [LabeledValue(label: "home", value: "https://example.com")])
+    }
+
+    @Test @MainActor
+    func identityDebugInfoClassifiesGuessWhoIdentityValues() {
+        let uuid = "11111111-1111-1111-1111-111111111111"
+        let contact = Contact(
+            localID: "c",
+            urlAddresses: [
+                LabeledValue(label: "home", value: "https://example.com"),
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/\(uuid)")
+            ]
+        )
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [contact]))
+
+        let debugInfo = repository.identityDebugInfo(for: contact)
+
+        #expect(debugInfo.localID == "c")
+        #expect(debugInfo.guessWhoID == uuid)
+        #expect(debugInfo.guessWhoURLs == [LabeledValue(label: "GuessWho", value: "guesswho://contact/\(uuid)")])
+    }
+
     // MARK: - guessWhoID(in:) — the opened contact's own GuessWho UUID
 
     @Test @MainActor

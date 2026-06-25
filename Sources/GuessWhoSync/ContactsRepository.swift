@@ -207,6 +207,17 @@ public final class ContactsRepository: NSObject {
         ContactID(contact: contact).guessWhoID
     }
 
+    /// Debug-only identity diagnostics for an app detail surface. The app may
+    /// render these values, but parsing and classification of GuessWho identity
+    /// URLs stays in the package.
+    public func identityDebugInfo(for contact: Contact) -> ContactIdentityDebugInfo {
+        ContactIdentityDebugInfo(
+            localID: contact.localID,
+            guessWhoID: guessWhoID(in: contact),
+            guessWhoURLs: contact.urlAddresses.filter { SidecarKey.parseGuessWhoContactURL($0.value) != nil }
+        )
+    }
+
     /// Resolves a BARE GuessWho UUID (a `SidecarKey` endpoint id, a
     /// `Favorite.id`, etc.) to its cached `Contact` via a clean pointer hop:
     /// `guessWhoIDToLocalID[uuid]` → `contactsByLocalID[localID]`. NO confirm-

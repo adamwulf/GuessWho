@@ -105,4 +105,10 @@ extension Contact {
     /// stored data (its `guesswho://` URL if reconciled, else its `localID`),
     /// so it's free to compute on demand. The canonical id shape the UI keys on.
     public var contactID: ContactID { ContactID(contact: self) }
+
+    /// URL addresses intended for user display/editing. GuessWho identity URLs
+    /// are package-owned metadata and are hidden from app UI surfaces.
+    public var userVisibleURLAddresses: [LabeledValue] {
+        urlAddresses.filter { SidecarKey.parseGuessWhoContactURL($0.value) == nil }
+    }
 }
