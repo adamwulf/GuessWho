@@ -62,6 +62,70 @@ public final class ContactsRepository: NSObject {
         contacts.first { $0.localID == localID }
     }
 
+    // MARK: - ContactID-addressed reads
+    //
+    // All accessors below are synchronous main-actor reads over the in-memory
+    // `contacts` cache. NONE of them enumerate `CNContactStore` — the cache is
+    // the read model and Contacts is refreshed only via `reload()` /
+    // `refreshContact(localID:)`. The UI keys exclusively on `ContactID`; the
+    // `localID` carrier inside the value is consumed only by `contact(id:)`.
+
+    /// Resolves a `ContactID` back to its cached `Contact`. Matches on the
+    /// internal `localID` carrier (the value's identity is settled, so the
+    /// carrier still points at the right cache row). Returns `nil` if the
+    /// contact is no longer cached (deleted, or a retired Case-D UUID).
+    public func contact(id: ContactID) -> Contact? {
+        contacts.first { $0.localID == id.localID }
+    }
+
+    /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors
+    /// `peopleSections` but vends list-ready identity values. A cached contact
+    /// without a valid GuessWho URL (identity not yet settled) is skipped — by
+    /// the time the UI snapshots these, reconciliation has minted/collapsed.
+    public var peopleSectionIDs: [(String, [ContactID])] { sectionedIDs(people) }
+
+    /// Organization rows addressed by `ContactID`, sectioned A–Z. Mirrors
+    /// `organizationsSections`.
+    public var organizationsSectionIDs: [(String, [ContactID])] { sectionedIDs(organizations) }
+
+    /// Every cached contact whose display name matches `displayName`, addressed
+    /// by `ContactID`. Returns ALL matches (no silent last-writer pick) — the
+    /// UI owns disambiguation. The `ContactID` parallel to `contacts(named:)`.
+    public func contactIDs(named displayName: String) -> [ContactID] {
+        contacts(named: displayName).compactMap { ContactID(contact: $0) }
+    }
+
+    /// Cached contacts that list `email` among their addresses, addressed by
+    /// `ContactID`. Matching is case-insensitive on the trimmed address; an
+    /// empty query returns nothing. Returns ALL matches.
+    public func contacts(matchingEmail email: String) -> [ContactID] {
+        let needle = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contacts.compactMap { contact in
+            let hit = contact.emailAddresses.contains {
+                $0.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+            }
+            return hit ? ContactID(contact: contact) : nil
+        }
+    }
+
+    /// Cached contacts that reference the contact identified by `id` through a
+    /// name-only `CNContactRelation`, addressed by `ContactID`. Self is excluded
+    /// by `guessWhoID` — never by `localID` — so a contact that relates to its
+    /// own name doesn't appear in its own reverse-relation list.
+    public func contactsReferencing(id: ContactID) -> [(id: ContactID, label: String)] {
+        let needle = id.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contacts.flatMap { other -> [(id: ContactID, label: String)] in
+            guard let otherID = ContactID(contact: other) else { return [] }
+            guard otherID.guessWhoID != id.guessWhoID else { return [] }
+            return other.contactRelations.compactMap { relation in
+                let name = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return name == needle ? (id: otherID, label: relation.label) : nil
+            }
+        }
+    }
+
     public var people: [Contact] {
         filtered(matching: peopleSearch, where: { $0.contactType == .person })
     }
@@ -188,6 +252,17 @@ public final class ContactsRepository: NSObject {
             case (_, "#"): return true
             default: return $0.0 < $1.0
             }
+        }
+    }
+
+    /// Sections the contacts exactly like `sectioned(_:)`, then maps each row to
+    /// its `ContactID`. Rows whose contact lacks a settled GuessWho identity are
+    /// dropped (cannot be addressed by `ContactID` yet). Section order and the
+    /// within-section sort are inherited from the `Contact` list passed in
+    /// (already sorted by `filtered(matching:where:)`).
+    private func sectionedIDs(_ contacts: [Contact]) -> [(String, [ContactID])] {
+        sectioned(contacts).map { letter, rows in
+            (letter, rows.compactMap { ContactID(contact: $0) })
         }
     }
 
