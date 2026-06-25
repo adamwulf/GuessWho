@@ -10,6 +10,11 @@ import Foundation
 /// As Stage 6 migrates the app's contact-sidecar callers onto the repository
 /// (sub-phase 6d), they converge on this package type; until then both exist
 /// (the app's local copy shadows this within the app target without collision).
+///
+/// 6d CHECKLIST: when the app migrates onto the package write API, REMOVE the
+/// app's local same-named `SidecarUnavailableError` in favor of this one.
+/// Otherwise an app-side `catch is SidecarUnavailableError` binds the LOCAL
+/// type and silently misses the package error this primitive throws.
 public struct SidecarUnavailableError: Error, LocalizedError {
     public init() {}
 

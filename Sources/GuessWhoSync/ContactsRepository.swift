@@ -25,10 +25,12 @@ public final class ContactsRepository: NSObject {
     // sidecar root) — exactly mirroring `SyncService.sync` / `.favoritesStore`.
     // They are wired in here (Stage 6, Step 0) so the repository can reconcile
     // and write a sidecar itself; pre-Stage-6 it held ONLY `contactsStore` and
-    // could not. `GuessWhoSync` is a `final class @unchecked Sendable`, so a
-    // `@MainActor` reference is safe; `FavoritesStore` is likewise a value-like
-    // package store. New methods that depend on either MUST degrade when nil:
-    // reads return empty/false, writes throw `SidecarUnavailableError`.
+    // could not. Both are reference-type classes; holding them on this
+    // `@MainActor`-isolated repository is what keeps access race-free —
+    // `GuessWhoSync` is additionally `@unchecked Sendable` so the stored
+    // reference crosses no isolation boundary diagnostic. New methods that
+    // depend on either MUST degrade when nil: reads return empty/false, writes
+    // throw `SidecarUnavailableError`.
     private let sync: GuessWhoSync?
     private let favorites: FavoritesStore?
 

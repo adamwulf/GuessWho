@@ -99,6 +99,46 @@ struct ContactsRepositoryResolveOrMintTests {
         #expect(guessWhoURLs(in: saved) == [SidecarKey.guessWhoContactURLPrefix + existingUUID])
     }
 
+    // The DEFENSIVE re-fetch fall-through: the passed ContactID is a STALE
+    // snapshot (guessWhoID nil) of a contact that ALREADY carries a valid
+    // GuessWho URL on disk. The mint path runs (guessWhoID nil), but reconcile
+    // sees the on-disk URL → single valid UUID → NOT Case A → assignedUUID nil
+    // and no save. The primitive must fall through, re-fetch the canonical
+    // record, and return the EXISTING URL's UUID — never throw, never mint a
+    // second URL. Mirrors the former SyncService.reconcileIfNeeded fall-through.
+    @Test @MainActor
+    func resolveOrMint_whenReconcileReportsNoAssignedUUID_fallsThroughToExistingURL() async throws {
+        // On-disk record carries a valid GuessWho URL.
+        let onDisk = Contact(
+            localID: "RECON",
+            givenName: "Grace",
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: SidecarKey.guessWhoContactURLPrefix + existingUUID),
+            ]
+        )
+        let store = InMemoryContactStore(contacts: [onDisk])
+        let sync = makeSync(contacts: store)
+        let repository = ContactsRepository(contacts: store, sync: sync)
+        await repository.reload()
+
+        // STALE snapshot of the SAME contact WITHOUT the URL → guessWhoID nil,
+        // same localID. Built directly via the `package` ContactID initializer
+        // (visible under @testable) to model an in-memory snapshot that predates
+        // the on-disk stamp.
+        let staleID = ContactID(contact: Contact(localID: "RECON", givenName: "Grace"))
+        #expect(staleID.guessWhoID == nil)
+        #expect(staleID.localID == "RECON")
+
+        // Mint path runs (guessWhoID nil), but reconcile finds the existing URL
+        // (single valid UUID, not Case A) → assignedUUID nil → fall through.
+        let resolved = try await repository.resolveOrMintGuessWhoID(for: staleID)
+        #expect(resolved == existingUUID)
+
+        // No second URL was stamped — the fall-through read, it did not mint.
+        let saved = try #require(try await store.fetch(localID: "RECON"))
+        #expect(guessWhoURLs(in: saved) == [SidecarKey.guessWhoContactURLPrefix + existingUUID])
+    }
+
     // With the engine nil (the `.unavailable` storage state), a write to an
     // unreconciled contact has nowhere to mint, so the primitive THROWS
     // `SidecarUnavailableError` rather than silently no-op.
