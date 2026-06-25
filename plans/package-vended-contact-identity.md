@@ -43,7 +43,7 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  IN PROGRESS — 6a + 6b + 6b2 DONE.** Split into sub-phases 6a
+  IN PROGRESS — 6a + 6b + 6b2 + 6c DONE.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6b2 (one `Contact` cache `contactsByLocalID` + a
   `guessWhoIDToLocalID` pointer index — no duplicate `Contact` copies — so
@@ -566,7 +566,7 @@ this is the sequencing:
   survives a reconcile re-key, the view keys purely on its captured `ContactID`.
   Full detail in the "Stage 6b2" section below. No public signature change, no app
   change yet. **6c and 6d's detail-view `resolvedLocalID` removal depend on 6b2.**
-- **6c — `prepareContactForDetail` (decision A).** Self-contained package
+- **6c — `prepareContactForDetail` (decision A) — DONE (`ec4307e`, `dfca813`).** Self-contained package
   addition; depends on 6a. (The prior draft's debug `lastReconcileOutcome` vend is
   DROPPED — see Debug section.) Pairs with 6b2: `prepareContactForDetail` runs the
   on-open reconcile and 6b2's cache poke keeps the view's captured `ContactID`
