@@ -801,25 +801,28 @@ sees it.
    UUID string) to take a `ContactID`. Call this out as a deliberate UX improvement
    in the 6d commit.
 
-4. **Detail-open reconcile stays — moved behind a package call (decision A).**
-   `ContactDetailView.performReconcile()` exists so OPENING a never-touched
-   contact stamps its URL and repairs malformed/duplicate URLs (Cases B/C/D) even
-   with no write. This is a legitimate REPAIR trigger that should not wait for a
-   write. Replace `performReconcile()` + `service.reconcile(localID:)` with ONE
-   opaque package call — `repository.prepareContactForDetail(_: ContactID) async`
-   — that runs the same reconcile internally and refreshes the repository cache.
-   The app calls it blindly on load; it never sees `localID`, a report, or the word
-   reconcile. This preserves today's open-without-writing repair behavior; if
-   instead you want "ONLY writes reconcile," dropping this call is the alternative —
-   decision A picks KEEP.
-   SEQUENCING: today `performReconcile()` does reconcile → `refreshContact` →
-   `loadContact`. `prepareContactForDetail` covers the first two (reconcile +
-   cache refresh); the view STILL runs its own `loadContact()` afterward to pull
-   the now-canonical record into its `@State`. Make the call `await`-then-reload so
-   the view doesn't render a pre-reconcile snapshot. A reconcile that changes the
-   effective identity means the view's nav `ContactID` (`id`) may no longer resolve
-   — re-derive from the loaded contact (as Stage 4/5 already do via
-   `resolvedLocalID`), or show the non-crashing unavailable state.
+4. **Detail-open reconcile is DROPPED — reconcile is WRITE-ONLY (decision A,
+   REVERSED 2026-06-25 per Adam).** The original draft KEPT an on-open reconcile
+   (`prepareContactForDetail`) so opening a never-touched contact stamped its URL
+   and repaired Cases B/C/D without a write. That is no longer wanted, for two
+   reasons Adam raised: (1) DISPLAY needs no GuessWho URL — the UI holds a
+   `ContactID`, which (with 6b2's reconcile-stable `contact(id:)`) is all the view
+   needs; an unstamped contact simply has no sidecar data to show, which is
+   correct; (2) Case-D repair (a cross-device-split contact) is FINE to defer to
+   the next write. So: NO reconcile on open. `prepareContactForDetail` is DELETED
+   (it was added in 6c; this reverses 6c), `ContactDetailView` drops its on-open
+   reconcile (`.task` → `performReconcile` → `didAutoReconcile`) and just loads the
+   contact by its `ContactID`. The contact stays un-stamped until the user adds
+   GuessWho data; reads return empty (correct); the FIRST write mints via
+   resolve-or-mint, and Case D heals on that same write. Net: reconcile fires ONLY
+   on write — no Contacts.app write merely for viewing a contact. (A future
+   background repair sweep, if ever wanted, belongs in the still-public whole-book
+   `reconcileContactIdentities()`, not a per-open call.)
+   POST-6E CLEANUP TASK (6f): delete `repository.prepareContactForDetail`, its
+   tests, and the view's on-open reconcile path; confirm every `contactUUID == nil`
+   binding in `ContactDetailView` already degrades correctly for an unstamped
+   contact (it does — those nil paths were kept precisely so reads work
+   pre-reconcile), and the first write still mints + lights up the bindings.
 
 5. **Package owns the post-write cache update (decision B), for SIDECAR writes.**
    Today the sidecar write paths deliberately do NOT poke the repository
