@@ -677,12 +677,14 @@ struct ContactDetailView: View {
             let key = item.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             // Compare by ContactID (effective GuessWho identity), not raw
             // localID, so a relation pointing at this very contact is excluded
-            // by stable identity rather than the transient identifier.
-            if !key.isEmpty, let match = lookup[key], repository.contactID(for: match) != selfID {
+            // by stable identity rather than the transient identifier. Mint the
+            // match's ContactID once (it re-parses the GuessWho URL) and reuse it.
+            if !key.isEmpty, let match = lookup[key],
+               case let matchID = repository.contactID(for: match), matchID != selfID {
                 rows.append(.contactLink(
                     label: localizedLabel(item.label),
                     displayName: match.displayName,
-                    contactID: repository.contactID(for: match)
+                    contactID: matchID
                 ))
             } else {
                 rows.append(.text(label: localizedLabel(item.label), value: item.value.name))
@@ -1124,9 +1126,9 @@ struct ContactDetailView: View {
         } else if let lookupLocalID {
             loaded = await service.fetch(localID: lookupLocalID)
         } else {
-            // First load (or after a re-key dropped resolvedLocalID): resolve the
-            // ContactID to its cached contact. This is how we bootstrap the
-            // localID we then keep for the lifetime of the view.
+            // First load only — `resolvedLocalID` is still nil here (it is set
+            // once below and never cleared). Resolve the ContactID to its cached
+            // contact to bootstrap the localID we then keep for the view's life.
             loaded = repository.contact(id: id)
         }
         contact = loaded
