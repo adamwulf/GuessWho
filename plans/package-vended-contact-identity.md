@@ -41,10 +41,11 @@
   removal. 430 tests + Catalyst + iPhone-sim builds green.
 - **Stage 5 (visibility tighten): DONE (5.5 assessed, NOT implemented).**
 - **Stage 6 (ContactID-keyed contact sidecar API; internalize reconcile):
-  PLANNED, reviewed twice, ready to implement.** Split into sub-phases 6a
+  PLANNED, reviewed three times, ready to implement.** Split into sub-phases 6a
   (foundation: wire engine into repository + reconcile-on-write) → 6b (vend the
   ContactID-keyed API) → 6c (`prepareContactForDetail`) → 6d (migrate app
-  consumers) → 6e (audit). Concurrency: accept double-mint (a practical non-event;
+  consumers) → 6e (audit). 6a wires the engine + favorites store into the
+  repository. Concurrency: accept double-mint (a practical non-event;
   single-device = harmless orphan, multi-device = Case-D heals).
   Favoriting an unreconciled contact becomes allowed (package reconciles then
   saves). Debug reconcile/sidecar readout dropped (no new retained package state).
@@ -605,7 +606,8 @@ App stores / views that bind to the contact-sidecar methods today:
   keyed; the `FavoriteKind` discriminator selects which).
 - **`ContactDetailView`** (`:717,1023,1047,1051,1057,1063,1079,1085,1139,1140,
   1212,1324,1325`) — the opened contact's own notes/links/event-links/favorite
-  binding, the debug `sidecar(for:)` readout, and `performReconcile()`.
+  binding, the debug `sidecar(for:)` readout (REMOVED, not re-keyed — see Debug
+  section), and `performReconcile()`.
 - **`ConnectionsSection`** (`:279`) — `reconcileIfNeeded(contact:)` before linking.
 - **`EventDetailView`** (`:500,506`) — `reconcileIfNeeded(contact:)` +
   `addContactEventLink` (contact endpoint only; see scope note).
@@ -751,7 +753,9 @@ sees it.
 
 5. **Package owns the post-write cache update (decision B), for SIDECAR writes.**
    Today the sidecar write paths deliberately do NOT poke the repository
-   (documented at `SyncService.swift:551-557`), so every app caller runs its own
+   (the sidecar methods at `SyncService.swift:576+` carry no repository poke; the
+   `:551-563` comment is about the separate `saveContact` path decision B
+   EXCLUDES), so every app caller runs its own
    `reconcile → loadContact → repository.reload` dance. Stage 6 REVERSES that for
    the new `ContactID`-keyed SIDECAR methods + `prepareContactForDetail`: after
    Step 0 wires the engine in (the coupling that comment deferred), they update
@@ -926,7 +930,7 @@ design TBD when Stage 6 lands.
   blindly and never sees `localID`/the report. Alternative ("only writes
   reconcile") was rejected so first-open repairs don't wait for a write.
 - **DECIDED — package owns the post-write cache update (Stage 6, decision B).**
-  Reverses the `SyncService.swift:551-557` "writes don't poke the repository"
-  decoupling; the package's write methods update `ContactsRepository` so the app
-  does no post-write reload dance. Internalizing reconcile is the reason to accept
+  Reverses the "sidecar writes don't poke the repository" decoupling (the sidecar
+  methods at `SyncService.swift:576+`); the package's write methods update
+  `ContactsRepository` so the app does no post-write reload dance. Internalizing reconcile is the reason to accept
   the coupling that comment deferred.
