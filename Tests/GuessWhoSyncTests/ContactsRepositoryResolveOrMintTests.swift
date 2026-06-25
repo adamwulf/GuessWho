@@ -44,7 +44,7 @@ struct ContactsRepositoryResolveOrMintTests {
 
         // Precondition: no GuessWho UUID yet.
         let cached = try #require(repository.contact(localID: "TARGET"))
-        let id = repository.contactID(for: cached)
+        let id = cached.contactID
         #expect(id.guessWhoID == nil)
 
         let minted = try await repository.resolveOrMintGuessWhoID(for: id)
@@ -64,7 +64,7 @@ struct ContactsRepositoryResolveOrMintTests {
 
         // Resolve-or-mint on the NOW-reconciled id returns the SAME UUID and
         // mints nothing further (fast path — no second URL appended).
-        let again = try await repository.resolveOrMintGuessWhoID(for: repository.contactID(for: reReconciled))
+        let again = try await repository.resolveOrMintGuessWhoID(for: reReconciled.contactID)
         #expect(again == minted)
         let afterSecond = try #require(try await store.fetch(localID: "TARGET"))
         #expect(guessWhoURLs(in: afterSecond).count == 1)
@@ -87,7 +87,7 @@ struct ContactsRepositoryResolveOrMintTests {
         await repository.reload()
 
         let cached = try #require(repository.contact(localID: "RECON"))
-        let id = repository.contactID(for: cached)
+        let id = cached.contactID
         #expect(id.guessWhoID == existingUUID)
 
         let resolved = try await repository.resolveOrMintGuessWhoID(for: id)
@@ -151,7 +151,7 @@ struct ContactsRepositoryResolveOrMintTests {
         await repository.reload()
 
         let cached = try #require(repository.contact(localID: "TARGET"))
-        let id = repository.contactID(for: cached)
+        let id = cached.contactID
         #expect(id.guessWhoID == nil)
 
         await #expect(throws: SidecarUnavailableError.self) {
@@ -176,7 +176,7 @@ struct ContactsRepositoryResolveOrMintTests {
         await repository.reload()
 
         let cached = try #require(repository.contact(localID: "RECON"))
-        let id = repository.contactID(for: cached)
+        let id = cached.contactID
 
         let resolved = try await repository.resolveOrMintGuessWhoID(for: id)
         #expect(resolved == existingUUID)

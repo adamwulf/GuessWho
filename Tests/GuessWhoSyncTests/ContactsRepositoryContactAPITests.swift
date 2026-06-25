@@ -61,7 +61,7 @@ struct ContactsRepositoryContactAPITests {
         await repository.reload()
 
         let cached = try #require(repository.contact(localID: "TARGET"))
-        let id = repository.contactID(for: cached)
+        let id = cached.contactID
         #expect(id.guessWhoID == nil)
 
         let noteID = try await repository.addNote(for: id, body: "first note")
@@ -72,7 +72,7 @@ struct ContactsRepositoryContactAPITests {
         let mintedUUID = try #require(ContactID(contact: saved).guessWhoID)
 
         // Reading the note back via a now-reconciled ContactID returns it.
-        let reconciledID = repository.contactID(for: saved)
+        let reconciledID = saved.contactID
         let notes = repository.notes(for: reconciledID)
         #expect(notes.count == 1)
         #expect(notes.first?.id == noteID)
@@ -96,7 +96,7 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "RECON")))
+        let id = (try #require(repository.contact(localID: "RECON"))).contactID
         #expect(id.guessWhoID == existingUUID)
 
         _ = try await repository.addNote(for: id, body: "a note")
@@ -128,7 +128,7 @@ struct ContactsRepositoryContactAPITests {
         )
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         #expect(id.guessWhoID == nil)
 
         #expect(repository.notes(for: id).isEmpty)
@@ -140,7 +140,7 @@ struct ContactsRepositoryContactAPITests {
         let saved = try #require(try await store.fetch(localID: "TARGET"))
         #expect(guessWhoURLs(in: saved).isEmpty)
         // And the cached contact is still unreconciled.
-        #expect(repository.contactID(for: try #require(repository.contact(localID: "TARGET"))).guessWhoID == nil)
+        #expect((try #require(repository.contact(localID: "TARGET"))).contactID.guessWhoID == nil)
     }
 
     // MARK: - Link write reconciles both endpoints
@@ -156,8 +156,8 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
 
-        let idA = repository.contactID(for: try #require(repository.contact(localID: "A")))
-        let idB = repository.contactID(for: try #require(repository.contact(localID: "B")))
+        let idA = (try #require(repository.contact(localID: "A"))).contactID
+        let idB = (try #require(repository.contact(localID: "B"))).contactID
         #expect(idA.guessWhoID == nil)
         #expect(idB.guessWhoID == nil)
 
@@ -179,8 +179,8 @@ struct ContactsRepositoryContactAPITests {
         ]))
 
         // Each endpoint can read the link back (excludes nothing, not deleted).
-        #expect(repository.links(for: repository.contactID(for: savedA)).contains { $0.id == link.id })
-        #expect(repository.links(for: repository.contactID(for: savedB)).contains { $0.id == link.id })
+        #expect(repository.links(for: savedA.contactID).contains { $0.id == link.id })
+        #expect(repository.links(for: savedB.contactID).contains { $0.id == link.id })
     }
 
     // MARK: - Favorite write mints then favorites
@@ -201,7 +201,7 @@ struct ContactsRepositoryContactAPITests {
         )
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         #expect(id.guessWhoID == nil)
 
         let newState = try await repository.toggleFavorite(id)
@@ -212,7 +212,7 @@ struct ContactsRepositoryContactAPITests {
         #expect(guessWhoURLs(in: saved).count == 1)
 
         // isFavorite is true via the now-reconciled id.
-        let reconciledID = repository.contactID(for: saved)
+        let reconciledID = saved.contactID
         #expect(repository.isFavorite(reconciledID) == true)
 
         // Toggling again unfavorites without minting a second URL.
@@ -236,7 +236,7 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         #expect(id.guessWhoID == nil)
 
         _ = try await repository.addNote(for: id, body: "decision B")
@@ -264,7 +264,7 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store)
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
 
         // Reads degrade silently.
         #expect(repository.notes(for: id).isEmpty)
@@ -319,14 +319,14 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         // `SidecarKey` canonicalizes ids to lowercase, so the stored event
         // endpoints (and what the accessors return) are lowercased.
         let link1 = try await repository.addEventLink(for: id, eventUUID: "evt-1", note: "a")
         // Re-resolve: the first link minted the contact's GuessWho UUID, so the
         // captured `id` (guessWhoID nil) is stale. The second write resolves it
         // again off the now-reconciled record.
-        let reconciledID = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let reconciledID = (try #require(repository.contact(localID: "TARGET"))).contactID
         let link2 = try await repository.addEventLink(for: reconciledID, eventUUID: "evt-2", note: "b")
 
         // The bulk accessor returns both event endpoints (order-independent).
@@ -349,13 +349,13 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
 
-        let idA = repository.contactID(for: try #require(repository.contact(localID: "A")))
-        let idB = repository.contactID(for: try #require(repository.contact(localID: "B")))
+        let idA = (try #require(repository.contact(localID: "A"))).contactID
+        let idB = (try #require(repository.contact(localID: "B"))).contactID
 
         // A contact↔contact link plus a contact↔event link, both on A. (Event
         // UUIDs are canonicalized to lowercase by `SidecarKey`.)
         let contactLink = try await repository.addLink(from: idA, to: idB, note: "colleagues")
-        let reconciledA = repository.contactID(for: try #require(repository.contact(localID: "A")))
+        let reconciledA = (try #require(repository.contact(localID: "A"))).contactID
         let eventLink = try await repository.addEventLink(for: reconciledA, eventUUID: "evt-x", note: "x")
 
         // Only the event endpoint surfaces in the bulk accessor.
@@ -376,7 +376,7 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         #expect(id.guessWhoID == nil)
 
         #expect(repository.linkedEventUUIDs(for: id).isEmpty)
@@ -408,7 +408,7 @@ struct ContactsRepositoryContactAPITests {
         let repository = ContactsRepository(contacts: store)
         await repository.reload()
 
-        let id = repository.contactID(for: try #require(repository.contact(localID: "TARGET")))
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         #expect(repository.linkedEventUUIDs(for: id).isEmpty)
     }
 }

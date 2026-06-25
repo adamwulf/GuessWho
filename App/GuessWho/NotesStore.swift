@@ -45,7 +45,7 @@ final class NotesStore {
     /// the same id. Keeps the old id when the contact is gone (deleted).
     private func reresolve() {
         guard let contact = repository.contact(id: id) else { return }
-        id = repository.contactID(for: contact)
+        id = contact.contactID
     }
 
     func addNote(body: String) async {

@@ -92,7 +92,7 @@ struct LinkRow: View {
     private var otherContactView: some View {
         if let other = otherContact {
             Button {
-                pushContactReference(ContactReference(id: repository.contactID(for: other)))
+                pushContactReference(ContactReference(id: other.contactID))
             } label: {
                 Text(other.displayName)
                     .font(.body)
@@ -257,7 +257,7 @@ struct AddLinkSheet: View {
             // Exclude by ContactID (effective GuessWho identity), not a raw
             // guessWhoUUID compare. The link target's UUID is resolved on save
             // inside the link WRITE, so we don't precompute a UUID per row.
-            let id = repository.contactID(for: contact)
+            let id = contact.contactID
             if id == currentContactID { continue }
             result.append(EligibleContact(contact: contact, id: id))
         }

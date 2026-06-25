@@ -196,8 +196,8 @@ public final class ContactsRepository: NSObject {
     ///
     /// A PURE function of the passed contact — no cache read — so it reads the
     /// UUID off the live record the caller already holds, with no cache-miss
-    /// window. Identity comes from `SidecarKey` exactly as `contactID(for:)` and
-    /// `contact(id:)` resolve it. The sanctioned way for the app to read an OPENED
+    /// window. Identity comes from `SidecarKey` exactly as `Contact.contactID`
+    /// and `contact(id:)` resolve it. The sanctioned way for the app to read an OPENED
     /// contact's own GuessWho UUID without reaching into `ContactID.guessWhoID`
     /// (which is `package`): the detail view holds the loaded `Contact` and binds
     /// its sidecar stores on this. Semantics match the former
@@ -205,18 +205,6 @@ public final class ContactsRepository: NSObject {
     /// `urlAddresses` via the same `SidecarKey` parser).
     public func guessWhoID(in contact: Contact) -> String? {
         ContactID(contact: contact).guessWhoID
-    }
-
-    /// Vends the `ContactID` for a `Contact` the caller already holds — the
-    /// only sanctioned way for the app to obtain a navigation/identity token
-    /// from a `Contact`, since `ContactID.init(contact:)` is `package` and the
-    /// app cannot mint one itself. Used by the navigation layer to re-key a
-    /// `ContactReference` off a list-selected `Contact` and by detail views
-    /// that hold a `Contact` and need to push to it. Pure function of the
-    /// passed contact (no cache read); identity comes from `SidecarKey` exactly
-    /// as `contact(id:)` resolves it back.
-    public func contactID(for contact: Contact) -> ContactID {
-        ContactID(contact: contact)
     }
 
     /// Resolves a BARE GuessWho UUID (a `SidecarKey` endpoint id, a

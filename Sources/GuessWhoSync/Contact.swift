@@ -99,3 +99,10 @@ public struct Contact: Hashable, Sendable, Codable {
         self.imageDataAvailable = imageDataAvailable
     }
 }
+
+extension Contact {
+    /// This contact's opaque identity token. Derived purely from the contact's
+    /// stored data (its `guesswho://` URL if reconciled, else its `localID`),
+    /// so it's free to compute on demand. The canonical id shape the UI keys on.
+    public var contactID: ContactID { ContactID(contact: self) }
+}

@@ -123,17 +123,17 @@ struct ContactsRepositoryIndexTests {
         let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [reconciled, bare]))
         await repository.reload()
 
-        // The app obtains a ContactID via `contactID(for:)` and hands it back to
+        // The app obtains a ContactID via `Contact.contactID` and hands it back to
         // `contact(id:)` — the navigation round-trip Stage 4 relies on.
-        let reconciledID = repository.contactID(for: reconciled)
+        let reconciledID = reconciled.contactID
         #expect(repository.contact(id: reconciledID)?.localID == "r")
         #expect(reconciledID.effectiveID == uuid)                 // keyed on the UUID
 
-        let bareID = repository.contactID(for: bare)
+        let bareID = bare.contactID
         #expect(repository.contact(id: bareID)?.localID == "b")
         #expect(bareID.effectiveID == "b")                        // falls back to localID
 
-        // And `contactID(for:)` for a reconciled contact agrees with the bare
+        // And `Contact.contactID` for a reconciled contact agrees with the bare
         // guessWhoID resolution.
         #expect(repository.contact(guessWhoID: reconciledID.effectiveID)?.localID == "r")
     }

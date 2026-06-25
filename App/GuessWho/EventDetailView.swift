@@ -391,7 +391,7 @@ struct EventDetailView: View {
 
         if let contact {
             Button {
-                pushContactReference(ContactReference(id: repository.contactID(for: contact)))
+                pushContactReference(ContactReference(id: contact.contactID))
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -502,7 +502,7 @@ struct EventDetailView: View {
             // EVENT endpoint is the bare `resolvedUUID` until the deferred
             // event-identity migration.
             _ = try await repository.addEventLink(
-                for: repository.contactID(for: contact),
+                for: contact.contactID,
                 eventUUID: resolvedUUID,
                 note: note
             )
@@ -799,6 +799,6 @@ private struct ContactPickerSheet: View {
             let needle = trimmed.lowercased()
             matched = sorted.filter { $0.displayName.lowercased().contains(needle) }
         }
-        return matched.map { (id: repository.contactID(for: $0), contact: $0) }
+        return matched.map { (id: $0.contactID, contact: $0) }
     }
 }

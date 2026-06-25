@@ -615,7 +615,7 @@ struct ContactDetailView: View {
                 InfoRowData.backReference(
                     displayName: entry.contact.displayName,
                     descriptor: "their \(localizedLabel(entry.label))",
-                    contactID: repository.contactID(for: entry.contact)
+                    contactID: entry.contact.contactID
                 )
             }
             Section {
@@ -675,7 +675,7 @@ struct ContactDetailView: View {
             rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
         }
         let lookup = repository.lookupByDisplayName()
-        let selfID = repository.contactID(for: contact)
+        let selfID = contact.contactID
         for item in contact.contactRelations {
             let key = item.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             // Compare by ContactID (effective GuessWho identity), not raw
@@ -683,7 +683,7 @@ struct ContactDetailView: View {
             // by stable identity rather than the transient identifier. Mint the
             // match's ContactID once (it re-parses the GuessWho URL) and reuse it.
             if !key.isEmpty, let match = lookup[key],
-               case let matchID = repository.contactID(for: match), matchID != selfID {
+               case let matchID = match.contactID, matchID != selfID {
                 rows.append(.contactLink(
                     label: localizedLabel(item.label),
                     displayName: match.displayName,
@@ -1021,7 +1021,7 @@ struct ContactDetailView: View {
     /// nil only before the first load resolves a contact.
     private var loadedContactID: ContactID? {
         guard let contact else { return nil }
-        return repository.contactID(for: contact)
+        return contact.contactID
     }
 
     private var isContactFavorited: Bool {
@@ -1166,7 +1166,7 @@ struct ContactDetailView: View {
     /// write reconciles + mints, so notes/links can be added to a never-touched
     /// contact.
     private func rebuildSidecarStores(for loaded: Contact) {
-        let loadedID = repository.contactID(for: loaded)
+        let loadedID = loaded.contactID
         if notesStore?.id != loadedID {
             notesStore = NotesStore(repository: repository, id: loadedID)
         } else {

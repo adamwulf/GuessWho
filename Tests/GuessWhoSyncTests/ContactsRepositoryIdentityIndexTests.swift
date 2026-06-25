@@ -145,7 +145,7 @@ struct ContactsRepositoryIdentityIndexTests {
 
         // Capture the pre-reconcile token (guessWhoID nil) as a view would.
         let cached = try #require(repository.contact(localID: "TARGET"))
-        let capturedID = repository.contactID(for: cached)
+        let capturedID = cached.contactID
         #expect(capturedID.guessWhoID == nil)
 
         // A write mints — and pokes the cache through the funnel. NO reload() here.
@@ -162,7 +162,7 @@ struct ContactsRepositoryIdentityIndexTests {
         //   via the localID branch (the contact struct was updated in place) →
         #expect(repository.contact(id: capturedID)?.localID == "TARGET")
         // - and a freshly-built reconciled token resolves via the guessWhoID branch.
-        #expect(repository.contact(id: repository.contactID(for: canonical))?.localID == "TARGET")
+        #expect(repository.contact(id: canonical.contactID)?.localID == "TARGET")
     }
 
     // MARK: - Single source of truth: one Contact struct; guessWhoID chases a pointer

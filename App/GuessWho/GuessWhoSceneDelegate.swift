@@ -169,7 +169,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // The list VCs vend a `Contact` on selection; re-key it to the opaque
         // `ContactID` the detail view now roots on — the app never threads a
         // raw `localID` through navigation.
-        let detail = ContactDetailView(id: appDelegate.contactsRepository.contactID(for: contact))
+        let detail = ContactDetailView(id: contact.contactID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.favoritesStore)
@@ -423,7 +423,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ) {
         // List selection vends a `Contact`; re-key it to its opaque `ContactID`
         // so the pushed detail roots on stable GuessWho identity, not localID.
-        pushContactDetail(id: appDelegate.contactsRepository.contactID(for: contact), on: nav, appDelegate: appDelegate)
+        pushContactDetail(id: contact.contactID, on: nav, appDelegate: appDelegate)
     }
 
     private func pushContactDetail(
