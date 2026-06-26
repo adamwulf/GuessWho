@@ -128,9 +128,10 @@ struct LinkedInConfirmView: View {
             if isPhoto {
                 photoThumb(photo, placeholder: placeholder)
             } else if let value, !value.isEmpty {
-                // Cap tall values (About) and scroll inside the cell.
+                // Cap very tall values (About) and scroll inside the cell, but
+                // allow a generous height so most text is visible without scroll.
                 ScrollView { Text(value).font(.body).frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(maxHeight: 160)
+                    .frame(maxHeight: 320)
                     .foregroundStyle(isExisting ? Color.secondary : Color.primary)
             } else {
                 Text("—").font(.body).foregroundStyle(.tertiary)

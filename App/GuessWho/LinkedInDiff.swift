@@ -62,15 +62,16 @@ enum LinkedInDiff {
         add(.about, "About", nil, profile.about)          // existing about is a sidecar note
 
         // Emails / websites are MERGED, never replaced: we only ever ADD values
-        // the contact is missing, and never delete existing ones. So the diff
-        // shows the existing set on the left and just the NEW additions on the
-        // right; if there's nothing new to add, the row is skipped entirely.
+        // the contact is missing, and never delete existing ones. The LEFT shows
+        // the existing set; the RIGHT shows the full RESULTING set (existing +
+        // additions) so the user sees the end state. The row appears only when
+        // there's at least one new value to add.
         let existingEmails = contact.emailAddresses.map(\.value)
         let newEmails = additions(profile.contactInfo?.emails ?? [], notIn: existingEmails)
         if !newEmails.isEmpty {
             add(.emails, "Email",
                 existingEmails.joined(separator: "\n"),
-                newEmails.joined(separator: "\n"))
+                (existingEmails + newEmails).joined(separator: "\n"))
         }
 
         let existingSites = contact.urlAddresses.map(\.value)
@@ -78,7 +79,7 @@ enum LinkedInDiff {
         if !newSites.isEmpty {
             add(.websites, "Websites",
                 existingSites.joined(separator: "\n"),
-                newSites.joined(separator: "\n"))
+                (existingSites + newSites).joined(separator: "\n"))
         }
 
         // LinkedIn URL: add only if the contact has no LinkedIn social profile yet.
