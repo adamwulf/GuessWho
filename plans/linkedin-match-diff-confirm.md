@@ -15,17 +15,25 @@ this flow hooks in.
 
 ## Matching rules (user-specified)
 
-1. **Match by email first.** If any parsed `contactInfo.emails` matches a
-   contact's email → that contact. Use
-   `ContactsRepository.contactIDs(matchingEmail:)` (case-insensitive, returns
-   ALL matches).
-2. **Else match by display name.** `contactIDs(named: fullName)` /
-   `lookupByDisplayName()`.
-3. **Else → new-contact screen.** (Scope decision below.)
+Try in priority order; first hit wins (most precise first):
 
-Multiple matches: take the single best and show it in the confirm dialog; if
-there are several, note it and let the user proceed with the chosen one (full
-disambiguation picker is a later refinement, not v1).
+1. **LinkedIn URL** (most precise — a near-unique identifier). Match a contact
+   whose `socialProfiles` or `urlAddresses` contains the LinkedIn profile.
+   - Match the **full profile URL** (`contactInfo.profileUrl`,
+     normalized — strip scheme/`www.`/trailing slash, case-insensitive), AND
+   - match just the **username/slug** (`/in/<slug>`), so a stored URL with a
+     different format (mobile, query params, trailing path) still matches.
+   - **No package primitive exists** for this (only email/name indexes). Do it
+     app-side in `LinkedInMatcher` by scanning `repository.contacts` (which is
+     `public` `[Contact]`) — O(n), fine for a one-shot user action.
+2. **Email.** Any parsed `contactInfo.emails` ↔ a contact's email, via
+   `contactIDs(matchingEmail:)` (case-insensitive, returns ALL matches).
+3. **Display name.** `contactIDs(named: fullName)` / `lookupByDisplayName()`.
+4. **Else → no match** (defer to a future new-contact screen).
+
+Multiple matches at a given tier: take the single best and show it in the
+confirm dialog; if several, note it and let the user proceed with the chosen one
+(full disambiguation picker is a later refinement, not v1).
 
 ## The confirm dialog — per-field diff with checkboxes
 
