@@ -40,17 +40,21 @@ function largestPhotoURL(photoSrcset) {
   return best;
 }
 
-// Fetch the photo bytes IN-SESSION (so cookies/session apply — media.licdn.com
-// may reject out-of-browser fetches the way the profile page does), and return
-// a data: URL (base64). We fetch the LARGEST available variant (full-res, up to
-// 800x800 for profile photos); that's tens of KB, still well within the
-// native-messaging payload limit, so we pass it inline. Best-effort: returns
-// null on any failure.
+// Fetch the photo bytes and return a data: URL (base64). We fetch the LARGEST
+// available variant (full-res, up to 800x800 for profile photos); that's tens of
+// KB, still well within the native-messaging payload limit, so we pass it inline.
+//
+// IMPORTANT: do NOT send credentials. media.licdn.com responds with
+// `Access-Control-Allow-Origin: *`, and the browser forbids combining a wildcard
+// ACAO with `credentials: "include"` ("Cannot use wildcard in
+// Access-Control-Allow-Origin when credentials flag is true"). These signed photo
+// URLs are public — the ?t= signature is the auth — so cookies aren't needed.
+// Best-effort: returns { error } on any failure.
 async function fetchPhotoBytes(photoSrcset) {
   const url = largestPhotoURL(photoSrcset);
   if (!url) return { error: "no-url" };
   try {
-    const res = await fetch(url, { credentials: "include" });
+    const res = await fetch(url, { credentials: "omit" });
     if (!res.ok) {
       console.log("[GuessWho] photo fetch HTTP", res.status, url);
       return { error: "http-" + res.status };
