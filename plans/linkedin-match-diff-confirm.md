@@ -17,19 +17,26 @@ this flow hooks in.
 
 Try in priority order; first hit wins (most precise first):
 
+**All matching logic is PACKAGE-side** (in `ContactsRepository`/`GuessWhoSync`),
+never in the app — consistent with `contactIDs(matchingEmail:)` /
+`contactIDs(named:)`. The app calls a package matcher; it owns no matching rules.
+
 1. **LinkedIn URL** (most precise — a near-unique identifier). Match a contact
    whose `socialProfiles` or `urlAddresses` contains the LinkedIn profile.
    - Match the **full profile URL** (`contactInfo.profileUrl`,
      normalized — strip scheme/`www.`/trailing slash, case-insensitive), AND
    - match just the **username/slug** (`/in/<slug>`), so a stored URL with a
      different format (mobile, query params, trailing path) still matches.
-   - **No package primitive exists** for this (only email/name indexes). Do it
-     app-side in `LinkedInMatcher` by scanning `repository.contacts` (which is
-     `public` `[Contact]`) — O(n), fine for a one-shot user action.
+   - **Net-new package primitive:** add `contactIDs(matchingLinkedInURL:)` (and
+     an index, mirroring `contactsByEmail`) to `ContactsRepository`, with tests.
 2. **Email.** Any parsed `contactInfo.emails` ↔ a contact's email, via
    `contactIDs(matchingEmail:)` (case-insensitive, returns ALL matches).
 3. **Display name.** `contactIDs(named: fullName)` / `lookupByDisplayName()`.
 4. **Else → no match** (defer to a future new-contact screen).
+
+A single package entry point — e.g. `matchLinkedIn(profile:) -> [ContactID]` or
+a thin matcher type in `GuessWhoSync` — runs tiers 1→3 in order and returns the
+first non-empty tier. The app just presents whatever it returns.
 
 Multiple matches at a given tier: take the single best and show it in the
 confirm dialog; if several, note it and let the user proceed with the chosen one
@@ -72,20 +79,29 @@ handleLinkedInHandoff(payload JSON)
        Cancel  → nothing
 ```
 
-New files (App target):
-- `LinkedInProfile.swift` — Codable model decoding the handoff JSON payload
-  (mirrors the parsed shape: fullName, title, org, location, about,
-  contactInfo{emails,websites,profileUrl}, photo{dataURL,contentType,byteLength}).
-- `LinkedInMatcher.swift` — the email→name→none matching over `ContactsRepository`.
-- `LinkedInConfirmView.swift` — SwiftUI diff dialog (left/right + per-row
-  checkbox), hosted in a `UIHostingController` and presented from the scene
-  delegate (same pattern the app uses for `ContactDetailView`/`EventDetailView`).
-- `LinkedInDiff.swift` — builds `[DiffRow]` from existing `Contact` + parsed
-  profile; each row carries field id, label, existing display, incoming display,
-  changed flag, default-checked flag.
+**Package (`Sources/GuessWhoSync/`)** — model + ALL matching:
+- `LinkedInProfile.swift` — `Codable`, `Sendable` model of the parsed payload
+  (fullName, title, org, location, about, contactInfo{emails,websites,profileUrl},
+  photo{dataURL,contentType,byteLength}, sourceUrl/slug). Package-vended so the
+  matcher can take it as input.
+- LinkedIn URL matching: `contactIDs(matchingLinkedInURL:)` + an index on
+  `ContactsRepository` (mirrors `contactsByEmail`), plus a single
+  `matchLinkedIn(profile:) -> [ContactID]` entry point that runs URL → email →
+  name and returns the first non-empty tier. Unit-tested in
+  `Tests/GuessWhoSyncTests`.
+- A LinkedIn-URL normalizer (strip scheme/`www.`/trailing slash; extract
+  `/in/<slug>`) — pure, unit-testable.
 
-`GuessWhoSceneDelegate` decodes the payload and drives match → present, reaching
-`ContactsRepository` via `GuessWhoAppDelegate.contactsRepository`.
+**App (`App/GuessWho/`)** — decode + present only (NO matching rules):
+- Decode the handoff JSON into the package `LinkedInProfile`.
+- `LinkedInConfirmView.swift` — SwiftUI diff dialog (left/right + per-row
+  checkbox), hosted in a `UIHostingController`, presented from the scene delegate
+  (same pattern as `ContactDetailView`/`EventDetailView`).
+- `LinkedInDiff.swift` (app) — builds `[DiffRow]` for display from the resolved
+  `Contact` + the package `LinkedInProfile` (presentation concern, app-side).
+
+`GuessWhoSceneDelegate` decodes the payload, calls the package matcher via
+`GuessWhoAppDelegate.contactsRepository`, then presents the dialog.
 
 ## Scope decisions (CONFIRMED 2026-06-26)
 
@@ -125,10 +141,13 @@ write path (photo).
 
 ## Build order
 
-1. `LinkedInProfile` Codable model + decode in the scene delegate (replace the
-   log-only receiver). Verify the real payload decodes.
-2. `LinkedInMatcher` (email → name → none) + unit-testable matching.
-3. `LinkedInDiff` builder.
+1. **Package:** `LinkedInProfile` Codable model + LinkedIn-URL normalizer +
+   `contactIDs(matchingLinkedInURL:)` (+ index) + `matchLinkedIn(profile:)`
+   entry point, with unit tests in `Tests/GuessWhoSyncTests`. (`swift test`.)
+2. **App:** decode the handoff JSON into `LinkedInProfile` in the scene delegate
+   (replace the log-only receiver); call `matchLinkedIn`. Verify the real
+   payload decodes and matches.
+3. `LinkedInDiff` builder (app, presentation).
 4. `LinkedInConfirmView` SwiftUI dialog (left/right + checkboxes, all ON,
    unchanged rows de-emphasized), presented on match.
 5. **Save on Confirm** — apply checked rows across the three write paths:
