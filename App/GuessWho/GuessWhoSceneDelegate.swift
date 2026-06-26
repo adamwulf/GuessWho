@@ -627,12 +627,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Filename the extension's native handler writes into the App Group.
     private static let handoffFilename = "pending-handoff.json"
 
-    /// Upper bound on the handoff file we will read into memory. The handoff is
-    /// small JSON today; a real photo-bearing payload will be larger but still
-    /// bounded — this cap guards against reading an unexpectedly huge or hostile
-    /// file from the shared container. Raise deliberately when the real consumer
-    /// (with image bytes) lands; never read unbounded.
-    private static let handoffMaxBytes = 256 * 1024
+    /// Upper bound on the handoff file we will read into memory. The payload now
+    /// carries the full-res profile photo as a base64 data URL inside the JSON,
+    /// so it's larger than the old text-only handoff but still bounded. An
+    /// 800x800 profile JPEG is ~tens–hundreds of KB; base64 inflates ~33% and the
+    /// JSON wraps it — 8 MB is generous headroom while still rejecting an
+    /// unexpectedly huge or hostile file. Never read unbounded.
+    private static let handoffMaxBytes = 8 * 1024 * 1024
 
     private static let handoffLog = Logger(
         subsystem: "com.milestonemade.guesswho",
@@ -652,8 +653,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         Self.handoffLog.log("APP resolved App Group id=\(Self.handoffAppGroupID, privacy: .public)")
         Self.handoffLog.log("LinkedIn handoff wake received")
 
-        let payload = readAndClearHandoffPayload()
-        presentHandoffAlert(payload: payload)
+        // Spike receiver: log the payload (the os_log inside the reader prints
+        // it). No alert — the payload now carries a full-res base64 photo that's
+        // unreadable in an alert; the Console log is the surface to inspect it.
+        _ = readAndClearHandoffPayload()
     }
 
     /// Reads `pending-handoff.json` from the App Group container, deletes it
@@ -695,7 +698,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             try FileManager.default.removeItem(at: fileURL)
 
             let rendered = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-UTF8>"
-            Self.handoffLog.log("LinkedIn handoff payload: \(rendered, privacy: .public)")
+            // Elide the base64 photo data URL so the Console log stays readable.
+            let logSafe: String
+            if let regex = try? NSRegularExpression(pattern: "data:[^\"]{0,40}base64,[A-Za-z0-9+/=]+") {
+                let r = NSRange(rendered.startIndex..., in: rendered)
+                logSafe = regex.stringByReplacingMatches(in: rendered, range: r, withTemplate: "<base64 image elided>")
+            } else {
+                logSafe = rendered
+            }
+            Self.handoffLog.log("LinkedIn handoff payload: \(logSafe, privacy: .public)")
             return rendered
         } catch {
             let message = "Failed to read/clear handoff: \(error.localizedDescription)"
@@ -704,27 +715,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Surfaces the drained payload in a throwaway alert so the spike can be
-    /// eyeballed end-to-end. No Contacts / sidecar work — that lands in later
-    /// build steps once the pipe is proven.
-    private func presentHandoffAlert(payload: String) {
-        guard let rootViewController = window?.rootViewController else { return }
-
-        let alert = UIAlertController(
-            title: "LinkedIn handoff received",
-            message: payload,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-
-        // Present on the topmost VC so it works whether the root is the
-        // Catalyst split or the iPhone tab/gate shell.
-        var presenter = rootViewController
-        while let presented = presenter.presentedViewController {
-            presenter = presented
-        }
-        presenter.present(alert, animated: true)
-    }
 }
 
 #if !targetEnvironment(macCatalyst)

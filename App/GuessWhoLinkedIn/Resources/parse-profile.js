@@ -138,13 +138,38 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   });
 
   // --- Photo URL ------------------------------------------------------------
-  // The photo <img>'s src is a media.licdn.com CDN URL; srcset carries multiple
-  // sizes. We return the srcset/src so the caller can pick a small variant and
-  // fetch the BYTES in-session (the URL itself may reject out-of-browser
-  // fetches like the profile page does).
+  // We want FULL-RES. LinkedIn signs each size variant separately (the ?t= token
+  // differs per size; the 800 variant can even have a different filename), so we
+  // can't rewrite the size token — we must use a srcset the page actually
+  // provides. The alt-anchored top-card <img> often carries ONLY the 100x100
+  // `src` (no srcset). But another <img> for the SAME profile-photo asset (e.g.
+  // alt="") carries the full multi-variant srcset including 800w. So: scan ALL
+  // profile-displayphoto images and return the richest source — prefer a real
+  // multi-variant `srcset`, else the largest single `src`. The caller picks the
+  // largest entry and fetches its bytes in-session.
   const photoSrcset = safe(() => {
-    if (!photoImg) return null;
-    return photoImg.getAttribute("srcset") || photoImg.currentSrc || photoImg.src || null;
+    const imgs = [...doc.querySelectorAll('img[src*="profile-displayphoto"], img[srcset*="profile-displayphoto"]')];
+    if (!imgs.length) {
+      // Last resort: the alt-anchored top-card image, whatever it has.
+      return photoImg
+        ? (photoImg.getAttribute("srcset") || photoImg.currentSrc || photoImg.src || null)
+        : null;
+    }
+    // Prefer an <img> that actually has a multi-variant srcset (contains "w,"),
+    // which carries the larger 400/800 sizes with valid signatures.
+    const withSrcset = imgs
+      .map((im) => im.getAttribute("srcset"))
+      .filter((s) => s && /\d+w/.test(s));
+    if (withSrcset.length) {
+      // Pick the srcset whose largest descriptor is biggest.
+      const maxW = (s) =>
+        Math.max(...[...s.matchAll(/(\d+)w/g)].map((m) => parseInt(m[1], 10)), 0);
+      return withSrcset.sort((a, b) => maxW(b) - maxW(a))[0];
+    }
+    // No srcset anywhere — fall back to the single src on the alt-anchored image.
+    return photoImg
+      ? (photoImg.getAttribute("srcset") || photoImg.currentSrc || photoImg.src || null)
+      : (imgs[0].currentSrc || imgs[0].src || null);
   });
 
   return {
