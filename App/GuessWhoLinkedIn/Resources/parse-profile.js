@@ -166,8 +166,96 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   };
 }
 
+// --- Contact info (click-then-parse) ----------------------------------------
+//
+// Emails, websites, and the canonical profile URL are NOT in the page DOM — they
+// live behind the "Contact info" link, which opens an overlay/dialog. This is an
+// async, STATEFUL interaction: open the overlay, wait for it, parse it, then
+// restore the page (close it). Only do this on explicit user action.
+//
+// The trigger is a stable anchor: an <a href> ending in "/overlay/contact-info/"
+// (more stable than the visible "Contact info" text, which can be localized).
+// Clicking it lets LinkedIn's SPA open the modal in place.
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Poll for a value until truthy or the attempts run out. Never hangs.
+async function waitFor(fn, { tries = 25, intervalMs = 120 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    let v = null;
+    try { v = fn(); } catch { v = null; }
+    if (v) return v;
+    await sleep(intervalMs);
+  }
+  return null;
+}
+
+function findContactInfoTrigger(doc) {
+  // Prefer the stable href; fall back to the accessible text/aria-label.
+  const byHref = doc.querySelector('a[href*="/overlay/contact-info/"]');
+  if (byHref) return byHref;
+  return [...doc.querySelectorAll("a, button")].find((el) => {
+    const t = (el.textContent || el.getAttribute("aria-label") || "").trim();
+    return /contact info/i.test(t);
+  }) || null;
+}
+
+async function extractContactInfo(doc = (typeof document !== "undefined" ? document : null)) {
+  if (!doc) return null;
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+
+  const trigger = findContactInfoTrigger(doc);
+  if (!trigger) return null;
+
+  // Open the overlay. preventDefault keeps the SPA in place rather than a full
+  // navigation; if the SPA ignores that, the modal still opens.
+  trigger.click();
+
+  const dialog = await waitFor(() => {
+    const d = doc.querySelector('[role="dialog"]');
+    // Make sure it's the contact-info dialog, not some other open dialog.
+    if (d && /contact|email|website|profile/i.test(d.textContent || "")) return d;
+    return null;
+  });
+  if (!dialog) return null;
+
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))];
+
+  const info = {
+    profileUrl: safe(() => {
+      // The public profile URL inside the dialog (an /in/<slug> link, not the
+      // overlay link itself).
+      const a = [...dialog.querySelectorAll('a[href*="/in/"]')]
+        .find((x) => !/\/overlay\//.test(x.href));
+      return a ? a.href : null;
+    }),
+    emails: safe(() =>
+      uniq([...dialog.querySelectorAll('a[href^="mailto:"]')]
+        .map((a) => a.getAttribute("href").replace(/^mailto:/, "").trim()))
+    ) || [],
+    websites: safe(() =>
+      uniq([...dialog.querySelectorAll('a[href^="http"]')]
+        .map((a) => a.href)
+        .filter((h) => !/linkedin\.com/.test(h)))
+    ) || [],
+  };
+
+  // Restore page state: close the dialog (Esc, or a close/dismiss button).
+  safe(() => {
+    const closeBtn = dialog.querySelector(
+      '[aria-label*="Dismiss" i], [aria-label*="Close" i], button[aria-label]'
+    );
+    if (closeBtn) closeBtn.click();
+    else doc.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+
+  return info;
+}
+
 // Export for the unit-test harness (Node) without breaking the browser, where
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { extractProfile };
+  module.exports = { extractProfile, extractContactInfo };
 }

@@ -18,7 +18,7 @@ function minimalProbe() {
   };
 }
 
-function probe() {
+async function probe() {
   let result;
   try {
     if (typeof extractProfile === "function") {
@@ -30,6 +30,18 @@ function probe() {
   }
   if (!result) result = minimalProbe();
 
+  // Contact info (emails/websites/profile URL) lives behind the "Contact info"
+  // overlay — open it, parse it, restore the page. Async + best-effort; never
+  // let it break the rest of the result.
+  try {
+    if (typeof extractContactInfo === "function") {
+      const ci = await extractContactInfo();
+      if (ci) result.contactInfo = ci;
+    }
+  } catch (e) {
+    console.log("[GuessWho] extractContactInfo threw:", e);
+  }
+
   // Log the full parse result to the page console so it can be copy/pasted for
   // selector debugging (alerts don't scale as the payload grows). Filter the
   // browser console on "[GuessWho]" to find it.
@@ -38,8 +50,13 @@ function probe() {
 }
 
 // The popup triggers the handoff; the content script answers with the probe.
+// `probe()` is async, so resolve it then call sendResponse; returning true
+// keeps the message channel open for the async reply.
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "guesswho.probe") return false;
-  sendResponse(probe());
+  probe().then(sendResponse).catch((e) => {
+    console.log("[GuessWho] probe failed:", e);
+    sendResponse(minimalProbe());
+  });
   return true;
 });
