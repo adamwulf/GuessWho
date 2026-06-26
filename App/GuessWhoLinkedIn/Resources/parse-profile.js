@@ -107,27 +107,22 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   // --- About ----------------------------------------------------------------
   // Anchor on the "About" <h2> landmark, then take the longest text block in
   // its following section (skips Edit links / icons present in self-view).
-  // `aboutDebug` records WHY about came back null (no heading? no section? no
-  // candidates?) so a null result is diagnosable from the console log.
-  const aboutDebug = { headingFound: false, sectionFound: false, candidateCount: 0, longest: 0 };
+  // NOTE: LinkedIn lazy-renders this section, so on a fresh non-scrolled page it
+  // may be absent and return null — accepted tradeoff (see content.js).
   const about = safe(() => {
     const heads = [...doc.querySelectorAll("h1, h2, h3")];
     const aboutHead = heads.find((h) => /^about$/i.test(text(h) || ""));
     if (!aboutHead) return null;
-    aboutDebug.headingFound = true;
     const section = aboutHead.closest("section") || aboutHead.parentElement;
     if (!section) return null;
-    aboutDebug.sectionFound = true;
     // Candidate text nodes within the section, excluding the heading itself and
     // obvious chrome (links/buttons). Pick the longest — the bio is the body.
     const candidates = [...section.querySelectorAll("span, p, div")]
       .filter((el) => !el.closest("a, button"))
       .map((el) => text(el))
       .filter((t) => t && t.length > 0 && !/^about$/i.test(t));
-    aboutDebug.candidateCount = candidates.length;
     if (!candidates.length) return null;
     let body = candidates.reduce((a, b) => (b.length > a.length ? b : a), "");
-    aboutDebug.longest = body.length;
     // The longest block can include the section heading text glued to the front
     // ("About<bio>") and the truncated expander suffix ("…more"/"… see more").
     // Strip both so we keep just the bio prose.
@@ -166,9 +161,8 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     location,
     about,
     photoSrcset,
-    // Debug aids for selector tuning — drop once the parser stabilizes.
+    // Debug aid for selector tuning — drop once the parser stabilizes.
     _topCardLines: topCardLines,
-    _aboutDebug: aboutDebug,
   };
 }
 
