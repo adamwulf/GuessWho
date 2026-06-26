@@ -48,12 +48,12 @@ function largestPhotoURL(photoSrcset) {
 // null on any failure.
 async function fetchPhotoBytes(photoSrcset) {
   const url = largestPhotoURL(photoSrcset);
-  if (!url) return null;
+  if (!url) return { error: "no-url" };
   try {
     const res = await fetch(url, { credentials: "include" });
     if (!res.ok) {
       console.log("[GuessWho] photo fetch HTTP", res.status, url);
-      return null;
+      return { error: "http-" + res.status };
     }
     const blob = await res.blob();
     const dataURL = await new Promise((resolve, reject) => {
@@ -64,8 +64,11 @@ async function fetchPhotoBytes(photoSrcset) {
     });
     return { dataURL, contentType: blob.type || null, byteLength: blob.size };
   } catch (e) {
+    // Surface the reason so it's visible in the (app-side) payload log even
+    // without the JS console — most likely a Safari host-permission denial or a
+    // CORS error on media.licdn.com.
     console.log("[GuessWho] photo fetch threw:", e);
-    return null;
+    return { error: "threw: " + (e && e.message ? e.message : String(e)) };
   }
 }
 
@@ -100,18 +103,24 @@ async function probe() {
   }
 
   // Photo bytes: fetch the full-res variant in-session and attach as a data URL.
-  // Best-effort; never breaks the rest of the result.
+  // Best-effort; never breaks the rest of the result. On failure, attach
+  // result.photoError so the reason is visible in the payload (and the app-side
+  // log) without needing the JS console.
   try {
     const photo = await fetchPhotoBytes(result.photoSrcset);
-    if (photo) {
+    if (photo && photo.dataURL) {
       result.photo = photo;
       console.log(
         "[GuessWho] photo fetched:",
         photo.contentType,
         Math.round(photo.byteLength / 1024) + "KB"
       );
+    } else {
+      result.photoError = (photo && photo.error) || "unknown";
+      console.log("[GuessWho] photo not fetched:", result.photoError);
     }
   } catch (e) {
+    result.photoError = "caller-threw: " + (e && e.message ? e.message : String(e));
     console.log("[GuessWho] fetchPhotoBytes threw:", e);
   }
 
