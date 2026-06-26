@@ -20,6 +20,7 @@ final class FavoritesListViewController: UIViewController {
     /// The single app-owned in-memory contact cache. The favorites builder
     /// reads `repository.contacts` instead of re-enumerating the whole store.
     private let repository: ContactsRepository
+    private let photoLoader: ContactPhotoLoader
 
     private enum CellID: String {
         case favorite
@@ -29,6 +30,7 @@ final class FavoritesListViewController: UIViewController {
     private var dataSource: UITableViewDiffableDataSource<Int, FavoriteListItem.ID>!
 
     private var favoriteItemsByID: [FavoriteListItem.ID: FavoriteListItem] = [:]
+    private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
     private let emptyLabel = UILabel()
 
@@ -39,10 +41,16 @@ final class FavoritesListViewController: UIViewController {
     private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
 
-    init(store: FavoritesListStore, service: SyncService, repository: ContactsRepository) {
+    init(
+        store: FavoritesListStore,
+        service: SyncService,
+        repository: ContactsRepository,
+        photoLoader: ContactPhotoLoader
+    ) {
         self.store = store
         self.service = service
         self.repository = repository
+        self.photoLoader = photoLoader
         super.init(nibName: nil, bundle: nil)
         title = "Favorites"
     }
@@ -88,6 +96,7 @@ final class FavoritesListViewController: UIViewController {
         tableView = UITableView(frame: .zero, style: .plain)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
+        tableView.prefetchDataSource = self
         tableView.dragDelegate = self
         tableView.dropDelegate = self
         tableView.dragInteractionEnabled = true
@@ -127,7 +136,7 @@ final class FavoritesListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, itemID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.favorite.rawValue, for: indexPath)
             guard let self, let item = self.favoriteItemsByID[itemID] else { return cell }
-            (cell as? FavoriteCell)?.configure(with: item)
+            (cell as? FavoriteCell)?.configure(with: item, photoLoader: self.photoLoader)
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -262,6 +271,10 @@ extension FavoritesListViewController: UITableViewDelegate {
         }
     }
 
+    func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        (cell as? FavoriteCell)?.cancelPhotoLoad()
+    }
+
     func tableView(
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
@@ -285,6 +298,36 @@ extension FavoritesListViewController: UITableViewDelegate {
 extension FavoritesListViewController: ScrollsToTop {
     func scrollToTop(animated: Bool) {
         tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
+// MARK: - UITableViewDataSourcePrefetching
+
+extension FavoritesListViewController: UITableViewDataSourcePrefetching {
+    func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
+        for indexPath in indexPaths {
+            guard let itemID = dataSource.itemIdentifier(for: indexPath),
+                  let contact = favoriteItemsByID[itemID]?.contact else { continue }
+            let id = contact.contactID
+            guard prefetchTasks[id] == nil,
+                  photoLoader.cachedImage(for: id, kind: .thumbnail) == nil else { continue }
+            prefetchTasks[id] = Task { [weak self, photoLoader] in
+                _ = await photoLoader.image(for: id, kind: .thumbnail)
+                await MainActor.run {
+                    self?.prefetchTasks[id] = nil
+                }
+            }
+        }
+    }
+
+    func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
+        for indexPath in indexPaths {
+            guard let itemID = dataSource.itemIdentifier(for: indexPath),
+                  let contact = favoriteItemsByID[itemID]?.contact else { continue }
+            let id = contact.contactID
+            prefetchTasks[id]?.cancel()
+            prefetchTasks[id] = nil
+        }
     }
 }
 
@@ -352,6 +395,8 @@ private final class FavoriteCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let captionLabel = UILabel()
+    private var representedContactID: ContactID?
+    private var photoTask: Task<Void, Never>?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -361,6 +406,14 @@ private final class FavoriteCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unsupported — FavoriteCell is code-only")
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        cancelPhotoLoad()
+        representedContactID = nil
+        iconView.image = nil
+        captionLabel.isHidden = false
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -377,6 +430,8 @@ private final class FavoriteCell: UITableViewCell {
         iconView.contentMode = .scaleAspectFit
         iconView.tintColor = .secondaryLabel
         iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .title3)
+        iconView.clipsToBounds = true
+        iconView.layer.cornerRadius = 12
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.font = .preferredFont(forTextStyle: .body)
@@ -411,15 +466,32 @@ private final class FavoriteCell: UITableViewCell {
         ])
     }
 
-    func configure(with item: FavoriteListItem) {
+    func configure(with item: FavoriteListItem, photoLoader: ContactPhotoLoader) {
+        cancelPhotoLoad()
+        representedContactID = nil
         switch item.kind {
         case .contact:
             if let contact = item.contact {
-                iconView.image = UIImage(systemName: "person.crop.circle.fill")
+                let id = contact.contactID
+                representedContactID = id
+                iconView.contentMode = .scaleAspectFill
+                iconView.image = ContactAvatarImage.placeholder(for: contact, diameter: 24)
+                if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
+                    iconView.image = cached
+                } else {
+                    photoTask = Task { [weak self, photoLoader] in
+                        guard let image = await photoLoader.image(for: id, kind: .thumbnail) else { return }
+                        await MainActor.run {
+                            guard self?.representedContactID == id else { return }
+                            self?.iconView.image = image
+                        }
+                    }
+                }
                 titleLabel.text = contact.displayName
                 captionLabel.text = nil
                 captionLabel.isHidden = true
             } else {
+                iconView.contentMode = .scaleAspectFit
                 iconView.image = UIImage(systemName: "person.crop.circle.badge.questionmark")
                 titleLabel.text = "Unavailable"
                 captionLabel.text = "Contact"
@@ -427,16 +499,23 @@ private final class FavoriteCell: UITableViewCell {
             }
         case .event:
             if let event = item.event {
+                iconView.contentMode = .scaleAspectFit
                 iconView.image = UIImage(systemName: "calendar")
                 titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
                 captionLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
                 captionLabel.isHidden = false
             } else {
+                iconView.contentMode = .scaleAspectFit
                 iconView.image = UIImage(systemName: "calendar.badge.exclamationmark")
                 titleLabel.text = "Unavailable"
                 captionLabel.text = "Event"
                 captionLabel.isHidden = false
             }
         }
+    }
+
+    func cancelPhotoLoad() {
+        photoTask?.cancel()
+        photoTask = nil
     }
 }

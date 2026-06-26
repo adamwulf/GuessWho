@@ -145,7 +145,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let list = FavoritesListViewController(
                 store: appDelegate.favoritesStore,
                 service: appDelegate.service,
-                repository: appDelegate.contactsRepository
+                repository: appDelegate.contactsRepository,
+                photoLoader: appDelegate.contactPhotoLoader
             )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -399,7 +400,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let list = FavoritesListViewController(
             store: appDelegate.favoritesStore,
             service: appDelegate.service,
-            repository: appDelegate.contactsRepository
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
         )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
