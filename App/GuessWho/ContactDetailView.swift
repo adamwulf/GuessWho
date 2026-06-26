@@ -50,8 +50,8 @@ struct ContactDetailView: View {
 
     // Inline contact-edit state. Non-nil `editModel` means the detail view
     // has flipped into editing mode in-place (no sheet). The model is
-    // seeded from a fresh `fetchContactForEditing` call when the user taps
-    // Edit; nilled out on Cancel/Save.
+    // seeded from a fresh package-owned edit fetch when the user taps Edit;
+    // nilled out on Cancel/Save.
     @State private var editModel: ContactEditModel?
     @State private var isSavingEdit = false
     @State private var editSaveError: ContactEditModel.SaveErrorCategory?
@@ -406,15 +406,8 @@ struct ContactDetailView: View {
     }
 
     private func beginInlineEdit() async {
-        // Contact-LIFECYCLE boundary: read the `CNContact.identifier` off the
-        // loaded record (resolved via the reconcile-stable `contact(id:)`) right
-        // at the call site — no retained localID token.
-        guard let lookupLocalID = repository.contact(id: id)?.localID else {
-            editFetchErrorMessage = "Contact could not be found."
-            return
-        }
         do {
-            guard let loaded = try await service.fetchContactForEditing(localID: lookupLocalID) else {
+            guard let loaded = try await repository.editableContact(id: id) else {
                 editFetchErrorMessage = "Contact could not be found."
                 return
             }
@@ -436,31 +429,20 @@ struct ContactDetailView: View {
 
     private func performInlineSave() async {
         guard let model = editModel else { return }
-        // localID exception (boundary token): the save targets the localID
-        // embedded in the edit model's contact — the same record we loaded.
-        // Captured purely to thread into the post-save SyncService/repository
-        // boundary calls (`saveContact` → `refreshContact(localID:)`), so a
-        // reconcile-driven identity re-key can't strand them. Never used as app
-        // identity — not a key, comparison, or nav payload.
-        let saveLocalID = model.edited.localID
         isSavingEdit = true
         defer { isSavingEdit = false }
         do {
-            try await service.saveContact(model.edited)
+            try await repository.saveContact(model.edited, for: id)
             editModel = nil
             editMode = .inactive
             // No reconcile here (6f): editing a contact's CONTACT fields is not a
             // GuessWho-sidecar write, so it must not stamp a guesswho:// URL — an
             // unstamped contact stays unstamped until the user adds notes/tags/
             // links/favorites, each of which mints via resolve-or-mint. Just
-            // re-read the one record into the cache.
-            await repository.refreshContact(localID: saveLocalID)
-            // refreshContact re-reads just this one record via service.fetch ->
-            // unifiedContact (the fresh path; enumerateContacts can lag right
-            // after a CNSaveRequest.update on Catalyst) and patches it into the
-            // cache. loadContact(preferFresh:) then re-reads the detail fields the
-            // same way so the view shows post-save state immediately rather than
-            // waiting for a nav-away-and-back.
+            // re-read the one record into the cache. loadContact(preferFresh:)
+            // then re-reads the detail fields through the same fresh path so the
+            // view shows post-save state immediately rather than waiting for a
+            // nav-away-and-back.
             await loadContact(preferFresh: true)
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
@@ -468,18 +450,12 @@ struct ContactDetailView: View {
     }
 
     private func performInlineDelete() async {
-        // Contact-LIFECYCLE boundary: capture the `CNContact.identifier` off the
-        // loaded record (resolved via the reconcile-stable `contact(id:)`) ONCE,
-        // before the delete — afterward `contact(id:)` resolves nil. No retained
-        // localID token.
-        guard let deleteLocalID = repository.contact(id: id)?.localID else { return }
         isSavingEdit = true
         defer { isSavingEdit = false }
         do {
-            try await service.deleteContact(localID: deleteLocalID)
+            guard try await repository.deleteContact(id: id) else { return }
             editModel = nil
             editMode = .inactive
-            repository.removeContact(localID: deleteLocalID)
             await loadContact()
             if contact == nil {
                 dismiss()
@@ -491,7 +467,7 @@ struct ContactDetailView: View {
             if category == .recordDoesNotExist {
                 editModel = nil
                 editMode = .inactive
-                repository.removeContact(localID: deleteLocalID)
+                repository.removeContact(id: id)
                 await loadContact()
                 if contact == nil {
                     dismiss()
@@ -714,7 +690,7 @@ struct ContactDetailView: View {
         var rows: [InfoRowData] = []
         let debugInfo = repository.identityDebugInfo(for: contact)
 
-        rows.append(.text(label: "localID", value: debugInfo.localID, monospaced: true))
+        rows.append(.text(label: "localID", value: debugInfo.contactsIdentifier, monospaced: true))
         rows.append(.text(label: "contact type", value: contact.contactType.rawValue))
         rows.append(.text(label: "image available", value: contact.imageDataAvailable ? "yes" : "no"))
 
@@ -1102,8 +1078,7 @@ struct ContactDetailView: View {
         // reconcile re-keys the contact's effective identity — no separately
         // threaded `localID` needed.
         let loaded: Contact?
-        if preferFresh, let lookupLocalID = repository.contact(id: id)?.localID,
-           let fresh = try? await service.fetchContactForEditing(localID: lookupLocalID) {
+        if preferFresh, let fresh = try? await repository.editableContact(id: id) {
             // Post-save read: route through unifiedContact(withIdentifier:)
             // which is more consistent than the enumerate path the
             // repository cache uses on Catalyst right after a write.

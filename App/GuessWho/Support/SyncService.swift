@@ -512,10 +512,10 @@ final class SyncService {
     /// the list-view caches reflect the changes. SyncService intentionally does
     /// NOT touch the repository — ContactsRepository already holds SyncService,
     /// so injecting the reverse direction adds coupling without an upside (every
-    /// current caller already refreshes after its own post-save dance — Stage 6's
-    /// `performInlineSave` runs `refreshContact(localID:)` →
-    /// `loadContact(preferFresh:)`; no reconcile, since a CONTACT-field edit is
-    /// not a sidecar write — 6f).
+    /// current caller already refreshes after its own post-save dance. Contact
+    /// detail editing now routes through `ContactsRepository.saveContact(_:for:)`,
+    /// which refreshes the edited record inside the package; no reconcile, since
+    /// a CONTACT-field edit is not a sidecar write — 6f).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }

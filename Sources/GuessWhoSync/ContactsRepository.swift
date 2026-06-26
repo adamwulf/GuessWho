@@ -187,6 +187,47 @@ public final class ContactsRepository: NSObject {
         return contactsByLocalID[id.localID]
     }
 
+    /// Fetches the current Contacts record for editing, addressed by the
+    /// app-facing `ContactID`. The package resolves the adapter-local Contacts
+    /// identifier at the boundary and then uses the fresh `fetch(localID:)`
+    /// path, which is more reliable than the bulk cache immediately after
+    /// Contacts writes on Catalyst.
+    public func editableContact(id: ContactID) async throws -> Contact? {
+        guard let localID = contact(id: id)?.localID else { return nil }
+        return try await contactsStore.fetch(localID: localID)
+    }
+
+    /// Saves an edited Contacts record and refreshes that exact record in the
+    /// repository cache. The edited value carries the local Contacts identifier
+    /// from `editableContact(id:)`; keeping that read inside the package avoids
+    /// re-resolving a possibly stale navigation token after a reconcile.
+    public func saveContact(_ edited: Contact, for _: ContactID) async throws {
+        try await contactsStore.save(edited)
+        await refreshContact(localID: edited.localID)
+    }
+
+    /// Deletes the cached contact addressed by `ContactID`. Returns `false`
+    /// when the id no longer resolves, matching the former app-side guard.
+    @discardableResult
+    public func deleteContact(id: ContactID) async throws -> Bool {
+        guard let localID = contact(id: id)?.localID else { return false }
+        try await contactsStore.delete(localID: localID)
+        removeContact(localID: localID)
+        return true
+    }
+
+    /// Re-read one Contacts record addressed by `ContactID` into the cache.
+    public func refreshContact(id: ContactID) async {
+        guard let localID = contact(id: id)?.localID else { return }
+        await refreshContact(localID: localID)
+    }
+
+    /// Remove a just-deleted record addressed by `ContactID` from the cache.
+    public func removeContact(id: ContactID) {
+        guard let localID = contact(id: id)?.localID else { return }
+        removeContact(localID: localID)
+    }
+
     /// The reconciled GuessWho UUID carried by `contact`, or `nil` when the
     /// contact has no valid `guesswho://` URL yet (un-reconciled). This is the
     /// EFFECTIVE GuessWho identity — `ContactID(contact:).guessWhoID` — NOT the
@@ -212,7 +253,7 @@ public final class ContactsRepository: NSObject {
     /// URLs stays in the package.
     public func identityDebugInfo(for contact: Contact) -> ContactIdentityDebugInfo {
         ContactIdentityDebugInfo(
-            localID: contact.localID,
+            contactsIdentifier: contact.localID,
             guessWhoID: guessWhoID(in: contact),
             guessWhoURLs: contact.urlAddresses.filter { SidecarKey.parseGuessWhoContactURL($0.value) != nil }
         )

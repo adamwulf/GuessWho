@@ -189,7 +189,7 @@ struct ContactsRepositoryIndexTests {
 
         let debugInfo = repository.identityDebugInfo(for: contact)
 
-        #expect(debugInfo.localID == "c")
+        #expect(debugInfo.contactsIdentifier == "c")
         #expect(debugInfo.guessWhoID == uuid)
         #expect(debugInfo.guessWhoURLs == [LabeledValue(label: "GuessWho", value: "guesswho://contact/\(uuid)")])
     }
@@ -258,6 +258,60 @@ struct ContactsRepositoryIndexTests {
         // And `Contact.contactID` for a reconciled contact agrees with the bare
         // guessWhoID resolution.
         #expect(repository.contact(guessWhoID: reconciledID.effectiveID)?.localID == "r")
+    }
+
+    // MARK: - ContactID-keyed lifecycle
+
+    @Test @MainActor
+    func editableContactFetchesFreshRecordByContactID() async throws {
+        let original = Contact(localID: "c", givenName: "Original")
+        let store = InMemoryContactStore(contacts: [original])
+        let repository = ContactsRepository(contacts: store)
+        await repository.reload()
+
+        try await store.save(Contact(localID: "c", givenName: "Fresh"))
+
+        let editable = try await repository.editableContact(id: original.contactID)
+
+        #expect(editable?.givenName == "Fresh")
+        #expect(repository.contact(id: original.contactID)?.givenName == "Original")
+    }
+
+    @Test @MainActor
+    func saveContactForContactIDRefreshesTheEditedRecord() async throws {
+        let original = Contact(localID: "c", givenName: "Before")
+        let store = InMemoryContactStore(contacts: [original])
+        let repository = ContactsRepository(contacts: store)
+        await repository.reload()
+
+        try await repository.saveContact(Contact(localID: "c", givenName: "After"), for: original.contactID)
+
+        #expect(repository.contact(id: original.contactID)?.givenName == "After")
+        #expect(try await store.fetch(localID: "c")?.givenName == "After")
+    }
+
+    @Test @MainActor
+    func deleteContactForContactIDRemovesTheCachedRecord() async throws {
+        let original = Contact(localID: "c", givenName: "Delete Me")
+        let store = InMemoryContactStore(contacts: [original])
+        let repository = ContactsRepository(contacts: store)
+        await repository.reload()
+
+        let deleted = try await repository.deleteContact(id: original.contactID)
+
+        #expect(deleted == true)
+        #expect(repository.contact(id: original.contactID) == nil)
+        #expect(try await store.fetch(localID: "c") == nil)
+    }
+
+    @Test @MainActor
+    func deleteContactForMissingContactIDIsNoOp() async throws {
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: []))
+        await repository.reload()
+
+        let deleted = try await repository.deleteContact(id: Contact(localID: "missing").contactID)
+
+        #expect(deleted == false)
     }
 
     // MARK: - Incremental refresh
