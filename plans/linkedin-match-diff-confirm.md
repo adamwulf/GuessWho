@@ -39,7 +39,7 @@ only the checked fields; Cancel writes nothing.
 | Row | Existing (`Contact`) | Incoming (parsed) | Notes |
 | --- | --- | --- | --- |
 | Photo | contact image (lazy-loaded) | `photo.dataURL` bytes | side-by-side thumbnails |
-| Name | `givenName` + `familyName` | `fullName` (split) | default checkbox OFF (rarely overwrite a name) |
+| Name | `givenName` + `familyName` | `fullName` (split) | checkbox ON by default like the rest |
 | Job title | `jobTitle` | `title` | |
 | Organization | `organizationName` | `org` | |
 | Location | (sidecar location field) | `location` | verbatim string |
@@ -79,20 +79,41 @@ New files (App target):
 `GuessWhoSceneDelegate` decodes the payload and drives match → present, reaching
 `ContactsRepository` via `GuessWhoAppDelegate.contactsRepository`.
 
-## Scope decisions (need your confirmation)
+## Scope decisions (CONFIRMED 2026-06-26)
 
-1. **Does Confirm SAVE in this phase, or just log the chosen fields?**
-   Recommendation: **build match + diff + dialog now; on Confirm, log the
-   selected fields** (don't write yet). The real write — especially the **photo
-   write path**, which is net-new package work (`CNContactStoreAdapter.apply()`
-   deliberately skips image data) — is a focused follow-up. This keeps the
-   match-and-confirm flow shippable and testable without the heaviest lift.
-2. **No-match → new-contact screen:** placeholder for v1 (show the parsed
-   preview + "no matching contact found", no create), with real creation as its
-   own step? (The overall plan already deferred create-new to phase 2.)
-3. **Default checkbox states:** all ON except Name (OFF — avoid clobbering a
-   curated name). Photo ON. Confirm.
-4. **Unchanged rows:** show de-emphasized vs. hide. Recommend de-emphasize.
+1. **Confirm SAVES for real** (all chosen fields, this phase). This includes the
+   net-new photo write path — see "Storage split" below.
+2. **No-match → defer.** There's no new-contact screen in the app yet, so the
+   no-match case just shows the parsed preview + "no matching contact found";
+   real creation is a later step.
+3. **All checkboxes ON by default** (including Name); the user can disable any.
+4. **Unchanged rows: de-emphasized** (shown, muted).
+
+## Storage split — CNContact vs. sidecar (settled against `apply()`)
+
+`CNContactStoreAdapter.apply()` (the `saveContact` write path) writes these to
+CNContact, so they save via `saveContact`:
+
+| Field | Storage | How |
+| --- | --- | --- |
+| Name (given/family) | CNContact | `saveContact` |
+| Job title | CNContact | `saveContact` |
+| Organization | CNContact | `saveContact` |
+| Emails | CNContact | `saveContact` (merge/dedupe into `emailAddresses`) |
+| Websites | CNContact | `saveContact` (merge/dedupe into `urlAddresses`) |
+| LinkedIn URL | CNContact | `saveContact` (ensure in `socialProfiles`) |
+
+`apply()` deliberately does NOT write two things, so they need other paths:
+
+| Field | Storage | Why / How |
+| --- | --- | --- |
+| About / bio | **Sidecar** (`ContactNote`) | `CNContactNoteKey` is entitlement-gated — that's why GuessWho keeps notes in the sidecar. `addNote`. |
+| Location (verbatim) | **Sidecar** | CNContact has no clean free-text locality slot; store the verbatim string in a sidecar field. |
+| Photo bytes | **CNContact image**, via a **net-new write path** | `apply()` skips `imageData` ("owned by the caller via a separate path", lines 620-624). Requires a new package API: fetch-with-image-keys + a separate image-including save. This is the heaviest piece of the phase. |
+
+So Confirm fans out to THREE write paths: `saveContact` (the bulk of fields),
+`addNote` (bio; possibly the location field too), and the new contact-image
+write path (photo).
 
 ## Build order
 
@@ -100,10 +121,13 @@ New files (App target):
    log-only receiver). Verify the real payload decodes.
 2. `LinkedInMatcher` (email → name → none) + unit-testable matching.
 3. `LinkedInDiff` builder.
-4. `LinkedInConfirmView` SwiftUI dialog (left/right + checkboxes), presented on
-   match; on Confirm, log the selected `[DiffRow]` (per scope #1).
-5. (Follow-up) actual save: text fields via `saveContact`/`addNote`; **photo
-   write path** (net-new package work); then no-match create-new.
+4. `LinkedInConfirmView` SwiftUI dialog (left/right + checkboxes, all ON,
+   unchanged rows de-emphasized), presented on match.
+5. **Save on Confirm** — apply checked rows across the three write paths:
+   `saveContact` (name/title/org/emails/websites/LinkedIn-URL),
+   `addNote` (bio; location sidecar field), and the **net-new contact-image
+   write path** (photo). Build the photo write path as part of this step.
+6. (Later) no-match create-new screen; `.blob` previous-photo; iOS target.
 
 ## Out of scope here
 
