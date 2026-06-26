@@ -120,7 +120,19 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
       .map((el) => text(el))
       .filter((t) => t && t.length > 0 && !/^about$/i.test(t));
     if (!candidates.length) return null;
-    return candidates.reduce((a, b) => (b.length > a.length ? b : a), "") || null;
+    let body = candidates.reduce((a, b) => (b.length > a.length ? b : a), "");
+    // The longest block can include the section heading text glued to the front
+    // ("About<bio>") and the truncated expander suffix ("…more"/"… see more").
+    // Strip both so we keep just the bio prose.
+    // NOTE: when "…more" was present the bio is TRUNCATED in the DOM until the
+    // user expands it. A later pass can click the "see more" control (like the
+    // Contact-info modal) to capture the full text; for now we keep the visible
+    // portion.
+    body = body
+      .replace(/^About\s*/i, "")
+      .replace(/[……]\s*(see\s+)?more\s*$/i, "")
+      .trim();
+    return body || null;
   });
 
   // --- Photo URL ------------------------------------------------------------
