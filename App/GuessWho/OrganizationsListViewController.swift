@@ -64,6 +64,11 @@ final class OrganizationsListViewController: UIViewController {
         applySnapshot(animated: false)
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
     // MARK: - Table view
 
     private func configureTableView() {

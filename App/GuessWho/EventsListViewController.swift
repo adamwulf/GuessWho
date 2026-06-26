@@ -72,6 +72,11 @@ final class EventsListViewController: UIViewController {
         Task { await repository.reload() }
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
     // MARK: - Table view
 
     private func configureTableView() {
@@ -522,4 +527,3 @@ private final class PermissionBannerView: UIView {
         ])
     }
 }
-
