@@ -282,6 +282,12 @@ extension FavoritesListViewController: UITableViewDelegate {
     }
 }
 
+extension FavoritesListViewController: ScrollsToTop {
+    func scrollToTop(animated: Bool) {
+        tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
 // MARK: - Drag & drop reorder
 
 extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropDelegate {

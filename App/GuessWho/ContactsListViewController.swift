@@ -265,6 +265,12 @@ extension ContactsListViewController: UITableViewDelegate {
     }
 }
 
+extension ContactsListViewController: ScrollsToTop {
+    func scrollToTop(animated: Bool) {
+        tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
 /// Subclasses the diffable data source to expose the section title
 /// hook. The optional `titleForHeaderInSection` lives on
 /// `UITableViewDataSource`, but the diffable data source's default
