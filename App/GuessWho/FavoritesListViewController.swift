@@ -3,9 +3,9 @@ import EventKit
 import GuessWhoSync
 
 /// UIKit Favorites list for the Catalyst 3-column shell. Single-section
-/// diffable data source keyed on `Favorite.stableID`. Mirrors the
+/// diffable data source keyed on opaque `FavoriteListItem.ID`. Mirrors the
 /// SwiftUI `FavoritesListView`: swipe-to-unfavorite, drag-to-reorder,
-/// and an async contact-uuid map rebuilt on `.contactsRepositoryDidReload`
+/// and package-vended favorite rows rebuilt on `.contactsRepositoryDidReload`
 /// (the repository's cache-changed signal, posted after the launch reload,
 /// incremental patches, and self-writes) and scene activation.
 final class FavoritesListViewController: UIViewController {
@@ -26,9 +26,9 @@ final class FavoritesListViewController: UIViewController {
     }
 
     private var tableView: UITableView!
-    private var dataSource: UITableViewDiffableDataSource<Int, String>!
+    private var dataSource: UITableViewDiffableDataSource<Int, FavoriteListItem.ID>!
 
-    private var favoritesByStableID: [String: Favorite] = [:]
+    private var favoriteItemsByID: [FavoriteListItem.ID: FavoriteListItem] = [:]
 
     private let emptyLabel = UILabel()
 
@@ -69,11 +69,10 @@ final class FavoritesListViewController: UIViewController {
         configureDataSource()
         observeNotifications()
 
-        // Rows resolve their contact on demand from the repository's O(1) index
-        // in the cell provider, so a single apply paints the right state. If the
-        // repository's launch reload hasn't landed yet, a contact favorite shows
-        // "Unavailable" until the `.contactsRepositoryDidReload` observer below
-        // re-applies (the reconfigure pass repaints it).
+        // Rows are projected by the package from the persisted favorites list.
+        // If the repository's launch reload hasn't landed yet, a contact
+        // favorite shows "Unavailable" until the `.contactsRepositoryDidReload`
+        // observer below re-applies (the reconfigure pass repaints it).
         store.reload()
         applySnapshot(animated: false)
     }
@@ -118,19 +117,12 @@ final class FavoritesListViewController: UIViewController {
     }
 
     private func configureDataSource() {
-        dataSource = UITableViewDiffableDataSource<Int, String>(
+        dataSource = UITableViewDiffableDataSource<Int, FavoriteListItem.ID>(
             tableView: tableView
-        ) { [weak self] tableView, indexPath, stableID in
+        ) { [weak self] tableView, indexPath, itemID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.favorite.rawValue, for: indexPath)
-            guard let self, let favorite = self.favoritesByStableID[stableID] else { return cell }
-            (cell as? FavoriteCell)?.configure(
-                with: favorite,
-                // A contact favorite's id IS a bare GuessWho UUID; resolve it on
-                // demand through the repository's O(1) index rather than an
-                // app-held uuid→Contact map.
-                contact: favorite.kind == .contact ? self.repository.contact(guessWhoID: favorite.id) : nil,
-                event: favorite.kind == .event ? self.service.event(uuid: favorite.id) : nil
-            )
+            guard let self, let item = self.favoriteItemsByID[itemID] else { return cell }
+            (cell as? FavoriteCell)?.configure(with: item)
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -150,8 +142,9 @@ final class FavoritesListViewController: UIViewController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.store.reload()
-                // Rows resolve their contact on demand; the apply's reconfigure
-                // pass repaints any rows whose resolved content changed.
+                // Rows project their contact through the package; the apply's
+                // reconfigure pass repaints any rows whose resolved content
+                // changed.
                 self.applySnapshot(animated: true)
             }
         }
@@ -166,9 +159,9 @@ final class FavoritesListViewController: UIViewController {
         // rendered "Unavailable" until an external Contacts edit happened to
         // fire. Observing the repository's reload post fixes that: re-applying
         // here re-runs the cell provider (via the reconfigure pass) so each row
-        // re-resolves its contact through the now-populated repository index. It
-        // also keeps favorites in sync with incremental patches + self-writes
-        // the old signal missed.
+        // re-renders from the now-populated package projection. It also keeps
+        // favorites in sync with incremental patches + self-writes the old
+        // signal missed.
         contactsChangedObserver = center.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
@@ -208,32 +201,33 @@ final class FavoritesListViewController: UIViewController {
     }
 
     private func applySnapshot(animated: Bool) {
-        let items = store.items
-
-        var byStableID: [String: Favorite] = [:]
-        for favorite in items {
-            byStableID[favorite.stableID] = favorite
+        let items = repository.favoriteListItems(from: store.items) { [service] uuid in
+            service.event(uuid: uuid)
         }
-        favoritesByStableID = byStableID
 
-        // A favorite's identity is its stableID, but the cell provider
-        // resolves the row's CONTENT (display name, "Unavailable" state) on
-        // demand via `repository.contact(guessWhoID:)` / `service.event(uuid:)`
-        // at build time. When the item SET is unchanged but that resolved
-        // content changed — the cold-launch case where the repository cache
-        // flips empty→populated, plus any later display-name edit — the diff is
-        // empty, so the data source never re-invokes the cell provider for rows
-        // already on screen and the stale "Unavailable" cell sticks. Explicitly
-        // reconfigure the items that already exist so they re-run the provider
-        // and re-resolve against the current repository index. Newly inserted
-        // items are guard-excluded: they're not yet in the data source's
-        // snapshot and the insert builds them fresh anyway (reconfiguring an
-        // absent item would crash).
+        var byID: [FavoriteListItem.ID: FavoriteListItem] = [:]
+        for item in items {
+            byID[item.id] = item
+        }
+        favoriteItemsByID = byID
+
+        // A favorite row's identity is its opaque package-vended ID, but the
+        // cell provider renders resolved content (display name, "Unavailable"
+        // state) from the package projection at build time. When the item SET is
+        // unchanged but that resolved content changed — the cold-launch case
+        // where the repository cache flips empty→populated, plus any later
+        // display-name edit — the diff is empty, so the data source never
+        // re-invokes the cell provider for rows already on screen and the stale
+        // "Unavailable" cell sticks. Explicitly reconfigure the items that
+        // already exist so they re-run the provider and re-render against the
+        // current projection. Newly inserted items are guard-excluded: they're
+        // not yet in the data source's snapshot and the insert builds them fresh
+        // anyway (reconfiguring an absent item would crash).
         let existingIDs = Set(dataSource.snapshot().itemIdentifiers)
 
-        var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
+        var snapshot = NSDiffableDataSourceSnapshot<Int, FavoriteListItem.ID>()
         snapshot.appendSections([0])
-        let itemIDs = items.map { $0.stableID }
+        let itemIDs = items.map(\.id)
         snapshot.appendItems(itemIDs, toSection: 0)
         let reconfigureIDs = itemIDs.filter { existingIDs.contains($0) }
         if !reconfigureIDs.isEmpty {
@@ -249,15 +243,15 @@ final class FavoritesListViewController: UIViewController {
 
 extension FavoritesListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let stableID = dataSource.itemIdentifier(for: indexPath),
-              let favorite = favoritesByStableID[stableID] else { return }
-        switch favorite.kind {
+        guard let itemID = dataSource.itemIdentifier(for: indexPath),
+              let item = favoriteItemsByID[itemID] else { return }
+        switch item.kind {
         case .contact:
-            if let contact = repository.contact(guessWhoID: favorite.id) {
+            if let contact = item.contact {
                 didSelectContact(contact)
             }
         case .event:
-            if let event = service.event(uuid: favorite.id) {
+            if let event = item.event {
                 didSelectEvent(event)
             }
         }
@@ -267,13 +261,13 @@ extension FavoritesListViewController: UITableViewDelegate {
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard let stableID = dataSource.itemIdentifier(for: indexPath),
-              let favorite = favoritesByStableID[stableID] else { return nil }
+        guard let itemID = dataSource.itemIdentifier(for: indexPath),
+              favoriteItemsByID[itemID] != nil else { return nil }
         let action = UIContextualAction(style: .destructive, title: "Unfavorite") { [weak self] _, _, completion in
             guard let self else { completion(false); return }
             // store.toggle → store.reload → posts .favoritesDidChange,
             // which the observer turns into applySnapshot.
-            self.store.toggle(kind: favorite.kind, id: favorite.id)
+            self.store.toggle(itemID)
             completion(true)
         }
         action.image = UIImage(systemName: "star.slash")
@@ -335,7 +329,7 @@ extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropD
 
 // MARK: - Row cell
 
-/// Two-line favorite row. Cell presentation switches by `Favorite.kind`
+/// Two-line favorite row. Cell presentation switches by `FavoriteListItem.kind`
 /// and resolution state:
 /// * .contact resolved → person.crop.circle.fill + display name.
 /// * .contact unresolved → person.crop.circle.badge.questionmark +
@@ -406,10 +400,10 @@ private final class FavoriteCell: UITableViewCell {
         ])
     }
 
-    func configure(with favorite: Favorite, contact: Contact?, event: Event?) {
-        switch favorite.kind {
+    func configure(with item: FavoriteListItem) {
+        switch item.kind {
         case .contact:
-            if let contact {
+            if let contact = item.contact {
                 iconView.image = UIImage(systemName: "person.crop.circle.fill")
                 titleLabel.text = contact.displayName
                 captionLabel.text = nil
@@ -421,7 +415,7 @@ private final class FavoriteCell: UITableViewCell {
                 captionLabel.isHidden = false
             }
         case .event:
-            if let event {
+            if let event = item.event {
                 iconView.image = UIImage(systemName: "calendar")
                 titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
                 captionLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)

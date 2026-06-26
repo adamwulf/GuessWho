@@ -141,7 +141,7 @@ public final class ContactsRepository: NSObject {
     /// Returns a currently-cached contact for an adapter-local refresh token.
     /// `localID` is intentionally confined to this Contacts-boundary API; it
     /// must not be persisted or used as application identity.
-    public func contact(localID: String) -> Contact? {
+    package func contact(localID: String) -> Contact? {
         contactsByLocalID[localID]
     }
 
@@ -187,6 +187,47 @@ public final class ContactsRepository: NSObject {
         return contactsByLocalID[id.localID]
     }
 
+    /// Fetches the current Contacts record for editing, addressed by the
+    /// app-facing `ContactID`. The package resolves the adapter-local Contacts
+    /// identifier at the boundary and then uses the fresh `fetch(localID:)`
+    /// path, which is more reliable than the bulk cache immediately after
+    /// Contacts writes on Catalyst.
+    public func editableContact(id: ContactID) async throws -> Contact? {
+        guard let localID = contact(id: id)?.localID else { return nil }
+        return try await contactsStore.fetch(localID: localID)
+    }
+
+    /// Saves an edited Contacts record and refreshes that exact record in the
+    /// repository cache. The edited value carries the local Contacts identifier
+    /// from `editableContact(id:)`; keeping that read inside the package avoids
+    /// re-resolving a possibly stale navigation token after a reconcile.
+    public func saveContact(_ edited: Contact, for _: ContactID) async throws {
+        try await contactsStore.save(edited)
+        await refreshContact(localID: edited.localID)
+    }
+
+    /// Deletes the cached contact addressed by `ContactID`. Returns `false`
+    /// when the id no longer resolves, matching the former app-side guard.
+    @discardableResult
+    public func deleteContact(id: ContactID) async throws -> Bool {
+        guard let localID = contact(id: id)?.localID else { return false }
+        try await contactsStore.delete(localID: localID)
+        removeContact(localID: localID)
+        return true
+    }
+
+    /// Re-read one Contacts record addressed by `ContactID` into the cache.
+    public func refreshContact(id: ContactID) async {
+        guard let localID = contact(id: id)?.localID else { return }
+        await refreshContact(localID: localID)
+    }
+
+    /// Remove a just-deleted record addressed by `ContactID` from the cache.
+    public func removeContact(id: ContactID) {
+        guard let localID = contact(id: id)?.localID else { return }
+        removeContact(localID: localID)
+    }
+
     /// The reconciled GuessWho UUID carried by `contact`, or `nil` when the
     /// contact has no valid `guesswho://` URL yet (un-reconciled). This is the
     /// EFFECTIVE GuessWho identity — `ContactID(contact:).guessWhoID` — NOT the
@@ -203,8 +244,19 @@ public final class ContactsRepository: NSObject {
     /// its sidecar stores on this. Semantics match the former
     /// `SyncService.guessWhoUUID(in:)` byte-for-byte (it walked the same
     /// `urlAddresses` via the same `SidecarKey` parser).
-    public func guessWhoID(in contact: Contact) -> String? {
+    package func guessWhoID(in contact: Contact) -> String? {
         ContactID(contact: contact).guessWhoID
+    }
+
+    /// Debug-only identity diagnostics for an app detail surface. The app may
+    /// render these values, but parsing and classification of GuessWho identity
+    /// URLs stays in the package.
+    public func identityDebugInfo(for contact: Contact) -> ContactIdentityDebugInfo {
+        ContactIdentityDebugInfo(
+            contactsIdentifier: contact.localID,
+            guessWhoID: guessWhoID(in: contact),
+            guessWhoURLs: contact.urlAddresses.filter { SidecarKey.parseGuessWhoContactURL($0.value) != nil }
+        )
     }
 
     /// Resolves a BARE GuessWho UUID (a `SidecarKey` endpoint id, a
@@ -225,7 +277,7 @@ public final class ContactsRepository: NSObject {
     /// reads bare guessWhoID strings off disk and resolves them here — the
     /// bridge that lets it resolve a link endpoint / favorite without an app-side
     /// `uuid → Contact` map.
-    public func contact(guessWhoID: String) -> Contact? {
+    package func contact(guessWhoID: String) -> Contact? {
         guard let lid = guessWhoIDToLocalID[guessWhoID.lowercased()] else { return nil }
         return contactsByLocalID[lid]
     }
@@ -405,6 +457,27 @@ public final class ContactsRepository: NSObject {
         return other.kind == .event ? other.id : nil
     }
 
+    /// The far CONTACT endpoint of a contact↔contact `link`, relative to the
+    /// contact identified by `id`. The app gets the resolved `Contact` without
+    /// reading the far endpoint's bare GuessWho UUID.
+    public func linkedContact(of link: Link, for id: ContactID) -> Contact? {
+        guard let guessWhoID = id.guessWhoID else { return nil }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
+        let other = Self.otherEndpoint(of: link, from: endpoint)
+        return other.kind == .contact ? contact(guessWhoID: other.id) : nil
+    }
+
+    /// The CONTACT endpoint of a contact↔event `link`, relative to the event
+    /// sidecar UUID. The event UUID remains the deferred EventID migration's
+    /// boundary; the contact endpoint UUID stays inside the package.
+    public func linkedContact(of link: Link, forEventUUID eventUUID: String) -> Contact? {
+        let endpoint = SidecarKey(kind: .event, id: eventUUID)
+        guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
+        let other = Self.otherEndpoint(of: link, from: endpoint)
+        return other.kind == .contact ? contact(guessWhoID: other.id) : nil
+    }
+
     /// Whether the contact identified by `id` is favorited. Returns `false` when
     /// the contact is unreconciled (no GuessWho UUID to key the favorite on) or
     /// the favorites store is unavailable. Mirrors
@@ -416,6 +489,32 @@ public final class ContactsRepository: NSObject {
         } catch {
             lastError = "favorites lookup failed: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    /// Project persisted favorites into app-facing rows without exposing contact
+    /// favorite UUIDs. Contact favorites resolve through this repository's
+    /// GuessWhoID index; event favorites use the supplied resolver until the
+    /// deferred EventID migration moves event identity behind the package too.
+    public func favoriteListItems(
+        from favorites: [Favorite],
+        event: (String) -> Event?
+    ) -> [FavoriteListItem] {
+        favorites.map { favorite in
+            switch favorite.kind {
+            case .contact:
+                FavoriteListItem(
+                    id: FavoriteListItem.ID(favorite.stableID),
+                    kind: favorite.kind,
+                    contact: contact(guessWhoID: favorite.id)
+                )
+            case .event:
+                FavoriteListItem(
+                    id: FavoriteListItem.ID(favorite.stableID),
+                    kind: favorite.kind,
+                    event: event(favorite.id)
+                )
+            }
         }
     }
 
@@ -672,13 +771,13 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Re-read one Contacts record and reconcile it into the cache.
-    public func refreshContact(localID: String) async {
+    package func refreshContact(localID: String) async {
         await applyRefresh(localID: localID)
         postDidReload()
     }
 
     /// Remove a just-deleted record from the in-memory cache.
-    public func removeContact(localID: String) {
+    package func removeContact(localID: String) {
         var updated = contacts
         updated.removeAll { $0.localID == localID }
         setContacts(updated)

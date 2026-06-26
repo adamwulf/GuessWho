@@ -88,4 +88,45 @@ struct FavoritesStoreTests {
         let expected = SidecarISO8601.date(from: SidecarISO8601.string(from: when))!
         #expect(reloaded[0].addedAt == expected)
     }
+
+    @Test
+    func contactFavoriteMatchesReconciledContactID() {
+        let id = "AB12CD34-0000-0000-0000-000000000001"
+        let favorite = Favorite(kind: .contact, id: id, addedAt: Date())
+        let contact = Contact(
+            localID: "local-1",
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: "\(SidecarKey.guessWhoContactURLPrefix)\(id)")
+            ]
+        )
+
+        #expect(favorite.matches(contact.contactID))
+    }
+
+    @Test
+    func contactFavoriteDoesNotMatchOtherKindsOrIDs() {
+        let id = "ab12cd34-0000-0000-0000-000000000001"
+        let otherID = "ab12cd34-0000-0000-0000-000000000002"
+        let contact = Contact(
+            localID: "local-1",
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: "\(SidecarKey.guessWhoContactURLPrefix)\(id.uppercased())")
+            ]
+        )
+
+        #expect(Favorite(kind: .event, id: id, addedAt: Date()).matches(contact.contactID) == false)
+        #expect(Favorite(kind: .contact, id: otherID, addedAt: Date()).matches(contact.contactID) == false)
+    }
+
+    @Test
+    func contactFavoriteDoesNotMatchUnreconciledContactID() {
+        let favorite = Favorite(
+            kind: .contact,
+            id: "ab12cd34-0000-0000-0000-000000000001",
+            addedAt: Date()
+        )
+        let contact = Contact(localID: "local-1")
+
+        #expect(favorite.matches(contact.contactID) == false)
+    }
 }

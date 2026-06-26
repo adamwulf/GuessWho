@@ -459,20 +459,6 @@ final class SyncService {
         ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
     }
 
-    /// Fetches one contact by localID without enumerating the whole store.
-    /// Returns nil when the contact does not exist or access is not granted.
-    /// Use instead of `fetchAll().first { $0.localID == ... }` — routes through
-    /// `unifiedContact(withIdentifier:)`, O(1) against the store.
-    func fetch(localID: String) async -> Contact? {
-        guard contactsAuthorization == .authorized else { return nil }
-        do {
-            return try await contactsAdapter.fetch(localID: localID)
-        } catch {
-            lastError = "fetch failed: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
     // MARK: - Contact change history (incremental external sync)
 
     /// Start the package-owned external-contact-change watcher. The package now
@@ -487,7 +473,7 @@ final class SyncService {
 
     // The CONTACT-sidecar surface (`sidecar(for:)`, the bare-UUID
     // notes/links/event-link methods) and the CONTACT-identity translation
-    // (`guessWhoUUID(in:)`, `reconcile(localID:)`, `reconcileIfNeeded(contact:)`)
+    // helpers formerly hosted here
     // were removed in Stage 6: the app now keys every contact-sidecar operation
     // on a `ContactID` through `ContactsRepository`, and reconcile is a
     // package-INTERNAL, WRITE-ONLY side effect of a sidecar/favorite write
@@ -498,34 +484,18 @@ final class SyncService {
 
     // MARK: - Edit
 
-    /// Fetches a `Contact` for editing in the SwiftUI editor. Goes
-    /// through the adapter actor (the same path `fetchAll` uses) so
-    /// the editor sees the same field set as the rest of the app and
-    /// no main-thread fetch is required.
-    func fetchContactForEditing(localID: String) async throws -> Contact? {
-        try await contactsAdapter.fetch(localID: localID)
-    }
-
     /// Writes the edited contact back through the adapter.
     ///
     /// **Caller contract:** refresh the repository cache after this returns so
     /// the list-view caches reflect the changes. SyncService intentionally does
     /// NOT touch the repository — ContactsRepository already holds SyncService,
     /// so injecting the reverse direction adds coupling without an upside (every
-    /// current caller already refreshes after its own post-save dance — Stage 6's
-    /// `performInlineSave` runs `refreshContact(localID:)` →
-    /// `loadContact(preferFresh:)`; no reconcile, since a CONTACT-field edit is
-    /// not a sidecar write — 6f).
+    /// current caller already refreshes after its own post-save dance. Contact
+    /// detail editing now routes through `ContactsRepository.saveContact(_:for:)`,
+    /// which refreshes the edited record inside the package; no reconcile, since
+    /// a CONTACT-field edit is not a sidecar write — 6f).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
-    }
-
-    /// Deletes the contact identified by `localID`.
-    ///
-    /// **Caller contract:** `await repository.reload()` after this
-    /// returns. See `saveContact` for rationale.
-    func deleteContact(localID: String) async throws {
-        try await contactsAdapter.delete(localID: localID)
     }
 
     // MARK: - Contact ↔ Event links (event side)

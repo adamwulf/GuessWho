@@ -42,9 +42,10 @@ compares it (e.g. as a diffable item identifier or a `Set` member), and hands it
 back to `repository.contact(id:)` to fetch the real `Contact`. It CANNOT read any
 field off it, so the token can never be misused as a "contact-light." It is also
 deliberately NOT `Codable`: a `ContactID` carries the transient `localID`, so
-persisting one would dangle after the next unification. Durable references
-(favorites, link endpoints) persist the **bare GuessWho UUID** instead and
-resolve it through `repository.contact(guessWhoID:)`. See the
+persisting one would dangle after the next unification. Durable references are
+owned by the package/repository layer: storage may persist the **bare GuessWho
+UUID**, but app code reads projected `ContactID`/`Contact` values and never
+resolves raw UUIDs itself. See the
 [`ContactID`](#contactid-the-apps-identity-token) section for the full treatment.
 
 ### Package-caller contract (repository / engine layer)
@@ -58,10 +59,9 @@ repository does it on the app's behalf when it resolves a `ContactID`.
 
 `Contact.localID` exists because the Contacts adapter must use
 `CNContact.identifier` to perform an immediate framework operation. It is not
-part of the package's identity contract. It is still `public` on the transport
-`Contact` struct (read by package fetch paths and a small set of blessed app
-boundary tokens), but consumers must treat it as opaque and must not store it,
-compare it, use it as a collection key, or pass it between application layers.
+part of the package's public identity contract. It is package-scoped on the
+transport `Contact` struct; the app cannot read it, store it, compare it, use it
+as a collection key, or pass it between application layers.
 
 ## `ContactID`: the app's identity token
 
@@ -104,17 +104,16 @@ The app does exactly four things with a `ContactID`, and no more:
 | **obtains** a token from a held `Contact` | `repository.contactID(for:)` | The only way to mint one — `ContactID.init` is `package`. <!-- [^contactid-for] --> |
 | **compares / hashes** it | `==`, `Set`, diffable identifier | Identity-only; stable across reloads. |
 | **resolves** it back to a `Contact` | `repository.contact(id:)` | O(1), reconcile-stable (see below). <!-- [^contact-id-accessor] --> |
-| **resolves a bare GuessWho UUID** to a `Contact` | `repository.contact(guessWhoID:)` | For durable favorite / link endpoints read off disk. <!-- [^contact-guesswhoid] --> |
 
 It NEVER reads `guessWhoID` / `localID` off the token, and NEVER persists a
 `ContactID`. Why sealed-and-not-`Codable`:
 
 - The app must not key on `localID` — it is transient (Apple re-mints it across
   unification / new device), so a persisted `ContactID` would dangle.
-- A durable reference (a favorite, a link endpoint) persists the **bare GuessWho
-  UUID** instead — favorites/links sync between devices, so their on-disk records
-  are keyed on the stable UUID and resolved with `contact(guessWhoID:)`.
-  <!-- [^contact-guesswhoid] -->
+- Durable references (favorites, link endpoints) may persist the **bare GuessWho
+  UUID** inside package-owned storage, because favorites/links sync between
+  devices. The app consumes repository projections keyed by `ContactID` and does
+  not perform that raw-UUID resolution.
 
 ### How the UI identifies contacts now
 
@@ -172,8 +171,8 @@ when linked cards introduce zero, malformed, or competing IDs. It is the
 package's canonical identity for a contact and the key for all sidecar data. The
 app does not handle it directly — it holds a [`ContactID`](#contactid-the-apps-identity-token),
 and the repository translates that to the GuessWho ID when it needs one. The one
-durable GuessWho-ID string the app does touch is a favorite / link endpoint read
-off disk, resolved through `repository.contact(guessWhoID:)`.
+durable GuessWho-ID string the app may still touch is outside contact identity:
+event favorites are deferred to the separate EventID migration.
 
 ### Contacts relationships
 
@@ -198,9 +197,8 @@ To classify which end of a fetched link is the OPENED contact (near) and which
 is the far contact, the app asks the package — `SidecarKey.matches(_ contactID:)`
 tests an endpoint key against `contactID.guessWhoID` (a `package` field). The app
 never reads a bare GuessWho UUID to do this comparison itself; it passes a
-`ContactID` and the package answers. (The app still resolves the FAR endpoint's
-GuessWho UUID to a `Contact` via `contact(guessWhoID:)` — a durable link-endpoint
-read, per the table above.)
+`ContactID` and the package answers. Far endpoints are projected by repository
+APIs; the app does not resolve their raw GuessWho UUIDs directly.
 
 ## The two package-internal identifiers
 
@@ -215,7 +213,7 @@ repository translates to one of these (see [the three layers](#the-one-rule-thre
 | Stable across devices? | **Yes** — same on every device after sync | **No** — different on each device |
 | Persistable on one device? | **Yes** | **Yes**, but it may later resolve to a *different* unified contact (or stop resolving) when linked cards change |
 | Who owns it | GuessWhoSync | The Contacts framework |
-| Used for | Identity, sidecar keys, links, dedup — at the package/repository layer; the app touches a bare GuessWho UUID only as a durable favorite/link endpoint resolved via `contact(guessWhoID:)` | **Nothing as identity** — it's a transient lookup token. The Contacts adapter and the repository consume it internally; the app never reads it (it lives sealed inside `ContactID`). |
+| Used for | Identity, sidecar keys, links, dedup — at the package/repository layer; the app does not resolve bare contact UUIDs directly | **Nothing as identity** — it's a transient lookup token. The Contacts adapter and the repository consume it internally; the app never reads it (it lives sealed inside `ContactID`). |
 
 ### Why `localID` cannot be identity
 
@@ -350,7 +348,7 @@ repository translates; sidecar storage keys on the GuessWho UUID.
 
 | Layer | Identifier | Notes |
 | --- | --- | --- |
-| **App code (lists, navigation, detail views)** | `ContactID` | Hold, compare, fetch with it. NEVER read a GuessWho ID / `localID` off it; NEVER persist it. The one durable string the app touches is a bare GuessWho UUID as a favorite/link endpoint, resolved via `contact(guessWhoID:)`. |
+| **App code (lists, navigation, detail views)** | `ContactID` | Hold, compare, fetch with it. NEVER read a GuessWho ID / `localID` off it; NEVER persist it. Contact favorite and link endpoint UUID resolution belongs behind package/repository projections. |
 | **Repository boundary** (`ContactsRepository`) | `ContactID` → GuessWho ID / `localID` | Translates a `ContactID` to the GuessWho ID for sidecar work, or (internally) to `localID` for a Contacts-framework fetch. The layer that bridges the app's opaque token to the package's two identifiers. |
 | `reconcileContactIdentity(localID:)` *(internal)* | `localID` in, GuessWho ID out | The bridge from Contacts handle to GuessWho identity. Reached only via resolve-or-mint on a write; not host-callable. |
 | Contacts adapter (`ContactStoreProtocol`) | `localID` | Lookups into the Contacts framework only. Transient. |
@@ -370,10 +368,11 @@ repository translates; sidecar storage keys on the GuessWho UUID.
   (`addNote(for:…)`, `addLink(from:to:…)`, `toggleFavorite(_:)`, …). The write
   reconciles-or-mints internally on the first write — you never trigger, see, or
   name reconcile, and you never thread a `localID`.
-- **To persist a durable reference** (favorite, link endpoint): store the bare
-  GuessWho UUID string and resolve it via `repository.contact(guessWhoID:)`. Do
-  NOT persist a `ContactID` (it carries the transient `localID`) and never store
-  a `localID`.
+- **To persist a durable reference** (favorite, link endpoint): use the
+  package/repository API for the workflow. Package storage may use the bare
+  GuessWho UUID string, but app code must not persist or resolve that contact
+  UUID directly. Do NOT persist a `ContactID` (it carries the transient
+  `localID`) and never store a `localID`.
 - **Do not** read a GuessWho ID / `localID` off a `Contact` or `ContactID`, build
   a `[String: Contact]` map, or compare contacts by a raw identifier — compare
   `ContactID`s.
@@ -418,7 +417,6 @@ repository translates; sidecar storage keys on the GuessWho UUID.
 <!-- [^contactid-init]: [ContactID.init(contact:) — package; always materializes (localID always present); guessWhoID via SidecarKey.forContact, nil pre-reconcile](../Sources/GuessWhoSync/ContactID.swift:ContactID) -->
 <!-- [^contactid-for]: [ContactsRepository.contactID(for:) — the only sanctioned way for the app to mint a ContactID from a held Contact](../Sources/GuessWhoSync/ContactsRepository.swift:contactID) -->
 <!-- [^contact-id-accessor]: [ContactsRepository.contact(id:) — O(1) resolve, guessWhoID-first via the guessWhoIDToLocalID pointer index else by localID; reconcile-stable for a captured token](../Sources/GuessWhoSync/ContactsRepository.swift:contact) -->
-<!-- [^contact-guesswhoid]: [ContactsRepository.contact(guessWhoID:) — public resolver for a bare GuessWho UUID (favorite/link endpoint); pointer hop, no confirm-guard; ContactID is not Codable for durable storage](../Sources/GuessWhoSync/ContactsRepository.swift:contact) -->
 <!-- [^repo-contact-id]: [ContactsRepository — translates a ContactID to GuessWho ID / localID at the package boundary; the app never does this](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository) -->
 <!-- [^resolve-or-mint]: [ContactsRepository.resolveOrMintGuessWhoID(for:) — internal; a WRITE with id.guessWhoID == nil reconciles on localID and mints; an already-reconciled id returns its UUID, minting nothing](../Sources/GuessWhoSync/ContactsRepository.swift:resolveOrMintGuessWhoID) -->
 <!-- [^reads-no-mint]: [ContactsRepository.notes(for:)/links(for:)/isFavorite(_:) — return empty/false when id.guessWhoID is nil; reads never reconcile or mint](../Sources/GuessWhoSync/ContactsRepository.swift:notes) -->

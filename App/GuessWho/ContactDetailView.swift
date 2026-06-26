@@ -50,8 +50,8 @@ struct ContactDetailView: View {
 
     // Inline contact-edit state. Non-nil `editModel` means the detail view
     // has flipped into editing mode in-place (no sheet). The model is
-    // seeded from a fresh `fetchContactForEditing` call when the user taps
-    // Edit; nilled out on Cancel/Save.
+    // seeded from a fresh package-owned edit fetch when the user taps Edit;
+    // nilled out on Cancel/Save.
     @State private var editModel: ContactEditModel?
     @State private var isSavingEdit = false
     @State private var editSaveError: ContactEditModel.SaveErrorCategory?
@@ -303,7 +303,7 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var editingSections: some View {
         let binding = Binding<ContactEditModel>(
-            get: { editModel ?? ContactEditModel(original: contact ?? Contact(localID: "")) },
+            get: { editModel ?? ContactEditModel(original: contact ?? Contact()) },
             set: { editModel = $0 }
         )
         NameFieldsRow(model: binding)
@@ -406,15 +406,8 @@ struct ContactDetailView: View {
     }
 
     private func beginInlineEdit() async {
-        // Contact-LIFECYCLE boundary: read the `CNContact.identifier` off the
-        // loaded record (resolved via the reconcile-stable `contact(id:)`) right
-        // at the call site — no retained localID token.
-        guard let lookupLocalID = repository.contact(id: id)?.localID else {
-            editFetchErrorMessage = "Contact could not be found."
-            return
-        }
         do {
-            guard let loaded = try await service.fetchContactForEditing(localID: lookupLocalID) else {
+            guard let loaded = try await repository.editableContact(id: id) else {
                 editFetchErrorMessage = "Contact could not be found."
                 return
             }
@@ -436,31 +429,20 @@ struct ContactDetailView: View {
 
     private func performInlineSave() async {
         guard let model = editModel else { return }
-        // localID exception (boundary token): the save targets the localID
-        // embedded in the edit model's contact — the same record we loaded.
-        // Captured purely to thread into the post-save SyncService/repository
-        // boundary calls (`saveContact` → `refreshContact(localID:)`), so a
-        // reconcile-driven identity re-key can't strand them. Never used as app
-        // identity — not a key, comparison, or nav payload.
-        let saveLocalID = model.edited.localID
         isSavingEdit = true
         defer { isSavingEdit = false }
         do {
-            try await service.saveContact(model.edited)
+            try await repository.saveContact(model.edited, for: id)
             editModel = nil
             editMode = .inactive
             // No reconcile here (6f): editing a contact's CONTACT fields is not a
             // GuessWho-sidecar write, so it must not stamp a guesswho:// URL — an
             // unstamped contact stays unstamped until the user adds notes/tags/
             // links/favorites, each of which mints via resolve-or-mint. Just
-            // re-read the one record into the cache.
-            await repository.refreshContact(localID: saveLocalID)
-            // refreshContact re-reads just this one record via service.fetch ->
-            // unifiedContact (the fresh path; enumerateContacts can lag right
-            // after a CNSaveRequest.update on Catalyst) and patches it into the
-            // cache. loadContact(preferFresh:) then re-reads the detail fields the
-            // same way so the view shows post-save state immediately rather than
-            // waiting for a nav-away-and-back.
+            // re-read the one record into the cache. loadContact(preferFresh:)
+            // then re-reads the detail fields through the same fresh path so the
+            // view shows post-save state immediately rather than waiting for a
+            // nav-away-and-back.
             await loadContact(preferFresh: true)
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
@@ -468,18 +450,12 @@ struct ContactDetailView: View {
     }
 
     private func performInlineDelete() async {
-        // Contact-LIFECYCLE boundary: capture the `CNContact.identifier` off the
-        // loaded record (resolved via the reconcile-stable `contact(id:)`) ONCE,
-        // before the delete — afterward `contact(id:)` resolves nil. No retained
-        // localID token.
-        guard let deleteLocalID = repository.contact(id: id)?.localID else { return }
         isSavingEdit = true
         defer { isSavingEdit = false }
         do {
-            try await service.deleteContact(localID: deleteLocalID)
+            guard try await repository.deleteContact(id: id) else { return }
             editModel = nil
             editMode = .inactive
-            repository.removeContact(localID: deleteLocalID)
             await loadContact()
             if contact == nil {
                 dismiss()
@@ -491,7 +467,7 @@ struct ContactDetailView: View {
             if category == .recordDoesNotExist {
                 editModel = nil
                 editMode = .inactive
-                repository.removeContact(localID: deleteLocalID)
+                repository.removeContact(id: id)
                 await loadContact()
                 if contact == nil {
                     dismiss()
@@ -650,7 +626,7 @@ struct ContactDetailView: View {
         for item in contact.emailAddresses {
             rows.append(.email(label: localizedLabel(item.label), address: item.value))
         }
-        for item in contact.urlAddresses where SidecarKey.parseGuessWhoContactURL(item.value) == nil {
+        for item in contact.userVisibleURLAddresses {
             rows.append(.url(label: localizedLabel(item.label), urlString: item.value))
         }
 
@@ -712,15 +688,13 @@ struct ContactDetailView: View {
 
     private func debugRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
+        let debugInfo = repository.identityDebugInfo(for: contact)
 
-        // localID exception (debug-only display): surfacing the raw
-        // CNContact.identifier is a developer diagnostic inside the debug-gated
-        // Debug section (per CLAUDE.md's debug-mode carve-out), NOT app identity.
-        rows.append(.text(label: "localID", value: contact.localID, monospaced: true))
+        rows.append(.text(label: "localID", value: debugInfo.contactsIdentifier, monospaced: true))
         rows.append(.text(label: "contact type", value: contact.contactType.rawValue))
         rows.append(.text(label: "image available", value: contact.imageDataAvailable ? "yes" : "no"))
 
-        if let uuid = repository.guessWhoID(in: contact) {
+        if let uuid = debugInfo.guessWhoID {
             rows.append(.text(label: "guesswho uuid", value: uuid, monospaced: true))
         } else if let reason = sidecarUnavailableReason {
             rows.append(.text(label: "guesswho uuid", value: "none — \(reason)"))
@@ -728,7 +702,7 @@ struct ContactDetailView: View {
             rows.append(.text(label: "guesswho uuid", value: "none"))
         }
 
-        for item in contact.urlAddresses where item.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) {
+        for item in debugInfo.guessWhoURLs {
             rows.append(.text(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true))
         }
 
@@ -736,8 +710,8 @@ struct ContactDetailView: View {
         // dropped in Stage 6: reconcile is now a package-internal side effect
         // the view no longer drives (so there's no app-side outcome to show),
         // and surfacing it would mean retaining new per-contact package state
-        // purely for a debug row. The cheap, stateless identity bits above
-        // (localID, guesswho uuid/url) remain under the debug carve-out.
+        // purely for a debug row. The package-vended identity diagnostics above
+        // remain under the debug carve-out.
 
         return rows
     }
@@ -794,10 +768,10 @@ struct ContactDetailView: View {
             .sheet(isPresented: $showingAddLinkSheet) {
                 if let linksStore {
                     // The picker hands back the far endpoint's ContactID; the
-                    // store's async addLink resolves-or-mints BOTH endpoints. The
-                    // store is @Observable, so adding the link re-renders the
-                    // connection rows; each row resolves its other endpoint on
-                    // demand via repository.contact(guessWhoID:).
+                    // store's async addLink resolves-or-mints BOTH endpoints.
+                    // The store is @Observable, so adding the link re-renders
+                    // the connection rows; each row asks the package to resolve
+                    // the other endpoint.
                     AddLinkSheet(currentContactID: id) { otherID, note in
                         Task { await linksStore.addLink(to: otherID, note: note) }
                     }
@@ -889,10 +863,10 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func connectionRow(_ link: ContactLink) -> some View {
-        if let contact, let direction = link.direction(for: contact.contactID) {
+        if let contact, link.direction(for: contact.contactID) != nil {
             LinkRow(
                 link: link,
-                otherContact: otherContact(for: direction),
+                otherContact: repository.linkedContact(of: link, for: loadedContactID ?? id),
                 isEditing: editingLinkID == link.id,
                 draftNote: $draftLinkNote,
                 noteFocus: $noteFocus,
@@ -991,30 +965,6 @@ struct ContactDetailView: View {
         noteFocus = .newNote
     }
 
-    private func otherContact(for direction: LinkDirection) -> Contact? {
-        let endpoint = direction.other
-        guard endpoint.kind == .contact else { return nil }
-        // The link endpoint id IS a bare GuessWho UUID; resolve it through the
-        // repository's O(1) index instead of an app-held uuid→Contact map.
-        return repository.contact(guessWhoID: endpoint.id)
-    }
-
-    /// The opened contact's own reconciled GuessWho UUID, or nil before it gains
-    /// a `guesswho://` URL. Resolved through the repository's identity model
-    /// (`guessWhoID(in:)`) off the LOADED `contact` — NOT the nav `id` — because
-    /// `id` is captured at selection time and does not re-key when a first-write
-    /// reconcile mints the UUID, whereas `self.contact` reflects the
-    /// post-mint record. Semantics are identical to the former
-    /// `service.guessWhoUUID(in:)`: nil for an un-reconciled contact (NEVER the
-    /// localID fallback). Still needed for the favorite observable read — the
-    /// @Observable favorites cache is keyed on the bare UUID, so swapping it for
-    /// a ContactID would lose star reactivity (link-direction classification no
-    /// longer reads this; it compares via the package's `SidecarKey.matches`).
-    private var contactUUID: String? {
-        guard let contact else { return nil }
-        return repository.guessWhoID(in: contact)
-    }
-
     /// The ContactID derived from the LOADED contact, carrying its current
     /// `guessWhoID` (which the nav `id` lacks after a first-write mint).
     /// The repository's sidecar reads (`eventLinks(for:)`) key on the passed
@@ -1026,23 +976,22 @@ struct ContactDetailView: View {
     }
 
     private var isContactFavorited: Bool {
-        // Read through the @Observable app-side favorites cache (keyed on the
-        // contact's own UUID) so the star reacts to a toggle. An unreconciled
-        // contact has no UUID yet → not favorited (it can't be, until a toggle
-        // mints one).
-        guard let uuid = contactUUID else { return false }
-        return favoritesStore.isFavorite(kind: .contact, id: uuid)
+        // Read through the @Observable app-side favorites cache so the star
+        // reacts to a toggle. The cache asks package `Favorite.matches(_:)` to
+        // compare the opaque ContactID to the stored GuessWho UUID.
+        guard let id = loadedContactID else { return false }
+        return favoritesStore.isFavorite(id)
     }
 
     private func toggleFavorite() async {
         // Route through the repository, which resolves-or-mints the GuessWho UUID
         // first (favoriting a never-touched contact reconciles + mints,
         // transparent here) then toggles the CONTACT favorite and pokes its
-        // cache. We then reload the contact so `contactUUID` reflects a just-
-        // minted UUID, and refresh the @Observable app-side favorites cache so
-        // the star + the favorites list update (the repository writes the same
-        // on-disk file the app-side store mirrors, but doesn't drive its
-        // observable state).
+        // cache. We then reload the contact so its `ContactID` carries the
+        // just-minted `guessWhoID`, and refresh the @Observable app-side
+        // favorites cache so the star + the favorites list update (the
+        // repository writes the same on-disk file the app-side store mirrors,
+        // but doesn't drive its observable state).
         do {
             _ = try await repository.toggleFavorite(id)
         } catch {
@@ -1129,8 +1078,7 @@ struct ContactDetailView: View {
         // reconcile re-keys the contact's effective identity — no separately
         // threaded `localID` needed.
         let loaded: Contact?
-        if preferFresh, let lookupLocalID = repository.contact(id: id)?.localID,
-           let fresh = try? await service.fetchContactForEditing(localID: lookupLocalID) {
+        if preferFresh, let fresh = try? await repository.editableContact(id: id) {
             // Post-save read: route through unifiedContact(withIdentifier:)
             // which is more consistent than the enumerate path the
             // repository cache uses on Catalyst right after a write.
@@ -1660,5 +1608,3 @@ private struct AddressRow: View {
         item.openInMaps(launchOptions: nil)
     }
 }
-
-

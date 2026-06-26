@@ -1,7 +1,7 @@
 import Foundation
 
 public struct Contact: Hashable, Sendable, Codable {
-    public var localID: String
+    package var localID: String
     public var contactType: ContactType
 
     // Names — full CNContact name family
@@ -42,6 +42,65 @@ public struct Contact: Hashable, Sendable, Codable {
     public var imageDataAvailable: Bool
 
     public init(
+        contactType: ContactType = .person,
+        namePrefix: String = "",
+        givenName: String = "",
+        middleName: String = "",
+        familyName: String = "",
+        previousFamilyName: String = "",
+        nameSuffix: String = "",
+        nickname: String = "",
+        phoneticGivenName: String = "",
+        phoneticMiddleName: String = "",
+        phoneticFamilyName: String = "",
+        jobTitle: String = "",
+        departmentName: String = "",
+        organizationName: String = "",
+        phoneticOrganizationName: String = "",
+        phoneNumbers: [LabeledValue] = [],
+        emailAddresses: [LabeledValue] = [],
+        postalAddresses: [LabeledPostalAddress] = [],
+        urlAddresses: [LabeledValue] = [],
+        birthday: DateComponents? = nil,
+        nonGregorianBirthday: DateComponents? = nil,
+        dates: [LabeledDate] = [],
+        socialProfiles: [LabeledSocialProfile] = [],
+        instantMessageAddresses: [LabeledInstantMessageAddress] = [],
+        contactRelations: [LabeledContactRelation] = [],
+        imageDataAvailable: Bool = false
+    ) {
+        self.init(
+            localID: "",
+            contactType: contactType,
+            namePrefix: namePrefix,
+            givenName: givenName,
+            middleName: middleName,
+            familyName: familyName,
+            previousFamilyName: previousFamilyName,
+            nameSuffix: nameSuffix,
+            nickname: nickname,
+            phoneticGivenName: phoneticGivenName,
+            phoneticMiddleName: phoneticMiddleName,
+            phoneticFamilyName: phoneticFamilyName,
+            jobTitle: jobTitle,
+            departmentName: departmentName,
+            organizationName: organizationName,
+            phoneticOrganizationName: phoneticOrganizationName,
+            phoneNumbers: phoneNumbers,
+            emailAddresses: emailAddresses,
+            postalAddresses: postalAddresses,
+            urlAddresses: urlAddresses,
+            birthday: birthday,
+            nonGregorianBirthday: nonGregorianBirthday,
+            dates: dates,
+            socialProfiles: socialProfiles,
+            instantMessageAddresses: instantMessageAddresses,
+            contactRelations: contactRelations,
+            imageDataAvailable: imageDataAvailable
+        )
+    }
+
+    package init(
         localID: String,
         contactType: ContactType = .person,
         namePrefix: String = "",
@@ -105,4 +164,10 @@ extension Contact {
     /// stored data (its `guesswho://` URL if reconciled, else its `localID`),
     /// so it's free to compute on demand. The canonical id shape the UI keys on.
     public var contactID: ContactID { ContactID(contact: self) }
+
+    /// URL addresses intended for user display/editing. GuessWho identity URLs
+    /// are package-owned metadata and are hidden from app UI surfaces.
+    public var userVisibleURLAddresses: [LabeledValue] {
+        urlAddresses.filter { SidecarKey.parseGuessWhoContactURL($0.value) == nil }
+    }
 }

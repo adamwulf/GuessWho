@@ -51,6 +51,11 @@ final class FavoritesListStore {
         reload()
     }
 
+    func toggle(_ id: FavoriteListItem.ID) {
+        guard let favorite = items.first(where: { $0.matches(id) }) else { return }
+        toggle(kind: favorite.kind, id: favorite.id)
+    }
+
     func setOrder(_ items: [Favorite]) {
         do {
             try service.setFavoritesOrder(items)
@@ -69,5 +74,11 @@ final class FavoritesListStore {
 
     func isFavorite(kind: FavoriteKind, id: String) -> Bool {
         items.contains { $0.kind == kind && $0.id == id.lowercased() }
+    }
+
+    /// Whether the contact identified by `id` is favorited. Reads the observable
+    /// cache while the package owns the ContactID → GuessWho UUID comparison.
+    func isFavorite(_ id: ContactID) -> Bool {
+        items.contains { $0.matches(id) }
     }
 }

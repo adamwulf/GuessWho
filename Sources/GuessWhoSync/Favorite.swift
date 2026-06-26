@@ -52,4 +52,17 @@ public struct Favorite: Codable, Sendable, Hashable {
         try container.encode(id, forKey: .id)
         try container.encode(SidecarISO8601.string(from: addedAt), forKey: .addedAt)
     }
+
+    /// Whether this favorite points at the reconciled contact identity.
+    /// The app can pass opaque `ContactID` values while the package owns the
+    /// bare GuessWho UUID comparison.
+    public func matches(_ contactID: ContactID) -> Bool {
+        kind == .contact && id == contactID.guessWhoID
+    }
+
+    /// Whether this favorite backs the app-facing favorite row identity. The
+    /// raw stable string stays package-owned.
+    public func matches(_ itemID: FavoriteListItem.ID) -> Bool {
+        stableID == itemID.rawValue
+    }
 }

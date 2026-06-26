@@ -353,7 +353,6 @@ struct EventDetailView: View {
             givenFallback = parsed == nil ? trimmed : ""
         }
         return Contact(
-            localID: "",
             namePrefix: parsed?.namePrefix ?? "",
             givenName: parsed?.givenName ?? givenFallback,
             middleName: parsed?.middleName ?? "",
@@ -383,11 +382,7 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private func linkedContactRow(_ link: ContactLink) -> some View {
-        let endpoint = SidecarKey(kind: .event, id: resolvedUUID)
-        let other = SyncService.otherEndpoint(of: link, from: endpoint)
-        // The other endpoint id IS a bare GuessWho UUID; resolve it through the
-        // repository's O(1) index instead of an app-held uuid→Contact map.
-        let contact = repository.contact(guessWhoID: other.id)
+        let contact = repository.linkedContact(of: link, forEventUUID: resolvedUUID)
 
         if let contact {
             Button {
@@ -484,9 +479,9 @@ struct EventDetailView: View {
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
         // Attendee→contact and linked-contact→contact resolution now happen on
-        // demand in the rows via repository.contactIDs(matchingEmail:) /
-        // repository.contact(guessWhoID:) — the O(1) indexes mean we no longer
-        // build (or hold) an app-side uuid/email→Contact map here.
+        // demand in the rows via package repository helpers — the O(1) indexes
+        // mean we no longer build (or hold) an app-side uuid/email→Contact map
+        // here.
         hasLoadedOnce = true
     }
 
