@@ -99,14 +99,22 @@ struct LinkedInConfirmView: View {
             set: { on in if on { selected.insert(row.id) } else { selected.remove(row.id) } }
         )
         GridRow(alignment: .top) {
-            // Plain Toggle: on a Mac-optimized Catalyst app (this target — no
-            // UIDesignRequiresCompatibility key, so it defaults to "Optimize
-            // Interface for Mac") this renders as a NATIVE macOS checkbox. On
-            // iOS later it falls back to a switch; we can revisit a forced
-            // checkbox style then if needed.
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .padding(.top, 6)
+            // Checkbox control. NOTE: SwiftUI's native `.toggleStyle(.checkbox)`
+            // is unavailable unless the target is built with "Optimize Interface
+            // for Mac" (Catalyst compiles against the iOS SDK, where `.checkbox`
+            // doesn't exist). Until that idiom is enabled, render a custom
+            // checkbox so we get a checkbox look on every config. Once
+            // "Optimize for Mac" is on, this can become a plain Toggle (it'll be
+            // a native Mac checkbox) or `.toggleStyle(.checkbox)`.
+            Button {
+                isOn.wrappedValue.toggle()
+            } label: {
+                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
 
             cell(label: row.label, value: row.existing, isExisting: true,
                  isPhoto: row.isPhoto, photo: existingPhoto, placeholder: "person.crop.circle")
