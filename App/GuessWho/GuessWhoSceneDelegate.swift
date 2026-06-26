@@ -667,15 +667,63 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
-        let matches = appDelegate.contactsRepository.matchLinkedIn(profile: profile)
+        let repo = appDelegate.contactsRepository
+        let matches = repo.matchLinkedIn(profile: profile)
         Self.handoffLog.log(
             "match: \(matches.count) contact(s) for \(profile.fullName ?? "?", privacy: .public) (url=\(profile.contactInfo?.profileUrl ?? "-", privacy: .public))"
         )
-        if let first = matches.first, let c = appDelegate.contactsRepository.contact(id: first) {
-            Self.handoffLog.log("match: -> \(c.givenName, privacy: .public) \(c.familyName, privacy: .public)")
+
+        // No match: a new-contact screen is a later step. For now, log and stop.
+        guard let matchID = matches.first, let contact = repo.contact(id: matchID) else {
+            Self.handoffLog.log("match: none — new-contact flow not built yet")
+            return
         }
-        // Next step: build the diff and present LinkedInConfirmView. For now we
-        // just log the match so the decode + match can be validated.
+
+        let rows = LinkedInDiff.rows(existing: contact, incoming: profile)
+        let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
+
+        let confirm = LinkedInConfirmView(
+            contactID: matchID,
+            contactDisplayName: contact.displayName,
+            rows: rows,
+            incomingPhoto: incomingPhoto,
+            loadExistingPhoto: { [weak repo] in
+                guard let repo else { return nil }
+                let photo = try? await repo.contactPhotoData(for: matchID, kind: .thumbnail)
+                return photo.flatMap { UIImage(data: $0.data) }
+            },
+            onConfirm: { [weak self] selected in
+                self?.dismissPresented()
+                // Saving lands in the next step; log the chosen fields for now.
+                Self.handoffLog.log("confirm: save fields \(selected.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)")
+            },
+            onCancel: { [weak self] in self?.dismissPresented() }
+        )
+
+        let hosting = UIHostingController(rootView: confirm)
+        hosting.modalPresentationStyle = .formSheet
+        topmostPresenter()?.present(hosting, animated: true)
+    }
+
+    /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a
+    /// recognizable base64 data URL or the bytes aren't an image.
+    private static func image(fromDataURL dataURL: String) -> UIImage? {
+        guard let comma = dataURL.range(of: ",") else { return nil }
+        let b64 = String(dataURL[comma.upperBound...])
+        guard let data = Data(base64Encoded: b64) else { return nil }
+        return UIImage(data: data)
+    }
+
+    /// The topmost presented view controller to present from (works for the
+    /// Catalyst split shell and the iPhone tab/gate shell).
+    private func topmostPresenter() -> UIViewController? {
+        guard var presenter = window?.rootViewController else { return nil }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        return presenter
+    }
+
+    private func dismissPresented() {
+        topmostPresenter()?.dismiss(animated: true)
     }
 
     /// The handoff JSON envelope the extension writes: a `payload` object plus a
