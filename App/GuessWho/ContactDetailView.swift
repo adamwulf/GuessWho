@@ -30,6 +30,12 @@ struct ContactDetailView: View {
 
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
+    // Drives the fullscreen, zoomable photo viewer. Set when the user taps the
+    // header photo (only possible when a real photo is loaded); the cover binds
+    // to this so the same image the header shows is the one presented. Wrapped
+    // in an Identifiable box because `.fullScreenCover(item:)` requires it and
+    // UIImage isn't Identifiable.
+    @State private var fullscreenPhoto: FullscreenPhoto?
     @State private var notesStore: NotesStore?
     @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
@@ -173,6 +179,9 @@ struct ContactDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
+        .fullScreenCover(item: $fullscreenPhoto) { photo in
+            ContactPhotoViewer(image: photo.image)
+        }
         .confirmationDialog(
             "Delete contact?",
             isPresented: $showDeleteConfirm,
@@ -569,21 +578,8 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func headerView(_ contact: Contact) -> some View {
         VStack(spacing: 12) {
-            ZStack {
-                if let headerPhoto {
-                    Image(uiImage: headerPhoto)
-                        .resizable()
-                        .scaledToFill()
-                        .clipShape(Circle())
-                } else {
-                    Circle()
-                        .fill(Color.secondary.opacity(0.15))
-                    Text(contact.initials)
-                        .font(.system(size: 36, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 96, height: 96)
+            photoCircle(contact)
+                .frame(width: 96, height: 96)
 
             VStack(spacing: 2) {
                 Text(contact.displayName)
@@ -598,6 +594,55 @@ struct ContactDetailView: View {
                         .multilineTextAlignment(.center)
                 }
             }
+        }
+    }
+
+    /// The circular profile image (photo or monogram fallback). When a real
+    /// photo is loaded and the view is NOT in edit mode, the circle is tappable
+    /// and opens the fullscreen zoom/pan viewer. In edit mode it instead shows a
+    /// translucent viewfinder symbol overlay to signal the photo can be changed.
+    @ViewBuilder
+    private func photoCircle(_ contact: Contact) -> some View {
+        let circle = ZStack {
+            if let headerPhoto {
+                Image(uiImage: headerPhoto)
+                    .resizable()
+                    .scaledToFill()
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(Color.secondary.opacity(0.15))
+                Text(contact.initials)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if isEditingContact {
+                // Translucent viewfinder over the circle while editing: a
+                // glanceable "tap to change photo" affordance. The dark scrim
+                // keeps the symbol legible over a light photo or monogram.
+                Circle()
+                    .fill(Color.black.opacity(0.35))
+                Image("custom.person.crop.circle.viewfinder")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(20)
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+        }
+
+        if headerPhoto != nil, !isEditingContact {
+            Button {
+                if let headerPhoto {
+                    fullscreenPhoto = FullscreenPhoto(image: headerPhoto)
+                }
+            } label: {
+                circle
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View photo")
+        } else {
+            circle
         }
     }
 
