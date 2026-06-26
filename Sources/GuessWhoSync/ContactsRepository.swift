@@ -781,6 +781,57 @@ public final class ContactsRepository: NSObject {
         return (contactsByEmail[needle] ?? []).map { ContactID(contact: $0) }
     }
 
+    /// Cached contacts whose stored LinkedIn URL matches `linkedInURL`, by either
+    /// canonical-URL or slug equality (see `LinkedInURL.sameProfile`). Scans each
+    /// contact's `socialProfiles` (urlString/username) and `urlAddresses` for a
+    /// LinkedIn link. A LinkedIn URL is a near-unique identifier, so this is the
+    /// most precise match signal. Returns ALL matches; empty query returns none.
+    /// O(n) scan — fine for a one-shot, user-initiated match.
+    public func contactIDs(matchingLinkedInURL linkedInURL: String) -> [ContactID] {
+        let needle = linkedInURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty, LinkedInURL.slug(from: needle) != nil else { return [] }
+        return contacts.filter { contact in
+            // socialProfiles: a LinkedIn entry stores the URL and/or username.
+            let socialHit = contact.socialProfiles.contains { lp in
+                let p = lp.value
+                if !p.urlString.isEmpty, LinkedInURL.sameProfile(p.urlString, needle) { return true }
+                if !p.username.isEmpty, let s = LinkedInURL.slug(from: needle), p.username.lowercased() == s.lowercased() { return true }
+                return false
+            }
+            if socialHit { return true }
+            // urlAddresses: a stored LinkedIn website link.
+            return contact.urlAddresses.contains { lv in
+                LinkedInURL.isLinkedIn(lv.value) && LinkedInURL.sameProfile(lv.value, needle)
+            }
+        }.map { ContactID(contact: $0) }
+    }
+
+    /// Single package entry point for matching a parsed LinkedIn profile to an
+    /// existing contact. Runs the tiers in precision order and returns the FIRST
+    /// non-empty tier (the app owns disambiguation when a tier returns several):
+    ///   1. LinkedIn URL (profileUrl / sourceUrl) — most precise
+    ///   2. any parsed email
+    ///   3. display name (fullName)
+    /// Returns an empty array when nothing matches.
+    public func matchLinkedIn(profile: LinkedInProfile) -> [ContactID] {
+        // 1. LinkedIn URL — try the contact-info profile URL, then the page URL.
+        for url in [profile.contactInfo?.profileUrl, profile.sourceUrl].compactMap({ $0 }) {
+            let hits = contactIDs(matchingLinkedInURL: url)
+            if !hits.isEmpty { return hits }
+        }
+        // 2. Email — any parsed email.
+        for email in profile.contactInfo?.emails ?? [] {
+            let hits = contactIDs(matchingEmail: email)
+            if !hits.isEmpty { return hits }
+        }
+        // 3. Display name.
+        if let name = profile.fullName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let hits = contactIDs(named: name)
+            if !hits.isEmpty { return hits }
+        }
+        return []
+    }
+
     /// Cached contacts that reference the contact identified by `id` through a
     /// name-only `CNContactRelation`, addressed by `ContactID`. Self is excluded
     /// by EFFECTIVE identity (`guessWhoID ?? localID`) — never by raw `localID` —
