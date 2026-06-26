@@ -310,7 +310,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let tabs = UITabBarController()
         tabs.viewControllers = [peopleNav, orgsNav, eventsNav, favoritesNav]
+        // Re-tapping the active tab scrolls its list to top — an iPhone /
+        // iPad tab-shell behavior. The `UITabBarControllerDelegate`
+        // conformance that drives it is `#if !targetEnvironment(macCatalyst)`
+        // (Catalyst uses the split-view shell, which has no tab bar), so the
+        // assignment must be guarded the same way to keep both sides in sync.
+        #if !targetEnvironment(macCatalyst)
         tabs.delegate = self
+        #endif
 
         // iOS 18 sidebar-adaptable tab bar surfaces as a bottom tab bar
         // on iPhone (compact) and as a leading sidebar on iPad
