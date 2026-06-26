@@ -626,7 +626,8 @@ struct ContactDetailView: View {
                 Image("custom.person.crop.circle.viewfinder")
                     .resizable()
                     .scaledToFit()
-                    .padding(20)
+                    .symbolRenderingMode(.monochrome)
+                    .padding(22)
                     .foregroundStyle(.white.opacity(0.9))
             }
         }
