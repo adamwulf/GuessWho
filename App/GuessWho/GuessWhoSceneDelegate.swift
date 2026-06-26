@@ -169,6 +169,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let detail = ContactDetailView(id: contact.contactID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.contactPhotoLoader)
             .environment(appDelegate.favoritesStore)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
@@ -216,6 +217,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let detail = ContactDetailView(id: ref.id)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.contactPhotoLoader)
             .environment(appDelegate.favoritesStore)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
@@ -449,6 +451,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             ContactDetailView(id: id)
                 .environment(appDelegate.service)
                 .environment(appDelegate.contactsRepository)
+                .environment(appDelegate.contactPhotoLoader)
                 .environment(appDelegate.favoritesStore),
             on: nav,
             appDelegate: appDelegate
