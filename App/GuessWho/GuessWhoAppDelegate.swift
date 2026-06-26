@@ -24,6 +24,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// Phase 5 the iPhone shell is also UIKit and consumes this repo,
     /// so the gate that previously made this Catalyst-only is gone.
     let eventsRepository: EventsRepository
+    let contactPhotoLoader: ContactPhotoLoader
 
     override init() {
         // Register defaults so non-@AppStorage readers and the iOS
@@ -33,10 +34,12 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             AppSettings.Key.debugModeEnabled: AppSettings.Default.debugModeEnabled
         ])
         let service = SyncService()
+        let contactsRepository = service.makeContactsRepository()
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
-        self.contactsRepository = service.makeContactsRepository()
+        self.contactsRepository = contactsRepository
         self.eventsRepository = EventsRepository(service: service)
+        self.contactPhotoLoader = ContactPhotoLoader(repository: contactsRepository)
         super.init()
     }
 

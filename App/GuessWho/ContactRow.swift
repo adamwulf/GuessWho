@@ -9,9 +9,14 @@ struct ContactRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: contact.contactType == .organization ? "building.2.crop.circle.fill" : "person.crop.circle.fill")
-                .font(.title2)
-                .foregroundStyle(.secondary)
+            ZStack {
+                Circle()
+                    .fill(avatarColor)
+                Text(contact.initials)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 nameLabel
                     .font(.body)
@@ -63,5 +68,23 @@ struct ContactRow: View {
         }
         if !contact.jobTitle.isEmpty { return contact.jobTitle }
         return contact.organizationName
+    }
+
+    private var avatarColor: Color {
+        let seed = "\(contact.contactType)-\(contact.displayName)"
+        let value = seed.unicodeScalars.reduce(0) { partial, scalar in
+            (partial &* 31) &+ Int(scalar.value)
+        }
+        let palette: [Color] = [
+            .blue,
+            .green,
+            .indigo,
+            .orange,
+            .pink,
+            .purple,
+            .red,
+            .teal,
+        ]
+        return palette[abs(value) % palette.count]
     }
 }

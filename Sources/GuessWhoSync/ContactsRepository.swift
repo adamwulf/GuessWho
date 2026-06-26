@@ -187,6 +187,32 @@ public final class ContactsRepository: NSObject {
         return contactsByLocalID[id.localID]
     }
 
+    /// Lazily loads contact photo bytes for the app-facing `ContactID`.
+    ///
+    /// Bulk contact reloads only fetch `imageDataAvailable`; the expensive image
+    /// bytes stay behind this visible-row/detail-driven path. The app passes an
+    /// opaque `ContactID`; the repository resolves the package-scoped Contacts
+    /// lookup token internally and chooses thumbnail vs. full-size store access.
+    public func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
+        guard let contact = contact(id: id), contact.imageDataAvailable else {
+            return nil
+        }
+
+        do {
+            let data: Data?
+            switch kind {
+            case .thumbnail:
+                data = try await contactsStore.loadThumbnailImageData(localID: contact.localID)
+            case .fullSize:
+                data = try await contactsStore.loadImageData(localID: contact.localID)
+            }
+            guard let data else { return nil }
+            return ContactPhoto(data: data, kind: kind)
+        } catch ContactStoreError.contactNotFound(_) {
+            return nil
+        }
+    }
+
     /// Fetches the current Contacts record for editing, addressed by the
     /// app-facing `ContactID`. The package resolves the adapter-local Contacts
     /// identifier at the boundary and then uses the fresh `fetch(localID:)`
