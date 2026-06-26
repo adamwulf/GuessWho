@@ -685,9 +685,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// Reads `pending-handoff.json` from the App Group container, deletes it
-    /// (so the same payload is never replayed), logs a photo-elided rendering,
-    /// and returns the RAW bytes for decoding. Returns nil on any failure (this
-    /// is a receiver, not production error handling — failures are logged).
+    /// (so the same payload is never replayed), and returns the RAW bytes for
+    /// decoding. Returns nil on any failure (this is a receiver, not production
+    /// error handling — failures are logged).
     private func readAndClearHandoffPayload() -> Data? {
         Self.handoffLog.log("read: resolving App Group id=\(Self.handoffAppGroupID, privacy: .public)")
         guard let container = FileManager.default
@@ -718,17 +718,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let data = try Data(contentsOf: fileURL)
             // Clear immediately so a re-open can't replay a stale handoff.
             try FileManager.default.removeItem(at: fileURL)
-
-            // Log a photo-elided rendering so the Console stays readable.
-            let rendered = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-UTF8>"
-            let logSafe: String
-            if let regex = try? NSRegularExpression(pattern: "data:[^\"]{0,40}base64,[A-Za-z0-9+/=]+") {
-                let r = NSRange(rendered.startIndex..., in: rendered)
-                logSafe = regex.stringByReplacingMatches(in: rendered, range: r, withTemplate: "<base64 image elided>")
-            } else {
-                logSafe = rendered
-            }
-            Self.handoffLog.log("LinkedIn handoff payload: \(logSafe, privacy: .public)")
             return data
         } catch {
             Self.handoffLog.error("read: failed to read/clear handoff: \(error.localizedDescription, privacy: .public)")
