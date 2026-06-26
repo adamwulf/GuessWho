@@ -99,16 +99,14 @@ struct LinkedInConfirmView: View {
             set: { on in if on { selected.insert(row.id) } else { selected.remove(row.id) } }
         )
         GridRow(alignment: .top) {
-            // Real checkbox (square + checkmark), not the iOS switch.
-            Button {
-                isOn.wrappedValue.toggle()
-            } label: {
-                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
-                    .font(.title3)
-                    .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 10)
+            // Plain Toggle: on a Mac-optimized Catalyst app (this target — no
+            // UIDesignRequiresCompatibility key, so it defaults to "Optimize
+            // Interface for Mac") this renders as a NATIVE macOS checkbox. On
+            // iOS later it falls back to a switch; we can revisit a forced
+            // checkbox style then if needed.
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .padding(.top, 6)
 
             cell(label: row.label, value: row.existing, isExisting: true,
                  isPhoto: row.isPhoto, photo: existingPhoto, placeholder: "person.crop.circle")
