@@ -19,15 +19,22 @@ function minimalProbe() {
 }
 
 function probe() {
+  let result;
   try {
     if (typeof extractProfile === "function") {
       const parsed = extractProfile();
-      if (parsed) return parsed;
+      if (parsed) result = parsed;
     }
-  } catch (_e) {
-    // fall through to the minimal probe
+  } catch (e) {
+    console.log("[GuessWho] extractProfile threw:", e);
   }
-  return minimalProbe();
+  if (!result) result = minimalProbe();
+
+  // Log the full parse result to the page console so it can be copy/pasted for
+  // selector debugging (alerts don't scale as the payload grows). Filter the
+  // browser console on "[GuessWho]" to find it.
+  console.log("[GuessWho] parse result:", JSON.stringify(result, null, 2));
+  return result;
 }
 
 // The popup triggers the handoff; the content script answers with the probe.

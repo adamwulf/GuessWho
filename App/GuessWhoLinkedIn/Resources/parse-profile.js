@@ -54,16 +54,28 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   });
 
   // Collect the candidate text lines in the top card after the name.
+  //
+  // The headline and location render as <p> elements that are NOT inside the
+  // name heading's immediate wrapper — they're siblings of an ancestor a few
+  // levels up. So `closest("section,div")` grabs too small a container and
+  // misses them. Instead, climb the ancestor chain (bounded) and pick the first
+  // ancestor that actually contains <p> text beyond the name — that's the top
+  // card. Keep the climb capped so we never accidentally select <main>/<body>.
+  const isPronoun = (t) =>
+    /^\(?\s*(he\/him|she\/her|they\/them)/i.test(t);
+
   const topCardLines = safe(() => {
     if (!nameHeading) return [];
-    // The headline/location live as siblings within the name heading's card
-    // container. Walk up to a reasonable container, then read its <p> text in
-    // document order, dropping empties, separators, and pronoun chips.
-    const card = nameHeading.closest("section, div") || nameHeading.parentElement;
-    if (!card) return [];
-    return [...card.querySelectorAll("p")]
-      .map((p) => text(p))
-      .filter((t) => t && t !== "·" && !/^\(?[Hh]e\/[Hh]im|[Ss]he\/[Hh]er|[Tt]hey\/[Tt]hem/.test(t));
+    let node = nameHeading;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      const lines = [...node.querySelectorAll("p")]
+        .map((p) => text(p))
+        .filter((t) => t && t !== "·" && !isPronoun(t));
+      // The top card is the first ancestor that yields real <p> lines (the
+      // headline/location). Stop as soon as we find them.
+      if (lines.length) return lines;
+    }
+    return [];
   }) || [];
 
   // Headline = first non-location line that looks like a role/headline. The
@@ -135,6 +147,10 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     location,
     about,
     photoSrcset,
+    // Debug aid for selector tuning — the raw top-card lines the climb found.
+    // Lets us see WHY headline/location classified the way they did. Drop this
+    // once the parser stabilizes.
+    _topCardLines: topCardLines,
   };
 }
 
