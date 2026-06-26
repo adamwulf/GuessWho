@@ -653,32 +653,55 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         Self.handoffLog.log("APP resolved App Group id=\(Self.handoffAppGroupID, privacy: .public)")
         Self.handoffLog.log("LinkedIn handoff wake received")
 
-        // Spike receiver: log the payload (the os_log inside the reader prints
-        // it). No alert — the payload now carries a full-res base64 photo that's
-        // unreadable in an alert; the Console log is the surface to inspect it.
-        _ = readAndClearHandoffPayload()
+        guard let data = readAndClearHandoffPayload() else { return }
+
+        // Decode the envelope ({ stampedBy, payload: {...} }) into the
+        // package-vended LinkedInProfile, then ask the package to match it.
+        let profile: LinkedInProfile
+        do {
+            let envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
+            profile = envelope.payload
+        } catch {
+            Self.handoffLog.error("decode: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        let matches = appDelegate.contactsRepository.matchLinkedIn(profile: profile)
+        Self.handoffLog.log(
+            "match: \(matches.count) contact(s) for \(profile.fullName ?? "?", privacy: .public) (url=\(profile.contactInfo?.profileUrl ?? "-", privacy: .public))"
+        )
+        if let first = matches.first, let c = appDelegate.contactsRepository.contact(id: first) {
+            Self.handoffLog.log("match: -> \(c.givenName, privacy: .public) \(c.familyName, privacy: .public)")
+        }
+        // Next step: build the diff and present LinkedInConfirmView. For now we
+        // just log the match so the decode + match can be validated.
+    }
+
+    /// The handoff JSON envelope the extension writes: a `payload` object plus a
+    /// `stampedBy` marker. The payload is the parsed `LinkedInProfile`.
+    private struct HandoffEnvelope: Decodable {
+        let payload: LinkedInProfile
     }
 
     /// Reads `pending-handoff.json` from the App Group container, deletes it
-    /// (so the same payload is never replayed), and returns a human-readable
-    /// rendering for the spike alert. Returns a diagnostic string rather than
-    /// throwing — this is a spike receiver, not production error handling.
-    private func readAndClearHandoffPayload() -> String {
+    /// (so the same payload is never replayed), logs a photo-elided rendering,
+    /// and returns the RAW bytes for decoding. Returns nil on any failure (this
+    /// is a receiver, not production error handling — failures are logged).
+    private func readAndClearHandoffPayload() -> Data? {
         Self.handoffLog.log("read: resolving App Group id=\(Self.handoffAppGroupID, privacy: .public)")
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.handoffAppGroupID) else {
-            let message = "App Group container unavailable: \(Self.handoffAppGroupID)"
-            Self.handoffLog.error("read: \(message, privacy: .public)")
-            return message
+            Self.handoffLog.error("read: App Group container unavailable: \(Self.handoffAppGroupID, privacy: .public)")
+            return nil
         }
 
         let fileURL = container.appendingPathComponent(Self.handoffFilename)
         Self.handoffLog.log("read: looking for \(fileURL.path, privacy: .public)")
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            let message = "No \(Self.handoffFilename) at \(fileURL.path)"
-            Self.handoffLog.error("read: \(message, privacy: .public)")
-            return message
+            Self.handoffLog.error("read: No \(Self.handoffFilename, privacy: .public) at \(fileURL.path, privacy: .public)")
+            return nil
         }
 
         do {
@@ -688,17 +711,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
             if size > Self.handoffMaxBytes {
                 try? FileManager.default.removeItem(at: fileURL)
-                let message = "Handoff file too large (\(size) bytes > \(Self.handoffMaxBytes)); discarded"
-                Self.handoffLog.error("\(message, privacy: .public)")
-                return message
+                Self.handoffLog.error("read: handoff file too large (\(size) bytes > \(Self.handoffMaxBytes)); discarded")
+                return nil
             }
 
             let data = try Data(contentsOf: fileURL)
             // Clear immediately so a re-open can't replay a stale handoff.
             try FileManager.default.removeItem(at: fileURL)
 
+            // Log a photo-elided rendering so the Console stays readable.
             let rendered = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-UTF8>"
-            // Elide the base64 photo data URL so the Console log stays readable.
             let logSafe: String
             if let regex = try? NSRegularExpression(pattern: "data:[^\"]{0,40}base64,[A-Za-z0-9+/=]+") {
                 let r = NSRange(rendered.startIndex..., in: rendered)
@@ -707,11 +729,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 logSafe = rendered
             }
             Self.handoffLog.log("LinkedIn handoff payload: \(logSafe, privacy: .public)")
-            return rendered
+            return data
         } catch {
-            let message = "Failed to read/clear handoff: \(error.localizedDescription)"
-            Self.handoffLog.error("\(message, privacy: .public)")
-            return message
+            Self.handoffLog.error("read: failed to read/clear handoff: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
