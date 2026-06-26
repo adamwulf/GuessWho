@@ -72,10 +72,14 @@ struct LinkedInConfirmView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+                    // Escape triggers Cancel.
                     Button("Cancel", role: .cancel) { onCancel() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
+                    // Save is the primary/default action (Return), styled prominent.
                     Button("Save") { onConfirm(selected) }
+                        .keyboardShortcut(.defaultAction)
                         .disabled(selected.isEmpty)
                 }
             }
