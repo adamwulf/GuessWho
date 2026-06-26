@@ -112,11 +112,15 @@ Add an app-owned `@MainActor` photo loader object that wraps
 
 Cache design:
 
-- Use `NSCache<ContactPhotoCacheKey, UIImage>`.
-- Key by `ContactID` plus `ContactPhotoKind`.
+- Use an explicit bounded LRU cache keyed by `ContactID` plus
+  `ContactPhotoKind`. `NSCache` is not sufficient by itself because it does not
+  guarantee true recency ordering.
+- Track recency on every cache read/write and evict the least-recently-used
+  entries when either the count limit or cost limit is exceeded.
 - Include a cost based on decoded pixel count or source byte count.
-- Let `NSCache` react to memory pressure automatically.
-- Optionally cap full-size entries more aggressively than thumbnails.
+- Use separate or weighted limits so full-size entries are capped more
+  aggressively than thumbnails.
+- Listen for memory-pressure notifications and trim or clear the LRU cache.
 
 `ContactPhotoCacheKey` must not expose `ContactID` internals. It can be an
 app-local wrapper around the public `Hashable` token and the photo kind.
@@ -147,6 +151,8 @@ Detail:
 - Cancel automatically when the view disappears or the contact ID changes.
 - If full-size data is unavailable, fall back to the thumbnail cache before
   showing initials.
+- Decode full-size image data off the main actor, then deliver the ready
+  `UIImage` to the main actor for assignment.
 
 Event detail and linked-contact rows:
 
@@ -158,14 +164,31 @@ Event detail and linked-contact rows:
 
 Placeholders:
 
-- Keep the current SF Symbol fallback for list rows while loading or when a
-  contact has no image.
-- For people, prefer a circular initials/monogram fallback once the shared avatar
-  view exists.
-- For organizations, keep a building symbol fallback unless Adam wants
-  organization initials.
+- Use circular initials monograms for list rows while loading and when a contact
+  has no image.
+- Derive initials with the app-side `Contact.initials` helper in
+  `App/GuessWho/Support/Contact+Display.swift`: people use given-name +
+  family-name initials; organizations and nickname-only contacts fall back to one
+  or two letters from `displayName`.
+- Use a deterministic background color chosen from public display fields such as
+  `displayName` and `contactType`. Do not use `ContactID.hashValue` as a
+  cross-launch color seed and do not read raw identity fields; if stronger
+  duplicate-name differentiation is needed later, have the package vend an
+  opaque color seed.
 - In `ContactDetailView`, keep the existing initials circle as the no-photo
   fallback and replace only the circle contents with the loaded image.
+
+Organizations:
+
+- Organizations are `Contact` values with `contactType == .organization`, a
+  public `Contact.contactID`, `imageDataAvailable`, and the same package-backed
+  Contacts image source. They can use the exact same
+  `contactPhotoData(for:kind:)` repository API, app LRU cache, table-cell
+  loading/cancellation, and detail fallback path as person contacts.
+- The only organization-specific behavior is avatar text: when given/family
+  names are empty, the app-side `Contact.initials` helper derives the monogram
+  from the organization `displayName` instead of person-name parts. No separate
+  organization image loader, cache key, or Contacts access path is needed.
 
 Presentation:
 
@@ -211,9 +234,8 @@ system contact images can change outside GuessWho.
   stay on main long enough to resolve `ContactID` and inspect
   `imageDataAvailable`; the awaited store load happens off main through the
   adapter.
-- Decode `UIImage(data:)` away from tight table-view layout work where practical,
-  then assign the final image on the main actor. If decoding stays on the main
-  actor for v1, constrain it to thumbnails and revisit if scrolling stutters.
+- Decode `UIImage(data:)` off the main actor for both thumbnails and full-size
+  images. Assign only the ready `UIImage` on the main actor.
 - UIKit cells keep a `Task<Void, Never>?` property. `prepareForReuse()` cancels
   and clears it.
 - Before assigning a loaded image, verify the cell's represented `ContactID` and
@@ -262,9 +284,11 @@ Risk notes:
 Scope:
 
 - Add an app-owned `ContactPhotoLoader` or equivalent observable/cache object.
-- Cache decoded `UIImage`s in `NSCache`.
+- Cache decoded `UIImage`s in an explicit bounded LRU cache with count and cost
+  limits.
 - Coalesce duplicate in-flight requests.
 - Observe repository reloads and clear the cache.
+- Trim or clear the cache on memory pressure.
 - Inject the loader where UIKit list controllers and SwiftUI detail views can
   share it.
 
@@ -280,14 +304,16 @@ Acceptance criteria:
 
 - Re-requesting the same visible thumbnail after it has loaded hits the cache and
   does not call the repository again.
+- Accessing a cached image updates its recency; exceeding the configured
+  count/cost limit evicts least-recently-used entries first.
 - `.contactsRepositoryDidReload` clears cached images.
 - The loader API accepts `ContactID`, not raw strings.
 - The app target contains no `Contacts` / `CNContact` photo-loading code.
 
 Risk notes:
 
-- `NSCache` keys must be reference types. Keep that implementation detail inside
-  the loader.
+- `NSCache` can still be used as a memory-pressure helper only if the loader owns
+  explicit LRU ordering; do not rely on `NSCache` eviction order for correctness.
 - Do not make the loader a second contact repository; it should cache images
   only.
 
@@ -298,7 +324,7 @@ Scope:
 - Update `ContactsListViewController.ContactCell` to render a circular thumbnail
   when available.
 - Update `OrganizationsListViewController.OrganizationCell` to use the same
-  loader, with building-symbol fallback.
+  loader and the same monogram fallback path.
 - Add row task cancellation in cell reuse and table-view display lifecycle.
 - Add `UITableViewDataSourcePrefetching` for both list controllers.
 
@@ -316,7 +342,9 @@ Acceptance criteria:
 - `prepareForReuse()` cancels any active row load.
 - Prefetch starts thumbnail loads for upcoming index paths and cancellation stops
   no-longer-needed prefetch tasks.
-- Rows with no photo keep the existing placeholder.
+- Rows with no photo show a stable circular initials monogram, not an SF Symbol.
+- Person and organization rows share the same photo API, cache, loader, and
+  cancellation path.
 
 Risk notes:
 
@@ -358,6 +386,8 @@ Scope:
 - Use thumbnail fallback if full-size data is missing but a thumbnail is cached.
 - Keep initials as the final fallback.
 - Tie loading to the currently loaded `Contact.contactID`.
+- Decode full-size image data off the main actor before assigning the image to
+  the header.
 
 Touch-points:
 
@@ -367,6 +397,8 @@ Touch-points:
 Acceptance criteria:
 
 - Opening a detail view starts one full-size load for that contact.
+- Full-size decode runs off the main actor; only final image assignment happens
+  on the main actor.
 - Navigating to another contact cancels or ignores the stale load.
 - The header layout does not jump when the image arrives.
 - An edited/deleted/reloaded contact clears stale photo state through the shared
@@ -387,7 +419,7 @@ Scope:
   integrations prove the shape.
 - Optionally add thumbnails to `EventDetailView` linked-contact rows and contact
   link picker rows.
-- Consider a monogram fallback for list rows to match the detail header.
+- Reuse the initials monogram fallback across all contact avatar surfaces.
 
 Touch-points:
 
@@ -419,6 +451,11 @@ Risk notes:
   - Scrolling away and back reuses cached thumbnails.
   - Contact detail shows full-size photo, then falls back to initials when none
     exists.
+  - Organization rows use the same thumbnail loader/cache as person rows and
+    fall back to initials derived from organization display names.
+  - LRU cache eviction removes least-recently-used entries when count/cost limits
+    are exceeded.
+  - Full-size detail image decode does not run on the main actor.
   - External contact photo change clears stale cached images after repository
     reload.
 - Static audits:
@@ -430,13 +467,28 @@ Risk notes:
   - `grep -R "\\.localID\\|localID:" -n App/GuessWho` has no new photo-related
     hits.
 
-## Open design questions
+## Resolved design decisions
 
-- Should list rows use initials monograms as the default fallback, or keep the
-  current SF Symbols until a broader visual pass?
-- Should organization contacts ever show stored profile images, or should they
-  always prefer the building placeholder unless the detail view is opened?
-- Is whole-cache invalidation on every repository reload acceptable for v1, or
-  should the first implementation add package-vended per-contact invalidation?
-- Should full-size detail image decoding happen off the main actor immediately,
-  or should v1 keep decoding simple and profile only if detail transitions hitch?
+- List fallback: use initials monograms, not SF Symbols.
+- Organizations: handle organizations exactly like other contacts for photo
+  loading. They share `ContactID`, `Contact`, `imageDataAvailable`,
+  `contactPhotoData(for:kind:)`, the same LRU cache, and the same visible-row
+  loading/cancellation path. The only difference is monogram derivation when
+  person-name fields are empty: use one or two initials from `displayName`.
+- Cache: use an explicit bounded LRU with memory-pressure trimming. Whole-cache
+  invalidation on `.contactsRepositoryDidReload` is the v1 invalidation path;
+  per-contact invalidation remains a later refinement.
+- Full-size decode: decode off the main actor and deliver the ready `UIImage` to
+  the main actor for display.
+
+## Boundary confirmation
+
+The revised design still respects the contact-identity boundary:
+
+- App photo requests are keyed only by `ContactID`.
+- The repository translates `ContactID` to the package-scoped Contacts lookup
+  token internally.
+- App code never touches `CNContact`, `CNContactStore`, `localID`, or
+  `CNContactImageDataKey` / `CNContactThumbnailImageDataKey` for photo loading.
+- Organizations do not introduce a second identity path; they are the same
+  `ContactID` / `Contact` records with `contactType == .organization`.
