@@ -3,7 +3,55 @@
     "automatic-gradient" : "extended-srgb:0.00000,0.76471,0.81569,1.00000"
   },
   "groups" : [
-
+    {
+      "hidden" : false,
+      "layers" : [
+        {
+          "hidden" : false,
+          "image-name" : "outside 3.svg",
+          "name" : "outside 3",
+          "position" : {
+            "scale" : 12.81,
+            "translation-in-points" : [
+              749,
+              98
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "hidden" : true,
+      "layers" : [
+        {
+          "image-name" : "inside 2.svg",
+          "name" : "inside 2",
+          "position" : {
+            "scale" : 12.91,
+            "translation-in-points" : [
+              867,
+              -94
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
   ],
   "supported-platforms" : {
     "circles" : [
