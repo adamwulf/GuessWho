@@ -127,6 +127,14 @@ CNContact, so they save via `saveContact`:
 | Websites | CNContact | `saveContact` (merge/dedupe into `urlAddresses`) |
 | LinkedIn URL | CNContact | `saveContact` (ensure in `socialProfiles`) |
 
+**Identity-URL guard (must not regress):** the diff UI hides the internal
+`guesswho://contact/<uuid>` URL from the Websites column (it's sidecar plumbing).
+That filter is DISPLAY-ONLY. The save MUST merge new websites onto the
+contact's **real** `urlAddresses` (which still contains the `guesswho://`
+identity URL) — never reconstruct `urlAddresses` from the filtered/displayed
+set. Dropping that URL would orphan the contact's sidecar data
+(see `docs/contact-identity.md`).
+
 `apply()` deliberately does NOT write two things, so they need other paths:
 
 | Field | Storage | Why / How |

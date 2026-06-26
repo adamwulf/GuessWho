@@ -47,7 +47,7 @@ struct LinkedInConfirmView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Turn off any field you don’t want to change. Existing values are on the left, LinkedIn values on the right.")
                         .font(.callout).foregroundStyle(.secondary)
-                        .padding(.horizontal).padding(.top, 8).padding(.bottom, 4)
+                        .padding(.horizontal).padding(.top, 8).padding(.bottom, 12)
 
                     // Two aligned columns (Existing | LinkedIn), each data row
                     // prefixed by a checkbox. A Grid keeps the columns aligned

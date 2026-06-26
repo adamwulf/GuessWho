@@ -74,7 +74,18 @@ enum LinkedInDiff {
                 (existingEmails + newEmails).joined(separator: "\n"))
         }
 
+        // Hide GuessWho's internal identity URL (guesswho://contact/<uuid>) from
+        // the diff — it lives in urlAddresses but is sidecar plumbing the user
+        // should never see.
+        //
+        // DISPLAY-ONLY: this filtered list is used only to render the row and to
+        // compute which incoming sites are NEW. The save step MUST merge new
+        // websites onto the contact's REAL urlAddresses (which still contains the
+        // guesswho:// identity URL) and never reconstruct urlAddresses from this
+        // filtered set — dropping the identity URL would orphan the contact's
+        // sidecar data. The filter affects pixels, not stored data.
         let existingSites = contact.urlAddresses.map(\.value)
+            .filter { !$0.hasPrefix(SidecarKey.guessWhoContactURLPrefix) }
         let newSites = additions(profile.contactInfo?.websites ?? [], notIn: existingSites)
         if !newSites.isEmpty {
             add(.websites, "Websites",
