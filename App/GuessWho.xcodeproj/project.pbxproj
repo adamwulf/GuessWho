@@ -65,7 +65,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				SPIKE.md,
 			);
 			target = B200000000000000000000B1 /* GuessWhoLinkedIn */;
 		};
@@ -412,6 +411,8 @@
 				DEVELOPMENT_TEAM = T68Z94627S;
 				ENABLE_APP_SANDBOX = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
+				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
 				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -422,8 +423,6 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
-				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -447,6 +446,8 @@
 				DEVELOPMENT_TEAM = T68Z94627S;
 				ENABLE_APP_SANDBOX = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
+				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
 				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -457,8 +458,6 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
-				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
