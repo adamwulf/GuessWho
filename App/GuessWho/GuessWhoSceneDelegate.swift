@@ -702,6 +702,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let hosting = UIHostingController(rootView: confirm)
         hosting.modalPresentationStyle = .formSheet
+        // Wider sheet so the two columns (esp. About / multi-line values) have room.
+        hosting.preferredContentSize = CGSize(width: 720, height: 620)
         topmostPresenter()?.present(hosting, animated: true)
     }
 

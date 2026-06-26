@@ -43,18 +43,33 @@ struct LinkedInConfirmView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    ForEach(rows) { row in
-                        rowView(row)
-                    }
-                } header: {
-                    Text("Update “\(contactDisplayName)” from LinkedIn")
-                } footer: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
                     Text("Turn off any field you don’t want to change. Existing values are on the left, LinkedIn values on the right.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .padding(.horizontal).padding(.top, 8).padding(.bottom, 4)
+
+                    // Two aligned columns (Existing | LinkedIn), each data row
+                    // prefixed by a checkbox. A Grid keeps the columns aligned
+                    // across every row regardless of content width.
+                    Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 0) {
+                        GridRow {
+                            Color.clear.frame(width: 22, height: 1) // checkbox column spacer
+                            columnHeader("Existing")
+                            columnHeader("LinkedIn")
+                        }
+                        Divider().gridCellColumns(3)
+                        ForEach(rows) { row in
+                            gridRow(row)
+                            Divider().gridCellColumns(3)
+                        }
+                    }
+                    .padding(.horizontal)
                 }
+                .padding(.bottom, 12)
             }
-            .navigationTitle("LinkedIn")
+            .navigationTitle("Update “\(contactDisplayName)”")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { onCancel() }
@@ -70,52 +85,60 @@ struct LinkedInConfirmView: View {
         }
     }
 
+    private func columnHeader(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 4)
+    }
+
     @ViewBuilder
-    private func rowView(_ row: LinkedInDiffRow) -> some View {
+    private func gridRow(_ row: LinkedInDiffRow) -> some View {
         let isOn = Binding(
             get: { selected.contains(row.id) },
             set: { on in if on { selected.insert(row.id) } else { selected.remove(row.id) } }
         )
-        HStack(alignment: .top, spacing: 12) {
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(row.label)
-                    .font(.caption).foregroundStyle(.secondary)
-
-                if row.isPhoto {
-                    HStack(spacing: 16) {
-                        photoThumb(existingPhoto, placeholder: "person.crop.circle")
-                        Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                        photoThumb(incomingPhoto, placeholder: "person.crop.circle.badge.plus")
-                    }
-                } else {
-                    HStack(alignment: .top, spacing: 8) {
-                        valueText(row.existing, isExisting: true)
-                        Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                        valueText(row.incoming, isExisting: false)
-                    }
-                }
+        GridRow(alignment: .top) {
+            // Real checkbox (square + checkmark), not the iOS switch.
+            Button {
+                isOn.wrappedValue.toggle()
+            } label: {
+                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
             }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
+
+            cell(label: row.label, value: row.existing, isExisting: true,
+                 isPhoto: row.isPhoto, photo: existingPhoto, placeholder: "person.crop.circle")
+            cell(label: row.label, value: row.incoming, isExisting: false,
+                 isPhoto: row.isPhoto, photo: incomingPhoto, placeholder: "person.crop.circle.badge.plus")
         }
-        // De-emphasize unchanged rows.
-        .opacity(row.changed ? 1.0 : 0.55)
+        .opacity(row.changed ? 1.0 : 0.55) // de-emphasize unchanged rows
+        .padding(.vertical, 8)
     }
 
+    /// One column cell: the field label above the value (or a photo thumb).
     @ViewBuilder
-    private func valueText(_ value: String?, isExisting: Bool) -> some View {
-        if let value, !value.isEmpty {
-            Text(value)
-                .font(.body)
-                .foregroundStyle(isExisting ? Color.secondary : Color.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            Text(isExisting ? "—" : "")
-                .font(.body).foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func cell(
+        label: String, value: String?, isExisting: Bool,
+        isPhoto: Bool, photo: UIImage?, placeholder: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption2).foregroundStyle(.tertiary)
+            if isPhoto {
+                photoThumb(photo, placeholder: placeholder)
+            } else if let value, !value.isEmpty {
+                // Cap tall values (About) and scroll inside the cell.
+                ScrollView { Text(value).font(.body).frame(maxWidth: .infinity, alignment: .leading) }
+                    .frame(maxHeight: 160)
+                    .foregroundStyle(isExisting ? Color.secondary : Color.primary)
+            } else {
+                Text("—").font(.body).foregroundStyle(.tertiary)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

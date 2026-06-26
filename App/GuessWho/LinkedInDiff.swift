@@ -61,25 +61,51 @@ enum LinkedInDiff {
         add(.location, "Location", nil, profile.location) // existing location is sidecar-only
         add(.about, "About", nil, profile.about)          // existing about is a sidecar note
 
-        // Emails / websites: show the incoming set joined; existing joined.
-        let incEmails = profile.contactInfo?.emails ?? []
-        if !incEmails.isEmpty {
+        // Emails / websites are MERGED, never replaced: we only ever ADD values
+        // the contact is missing, and never delete existing ones. So the diff
+        // shows the existing set on the left and just the NEW additions on the
+        // right; if there's nothing new to add, the row is skipped entirely.
+        let existingEmails = contact.emailAddresses.map(\.value)
+        let newEmails = additions(profile.contactInfo?.emails ?? [], notIn: existingEmails)
+        if !newEmails.isEmpty {
             add(.emails, "Email",
-                contact.emailAddresses.map(\.value).joined(separator: ", "),
-                incEmails.joined(separator: ", "))
+                existingEmails.joined(separator: "\n"),
+                newEmails.joined(separator: "\n"))
         }
-        let incSites = profile.contactInfo?.websites ?? []
-        if !incSites.isEmpty {
+
+        let existingSites = contact.urlAddresses.map(\.value)
+        let newSites = additions(profile.contactInfo?.websites ?? [], notIn: existingSites)
+        if !newSites.isEmpty {
             add(.websites, "Websites",
-                contact.urlAddresses.map(\.value).joined(separator: ", "),
-                incSites.joined(separator: ", "))
+                existingSites.joined(separator: "\n"),
+                newSites.joined(separator: "\n"))
         }
+
+        // LinkedIn URL: add only if the contact has no LinkedIn social profile yet.
         if let url = profile.contactInfo?.profileUrl ?? profile.sourceUrl {
             let existingLinkedIn = contact.socialProfiles
                 .first { LinkedInURL.isLinkedIn($0.value.urlString) }?.value.urlString
-            add(.linkedInURL, "LinkedIn", existingLinkedIn, url)
+            let alreadyHas = existingLinkedIn.map { LinkedInURL.sameProfile($0, url) } ?? false
+            if !alreadyHas {
+                add(.linkedInURL, "LinkedIn", existingLinkedIn, url)
+            }
         }
 
         return rows
+    }
+
+    /// The members of `incoming` that aren't already in `existing`
+    /// (case-insensitive, trimmed), preserving incoming order and de-duped.
+    private static func additions(_ incoming: [String], notIn existing: [String]) -> [String] {
+        let have = Set(existing.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        var seen = Set<String>()
+        var out: [String] = []
+        for value in incoming {
+            let key = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty, !have.contains(key), !seen.contains(key) else { continue }
+            seen.insert(key)
+            out.append(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return out
     }
 }
