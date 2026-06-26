@@ -64,7 +64,6 @@
 		B200000000000000000000A4 /* Exceptions for "GuessWhoLinkedIn" folder in "GuessWhoLinkedIn" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				GuessWhoLinkedIn.entitlements,
 				Info.plist,
 				SPIKE.md,
 			);
@@ -158,28 +157,6 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		B200000000000000000000B1 /* GuessWhoLinkedIn */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = B200000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoLinkedIn" */;
-			buildPhases = (
-				B200000000000000000000B2 /* Sources */,
-				B200000000000000000000B4 /* Frameworks */,
-				B200000000000000000000B3 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				B200000000000000000000A3 /* GuessWhoLinkedIn */,
-			);
-			name = GuessWhoLinkedIn;
-			packageProductDependencies = (
-			);
-			productName = GuessWhoLinkedIn;
-			productReference = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
 		A100000000000000000000B1 /* GuessWho */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A100000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWho" */;
@@ -204,6 +181,28 @@
 			productName = GuessWho;
 			productReference = A100000000000000000000C0 /* GuessWho.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B200000000000000000000B1 /* GuessWhoLinkedIn */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B200000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoLinkedIn" */;
+			buildPhases = (
+				B200000000000000000000B2 /* Sources */,
+				B200000000000000000000B4 /* Frameworks */,
+				B200000000000000000000B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B200000000000000000000A3 /* GuessWhoLinkedIn */,
+			);
+			name = GuessWhoLinkedIn;
+			packageProductDependencies = (
+			);
+			productName = GuessWhoLinkedIn;
+			productReference = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		C55586F82FE7A7DE002F1969 /* GuessWhoUITests */ = {
 			isa = PBXNativeTarget;
@@ -336,68 +335,6 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		B200000000000000000000C21 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
-			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = T68Z94627S;
-				ENABLE_APP_SANDBOX = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = YES;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		B200000000000000000000C22 /* Release */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
-			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = T68Z94627S;
-				ENABLE_APP_SANDBOX = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = YES;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
 		A100000000000000000000C11 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = A100000000000000000000E3 /* Project-Debug.xcconfig */;
@@ -460,6 +397,72 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = YES;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B200000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = T68Z94627S;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B200000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = T68Z94627S;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -614,15 +617,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		B200000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoLinkedIn" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				B200000000000000000000C21 /* Debug */,
-				B200000000000000000000C22 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		A100000000000000000000C1 /* Build configuration list for PBXProject "GuessWho" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -637,6 +631,15 @@
 			buildConfigurations = (
 				A100000000000000000000C21 /* Debug */,
 				A100000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B200000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoLinkedIn" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B200000000000000000000C21 /* Debug */,
+				B200000000000000000000C22 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

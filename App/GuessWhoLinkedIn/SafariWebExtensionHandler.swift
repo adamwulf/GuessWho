@@ -16,10 +16,15 @@ import os.log
 /// iCloud + Contacts entitlements).
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
-    /// The single App Group shared by the app + this extension (iOS + Catalyst).
-    /// Used ONLY for ephemeral handoff — NOT for synced data, which lives in the
-    /// app's iCloud ubiquity container.
-    static let appGroupID = "group.com.milestonemade.guesswho"
+    /// The App Group shared by the app + this extension. Read from the bundle's
+    /// `GuessWhoAppGroup` Info.plist key (fed by `GUESSWHO_APP_GROUP` in the
+    /// xcconfig) so it is the RIGHT id per platform — `group.`-prefixed on iOS,
+    /// `<TeamID>.`-prefixed on Mac Catalyst — and can never diverge from the
+    /// entitlement. Used ONLY for ephemeral handoff, NOT synced data.
+    static let appGroupID: String = {
+        Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup") as? String
+            ?? "group.com.milestonemade.guesswho"
+    }()
 
     /// Custom scheme the app registers to receive the wake. Distinct from the
     /// existing `guesswho://contact/<uuid>` identity scheme to avoid collision.

@@ -65,9 +65,10 @@ before/after diff, `.blob`/previous-photo, iOS target. All later steps.
 
 ## Wiring result (step-0, this commit)
 
-Status: **target added, builds clean, extension embeds, entitlement split
-verified.** Runtime handoff is NOT yet verified end-to-end (needs Safari +
-a real tab + manual interaction — see "Runtime validation" below).
+Status: **PROVEN END-TO-END on Mac Catalyst (2026-06-26).** Target added,
+builds clean, extension embeds, entitlement split verified, AND the full
+runtime round-trip was confirmed by hand — see "Runtime validation result"
+below.
 
 What was wired into `App/GuessWho.xcodeproj` (objectVersion 77, file-system
 synchronized groups — matching the existing app target):
@@ -155,11 +156,71 @@ The app-side receiver is mechanism-agnostic: whichever of the above fires the
 URL (or if the app is simply brought forward and re-reads on activation), the
 read+clear+surface path is identical and already wired.
 
-## Runtime validation — what still needs a human
+## Runtime validation RESULT (2026-06-26) — PASSED
+
+Validated by hand on Mac Catalyst (debug build attached to Xcode), on a real
+`linkedin.com/in/adamwulf/` tab. The full chain works:
+
+- content script probe → background → `sendNativeMessage` → native handler,
+- handler parked `pending-handoff.json` in the App Group,
+- the **popup's web-side navigation to `guesswho-linkedin://handoff` brought the
+  GuessWho app forward** — this answers the spike's one true open question:
+  **the Catalyst web-side wake fires.** (No App-Group-observe fallback needed.)
+- the app read + cleared the file and surfaced the payload:
+  `{ "payload": { "slug": "adamwulf", "sourceUrl":
+  "https://www.linkedin.com/in/adamwulf/", "title": "Adam Wulf | LinkedIn" },
+  "stampedBy": "extension" }`.
+
+Two findings worth carrying forward:
+
+- **macOS App Group consent prompt.** macOS showed *"GuessWho would like to
+  access data from other applications"* (the group-container access prompt),
+  once per process touching the container (extension write + app read = up to
+  two prompts on first run). This is the **macOS sandbox** behavior for App
+  Groups; on a real **iOS device, own-app↔own-appex App Group access is silent**
+  (no prompt). It is one-time-per-process, expected, and confirms the data
+  really flows through the sandboxed shared container.
+  - **Root cause + fix (verified vs. Apple docs `accessing-app-group-containers`,
+    macOS 15+):** the prompt fires when a process touches a group container whose
+    app-group entitlement is **not authorized/validated** at runtime — NOT
+    because of the prefix per se. Two complementary fixes, both applied:
+    1. **`REGISTER_APP_GROUPS = YES`** (added to app xcconfig + extension build
+       configs) so automatic signing fetches a profile that authorizes the
+       `group.`-prefixed id. Verify with
+       `sudo launchctl procinfo \`pgrep GuessWho\`` → expect `entitlements
+       validated`.
+    2. **Per-SDK App Group identifier (decided 2026-06-26):**
+       - iOS/iPadOS: `group.com.milestonemade.guesswho` (only form iOS supports;
+         needs provisioning, handled by #1).
+       - **Mac Catalyst: `$(DEVELOPMENT_TEAM).com.milestonemade.guesswho`** — the
+         `<TeamID>.<name>` form is **self-authorizing by code signature**, needs
+         no provisioning profile and no portal registration, and **avoids the
+         prompt**. NOT supported on iOS, hence the split. Defined as
+         `GUESSWHO_APP_GROUP` (with an `[sdk=macosx*]` override) in
+         `GuessWho-Shared.xcconfig`.
+       - The two platforms therefore use DIFFERENT container ids — fine, since
+         iOS and Catalyst are separate installs that never share a container
+         (cross-device data syncs via iCloud, not the App Group).
+       - **Consequence for the implementation:** the identifier must be selected
+         per-platform in FOUR places kept in lockstep — iOS entitlements, Catalyst
+         entitlements, the EXTENSION's entitlements (needs its own `[sdk=macosx*]`
+         second file, like the app), and the Swift code (`appGroupID` /
+         `handoffAppGroupID` must read the value from an Info.plist key fed by
+         `GUESSWHO_APP_GROUP`, not a hardcoded literal). A mismatch silently
+         breaks container resolution.
+  - *Alternative considered:* carry text inline in the deep link
+    (`guesswho-linkedin://handoff?data=<base64>`) and skip the App Group — but
+    the real v1 **photo bytes** are too big for a URL, so the App Group stays.
+- The probe must be **injected on demand**: a tab open *before* the extension
+  was enabled has no content script, so the popup now
+  `scripting.executeScript`s `content.js` and retries (fixed in commit that
+  followed the first runtime attempt).
+
+## Runtime validation procedure (for re-running)
 
 The build/embed/entitlement wiring is verified by `xcodebuild` + reading the
-signed `.xcent` and `Info.plist` blobs. The actual handoff round-trip is NOT
-verified and CANNOT be from a headless build. To validate at runtime:
+signed `.xcent` and `Info.plist` blobs. To re-validate the round-trip at
+runtime:
 
 1. Run the `GuessWho` Catalyst app once so LaunchServices registers the
    embedded appex and the `guesswho-linkedin` scheme.
@@ -180,18 +241,17 @@ No Xcode-GUI-only steps were required — the target was added entirely by
 `.pbxproj` surgery and the project builds from the command line. The items
 below are NOT blockers for the build; they are follow-ups for runtime:
 
-- **Extension icons are missing.** `Resources/manifest.json` references
-  `images/icon-48.png` and `images/icon-128.png`, but no `Resources/images/`
-  folder exists. The build does not fail (manifest icon paths are a Safari
-  runtime concern), but Safari will warn / show a placeholder until the two
-  PNGs are added. Drop them at `App/GuessWhoLinkedIn/Resources/images/` — the
-  synchronized group will pick them up automatically; no `.pbxproj` change.
+- **Extension icons** — RESOLVED: the nonexistent `images/icon-*.png` refs were
+  removed from `manifest.json` (they caused Safari's "invalid path" / "failed to
+  load images" errors). Real icons are a later cosmetic follow-up; drop PNGs at
+  `App/GuessWhoLinkedIn/Resources/images/` + restore the manifest `icons` block.
+- **Catalyst wake trigger** — RESOLVED: confirmed at runtime that the popup
+  navigating to `guesswho-linkedin://handoff` brings the app forward on Catalyst.
 - **App Group provisioning.** Automatic signing registered
   `group.com.milestonemade.guesswho` on both targets during the local build.
   For a clean machine / CI, ensure the App Group exists on the Apple Developer
   portal and is enabled on both App IDs
   (`com.milestonemade.guesswho` and `com.milestonemade.guesswho.safari`).
-- **Catalyst wake trigger** (the one true open question) still needs the
-  runtime experiment in "Wake mechanism" #1 to confirm the popup can open the
-  custom scheme on Catalyst; if it can't, fall back to #2 (observe + manual
-  switch).
+- **macOS App Group consent prompt** — open follow-up (see "Runtime validation
+  RESULT"). Investigating whether the prompt can be avoided; iOS does not show
+  it. See the App-Group-prefix analysis below.

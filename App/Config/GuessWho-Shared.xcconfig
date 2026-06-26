@@ -10,6 +10,27 @@ PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
 // Signing
 DEVELOPMENT_TEAM = T68Z94627S
 CODE_SIGN_STYLE = Automatic
+// Authorize the App Group entitlement at runtime. Without this, macOS 15+
+// treats a `group.`-prefixed container the process touches as unauthorized
+// (entitlement not validated) and shows the "would like to access data from
+// other applications" prompt. Setting this makes automatic signing fetch a
+// provisioning profile that includes the app group, so the entitlement is
+// validated and no prompt appears. Verify with:
+//   sudo launchctl procinfo `pgrep GuessWho`  # expect "entitlements validated"
+REGISTER_APP_GROUPS = YES
+
+// App Group identifier — DIFFERENT per platform (per Apple guidance):
+//   * iOS/iPadOS: must be `group.`-prefixed (the only form iOS supports), and
+//     requires provisioning (handled by REGISTER_APP_GROUPS above).
+//   * Mac Catalyst: use the `<TeamID>.<name>` form. It is self-authorizing by
+//     code signature (the system checks the team-id prefix matches the signing
+//     team), needs NO provisioning profile and NO developer-portal registration,
+//     and avoids the macOS 15+ "access data from other applications" prompt.
+//     This form is NOT supported on iOS — hence the per-sdk split.
+// The Swift code reads the matching value via the GUESSWHO_APP_GROUP Info.plist
+// key (set from this var) so entitlement and runtime identifier never diverge.
+GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
 // Per Apple guidance, Mac Catalyst should ship its own entitlements file
 // so Catalyst-specific keys (e.g. com.apple.security.app-sandbox tuning,
 // app-group / file-access bookmarks) can diverge without disturbing the
