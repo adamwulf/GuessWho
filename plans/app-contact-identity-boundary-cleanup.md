@@ -2,6 +2,13 @@
 
 ## Status (2026-06-25)
 
+Implementation status: phases 6g through 6m are complete on branch
+`agent/synthesis-plan`. The final boundary now has app contact identity keyed on
+`ContactID`/resolved `Contact` projections, package-owned contact UUID and
+`localID` resolution, package-scoped raw identity escape hatches, and tightened
+documentation. Review gates after 6g+6h, 6i+6j, and 6k+6l reported no findings;
+the final 6m review is the remaining post-implementation gate for this branch.
+
 This plan synthesizes two independent agent passes:
 
 - `favroites-check` produced an audit plus a 7-step removal plan. It found

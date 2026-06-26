@@ -473,7 +473,7 @@ final class SyncService {
 
     // The CONTACT-sidecar surface (`sidecar(for:)`, the bare-UUID
     // notes/links/event-link methods) and the CONTACT-identity translation
-    // (`guessWhoUUID(in:)`, `reconcile(localID:)`, `reconcileIfNeeded(contact:)`)
+    // helpers formerly hosted here
     // were removed in Stage 6: the app now keys every contact-sidecar operation
     // on a `ContactID` through `ContactsRepository`, and reconcile is a
     // package-INTERNAL, WRITE-ONLY side effect of a sidecar/favorite write

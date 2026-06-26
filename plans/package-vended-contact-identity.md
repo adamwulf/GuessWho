@@ -2,6 +2,17 @@
 
 ## Status (2026-06-24)
 
+- **Post-plan contact identity boundary cleanup (2026-06-25): DONE on
+  `agent/synthesis-plan` through Phase 6m.** The follow-on cleanup in
+  `plans/app-contact-identity-boundary-cleanup.md` removes the remaining app-side
+  contact UUID/`localID` escape hatches after Stage 6f: contact favorites and
+  link projections are `ContactID`-keyed, contact detail diagnostics and
+  lifecycle operations route through package APIs, `Contact.localID` and raw
+  `ContactsRepository` identity resolvers are package-scoped, and
+  `docs/contact-identity.md` no longer blesses an app-side favorite/link endpoint
+  UUID carve-out. Stage 7/EventID remains deferred; event favorites may still use
+  raw event UUIDs until that separate migration.
+
 - **Stage 1 — vend `ContactID`: DONE** (commits `79337de`, `ed57ae4`).
 - **Stage 2 — package permission API: DONE** (commits `fa79533`, `13851e0`;
   integration fix `6a7fba9`).
