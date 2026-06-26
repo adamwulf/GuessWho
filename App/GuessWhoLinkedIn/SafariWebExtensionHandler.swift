@@ -29,22 +29,42 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
     func beginRequest(with context: NSExtensionContext) {
         let request = context.inputItems.first as? NSExtensionItem
-        let message = request?.userInfo?[SFExtensionMessageKey]
+        let rawMessage = request?.userInfo?[SFExtensionMessageKey]
+
+        // Log the raw shape so we can see, in Console (subsystem
+        // com.milestonemade.guesswho.safari, category handoff), exactly what
+        // Safari delivered — native-messaging payload shape varies by version.
+        Self.log.log("native message received: \(String(describing: rawMessage), privacy: .public)")
 
         var ack: [String: Any] = ["received": false]
 
-        if let dict = message as? [String: Any], let payload = dict["payload"] {
+        if let payload = Self.extractPayload(from: rawMessage) {
             let parked = parkPayload(payload)
             // The handler does NOT (and cannot) wake the app here — see `wakeURL`
             // note below. It returns the URL for the popup to open.
             ack = ["received": true, "parked": parked, "wakeURL": Self.handoffURL.absoluteString]
         } else {
-            Self.log.error("handoff message missing payload")
+            Self.log.error("handoff message missing payload (raw: \(String(describing: rawMessage), privacy: .public))")
         }
 
         let response = NSExtensionItem()
         response.userInfo = [SFExtensionMessageKey: ack]
         context.completeRequest(returningItems: [response], completionHandler: nil)
+    }
+
+    /// Pull the `payload` out of whatever shape Safari delivered. Native
+    /// messaging payloads can arrive as the object directly
+    /// (`{ payload: ... }`) or wrapped under a `"message"` key
+    /// (`{ message: { payload: ... } }`) depending on the Safari version, so we
+    /// check both. Returns nil if no payload is present (e.g. the JS side sent
+    /// `undefined` because the content-script probe didn't respond).
+    private static func extractPayload(from raw: Any?) -> Any? {
+        guard let dict = raw as? [String: Any] else { return nil }
+        if let payload = dict["payload"] { return payload }
+        if let inner = dict["message"] as? [String: Any], let payload = inner["payload"] {
+            return payload
+        }
+        return nil
     }
 
     /// Writes the handoff payload as a small JSON file in the App Group container.

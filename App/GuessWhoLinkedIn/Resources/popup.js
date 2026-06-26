@@ -20,6 +20,20 @@ async function activeTab() {
   return tab;
 }
 
+// Probe the content script. A tab that was already open BEFORE the extension
+// was enabled has no content script injected (manifest content_scripts only
+// run on navigation after enable), so `tabs.sendMessage` throws "no receiver".
+// In that case inject content.js on demand and retry — this is the fix for the
+// `received: false` symptom (probe was undefined → native got no payload).
+async function probeTab(tabId) {
+  try {
+    return await api.tabs.sendMessage(tabId, { type: "guesswho.probe" });
+  } catch (_e) {
+    await api.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    return await api.tabs.sendMessage(tabId, { type: "guesswho.probe" });
+  }
+}
+
 document.getElementById("go").addEventListener("click", async () => {
   try {
     const tab = await activeTab();
@@ -28,14 +42,22 @@ document.getElementById("go").addEventListener("click", async () => {
       return;
     }
 
-    // 1) Probe the content script for the minimal real signal.
-    const probe = await api.tabs.sendMessage(tab.id, { type: "guesswho.probe" });
+    // 1) Probe the content script (inject-and-retry if not present).
+    const probe = await probeTab(tab.id);
+    if (!probe) {
+      show({ step: "probe failed", detail: "content script returned no data" }, true);
+      return;
+    }
 
     // 2) Hand off to native (background relays to SafariWebExtensionHandler).
     const ack = await api.runtime.sendMessage({ type: "guesswho.handoff", payload: probe });
 
     if (!ack?.ok) {
       show({ step: "native handoff failed", error: ack?.error ?? "unknown" }, true);
+      return;
+    }
+    if (ack.native?.received !== true) {
+      show({ step: "native rejected payload", probe, nativeAck: ack.native }, true);
       return;
     }
 
