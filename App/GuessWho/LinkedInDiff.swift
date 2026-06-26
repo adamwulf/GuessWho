@@ -67,7 +67,7 @@ enum LinkedInDiff {
         // additions) so the user sees the end state. The row appears only when
         // there's at least one new value to add.
         let existingEmails = contact.emailAddresses.map(\.value)
-        let newEmails = additions(profile.contactInfo?.emails ?? [], notIn: existingEmails)
+        let newEmails = additions(profile.contactInfo?.emails ?? [], notIn: existingEmails, key: plainKey)
         if !newEmails.isEmpty {
             add(.emails, "Email",
                 existingEmails.joined(separator: "\n"),
@@ -86,7 +86,9 @@ enum LinkedInDiff {
         // sidecar data. The filter affects pixels, not stored data.
         let existingSites = contact.urlAddresses.map(\.value)
             .filter { !$0.hasPrefix(SidecarKey.guessWhoContactURLPrefix) }
-        let newSites = additions(profile.contactInfo?.websites ?? [], notIn: existingSites)
+        // URL dedup is scheme-insensitive: "adamwulf.me" already on the contact
+        // matches LinkedIn's "https://adamwulf.me", so it isn't added again.
+        let newSites = additions(profile.contactInfo?.websites ?? [], notIn: existingSites, key: urlKey)
         if !newSites.isEmpty {
             add(.websites, "Websites",
                 existingSites.joined(separator: "\n"),
@@ -106,18 +108,41 @@ enum LinkedInDiff {
         return rows
     }
 
-    /// The members of `incoming` that aren't already in `existing`
-    /// (case-insensitive, trimmed), preserving incoming order and de-duped.
-    private static func additions(_ incoming: [String], notIn existing: [String]) -> [String] {
-        let have = Set(existing.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+    /// The members of `incoming` that aren't already in `existing`, comparing by
+    /// `key` (so different surface forms of the same value dedup together),
+    /// preserving incoming order and the original incoming text.
+    private static func additions(
+        _ incoming: [String],
+        notIn existing: [String],
+        key: (String) -> String
+    ) -> [String] {
+        let have = Set(existing.map(key))
         var seen = Set<String>()
         var out: [String] = []
         for value in incoming {
-            let key = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !key.isEmpty, !have.contains(key), !seen.contains(key) else { continue }
-            seen.insert(key)
-            out.append(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let k = key(trimmed)
+            guard !k.isEmpty, !have.contains(k), !seen.contains(k) else { continue }
+            seen.insert(k)
+            out.append(trimmed)
         }
         return out
+    }
+
+    /// Plain case-insensitive key (emails).
+    private static func plainKey(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// URL dedup key: scheme- and case-insensitive, ignoring a leading `www.`
+    /// and a trailing slash. So "adamwulf.me", "http://adamwulf.me",
+    /// "https://www.adamwulf.me/" all collapse to the same key — a contact's
+    /// bare URL is recognized as the same as LinkedIn's https one.
+    private static func urlKey(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let range = t.range(of: "://") { t = String(t[range.upperBound...]) }
+        if t.hasPrefix("www.") { t = String(t.dropFirst(4)) }
+        while t.hasSuffix("/") { t = String(t.dropLast()) }
+        return t
     }
 }
