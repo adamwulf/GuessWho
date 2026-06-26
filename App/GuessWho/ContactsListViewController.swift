@@ -87,7 +87,7 @@ final class ContactsListViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        deselectSelectedTableRowOnCompactNavigationReturn(in: tableView, animated: animated)
+        deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
     }
 
     // MARK: - Table view

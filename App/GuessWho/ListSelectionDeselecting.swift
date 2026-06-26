@@ -4,7 +4,7 @@ extension UIViewController {
     /// Match UITableViewController's push/pop selection clearing for plain
     /// UIViewController-hosted tables while preserving expanded split-view
     /// selection, where the highlighted row represents the visible detail pane.
-    func deselectSelectedTableRowOnCompactNavigationReturn(
+    func deselectSelectedTableRowOnNavigationReturn(
         in tableView: UITableView,
         animated: Bool
     ) {
