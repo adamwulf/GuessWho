@@ -112,15 +112,11 @@ Add an app-owned `@MainActor` photo loader object that wraps
 
 Cache design:
 
-- Use an explicit bounded LRU cache keyed by `ContactID` plus
-  `ContactPhotoKind`. `NSCache` is not sufficient by itself because it does not
-  guarantee true recency ordering.
-- Track recency on every cache read/write and evict the least-recently-used
-  entries when either the count limit or cost limit is exceeded.
-- Include a cost based on decoded pixel count or source byte count.
-- Use separate or weighted limits so full-size entries are capped more
-  aggressively than thumbnails.
-- Listen for memory-pressure notifications and trim or clear the LRU cache.
+- Use a plain `NSCache` keyed by `ContactID` plus `ContactPhotoKind`. This is
+  the intentionally simple v1 cache: no custom LRU, recency tracking, or
+  count/cost tuning unless profiling proves it is needed.
+- Let `NSCache` handle memory-pressure eviction.
+- Clear the cache on `.contactsRepositoryDidReload`.
 
 `ContactPhotoCacheKey` must not expose `ContactID` internals. It can be an
 app-local wrapper around the public `Hashable` token and the photo kind.
@@ -183,7 +179,7 @@ Organizations:
 - Organizations are `Contact` values with `contactType == .organization`, a
   public `Contact.contactID`, `imageDataAvailable`, and the same package-backed
   Contacts image source. They can use the exact same
-  `contactPhotoData(for:kind:)` repository API, app LRU cache, table-cell
+  `contactPhotoData(for:kind:)` repository API, app `NSCache`, table-cell
   loading/cancellation, and detail fallback path as person contacts.
 - The only organization-specific behavior is avatar text: when given/family
   names are empty, the app-side `Contact.initials` helper derives the monogram
@@ -284,11 +280,11 @@ Risk notes:
 Scope:
 
 - Add an app-owned `ContactPhotoLoader` or equivalent observable/cache object.
-- Cache decoded `UIImage`s in an explicit bounded LRU cache with count and cost
-  limits.
+- Cache decoded `UIImage`s in a plain `NSCache`.
 - Coalesce duplicate in-flight requests.
 - Observe repository reloads and clear the cache.
-- Trim or clear the cache on memory pressure.
+- Clear the cache on repository reload and let `NSCache` handle memory-pressure
+  eviction.
 - Inject the loader where UIKit list controllers and SwiftUI detail views can
   share it.
 
@@ -304,16 +300,14 @@ Acceptance criteria:
 
 - Re-requesting the same visible thumbnail after it has loaded hits the cache and
   does not call the repository again.
-- Accessing a cached image updates its recency; exceeding the configured
-  count/cost limit evicts least-recently-used entries first.
 - `.contactsRepositoryDidReload` clears cached images.
 - The loader API accepts `ContactID`, not raw strings.
 - The app target contains no `Contacts` / `CNContact` photo-loading code.
 
 Risk notes:
 
-- `NSCache` can still be used as a memory-pressure helper only if the loader owns
-  explicit LRU ordering; do not rely on `NSCache` eviction order for correctness.
+- Keep the cache simple for v1; do not add custom recency tracking or tuning
+  unless measured scrolling/detail performance requires it.
 - Do not make the loader a second contact repository; it should cache images
   only.
 
@@ -453,8 +447,7 @@ Risk notes:
     exists.
   - Organization rows use the same thumbnail loader/cache as person rows and
     fall back to initials derived from organization display names.
-  - LRU cache eviction removes least-recently-used entries when count/cost limits
-    are exceeded.
+  - Clearing on `.contactsRepositoryDidReload` removes cached images.
   - Full-size detail image decode does not run on the main actor.
   - External contact photo change clears stale cached images after repository
     reload.
@@ -472,12 +465,12 @@ Risk notes:
 - List fallback: use initials monograms, not SF Symbols.
 - Organizations: handle organizations exactly like other contacts for photo
   loading. They share `ContactID`, `Contact`, `imageDataAvailable`,
-  `contactPhotoData(for:kind:)`, the same LRU cache, and the same visible-row
+  `contactPhotoData(for:kind:)`, the same `NSCache`, and the same visible-row
   loading/cancellation path. The only difference is monogram derivation when
   person-name fields are empty: use one or two initials from `displayName`.
-- Cache: use an explicit bounded LRU with memory-pressure trimming. Whole-cache
-  invalidation on `.contactsRepositoryDidReload` is the v1 invalidation path;
-  per-contact invalidation remains a later refinement.
+- Cache: use a plain `NSCache` for v1. Whole-cache invalidation on
+  `.contactsRepositoryDidReload` is the invalidation path; per-contact
+  invalidation remains a later refinement.
 - Full-size decode: decode off the main actor and deliver the ready `UIImage` to
   the main actor for display.
 
