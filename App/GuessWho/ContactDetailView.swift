@@ -696,10 +696,12 @@ struct ContactDetailView: View {
         }
     }
 
-    /// The circular profile image (photo or monogram fallback). When a real
-    /// photo is loaded and the view is NOT in edit mode, the circle is tappable
-    /// and opens the fullscreen zoom/pan viewer. In edit mode it instead shows a
-    /// translucent viewfinder symbol overlay to signal the photo can be changed.
+    /// The circular profile image (photo or monogram fallback). Tapping it does
+    /// one of three things depending on state: in edit mode it offers
+    /// Choose/Remove (with a translucent viewfinder overlay signalling this); in
+    /// view mode with a photo it opens the fullscreen zoom/pan viewer; in view
+    /// mode WITHOUT a photo it jumps straight to the picker so a first photo can
+    /// be added without entering the editor.
     @ViewBuilder
     private func photoCircle(_ contact: Contact) -> some View {
         let circle = ZStack {
@@ -752,7 +754,16 @@ struct ContactDetailView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("View photo")
         } else {
-            circle
+            // No photo, not editing: tapping the monogram is a shortcut to add
+            // a first photo without opening the editor. There's nothing to
+            // remove, so go straight to the picker (no Choose/Remove dialog).
+            Button {
+                presentingPhotoPicker = true
+            } label: {
+                circle
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add photo")
         }
     }
 
