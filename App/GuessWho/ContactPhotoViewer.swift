@@ -55,7 +55,13 @@ private struct ZoomableImageView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UIScrollView {
-        let scrollView = UIScrollView()
+        // A LayoutNotifyingScrollView so the fit-scale + centering math runs on
+        // every real layout pass (`layoutSubviews`), where the bounds are
+        // settled. Driving it from `updateUIView` instead is wrong: SwiftUI
+        // calls `updateUIView` before the scroll view has its final bounds, so
+        // the centering computation would bail on a zero/placeholder size and
+        // the image would pin to the top-left corner.
+        let scrollView = LayoutNotifyingScrollView()
         scrollView.delegate = context.coordinator
         scrollView.backgroundColor = .clear
         scrollView.showsVerticalScrollIndicator = false
@@ -64,6 +70,9 @@ private struct ZoomableImageView: UIViewRepresentable {
         scrollView.alwaysBounceHorizontal = false
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.decelerationRate = .fast
+        scrollView.onLayout = { [weak coordinator = context.coordinator] in
+            coordinator?.layoutDidChange()
+        }
 
         let imageView = context.coordinator.imageView
         imageView.contentMode = .scaleAspectFit
@@ -82,10 +91,8 @@ private struct ZoomableImageView: UIViewRepresentable {
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         // The image is fixed for the lifetime of the cover, so there is nothing
-        // to re-bind here. Layout (zoom scales + centering) is driven from the
-        // coordinator's `layoutDidChange`, which the scroll view calls back into
-        // via `viewDidLayoutSubviews`-equivalent bounds changes.
-        context.coordinator.layoutDidChange()
+        // to re-bind. Layout (zoom scales + centering) is driven from the scroll
+        // view's own `layoutSubviews` via `onLayout`, not from here.
     }
 
     @MainActor
@@ -177,5 +184,19 @@ private struct ZoomableImageView: UIViewRepresentable {
                 scrollView.zoom(to: rect, animated: true)
             }
         }
+    }
+}
+
+/// A `UIScrollView` that invokes `onLayout` on every layout pass. The zoom
+/// scales and centering depend on the scroll view's final bounds, which are
+/// only known inside `layoutSubviews` — not when SwiftUI calls `updateUIView`.
+/// Driving the layout from here keeps the image fit-to-screen and centered on
+/// first present and across every later bounds change (rotation, resize).
+private final class LayoutNotifyingScrollView: UIScrollView {
+    var onLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
     }
 }
