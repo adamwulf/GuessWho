@@ -156,6 +156,14 @@ The app-side receiver is mechanism-agnostic: whichever of the above fires the
 URL (or if the app is simply brought forward and re-reads on activation), the
 read+clear+surface path is identical and already wired.
 
+## Step 0 — CLOSED (2026-06-26): fully proven, no prompts
+
+Final runtime test passed on Mac Catalyst: the app received the real parsed
+payload (`slug: adamwulf`, `sourceUrl`, `title: "Adam Wulf | LinkedIn"`,
+`stampedBy: extension`) **with no macOS permission prompts**. Both the handoff
+container fix (extension + app resolve the same App Group id) and the per-SDK
+`<TeamID>.` App Group form (no prompt) are confirmed working together.
+
 ## Runtime validation RESULT (2026-06-26) — PASSED
 
 Validated by hand on Mac Catalyst (debug build attached to Xcode), on a real
