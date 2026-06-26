@@ -202,6 +202,21 @@ function findContactInfoTrigger(doc) {
   }) || null;
 }
 
+// LinkedIn wraps external website links in a safety redirect:
+//   https://www.linkedin.com/safety/go/?url=<encoded real url>&urlhash=...
+// Unwrap to the real destination so we store "https://adamwulf.me", not the
+// redirect. Returns the input unchanged if it isn't a safety link.
+function unwrapSafetyURL(href) {
+  try {
+    if (!/linkedin\.com\/safety\/go\//i.test(href)) return href;
+    const u = new URL(href);
+    const real = u.searchParams.get("url");
+    return real ? decodeURIComponent(real) : href;
+  } catch {
+    return href;
+  }
+}
+
 async function extractContactInfo(doc = (typeof document !== "undefined" ? document : null)) {
   if (!doc) return null;
   const safe = (fn) => { try { return fn(); } catch { return null; } };
@@ -214,10 +229,19 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
   trigger.click();
 
   const dialog = await waitFor(() => {
-    const d = doc.querySelector('[role="dialog"]');
-    // Make sure it's the contact-info dialog, not some other open dialog.
-    if (d && /contact|email|website|profile/i.test(d.textContent || "")) return d;
-    return null;
+    // Most specific first: the SDUI contact-details overlay screen and the
+    // dialog-content testid (confirmed in a captured open panel). Fall back to a
+    // role="dialog" whose text actually mentions contact fields, so we never
+    // grab an ambient aria-live dialog (toasts use role="dialog" too).
+    const sdui = doc.querySelector('[data-sdui-screen*="ProfileContactDetails" i]');
+    if (sdui) return sdui.closest('[role="dialog"]') || sdui;
+    const byTestId = doc.querySelector('[data-testid="dialog-content"]');
+    if (byTestId && /email|website|contact/i.test(byTestId.textContent || "")) {
+      return byTestId.closest('[role="dialog"]') || byTestId;
+    }
+    const d = [...doc.querySelectorAll('[role="dialog"]')]
+      .find((x) => /\b(email|website|contact info)\b/i.test(x.textContent || ""));
+    return d || null;
   });
   if (!dialog) return null;
 
@@ -225,11 +249,15 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 
   const info = {
     profileUrl: safe(() => {
-      // The public profile URL inside the dialog (an /in/<slug> link, not the
-      // overlay link itself).
-      const a = [...dialog.querySelectorAll('a[href*="/in/"]')]
-        .find((x) => !/\/overlay\//.test(x.href));
-      return a ? a.href : null;
+      // The CANONICAL public profile URL — "linkedin.com/in/<slug>" with nothing
+      // trailing. The dialog also contains many /in/<slug>/edit/…, /details/…,
+      // /overlay/… links; exclude those and prefer the bare canonical form.
+      const links = [...dialog.querySelectorAll('a[href*="/in/"]')]
+        .map((x) => x.href)
+        .filter((h) => /\/in\/[^/]+\/?($|\?)/.test(h) && !/\/overlay\//.test(h));
+      // Prefer the shortest (the clean canonical one), strip a trailing slash.
+      const best = links.sort((a, b) => a.length - b.length)[0];
+      return best ? best.replace(/\/$/, "") : null;
     }),
     emails: safe(() =>
       uniq([...dialog.querySelectorAll('a[href^="mailto:"]')]
@@ -237,8 +265,10 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
     ) || [],
     websites: safe(() =>
       uniq([...dialog.querySelectorAll('a[href^="http"]')]
-        .map((a) => a.href)
-        .filter((h) => !/linkedin\.com/.test(h)))
+        .map((a) => unwrapSafetyURL(a.href))
+        // After unwrapping, drop anything still on linkedin.com (the profile
+        // link, the safety host itself, internal nav).
+        .filter((h) => h && !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(h)))
     ) || [],
   };
 
