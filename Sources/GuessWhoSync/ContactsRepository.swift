@@ -285,6 +285,20 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: edited.localID)
     }
 
+    /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
+    /// record, addressed by the app-facing `ContactID`. Image bytes go through
+    /// the store's dedicated photo-write path (not `save`), then the one record
+    /// is re-read so its `imageDataAvailable` flag reflects the write. The app
+    /// is responsible for invalidating any cached decoded image afterwards.
+    /// Returns `false` when the id no longer resolves to a contact.
+    @discardableResult
+    public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
+        guard let localID = contact(id: id)?.localID else { return false }
+        try await contactsStore.setImageData(localID: localID, imageData: imageData)
+        await refreshContact(localID: localID)
+        return true
+    }
+
     /// Apply selected fields from a parsed LinkedIn profile to an existing
     /// contact and return the refreshed contact. The single package-side entry
     /// point that owns the merge + save rules (the app only chooses which

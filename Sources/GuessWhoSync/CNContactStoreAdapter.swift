@@ -291,6 +291,27 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
+    public func setImageData(localID: String, imageData: Data?) async throws {
+        try await runOnWorkQueue { store in
+            let cn: CNContact
+            do {
+                // Fetch with only the image key: the mutableCopy then carries
+                // just that key, so the `update` writes ONLY the photo and
+                // leaves every other field untouched (the OS regenerates the
+                // thumbnail from the new full-size bytes).
+                cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.imageKeys)
+            } catch let error as CNError where error.code == .recordDoesNotExist {
+                throw ContactStoreError.contactNotFound(localID: localID)
+            }
+            // mutableCopy() on a CNContact always returns CNMutableContact.
+            let mutable = cn.mutableCopy() as! CNMutableContact
+            mutable.imageData = imageData
+            let request = Self.makeSaveRequest()
+            request.update(mutable)
+            try store.execute(request)
+        }
+    }
+
     // MARK: - Groups
 
     public func fetchAllGroups() async throws -> [ContactGroup] {

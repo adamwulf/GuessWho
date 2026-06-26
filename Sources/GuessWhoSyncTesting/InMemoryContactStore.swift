@@ -259,6 +259,25 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         }
     }
 
+    /// Protocol photo-write path. Models the CN adapter: writes the full-size
+    /// bytes (and derives a matching thumbnail by reusing the same bytes — the
+    /// in-memory store has no real downscaler) and records a self-authored
+    /// op so the write is excluded from `changes(since:)` exactly like a real
+    /// CN write. Throws `contactNotFound` when `localID` does not resolve.
+    /// Leaves `imageDataAvailable` for `fetch(localID:)` to auto-correct.
+    public func setImageData(localID: String, imageData: Data?) throws {
+        guard contactsByID[localID] != nil else {
+            throw ContactStoreError.contactNotFound(localID: localID)
+        }
+        imageSidebandAccessCount += 1
+        if let imageData {
+            imageSideband[localID] = (image: imageData, thumbnail: imageData)
+        } else {
+            imageSideband.removeValue(forKey: localID)
+        }
+        recordOp(.updated(localID: localID), author: transactionAuthor)
+    }
+
     // MARK: - changes(since:)
 
     public func changes(since token: Data?) throws -> ContactChangeSet {

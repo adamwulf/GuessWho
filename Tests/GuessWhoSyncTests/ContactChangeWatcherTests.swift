@@ -366,6 +366,7 @@ actor ScriptableContactStore: ContactStoreProtocol {
     func delete(localID: String) async throws { unused() }
     func loadImageData(localID: String) async throws -> Data? { unused() }
     func loadThumbnailImageData(localID: String) async throws -> Data? { unused() }
+    func setImageData(localID: String, imageData: Data?) async throws { unused() }
     func fetchAllGroups() async throws -> [ContactGroup] { unused() }
     func fetchGroup(localID: String) async throws -> ContactGroup? { unused() }
     func createGroup(name: String) async throws -> ContactGroup { unused() }
