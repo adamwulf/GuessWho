@@ -623,10 +623,9 @@ struct ContactDetailView: View {
                 // keeps the symbol legible over a light photo or monogram.
                 Circle()
                     .fill(Color.black.opacity(0.35))
-                Image("custom.person.crop.circle.viewfinder")
+                Image(.customPersonCropCircleViewfinder)
                     .resizable()
                     .scaledToFit()
-                    .symbolRenderingMode(.monochrome)
                     .padding(22)
                     .foregroundStyle(.white.opacity(0.9))
             }

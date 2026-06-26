@@ -26,6 +26,8 @@ struct ContactPhotoViewer: View {
 
             ZoomableImageView(image: image)
                 .ignoresSafeArea()
+                .accessibilityElement()
+                .accessibilityLabel("Contact photo")
 
             Button {
                 dismiss()
@@ -138,9 +140,9 @@ private struct ZoomableImageView: UIViewRepresentable {
             let minScale = min(widthScale, heightScale)
 
             scrollView.minimumZoomScale = minScale
-            // Allow zooming in to 3x past fit, but never below the image's native
-            // resolution feeling cramped — cap the max so huge photos still get a
-            // meaningful zoom range.
+            // Cap the max zoom at 4x the fit scale so even a small photo gets a
+            // meaningful zoom range without becoming an unbounded pixel-peep.
+            // (Double-tap zooms to 3x fit — see `handleDoubleTap`.)
             scrollView.maximumZoomScale = max(minScale * 4, 1)
 
             if wasMinimumZoom {
