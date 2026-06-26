@@ -353,7 +353,6 @@ struct EventDetailView: View {
             givenFallback = parsed == nil ? trimmed : ""
         }
         return Contact(
-            localID: "",
             namePrefix: parsed?.namePrefix ?? "",
             givenName: parsed?.givenName ?? givenFallback,
             middleName: parsed?.middleName ?? "",

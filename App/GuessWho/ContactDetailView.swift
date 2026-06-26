@@ -303,7 +303,7 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var editingSections: some View {
         let binding = Binding<ContactEditModel>(
-            get: { editModel ?? ContactEditModel(original: contact ?? Contact(localID: "")) },
+            get: { editModel ?? ContactEditModel(original: contact ?? Contact()) },
             set: { editModel = $0 }
         )
         NameFieldsRow(model: binding)

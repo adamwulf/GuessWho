@@ -141,7 +141,7 @@ public final class ContactsRepository: NSObject {
     /// Returns a currently-cached contact for an adapter-local refresh token.
     /// `localID` is intentionally confined to this Contacts-boundary API; it
     /// must not be persisted or used as application identity.
-    public func contact(localID: String) -> Contact? {
+    package func contact(localID: String) -> Contact? {
         contactsByLocalID[localID]
     }
 
@@ -244,7 +244,7 @@ public final class ContactsRepository: NSObject {
     /// its sidecar stores on this. Semantics match the former
     /// `SyncService.guessWhoUUID(in:)` byte-for-byte (it walked the same
     /// `urlAddresses` via the same `SidecarKey` parser).
-    public func guessWhoID(in contact: Contact) -> String? {
+    package func guessWhoID(in contact: Contact) -> String? {
         ContactID(contact: contact).guessWhoID
     }
 
@@ -277,7 +277,7 @@ public final class ContactsRepository: NSObject {
     /// reads bare guessWhoID strings off disk and resolves them here — the
     /// bridge that lets it resolve a link endpoint / favorite without an app-side
     /// `uuid → Contact` map.
-    public func contact(guessWhoID: String) -> Contact? {
+    package func contact(guessWhoID: String) -> Contact? {
         guard let lid = guessWhoIDToLocalID[guessWhoID.lowercased()] else { return nil }
         return contactsByLocalID[lid]
     }
@@ -771,13 +771,13 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Re-read one Contacts record and reconcile it into the cache.
-    public func refreshContact(localID: String) async {
+    package func refreshContact(localID: String) async {
         await applyRefresh(localID: localID)
         postDidReload()
     }
 
     /// Remove a just-deleted record from the in-memory cache.
-    public func removeContact(localID: String) {
+    package func removeContact(localID: String) {
         var updated = contacts
         updated.removeAll { $0.localID == localID }
         setContacts(updated)

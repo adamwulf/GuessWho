@@ -459,20 +459,6 @@ final class SyncService {
         ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
     }
 
-    /// Fetches one contact by localID without enumerating the whole store.
-    /// Returns nil when the contact does not exist or access is not granted.
-    /// Use instead of `fetchAll().first { $0.localID == ... }` — routes through
-    /// `unifiedContact(withIdentifier:)`, O(1) against the store.
-    func fetch(localID: String) async -> Contact? {
-        guard contactsAuthorization == .authorized else { return nil }
-        do {
-            return try await contactsAdapter.fetch(localID: localID)
-        } catch {
-            lastError = "fetch failed: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
     // MARK: - Contact change history (incremental external sync)
 
     /// Start the package-owned external-contact-change watcher. The package now
@@ -498,14 +484,6 @@ final class SyncService {
 
     // MARK: - Edit
 
-    /// Fetches a `Contact` for editing in the SwiftUI editor. Goes
-    /// through the adapter actor (the same path `fetchAll` uses) so
-    /// the editor sees the same field set as the rest of the app and
-    /// no main-thread fetch is required.
-    func fetchContactForEditing(localID: String) async throws -> Contact? {
-        try await contactsAdapter.fetch(localID: localID)
-    }
-
     /// Writes the edited contact back through the adapter.
     ///
     /// **Caller contract:** refresh the repository cache after this returns so
@@ -518,14 +496,6 @@ final class SyncService {
     /// a CONTACT-field edit is not a sidecar write — 6f).
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
-    }
-
-    /// Deletes the contact identified by `localID`.
-    ///
-    /// **Caller contract:** `await repository.reload()` after this
-    /// returns. See `saveContact` for rationale.
-    func deleteContact(localID: String) async throws {
-        try await contactsAdapter.delete(localID: localID)
     }
 
     // MARK: - Contact ↔ Event links (event side)

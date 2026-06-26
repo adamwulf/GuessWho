@@ -158,13 +158,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func showContactDetail(contact: Contact, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
-        // No `.id(contact.localID)` here: `setViewController(_:for:
-        // .secondary)` replaces the entire hosting controller per
-        // selection, so a fresh ContactDetailView + brand-new @State
-        // tree is built automatically. The `.id()` modifier would
-        // only matter if we were reusing one hosting controller and
-        // mutating its rootView's localID (which is what
-        // `RootView.detailColumn` did on the pre-Phase-5 SwiftUI path).
+        // No extra `.id(...)` modifier here: `setViewController(_:for:
+        // .secondary)` replaces the entire hosting controller per selection,
+        // so a fresh ContactDetailView + brand-new @State tree is built
+        // automatically.
         let nav = UINavigationController()
         // The list VCs vend a `Contact` on selection; re-key it to the opaque
         // `ContactID` the detail view now roots on — the app never threads a
