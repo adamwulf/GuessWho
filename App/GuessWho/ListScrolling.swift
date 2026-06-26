@@ -1,5 +1,6 @@
 import UIKit
 
+@MainActor
 protocol ScrollsToTop: AnyObject {
     func scrollToTop(animated: Bool)
 }
