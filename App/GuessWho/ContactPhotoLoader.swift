@@ -34,6 +34,7 @@ final class ContactPhotoLoader {
     private let cache = NSCache<CacheKeyBox, UIImage>()
     private var inFlight: [CacheKey: Task<UIImage?, Never>] = [:]
     private var reloadObserver: NSObjectProtocol?
+    private var cacheGeneration = 0
 
     init(repository: ContactsRepository, notificationCenter: NotificationCenter = .default) {
         self.repository = repository
@@ -69,15 +70,20 @@ final class ContactPhotoLoader {
             return await task.value
         }
 
+        let generation = cacheGeneration
         let task = Task<UIImage?, Never> {
             guard let photo = try? await repository.contactPhotoData(for: id, kind: kind) else {
                 return nil
             }
-            return await Self.decodeImage(from: photo.data)
+            guard !Task.isCancelled else { return nil }
+            let image = await Self.decodeImage(from: photo.data)
+            guard !Task.isCancelled else { return nil }
+            return image
         }
         inFlight[key] = task
         let image = await task.value
         inFlight[key] = nil
+        guard cacheGeneration == generation else { return nil }
         if let image {
             cache.setObject(image, forKey: boxed)
         }
@@ -91,6 +97,7 @@ final class ContactPhotoLoader {
     }
 
     func removeAll() {
+        cacheGeneration += 1
         cache.removeAllObjects()
         for task in inFlight.values {
             task.cancel()
