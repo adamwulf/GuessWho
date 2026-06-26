@@ -30,10 +30,10 @@ final class ContactPhotoLoader {
     }
 
     private let repository: ContactsRepository
-    private nonisolated(unsafe) let notificationCenter: NotificationCenter
+    private let notificationCenter: NotificationCenter
     private let cache = NSCache<CacheKeyBox, UIImage>()
     private var inFlight: [CacheKey: Task<UIImage?, Never>] = [:]
-    private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
+    private nonisolated var reloadObserver: NSObjectProtocol?
     private var cacheGeneration = 0
 
     init(repository: ContactsRepository, notificationCenter: NotificationCenter = .default) {

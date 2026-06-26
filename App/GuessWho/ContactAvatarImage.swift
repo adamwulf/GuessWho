@@ -3,8 +3,7 @@ import GuessWhoSync
 
 enum ContactAvatarImage {
     static func placeholder(for contact: Contact, diameter: CGFloat) -> UIImage {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = UIScreen.main.scale
+        let format = UIGraphicsImageRendererFormat.default()
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: diameter, height: diameter), format: format)
         return renderer.image { context in
             let rect = CGRect(x: 0, y: 0, width: diameter, height: diameter)
