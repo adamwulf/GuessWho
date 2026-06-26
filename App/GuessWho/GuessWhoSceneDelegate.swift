@@ -310,6 +310,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let tabs = UITabBarController()
         tabs.viewControllers = [peopleNav, orgsNav, eventsNav, favoritesNav]
+        tabs.delegate = self
 
         // iOS 18 sidebar-adaptable tab bar surfaces as a bottom tab bar
         // on iPhone (compact) and as a leading sidebar on iPad
@@ -495,3 +496,41 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
     }
 }
+
+#if !targetEnvironment(macCatalyst)
+extension GuessWhoSceneDelegate: UITabBarControllerDelegate {
+    func tabBarController(
+        _ tabBarController: UITabBarController,
+        shouldSelect viewController: UIViewController
+    ) -> Bool {
+        guard tabBarController.selectedViewController === viewController else {
+            return true
+        }
+
+        scrollReselectedTabToTop(viewController)
+        return false
+    }
+
+    private func scrollReselectedTabToTop(_ viewController: UIViewController) {
+        guard let navigationController = viewController as? UINavigationController else {
+            (viewController as? ScrollsToTop)?.scrollToTop(animated: true)
+            return
+        }
+
+        guard let root = navigationController.viewControllers.first else { return }
+        guard let scrollsToTop = root as? ScrollsToTop else { return }
+
+        if navigationController.topViewController === root {
+            scrollsToTop.scrollToTop(animated: true)
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock {
+            scrollsToTop.scrollToTop(animated: true)
+        }
+        navigationController.popToRootViewController(animated: true)
+        CATransaction.commit()
+    }
+}
+#endif

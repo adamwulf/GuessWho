@@ -375,6 +375,12 @@ extension EventsListViewController: UITableViewDelegate {
     }
 }
 
+extension EventsListViewController: ScrollsToTop {
+    func scrollToTop(animated: Bool) {
+        tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
 // MARK: - UISearchResultsUpdating
 
 extension EventsListViewController: UISearchResultsUpdating {

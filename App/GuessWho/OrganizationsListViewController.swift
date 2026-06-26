@@ -217,6 +217,12 @@ extension OrganizationsListViewController: UITableViewDelegate {
     }
 }
 
+extension OrganizationsListViewController: ScrollsToTop {
+    func scrollToTop(animated: Bool) {
+        tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
 /// Diffable data source subclass that forwards A–Z section headers
 /// and the index scrubber. Same rationale as
 /// `ContactsListViewController.SectionedDataSource`.
