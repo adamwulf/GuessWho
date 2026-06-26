@@ -104,7 +104,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         switch tab {
         case .people:
-            let list = ContactsListViewController(repository: appDelegate.contactsRepository)
+            let list = ContactsListViewController(
+                repository: appDelegate.contactsRepository,
+                photoLoader: appDelegate.contactPhotoLoader
+            )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
@@ -113,7 +116,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             installDetailPlaceholder(in: split, for: .people)
 
         case .organizations:
-            let list = OrganizationsListViewController(repository: appDelegate.contactsRepository)
+            let list = OrganizationsListViewController(
+                repository: appDelegate.contactsRepository,
+                photoLoader: appDelegate.contactPhotoLoader
+            )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
@@ -334,7 +340,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private func makeIPhonePeopleTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
-        let list = ContactsListViewController(repository: appDelegate.contactsRepository)
+        let list = ContactsListViewController(
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
+        )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
         }
@@ -348,7 +357,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private func makeIPhoneOrganizationsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
-        let list = OrganizationsListViewController(repository: appDelegate.contactsRepository)
+        let list = OrganizationsListViewController(
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
+        )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
         }

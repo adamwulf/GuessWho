@@ -9,6 +9,7 @@ final class OrganizationsListViewController: UIViewController {
     var didSelectContact: (Contact) -> Void = { _ in }
 
     private let repository: ContactsRepository
+    private let photoLoader: ContactPhotoLoader
 
     private enum CellID: String {
         case organization
@@ -34,8 +35,11 @@ final class OrganizationsListViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
-    init(repository: ContactsRepository) {
+    private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
+
+    init(repository: ContactsRepository, photoLoader: ContactPhotoLoader) {
         self.repository = repository
+        self.photoLoader = photoLoader
         super.init(nibName: nil, bundle: nil)
         title = "Organizations"
     }
@@ -75,6 +79,7 @@ final class OrganizationsListViewController: UIViewController {
         tableView = UITableView(frame: .zero, style: .plain)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
+        tableView.prefetchDataSource = self
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 44
         tableView.sectionIndexBackgroundColor = .clear
@@ -127,7 +132,7 @@ final class OrganizationsListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, id in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.organization.rawValue, for: indexPath)
             guard let self, let contact = self.repository.contact(id: id) else { return cell }
-            (cell as? OrganizationCell)?.configure(with: contact)
+            (cell as? OrganizationCell)?.configure(with: contact, photoLoader: self.photoLoader)
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -215,6 +220,36 @@ extension OrganizationsListViewController: UITableViewDelegate {
               let contact = repository.contact(id: id) else { return }
         didSelectContact(contact)
     }
+
+    func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        (cell as? OrganizationCell)?.cancelPhotoLoad()
+    }
+}
+
+// MARK: - UITableViewDataSourcePrefetching
+
+extension OrganizationsListViewController: UITableViewDataSourcePrefetching {
+    func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
+        for indexPath in indexPaths {
+            guard let id = dataSource.itemIdentifier(for: indexPath),
+                  prefetchTasks[id] == nil,
+                  photoLoader.cachedImage(for: id, kind: .thumbnail) == nil else { continue }
+            prefetchTasks[id] = Task { [weak self, photoLoader] in
+                _ = await photoLoader.image(for: id, kind: .thumbnail)
+                await MainActor.run {
+                    self?.prefetchTasks[id] = nil
+                }
+            }
+        }
+    }
+
+    func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
+        for indexPath in indexPaths {
+            guard let id = dataSource.itemIdentifier(for: indexPath) else { continue }
+            prefetchTasks[id]?.cancel()
+            prefetchTasks[id] = nil
+        }
+    }
 }
 
 extension OrganizationsListViewController: ScrollsToTop {
@@ -261,6 +296,8 @@ extension OrganizationsListViewController: UISearchResultsUpdating {
 private final class OrganizationCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
+    private var representedID: ContactID?
+    private var photoTask: Task<Void, Never>?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -270,6 +307,13 @@ private final class OrganizationCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unsupported — OrganizationCell is code-only")
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        cancelPhotoLoad()
+        representedID = nil
+        iconView.image = nil
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -286,7 +330,8 @@ private final class OrganizationCell: UITableViewCell {
         iconView.contentMode = .scaleAspectFit
         iconView.tintColor = .secondaryLabel
         iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .title2)
-        iconView.image = UIImage(systemName: "building.2.crop.circle.fill")
+        iconView.clipsToBounds = true
+        iconView.layer.cornerRadius = 14
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         nameLabel.font = .preferredFont(forTextStyle: .body)
@@ -309,8 +354,29 @@ private final class OrganizationCell: UITableViewCell {
         ])
     }
 
-    func configure(with contact: Contact) {
+    func configure(with contact: Contact, photoLoader: ContactPhotoLoader) {
+        cancelPhotoLoad()
+        let id = contact.contactID
+        representedID = id
+        iconView.contentMode = .scaleAspectFill
+        iconView.image = ContactAvatarImage.placeholder(for: contact, diameter: 28)
+        if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
+            iconView.image = cached
+        } else {
+            photoTask = Task { [weak self, photoLoader] in
+                guard let image = await photoLoader.image(for: id, kind: .thumbnail) else { return }
+                await MainActor.run {
+                    guard self?.representedID == id else { return }
+                    self?.iconView.image = image
+                }
+            }
+        }
         nameLabel.attributedText = Self.nameAttributedString(for: contact)
+    }
+
+    func cancelPhotoLoad() {
+        photoTask?.cancel()
+        photoTask = nil
     }
 
     private static func nameAttributedString(for contact: Contact) -> NSAttributedString {
