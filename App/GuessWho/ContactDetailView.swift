@@ -6,6 +6,7 @@ import GuessWhoSync
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
+    @Environment(ContactPhotoLoader.self) private var photoLoader
     @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
     // Set by SceneDelegate when this view is pushed onto an iPhone
@@ -28,6 +29,7 @@ struct ContactDetailView: View {
     let id: ContactID
 
     @State private var contact: Contact?
+    @State private var headerPhoto: UIImage?
     @State private var notesStore: NotesStore?
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
@@ -231,6 +233,9 @@ struct ContactDetailView: View {
             // has no sidecar data to show (correct), and the FIRST write mints
             // via the package's resolve-or-mint primitive.
             await loadContact()
+        }
+        .task(id: contact?.contactID) {
+            await loadHeaderPhoto()
         }
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop
@@ -480,6 +485,28 @@ struct ContactDetailView: View {
 
     // MARK: - Header (macOS inline)
 
+    private func loadHeaderPhoto() async {
+        guard let contact else {
+            headerPhoto = nil
+            return
+        }
+
+        let id = contact.contactID
+        if let cached = photoLoader.cachedImage(for: id, kind: .fullSize) {
+            headerPhoto = cached
+            return
+        }
+        if let cachedThumbnail = photoLoader.cachedImage(for: id, kind: .thumbnail) {
+            headerPhoto = cachedThumbnail
+        } else {
+            headerPhoto = nil
+        }
+
+        guard let image = await photoLoader.image(for: id, kind: .fullSize) else { return }
+        guard self.contact?.contactID == id else { return }
+        headerPhoto = image
+    }
+
     /// Inline detail header used on macOS: large monogram circle, name,
     /// and a `job title · organization` subtitle. The nav-bar title is
     /// hidden in this configuration so the name only appears once.
@@ -487,11 +514,18 @@ struct ContactDetailView: View {
     private func headerView(_ contact: Contact) -> some View {
         VStack(spacing: 12) {
             ZStack {
-                Circle()
-                    .fill(Color.secondary.opacity(0.15))
-                Text(contact.initials)
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                if let headerPhoto {
+                    Image(uiImage: headerPhoto)
+                        .resizable()
+                        .scaledToFill()
+                        .clipShape(Circle())
+                } else {
+                    Circle()
+                        .fill(Color.secondary.opacity(0.15))
+                    Text(contact.initials)
+                        .font(.system(size: 36, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(width: 96, height: 96)
 
