@@ -622,6 +622,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Filename the extension's native handler writes into the App Group.
     private static let handoffFilename = "pending-handoff.json"
 
+    /// Upper bound on the handoff file we will read into memory. The handoff is
+    /// small JSON today; a real photo-bearing payload will be larger but still
+    /// bounded — this cap guards against reading an unexpectedly huge or hostile
+    /// file from the shared container. Raise deliberately when the real consumer
+    /// (with image bytes) lands; never read unbounded.
+    private static let handoffMaxBytes = 256 * 1024
+
     private static let handoffLog = Logger(
         subsystem: "com.milestonemade.guesswho",
         category: "linkedin-handoff"
@@ -664,6 +671,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         do {
+            // Cap the read: reject (and clear) an oversized file instead of
+            // loading it into memory unbounded.
+            let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+            if size > Self.handoffMaxBytes {
+                try? FileManager.default.removeItem(at: fileURL)
+                let message = "Handoff file too large (\(size) bytes > \(Self.handoffMaxBytes)); discarded"
+                Self.handoffLog.error("\(message, privacy: .public)")
+                return message
+            }
+
             let data = try Data(contentsOf: fileURL)
             // Clear immediately so a re-open can't replay a stale handoff.
             try FileManager.default.removeItem(at: fileURL)

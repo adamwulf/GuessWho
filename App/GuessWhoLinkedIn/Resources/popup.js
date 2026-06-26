@@ -38,7 +38,17 @@ document.getElementById("go").addEventListener("click", async () => {
       show({ step: "native handoff failed", error: ack?.error ?? "unknown" }, true);
       return;
     }
-    show({ sentToGuessWho: probe, nativeAck: ack.native });
+
+    // 3) Wake the app from the WEB context — the native handler can't (see
+    // SafariWebExtensionHandler). Navigate to the custom scheme the handler
+    // returned; the app's scene delegate drains the parked payload.
+    const wakeURL = ack.native?.wakeURL;
+    if (wakeURL) {
+      // Best-effort; if Catalyst blocks the navigation the app can still pick
+      // up the parked file when next foregrounded (App-Group fallback).
+      window.location.href = wakeURL;
+    }
+    show({ sentToGuessWho: probe, nativeAck: ack.native, openedWakeURL: wakeURL ?? null });
   } catch (e) {
     show({ error: String(e) }, true);
   }

@@ -8,8 +8,10 @@ import os.log
 /// holds neither entitlement). It only:
 ///   1. receives the parsed payload from the background script,
 ///   2. parks it in the shared **App Group** container (ephemeral IPC handoff),
-///   3. wakes the GuessWho app via the `guesswho-linkedin://handoff` URL,
-///   4. acks back to JS.
+///   3. acks back to JS with the `guesswho-linkedin://handoff` URL the popup
+///      should then open to wake the app (the handler itself cannot wake it —
+///      see below),
+///   4. the app's scene delegate drains the parked payload on wake.
 /// The app process is where match/diff/save will live (it already holds the
 /// iCloud + Contacts entitlements).
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
@@ -33,7 +35,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         if let dict = message as? [String: Any], let payload = dict["payload"] {
             let parked = parkPayload(payload)
-            wakeApp()
+            // The handler does NOT (and cannot) wake the app here — see `wakeURL`
+            // note below. It returns the URL for the popup to open.
             ack = ["received": true, "parked": parked, "wakeURL": Self.handoffURL.absoluteString]
         } else {
             Self.log.error("handoff message missing payload")
@@ -64,18 +67,17 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         }
     }
 
-    /// Wakes the GuessWho app. On macOS/Catalyst an extension can request the
-    /// app open a URL via SFSafariApplication; the exact API path is one of the
-    /// things this spike validates per platform.
-    private func wakeApp() {
-        #if os(macOS)
-        SFSafariApplication.dispatchMessage(
-            withName: "open", toExtensionWithIdentifier: "", userInfo: nil
-        )
-        #endif
-        // NOTE: Catalyst/iOS wake path is validated empirically in the spike —
-        // candidates: opening the custom scheme from the app side after it polls
-        // the App Group, a universal link, or SFSafariApplication APIs. This stub
-        // marks the seam; the worker confirms which mechanism actually fires.
-    }
+    // Why there is no `wakeApp()` here (spike finding, confirmed in review):
+    // a Safari Web Extension's native handler runs in an NSExtension process and
+    // cannot bring the container app forward.
+    //   - `UIApplication.shared` is unavailable in an app-extension process, so
+    //     there is no `open(_:)` to call.
+    //   - `SFSafariApplication`'s open/messaging APIs are legacy macOS-AppKit
+    //     only (absent from the Catalyst SDK), and `dispatchMessage` is the
+    //     app→extension-JS direction anyway — not an app-wake on ANY platform.
+    // The wake is therefore initiated from the WEB side: the popup opens the
+    // `wakeURL` (`guesswho-linkedin://handoff`) returned in the ack, which the
+    // app's `GuessWhoSceneDelegate` receives and drains. The browser web context
+    // CAN navigate to a registered custom scheme; the native side just parks the
+    // payload and reports the URL.
 }

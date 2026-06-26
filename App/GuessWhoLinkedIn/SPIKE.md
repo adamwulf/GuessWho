@@ -125,15 +125,23 @@ Builds verified (per CLAUDE.md, local `.build/DerivedData`):
   the App Group container, `os_log`s the payload, and shows a throwaway
   `UIAlertController`. No Contacts / sidecar work, per spec.
 
-**Open-question finding — who actually opens the URL on Catalyst:** the
-`wakeApp()` stub in `SafariWebExtensionHandler.swift` is `#if os(macOS)` only,
-which does NOT match Mac Catalyst (`targetEnvironment(macCatalyst)`), so today
-it is a no-op on Catalyst. That is correct for the spike, because a Safari Web
-Extension's *native handler* runs in an NSExtension process that, on Catalyst,
-has neither `UIApplication.shared.open` nor `SFSafariApplication` (the latter
-is AppKit/macOS-only and absent from the Catalyst SDK). So the **extension
-process cannot bring the app forward by itself on Catalyst.** The viable
-triggers, all landing on the same app-side receiver, are:
+**Open-question finding — who actually opens the URL on Catalyst:** a Safari Web
+Extension's *native handler* runs in an NSExtension process that **cannot bring
+the container app forward** — there is no `UIApplication.shared` in an extension
+process, and `SFSafariApplication`'s open/messaging APIs are legacy
+macOS-AppKit-only (absent from the Catalyst SDK) and point app→extension-JS
+anyway, not an app-wake. (Review caught that the original `wakeApp()` stub called
+the wrong API on *every* platform, not just a Catalyst no-op; it has been
+**removed** and replaced with an explanatory note.)
+
+**Resolved direction (wired this revision):** the wake is initiated from the
+**web** side — the popup opens the `wakeURL` (`guesswho-linkedin://handoff`)
+returned in the native ack (`popup.js`: `window.location.href = wakeURL`). The
+browser web context can navigate to a registered custom scheme; the app's
+`GuessWhoSceneDelegate` receives it and drains the parked payload. Still needs
+runtime confirmation on Catalyst (manual Safari enable), with the App-Group
+fallback below if the navigation is blocked. The viable triggers, all landing on
+the same app-side receiver, are:
 
 1. The **popup web page** navigates to `guesswho-linkedin://handoff` (e.g.
    `window.location = "guesswho-linkedin://handoff"` after the native ack).
