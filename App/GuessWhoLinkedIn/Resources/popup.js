@@ -29,7 +29,12 @@ async function probeTab(tabId) {
   try {
     return await api.tabs.sendMessage(tabId, { type: "guesswho.probe" });
   } catch (_e) {
-    await api.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    // Inject the parser first, then the content script (same order as the
+    // manifest), so `extractProfile` is defined when content.js runs.
+    await api.scripting.executeScript({
+      target: { tabId },
+      files: ["parse-profile.js", "content.js"],
+    });
     return await api.tabs.sendMessage(tabId, { type: "guesswho.probe" });
   }
 }
