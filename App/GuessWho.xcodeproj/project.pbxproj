@@ -422,6 +422,8 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
+				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -455,6 +457,8 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
+				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;

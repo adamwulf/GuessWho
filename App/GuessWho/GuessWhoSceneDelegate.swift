@@ -649,6 +649,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         guard isHandoff else { return }
 
+        Self.handoffLog.log("APP resolved App Group id=\(Self.handoffAppGroupID, privacy: .public)")
         Self.handoffLog.log("LinkedIn handoff wake received")
 
         let payload = readAndClearHandoffPayload()
@@ -660,18 +661,20 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// rendering for the spike alert. Returns a diagnostic string rather than
     /// throwing — this is a spike receiver, not production error handling.
     private func readAndClearHandoffPayload() -> String {
+        Self.handoffLog.log("read: resolving App Group id=\(Self.handoffAppGroupID, privacy: .public)")
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.handoffAppGroupID) else {
             let message = "App Group container unavailable: \(Self.handoffAppGroupID)"
-            Self.handoffLog.error("\(message, privacy: .public)")
+            Self.handoffLog.error("read: \(message, privacy: .public)")
             return message
         }
 
         let fileURL = container.appendingPathComponent(Self.handoffFilename)
+        Self.handoffLog.log("read: looking for \(fileURL.path, privacy: .public)")
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            let message = "No \(Self.handoffFilename) in App Group container"
-            Self.handoffLog.error("\(message, privacy: .public)")
+            let message = "No \(Self.handoffFilename) at \(fileURL.path)"
+            Self.handoffLog.error("read: \(message, privacy: .public)")
             return message
         }
 

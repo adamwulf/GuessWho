@@ -36,9 +36,10 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         let request = context.inputItems.first as? NSExtensionItem
         let rawMessage = request?.userInfo?[SFExtensionMessageKey]
 
-        // Log the raw shape so we can see, in Console (subsystem
-        // com.milestonemade.guesswho.safari, category handoff), exactly what
-        // Safari delivered — native-messaging payload shape varies by version.
+        // Log the raw shape + the App Group id this process resolved, so we can
+        // see in Console (subsystem com.milestonemade.guesswho.safari, category
+        // handoff) both what Safari delivered and which container we'll write to.
+        Self.log.log("EXTENSION resolved App Group id=\(Self.appGroupID, privacy: .public)")
         Self.log.log("native message received: \(String(describing: rawMessage), privacy: .public)")
 
         var ack: [String: Any] = ["received": false]
@@ -75,19 +76,22 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// Writes the handoff payload as a small JSON file in the App Group container.
     /// Returns true on success. The app reads (and clears) it on wake.
     private func parkPayload(_ payload: Any) -> Bool {
+        Self.log.log("park: resolving App Group id=\(Self.appGroupID, privacy: .public)")
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID) else {
-            Self.log.error("App Group container unavailable: \(Self.appGroupID, privacy: .public)")
+            Self.log.error("park: App Group container UNAVAILABLE for id=\(Self.appGroupID, privacy: .public) — entitlement not granting this group at runtime")
             return false
         }
         let url = container.appendingPathComponent("pending-handoff.json")
+        Self.log.log("park: writing to \(url.path, privacy: .public)")
         do {
             let envelope: [String: Any] = ["payload": payload, "stampedBy": "extension"]
             let data = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted])
             try data.write(to: url, options: [.atomic])
+            Self.log.log("park: wrote \(data.count) bytes OK to \(url.path, privacy: .public)")
             return true
         } catch {
-            Self.log.error("park failed: \(error.localizedDescription, privacy: .public)")
+            Self.log.error("park: write FAILED to \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
     }
