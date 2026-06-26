@@ -1,8 +1,8 @@
 import UIKit
 
 extension UIViewController {
-    /// Match UITableViewController's compact push/pop selection clearing for
-    /// plain UIViewController-hosted tables while preserving expanded split-view
+    /// Match UITableViewController's push/pop selection clearing for plain
+    /// UIViewController-hosted tables while preserving expanded split-view
     /// selection, where the highlighted row represents the visible detail pane.
     func deselectSelectedTableRowOnCompactNavigationReturn(
         in tableView: UITableView,
@@ -26,9 +26,6 @@ extension UIViewController {
 
     private var shouldDeselectListSelectionOnNavigationReturn: Bool {
         if let splitViewController, !splitViewController.isCollapsed {
-            return false
-        }
-        guard traitCollection.horizontalSizeClass == .compact else {
             return false
         }
         guard let navigationController else {
