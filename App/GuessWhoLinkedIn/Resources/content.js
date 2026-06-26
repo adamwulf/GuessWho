@@ -18,7 +18,41 @@ function minimalProbe() {
   };
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// LinkedIn lazy-renders sections — only what's scrolled into view exists in the
+// DOM. So About (and anything below the fold) is missing on a fresh load until
+// the user scrolls. Scroll through the page to force those sections to render,
+// then return to the top so the page looks untouched.
+async function forceLazyRender() {
+  const startY = window.scrollY;
+  try {
+    const step = Math.max(window.innerHeight * 0.8, 400);
+    const maxScroll = () =>
+      Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    let y = 0;
+    // Walk down the page in steps, pausing so lazy sections can render. Bounded
+    // so it never loops forever as the page grows.
+    for (let i = 0; i < 25 && y < maxScroll(); i++) {
+      y += step;
+      window.scrollTo(0, y);
+      await sleep(150);
+    }
+    // One settle pause at the bottom, then restore the original scroll position.
+    await sleep(250);
+  } finally {
+    window.scrollTo(0, startY);
+  }
+}
+
 async function probe() {
+  // Force lazy sections (About, etc.) into the DOM before parsing.
+  try {
+    await forceLazyRender();
+  } catch (e) {
+    console.log("[GuessWho] forceLazyRender threw:", e);
+  }
+
   let result;
   try {
     if (typeof extractProfile === "function") {
