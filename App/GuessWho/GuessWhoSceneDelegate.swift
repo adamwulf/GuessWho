@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import GuessWhoSync
+import os.log
 
 /// UIKit `UIWindowSceneDelegate` that owns the per-scene `UIWindow`
 /// and picks its root view controller based on the build target:
@@ -47,6 +48,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.rootViewController = makeRootViewController(appDelegate: appDelegate)
         self.window = window
         window.makeKeyAndVisible()
+
+        // Cold-launch path: if the app was woken by the LinkedIn handoff URL
+        // (`guesswho-linkedin://handoff`) the URL arrives here rather than in
+        // `scene(_:openURLContexts:)`. Drain it once the window exists so the
+        // spike alert has something to present on.
+        if !connectionOptions.urlContexts.isEmpty {
+            handleLinkedInHandoff(urlContexts: connectionOptions.urlContexts)
+        }
+    }
+
+    /// Running-app path for the LinkedIn handoff spike. When the
+    /// `guesswho-linkedin://handoff` URL is opened while a scene is already
+    /// connected, UIKit delivers it here. Distinct from the
+    /// `guesswho://contact/<uuid>` identity scheme — only `guesswho-linkedin`
+    /// URLs are handled.
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        handleLinkedInHandoff(urlContexts: URLContexts)
     }
 
     private func makeRootViewController(appDelegate: GuessWhoAppDelegate) -> UIViewController {
@@ -592,6 +610,94 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             .environment(\.pushEventReference) { [weak self, weak nav] ref in
                 self?.pushEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
             }
+    }
+
+    // MARK: - LinkedIn handoff spike (step-0)
+
+    /// App Group shared with the `GuessWhoLinkedIn` Safari Web Extension.
+    /// Used ONLY for the ephemeral handoff file the extension parks; synced
+    /// GuessWho data lives in the iCloud ubiquity container, never here.
+    private static let handoffAppGroupID = "group.com.milestonemade.guesswho"
+
+    /// Filename the extension's native handler writes into the App Group.
+    private static let handoffFilename = "pending-handoff.json"
+
+    private static let handoffLog = Logger(
+        subsystem: "com.milestonemade.guesswho",
+        category: "linkedin-handoff"
+    )
+
+    /// Drains a LinkedIn handoff wake. Only `guesswho-linkedin://handoff`
+    /// URLs are acted on; anything else (including the `guesswho://` identity
+    /// scheme, which never reaches this scene type) is ignored. Reads and
+    /// clears the App Group payload, logs it, and shows a spike alert.
+    private func handleLinkedInHandoff(urlContexts: Set<UIOpenURLContext>) {
+        let isHandoff = urlContexts.contains { context in
+            context.url.scheme == "guesswho-linkedin"
+        }
+        guard isHandoff else { return }
+
+        Self.handoffLog.log("LinkedIn handoff wake received")
+
+        let payload = readAndClearHandoffPayload()
+        presentHandoffAlert(payload: payload)
+    }
+
+    /// Reads `pending-handoff.json` from the App Group container, deletes it
+    /// (so the same payload is never replayed), and returns a human-readable
+    /// rendering for the spike alert. Returns a diagnostic string rather than
+    /// throwing — this is a spike receiver, not production error handling.
+    private func readAndClearHandoffPayload() -> String {
+        guard let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.handoffAppGroupID) else {
+            let message = "App Group container unavailable: \(Self.handoffAppGroupID)"
+            Self.handoffLog.error("\(message, privacy: .public)")
+            return message
+        }
+
+        let fileURL = container.appendingPathComponent(Self.handoffFilename)
+
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            let message = "No \(Self.handoffFilename) in App Group container"
+            Self.handoffLog.error("\(message, privacy: .public)")
+            return message
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            // Clear immediately so a re-open can't replay a stale handoff.
+            try FileManager.default.removeItem(at: fileURL)
+
+            let rendered = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-UTF8>"
+            Self.handoffLog.log("LinkedIn handoff payload: \(rendered, privacy: .public)")
+            return rendered
+        } catch {
+            let message = "Failed to read/clear handoff: \(error.localizedDescription)"
+            Self.handoffLog.error("\(message, privacy: .public)")
+            return message
+        }
+    }
+
+    /// Surfaces the drained payload in a throwaway alert so the spike can be
+    /// eyeballed end-to-end. No Contacts / sidecar work — that lands in later
+    /// build steps once the pipe is proven.
+    private func presentHandoffAlert(payload: String) {
+        guard let rootViewController = window?.rootViewController else { return }
+
+        let alert = UIAlertController(
+            title: "LinkedIn handoff received",
+            message: payload,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+
+        // Present on the topmost VC so it works whether the root is the
+        // Catalyst split or the iPhone tab/gate shell.
+        var presenter = rootViewController
+        while let presented = presenter.presentedViewController {
+            presenter = presented
+        }
+        presenter.present(alert, animated: true)
     }
 }
 
