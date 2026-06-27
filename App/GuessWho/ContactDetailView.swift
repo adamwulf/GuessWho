@@ -678,8 +678,8 @@ struct ContactDetailView: View {
     }
 
     /// A single positioned cell in the info section: either a field row or the
-    /// per-group "more…"/"less…" disclosure that toggles the group's hidden
-    /// "old"-labeled rows.
+    /// per-group "more…" disclosure that reveals the group's hidden "old"-labeled
+    /// rows (one-way; the rows then replace the disclosure).
     private enum InfoDisplayElement: Identifiable {
         case row(InfoRowData)
         case disclosure(group: InfoRowData.FieldGroup, hiddenCount: Int)
@@ -695,15 +695,16 @@ struct ContactDetailView: View {
     /// Flatten the ordered `rows` into display cells, collapsing each field
     /// group's "old"-labeled rows behind a "more…" disclosure unless the group
     /// is expanded. The disclosure is emitted at the END of its group (after the
-    /// always-visible rows), so a phone with one old number reads "phone, more…"
-    /// and an expanded group reads "phone, old phone, less…".
+    /// always-visible rows), so a phone with one old number reads "phone, more…".
+    /// Once expanded the hidden rows REPLACE the disclosure ("phone, old phone"),
+    /// with no "less…" row — see `moreDisclosureRow`.
     private func infoDisplayElements(for rows: [InfoRowData]) -> [InfoDisplayElement] {
         var elements: [InfoDisplayElement] = []
         var index = rows.startIndex
         while index < rows.endIndex {
             let row = rows[index]
             guard let group = row.group else {
-                // Ungrouped row (name parts, addresses, dates, …): always shown.
+                // Ungrouped row (name parts, dates, relations, …): always shown.
                 elements.append(.row(row))
                 index += 1
                 continue
@@ -723,9 +724,12 @@ struct ContactDetailView: View {
             // un-collapsed. Tapping "more…" reveals them.
             for r in visible { elements.append(.row(r)) }
             if expandedFieldGroups.contains(group) {
+                // Once revealed, the "old" rows REPLACE the "more…" row — no
+                // re-collapse affordance. The group re-collapses only when the
+                // view is rebuilt (navigate away and back), since expansion is
+                // per-view-instance @State.
                 for r in hidden { elements.append(.row(r)) }
-            }
-            if !hidden.isEmpty {
+            } else if !hidden.isEmpty {
                 elements.append(.disclosure(group: group, hiddenCount: hidden.count))
             }
             index = runEnd
@@ -733,22 +737,19 @@ struct ContactDetailView: View {
         return elements
     }
 
-    /// The "more…" / "less…" toggle row for a field group's hidden "old" rows.
-    /// Collapsed shows the hidden count ("more… (2)") so the user knows how many
-    /// rows are tucked away; expanded shows "less…".
+    /// The "more…" disclosure row for a field group's hidden "old" rows. Shows
+    /// the hidden count ("more… (2)") so the user knows how many rows are tucked
+    /// away. Tapping it is one-way: the hidden rows REPLACE this row and there is
+    /// no "less…" / re-collapse affordance — the group re-collapses only when the
+    /// view is rebuilt (navigate away and back).
     @ViewBuilder
     private func moreDisclosureRow(for group: InfoRowData.FieldGroup, hiddenCount: Int) -> some View {
-        let isExpanded = expandedFieldGroups.contains(group)
         Button {
             withAnimation {
-                if isExpanded {
-                    expandedFieldGroups.remove(group)
-                } else {
-                    expandedFieldGroups.insert(group)
-                }
+                _ = expandedFieldGroups.insert(group)
             }
         } label: {
-            Text(isExpanded ? "less…" : "more… (\(hiddenCount))")
+            Text("more… (\(hiddenCount))")
                 .font(.body)
                 .foregroundStyle(.tint)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -843,26 +844,27 @@ struct ContactDetailView: View {
             rows.append(.text(label: label, value: value))
         }
 
-        // Phone/email/url groups partition into non-"old" rows first, then the
-        // "old"-labeled ones. The view collapses each group's trailing "old"
-        // rows behind a "more…" disclosure (see `infoSection`). Partitioning
-        // here guarantees the visible rows precede the hidden ones regardless of
-        // the order Contacts stored the values in.
-        let phones = contact.phoneNumbers.stablePartitionedByOldLabel()
+        // Phone/email/url/address groups partition into non-"old" rows first,
+        // then the "old"-labeled ones. The view collapses each group's trailing
+        // "old" rows behind a "more…" disclosure (see `infoSection`).
+        // Partitioning here guarantees the visible rows precede the hidden ones
+        // regardless of the order Contacts stored the values in.
+        let phones = contact.phoneNumbers.stablePartitionedByOldLabel { $0.label }
         for item in phones {
             rows.append(.phone(label: localizedLabel(item.label), number: item.value, isOld: item.label.isOldFieldLabel))
         }
-        let emails = contact.emailAddresses.stablePartitionedByOldLabel()
+        let emails = contact.emailAddresses.stablePartitionedByOldLabel { $0.label }
         for item in emails {
             rows.append(.email(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel))
         }
-        let urls = contact.userVisibleURLAddresses.stablePartitionedByOldLabel()
+        let urls = contact.userVisibleURLAddresses.stablePartitionedByOldLabel { $0.label }
         for item in urls {
             rows.append(.url(label: localizedLabel(item.label), urlString: item.value, isOld: item.label.isOldFieldLabel))
         }
 
-        for item in contact.postalAddresses {
-            rows.append(.address(label: localizedLabel(item.label), address: item.value))
+        let addresses = contact.postalAddresses.stablePartitionedByOldLabel { $0.label }
+        for item in addresses {
+            rows.append(.address(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel))
         }
 
         if let bday = contact.birthday {
@@ -1608,13 +1610,15 @@ private extension String {
     }
 }
 
-private extension Array where Element == LabeledValue {
-    /// Reorder so every non-"old"-labeled value precedes every "old"-labeled
-    /// one, preserving each subgroup's original order. Lets the detail view
-    /// collapse the trailing "old" rows behind a "more…" disclosure without
-    /// depending on how Contacts happened to order the values.
-    func stablePartitionedByOldLabel() -> [LabeledValue] {
-        filter { !$0.label.isOldFieldLabel } + filter { $0.label.isOldFieldLabel }
+private extension Array {
+    /// Reorder so every non-"old"-labeled element precedes every "old"-labeled
+    /// one, preserving each subgroup's original order. `label` extracts the raw
+    /// Contacts label from an element (the various labeled-value types don't
+    /// share a protocol). Lets the detail view collapse the trailing "old" rows
+    /// behind a "more…" disclosure without depending on how Contacts happened to
+    /// order the values.
+    func stablePartitionedByOldLabel(_ label: (Element) -> String) -> [Element] {
+        filter { !label($0).isOldFieldLabel } + filter { label($0).isOldFieldLabel }
     }
 }
 
@@ -1630,13 +1634,14 @@ private struct InfoRowData: Identifiable {
         case backReference(displayName: String, descriptor: String, contactID: ContactID)
     }
 
-    /// The collapsible field group a row belongs to. Phone/email/url rows that
-    /// carry an "old" label are hidden behind a per-group "more…" disclosure;
-    /// every other row leaves this `nil` and is always shown.
+    /// The collapsible field group a row belongs to. Phone/email/url/address
+    /// rows that carry an "old" label are hidden behind a per-group "more…"
+    /// disclosure; every other row leaves this `nil` and is always shown.
     enum FieldGroup: Hashable {
         case phone
         case email
         case url
+        case address
     }
 
     let label: String
@@ -1680,8 +1685,8 @@ private struct InfoRowData: Identifiable {
     static func url(label: String, urlString: String, isOld: Bool = false) -> InfoRowData {
         InfoRowData(label: label, kind: .url(urlString: urlString), group: .url, isOld: isOld)
     }
-    static func address(label: String, address: PostalAddress) -> InfoRowData {
-        InfoRowData(label: label, kind: .address(address))
+    static func address(label: String, address: PostalAddress, isOld: Bool = false) -> InfoRowData {
+        InfoRowData(label: label, kind: .address(address), group: .address, isOld: isOld)
     }
     static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
         InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
