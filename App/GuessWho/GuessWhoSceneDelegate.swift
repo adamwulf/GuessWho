@@ -39,6 +39,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         willConnectTo session: UISceneSession,
         options connectionOptions: UIScene.ConnectionOptions
     ) {
+        // First scene breadcrumb. `urlContextCount` records whether this is a
+        // cold-launch deep link (the handoff wake arrives here, not in
+        // `openURLContexts`, when the app was not already running) so the wake
+        // path is traceable from the scene's very first line.
+        Self.lifecycleLog.notice("scene willConnect", [
+            "scene": Self.sceneTag(scene),
+            "role": scene.session.role.rawValue,
+            "activationState": Self.activationStateName(scene.activationState),
+            "urlContextCount": connectionOptions.urlContexts.count
+        ])
+
         guard let windowScene = scene as? UIWindowScene else { return }
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else {
             fatalError("GuessWhoAppDelegate missing during scene connection")
@@ -54,7 +65,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // `scene(_:openURLContexts:)`. Drain it once the window exists so the
         // spike alert has something to present on.
         if !connectionOptions.urlContexts.isEmpty {
-            handleLinkedInHandoff(urlContexts: connectionOptions.urlContexts)
+            handleLinkedInHandoff(urlContexts: connectionOptions.urlContexts, entry: "cold-launch")
         }
     }
 
@@ -64,7 +75,38 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// `guesswho://contact/<uuid>` identity scheme — only `guesswho-linkedin`
     /// URLs are handled.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        handleLinkedInHandoff(urlContexts: URLContexts)
+        handleLinkedInHandoff(urlContexts: URLContexts, entry: "warm-open")
+    }
+
+    // MARK: - Scene lifecycle breadcrumbs
+    //
+    // The full run-state timeline, one log line per UIKit transition. Pairing
+    // these with the handoff breadcrumbs makes the wake path legible: e.g. a
+    // `guesswho-linkedin://` deep link should show `willEnterForeground` →
+    // `openURLContexts`/handoff → `didBecomeActive` when the app was already
+    // running, or `willConnect (urlContextCount=1)` on a cold launch. A wake
+    // that only foregrounds the app WITHOUT delivering the URL shows the
+    // foreground/active transitions with no accompanying handoff line — exactly
+    // the "app just opened, nothing happened" symptom we're chasing.
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        Self.lifecycleLog.notice("scene willEnterForeground", ["scene": Self.sceneTag(scene)])
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        Self.lifecycleLog.notice("scene didBecomeActive", ["scene": Self.sceneTag(scene)])
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        Self.lifecycleLog.notice("scene willResignActive", ["scene": Self.sceneTag(scene)])
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        Self.lifecycleLog.notice("scene didEnterBackground", ["scene": Self.sceneTag(scene)])
+    }
+
+    func sceneDidDisconnect(_ scene: UIScene) {
+        Self.lifecycleLog.notice("scene didDisconnect", ["scene": Self.sceneTag(scene)])
     }
 
     private func makeRootViewController(appDelegate: GuessWhoAppDelegate) -> UIViewController {
@@ -641,18 +683,70 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// handler). Label is developer-facing; see GuessWhoLogging notes.
     private static let handoffLog = GuessWhoLog.logger("app.linkedin-handoff")
 
+    /// Per-scene lifecycle breadcrumbs. Every scene transition UIKit delivers
+    /// to this delegate (connect → foreground → active → resign → background →
+    /// disconnect) is logged here so the app's run-state timeline is legible in
+    /// `<AppGroup>/Logs/app.log` alongside the handoff breadcrumbs. The
+    /// `session.persistentIdentifier` tags each line so multiple scenes
+    /// (multi-window on Catalyst/iPad) stay distinguishable. Developer-facing
+    /// label; see GuessWhoLogging notes.
+    private static let lifecycleLog = GuessWhoLog.logger("app.lifecycle.scene")
+
+    /// A stable, short tag for the scene driving a log line, so concurrent
+    /// scenes (multi-window) are distinguishable without dumping the full
+    /// session identifier on every line.
+    private static func sceneTag(_ scene: UIScene) -> String {
+        scene.session.persistentIdentifier
+    }
+
+    /// Human-readable name for a `UIScene.ActivationState`, so the logged
+    /// timeline reads "foregroundActive" rather than a bare enum rawValue.
+    private static func activationStateName(_ state: UIScene.ActivationState) -> String {
+        switch state {
+        case .unattached: return "unattached"
+        case .foregroundActive: return "foregroundActive"
+        case .foregroundInactive: return "foregroundInactive"
+        case .background: return "background"
+        @unknown default: return "unknown(\(state.rawValue))"
+        }
+    }
+
     /// Drains a LinkedIn handoff wake. Only `guesswho-linkedin://handoff`
     /// URLs are acted on; anything else (including the `guesswho://` identity
     /// scheme, which never reaches this scene type) is ignored. Reads and
     /// clears the App Group payload, logs it, and shows a spike alert.
-    private func handleLinkedInHandoff(urlContexts: Set<UIOpenURLContext>) {
+    ///
+    /// - Parameter entry: which UIKit delivery path called us — `"cold-launch"`
+    ///   (`scene(_:willConnectTo:)`) or `"warm-open"`
+    ///   (`scene(_:openURLContexts:)`). Logged so the wake path is legible: a
+    ///   web-side `window.location.href = "guesswho-linkedin://handoff"` that
+    ///   reaches the app shows exactly one of these lines; if neither appears,
+    ///   the URL never made it across the boundary (the "app just opened,
+    ///   nothing happened" symptom).
+    private func handleLinkedInHandoff(urlContexts: Set<UIOpenURLContext>, entry: String) {
+        // Log EVERY scheme that arrived, not just the handoff one. A wake that
+        // foregrounds the app but drops the URL, or delivers an unexpected
+        // scheme, is otherwise invisible — this line is the app-side proof that
+        // the deep link did (or did not) cross from the web context.
+        let schemes = urlContexts.compactMap { $0.url.scheme }.sorted()
+        Self.handoffLog.notice("wake URL(s) received", [
+            "entry": entry,
+            "count": urlContexts.count,
+            "schemes": schemes.joined(separator: ",")
+        ])
+
         let isHandoff = urlContexts.contains { context in
             context.url.scheme == "guesswho-linkedin"
         }
-        guard isHandoff else { return }
+        guard isHandoff else {
+            // Not our scheme (e.g. the `guesswho://` identity URL). Record the
+            // ignore explicitly so this isn't a silent return in the log.
+            Self.handoffLog.notice("not a LinkedIn handoff — ignoring", ["schemes": schemes.joined(separator: ",")])
+            return
+        }
 
         Self.handoffLog.notice("APP resolved App Group id=\(Self.handoffAppGroupID)")
-        Self.handoffLog.notice("LinkedIn handoff wake received")
+        Self.handoffLog.notice("LinkedIn handoff wake received", ["entry": entry])
 
         guard let data = readAndClearHandoffPayload() else { return }
 
@@ -725,7 +819,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         hosting.modalPresentationStyle = .formSheet
         // Wider sheet so the two columns (esp. About / multi-line values) have room.
         hosting.preferredContentSize = CGSize(width: 840, height: 660)
-        topmostPresenter()?.present(hosting, animated: true)
+        // Present from the topmost VC. If there's no presenter (window not yet
+        // key, or a teardown race) the sheet would silently never appear — log
+        // that case rather than let it look like the diff "just didn't show".
+        // Resolve the presenter BEFORE the "presenting" line so a failure reads
+        // as a clean "NO presenter available" rather than "presenting" followed
+        // by a contradiction.
+        guard let presenter = topmostPresenter() else {
+            Self.handoffLog.error("diff: NO presenter available — confirm sheet not shown")
+            return
+        }
+        Self.handoffLog.notice("diff: presenting confirm sheet", [
+            "contact": contact.displayName,
+            "rows": rows.count
+        ])
+        presenter.present(hosting, animated: true)
     }
 
     /// The LinkedIn-sourced sidecar fields (About / Location) as a

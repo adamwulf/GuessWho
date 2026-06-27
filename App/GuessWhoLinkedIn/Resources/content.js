@@ -8,6 +8,19 @@
 
 const api = globalThis.browser ?? globalThis.chrome;
 
+// Step breadcrumb helper, mirroring popup.js / background.js so all three JS
+// contexts read identically. Reachable only from the PAGE's Web Inspector
+// console (the content script's isolated world). The pre-existing inner
+// `[GuessWho] …` logs in `probe()` (photo fetch, parse result) keep their own
+// format — this helper covers the listener breadcrumbs that bracket the probe.
+function log(step, detail) {
+  if (detail === undefined) {
+    console.log("[GuessWho][content]", step);
+  } else {
+    console.log("[GuessWho][content]", step, detail);
+  }
+}
+
 function minimalProbe() {
   const slug = (location.pathname.match(/\/in\/([^/]+)/) || [])[1] || null;
   return {
@@ -143,11 +156,24 @@ async function probe() {
 // The popup triggers the handoff; the content script answers with the probe.
 // `probe()` is async, so resolve it then call sendResponse; returning true
 // keeps the message channel open for the async reply.
+//
+// Breadcrumbs here (read in the PAGE's Web Inspector console, not the popup's)
+// are the content half of the pipe — they prove the probe ran in the tab and
+// what it returned to the popup.
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "guesswho.probe") return false;
-  probe().then(sendResponse).catch((e) => {
-    console.log("[GuessWho] probe failed:", e);
-    sendResponse(minimalProbe());
-  });
+  log("probe requested by popup");
+  probe()
+    .then((result) => {
+      log("probe responding", {
+        fallback: !!result._fallback,
+        hasPhoto: !!result.photo,
+      });
+      sendResponse(result);
+    })
+    .catch((e) => {
+      log("probe failed, sending minimal probe", { error: String(e) });
+      sendResponse(minimalProbe());
+    });
   return true;
 });
