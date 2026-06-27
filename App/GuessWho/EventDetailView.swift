@@ -405,9 +405,7 @@ struct EventDetailView: View {
             .buttonStyle(.plain)
         } else {
             HStack(spacing: 12) {
-                Image(systemName: "person.crop.circle")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.secondary)
+                UnknownContactAvatar(diameter: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("(Unknown contact)")
                         .foregroundStyle(.secondary)

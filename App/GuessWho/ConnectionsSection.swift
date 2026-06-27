@@ -83,16 +83,14 @@ struct LinkRow: View {
     }
 
     // Leading column: the resolved contact's thumbnail avatar (initials-circle
-    // fallback). The unknown-contact case keeps the generic person glyph so the
-    // row still reads sensibly.
+    // fallback). The unknown-contact case shows a generic person glyph in the
+    // same 20pt circular footprint so known and unknown rows stay aligned.
     @ViewBuilder
     private var leadingAvatar: some View {
         if let other = otherContact {
             ContactAvatar(contact: other, diameter: 20)
         } else {
-            Image(systemName: "person")
-                .font(.body)
-                .foregroundStyle(.secondary)
+            UnknownContactAvatar(diameter: 20)
         }
     }
 

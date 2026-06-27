@@ -7,8 +7,8 @@ import GuessWhoSync
 /// `UITableViewDiffableDataSource` keyed on (section-letter, ContactID)
 /// so a repository reload only re-applies a snapshot rather than
 /// invalidating the entire view. A–Z sectioning, search bound to
-/// `ContactsRepository.peopleSearch`, per-row layout matching
-/// `ContactRow` (icon + name + caption subtitle).
+/// `ContactsRepository.peopleSearch`, per-row layout of a leading
+/// avatar plus a name and caption subtitle.
 final class ContactsListViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can mount
     /// a fresh `UIHostingController<ContactDetailView>` in the secondary
@@ -355,10 +355,10 @@ extension ContactsListViewController: UISearchResultsUpdating {
 
 // MARK: - Row cell
 
-/// Two-line contact row mirroring the SwiftUI `ContactRow`: leading
-/// circle/building icon, name with bold family name, caption-sized
-/// subtitle showing "jobTitle, organizationName" (non-breaking space
-/// when empty so every row stays the same height).
+/// Two-line contact row: leading avatar thumbnail (initials-circle
+/// fallback from `ContactAvatarImage`), name with bold family name,
+/// caption-sized subtitle showing "jobTitle, organizationName"
+/// (non-breaking space when empty so every row stays the same height).
 private final class ContactCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
@@ -452,8 +452,8 @@ private final class ContactCell: UITableViewCell {
         }
         nameLabel.attributedText = Self.nameAttributedString(for: contact)
         // Non-breaking space keeps the row's two-line height stable
-        // when the contact has no jobTitle/organizationName — matches
-        // the SwiftUI ContactRow's subtitleLine placeholder.
+        // when the contact has no jobTitle/organizationName — an empty
+        // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
     }
 
