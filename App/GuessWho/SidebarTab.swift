@@ -5,10 +5,13 @@ import Foundation
 /// pass so we can validate the architecture; the other tabs still
 /// ship via the iPhone TabView and will land here as follow-ups.
 enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
+    // `allCases` order drives both the Catalyst/iPad sidebar rows and the
+    // iPhone tab-bar order, so the declaration order IS the display order:
+    // Favorites first, then People, Organizations, Events.
+    case favorites
     case people
     case organizations
     case events
-    case favorites
 
     var id: String { rawValue }
 

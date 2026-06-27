@@ -318,7 +318,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let favoritesNav = makeIPhoneFavoritesTab(appDelegate: appDelegate)
 
         let tabs = UITabBarController()
-        tabs.viewControllers = [peopleNav, orgsNav, eventsNav, favoritesNav]
+        // Order matches the sidebar's `SidebarTab.allCases`: Favorites first,
+        // then People, Organizations, Events.
+        tabs.viewControllers = [favoritesNav, peopleNav, orgsNav, eventsNav]
         // Re-tapping the active tab scrolls its list to top — an iPhone /
         // iPad tab-shell behavior. The `UITabBarControllerDelegate`
         // conformance that drives it is `#if !targetEnvironment(macCatalyst)`
@@ -352,7 +354,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.people.title,
             image: UIImage(systemName: SidebarTab.people.systemImage),
-            tag: 0
+            tag: 1
         )
         return nav
     }
@@ -369,7 +371,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.organizations.title,
             image: UIImage(systemName: SidebarTab.organizations.systemImage),
-            tag: 1
+            tag: 2
         )
         return nav
     }
@@ -391,7 +393,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.events.title,
             image: UIImage(systemName: SidebarTab.events.systemImage),
-            tag: 2
+            tag: 3
         )
         return nav
     }
@@ -418,7 +420,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.favorites.title,
             image: UIImage(systemName: SidebarTab.favorites.systemImage),
-            tag: 3
+            tag: 0
         )
         return nav
     }
