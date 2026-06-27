@@ -90,6 +90,10 @@ struct ContactDetailView: View {
 
     @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
 
+    // Which info field groups (phones/emails/urls) have had their "old"-labeled
+    // rows revealed via the per-group "more…" disclosure. Empty = all collapsed.
+    @State private var expandedFieldGroups: Set<InfoRowData.FieldGroup> = []
+
     // Contact-link edit state (lifted from the old ConnectionsSection).
     @State private var editingLinkID: UUID?
     @State private var draftLinkNote: String = ""
@@ -611,11 +615,18 @@ struct ContactDetailView: View {
         // Mirror Apple's Contacts: one card with every populated field as
         // a label-above-value row, in roughly the same order Contacts uses.
         let rows = infoRows(for: contact)
-        if !rows.isEmpty {
+        let elements = infoDisplayElements(for: rows)
+        if !elements.isEmpty {
             Section {
-                ForEach(rows) { row in
-                    InfoRow(data: row)
-                        .centeredRowContent()
+                ForEach(elements) { element in
+                    switch element {
+                    case .row(let row):
+                        InfoRow(data: row)
+                            .centeredRowContent()
+                    case .disclosure(let group, let hiddenCount):
+                        moreDisclosureRow(for: group, hiddenCount: hiddenCount)
+                            .centeredRowContent()
+                    }
                 }
             }
         }
@@ -664,6 +675,87 @@ struct ContactDetailView: View {
         case .null: return ""
         case .array, .object: return ""
         }
+    }
+
+    /// A single positioned cell in the info section: either a field row or the
+    /// per-group "more…" disclosure that reveals the group's hidden "old"-labeled
+    /// rows (one-way; the rows then replace the disclosure).
+    private enum InfoDisplayElement: Identifiable {
+        case row(InfoRowData)
+        case disclosure(group: InfoRowData.FieldGroup, hiddenCount: Int)
+
+        var id: AnyHashable {
+            switch self {
+            case .row(let r): return AnyHashable("row-\(r.id)")
+            case .disclosure(let g, _): return AnyHashable("more-\(g)")
+            }
+        }
+    }
+
+    /// Flatten the ordered `rows` into display cells, collapsing each field
+    /// group's "old"-labeled rows behind a "more…" disclosure unless the group
+    /// is expanded. The disclosure is emitted at the END of its group (after the
+    /// always-visible rows), so a phone with one old number reads "phone, more…".
+    /// Once expanded the hidden rows REPLACE the disclosure ("phone, old phone"),
+    /// with no "less…" row — see `moreDisclosureRow`.
+    private func infoDisplayElements(for rows: [InfoRowData]) -> [InfoDisplayElement] {
+        var elements: [InfoDisplayElement] = []
+        var index = rows.startIndex
+        while index < rows.endIndex {
+            let row = rows[index]
+            guard let group = row.group else {
+                // Ungrouped row (name parts, dates, relations, …): always shown.
+                elements.append(.row(row))
+                index += 1
+                continue
+            }
+            // Consume the whole contiguous run for this group at once so the
+            // "more…" disclosure lands at the group's tail regardless of how
+            // many rows it spans.
+            var runEnd = index
+            while runEnd < rows.endIndex, rows[runEnd].group == group { runEnd += 1 }
+            let run = rows[index..<runEnd]
+            let visible = run.filter { !$0.isOld }
+            let hidden = run.filter { $0.isOld }
+            // Deliberate: when EVERY value in a group is "old", `visible` is empty
+            // and the group renders as a lone "more…" with no row above it. That
+            // matches the rule the user asked for — "old" values always hide
+            // behind "more…" — rather than special-casing all-old groups to show
+            // un-collapsed. Tapping "more…" reveals them.
+            for r in visible { elements.append(.row(r)) }
+            if expandedFieldGroups.contains(group) {
+                // Once revealed, the "old" rows REPLACE the "more…" row — no
+                // re-collapse affordance. The group re-collapses only when the
+                // view is rebuilt (navigate away and back), since expansion is
+                // per-view-instance @State.
+                for r in hidden { elements.append(.row(r)) }
+            } else if !hidden.isEmpty {
+                elements.append(.disclosure(group: group, hiddenCount: hidden.count))
+            }
+            index = runEnd
+        }
+        return elements
+    }
+
+    /// The "more…" disclosure row for a field group's hidden "old" rows. Shows
+    /// the hidden count ("more… (2)") so the user knows how many rows are tucked
+    /// away. Tapping it is one-way: the hidden rows REPLACE this row and there is
+    /// no "less…" / re-collapse affordance — the group re-collapses only when the
+    /// view is rebuilt (navigate away and back).
+    @ViewBuilder
+    private func moreDisclosureRow(for group: InfoRowData.FieldGroup, hiddenCount: Int) -> some View {
+        Button {
+            withAnimation {
+                _ = expandedFieldGroups.insert(group)
+            }
+        } label: {
+            Text("more… (\(hiddenCount))")
+                .font(.body)
+                .foregroundStyle(.tint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// "Recent Events": up to 10 EventKit events where this contact appears
@@ -752,18 +844,37 @@ struct ContactDetailView: View {
             rows.append(.text(label: label, value: value))
         }
 
-        for item in contact.phoneNumbers {
-            rows.append(.phone(label: localizedLabel(item.label), number: item.value))
+        // Phone/email/url/address groups partition into non-"old" rows first,
+        // then the "old"-labeled ones. The view collapses each group's trailing
+        // "old" rows behind a "more…" disclosure (see `infoSection`).
+        // Partitioning here guarantees the visible rows precede the hidden ones
+        // regardless of the order Contacts stored the values in.
+        // `groupOccurrence` is the row's index within its (partitioned) group so
+        // the id stays unique even when a contact has duplicate values.
+        let phones = contact.phoneNumbers.stablePartitionedByOldLabel { $0.label }
+        for (i, item) in phones.enumerated() {
+            var row = InfoRowData.phone(label: localizedLabel(item.label), number: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
-        for item in contact.emailAddresses {
-            rows.append(.email(label: localizedLabel(item.label), address: item.value))
+        let emails = contact.emailAddresses.stablePartitionedByOldLabel { $0.label }
+        for (i, item) in emails.enumerated() {
+            var row = InfoRowData.email(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
-        for item in contact.userVisibleURLAddresses {
-            rows.append(.url(label: localizedLabel(item.label), urlString: item.value))
+        let urls = contact.userVisibleURLAddresses.stablePartitionedByOldLabel { $0.label }
+        for (i, item) in urls.enumerated() {
+            var row = InfoRowData.url(label: localizedLabel(item.label), urlString: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
 
-        for item in contact.postalAddresses {
-            rows.append(.address(label: localizedLabel(item.label), address: item.value))
+        let addresses = contact.postalAddresses.stablePartitionedByOldLabel { $0.label }
+        for (i, item) in addresses.enumerated() {
+            var row = InfoRowData.address(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
 
         if let bday = contact.birthday {
@@ -1500,6 +1611,27 @@ struct ContactDetailView: View {
     }
 }
 
+private extension String {
+    /// True when this raw Contacts label is the user's custom "old" label.
+    /// Standard CN labels arrive wrapped (e.g. `_$!<Home>!$_`), so they never
+    /// collide with this plain, case-insensitive "old" match.
+    var isOldFieldLabel: Bool {
+        trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "old"
+    }
+}
+
+private extension Array {
+    /// Reorder so every non-"old"-labeled element precedes every "old"-labeled
+    /// one, preserving each subgroup's original order. `label` extracts the raw
+    /// Contacts label from an element (the various labeled-value types don't
+    /// share a protocol). Lets the detail view collapse the trailing "old" rows
+    /// behind a "more…" disclosure without depending on how Contacts happened to
+    /// order the values.
+    func stablePartitionedByOldLabel(_ label: (Element) -> String) -> [Element] {
+        filter { !label($0).isOldFieldLabel } + filter { label($0).isOldFieldLabel }
+    }
+}
+
 private struct InfoRowData: Identifiable {
     enum Kind {
         case text(value: String, monospaced: Bool, valueColor: Color?)
@@ -1512,24 +1644,66 @@ private struct InfoRowData: Identifiable {
         case backReference(displayName: String, descriptor: String, contactID: ContactID)
     }
 
-    let id = UUID()
+    /// The collapsible field group a row belongs to. Phone/email/url/address
+    /// rows that carry an "old" label are hidden behind a per-group "more…"
+    /// disclosure; every other row leaves this `nil` and is always shown.
+    enum FieldGroup: Hashable {
+        case phone
+        case email
+        case url
+        case address
+    }
+
     let label: String
     let kind: Kind
+    /// Which collapsible group this row participates in, if any.
+    var group: FieldGroup?
+    /// True when this row's raw label is the user's "old" custom label, so it
+    /// hides behind its group's "more…" disclosure.
+    var isOld: Bool = false
+    /// Position of this row within its field group, assigned in `infoRows(for:)`.
+    /// Disambiguates the id of genuinely-duplicate values (e.g. two phones both
+    /// labeled "other" with the same number — degenerate but real address-book
+    /// data) so `ForEach` never sees colliding ids.
+    var groupOccurrence: Int = 0
+
+    /// Content-derived stable identity. A per-render `UUID()` would re-mint each
+    /// time `infoRows(for:)` runs in the view body, so the "old"-row reveal
+    /// `withAnimation` would see every row as new and re-lay-out the whole info
+    /// card instead of sliding in only the revealed rows. Keying on the row's
+    /// own content (plus group/isOld and the per-group occurrence index for
+    /// duplicate values) keeps identity stable across renders AND unique, so the
+    /// animation affects only the rows that actually appear/disappear.
+    var id: String {
+        let kindKey: String
+        switch kind {
+        case .text(let value, _, _): kindKey = "text|\(value)"
+        case .phone(let number): kindKey = "phone|\(number)"
+        case .email(let address): kindKey = "email|\(address)"
+        case .url(let urlString): kindKey = "url|\(urlString)"
+        case .address(let address): kindKey = "address|\(String(describing: address))"
+        case .date(_, let formatted): kindKey = "date|\(formatted)"
+        case .contactLink(let displayName, let contactID): kindKey = "contactLink|\(displayName)|\(String(describing: contactID))"
+        case .backReference(let displayName, let descriptor, let contactID): kindKey = "backRef|\(displayName)|\(descriptor)|\(String(describing: contactID))"
+        }
+        let groupKey = group.map { String(describing: $0) } ?? "none"
+        return "\(groupKey)|\(isOld ? "old" : "cur")|\(groupOccurrence)|\(label)|\(kindKey)"
+    }
 
     static func text(label: String, value: String, monospaced: Bool = false, valueColor: Color? = nil) -> InfoRowData {
         InfoRowData(label: label, kind: .text(value: value, monospaced: monospaced, valueColor: valueColor))
     }
-    static func phone(label: String, number: String) -> InfoRowData {
-        InfoRowData(label: label, kind: .phone(number: number))
+    static func phone(label: String, number: String, isOld: Bool = false) -> InfoRowData {
+        InfoRowData(label: label, kind: .phone(number: number), group: .phone, isOld: isOld)
     }
-    static func email(label: String, address: String) -> InfoRowData {
-        InfoRowData(label: label, kind: .email(address: address))
+    static func email(label: String, address: String, isOld: Bool = false) -> InfoRowData {
+        InfoRowData(label: label, kind: .email(address: address), group: .email, isOld: isOld)
     }
-    static func url(label: String, urlString: String) -> InfoRowData {
-        InfoRowData(label: label, kind: .url(urlString: urlString))
+    static func url(label: String, urlString: String, isOld: Bool = false) -> InfoRowData {
+        InfoRowData(label: label, kind: .url(urlString: urlString), group: .url, isOld: isOld)
     }
-    static func address(label: String, address: PostalAddress) -> InfoRowData {
-        InfoRowData(label: label, kind: .address(address))
+    static func address(label: String, address: PostalAddress, isOld: Bool = false) -> InfoRowData {
+        InfoRowData(label: label, kind: .address(address), group: .address, isOld: isOld)
     }
     static func date(label: String, components: DateComponents, formatted: String) -> InfoRowData {
         InfoRowData(label: label, kind: .date(components: components, formatted: formatted))
