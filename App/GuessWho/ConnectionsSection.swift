@@ -55,7 +55,9 @@ struct LinkRow: View {
     @Environment(ContactsRepository.self) private var repository
 
     var body: some View {
-        ActivityRowLayout(systemImage: "person") {
+        ActivityRowLayout {
+            leadingAvatar
+        } content: {
             VStack(alignment: .leading, spacing: 4) {
                 otherContactView
                 if isEditing {
@@ -77,6 +79,20 @@ struct LinkRow: View {
                 Label("Edit Note", systemImage: "pencil")
             }
             Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+
+    // Leading column: the resolved contact's thumbnail avatar (initials-circle
+    // fallback). The unknown-contact case keeps the generic person glyph so the
+    // row still reads sensibly.
+    @ViewBuilder
+    private var leadingAvatar: some View {
+        if let other = otherContact {
+            ContactAvatar(contact: other, diameter: 20)
+        } else {
+            Image(systemName: "person")
+                .font(.body)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -131,30 +147,49 @@ struct LinkRow: View {
 /// Shared row layout for the merged Activity section: a leading icon column
 /// (or empty space, for note rows) and a content column. Keeps note text,
 /// connection bodies, and event titles vertically aligned across types.
-struct ActivityRowLayout<Content: View>: View {
-    let systemImage: String?
+///
+/// The leading column accepts either an SF Symbol name (the common case) or an
+/// arbitrary view (used by connection rows to show a contact avatar). Both
+/// occupy the same fixed-width column so every activity row stays aligned.
+struct ActivityRowLayout<Leading: View, Content: View>: View {
+    let leading: Leading
     let content: Content
 
-    init(systemImage: String?, @ViewBuilder content: () -> Content) {
-        self.systemImage = systemImage
+    init(@ViewBuilder leading: () -> Leading, @ViewBuilder content: () -> Content) {
+        self.leading = leading()
         self.content = content()
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Group {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(width: 20)
+            leading
+                .frame(width: 20)
 
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+extension ActivityRowLayout where Leading == _ActivityRowSymbol {
+    /// Convenience for the common case: a secondary-tinted SF Symbol (or empty
+    /// space when `systemImage` is nil) in the leading column.
+    init(systemImage: String?, @ViewBuilder content: () -> Content) {
+        self.init(leading: { _ActivityRowSymbol(systemImage: systemImage) }, content: content)
+    }
+}
+
+/// Leading-column glyph used by the `systemImage:` convenience initializer.
+struct _ActivityRowSymbol: View {
+    let systemImage: String?
+
+    var body: some View {
+        if let systemImage {
+            Image(systemName: systemImage)
+                .font(.body)
+                .foregroundStyle(.secondary)
+        } else {
+            Color.clear
         }
     }
 }

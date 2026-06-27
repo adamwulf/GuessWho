@@ -388,7 +388,8 @@ struct EventDetailView: View {
             Button {
                 pushContactReference(ContactReference(id: contact.contactID))
             } label: {
-                HStack {
+                HStack(spacing: 12) {
+                    ContactAvatar(contact: contact, diameter: 28)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(contact.displayName)
                         if !link.note.isEmpty {
@@ -403,13 +404,18 @@ struct EventDetailView: View {
             }
             .buttonStyle(.plain)
         } else {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("(Unknown contact)")
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 28))
                     .foregroundStyle(.secondary)
-                if !link.note.isEmpty {
-                    Text(link.note)
-                        .font(.caption)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("(Unknown contact)")
                         .foregroundStyle(.secondary)
+                    if !link.note.isEmpty {
+                        Text(link.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
