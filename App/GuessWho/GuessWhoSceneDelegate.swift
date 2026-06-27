@@ -679,7 +679,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        let rows = LinkedInDiff.rows(existing: contact, incoming: profile)
+        // About / Location live as named sidecar fields, not on the CNContact —
+        // read the contact's current values so the diff shows them on the
+        // existing side (and marks unchanged rows). `fields(for:)` returns [] for
+        // an unreconciled contact, so this is simply empty in that case.
+        let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
+        let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
         let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
 
         let confirm = LinkedInConfirmView(
@@ -714,6 +719,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Wider sheet so the two columns (esp. About / multi-line values) have room.
         hosting.preferredContentSize = CGSize(width: 840, height: 660)
         topmostPresenter()?.present(hosting, animated: true)
+    }
+
+    /// The LinkedIn-sourced sidecar fields (About / Location) as a
+    /// `[name: value]` map for the diff's existing side. Only string-valued
+    /// fields whose name matches one the import writes are included; everything
+    /// else (other sidecar fields, non-string values) is ignored.
+    private static func existingSidecarFields(_ fields: [SidecarField]) -> [String: String] {
+        let names: Set<String> = [LinkedInDiff.aboutFieldName, LinkedInDiff.locationFieldName]
+        var out: [String: String] = [:]
+        for field in fields where names.contains(field.field) {
+            if case .string(let value) = field.value { out[field.field] = value }
+        }
+        return out
     }
 
     /// Map the dialog's chosen diff-row fields to the package's `LinkedInField`

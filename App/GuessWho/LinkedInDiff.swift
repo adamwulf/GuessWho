@@ -26,7 +26,22 @@ struct LinkedInDiffRow: Identifiable {
 /// Only includes a row when the profile actually carries that field (we never
 /// show an incoming-empty row). Photo is always first when present.
 enum LinkedInDiff {
-    static func rows(existing contact: Contact, incoming profile: LinkedInProfile) -> [LinkedInDiffRow] {
+    /// The sidecar field names `ContactsRepository.applyLinkedIn` writes the
+    /// LinkedIn About / Location values to. The diff reads the SAME names so a
+    /// re-import shows the contact's current value on the existing side.
+    static let aboutFieldName = "LinkedIn About"
+    static let locationFieldName = "LinkedIn Location"
+
+    /// - Parameter existingSidecar: the contact's current sidecar field values
+    ///   keyed by field name (e.g. `["LinkedIn About": "…", "LinkedIn Location":
+    ///   "…"]`). About/Location aren't `CNContact` fields, so their existing
+    ///   value lives here, not on `contact`. Pass `[:]` when the contact is
+    ///   unreconciled (no sidecar fields yet) — every row then reads as new.
+    static func rows(
+        existing contact: Contact,
+        incoming profile: LinkedInProfile,
+        existingSidecar: [String: String] = [:]
+    ) -> [LinkedInDiffRow] {
         var rows: [LinkedInDiffRow] = []
 
         func add(_ id: LinkedInDiffRow.Field, _ label: String, _ existing: String?, _ incoming: String?, isPhoto: Bool = false) {
@@ -58,8 +73,11 @@ enum LinkedInDiff {
         add(.name, "Name", existingName, profile.fullName)
         add(.jobTitle, "Job title", contact.jobTitle, profile.title)
         add(.organization, "Organization", contact.organizationName, profile.org)
-        add(.location, "Location", nil, profile.location) // existing location is sidecar-only
-        add(.about, "About", nil, profile.about)          // existing about is a sidecar note
+        // Location / About are sidecar-only (not CNContact fields). Read the
+        // contact's current value from the named sidecar fields so a re-import
+        // shows the existing value and marks the row unchanged when it matches.
+        add(.location, "Location", existingSidecar[locationFieldName], profile.location)
+        add(.about, "About", existingSidecar[aboutFieldName], profile.about)
 
         // Emails / websites are MERGED, never replaced: we only ever ADD values
         // the contact is missing, and never delete existing ones. The LEFT shows
