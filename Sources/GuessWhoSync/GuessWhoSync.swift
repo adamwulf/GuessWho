@@ -70,7 +70,6 @@ public final class GuessWhoSync: @unchecked Sendable {
 
         func read() throws -> SidecarEnvelope? { try sidecars.read(key) }
         func write(_ envelope: SidecarEnvelope) throws { try sidecars.write(envelope, at: key) }
-        func delete() throws { try sidecars.delete(key) }
         func writeBlob(_ data: Data, blobId: String) throws { try sidecars.writeBlob(data, blobId: blobId, for: key) }
         func readBlob(blobId: String) throws -> Data? { try sidecars.readBlob(blobId: blobId, for: key) }
         func deleteBlob(blobId: String) throws { try sidecars.deleteBlob(blobId: blobId, for: key) }
