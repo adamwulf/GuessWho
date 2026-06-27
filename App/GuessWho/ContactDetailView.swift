@@ -104,45 +104,40 @@ struct ContactDetailView: View {
         editModel != nil
     }
 
-    private enum ActivityItem: Identifiable {
-        case note(ContactNote)
-        case connection(ContactLink)
-        case event(ContactLink)
+    // The unified-timeline `activityItems` was split into per-kind sections
+    // (Notes / Linked Contacts / Linked Organizations / Linked Events), each
+    // sorted createdAt ASC, instead of intertwining them.
 
-        var id: AnyHashable {
-            switch self {
-            case .note(let n): return AnyHashable("note-\(n.id)")
-            case .connection(let l): return AnyHashable("conn-\(l.id)")
-            case .event(let l): return AnyHashable("event-\(l.id)")
-            }
-        }
-
-        var createdAt: Date {
-            switch self {
-            case .note(let n): return n.createdAt
-            case .connection(let l), .event(let l): return l.createdAt
-            }
-        }
-
-        var sortKey: (Date, String) {
-            switch self {
-            case .note(let n): return (n.createdAt, "n-\(n.id.uuidString)")
-            case .connection(let l): return (l.createdAt, "c-\(l.id.uuidString)")
-            case .event(let l): return (l.createdAt, "e-\(l.id.uuidString)")
-            }
-        }
+    private var noteItems: [ContactNote] {
+        (notesStore?.notes ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
-    private var activityItems: [ActivityItem] {
-        var items: [ActivityItem] = []
-        if let notesStore {
-            items.append(contentsOf: notesStore.notes.map(ActivityItem.note))
-        }
-        if let linksStore {
-            items.append(contentsOf: linksStore.links.map(ActivityItem.connection))
-        }
-        items.append(contentsOf: eventLinks.map(ActivityItem.event))
-        return items.sorted { $0.sortKey < $1.sortKey }
+    /// Contact↔contact links whose OTHER endpoint is a person, sorted ASC.
+    private var linkedPeople: [ContactLink] {
+        connectionLinks(where: .person)
+    }
+
+    /// Contact↔contact links whose OTHER endpoint is an organization, ASC.
+    private var linkedOrganizations: [ContactLink] {
+        connectionLinks(where: .organization)
+    }
+
+    private var linkedEventItems: [ContactLink] {
+        eventLinks.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Split the connection links by the linked contact's type. Links whose
+    /// other endpoint can't be resolved (rare: unreconciled/malformed) fall into
+    /// the People bucket so they're not silently dropped.
+    private func connectionLinks(where type: ContactType) -> [ContactLink] {
+        let links = linksStore?.links ?? []
+        return links
+            .filter { link in
+                let other = repository.linkedContact(of: link, for: loadedContactID ?? id)
+                let resolved = other?.contactType ?? .person
+                return resolved == type
+            }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     var body: some View {
@@ -282,9 +277,13 @@ struct ContactDetailView: View {
 
                 referencedBySection(contact)
 
+                notesSection
+
                 recentEventsSection
 
-                activitySection
+                linkedContactsSection
+                linkedOrganizationsSection
+                linkedEventsSection
 
                 if debugModeEnabled {
                     debugSection(contact)
@@ -631,7 +630,8 @@ struct ContactDetailView: View {
 
     /// "Recent Events": up to 10 EventKit events where this contact appears
     /// as an attendee, matched by any email on the card. Distinct from the
-    /// user-curated linked events that surface in `activitySection`. Tapping
+    /// user-curated linked events that surface in the "Linked Events" section.
+    /// Tapping
     /// a row pushes the event detail; the `eventKitID` hint lets the detail
     /// view's adopt-on-load path mint a sidecar on first open.
     @ViewBuilder
@@ -810,20 +810,22 @@ struct ContactDetailView: View {
         return rows
     }
 
-    // MARK: - Activity (merged notes + connections + linked events)
+    // MARK: - Notes / Linked Contacts / Organizations / Events
+    //
+    // Formerly one intertwined "Activity" timeline; split into per-kind sections,
+    // each sorted createdAt ASC.
 
     @ViewBuilder
-    private var activitySection: some View {
-        let items = activityItems
-        if !items.isEmpty || showingNewNoteEditor {
+    private var notesSection: some View {
+        let notes = noteItems
+        if !notes.isEmpty || showingNewNoteEditor {
             Section {
-                ForEach(items) { item in
-                    activityRow(item)
+                ForEach(notes, id: \.id) { note in
+                    noteRow(note)
                         .centeredRowContent()
                 }
                 .onDelete { offsets in
-                    let targets = offsets.map { items[$0] }
-                    for target in targets { deleteActivityItem(target) }
+                    for i in offsets { deleteNote(notes[i].id) }
                 }
 
                 if showingNewNoteEditor {
@@ -832,7 +834,50 @@ struct ContactDetailView: View {
                         .centeredRowContent()
                 }
             } header: {
-                Text("Activity").centeredSectionHeader()
+                Text("Notes").centeredSectionHeader()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var linkedContactsSection: some View {
+        linkSection(title: "Linked Contacts", links: linkedPeople,
+                    delete: { deleteLink($0) }) { connectionRow($0) }
+    }
+
+    @ViewBuilder
+    private var linkedOrganizationsSection: some View {
+        linkSection(title: "Linked Organizations", links: linkedOrganizations,
+                    delete: { deleteLink($0) }) { connectionRow($0) }
+    }
+
+    @ViewBuilder
+    private var linkedEventsSection: some View {
+        // Event links delete via removeEventLink (NOT deleteLink).
+        linkSection(title: "Linked Events", links: linkedEventItems,
+                    delete: { removeEventLink($0) }) { linkedEventRow($0) }
+    }
+
+    /// Shared section shell for a list of `ContactLink`s with a row builder and
+    /// swipe-to-delete. The delete action differs by kind (contact/org links use
+    /// `deleteLink`, event links use `removeEventLink`). Hidden when empty.
+    @ViewBuilder
+    private func linkSection(
+        title: String,
+        links: [ContactLink],
+        delete: @escaping (UUID) -> Void,
+        @ViewBuilder row: @escaping (ContactLink) -> some View
+    ) -> some View {
+        if !links.isEmpty {
+            Section {
+                ForEach(links, id: \.id) { link in
+                    row(link).centeredRowContent()
+                }
+                .onDelete { offsets in
+                    for i in offsets { delete(links[i].id) }
+                }
+            } header: {
+                Text(title).centeredSectionHeader()
             }
         }
     }
@@ -906,18 +951,6 @@ struct ContactDetailView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func activityRow(_ item: ActivityItem) -> some View {
-        switch item {
-        case .note(let note):
-            noteRow(note)
-        case .connection(let link):
-            connectionRow(link)
-        case .event(let link):
-            linkedEventRow(link)
-        }
     }
 
     @ViewBuilder
@@ -1042,14 +1075,6 @@ struct ContactDetailView: View {
             Button("Delete", role: .destructive) {
                 removeEventLink(link.id)
             }
-        }
-    }
-
-    private func deleteActivityItem(_ item: ActivityItem) {
-        switch item {
-        case .note(let n): deleteNote(n.id)
-        case .connection(let l): deleteLink(l.id)
-        case .event(let l): removeEventLink(l.id)
         }
     }
 
