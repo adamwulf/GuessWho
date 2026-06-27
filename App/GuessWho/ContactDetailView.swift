@@ -953,10 +953,11 @@ struct ContactDetailView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // centeredSectionHeader() is named for headers but is exactly what a
-        // footer wants here too: top padding + the Catalyst 560-column clamp so
-        // the link lines up with the section's rows. Not a copy-paste slip.
-        .centeredSectionHeader()
+        // Footer styling: the Catalyst 560-column clamp so the link lines up
+        // with the section's rows, plus breathing room *below* (not above) so
+        // the link tucks up under the section it discloses instead of floating
+        // in the gap toward the next section.
+        .centeredSectionFooter()
     }
 
     /// "Recent Events": up to 10 EventKit events where this contact appears

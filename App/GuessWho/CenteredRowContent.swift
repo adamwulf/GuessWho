@@ -19,6 +19,12 @@ enum ContactDetailLayout {
     /// Extra space above a styled section header, on top of the list style's
     /// default — gives "Recent Events", "Debug", etc. room to breathe.
     static let sectionHeaderTopPadding: CGFloat = 12
+
+    /// Space below a "more…" disclosure footer, separating it from the next
+    /// section. A footer's breathing room belongs *below* it, not above —
+    /// keeping the link tucked up against the section it discloses rather than
+    /// floating in the gap toward the section below.
+    static let sectionFooterBottomPadding: CGFloat = 12
 }
 
 extension View {
@@ -75,6 +81,26 @@ extension View {
             .frame(maxWidth: .infinity)
         #else
         withTopMargin
+        #endif
+    }
+
+    /// Style a section *footer* — specifically the "more…" disclosure link — to
+    /// the same centered column the rows use on Catalyst, but put its breathing
+    /// room *below* (separating it from the next section) instead of above. A
+    /// header wants the gap above it; a footer belongs to the section it follows,
+    /// so the gap above is what makes the link read as floating between sections.
+    /// Pulling the margin to the bottom tucks the link up under its own section.
+    @ViewBuilder
+    func centeredSectionFooter() -> some View {
+        let withBottomMargin = self.padding(.bottom, ContactDetailLayout.sectionFooterBottomPadding)
+        #if targetEnvironment(macCatalyst)
+        let maxWidth = ContactDetailLayout.maxContentWidth
+        withBottomMargin
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: maxWidth)
+            .frame(maxWidth: .infinity)
+        #else
+        withBottomMargin
         #endif
     }
 }
