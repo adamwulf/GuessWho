@@ -692,10 +692,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 let photo = try? await repo.contactPhotoData(for: matchID, kind: .thumbnail)
                 return photo.flatMap { UIImage(data: $0.data) }
             },
-            onConfirm: { [weak self] selected in
+            onConfirm: { [weak self, weak repo] selected in
                 self?.dismissPresented()
-                // Saving lands in the next step; log the chosen fields for now.
-                Self.handoffLog.log("confirm: save fields \(selected.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)")
+                guard let repo else { return }
+                let fields = Self.packageFields(from: selected)
+                Self.handoffLog.log("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)")
+                Task {
+                    do {
+                        let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
+                        Self.handoffLog.log("confirm: saved \(updated.givenName, privacy: .public) \(updated.familyName, privacy: .public)")
+                    } catch {
+                        Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
             },
             onCancel: { [weak self] in self?.dismissPresented() }
         )
@@ -705,6 +714,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Wider sheet so the two columns (esp. About / multi-line values) have room.
         hosting.preferredContentSize = CGSize(width: 840, height: 660)
         topmostPresenter()?.present(hosting, animated: true)
+    }
+
+    /// Map the dialog's chosen diff-row fields to the package's `LinkedInField`
+    /// set that `applyLinkedIn` understands.
+    private static func packageFields(from rows: Set<LinkedInDiffRow.Field>) -> Set<LinkedInField> {
+        var out: Set<LinkedInField> = []
+        for row in rows {
+            switch row {
+            case .name: out.insert(.name)
+            case .jobTitle: out.insert(.jobTitle)
+            case .organization: out.insert(.organization)
+            case .location: out.insert(.location)
+            case .about: out.insert(.about)
+            case .emails: out.insert(.emails)
+            case .websites: out.insert(.websites)
+            case .linkedInURL: out.insert(.linkedInURL)
+            case .photo: out.insert(.photo)
+            }
+        }
+        return out
     }
 
     /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a

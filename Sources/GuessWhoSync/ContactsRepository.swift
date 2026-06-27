@@ -285,6 +285,123 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: edited.localID)
     }
 
+    /// Apply selected fields from a parsed LinkedIn profile to an existing
+    /// contact and return the refreshed contact. The single package-side entry
+    /// point that owns the merge + save rules (the app only chooses which
+    /// `fields` to apply and presents the result).
+    ///
+    /// Rules:
+    /// - CNContact fields (name/jobTitle/organization/emails/websites/LinkedIn
+    ///   URL) are MERGED, never replaced. New emails/websites are appended to the
+    ///   existing set (case-insensitive for emails; scheme-insensitive for URLs);
+    ///   existing values — including the internal `guesswho://` identity URL —
+    ///   are preserved. Name/title/org overwrite only when that field is chosen.
+    /// - Sidecar fields (about/location) are stored as notes prefixed with
+    ///   "LinkedIn …: " so the source is obvious to the user.
+    /// - `photo` is accepted in `fields` but not yet applied (the contact-image
+    ///   write path is a separate step); it's a no-op here for now.
+    ///
+    /// Throws if the contact can't be fetched/saved. Returns the refreshed
+    /// `Contact` (CNContact fields; sidecar notes are read separately).
+    ///
+    /// NOTE: adding the about/location notes can MINT a GuessWho ID for a
+    /// previously-unreconciled contact. After this call, use the RETURNED
+    /// contact's `contactID` for any follow-up sidecar reads — an older
+    /// `ContactID` held by the caller may be pre-mint (stale) for note reads.
+    @discardableResult
+    public func applyLinkedIn(
+        profile: LinkedInProfile,
+        to id: ContactID,
+        fields: Set<LinkedInField>
+    ) async throws -> Contact {
+        guard var edited = try await editableContact(id: id) else {
+            throw ContactStoreError.contactNotFound(localID: id.localID)
+        }
+
+        if fields.contains(.name), let full = profile.fullName?.trimmed, !full.isEmpty {
+            let parts = full.split(separator: " ", maxSplits: 1).map(String.init)
+            edited.givenName = parts.first ?? full
+            edited.familyName = parts.count > 1 ? parts[1] : ""
+        }
+        if fields.contains(.jobTitle), let v = profile.title?.trimmed, !v.isEmpty {
+            edited.jobTitle = v
+        }
+        if fields.contains(.organization), let v = profile.org?.trimmed, !v.isEmpty {
+            edited.organizationName = v
+        }
+        if fields.contains(.emails) {
+            let additions = Self.newValues(
+                profile.contactInfo?.emails ?? [],
+                notIn: edited.emailAddresses.map(\.value),
+                key: { $0.trimmed.lowercased() }
+            )
+            edited.emailAddresses += additions.map { LabeledValue(label: "LinkedIn", value: $0) }
+        }
+        if fields.contains(.websites) {
+            let additions = Self.newValues(
+                profile.contactInfo?.websites ?? [],
+                notIn: edited.urlAddresses.map(\.value),
+                key: Self.urlDedupKey
+            )
+            edited.urlAddresses += additions.map { LabeledValue(label: "LinkedIn", value: $0) }
+        }
+        if fields.contains(.linkedInURL),
+           let url = (profile.contactInfo?.profileUrl ?? profile.sourceUrl)?.trimmed, !url.isEmpty {
+            let alreadyHas = edited.socialProfiles.contains {
+                LinkedInURL.isLinkedIn($0.value.urlString) && LinkedInURL.sameProfile($0.value.urlString, url)
+            }
+            if !alreadyHas {
+                edited.socialProfiles.append(LabeledSocialProfile(
+                    label: "LinkedIn",
+                    value: SocialProfile(urlString: url, username: LinkedInURL.slug(from: url) ?? "", service: "LinkedIn")
+                ))
+            }
+        }
+
+        try await saveContact(edited, for: id)
+
+        // Sidecar notes (prefixed so the user sees the source). About/location
+        // aren't CNContact fields, so they live in the sidecar.
+        if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
+            _ = try await addNote(for: id, body: "LinkedIn About: \(about)")
+        }
+        if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
+            _ = try await addNote(for: id, body: "LinkedIn Location: \(loc)")
+        }
+
+        return contact(id: id) ?? edited
+    }
+
+    /// New members of `incoming` not already present in `existing`, compared by
+    /// `key`, preserving incoming order, de-duped, trimmed, and dropping empties.
+    private static func newValues(
+        _ incoming: [String],
+        notIn existing: [String],
+        key: (String) -> String
+    ) -> [String] {
+        let have = Set(existing.map(key))
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in incoming {
+            let value = raw.trimmed
+            let k = key(value)
+            guard !k.isEmpty, !have.contains(k), !seen.contains(k) else { continue }
+            seen.insert(k)
+            out.append(value)
+        }
+        return out
+    }
+
+    /// Scheme-insensitive URL dedup key: strips scheme, a leading `www.`, and a
+    /// trailing slash; lowercased. So "adamwulf.me" == "https://www.adamwulf.me/".
+    private static func urlDedupKey(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let r = t.range(of: "://") { t = String(t[r.upperBound...]) }
+        if t.hasPrefix("www.") { t = String(t.dropFirst(4)) }
+        while t.hasSuffix("/") { t = String(t.dropLast()) }
+        return t
+    }
+
     /// Deletes the cached contact addressed by `ContactID`. Returns `false`
     /// when the id no longer resolves, matching the former app-side guard.
     @discardableResult
@@ -1074,4 +1191,10 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+}
+
+private extension String {
+    /// Whitespace/newline-trimmed copy. File-private convenience for the
+    /// LinkedIn-apply merge logic above.
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

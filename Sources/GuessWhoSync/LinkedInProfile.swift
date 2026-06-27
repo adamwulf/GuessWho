@@ -76,3 +76,17 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         case contactInfo, photo
     }
 }
+
+/// The fields a LinkedIn import can apply to a contact. The app maps the user's
+/// per-row checkbox selections to this set and passes it to
+/// `ContactsRepository.applyLinkedIn(profile:to:fields:)`, which is the single
+/// package-side entry point that owns the merge + save rules.
+///
+/// `photo` is included for completeness but the contact-image write path is a
+/// separate (net-new) step; applying it is wired in later.
+public enum LinkedInField: String, Sendable, CaseIterable {
+    case name, jobTitle, organization
+    case emails, websites, linkedInURL
+    case location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
+    case photo
+}
