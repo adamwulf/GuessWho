@@ -313,13 +313,17 @@ public final class GuessWhoSync: @unchecked Sendable {
                 fields: fields
             )
             try sidecars.write(envelope, at: key)
-        }
 
-        // Delete-on-overwrite fast path: drop the superseded `.dat` now that
-        // the repoint committed. A failure here is non-fatal — the orphan
-        // sweep reclaims it later — so it does not propagate.
-        if let supersededBlobId {
-            try? sidecars.deleteBlob(blobId: supersededBlobId, for: key)
+            // Delete-on-overwrite fast path, INSIDE the lock: drop the superseded
+            // `.dat` atomically with the repoint so a concurrent reader holding
+            // this same per-key lock never captures a pointer to a blobId that's
+            // about to be deleted out from under its `readBlob` (the read↔
+            // overwrite race). A failure is non-fatal — the orphan sweep reclaims
+            // it later — so it does not propagate. (`deleteBlob` takes the store's
+            // own `fileLocks`, a different table, so no reentrancy here.)
+            if let supersededBlobId {
+                try? sidecars.deleteBlob(blobId: supersededBlobId, for: key)
+            }
         }
 
         return newBlobId
@@ -328,19 +332,28 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// Read the bytes a single-slot `.blob` field named `field` on `key`
     /// points at, or nil when there is no such live field OR its `.dat` is not
     /// materialized on this device yet (a missing/pending payload is benign).
+    ///
+    /// The envelope-pointer read and the blob-bytes read run under the per-key
+    /// lock TOGETHER: a concurrent `setBlobField` overwrite deletes the
+    /// superseded `.dat` under that same lock, so without holding it here a
+    /// reader could capture the old pointer and then have its `readBlob` miss
+    /// because the overwrite deleted that `.dat` in between (the read↔overwrite
+    /// race). Holding the lock makes capture+read atomic against the overwrite.
     public func blobFieldData(at key: SidecarKey, field: String) throws -> Data? {
-        guard let envelope = try sidecars.read(key) else { return nil }
-        for (rawID, cell) in envelope.fields {
-            guard cell.deletedAt == nil,
-                  let id = UUID(uuidString: rawID),
-                  let decoded = SidecarField.decode(id: id, from: cell),
-                  decoded.type == .blob,
-                  decoded.field == field,
-                  let pointer = BlobPointer(from: decoded.value)
-            else { continue }
-            return try sidecars.readBlob(blobId: pointer.blobId, for: key)
+        try sidecarLocks.withLock(forKey: key) {
+            guard let envelope = try sidecars.read(key) else { return nil }
+            for (rawID, cell) in envelope.fields {
+                guard cell.deletedAt == nil,
+                      let id = UUID(uuidString: rawID),
+                      let decoded = SidecarField.decode(id: id, from: cell),
+                      decoded.type == .blob,
+                      decoded.field == field,
+                      let pointer = BlobPointer(from: decoded.value)
+                else { continue }
+                return try sidecars.readBlob(blobId: pointer.blobId, for: key)
+            }
+            return nil
         }
-        return nil
     }
 
     // MARK: - Orphan blob sweep

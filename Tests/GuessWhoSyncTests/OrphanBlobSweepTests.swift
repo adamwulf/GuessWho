@@ -125,6 +125,50 @@ struct OrphanBlobSweepTests {
     }
 
     @Test
+    func concurrentSetBlobFieldAndSweepNeverLosesTheLivePhoto() async throws {
+        // REGRESSION (write→sweep race), the CONCURRENCY version: the sequential
+        // test documents the invariant but would pass even pre-fix. This runs a
+        // writer (repeated setBlobField on one key) and a sweeper (repeated
+        // sweepOrphanBlobs) truly concurrently. With the `.dat` write moved
+        // inside the per-key lock the sweep shares, the live previousPhoto must
+        // ALWAYS be readable — never a pointer to a swept `.dat`. Pre-fix, the
+        // sweeper could delete a just-written `.dat` in the write→repoint window.
+        let (sync, _) = makeOrchestrator()
+        let iterations = 200
+        // Seed one so the first sweeps have a real reference to protect.
+        _ = try sync.setBlobField(at: contactKey, field: "previousPhoto", data: Data([0x00]), contentType: "image/jpeg")
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            // Writer: overwrite the single slot repeatedly with distinct bytes.
+            group.addTask {
+                for i in 0..<iterations {
+                    _ = try sync.setBlobField(
+                        at: self.contactKey,
+                        field: "previousPhoto",
+                        data: Data([UInt8(i % 251), 0xAB]),
+                        contentType: "image/jpeg"
+                    )
+                }
+            }
+            // Sweeper: hammer the orphan sweep in parallel.
+            group.addTask {
+                for _ in 0..<iterations {
+                    _ = try sync.sweepOrphanBlobs()
+                    // The live previousPhoto pointer must ALWAYS resolve to bytes
+                    // — a nil here means the sweep deleted a referenced `.dat`.
+                    let live = try sync.blobFieldData(at: self.contactKey, field: "previousPhoto")
+                    #expect(live != nil)
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        // Final state is consistent: exactly one live slot, its `.dat` present.
+        let final = try sync.blobFieldData(at: contactKey, field: "previousPhoto")
+        #expect(final != nil)
+    }
+
+    @Test
     func sweepKeepsBlobWhosePointerHasMalformedMetadata() throws {
         // REGRESSION (over-strict harvest): a live `.blob` cell whose pointer has
         // a valid blobId but malformed contentType/byteCount must STILL protect
