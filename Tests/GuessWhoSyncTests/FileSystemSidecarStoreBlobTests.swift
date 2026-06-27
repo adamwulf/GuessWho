@@ -168,6 +168,24 @@ struct FileSystemSidecarStoreBlobTests {
         #expect(try store.blobIds(for: contactKey).isEmpty)
     }
 
+    @Test
+    func deletingEnvelopeCascadesBlobCleanup() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = makeStore(root: root)
+        // An envelope + two `.dat`s under the same key.
+        try store.write(SidecarEnvelope(entityID: contactKey.id, fields: [:]), at: contactKey)
+        try store.writeBlob(Data([0x01]), blobId: "b1", for: contactKey)
+        try store.writeBlob(Data([0x02]), blobId: "b2", for: contactKey)
+        #expect(Set(try store.blobIds(for: contactKey)) == Set(["b1", "b2"]))
+
+        // Deleting the record self-cleans its `.dat`s (envelope-delete orphan
+        // prevention — the global sweep is only the cross-device backstop).
+        try store.delete(contactKey)
+        #expect(try store.read(contactKey) == nil)
+        #expect(try store.blobIds(for: contactKey).isEmpty)
+    }
+
     // MARK: - iCloud placeholder handling for a `.dat`
 
     private func plantBlobPlaceholder(in root: URL, kindDir: String, basename: String) throws {

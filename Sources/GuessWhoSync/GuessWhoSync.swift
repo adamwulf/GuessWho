@@ -201,6 +201,245 @@ public final class GuessWhoSync: @unchecked Sendable {
         return result
     }
 
+    // MARK: - Blob field API (`.blob`)
+    //
+    // A `.blob` field is a SINGLE-SLOT pointer (by field name) to a binary
+    // `.dat` payload living beside the envelope. `setBlobField` writes the
+    // bytes, upserts the pointer cell, and deletes any superseded `.dat`
+    // (the orphan sweep is the cross-device backstop; delete-on-overwrite is
+    // the same-device fast path). A FRESH blobId is minted per write so a new
+    // snapshot never collides with an in-flight older `.dat` mid-sync.
+
+    /// Upsert a single-slot `.blob` field named `field` on `key`, storing
+    /// `data` as a fresh `.dat` and pointing the field at it. If a live `.blob`
+    /// field with the same name already exists, its pointer is repointed to the
+    /// new blobId and the OLD `.dat` is deleted (fast-path reclaim). Returns the
+    /// new blobId. Throws `typeValueMismatch` if a same-named field of a
+    /// different type already exists (a `.blob` slot can't overwrite a `.note`).
+    @discardableResult
+    public func setBlobField(
+        at key: SidecarKey,
+        field: String,
+        data: Data,
+        contentType: String
+    ) throws -> String {
+        let newBlobId = UUID().uuidString.lowercased()
+        // Write the bytes FIRST so the pointer never dangles: if the envelope
+        // write below fails, an orphaned `.dat` is swept later; but a pointer
+        // with no `.dat` would read as a permanent "pending" miss.
+        try sidecars.writeBlob(data, blobId: newBlobId, for: key)
+
+        let pointer = BlobPointer(
+            blobId: newBlobId,
+            contentType: contentType,
+            byteCount: data.count
+        ).jsonValue
+
+        // Capture the superseded blobId (if any) to delete after the envelope
+        // write commits the repoint.
+        var supersededBlobId: String?
+        try sidecarLocks.withLock(forKey: key) {
+            let existing = try sidecars.read(key)
+            var fields = existing?.fields ?? [:]
+            let now = Date()
+
+            // Find a live same-named `.blob` cell to repoint (single slot).
+            let slot = fields.first { (_, cell) in
+                cell.deletedAt == nil
+                    && SidecarField.type(of: cell) == .blob
+                    && {
+                        if case .object(let inner) = cell.value,
+                           case .string(let name) = inner[SidecarField.innerFieldKey] ?? .null {
+                            return name == field
+                        }
+                        return false
+                    }()
+            }
+
+            if let (slotID, slotCell) = slot {
+                // Repoint the existing slot, preserving its type/createdAt.
+                if case .object(let inner) = slotCell.value,
+                   case .object(let oldPointer) = inner[SidecarField.innerValueKey] ?? .null,
+                   case .string(let oldBlobId) = oldPointer[BlobPointer.blobIdKey] ?? .null,
+                   oldBlobId != newBlobId {
+                    supersededBlobId = oldBlobId
+                }
+                guard let newInner = SidecarField.makeInnerValueForEdit(
+                    existingCell: slotCell,
+                    newField: field,
+                    newValue: pointer
+                ) else { return }
+                fields[slotID] = SidecarCell(
+                    value: newInner,
+                    modifiedAt: now,
+                    modifiedBy: deviceID,
+                    deletedAt: nil
+                )
+            } else {
+                // No existing slot — but a same-named field of ANOTHER type is
+                // a caller error (a `.blob` slot can't silently replace it).
+                let conflicting = fields.contains { (_, cell) in
+                    cell.deletedAt == nil
+                        && SidecarField.type(of: cell) != .blob
+                        && {
+                            if case .object(let inner) = cell.value,
+                               case .string(let name) = inner[SidecarField.innerFieldKey] ?? .null {
+                                return name == field
+                            }
+                            return false
+                        }()
+                }
+                if conflicting {
+                    throw SidecarStoreError.typeValueMismatch(expected: .blob, got: pointer)
+                }
+                let id = UUID()
+                let inner = SidecarField.makeInnerValue(
+                    field: field,
+                    type: .blob,
+                    value: pointer,
+                    createdAt: now
+                )
+                fields[id.uuidString] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+            }
+
+            let envelope = SidecarEnvelope(
+                schemaVersion: 1,
+                entityID: existing?.entityID ?? key.id,
+                fields: fields
+            )
+            try sidecars.write(envelope, at: key)
+        }
+
+        // Delete-on-overwrite fast path: drop the superseded `.dat` now that
+        // the repoint committed. A failure here is non-fatal — the orphan
+        // sweep reclaims it later — so it does not propagate.
+        if let supersededBlobId {
+            try? sidecars.deleteBlob(blobId: supersededBlobId, for: key)
+        }
+
+        return newBlobId
+    }
+
+    /// Read the bytes a single-slot `.blob` field named `field` on `key`
+    /// points at, or nil when there is no such live field OR its `.dat` is not
+    /// materialized on this device yet (a missing/pending payload is benign).
+    public func blobFieldData(at key: SidecarKey, field: String) throws -> Data? {
+        guard let envelope = try sidecars.read(key) else { return nil }
+        for (rawID, cell) in envelope.fields {
+            guard cell.deletedAt == nil,
+                  let id = UUID(uuidString: rawID),
+                  let decoded = SidecarField.decode(id: id, from: cell),
+                  decoded.type == .blob,
+                  decoded.field == field,
+                  let pointer = BlobPointer(from: decoded.value)
+            else { continue }
+            return try sidecars.readBlob(blobId: pointer.blobId, for: key)
+        }
+        return nil
+    }
+
+    // MARK: - Orphan blob sweep
+    //
+    // The envelope merge is whole-cell LWW, so a routine cross-device race —
+    // two devices each snapshot a DIFFERENT previous photo into the same
+    // single-slot `.blob` field — keeps one cell and silently drops the
+    // loser's pointer, leaving the loser's `.dat` on disk unreferenced.
+    // Delete-on-overwrite (in setBlobField) is the same-device fast path but
+    // is NOT sufficient for that race; this reference-counting sweep is the
+    // backstop.
+
+    /// Delete every `.dat` whose blobId is referenced by NO live (non-soft-
+    /// deleted) `.blob` field across ALL keys.
+    ///
+    /// Conservative by construction: the referenced-blob set is built from
+    /// every readable envelope. If ANY envelope read fails this pass (e.g. a
+    /// not-yet-downloaded `.json`), a referenced blob might be hiding in that
+    /// unreadable envelope, so NO deletions are performed — the report's
+    /// `deletionSkipped` is true and the next pass retries once envelopes are
+    /// readable. A blob whose envelope IS readable but whose `.dat` simply
+    /// hasn't downloaded is "pending," not orphan, and is never deleted
+    /// (it isn't on disk to list, and its pointer keeps it referenced).
+    @discardableResult
+    public func sweepOrphanBlobs() throws -> BlobSweepReport {
+        let keys = try sidecars.allKeys()
+
+        // 1. Build the GLOBAL set of referenced blobIds from every readable
+        //    envelope. Track read failures — any failure makes the set
+        //    potentially incomplete.
+        var referenced = Set<String>()
+        var skippedReasons: [String] = []
+        var anyEnvelopeUnreadable = false
+        for key in keys {
+            do {
+                guard let envelope = try sidecars.read(key) else { continue }
+                for (_, cell) in envelope.fields {
+                    guard cell.deletedAt == nil,
+                          SidecarField.type(of: cell) == .blob,
+                          case .object(let inner) = cell.value,
+                          let pointer = BlobPointer(from: inner[SidecarField.innerValueKey] ?? .null)
+                    else { continue }
+                    referenced.insert(pointer.blobId)
+                }
+            } catch {
+                anyEnvelopeUnreadable = true
+                skippedReasons.append("envelope read failed for \(key.kind)/\(key.id): \(error)")
+            }
+        }
+
+        // 2. If the reference set is incomplete, do NOT delete anything — a
+        //    live pointer could be in an envelope we couldn't read.
+        guard !anyEnvelopeUnreadable else {
+            return BlobSweepReport(deleted: [], deletionSkipped: true, skippedReasons: skippedReasons)
+        }
+
+        // 3. Reference set is authoritative. For each key, list its `.dat`s and
+        //    delete any whose blobId is unreferenced. A blob-listing failure
+        //    for one key skips that key only (the others still sweep).
+        //
+        //    The list + per-blob decision + delete run under the key's sidecar
+        //    lock, and the key's envelope is RE-READ inside the lock, so a
+        //    concurrent setBlobField that landed since the snapshot (its fresh
+        //    `.dat`'s blobId wasn't in the snapshot `referenced` set) does not
+        //    get clobbered as a false orphan. A blob is deleted only when it is
+        //    unreferenced by BOTH the global snapshot set AND the key's fresh
+        //    envelope. (A `.dat` is only ever written under the key whose
+        //    envelope references it — blobIds are minted fresh per write — so
+        //    the fresh same-key envelope is the authority for newly-arrived
+        //    pointers.)
+        var deleted: [BlobSweepReport.Deleted] = []
+        for key in keys {
+            do {
+                let perKeyDeleted = try sidecarLocks.withLock(forKey: key) { () throws -> [BlobSweepReport.Deleted] in
+                    let onDisk = try sidecars.blobIds(for: key)
+                    // Fresh live blobIds referenced by THIS key's current envelope.
+                    var liveHere = Set<String>()
+                    if let envelope = try sidecars.read(key) {
+                        for (_, cell) in envelope.fields {
+                            guard cell.deletedAt == nil,
+                                  SidecarField.type(of: cell) == .blob,
+                                  case .object(let inner) = cell.value,
+                                  let pointer = BlobPointer(from: inner[SidecarField.innerValueKey] ?? .null)
+                            else { continue }
+                            liveHere.insert(pointer.blobId)
+                        }
+                    }
+                    var localDeleted: [BlobSweepReport.Deleted] = []
+                    for blobId in onDisk where !referenced.contains(blobId) && !liveHere.contains(blobId) {
+                        try sidecars.deleteBlob(blobId: blobId, for: key)
+                        localDeleted.append(BlobSweepReport.Deleted(key: key, blobId: blobId))
+                    }
+                    return localDeleted
+                }
+                deleted.append(contentsOf: perKeyDeleted)
+            } catch {
+                skippedReasons.append("blob sweep failed for \(key.kind)/\(key.id): \(error)")
+                continue
+            }
+        }
+
+        return BlobSweepReport(deleted: deleted, deletionSkipped: false, skippedReasons: skippedReasons)
+    }
+
     // MARK: - Link API (§13)
 
     /// Creates a link between two entities. Writes one envelope and

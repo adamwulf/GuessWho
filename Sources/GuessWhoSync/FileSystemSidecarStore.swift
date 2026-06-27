@@ -157,6 +157,22 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     public func delete(_ key: SidecarKey) throws {
         try fileLocks.withLock(forKey: key) {
+            // Cascade-delete this key's `.dat` payloads FIRST so deleting the
+            // record self-cleans its blobs (the global orphan sweep is the
+            // backstop for the cross-device LWW race where the envelope still
+            // exists; envelope-delete cleans its own blobs here). Best-effort:
+            // a failure to remove a stray `.dat` must not block the envelope
+            // delete — the sweep reclaims it later.
+            if let blobIds = try? blobIds(for: key) {
+                for blobId in blobIds {
+                    let blobURL = blobURL(for: key, blobId: blobId)
+                    guard FileManager.default.fileExists(atPath: blobURL.path) else { continue }
+                    try? coordinatedDelete(key: key, at: blobURL) { safeURL in
+                        try? FileManager.default.removeItem(at: safeURL)
+                    }
+                }
+            }
+
             let url = fileURL(for: key)
             guard FileManager.default.fileExists(atPath: url.path) else { return }
 
