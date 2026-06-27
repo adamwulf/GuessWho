@@ -62,6 +62,13 @@ public final class ContactsRepository: NSObject {
     public var peopleSearch = ""
     public var organizationsSearch = ""
 
+    /// Contacts.app groups (`CNGroup`), cached for the Groups list. Filled by
+    /// `loadGroups()`; a failed fetch leaves an empty array and records
+    /// `lastError`, exactly like `reload()` does for contacts. Groups are
+    /// read-only here — the sidecar does not mirror them and there is no
+    /// membership-mutation path through this repository surface.
+    public private(set) var groups: [ContactGroup] = []
+
     // MARK: - Point-lookup indexes (private; rebuilt from `contacts`)
     //
     // These make `contact(id:)`, `contact(guessWhoID:)`, `contact(localID:)`,
@@ -136,6 +143,50 @@ public final class ContactsRepository: NSObject {
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
         postDidReload()
+    }
+
+    // MARK: - Groups (read-only)
+    //
+    // Groups are Contacts.app groups (`CNGroup`), read directly from the store —
+    // the sidecar does not mirror them. The Groups UI is read-only, so the
+    // repository exposes only a list fetch and a members fetch; the store's
+    // membership-mutation methods are intentionally not surfaced here.
+
+    /// Rebuild the `groups` cache from Contacts, sorted by name. A failed fetch
+    /// leaves an empty cache and records `lastError`, mirroring `reload()`'s
+    /// degrade-gracefully behavior. Posts `.contactsRepositoryDidReload` so the
+    /// Groups list controller refreshes through the same notification path the
+    /// People/Organizations lists use.
+    public func loadGroups() async {
+        do {
+            let fetched = try await contactsStore.fetchAllGroups()
+            groups = fetched.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            lastError = nil
+        } catch {
+            groups = []
+            lastError = "Groups fetch failed: \(error.localizedDescription)"
+        }
+        postDidReload()
+    }
+
+    /// The members of the group identified by `groupLocalID`, as `Contact`s.
+    /// Returns the contacts straight from the store so the caller can section
+    /// them A–Z with the same `Contact`-level helpers the People/Organizations
+    /// lists use. A failed fetch returns an empty array and records `lastError`,
+    /// matching the degrade-gracefully behavior of `reload()` / `loadGroups()`.
+    /// `groupLocalID` is the Contacts `CNGroup.identifier` (`ContactGroup.localID`),
+    /// the correct key for membership — groups are not GuessWho-ID'd.
+    public func members(ofGroup groupLocalID: String) async -> [Contact] {
+        do {
+            let members = try await contactsStore.fetchMembers(ofGroup: groupLocalID)
+            lastError = nil
+            return members
+        } catch {
+            lastError = "Group members fetch failed: \(error.localizedDescription)"
+            return []
+        }
     }
 
     /// Returns a currently-cached contact for an adapter-local refresh token.

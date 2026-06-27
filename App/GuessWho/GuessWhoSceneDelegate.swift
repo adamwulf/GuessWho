@@ -160,7 +160,40 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split, for: .favorites)
+
+        case .groups:
+            let list = GroupsListViewController(repository: appDelegate.contactsRepository)
+            // The supplementary column hosts a UINavigationController; selecting a
+            // group PUSHES the members list onto it (back-button returns to the
+            // group list), and selecting a member REPLACES the secondary/detail
+            // column via `showContactDetail` — the established Catalyst pattern.
+            let nav = UINavigationController(rootViewController: list)
+            list.didSelectGroup = { [weak self, weak nav] group in
+                self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+            }
+            split.setViewController(nav, for: .supplementary)
+            installDetailPlaceholder(in: split, for: .groups)
         }
+    }
+
+    /// Push a `GroupMembersListViewController` for `group` onto the supplementary
+    /// column's `nav`. Member selection REPLACES the secondary/detail column via
+    /// `showContactDetail`, matching how the People list drives detail on Catalyst.
+    private func showGroupMembers(
+        group: ContactGroup,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let members = GroupMembersListViewController(
+            group: group,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
+        )
+        members.didSelectContact = { [weak self] contact in
+            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
+        nav.pushViewController(members, animated: true)
     }
 
     private func showContactDetail(contact: Contact, appDelegate: GuessWhoAppDelegate) {
@@ -316,11 +349,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let orgsNav = makeIPhoneOrganizationsTab(appDelegate: appDelegate)
         let eventsNav = makeIPhoneEventsTab(appDelegate: appDelegate)
         let favoritesNav = makeIPhoneFavoritesTab(appDelegate: appDelegate)
+        let groupsNav = makeIPhoneGroupsTab(appDelegate: appDelegate)
 
         let tabs = UITabBarController()
         // Order matches the sidebar's `SidebarTab.allCases`: Favorites first,
-        // then People, Organizations, Events.
-        tabs.viewControllers = [favoritesNav, peopleNav, orgsNav, eventsNav]
+        // then People, Organizations, Events, and Groups last.
+        tabs.viewControllers = [favoritesNav, peopleNav, orgsNav, eventsNav, groupsNav]
         // Re-tapping the active tab scrolls its list to top — an iPhone /
         // iPad tab-shell behavior. The `UITabBarControllerDelegate`
         // conformance that drives it is `#if !targetEnvironment(macCatalyst)`
@@ -423,6 +457,44 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             tag: 0
         )
         return nav
+    }
+
+    /// Groups tab (LAST). A `GroupsListViewController` rooted in its own nav
+    /// stack; selecting a group PUSHES a `GroupMembersListViewController` onto
+    /// the same nav, and selecting a member PUSHES the contact detail — the same
+    /// push-to-drill-in flow the People tab uses.
+    private func makeIPhoneGroupsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = GroupsListViewController(repository: appDelegate.contactsRepository)
+        list.didSelectGroup = { [weak self] group in
+            self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.groups.title,
+            image: UIImage(systemName: SidebarTab.groups.systemImage),
+            tag: 4
+        )
+        return nav
+    }
+
+    /// Push a `GroupMembersListViewController` for `group` onto `nav`, wiring its
+    /// member selection to push the contact detail onto the same stack. Used by
+    /// the iPhone Groups tab (and shaped to match `pushContactDetail`).
+    private func pushGroupMembers(
+        group: ContactGroup,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let members = GroupMembersListViewController(
+            group: group,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
+        )
+        members.didSelectContact = { [weak self, weak nav] contact in
+            self?.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
+        }
+        nav.pushViewController(members, animated: true)
     }
 
     /// Push a fresh `UIHostingController<ContactDetailView>` onto the

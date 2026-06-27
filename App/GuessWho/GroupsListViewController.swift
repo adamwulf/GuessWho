@@ -1,0 +1,312 @@
+import UIKit
+import GuessWhoSync
+
+/// UIKit Groups list. Used by both the Catalyst 3-column shell (as the
+/// supplementary column for `.groups`) and the iPhone tab shell (rooted in
+/// the Groups nav stack). Lists Contacts.app groups alphabetically by name;
+/// selecting a group surfaces its members via `didSelectGroup`.
+///
+/// Unlike `ContactsListViewController` / `OrganizationsListViewController`,
+/// groups need no A–Z sectioning or photo prefetch — a group is just a name —
+/// so this is a plain single-section `UITableViewDiffableDataSource` keyed on
+/// the group's `localID` (Contacts' `CNGroup.identifier`, the correct group
+/// key; groups are not GuessWho-ID'd). The repository's `loadGroups()` fills
+/// the cache and posts `.contactsRepositoryDidReload`, the same notification
+/// the contact lists observe, so this list refreshes through one shared path.
+final class GroupsListViewController: UIViewController {
+    /// Closure-based selection callback so the SceneDelegate can push (iPhone)
+    /// or push-onto-supplementary (Catalyst) a `GroupMembersListViewController`
+    /// without us holding a reference to the nav stack or the split.
+    var didSelectGroup: (ContactGroup) -> Void = { _ in }
+
+    private let repository: ContactsRepository
+
+    private enum CellID: String {
+        case group
+    }
+
+    private var tableView: UITableView!
+    private var dataSource: UITableViewDiffableDataSource<Int, String>!
+
+    /// The `ContactGroup` each `localID` row last rendered, so the cell provider
+    /// can resolve a row's name from a stable map (the diffable item is the bare
+    /// `localID`). Rebuilt to the current groups on every snapshot apply.
+    private var groupsByLocalID: [String: ContactGroup] = [:]
+
+    /// The display name each `localID` row last rendered. The diffable item is
+    /// the bare `localID`, so a rename (same id, new name) keeps the row in place
+    /// and the cell provider is NOT re-run — we detect the change by comparing
+    /// this map against the freshly cached name and `reconfigureItems(_:)` the
+    /// rows that differ. Mirrors `ContactsListViewController.renderedContacts`.
+    private var renderedNames: [String: String] = [:]
+
+    private let emptyLabel = UILabel()
+    private let activityIndicator = UIActivityIndicatorView(style: .medium)
+
+    /// See `ContactsListViewController.reloadObserver` for the
+    /// `nonisolated(unsafe)` rationale (written once on main, read only from the
+    /// nonisolated `deinit`).
+    private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
+
+    init(repository: ContactsRepository) {
+        self.repository = repository
+        super.init(nibName: nil, bundle: nil)
+        title = "Groups"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unsupported — GroupsListViewController is code-only")
+    }
+
+    deinit {
+        if let reloadObserver {
+            NotificationCenter.default.removeObserver(reloadObserver)
+        }
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        configureTableView()
+        configureEmptyState()
+        configureDataSource()
+        observeRepositoryReloads()
+
+        // Paint whatever the repository already cached, then kick a fresh fetch.
+        // Groups are not loaded by the AppDelegate's contact reload, so this VC
+        // owns triggering `loadGroups()`; the resulting `.contactsRepositoryDidReload`
+        // re-applies the snapshot when the fetch lands.
+        applySnapshot(animated: false)
+        Task { await repository.loadGroups() }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
+    // MARK: - Table view
+
+    private func configureTableView() {
+        tableView = UITableView(frame: .zero, style: .plain)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.delegate = self
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 44
+        tableView.register(GroupCell.self, forCellReuseIdentifier: CellID.group.rawValue)
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+        ])
+    }
+
+    private func configureEmptyState() {
+        emptyLabel.text = "No Groups"
+        emptyLabel.font = .preferredFont(forTextStyle: .body)
+        emptyLabel.textColor = .secondaryLabel
+        emptyLabel.textAlignment = .center
+        emptyLabel.adjustsFontForContentSizeCategory = true
+        emptyLabel.isHidden = true
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyLabel)
+
+        activityIndicator.hidesWhenStopped = true
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(activityIndicator)
+
+        NSLayoutConstraint.activate([
+            emptyLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
+            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
+            activityIndicator.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+        ])
+    }
+
+    private func configureDataSource() {
+        dataSource = UITableViewDiffableDataSource<Int, String>(
+            tableView: tableView
+        ) { [weak self] tableView, indexPath, localID in
+            let cell = tableView.dequeueReusableCell(withIdentifier: CellID.group.rawValue, for: indexPath)
+            guard let self, let group = self.groupsByLocalID[localID] else { return cell }
+            (cell as? GroupCell)?.configure(with: group)
+            return cell
+        }
+        dataSource.defaultRowAnimation = .fade
+    }
+
+    // MARK: - Snapshot wiring
+
+    @MainActor
+    private func observeRepositoryReloads() {
+        // Repository posts `.contactsRepositoryDidReload` after `loadGroups()`
+        // lands (and after contact reloads — harmless extra applies here). Same
+        // main-queue pin + assumeIsolated hop as the contact lists so a future
+        // off-main post still applies the diffable snapshot on the main thread.
+        reloadObserver = NotificationCenter.default.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applySnapshot(animated: true)
+            }
+        }
+    }
+
+    private func applySnapshot(animated: Bool) {
+        let groups = repository.groups
+
+        // Rebuild the localID → group map so the cell provider resolves names
+        // from a stable lookup, and so a removed group's stale name can't linger.
+        var byLocalID: [String: ContactGroup] = [:]
+        for group in groups {
+            byLocalID[group.localID] = group
+        }
+        groupsByLocalID = byLocalID
+
+        var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
+        snapshot.appendSections([0])
+        // De-dupe by localID defensively — Contacts issues a unique identifier
+        // per group, but appendItems traps on a duplicate, so guard regardless.
+        var seen = Set<String>()
+        let ids = groups.map(\.localID).filter { seen.insert($0).inserted }
+        snapshot.appendItems(ids, toSection: 0)
+
+        // A group row renders only its name; reconfigure rows whose name changed
+        // between renders (a rename) so the cell repaints — the diffable apply
+        // keeps a same-localID row in place but won't re-run the cell provider
+        // for it otherwise. Only reconfigure rows present in the new snapshot
+        // (inserts/removes are handled by apply; reconfiguring an absent item
+        // traps). Mirrors ContactsListViewController.applySnapshot.
+        let currentIDs = Set(ids)
+        let changed = currentIDs.filter { id in
+            guard let previous = renderedNames[id] else { return false }
+            return previous != GroupCell.displayName(for: byLocalID[id])
+        }
+        if !changed.isEmpty {
+            snapshot.reconfigureItems(Array(changed))
+        }
+
+        // Rebuild the render map to exactly the rows in this snapshot.
+        var rendered: [String: String] = [:]
+        for id in currentIDs {
+            rendered[id] = GroupCell.displayName(for: byLocalID[id])
+        }
+        renderedNames = rendered
+
+        dataSource.apply(snapshot, animatingDifferences: animated)
+
+        updateEmptyState()
+    }
+
+    private func updateEmptyState() {
+        let isEmpty = repository.groups.isEmpty
+        emptyLabel.isHidden = !isEmpty || repository.isLoading
+        if isEmpty && repository.isLoading {
+            activityIndicator.startAnimating()
+        } else {
+            activityIndicator.stopAnimating()
+        }
+        emptyLabel.text = "No Groups"
+    }
+}
+
+// MARK: - UITableViewDelegate
+
+extension GroupsListViewController: UITableViewDelegate {
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let group = groupsByLocalID[localID] else { return }
+        didSelectGroup(group)
+    }
+}
+
+extension GroupsListViewController: ScrollsToTop {
+    func scrollToTop(animated: Bool) {
+        tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
+// MARK: - Row cell
+
+/// Single-line group row: leading group icon + the group's name. A group has no
+/// subtitle and no photo, so this is deliberately lighter than `ContactCell`.
+/// Member count is intentionally omitted — surfacing it would require fetching
+/// every group's members up front, which the read-only Groups list avoids.
+private final class GroupCell: UITableViewCell {
+    private let iconView = UIImageView()
+    private let nameLabel = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: .default, reuseIdentifier: reuseIdentifier)
+        configureSubviews()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unsupported — GroupCell is code-only")
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        nameLabel.text = nil
+    }
+
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        var background = UIBackgroundConfiguration.listPlainCell().updated(for: state)
+        if state.isSelected || state.isHighlighted {
+            background.backgroundColor = .tintColor
+            background.cornerRadius = 8
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 20)
+        }
+        backgroundConfiguration = background
+    }
+
+    private func configureSubviews() {
+        accessoryType = .disclosureIndicator
+
+        iconView.contentMode = .scaleAspectFit
+        iconView.tintColor = .secondaryLabel
+        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .title2)
+        iconView.image = UIImage(systemName: "person.3.fill")
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        nameLabel.font = .preferredFont(forTextStyle: .body)
+        nameLabel.adjustsFontForContentSizeCategory = true
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.numberOfLines = 1
+
+        contentView.addSubview(iconView)
+        contentView.addSubview(nameLabel)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 28),
+            iconView.heightAnchor.constraint(equalToConstant: 28),
+            nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            nameLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            nameLabel.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+            nameLabel.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+        ])
+    }
+
+    func configure(with group: ContactGroup) {
+        nameLabel.text = Self.displayName(for: group)
+    }
+
+    /// The user-facing name for a group, falling back to a neutral placeholder
+    /// for an (effectively never) empty name. Static so the list VC can compute
+    /// the same string when comparing renders to detect a rename.
+    static func displayName(for group: ContactGroup?) -> String {
+        let name = group?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "(Unnamed Group)" : name
+    }
+}
