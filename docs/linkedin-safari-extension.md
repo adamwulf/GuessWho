@@ -255,6 +255,14 @@ profile fetch.
 ## Out of scope here (later build steps)
 
 Real LinkedIn DOM parsing (semantic-anchor selectors), in-session photo-byte
-fetch, the "Contact info" modal, contact matching, the before/after diff UI, the
-`.blob` sidecar type + previous-photo snapshot, and the iOS target. See
+fetch, the "Contact info" modal, contact matching, the before/after diff UI, and
+the iOS target. See
 [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md).
+
+**Built (2026-06-27):** the `.blob` sidecar field type + previous-photo
+snapshot. A `.blob` field stores a small pointer to an AES-GCM-encrypted `.dat`
+neighbor file under the same iCloud root (the key lives in the synchronizable
+keychain). The contact-image write path (`ContactsRepository.setContactPhoto`)
+snapshots the replaced photo into a single-slot `previousPhoto` `.blob`; a
+reference-counting `sweepOrphanBlobs()` reclaims unreferenced `.dat`s. v1
+guarantees capture only (no revert UI yet).
