@@ -815,11 +815,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             onCancel: { [weak self] in self?.dismissPresented() }
         )
 
-        Self.handoffLog.notice("diff: presenting confirm sheet", [
-            "contact": contact.displayName,
-            "rows": rows.count
-        ])
-
         let hosting = UIHostingController(rootView: confirm)
         hosting.modalPresentationStyle = .formSheet
         // Wider sheet so the two columns (esp. About / multi-line values) have room.
@@ -827,10 +822,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Present from the topmost VC. If there's no presenter (window not yet
         // key, or a teardown race) the sheet would silently never appear — log
         // that case rather than let it look like the diff "just didn't show".
+        // Resolve the presenter BEFORE the "presenting" line so a failure reads
+        // as a clean "NO presenter available" rather than "presenting" followed
+        // by a contradiction.
         guard let presenter = topmostPresenter() else {
             Self.handoffLog.error("diff: NO presenter available — confirm sheet not shown")
             return
         }
+        Self.handoffLog.notice("diff: presenting confirm sheet", [
+            "contact": contact.displayName,
+            "rows": rows.count
+        ])
         presenter.present(hosting, animated: true)
     }
 
