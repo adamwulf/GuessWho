@@ -102,11 +102,18 @@ Add to the existing local `Package.swift` (same one the app already references).
    - Creates `<container>/Logs/` if missing.
    - **Fallback:** if the App Group container is unavailable (e.g. entitlement
      not granted at runtime), fall back to the process's Caches directory so
-     logging never crashes — log a single breadcrumb about the fallback.
+     logging never crashes — emit a single breadcrumb about the fallback **to
+     `os.log`** (N2), which survives the fallback so it's diagnosable. Note that
+     in this state the extension's `extension.log` lands in the appex Caches and
+     the app's exporter (which zips the App Group `Logs/`) won't see it —
+     acceptable degradation.
 
-2. **`LogFileWriter.swift`** — serial, thread-safe append writer (an `actor`, or
-   a class guarded by a private serial `DispatchQueue`; pick the simpler that
-   keeps writes ordered and off the caller's thread):
+2. **`LogFileWriter.swift`** — serial, thread-safe append writer. **(N3) Use a
+   class guarded by a private serial `DispatchQueue`, NOT an actor:** swift-log's
+   `LogHandler.log(...)` is synchronous and non-`async`, so an actor would force
+   `await` hops that can't be made from inside `log`. The serial-queue class is
+   the correct fit for the synchronous `LogHandler` contract. It keeps writes
+   ordered and off the caller's thread:
    - Owns one base file (e.g. `app.log`) given a `processName`.
    - **Append** each formatted line + `\n` using a held `FileHandle`
      (open once, `seekToEnd`, write; reopen after rotation).
@@ -132,10 +139,28 @@ Add to the existing local `Package.swift` (same one the app already references).
      ```
      - Timestamp: ISO-8601 with milliseconds, UTC (`ISO8601DateFormatter` with
        `.withFractionalSeconds`), or a cached formatter for perf.
-     - `msg` value: quote + escape per logfmt (Logfmt's formatter handles
-       quoting; pass the message string through `String.logfmt(...)` for the
-       value, or hand-quote consistently — implementer to confirm Logfmt's
-       exact escaping API and use it so quoting is *consistent*).
+     - **(B2) `String.logfmt(_:)` is a whole-object formatter, NOT a
+       single-value escaper.** Its signature is
+       `static func logfmt(_ object: Any) -> String` and it emits a *full*
+       `key=value key2=value2` line from a dictionary/array/object (e.g.
+       `String.logfmt(["asdf": "qwer thjfdg"])` → `asdf="qwer thjfdg"`). It also
+       emits the *key*, so feeding it a bare string is the wrong shape. **Do
+       this instead:** build the trailing pairs by handing
+       `String.logfmt(...)` a single dictionary — `["msg": message,
+       <metadata…>]` — and let it emit `msg="..." key=val`. The fixed leading
+       fields (`ts`, `level`, `label`) are emitted by hand so their order is
+       stable; everything after `msg` comes from one `String.logfmt(dict)`
+       call. (Alternatively, write a tiny local `logfmtQuote(_:)` helper for the
+       leading fields and use Logfmt only for the metadata bag — implementer's
+       choice, but do NOT feed `String.logfmt` a bare string expecting a value.)
+     - **(B3) Guarantee one record = one line.** logfmt values containing `\n`
+       or `\r` would break the per-line file format the rotation/prune logic
+       assumes. Logfmt's `slashEscape` escapes quotes and backslashes but has
+       **no** newline handling (no newline case in its tests; `wrapInQuotes()`
+       is unconditional). So **strip or escape `\r`/`\n` in the message and in
+       every metadata value before formatting** — do not rely on Logfmt for it.
+       (`error.localizedDescription` routinely contains newlines.) Add a test
+       with an embedded newline asserting the output is a single line.
      - Merge per-log metadata over handler metadata; flatten nested values with
        dot-notation via `String.logfmt(...)` (its documented behavior).
    - Implements the required `subscript(metadataKey:)` and `metadata`/`logLevel`
@@ -143,9 +168,13 @@ Add to the existing local `Package.swift` (same one the app already references).
 
 4. **`GuessWhoLog.swift`** — public bootstrap + accessors:
    - `static func bootstrap(processName: String, appGroupID: String, consoleEcho: Bool = true)`:
-     idempotent (guard against double-bootstrap — swift-log's
-     `LoggingSystem.bootstrap` may only be called once per process; use a
-     `dispatch_once`-style flag). Builds a `MultiplexLogHandler` of
+     idempotent. **(S4)** swift-log's `LoggingSystem.bootstrap` is genuinely
+     once-per-process and **traps** on a second call; the extension calls
+     `beginRequest` per request, so the guard is **mandatory** and must wrap the
+     `LoggingSystem.bootstrap` call *itself* (not just the file-writer setup),
+     using a lock-protected `Bool` (`NSLock` / `os_unfair_lock`) that is safe
+     under concurrent `beginRequest` invocations. Builds a
+     `MultiplexLogHandler` of
      `[LogfmtLogHandler(file), <console handler>]` when `consoleEcho`, else just
      the file handler. Console handler: `StreamLogHandler.standardError` (from
      swift-log) so existing Console workflows keep working. (os.log is *also*
@@ -158,11 +187,16 @@ Add to the existing local `Package.swift` (same one the app already references).
 5. **`LogExporter.swift`** — zips the shared `Logs/` directory:
    - Foundation-only zip via `NSFileCoordinator.coordinate(readingItemAt:
      options: .forUploading, ...)`: the `.forUploading` reading intent produces
-     a **zip** of the directory at a temporary URL. Copy that temp zip to a
-     stable temp file named `GuessWho-Logs-<timestamp>.zip` and return its URL.
-     (Confirm the exact option constant name during implementation;
-     `.forUploading` is the documented directory→zip path that works on both
-     Catalyst and iOS without a 3rd-party archiver.)
+     a **zip** of the directory at a temporary URL. Confirmed available iOS 8+ /
+     Mac Catalyst 13.1+ / macOS 10.10+ (both targets covered).
+   - **(S1) Copy the zip INSIDE the accessor block.** Apple's docs: "The file
+     coordinator unlinks the file after the block returns, rendering it
+     inaccessible through the URL." So the `copyItem`/`moveItem` from the
+     coordinator's temp URL to the stable temp file named
+     `GuessWho-Logs-<timestamp>.zip` **must happen within the accessor closure**;
+     return the stable URL *after* the copy. Copying "after the coordinate call"
+     would dead-URL and is the single most likely runtime bug in the export
+     path.
    - Returns `URL` (the zip) or throws. Caller owns presenting it.
    - Zips **everything** in `Logs/` (both `app*.log` and `extension*.log`), so a
      single export captures both processes — matching "one place".
@@ -172,8 +206,11 @@ Add to the existing local `Package.swift` (same one the app already references).
 - **Link `GuessWhoLogging`** into the `GuessWho` app target (add the product
   dependency in `project.pbxproj`, mirroring the existing `GuessWhoSync`
   `XCSwiftPackageProductDependency` + Frameworks build file).
-- **Bootstrap** in `GuessWhoAppDelegate.init()` (first thing, before the
-  existing `UserDefaults.register`): resolve the App Group id the same way the
+- **Bootstrap** in `GuessWhoAppDelegate.init()`. **(S2) Make it the FIRST
+  statement in `init()`** — before both `UserDefaults.register` *and*
+  `SyncService()` (which is constructed right after register at
+  `GuessWhoAppDelegate.swift:36`). The backend must be live before any logger
+  in the construction path can fire. Resolve the App Group id the same way the
   SceneDelegate does (`GuessWhoAppGroup` Info.plist key, with the
   `group.com.milestonemade.guesswho` fallback) and call
   `GuessWhoLog.bootstrap(processName: "app", appGroupID: id)`.
@@ -193,15 +230,17 @@ Add to the existing local `Package.swift` (same one the app already references).
 
 ### Sync package wiring (`Sources/GuessWhoSync/`)
 
-- `ContactChangeWatcher.swift` uses `NSLog`. **Option A (preferred):** route it
-  through swift-log by having `GuessWhoSync` depend on `Logging` (swift-log) and
-  use a package-local `Logger`. The app bootstraps the backend, so the
-  package's `Logger` automatically writes to the file too. This means adding
-  `Logging` as a dependency of the `GuessWhoSync` target.
-  **Option B (smaller):** leave `ContactChangeWatcher`'s `NSLog` alone for now
-  (it still reaches Console; just not the file). Decide during review — Option A
-  is the "clean and consistent" goal; Option B is lower-risk/smaller diff.
-  Recommend **A** but call it out explicitly so the reviewer can weigh scope.
+- `ContactChangeWatcher.swift` has **exactly one** `NSLog`
+  (`ContactChangeWatcher.swift:150`) — the only log site in the whole package.
+  **(S3) Recommendation: Option B — leave it as-is.** `GuessWhoSync` currently
+  has **zero external dependencies** (`Package.swift`), a meaningful property to
+  keep. Routing one log line through swift-log (Option A) would add `Logging` as
+  a hard dependency of both `GuessWhoSync` and its test target — not worth it
+  for a single line. The `NSLog` still reaches Console; it just won't land in
+  the file. Revisit (→ Option A) only if/when the package needs to log more.
+  - **Option A (rejected for now):** add `Logging` to `GuessWhoSync`, use a
+    package-local `Logger`; the app's bootstrap makes it write to the file too.
+    Documented only so the trade-off is explicit.
 
 ### Extension wiring (`App/GuessWhoLinkedIn/`)
 
@@ -226,8 +265,11 @@ Add to the existing local `Package.swift` (same one the app already references).
   `UserDefaults` / `.didChangeNotification`, or re-evaluate on
   `viewWillAppear`). Keep it lightweight; simplest is re-evaluate on
   `viewWillAppear` + a `UserDefaults` observer.
-  - Placement: the events list navbar already hosts the `+` button; add Export
-    as a second right-bar item (or a left-bar item) there. If a single,
+  - Placement: the events list navbar already hosts the `+` button
+    (`EventsListViewController.configureAddButton()` sets the **singular**
+    `navigationItem.rightBarButtonItem` at `EventsListViewController.swift:150`).
+    **(S5) Switch to `navigationItem.rightBarButtonItems` (plural array)** so
+    adding Export Logs does not clobber the `+` button. If a single,
     always-present host is cleaner, the implementer may choose the most natural
     list controller — but it must be reachable in the normal debug flow.
 - **Action:** call `LogExporter` to produce the zip, then present:
@@ -258,6 +300,14 @@ Add to the existing local `Package.swift` (same one the app already references).
   - **Exporter:** zipping a `Logs/` dir with two files yields a non-empty zip
     whose entries include both. (If unzip-in-test is awkward, at least assert a
     non-empty `.zip` is produced and is a valid zip header `PK\x03\x04`.)
+    **(N6/S1)** assert the returned URL is **still readable after** the
+    `coordinate` call returns — this catches the unlink-after-block bug.
+  - **(N6/B3) Embedded-newline message** round-trips to a **single line** in the
+    file (no record split).
+  - **(N6/B2) Quoting:** a message containing both a space and a `"` is quoted
+    and escaped consistently in the emitted `msg=` value.
+  - **(N6/S4) Double-bootstrap does not trap** — calling `bootstrap(...)` twice
+    (and concurrently) is safe.
   - Drive the writer against a **temp directory** (inject the base URL) so tests
     never touch the real App Group container.
 - **Build verification:**
@@ -269,23 +319,69 @@ Add to the existing local `Package.swift` (same one the app already references).
   Export Logs → confirm save dialog (Catalyst) / share sheet (iOS) presents a
   zip; unzip shows `app.log` (+ `extension.log` after the extension has run).
 
-## Risks / open items for the reviewer
+## Plan review — incorporated
 
-1. **`.forUploading` zip path** — confirm the exact `NSFileCoordinator` reading
-   option constant and that it yields a real `.zip` on both Catalyst and iOS. If
-   it proves flaky, fall back to a tiny vendored zip (still Foundation/
-   Compression based) — but avoid adding a heavy 3rd-party archiver to a target
-   the extension links.
-2. **swift-log in `GuessWhoSync`** (Option A vs B above) — scope call.
-3. **Bootstrap idempotency** — `LoggingSystem.bootstrap` is once-per-process;
-   the extension's per-request bootstrap must guard against re-bootstrap.
-4. **Logfmt product/escaping API** — verify Logfmt's exact public surface
-   (`String.logfmt`) and product name; ensure value quoting is consistent for
-   messages containing spaces/quotes/newlines.
-5. **Export button host** — confirm the events list navbar is an acceptable home
-   (vs. a dedicated debug surface). User chose "navbar, debug mode only".
-6. **Catalyst save dialog** via `UIDocumentPickerViewController(forExporting:)`
-   vs. `NSSavePanel` — confirm the document-picker path gives a true save panel
-   on Catalyst.
-7. **Extension memory** — ensure linking `GuessWhoLogging` + swift-log + Logfmt
-   stays within appex limits (lean target; expected fine).
+A read-only reviewer verified this plan against the tree + Apple docs. The App
+Group, pbxproj wiring, bootstrap point, debug-gating, and `.forUploading` claims
+all verified true. Findings folded in above:
+
+- **B1 — dependency-graph note (resolved-file & Logfmt platforms).** Re-resolving
+  pulls **swift-log into `Package.resolved` for the first time** — expected; do
+  not hand-edit `.resolved`, re-resolve via the manifest. Logfmt's own
+  `Package.swift` declares only `.macOS(.v10_14)` with **no iOS platform floor**
+  (`swift-tools-version: 5.10`). It links fine under the app's iOS-17 floor
+  (SwiftPM defaults unspecified platforms), but the single-commit pin freezes
+  that shape — note it; if the appex ever complains, the fix is upstream/fork.
+- **B2 — `String.logfmt` is a whole-object formatter** (see LogfmtLogHandler
+  notes above): feed it a dict, not a bare string.
+- **B3 — escape/strip `\r`/`\n` ourselves** (one record = one line); Logfmt has
+  no newline handling.
+- **S1 — copy the zip inside the `NSFileCoordinator` accessor block** (it unlinks
+  the temp file after the block returns).
+- **S2 — bootstrap is the first statement in `AppDelegate.init()`**, before
+  `SyncService()`.
+- **S3 — Option B (leave the package's single `NSLog`)**, keeping `GuessWhoSync`
+  dependency-free.
+- **S4 — lock-guarded once-per-process `LoggingSystem.bootstrap`**, safe under
+  concurrent `beginRequest`.
+- **S5 — use `rightBarButtonItems` (plural)** so the `+` button isn't clobbered.
+- **N3 — serial-`DispatchQueue` class writer** (not an actor) — `log(...)` is
+  synchronous.
+
+Remaining lower-priority notes to honor during implementation:
+
+- **N1 — stderr echo + remaining `os_log` both show in Console** for
+  not-yet-migrated sites. Acceptable, not a regression.
+- **N2 — Caches fallback** (App Group unavailable) means the extension's
+  `extension.log` won't reach the app's export; emit the fallback breadcrumb to
+  **`os.log`** (which survives the fallback) so it's diagnosable.
+- **N4 — prune deleting a file another process holds open is benign on APFS**
+  (unlinked-but-open). Add a one-line note in code that this is intentional.
+- **N5 — log bodies are developer-facing** and exempt from the
+  no-internal-vocabulary rule (they will contain `app.linkedin-handoff`,
+  `[GuessWho]`, etc.). State this in code so a future reader doesn't "fix" them.
+  The button label "Export Logs" and filename `GuessWho-Logs-<ts>.zip` are plain
+  and compliant.
+- **N7 — appex memory: low risk, confirmed.** swift-log + Logfmt are pure-Swift,
+  statically linked (no Embed phase — matches how `GuessWhoSync` is wired);
+  deployment targets match (iOS 17 / macOS 14).
+
+### pbxproj wiring (confirmed feasible)
+
+The hand-authored deterministic-ID pbxproj links `GuessWhoSync` via a quartet:
+`PBXBuildFile` → app Frameworks phase → `packageProductDependencies` →
+`XCSwiftPackageProductDependency`. For `GuessWhoLogging`:
+
+- Replicate that quartet for the **app** target, and a parallel set for the
+  **extension** target (its Frameworks phase + `packageProductDependencies` are
+  currently empty).
+- Use **two distinct** `XCSwiftPackageProductDependency` objects (one per
+  target) referencing the same product name — do **not** share one `productRef`
+  across both Frameworks phases.
+- Reuse the existing `XCLocalSwiftPackageReference ".."` (no new package
+  reference — `GuessWhoLogging` lives in the same `Package.swift`).
+- **No Embed phase** for either target (static linking, like `GuessWhoSync`).
+
+> If `.forUploading` ever proves flaky in practice, the only sanctioned fallback
+> is a tiny Foundation/`Compression`-based zip — **never** a heavy 3rd-party
+> archiver, since the extension links this module.
