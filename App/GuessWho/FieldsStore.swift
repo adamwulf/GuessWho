@@ -32,4 +32,22 @@ final class FieldsStore {
         }
         reload()
     }
+
+    func editField(_ fieldID: UUID, value: String) async {
+        do {
+            try await repository.editField(for: id, id: fieldID, value: value)
+        } catch {
+            // ignore — reload reflects the truth
+        }
+        reresolveAndReload()
+    }
+
+    func deleteField(_ fieldID: UUID) async {
+        do {
+            try await repository.deleteField(for: id, id: fieldID)
+        } catch {
+            // ignore — reload reflects the truth
+        }
+        reresolveAndReload()
+    }
 }

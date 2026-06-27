@@ -786,6 +786,32 @@ public final class ContactsRepository: NSObject {
         return fieldID
     }
 
+    /// Edit an existing sidecar field's value (by field id) on the contact.
+    /// `id` is the CONTACT, `fieldID` the field. Silent no-op if the field is
+    /// gone. Throws `SidecarUnavailableError` if no engine.
+    public func editField(for id: ContactID, id fieldID: UUID, value: String) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        // setField needs the field's current name (it's preserved); read it.
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let name = ((try? sync.fields(at: key)) ?? []).first { $0.id == fieldID }?.field
+        if let name {
+            try sync.setField(at: key, id: fieldID, field: name, value: .string(value))
+        }
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
+    /// Soft-delete a sidecar field (by field id) on the contact. `id` is the
+    /// CONTACT, `fieldID` the field. Throws `SidecarUnavailableError` if no engine.
+    public func deleteField(for id: ContactID, id fieldID: UUID) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        try sync.deleteField(at: SidecarKey(kind: .contact, id: guessWhoID), id: fieldID)
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
     /// Edit an existing note's body on the contact identified by `id`. The two
     /// `id`s are disambiguated: `id` is the CONTACT, `noteID` is the note. (No
     /// mint can happen via an edit in practice — you can only edit a note that

@@ -79,6 +79,10 @@ struct ContactDetailView: View {
     @State private var newNoteText: String = ""
     @State private var editingNoteID: UUID?
     @State private var draftBody: String = ""
+    // Sidecar-field edit state: the field being edited (presented in an alert)
+    // and its working text.
+    @State private var editingField: SidecarField?
+    @State private var fieldDraft: String = ""
     // Body captured at edit-start, used by §12.5's no-op-tap rule: commit
     // is a no-op only when the draft is unchanged from this snapshot —
     // never the current on-disk value. Matters when a reconcile lands
@@ -296,10 +300,18 @@ struct ContactDetailView: View {
         list
             .listStyle(.inset)
             .environment(\.editMode, $editMode)
+            .modifier(EditFieldAlert(
+                field: $editingField, draft: $fieldDraft,
+                onSave: { f, value in Task { await fieldsStore?.editField(f.id, value: value) } }
+            ))
         #else
         list
             .listStyle(.insetGrouped)
             .environment(\.editMode, $editMode)
+            .modifier(EditFieldAlert(
+                field: $editingField, draft: $fieldDraft,
+                onSave: { f, value in Task { await fieldsStore?.editField(f.id, value: value) } }
+            ))
         #endif
     }
 
@@ -589,6 +601,17 @@ struct ContactDetailView: View {
                             .textSelection(.enabled)
                     }
                     .centeredRowContent()
+                    .contextMenu {
+                        Button {
+                            fieldDraft = Self.fieldDisplayValue(field)
+                            editingField = field
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        Button("Delete", role: .destructive) {
+                            Task { await fieldsStore?.deleteField(field.id) }
+                        }
+                    }
                 }
             }
         }
@@ -1683,5 +1706,28 @@ private struct AddressRow: View {
         let item = MKMapItem(placemark: placemark)
         item.name = formatted
         item.openInMaps(launchOptions: nil)
+    }
+}
+
+/// Presents an editing alert for a sidecar field. Shown when `field` is non-nil;
+/// `draft` holds the working text. Save invokes `onSave(field, draft)`.
+private struct EditFieldAlert: ViewModifier {
+    @Binding var field: SidecarField?
+    @Binding var draft: String
+    let onSave: (SidecarField, String) -> Void
+
+    func body(content: Content) -> some View {
+        let isPresented = Binding(
+            get: { field != nil },
+            set: { if !$0 { field = nil } }
+        )
+        content.alert(field?.field ?? "Edit", isPresented: isPresented) {
+            TextField("Value", text: $draft)
+            Button("Cancel", role: .cancel) { field = nil }
+            Button("Save") {
+                if let f = field { onSave(f, draft) }
+                field = nil
+            }
+        }
     }
 }

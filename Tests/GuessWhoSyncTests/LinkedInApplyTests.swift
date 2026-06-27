@@ -178,4 +178,27 @@ struct LinkedInApplyTests {
         )
         #expect(result.jobTitle == "Keep")
     }
+
+    @Test func editField_updatesValue() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(about: "First"), to: id, fields: [.about]
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        let fieldID = repo.fields(for: rid).first { $0.field == "LinkedIn About" }!.id
+        try await repo.editField(for: rid, id: fieldID, value: "Edited")
+        let after = repo.fields(for: rid).first { $0.field == "LinkedIn About" }
+        #expect(after?.value == .string("Edited"))
+    }
+
+    @Test func deleteField_removesIt() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(location: "Tomball"), to: id, fields: [.location]
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        let fieldID = repo.fields(for: rid).first { $0.field == "LinkedIn Location" }!.id
+        try await repo.deleteField(for: rid, id: fieldID)
+        #expect(repo.fields(for: rid).contains { $0.field == "LinkedIn Location" } == false)
+    }
 }
