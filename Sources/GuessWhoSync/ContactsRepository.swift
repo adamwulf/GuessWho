@@ -335,7 +335,9 @@ public final class ContactsRepository: NSObject {
                 notIn: edited.emailAddresses.map(\.value),
                 key: { $0.trimmed.lowercased() }
             )
-            edited.emailAddresses += additions.map { LabeledValue(label: "LinkedIn", value: $0) }
+            // CNContact field — default label (empty -> the adapter passes nil,
+            // so Contacts assigns its own default). NOT "LinkedIn".
+            edited.emailAddresses += additions.map { LabeledValue(label: "", value: $0) }
         }
         if fields.contains(.websites) {
             let additions = Self.newValues(
@@ -343,17 +345,35 @@ public final class ContactsRepository: NSObject {
                 notIn: edited.urlAddresses.map(\.value),
                 key: Self.urlDedupKey
             )
-            edited.urlAddresses += additions.map { LabeledValue(label: "LinkedIn", value: $0) }
+            // CNContact field — default label (empty -> adapter passes nil).
+            edited.urlAddresses += additions.map { LabeledValue(label: "", value: $0) }
         }
         if fields.contains(.linkedInURL),
            let url = (profile.contactInfo?.profileUrl ?? profile.sourceUrl)?.trimmed, !url.isEmpty {
-            let alreadyHas = edited.socialProfiles.contains {
-                LinkedInURL.isLinkedIn($0.value.urlString) && LinkedInURL.sameProfile($0.value.urlString, url)
+            let slug = LinkedInURL.slug(from: url) ?? ""
+            // A LinkedIn social profile is identified by its service ("LinkedIn")
+            // — existing ones may store only a username (no urlString), so match
+            // on service or a same-slug urlString/username, not urlString alone.
+            let existingIndex = edited.socialProfiles.firstIndex { lp in
+                let p = lp.value
+                if p.service.caseInsensitiveCompare("LinkedIn") == .orderedSame { return true }
+                if !p.urlString.isEmpty, LinkedInURL.sameProfile(p.urlString, url) { return true }
+                if !p.username.isEmpty, !slug.isEmpty, p.username.caseInsensitiveCompare(slug) == .orderedSame { return true }
+                return false
             }
-            if !alreadyHas {
+            // Contacts' LinkedIn social-profile field expects the USERNAME, not a
+            // URL (it derives the URL from the username; a stored URL shows blank
+            // in the normal card view). So store just the slug.
+            if let i = existingIndex {
+                // Already has a LinkedIn profile — don't duplicate. Fill in the
+                // username if it's missing.
+                if edited.socialProfiles[i].value.username.isEmpty, !slug.isEmpty {
+                    edited.socialProfiles[i].value.username = slug
+                }
+            } else if !slug.isEmpty {
                 edited.socialProfiles.append(LabeledSocialProfile(
                     label: "LinkedIn",
-                    value: SocialProfile(urlString: url, username: LinkedInURL.slug(from: url) ?? "", service: "LinkedIn")
+                    value: SocialProfile(urlString: "", username: slug, service: "LinkedIn")
                 ))
             }
         }

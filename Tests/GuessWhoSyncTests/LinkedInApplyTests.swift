@@ -94,16 +94,44 @@ struct LinkedInApplyTests {
         #expect(values.contains("https://museapp.com"))
     }
 
-    @Test func linkedInURL_addedToSocialProfiles_whenMissing() async throws {
+    @Test func linkedInURL_addedToSocialProfiles_asUsername_whenMissing() async throws {
         let (repo, id, _) = await setup(Contact(localID: "T"))
         let result = try await repo.applyLinkedIn(
             profile: profile(profileUrl: "https://www.linkedin.com/in/adamwulf"),
             to: id, fields: [.linkedInURL]
         )
-        #expect(result.socialProfiles.contains {
-            LinkedInURL.isLinkedIn($0.value.urlString) &&
-            LinkedInURL.sameProfile($0.value.urlString, "https://www.linkedin.com/in/adamwulf")
-        })
+        // Stored as the USERNAME (slug), not the full URL — Contacts expects that.
+        let linkedIns = result.socialProfiles.filter { $0.value.service.caseInsensitiveCompare("LinkedIn") == .orderedSame }
+        #expect(linkedIns.count == 1)
+        #expect(linkedIns[0].value.username == "adamwulf")
+    }
+
+    @Test func linkedInURL_existingUsernameOnlyProfile_isNotDuplicated() async throws {
+        // The contact already has a username-only LinkedIn social profile.
+        let existing = Contact(localID: "T", socialProfiles: [
+            LabeledSocialProfile(label: "LinkedIn",
+                value: SocialProfile(urlString: "", username: "adamwulf", service: "LinkedIn"))
+        ])
+        let (repo, id, _) = await setup(existing)
+        let result = try await repo.applyLinkedIn(
+            profile: profile(profileUrl: "https://www.linkedin.com/in/adamwulf"),
+            to: id, fields: [.linkedInURL]
+        )
+        // Exactly one LinkedIn profile (no duplicate); username preserved.
+        let linkedIns = result.socialProfiles.filter { $0.value.service.caseInsensitiveCompare("LinkedIn") == .orderedSame }
+        #expect(linkedIns.count == 1)
+        #expect(linkedIns[0].value.username == "adamwulf")
+    }
+
+    @Test func mergedCNContactValues_useDefaultLabel_notLinkedIn() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T"))
+        let result = try await repo.applyLinkedIn(
+            profile: profile(emails: ["new@example.com"], websites: ["https://museapp.com"]),
+            to: id, fields: [.emails, .websites]
+        )
+        // Added CNContact values must NOT carry a "LinkedIn" label.
+        #expect(result.emailAddresses.allSatisfy { $0.label != "LinkedIn" })
+        #expect(result.urlAddresses.allSatisfy { $0.label != "LinkedIn" })
     }
 
     @Test func aboutAndLocation_storedAsPrefixedNotes() async throws {
