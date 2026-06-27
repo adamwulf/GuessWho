@@ -97,10 +97,10 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             let envelope: [String: Any] = ["payload": payload, "stampedBy": "extension"]
             let data = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted])
             try data.write(to: url, options: [.atomic])
-            Self.log.notice("park: wrote \(data.count) bytes OK to \(url.path)")
+            Self.log.notice("park: wrote OK", ["bytes": data.count, "path": url.path])
             return true
         } catch {
-            Self.log.error("park: write FAILED to \(url.path): \(error.localizedDescription)")
+            Self.log.error("park: write FAILED", ["path": url.path, "error": error.localizedDescription])
             return false
         }
     }

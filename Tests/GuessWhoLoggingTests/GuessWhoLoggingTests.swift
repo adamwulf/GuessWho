@@ -282,4 +282,31 @@ final class GuessWhoLoggingTests: XCTestCase {
         XCTAssertTrue(contents.contains("code=7"))
         XCTAssertTrue(contents.contains("label=app.test"))
     }
+
+    // MARK: - Ergonomic metadata convenience
+
+    /// The `log.info("msg", ["key": value])` sugar bridges a plain
+    /// `[String: CustomStringConvertible]` bag into the logfmt line, with each
+    /// value rendered via its own `description`.
+    func testConvenienceMetadataOverloadEmitsPairs() throws {
+        let dir = try makeLogsDir()
+        let writer = LogFileWriter(directory: dir, processName: "app")
+        let handler = LogfmtLogHandler(label: "app.test", writer: writer)
+        var logger = Logger(label: "app.test", factory: { _ in handler })
+        logger.logLevel = .trace
+
+        // Mixed value types: Int, String, and URL all flow through directly.
+        let url = URL(fileURLWithPath: "/tmp/handoff.json")
+        logger.notice("park: wrote OK", ["bytes": 1234, "path": url.path, "stage": "extension"])
+        writer.flush()
+
+        let contents = try String(contentsOf: dir.appendingPathComponent("app.log"), encoding: .utf8)
+        let lines = contents.split(separator: "\n", omittingEmptySubsequences: true)
+        XCTAssertEqual(lines.count, 1, "one record → one line: \(contents)")
+        XCTAssertTrue(contents.contains("level=notice"))
+        XCTAssertTrue(contents.contains("msg=\"park: wrote OK\""), "message present and quoted: \(contents)")
+        XCTAssertTrue(contents.contains("bytes=1234"), "Int value rendered via description: \(contents)")
+        XCTAssertTrue(contents.contains("stage=extension"), "String value present: \(contents)")
+        XCTAssertTrue(contents.contains("path="), "URL path value present: \(contents)")
+    }
 }

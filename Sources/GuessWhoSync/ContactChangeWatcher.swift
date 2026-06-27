@@ -2,6 +2,7 @@
 import Contacts
 #endif
 import Foundation
+import Logging
 
 /// Owns the external-contact-change pipeline that used to live in the app's
 /// `ContactsRepository`: the `.CNContactStoreDidChange` observer, the
@@ -27,6 +28,13 @@ import Foundation
 /// thread; it hops onto the main actor before touching any state.
 @MainActor
 public final class ContactChangeWatcher: NSObject {
+    /// Routes change-pipeline breadcrumbs through swift-log. With the app's
+    /// logging backend bootstrapped these land in `<AppGroup>/Logs/app.log`
+    /// (and echo to Console); under `swift test` (no bootstrap) they fall back
+    /// to swift-log's default stderr handler. Developer-facing — internal
+    /// vocabulary is fine in the message body.
+    private static let log = Logger(label: "sync.contact-change-watcher")
+
     private let contacts: ContactStoreProtocol
     private let cursorStore: ContactSyncCursorStore
     private let notificationCenter: NotificationCenter
@@ -143,11 +151,11 @@ public final class ContactChangeWatcher: NSObject {
             // Auth / I-O failure reading history → tell the subscriber to do a
             // full reload; leave the cursor untouched so the next attempt
             // retries from the same point. The watcher has no UI-visible error
-            // channel (it is not the old @Observable repository), so leave an
-            // OS-level breadcrumb: without it, a transient "read failed but the
-            // recovery reload succeeded" is otherwise invisible. Developer-facing
-            // — internal vocabulary is fine in NSLog.
-            NSLog("[GuessWho] contact change read failed: %@", String(describing: error))
+            // channel (it is not the old @Observable repository), so leave a
+            // breadcrumb: without it, a transient "read failed but the recovery
+            // reload succeeded" is otherwise invisible. Routes through swift-log
+            // so it lands in the log file alongside the rest of the app's logs.
+            Self.log.error("contact change read failed", metadata: ["error": .string(String(describing: error))])
             postFullReload()
             return
         }

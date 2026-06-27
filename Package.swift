@@ -30,7 +30,18 @@ let package = Package(
         // invoke it directly (NS_SWIFT_UNAVAILABLE), so the change-history
         // delta read in CNContactStoreAdapter bridges through here.
         .target(name: "GuessWhoSyncObjC"),
-        .target(name: "GuessWhoSync", dependencies: ["GuessWhoSyncObjC"]),
+        // GuessWhoSync depends on swift-log directly (NOT GuessWhoLogging — that
+        // would drag the file writer / App Group / exporter machinery into the
+        // package). A plain `Logger` here routes to the file via whatever backend
+        // the app bootstraps; with no bootstrap (e.g. `swift test`) it falls back
+        // to swift-log's default stderr handler.
+        .target(
+            name: "GuessWhoSync",
+            dependencies: [
+                "GuessWhoSyncObjC",
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
         .target(name: "GuessWhoSyncTesting", dependencies: ["GuessWhoSync"]),
         .testTarget(
             name: "GuessWhoSyncTests",

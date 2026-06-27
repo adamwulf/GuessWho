@@ -98,7 +98,7 @@ final class SyncService {
             // failed to provision and we fell back to Application
             // Support. Not user-actionable here — the banner explains
             // the trade-off (local-only, no cross-device sync).
-            Self.log.notice("[GuessWho] storage fallback to local: \(reason)")
+            Self.log.notice("storage fallback to local", ["reason": reason])
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
                 contacts: adapter,
@@ -112,7 +112,7 @@ final class SyncService {
             // Hard failure — neither iCloud nor Application Support was
             // writable. Log loudly so it surfaces in Console.app even if
             // the user never sees the banner.
-            Self.log.error("[GuessWho] storage unavailable: \(reason)")
+            Self.log.error("storage unavailable", ["reason": reason])
             self.sync = nil
             self.favoritesStore = nil
         }
