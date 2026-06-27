@@ -31,6 +31,7 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
     @State private var notesStore: NotesStore?
+    @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
@@ -272,6 +273,8 @@ struct ContactDetailView: View {
                 editingSections
             } else {
                 infoSection(contact)
+
+                sidecarFieldsSection
 
                 referencedBySection(contact)
 
@@ -566,6 +569,40 @@ struct ContactDetailView: View {
                         .centeredRowContent()
                 }
             }
+        }
+    }
+
+    /// Named key/value sidecar fields (e.g. "LinkedIn About", "LinkedIn
+    /// Location"). Read-only, label-above-value, one row per field. Hidden when
+    /// the contact has none.
+    @ViewBuilder
+    private var sidecarFieldsSection: some View {
+        let fields = fieldsStore?.fields ?? []
+        if !fields.isEmpty {
+            Section {
+                ForEach(fields, id: \.id) { field in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(field.field)
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(Self.fieldDisplayValue(field))
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+                    .centeredRowContent()
+                }
+            }
+        }
+    }
+
+    /// Render a sidecar field's value for display. `.note`-type fields hold a
+    /// JSON string; fall back to a reasonable rendering for other shapes.
+    private static func fieldDisplayValue(_ field: SidecarField) -> String {
+        switch field.value {
+        case .string(let s): return s
+        case .bool(let b): return b ? "Yes" : "No"
+        case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
+        case .null: return ""
+        case .array, .object: return ""
         }
     }
 
@@ -1132,6 +1169,7 @@ struct ContactDetailView: View {
             // Safe to nil regardless of whether the caller is about to
             // dismiss — a re-load would reconstruct them.
             notesStore = nil
+            fieldsStore = nil
             linksStore = nil
             eventLinks = []
             recentEvents = []
@@ -1154,6 +1192,11 @@ struct ContactDetailView: View {
             notesStore = NotesStore(repository: repository, id: loadedID)
         } else {
             notesStore?.reload()
+        }
+        if fieldsStore?.id != loadedID {
+            fieldsStore = FieldsStore(repository: repository, id: loadedID)
+        } else {
+            fieldsStore?.reload()
         }
         if linksStore?.id != loadedID {
             linksStore = ContactLinksStore(repository: repository, id: loadedID)
