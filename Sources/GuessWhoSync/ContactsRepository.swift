@@ -285,6 +285,147 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: edited.localID)
     }
 
+    /// Apply selected fields from a parsed LinkedIn profile to an existing
+    /// contact and return the refreshed contact. The single package-side entry
+    /// point that owns the merge + save rules (the app only chooses which
+    /// `fields` to apply and presents the result).
+    ///
+    /// Rules:
+    /// - CNContact fields (name/jobTitle/organization/emails/websites/LinkedIn
+    ///   URL) are MERGED, never replaced. New emails/websites are appended to the
+    ///   existing set (case-insensitive for emails; scheme-insensitive for URLs);
+    ///   existing values — including the internal `guesswho://` identity URL —
+    ///   are preserved. Name/title/org overwrite only when that field is chosen.
+    /// - Sidecar fields (about/location) are stored as notes prefixed with
+    ///   "LinkedIn …: " so the source is obvious to the user.
+    /// - `photo` is accepted in `fields` but not yet applied (the contact-image
+    ///   write path is a separate step); it's a no-op here for now.
+    ///
+    /// Throws if the contact can't be fetched/saved. Returns the refreshed
+    /// `Contact` (CNContact fields; sidecar notes are read separately).
+    ///
+    /// NOTE: adding the about/location notes can MINT a GuessWho ID for a
+    /// previously-unreconciled contact. After this call, use the RETURNED
+    /// contact's `contactID` for any follow-up sidecar reads — an older
+    /// `ContactID` held by the caller may be pre-mint (stale) for note reads.
+    @discardableResult
+    public func applyLinkedIn(
+        profile: LinkedInProfile,
+        to id: ContactID,
+        fields: Set<LinkedInField>
+    ) async throws -> Contact {
+        guard var edited = try await editableContact(id: id) else {
+            throw ContactStoreError.contactNotFound(localID: id.localID)
+        }
+
+        if fields.contains(.name), let full = profile.fullName?.trimmed, !full.isEmpty {
+            let parts = full.split(separator: " ", maxSplits: 1).map(String.init)
+            edited.givenName = parts.first ?? full
+            edited.familyName = parts.count > 1 ? parts[1] : ""
+        }
+        if fields.contains(.jobTitle), let v = profile.title?.trimmed, !v.isEmpty {
+            edited.jobTitle = v
+        }
+        if fields.contains(.organization), let v = profile.org?.trimmed, !v.isEmpty {
+            edited.organizationName = v
+        }
+        if fields.contains(.emails) {
+            let additions = Self.newValues(
+                profile.contactInfo?.emails ?? [],
+                notIn: edited.emailAddresses.map(\.value),
+                key: { $0.trimmed.lowercased() }
+            )
+            // CNContact field — default label (empty -> the adapter passes nil,
+            // so Contacts assigns its own default). NOT "LinkedIn".
+            edited.emailAddresses += additions.map { LabeledValue(label: "", value: $0) }
+        }
+        if fields.contains(.websites) {
+            let additions = Self.newValues(
+                profile.contactInfo?.websites ?? [],
+                notIn: edited.urlAddresses.map(\.value),
+                key: Self.urlDedupKey
+            )
+            // CNContact field — default label (empty -> adapter passes nil).
+            edited.urlAddresses += additions.map { LabeledValue(label: "", value: $0) }
+        }
+        if fields.contains(.linkedInURL),
+           let url = (profile.contactInfo?.profileUrl ?? profile.sourceUrl)?.trimmed, !url.isEmpty {
+            let slug = LinkedInURL.slug(from: url) ?? ""
+            // A LinkedIn social profile is identified by its service ("LinkedIn")
+            // — existing ones may store only a username (no urlString), so match
+            // on service or a same-slug urlString/username, not urlString alone.
+            let existingIndex = edited.socialProfiles.firstIndex { lp in
+                let p = lp.value
+                if p.service.caseInsensitiveCompare("LinkedIn") == .orderedSame { return true }
+                if !p.urlString.isEmpty, LinkedInURL.sameProfile(p.urlString, url) { return true }
+                if !p.username.isEmpty, !slug.isEmpty, p.username.caseInsensitiveCompare(slug) == .orderedSame { return true }
+                return false
+            }
+            // Contacts' LinkedIn social-profile field expects the USERNAME, not a
+            // URL (it derives the URL from the username; a stored URL shows blank
+            // in the normal card view). So store just the slug.
+            if let i = existingIndex {
+                // Already has a LinkedIn profile — don't duplicate. Fill in the
+                // username if it's missing.
+                if edited.socialProfiles[i].value.username.isEmpty, !slug.isEmpty {
+                    edited.socialProfiles[i].value.username = slug
+                }
+            } else if !slug.isEmpty {
+                edited.socialProfiles.append(LabeledSocialProfile(
+                    label: "LinkedIn",
+                    value: SocialProfile(urlString: "", username: slug, service: "LinkedIn")
+                ))
+            }
+        }
+
+        try await saveContact(edited, for: id)
+
+        // Sidecar key/value fields (about/location aren't CNContact fields). Use
+        // UPSERT by name (not append-only notes) so re-importing the same profile
+        // updates the value instead of duplicating it. Field names are prefixed
+        // "LinkedIn " so the source is obvious.
+        if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
+            // About is multi-line prose.
+            _ = try await upsertField(for: id, field: "LinkedIn About", value: about, type: .multilineNote)
+        }
+        if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
+            // Location is a single line.
+            _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
+        }
+
+        return contact(id: id) ?? edited
+    }
+
+    /// New members of `incoming` not already present in `existing`, compared by
+    /// `key`, preserving incoming order, de-duped, trimmed, and dropping empties.
+    private static func newValues(
+        _ incoming: [String],
+        notIn existing: [String],
+        key: (String) -> String
+    ) -> [String] {
+        let have = Set(existing.map(key))
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in incoming {
+            let value = raw.trimmed
+            let k = key(value)
+            guard !k.isEmpty, !have.contains(k), !seen.contains(k) else { continue }
+            seen.insert(k)
+            out.append(value)
+        }
+        return out
+    }
+
+    /// Scheme-insensitive URL dedup key: strips scheme, a leading `www.`, and a
+    /// trailing slash; lowercased. So "adamwulf.me" == "https://www.adamwulf.me/".
+    private static func urlDedupKey(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let r = t.range(of: "://") { t = String(t[r.upperBound...]) }
+        if t.hasPrefix("www.") { t = String(t.dropFirst(4)) }
+        while t.hasSuffix("/") { t = String(t.dropLast()) }
+        return t
+    }
+
     /// Deletes the cached contact addressed by `ContactID`. Returns `false`
     /// when the id no longer resolves, matching the former app-side guard.
     @discardableResult
@@ -613,6 +754,83 @@ public final class ContactsRepository: NSObject {
         return noteID
     }
 
+    /// All live (non-deleted) sidecar fields on the contact, by `ContactID`.
+    /// Returns empty for an unreconciled id (no mint on read).
+    public func fields(for id: ContactID) -> [SidecarField] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        let all = (try? sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))) ?? []
+        return all.filter { $0.deletedAt == nil }
+    }
+
+    /// Upsert a named free-text sidecar field on the contact, by `field` name:
+    ///  - no existing field → create it with `type`;
+    ///  - existing field, SAME type → update its value in place;
+    ///  - existing field, DIFFERENT type → replace it (delete + recreate) so the
+    ///    type can change. The per-cell type is write-once, but replacing the
+    ///    whole field programmatically is allowed (the UI keeps the type fixed;
+    ///    this lets an import upgrade e.g. a single-line `.note` to a
+    ///    `.multilineNote`).
+    ///
+    /// Gives stable, re-importable key/value storage (unlike notes, which
+    /// append). Resolves-or-mints first, then refreshes the cache if minted.
+    /// Returns the field's id. Throws `SidecarUnavailableError` if no engine.
+    @discardableResult
+    public func upsertField(
+        for id: ContactID,
+        field: String,
+        value: String,
+        type: SidecarFieldType = .note
+    ) async throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+
+        let existing = ((try? sync.fields(at: key)) ?? [])
+            .first { $0.deletedAt == nil && $0.field == field }
+
+        let fieldID: UUID
+        if let existing, existing.type == type {
+            // Same type — update in place.
+            try sync.setField(at: key, id: existing.id, field: field, value: .string(value))
+            fieldID = existing.id
+        } else {
+            // Different type (or new) — replace: soft-delete the old, create new.
+            if let existing {
+                try sync.deleteField(at: key, id: existing.id)
+            }
+            fieldID = try sync.addField(at: key, field: field, type: type, value: .string(value))
+        }
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        return fieldID
+    }
+
+    /// Edit an existing sidecar field's value (by field id) on the contact.
+    /// `id` is the CONTACT, `fieldID` the field. Silent no-op if the field is
+    /// gone. Throws `SidecarUnavailableError` if no engine.
+    public func editField(for id: ContactID, id fieldID: UUID, value: String) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        // setField needs the field's current name (it's preserved); read it.
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let name = ((try? sync.fields(at: key)) ?? []).first { $0.id == fieldID }?.field
+        if let name {
+            try sync.setField(at: key, id: fieldID, field: name, value: .string(value))
+        }
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
+    /// Soft-delete a sidecar field (by field id) on the contact. `id` is the
+    /// CONTACT, `fieldID` the field. Throws `SidecarUnavailableError` if no engine.
+    public func deleteField(for id: ContactID, id fieldID: UUID) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        try sync.deleteField(at: SidecarKey(kind: .contact, id: guessWhoID), id: fieldID)
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
     /// Edit an existing note's body on the contact identified by `id`. The two
     /// `id`s are disambiguated: `id` is the CONTACT, `noteID` is the note. (No
     /// mint can happen via an edit in practice — you can only edit a note that
@@ -779,6 +997,57 @@ public final class ContactsRepository: NSObject {
         // preserves the previous `contacts.compactMap` ordering and returns
         // ALL matches.
         return (contactsByEmail[needle] ?? []).map { ContactID(contact: $0) }
+    }
+
+    /// Cached contacts whose stored LinkedIn URL matches `linkedInURL`, by either
+    /// canonical-URL or slug equality (see `LinkedInURL.sameProfile`). Scans each
+    /// contact's `socialProfiles` (urlString/username) and `urlAddresses` for a
+    /// LinkedIn link. A LinkedIn URL is a near-unique identifier, so this is the
+    /// most precise match signal. Returns ALL matches; empty query returns none.
+    /// O(n) scan — fine for a one-shot, user-initiated match.
+    public func contactIDs(matchingLinkedInURL linkedInURL: String) -> [ContactID] {
+        let needle = linkedInURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty, LinkedInURL.slug(from: needle) != nil else { return [] }
+        return contacts.filter { contact in
+            // socialProfiles: a LinkedIn entry stores the URL and/or username.
+            let socialHit = contact.socialProfiles.contains { lp in
+                let p = lp.value
+                if !p.urlString.isEmpty, LinkedInURL.sameProfile(p.urlString, needle) { return true }
+                if !p.username.isEmpty, let s = LinkedInURL.slug(from: needle), p.username.lowercased() == s.lowercased() { return true }
+                return false
+            }
+            if socialHit { return true }
+            // urlAddresses: a stored LinkedIn website link.
+            return contact.urlAddresses.contains { lv in
+                LinkedInURL.isLinkedIn(lv.value) && LinkedInURL.sameProfile(lv.value, needle)
+            }
+        }.map { ContactID(contact: $0) }
+    }
+
+    /// Single package entry point for matching a parsed LinkedIn profile to an
+    /// existing contact. Runs the tiers in precision order and returns the FIRST
+    /// non-empty tier (the app owns disambiguation when a tier returns several):
+    ///   1. LinkedIn URL (profileUrl / sourceUrl) — most precise
+    ///   2. any parsed email
+    ///   3. display name (fullName)
+    /// Returns an empty array when nothing matches.
+    public func matchLinkedIn(profile: LinkedInProfile) -> [ContactID] {
+        // 1. LinkedIn URL — try the contact-info profile URL, then the page URL.
+        for url in [profile.contactInfo?.profileUrl, profile.sourceUrl].compactMap({ $0 }) {
+            let hits = contactIDs(matchingLinkedInURL: url)
+            if !hits.isEmpty { return hits }
+        }
+        // 2. Email — any parsed email.
+        for email in profile.contactInfo?.emails ?? [] {
+            let hits = contactIDs(matchingEmail: email)
+            if !hits.isEmpty { return hits }
+        }
+        // 3. Display name.
+        if let name = profile.fullName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let hits = contactIDs(named: name)
+            if !hits.isEmpty { return hits }
+        }
+        return []
     }
 
     /// Cached contacts that reference the contact identified by `id` through a
@@ -1023,4 +1292,10 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+}
+
+private extension String {
+    /// Whitespace/newline-trimmed copy. File-private convenience for the
+    /// LinkedIn-apply merge logic above.
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

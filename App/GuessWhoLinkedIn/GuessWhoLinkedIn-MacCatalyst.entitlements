@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Extension holds the App Group ONLY (no iCloud, no Contacts). Mac
+	     Catalyst uses the <TeamID>.<name> form to match the app's Catalyst
+	     entitlement and avoid the macOS App Group prompt. Keep in sync with
+	     GUESSWHO_APP_GROUP[sdk=macosx*] in GuessWho-Shared.xcconfig and the
+	     app's GuessWho-MacCatalyst.entitlements. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>T68Z94627S.com.milestonemade.guesswho</string>
+	</array>
+</dict>
+</plist>

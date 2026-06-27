@@ -31,6 +31,7 @@ struct ContactDetailView: View {
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
     @State private var notesStore: NotesStore?
+    @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
@@ -63,7 +64,6 @@ struct ContactDetailView: View {
     // user exits contact-edit, leaking drag-handle/delete-circle affordances
     // into the read-only activity list. Reset to .inactive on every exit.
     @State private var editMode: EditMode = .inactive
-    @State private var showDiscardConfirm = false
     @State private var showDeleteConfirm = false
 
     // Focus identity covers both the bottom new-note editor and any row
@@ -78,6 +78,10 @@ struct ContactDetailView: View {
     @State private var newNoteText: String = ""
     @State private var editingNoteID: UUID?
     @State private var draftBody: String = ""
+    // Sidecar-field edit state: the field being edited (presented in an alert)
+    // and its working text.
+    @State private var editingField: SidecarField?
+    @State private var fieldDraft: String = ""
     // Body captured at edit-start, used by §12.5's no-op-tap rule: commit
     // is a no-op only when the draft is unchanged from this snapshot —
     // never the current on-disk value. Matters when a reconcile lands
@@ -99,45 +103,40 @@ struct ContactDetailView: View {
         editModel != nil
     }
 
-    private enum ActivityItem: Identifiable {
-        case note(ContactNote)
-        case connection(ContactLink)
-        case event(ContactLink)
+    // The unified-timeline `activityItems` was split into per-kind sections
+    // (Notes / Linked Contacts / Linked Organizations / Linked Events), each
+    // sorted createdAt ASC, instead of intertwining them.
 
-        var id: AnyHashable {
-            switch self {
-            case .note(let n): return AnyHashable("note-\(n.id)")
-            case .connection(let l): return AnyHashable("conn-\(l.id)")
-            case .event(let l): return AnyHashable("event-\(l.id)")
-            }
-        }
-
-        var createdAt: Date {
-            switch self {
-            case .note(let n): return n.createdAt
-            case .connection(let l), .event(let l): return l.createdAt
-            }
-        }
-
-        var sortKey: (Date, String) {
-            switch self {
-            case .note(let n): return (n.createdAt, "n-\(n.id.uuidString)")
-            case .connection(let l): return (l.createdAt, "c-\(l.id.uuidString)")
-            case .event(let l): return (l.createdAt, "e-\(l.id.uuidString)")
-            }
-        }
+    private var noteItems: [ContactNote] {
+        (notesStore?.notes ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
-    private var activityItems: [ActivityItem] {
-        var items: [ActivityItem] = []
-        if let notesStore {
-            items.append(contentsOf: notesStore.notes.map(ActivityItem.note))
-        }
-        if let linksStore {
-            items.append(contentsOf: linksStore.links.map(ActivityItem.connection))
-        }
-        items.append(contentsOf: eventLinks.map(ActivityItem.event))
-        return items.sorted { $0.sortKey < $1.sortKey }
+    /// Contact↔contact links whose OTHER endpoint is a person, sorted ASC.
+    private var linkedPeople: [ContactLink] {
+        connectionLinks(where: .person)
+    }
+
+    /// Contact↔contact links whose OTHER endpoint is an organization, ASC.
+    private var linkedOrganizations: [ContactLink] {
+        connectionLinks(where: .organization)
+    }
+
+    private var linkedEventItems: [ContactLink] {
+        eventLinks.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Split the connection links by the linked contact's type. Links whose
+    /// other endpoint can't be resolved (rare: unreconciled/malformed) fall into
+    /// the People bucket so they're not silently dropped.
+    private func connectionLinks(where type: ContactType) -> [ContactLink] {
+        let links = linksStore?.links ?? []
+        return links
+            .filter { link in
+                let other = repository.linkedContact(of: link, for: loadedContactID ?? id)
+                let resolved = other?.contactType ?? .person
+                return resolved == type
+            }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     var body: some View {
@@ -170,14 +169,6 @@ struct ContactDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
-        .confirmationDialog(
-            "Discard changes?",
-            isPresented: $showDiscardConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Discard Changes", role: .destructive) { cancelEdit() }
-            Button("Keep Editing", role: .cancel) {}
-        }
         .confirmationDialog(
             "Delete contact?",
             isPresented: $showDeleteConfirm,
@@ -243,6 +234,13 @@ struct ContactDetailView: View {
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .linkedInImportDidSave)) { _ in
+            // A LinkedIn import just saved changes to a contact. Re-read so the
+            // open card reflects the new fields/notes immediately instead of
+            // showing stale data until re-selected. preferFresh re-reads the
+            // record + sidecar fields through the fresh path.
+            Task { await loadContact(preferFresh: true) }
+        }
     }
 
     @ViewBuilder
@@ -273,11 +271,17 @@ struct ContactDetailView: View {
             } else {
                 infoSection(contact)
 
+                sidecarFieldsSection
+
                 referencedBySection(contact)
+
+                notesSection
 
                 recentEventsSection
 
-                activitySection
+                linkedContactsSection
+                linkedOrganizationsSection
+                linkedEventsSection
 
                 if debugModeEnabled {
                     debugSection(contact)
@@ -293,10 +297,18 @@ struct ContactDetailView: View {
         list
             .listStyle(.inset)
             .environment(\.editMode, $editMode)
+            .modifier(EditFieldAlert(
+                field: $editingField, draft: $fieldDraft,
+                onSave: { f, value in Task { await fieldsStore?.editField(f.id, value: value) } }
+            ))
         #else
         list
             .listStyle(.insetGrouped)
             .environment(\.editMode, $editMode)
+            .modifier(EditFieldAlert(
+                field: $editingField, draft: $fieldDraft,
+                onSave: { f, value in Task { await fieldsStore?.editField(f.id, value: value) } }
+            ))
         #endif
     }
 
@@ -323,6 +335,7 @@ struct ContactDetailView: View {
         SocialProfileRow(model: binding)
         IMRow(model: binding)
         PhoneticNameRow(model: binding)
+        editableSidecarFieldsSection
         Section {
             Button(role: .destructive) {
                 showDeleteConfirm = true
@@ -335,6 +348,38 @@ struct ContactDetailView: View {
             }
             .disabled(isSavingEdit)
             .centeredRowContent()
+        }
+    }
+
+    /// Editable custom (sidecar) fields shown inside contact-edit mode. The KEY
+    /// (field name) is read-only; the VALUE is editable. Edits/deletes save
+    /// immediately via `fieldsStore` (separate from the CNContact edit model).
+    /// No add (out of scope). Hidden when the contact has no custom fields.
+    @ViewBuilder
+    private var editableSidecarFieldsSection: some View {
+        let fields = fieldsStore?.fields ?? []
+        if !fields.isEmpty {
+            Section {
+                ForEach(fields, id: \.id) { field in
+                    EditableSidecarFieldRow(
+                        name: field.field,
+                        initialValue: Self.fieldDisplayValue(field),
+                        isMultiline: field.type == .multilineNote,
+                        onCommit: { value in
+                            Task { await fieldsStore?.editField(field.id, value: value) }
+                        }
+                    )
+                    .centeredRowContent()
+                }
+                .onDelete { offsets in
+                    for i in offsets {
+                        let fieldID = fields[i].id
+                        Task { await fieldsStore?.deleteField(fieldID) }
+                    }
+                }
+            } header: {
+                Text("Custom Fields").centeredSectionHeader()
+            }
         }
     }
 
@@ -355,21 +400,28 @@ struct ContactDetailView: View {
 
     @ToolbarContentBuilder
     private var editingToolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel") {
-                if editModel?.isDirty == true {
-                    showDiscardConfirm = true
-                } else {
-                    cancelEdit()
-                }
-            }
-            .disabled(isSavingEdit)
-        }
+        // A single accent checkmark "Done" — there's no Cancel because some edits
+        // (custom/sidecar fields) commit immediately, so a Cancel that implied
+        // undo would be a lie. Done commits any pending CNContact-model edits and
+        // dismisses; sidecar edits already saved live.
         ToolbarItem(placement: .confirmationAction) {
-            Button("Save") {
-                Task { await performInlineSave() }
+            Button {
+                Task {
+                    if editModel?.isDirty == true {
+                        await performInlineSave()   // saves + dismisses
+                    } else {
+                        cancelEdit()                // nothing to save; just dismiss
+                    }
+                }
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.subheadline.weight(.bold))
             }
-            .disabled(editModel?.isDirty != true || isSavingEdit)
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            .disabled(isSavingEdit)
+            .accessibilityLabel("Done")
         }
     }
 
@@ -569,9 +621,55 @@ struct ContactDetailView: View {
         }
     }
 
+    /// Named key/value sidecar fields (e.g. "LinkedIn About", "LinkedIn
+    /// Location"). Read-only, label-above-value, one row per field. Hidden when
+    /// the contact has none.
+    @ViewBuilder
+    private var sidecarFieldsSection: some View {
+        let fields = fieldsStore?.fields ?? []
+        if !fields.isEmpty {
+            Section {
+                ForEach(fields, id: \.id) { field in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(field.field)
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(Self.fieldDisplayValue(field))
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+                    .centeredRowContent()
+                    .contextMenu {
+                        Button {
+                            fieldDraft = Self.fieldDisplayValue(field)
+                            editingField = field
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        Button("Delete", role: .destructive) {
+                            Task { await fieldsStore?.deleteField(field.id) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Render a sidecar field's value for display. `.note`-type fields hold a
+    /// JSON string; fall back to a reasonable rendering for other shapes.
+    private static func fieldDisplayValue(_ field: SidecarField) -> String {
+        switch field.value {
+        case .string(let s): return s
+        case .bool(let b): return b ? "Yes" : "No"
+        case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
+        case .null: return ""
+        case .array, .object: return ""
+        }
+    }
+
     /// "Recent Events": up to 10 EventKit events where this contact appears
     /// as an attendee, matched by any email on the card. Distinct from the
-    /// user-curated linked events that surface in `activitySection`. Tapping
+    /// user-curated linked events that surface in the "Linked Events" section.
+    /// Tapping
     /// a row pushes the event detail; the `eventKitID` hint lets the detail
     /// view's adopt-on-load path mint a sidecar on first open.
     @ViewBuilder
@@ -750,20 +848,22 @@ struct ContactDetailView: View {
         return rows
     }
 
-    // MARK: - Activity (merged notes + connections + linked events)
+    // MARK: - Notes / Linked Contacts / Organizations / Events
+    //
+    // Formerly one intertwined "Activity" timeline; split into per-kind sections,
+    // each sorted createdAt ASC.
 
     @ViewBuilder
-    private var activitySection: some View {
-        let items = activityItems
-        if !items.isEmpty || showingNewNoteEditor {
+    private var notesSection: some View {
+        let notes = noteItems
+        if !notes.isEmpty || showingNewNoteEditor {
             Section {
-                ForEach(items) { item in
-                    activityRow(item)
+                ForEach(notes, id: \.id) { note in
+                    noteRow(note)
                         .centeredRowContent()
                 }
                 .onDelete { offsets in
-                    let targets = offsets.map { items[$0] }
-                    for target in targets { deleteActivityItem(target) }
+                    for i in offsets { deleteNote(notes[i].id) }
                 }
 
                 if showingNewNoteEditor {
@@ -772,7 +872,50 @@ struct ContactDetailView: View {
                         .centeredRowContent()
                 }
             } header: {
-                Text("Activity").centeredSectionHeader()
+                Text("Notes").centeredSectionHeader()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var linkedContactsSection: some View {
+        linkSection(title: "Linked Contacts", links: linkedPeople,
+                    delete: { deleteLink($0) }) { connectionRow($0) }
+    }
+
+    @ViewBuilder
+    private var linkedOrganizationsSection: some View {
+        linkSection(title: "Linked Organizations", links: linkedOrganizations,
+                    delete: { deleteLink($0) }) { connectionRow($0) }
+    }
+
+    @ViewBuilder
+    private var linkedEventsSection: some View {
+        // Event links delete via removeEventLink (NOT deleteLink).
+        linkSection(title: "Linked Events", links: linkedEventItems,
+                    delete: { removeEventLink($0) }) { linkedEventRow($0) }
+    }
+
+    /// Shared section shell for a list of `ContactLink`s with a row builder and
+    /// swipe-to-delete. The delete action differs by kind (contact/org links use
+    /// `deleteLink`, event links use `removeEventLink`). Hidden when empty.
+    @ViewBuilder
+    private func linkSection(
+        title: String,
+        links: [ContactLink],
+        delete: @escaping (UUID) -> Void,
+        @ViewBuilder row: @escaping (ContactLink) -> some View
+    ) -> some View {
+        if !links.isEmpty {
+            Section {
+                ForEach(links, id: \.id) { link in
+                    row(link).centeredRowContent()
+                }
+                .onDelete { offsets in
+                    for i in offsets { delete(links[i].id) }
+                }
+            } header: {
+                Text(title).centeredSectionHeader()
             }
         }
     }
@@ -846,18 +989,6 @@ struct ContactDetailView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func activityRow(_ item: ActivityItem) -> some View {
-        switch item {
-        case .note(let note):
-            noteRow(note)
-        case .connection(let link):
-            connectionRow(link)
-        case .event(let link):
-            linkedEventRow(link)
-        }
     }
 
     @ViewBuilder
@@ -982,14 +1113,6 @@ struct ContactDetailView: View {
             Button("Delete", role: .destructive) {
                 removeEventLink(link.id)
             }
-        }
-    }
-
-    private func deleteActivityItem(_ item: ActivityItem) {
-        switch item {
-        case .note(let n): deleteNote(n.id)
-        case .connection(let l): deleteLink(l.id)
-        case .event(let l): removeEventLink(l.id)
         }
     }
 
@@ -1132,6 +1255,7 @@ struct ContactDetailView: View {
             // Safe to nil regardless of whether the caller is about to
             // dismiss — a re-load would reconstruct them.
             notesStore = nil
+            fieldsStore = nil
             linksStore = nil
             eventLinks = []
             recentEvents = []
@@ -1154,6 +1278,11 @@ struct ContactDetailView: View {
             notesStore = NotesStore(repository: repository, id: loadedID)
         } else {
             notesStore?.reload()
+        }
+        if fieldsStore?.id != loadedID {
+            fieldsStore = FieldsStore(repository: repository, id: loadedID)
+        } else {
+            fieldsStore?.reload()
         }
         if linksStore?.id != loadedID {
             linksStore = ContactLinksStore(repository: repository, id: loadedID)
@@ -1640,5 +1769,81 @@ private struct AddressRow: View {
         let item = MKMapItem(placemark: placemark)
         item.name = formatted
         item.openInMaps(launchOptions: nil)
+    }
+}
+
+/// One editable custom-field row for contact-edit mode: read-only name label
+/// above an editable value field. Commits the value via `onCommit` when the
+/// field loses focus or the user submits — only if it actually changed.
+private struct EditableSidecarFieldRow: View {
+    let name: String
+    let initialValue: String
+    /// Multi-line fields let Return insert newlines; single-line fields submit on
+    /// Return and never contain a `\n` (though they may visually wrap).
+    let isMultiline: Bool
+    let onCommit: (String) -> Void
+
+    @State private var draft: String
+    @FocusState private var focused: Bool
+
+    init(name: String, initialValue: String, isMultiline: Bool, onCommit: @escaping (String) -> Void) {
+        self.name = name
+        self.initialValue = initialValue
+        self.isMultiline = isMultiline
+        self.onCommit = onCommit
+        _draft = State(initialValue: initialValue)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name)
+                .font(.caption).foregroundStyle(.secondary)
+            Group {
+                if isMultiline {
+                    // Return inserts a newline; grows vertically.
+                    TextField("Value", text: $draft, axis: .vertical)
+                } else {
+                    // Single line: Return submits (commits); strip any pasted \n.
+                    TextField("Value", text: $draft)
+                        .onChange(of: draft) { _, new in
+                            if new.contains("\n") { draft = new.replacingOccurrences(of: "\n", with: " ") }
+                        }
+                }
+            }
+            .focused($focused)
+            .onSubmit(commit)
+        }
+        .onChange(of: focused) { _, isFocused in
+            if !isFocused { commit() }
+        }
+    }
+
+    private func commit() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != initialValue else { return }
+        onCommit(trimmed)
+    }
+}
+
+/// Presents an editing alert for a sidecar field. Shown when `field` is non-nil;
+/// `draft` holds the working text. Save invokes `onSave(field, draft)`.
+private struct EditFieldAlert: ViewModifier {
+    @Binding var field: SidecarField?
+    @Binding var draft: String
+    let onSave: (SidecarField, String) -> Void
+
+    func body(content: Content) -> some View {
+        let isPresented = Binding(
+            get: { field != nil },
+            set: { if !$0 { field = nil } }
+        )
+        content.alert(field?.field ?? "Edit", isPresented: isPresented) {
+            TextField("Value", text: $draft)
+            Button("Cancel", role: .cancel) { field = nil }
+            Button("Save") {
+                if let f = field { onSave(f, draft) }
+                field = nil
+            }
+        }
     }
 }

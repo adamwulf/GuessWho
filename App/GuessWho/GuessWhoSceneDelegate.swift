@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import GuessWhoSync
+import os.log
 
 /// UIKit `UIWindowSceneDelegate` that owns the per-scene `UIWindow`
 /// and picks its root view controller based on the build target:
@@ -47,6 +48,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.rootViewController = makeRootViewController(appDelegate: appDelegate)
         self.window = window
         window.makeKeyAndVisible()
+
+        // Cold-launch path: if the app was woken by the LinkedIn handoff URL
+        // (`guesswho-linkedin://handoff`) the URL arrives here rather than in
+        // `scene(_:openURLContexts:)`. Drain it once the window exists so the
+        // spike alert has something to present on.
+        if !connectionOptions.urlContexts.isEmpty {
+            handleLinkedInHandoff(urlContexts: connectionOptions.urlContexts)
+        }
+    }
+
+    /// Running-app path for the LinkedIn handoff spike. When the
+    /// `guesswho-linkedin://handoff` URL is opened while a scene is already
+    /// connected, UIKit delivers it here. Distinct from the
+    /// `guesswho://contact/<uuid>` identity scheme — only `guesswho-linkedin`
+    /// URLs are handled.
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        handleLinkedInHandoff(urlContexts: URLContexts)
     }
 
     private func makeRootViewController(appDelegate: GuessWhoAppDelegate) -> UIViewController {
@@ -593,6 +611,223 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.pushEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
+
+    // MARK: - LinkedIn handoff spike (step-0)
+
+    /// App Group shared with the `GuessWhoLinkedIn` Safari Web Extension.
+    /// Read from the `GuessWhoAppGroup` Info.plist key (fed by
+    /// `GUESSWHO_APP_GROUP` in the xcconfig) so it matches the per-platform
+    /// entitlement — `group.`-prefixed on iOS, `<TeamID>.`-prefixed on Mac
+    /// Catalyst. Used ONLY for the ephemeral handoff file the extension parks;
+    /// synced GuessWho data lives in the iCloud ubiquity container, never here.
+    private static let handoffAppGroupID: String =
+        Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup") as? String
+            ?? "group.com.milestonemade.guesswho"
+
+    /// Filename the extension's native handler writes into the App Group.
+    private static let handoffFilename = "pending-handoff.json"
+
+    /// Upper bound on the handoff file we will read into memory. The payload now
+    /// carries the full-res profile photo as a base64 data URL inside the JSON,
+    /// so it's larger than the old text-only handoff but still bounded. An
+    /// 800x800 profile JPEG is ~tens–hundreds of KB; base64 inflates ~33% and the
+    /// JSON wraps it — 8 MB is generous headroom while still rejecting an
+    /// unexpectedly huge or hostile file. Never read unbounded.
+    private static let handoffMaxBytes = 8 * 1024 * 1024
+
+    private static let handoffLog = Logger(
+        subsystem: "com.milestonemade.guesswho",
+        category: "linkedin-handoff"
+    )
+
+    /// Drains a LinkedIn handoff wake. Only `guesswho-linkedin://handoff`
+    /// URLs are acted on; anything else (including the `guesswho://` identity
+    /// scheme, which never reaches this scene type) is ignored. Reads and
+    /// clears the App Group payload, logs it, and shows a spike alert.
+    private func handleLinkedInHandoff(urlContexts: Set<UIOpenURLContext>) {
+        let isHandoff = urlContexts.contains { context in
+            context.url.scheme == "guesswho-linkedin"
+        }
+        guard isHandoff else { return }
+
+        Self.handoffLog.log("APP resolved App Group id=\(Self.handoffAppGroupID, privacy: .public)")
+        Self.handoffLog.log("LinkedIn handoff wake received")
+
+        guard let data = readAndClearHandoffPayload() else { return }
+
+        // Decode the envelope ({ stampedBy, payload: {...} }) into the
+        // package-vended LinkedInProfile, then ask the package to match it.
+        let profile: LinkedInProfile
+        do {
+            let envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
+            profile = envelope.payload
+        } catch {
+            Self.handoffLog.error("decode: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        let repo = appDelegate.contactsRepository
+        let matches = repo.matchLinkedIn(profile: profile)
+        Self.handoffLog.log(
+            "match: \(matches.count) contact(s) for \(profile.fullName ?? "?", privacy: .public) (url=\(profile.contactInfo?.profileUrl ?? "-", privacy: .public))"
+        )
+
+        // No match: a new-contact screen is a later step. For now, log and stop.
+        guard let matchID = matches.first, let contact = repo.contact(id: matchID) else {
+            Self.handoffLog.log("match: none — new-contact flow not built yet")
+            return
+        }
+
+        // About / Location live as named sidecar fields, not on the CNContact —
+        // read the contact's current values so the diff shows them on the
+        // existing side (and marks unchanged rows). `fields(for:)` returns [] for
+        // an unreconciled contact, so this is simply empty in that case.
+        let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
+        let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
+        let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
+
+        let confirm = LinkedInConfirmView(
+            contactID: matchID,
+            contactDisplayName: contact.displayName,
+            rows: rows,
+            incomingPhoto: incomingPhoto,
+            loadExistingPhoto: { [weak repo] in
+                guard let repo else { return nil }
+                let photo = try? await repo.contactPhotoData(for: matchID, kind: .thumbnail)
+                return photo.flatMap { UIImage(data: $0.data) }
+            },
+            onConfirm: { [weak self, weak repo] selected in
+                self?.dismissPresented()
+                guard let repo else { return }
+                let fields = Self.packageFields(from: selected)
+                Self.handoffLog.log("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)")
+                Task {
+                    do {
+                        let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
+                        Self.handoffLog.log("confirm: saved \(updated.givenName, privacy: .public) \(updated.familyName, privacy: .public)")
+                        // Nudge an open ContactDetailView to reload — the package
+                        // cache is fresh after applyLinkedIn, but the SwiftUI view
+                        // doesn't know to re-read until told.
+                        await MainActor.run {
+                            NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+                        }
+                    } catch {
+                        Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            },
+            onCancel: { [weak self] in self?.dismissPresented() }
+        )
+
+        let hosting = UIHostingController(rootView: confirm)
+        hosting.modalPresentationStyle = .formSheet
+        // Wider sheet so the two columns (esp. About / multi-line values) have room.
+        hosting.preferredContentSize = CGSize(width: 840, height: 660)
+        topmostPresenter()?.present(hosting, animated: true)
+    }
+
+    /// The LinkedIn-sourced sidecar fields (About / Location) as a
+    /// `[name: value]` map for the diff's existing side. Only string-valued
+    /// fields whose name matches one the import writes are included; everything
+    /// else (other sidecar fields, non-string values) is ignored.
+    private static func existingSidecarFields(_ fields: [SidecarField]) -> [String: String] {
+        let names: Set<String> = [LinkedInDiff.aboutFieldName, LinkedInDiff.locationFieldName]
+        var out: [String: String] = [:]
+        for field in fields where names.contains(field.field) {
+            if case .string(let value) = field.value { out[field.field] = value }
+        }
+        return out
+    }
+
+    /// Map the dialog's chosen diff-row fields to the package's `LinkedInField`
+    /// set that `applyLinkedIn` understands.
+    private static func packageFields(from rows: Set<LinkedInDiffRow.Field>) -> Set<LinkedInField> {
+        var out: Set<LinkedInField> = []
+        for row in rows {
+            switch row {
+            case .name: out.insert(.name)
+            case .jobTitle: out.insert(.jobTitle)
+            case .organization: out.insert(.organization)
+            case .location: out.insert(.location)
+            case .about: out.insert(.about)
+            case .emails: out.insert(.emails)
+            case .websites: out.insert(.websites)
+            case .linkedInURL: out.insert(.linkedInURL)
+            case .photo: out.insert(.photo)
+            }
+        }
+        return out
+    }
+
+    /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a
+    /// recognizable base64 data URL or the bytes aren't an image.
+    private static func image(fromDataURL dataURL: String) -> UIImage? {
+        guard let comma = dataURL.range(of: ",") else { return nil }
+        let b64 = String(dataURL[comma.upperBound...])
+        guard let data = Data(base64Encoded: b64) else { return nil }
+        return UIImage(data: data)
+    }
+
+    /// The topmost presented view controller to present from (works for the
+    /// Catalyst split shell and the iPhone tab/gate shell).
+    private func topmostPresenter() -> UIViewController? {
+        guard var presenter = window?.rootViewController else { return nil }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        return presenter
+    }
+
+    private func dismissPresented() {
+        topmostPresenter()?.dismiss(animated: true)
+    }
+
+    /// The handoff JSON envelope the extension writes: a `payload` object plus a
+    /// `stampedBy` marker. The payload is the parsed `LinkedInProfile`.
+    private struct HandoffEnvelope: Decodable {
+        let payload: LinkedInProfile
+    }
+
+    /// Reads `pending-handoff.json` from the App Group container, deletes it
+    /// (so the same payload is never replayed), and returns the RAW bytes for
+    /// decoding. Returns nil on any failure (this is a receiver, not production
+    /// error handling — failures are logged).
+    private func readAndClearHandoffPayload() -> Data? {
+        Self.handoffLog.log("read: resolving App Group id=\(Self.handoffAppGroupID, privacy: .public)")
+        guard let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.handoffAppGroupID) else {
+            Self.handoffLog.error("read: App Group container unavailable: \(Self.handoffAppGroupID, privacy: .public)")
+            return nil
+        }
+
+        let fileURL = container.appendingPathComponent(Self.handoffFilename)
+        Self.handoffLog.log("read: looking for \(fileURL.path, privacy: .public)")
+
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            Self.handoffLog.error("read: No \(Self.handoffFilename, privacy: .public) at \(fileURL.path, privacy: .public)")
+            return nil
+        }
+
+        do {
+            // Cap the read: reject (and clear) an oversized file instead of
+            // loading it into memory unbounded.
+            let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+            if size > Self.handoffMaxBytes {
+                try? FileManager.default.removeItem(at: fileURL)
+                Self.handoffLog.error("read: handoff file too large (\(size) bytes > \(Self.handoffMaxBytes)); discarded")
+                return nil
+            }
+
+            let data = try Data(contentsOf: fileURL)
+            // Clear immediately so a re-open can't replay a stale handoff.
+            try FileManager.default.removeItem(at: fileURL)
+            return data
+        } catch {
+            Self.handoffLog.error("read: failed to read/clear handoff: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
 }
 
 #if !targetEnvironment(macCatalyst)

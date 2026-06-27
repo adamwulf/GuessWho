@@ -74,7 +74,7 @@ extension SidecarField {
     /// For `.date`, the value must additionally be ISO8601-parseable.
     static func validate(value: JSONValue, against type: SidecarFieldType) throws {
         switch type {
-        case .note:
+        case .note, .multilineNote:
             guard case .string = value else {
                 throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
             }

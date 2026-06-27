@@ -8,9 +8,17 @@
 
 /* Begin PBXBuildFile section */
 		A100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D2 /* GuessWhoSync */; };
+		B200000000000000000000F1 /* GuessWhoLinkedIn.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		B200000000000000000000F2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A100000000000000000000A0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B200000000000000000000B1;
+			remoteInfo = GuessWhoLinkedIn;
+		};
 		C55586FF2FE7A7DE002F1969 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A100000000000000000000A0 /* Project object */;
@@ -20,6 +28,20 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		B200000000000000000000F0 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B200000000000000000000F1 /* GuessWhoLinkedIn.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		A100000000000000000000C0 /* GuessWho.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GuessWho.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A100000000000000000000E1 /* SharedVersion.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = SharedVersion.xcconfig; sourceTree = "<group>"; };
@@ -27,6 +49,7 @@
 		A100000000000000000000E3 /* Project-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Debug.xcconfig"; sourceTree = "<group>"; };
 		A100000000000000000000E4 /* Project-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Release.xcconfig"; sourceTree = "<group>"; };
 		A100000000000000000000E5 /* GuessWho-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Shared.xcconfig"; sourceTree = "<group>"; };
+		B200000000000000000000C0 /* GuessWhoLinkedIn.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoLinkedIn.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -38,6 +61,13 @@
 			);
 			target = A100000000000000000000B1 /* GuessWho */;
 		};
+		B200000000000000000000A4 /* Exceptions for "GuessWhoLinkedIn" folder in "GuessWhoLinkedIn" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B200000000000000000000B1 /* GuessWhoLinkedIn */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -47,6 +77,14 @@
 				A100000000000000000000A4 /* Exceptions for "GuessWho" folder in "GuessWho" target */,
 			);
 			path = GuessWho;
+			sourceTree = "<group>";
+		};
+		B200000000000000000000A3 /* GuessWhoLinkedIn */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B200000000000000000000A4 /* Exceptions for "GuessWhoLinkedIn" folder in "GuessWhoLinkedIn" target */,
+			);
+			path = GuessWhoLinkedIn;
 			sourceTree = "<group>";
 		};
 		C55586FA2FE7A7DE002F1969 /* GuessWhoUITests */ = {
@@ -65,6 +103,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B200000000000000000000B4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C55586F62FE7A7DE002F1969 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -80,6 +125,7 @@
 			children = (
 				A100000000000000000000A7 /* Config */,
 				A100000000000000000000A3 /* GuessWho */,
+				B200000000000000000000A3 /* GuessWhoLinkedIn */,
 				C55586FA2FE7A7DE002F1969 /* GuessWhoUITests */,
 				A100000000000000000000A5 /* Products */,
 			);
@@ -89,6 +135,7 @@
 			isa = PBXGroup;
 			children = (
 				A100000000000000000000C0 /* GuessWho.app */,
+				B200000000000000000000C0 /* GuessWhoLinkedIn.appex */,
 				C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */,
 			);
 			name = Products;
@@ -116,10 +163,12 @@
 				A100000000000000000000B2 /* Sources */,
 				A100000000000000000000B4 /* Frameworks */,
 				A100000000000000000000B3 /* Resources */,
+				B200000000000000000000F0 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B200000000000000000000F3 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A100000000000000000000A3 /* GuessWho */,
@@ -131,6 +180,28 @@
 			productName = GuessWho;
 			productReference = A100000000000000000000C0 /* GuessWho.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B200000000000000000000B1 /* GuessWhoLinkedIn */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B200000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoLinkedIn" */;
+			buildPhases = (
+				B200000000000000000000B2 /* Sources */,
+				B200000000000000000000B4 /* Frameworks */,
+				B200000000000000000000B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B200000000000000000000A3 /* GuessWhoLinkedIn */,
+			);
+			name = GuessWhoLinkedIn;
+			packageProductDependencies = (
+			);
+			productName = GuessWhoLinkedIn;
+			productReference = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		C55586F82FE7A7DE002F1969 /* GuessWhoUITests */ = {
 			isa = PBXNativeTarget;
@@ -168,6 +239,9 @@
 					A100000000000000000000B1 = {
 						CreatedOnToolsVersion = 26.3;
 					};
+					B200000000000000000000B1 = {
+						CreatedOnToolsVersion = 26.3;
+					};
 					C55586F82FE7A7DE002F1969 = {
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = A100000000000000000000B1;
@@ -192,6 +266,7 @@
 			projectRoot = "";
 			targets = (
 				A100000000000000000000B1 /* GuessWho */,
+				B200000000000000000000B1 /* GuessWhoLinkedIn */,
 				C55586F82FE7A7DE002F1969 /* GuessWhoUITests */,
 			);
 		};
@@ -199,6 +274,13 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		A100000000000000000000B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B200000000000000000000B3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -222,6 +304,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B200000000000000000000B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C55586F52FE7A7DE002F1969 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -232,6 +321,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		B200000000000000000000F3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B200000000000000000000B1 /* GuessWhoLinkedIn */;
+			targetProxy = B200000000000000000000F2 /* PBXContainerItemProxy */;
+		};
 		C55587002FE7A7DE002F1969 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A100000000000000000000B1 /* GuessWho */;
@@ -302,6 +396,76 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = YES;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B200000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = T68Z94627S;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
+				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
+				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B200000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = T68Z94627S;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
+				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
+				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -470,6 +634,15 @@
 			buildConfigurations = (
 				A100000000000000000000C21 /* Debug */,
 				A100000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B200000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoLinkedIn" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B200000000000000000000C21 /* Debug */,
+				B200000000000000000000C22 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
