@@ -290,9 +290,9 @@ extension OrganizationsListViewController: UISearchResultsUpdating {
 
 // MARK: - Row cell
 
-/// Single-line organization row: leading building icon + bold family
-/// name (which is the organization's name in the data model). No
-/// subtitle — matches the SwiftUI `ContactRow` for `.organization`.
+/// Single-line organization row: leading avatar thumbnail (initials-
+/// circle fallback from `ContactAvatarImage`) + bold family name (which
+/// is the organization's name in the data model). No subtitle.
 private final class OrganizationCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()

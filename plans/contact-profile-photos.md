@@ -1,8 +1,20 @@
 # Plan: contact profile photos
 
-## Status (2026-06-26)
+## Status (2026-06-27)
 
-Planning only. No app or package implementation has been changed.
+All six phases are implemented and merged onto `agent/profile-photos`:
+
+- Phase 1 — package `ContactID` photo API (`ContactPhoto`,
+  `ContactsRepository.contactPhotoData(for:kind:)`). ✅
+- Phase 2 — app `ContactPhotoLoader` + `NSCache`, reload invalidation, DI. ✅
+- Phase 3 — People + Organizations list thumbnails (and `GroupMembers`). ✅
+- Phase 4 — Favorites thumbnails. ✅
+- Phase 5 — `ContactDetailView` full-size header photo. ✅
+- Phase 6 — shared SwiftUI `ContactAvatar` adopted in connection rows
+  (`LinkRow`) and event linked-contact rows; dead `ContactRow.swift` removed;
+  placeholder color index shared via `ContactAvatarPalette`. ✅
+
+`swift test` (567 tests), Catalyst, and iPhone-sim builds all pass.
 
 This plan covers how GuessWho should load and display contact profile photos
 without violating the contact-identity boundary:
