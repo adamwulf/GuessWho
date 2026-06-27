@@ -23,6 +23,17 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   if (!doc) return null;
 
   const text = (el) => (el && el.textContent ? el.textContent.trim() : null);
+  // Like `text`, but preserves visual line breaks. `textContent` flattens
+  // <br>/<p>/block boundaries into a single run with NO newlines, which would
+  // collapse a multi-paragraph About into one line. `innerText` reflects the
+  // RENDERED text and inserts "\n" at those boundaries, so multi-paragraph
+  // prose round-trips with its newlines intact. Fall back to textContent where
+  // innerText is unavailable (e.g. a non-rendering test DOM).
+  const blockText = (el) => {
+    if (!el) return null;
+    const raw = typeof el.innerText === "string" ? el.innerText : el.textContent;
+    return raw ? raw.trim() : null;
+  };
   const safe = (fn) => { try { return fn(); } catch { return null; } };
 
   // --- Name -----------------------------------------------------------------
@@ -105,8 +116,18 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   const org = firstAt ? firstAt.org : null;
 
   // --- About ----------------------------------------------------------------
-  // Anchor on the "About" <h2> landmark, then take the longest text block in
-  // its following section (skips Edit links / icons present in self-view).
+  // Anchor on the "About" <h2> landmark, then take the bio by its DOM POSITION:
+  // the content block that immediately follows the heading's block within the
+  // section. We do NOT pick "the longest text block" — that heuristic is fragile
+  // (a long headline/experience entry elsewhere in the section can win, and a
+  // short bio can lose). The bio is positionally the first real content after
+  // the "About" heading, so walk forward from there.
+  //
+  // Read the bio with `blockText` (innerText-based) for two reasons: it
+  // preserves the bio's <br>/<p> line breaks as "\n" (textContent flattens
+  // them), and it naturally excludes LinkedIn's visually-hidden screen-reader
+  // duplicate of the bio (textContent would return it doubled).
+  //
   // NOTE: LinkedIn lazy-renders this section, so on a fresh non-scrolled page it
   // may be absent and return null — accepted tradeoff (see content.js).
   const about = safe(() => {
@@ -115,24 +136,42 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     if (!aboutHead) return null;
     const section = aboutHead.closest("section") || aboutHead.parentElement;
     if (!section) return null;
-    // Candidate text nodes within the section, excluding the heading itself and
-    // obvious chrome (links/buttons). Pick the longest — the bio is the body.
-    const candidates = [...section.querySelectorAll("span, p, div")]
-      .filter((el) => !el.closest("a, button"))
-      .map((el) => text(el))
-      .filter((t) => t && t.length > 0 && !/^about$/i.test(t));
-    if (!candidates.length) return null;
-    let body = candidates.reduce((a, b) => (b.length > a.length ? b : a), "");
-    // The longest block can include the section heading text glued to the front
-    // ("About<bio>") and the truncated expander suffix ("…more"/"… see more").
-    // Strip both so we keep just the bio prose.
+
+    // The bio prose sits in a block AFTER the heading. Climb from the heading to
+    // the ancestor that is a direct child of the section ("the heading block"),
+    // then scan its following siblings for the first one carrying real prose.
+    let headerBlock = aboutHead;
+    while (headerBlock.parentElement && headerBlock.parentElement !== section) {
+      headerBlock = headerBlock.parentElement;
+    }
+    let body = null;
+    for (let sib = headerBlock.nextElementSibling; sib; sib = sib.nextElementSibling) {
+      // Skip pure chrome (a bare "see more"/"Edit" link or button block).
+      if (sib.matches("a, button")) continue;
+      const t = blockText(sib);
+      if (t && t.length > 0 && !/^about$/i.test(t)) { body = t; break; }
+    }
+
+    // Fallback: some layouts nest the heading and the bio under a shared wrapper
+    // rather than as siblings (so there's no following sibling to find). Take the
+    // section's rendered text (still attached, so innerText resolves and drops
+    // the a11y duplicate) and strip the leading "About" heading line. The leading
+    // /^…about…/ strip below also removes a self-view "Edit" label if present.
+    if (body == null) {
+      const whole = blockText(section);
+      if (whole) body = whole.replace(/^\s*about\s*\n?/i, "");
+    }
+    if (body == null) return null;
+
+    // Strip a glued-on heading prefix and the truncated expander suffix
+    // ("…more"/"… see more"); keep the bio prose and its internal newlines.
     // NOTE: when "…more" was present the bio is TRUNCATED in the DOM until the
     // user expands it. A later pass can click the "see more" control (like the
     // Contact-info modal) to capture the full text; for now we keep the visible
     // portion.
     body = body
       .replace(/^About\s*/i, "")
-      .replace(/[……]\s*(see\s+)?more\s*$/i, "")
+      .replace(/\n*[……]\s*(see\s+)?more\s*$/i, "")
       .trim();
     return body || null;
   });

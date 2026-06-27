@@ -201,6 +201,24 @@ struct LinkedInApplyTests {
         let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: rid).map { ($0.field, $0) })
         #expect(byName["LinkedIn About"]?.type == .multilineNote)
         #expect(byName["LinkedIn Location"]?.type == .note)
+        // About is multiline: its internal newline must survive the round-trip.
+        #expect(byName["LinkedIn About"]?.value == .string("Line 1\nLine 2"))
+    }
+
+    @Test func multiParagraphAbout_preservesNewlines_endToEnd() async throws {
+        // A realistic multi-paragraph bio (blank line between paragraphs). The
+        // newlines must survive parser -> applyLinkedIn -> the .multilineNote
+        // field unchanged. (The parser's textContent->innerText fix is what keeps
+        // the newlines on the way in; this asserts nothing downstream drops them.)
+        let bio = "First paragraph about my work.\n\nSecond paragraph with more detail.\nAnd a third line."
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(about: bio), to: id, fields: [.about]
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        let stored = repo.fields(for: rid).first { $0.field == "LinkedIn About" }
+        #expect(stored?.type == .multilineNote)
+        #expect(stored?.value == .string(bio))
     }
 
     @Test func upsert_changingType_replacesField() async throws {
