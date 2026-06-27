@@ -64,7 +64,6 @@ struct ContactDetailView: View {
     // user exits contact-edit, leaking drag-handle/delete-circle affordances
     // into the read-only activity list. Reset to .inactive on every exit.
     @State private var editMode: EditMode = .inactive
-    @State private var showDiscardConfirm = false
     @State private var showDeleteConfirm = false
 
     // Focus identity covers both the bottom new-note editor and any row
@@ -170,14 +169,6 @@ struct ContactDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
-        .confirmationDialog(
-            "Discard changes?",
-            isPresented: $showDiscardConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Discard Changes", role: .destructive) { cancelEdit() }
-            Button("Keep Editing", role: .cancel) {}
-        }
         .confirmationDialog(
             "Delete contact?",
             isPresented: $showDeleteConfirm,
@@ -401,21 +392,28 @@ struct ContactDetailView: View {
 
     @ToolbarContentBuilder
     private var editingToolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel") {
-                if editModel?.isDirty == true {
-                    showDiscardConfirm = true
-                } else {
-                    cancelEdit()
-                }
-            }
-            .disabled(isSavingEdit)
-        }
+        // A single accent checkmark "Done" — there's no Cancel because some edits
+        // (custom/sidecar fields) commit immediately, so a Cancel that implied
+        // undo would be a lie. Done commits any pending CNContact-model edits and
+        // dismisses; sidecar edits already saved live.
         ToolbarItem(placement: .confirmationAction) {
-            Button("Save") {
-                Task { await performInlineSave() }
+            Button {
+                Task {
+                    if editModel?.isDirty == true {
+                        await performInlineSave()   // saves + dismisses
+                    } else {
+                        cancelEdit()                // nothing to save; just dismiss
+                    }
+                }
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.subheadline.weight(.bold))
             }
-            .disabled(editModel?.isDirty != true || isSavingEdit)
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            .disabled(isSavingEdit)
+            .accessibilityLabel("Done")
         }
     }
 
