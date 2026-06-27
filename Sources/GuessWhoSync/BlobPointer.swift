@@ -36,9 +36,26 @@ extension BlobPointer {
         ])
     }
 
+    /// Leniently extract JUST the `blobId` from a `.blob` field's `value`,
+    /// ignoring whether `contentType`/`byteCount` are well-formed. Returns nil
+    /// only when there is no non-empty `blobId` string at all.
+    ///
+    /// The orphan sweep's reference-counting uses THIS (not the strict
+    /// `init?(from:)`): a `.dat` must stay protected from deletion whenever any
+    /// live cell points at its blobId, even if the rest of that cell's pointer
+    /// object is somehow malformed. Erring toward "referenced" keeps a partially
+    /// corrupt pointer from causing data loss; the strict decoder governs reads.
+    public static func referencedBlobId(from value: JSONValue) -> String? {
+        guard case .object(let pointer) = value,
+              case .string(let blobId) = pointer[BlobPointer.blobIdKey] ?? .null,
+              !blobId.isEmpty
+        else { return nil }
+        return blobId
+    }
+
     /// Decode a pointer object from a `.blob` field's `value`. Returns nil if
     /// the shape doesn't match (mirrors `SidecarField.validate`'s `.blob` arm,
-    /// but non-throwing — used by the orphan sweep to harvest live blobIds).
+    /// but non-throwing — used to READ a blob through its pointer).
     public init?(from value: JSONValue) {
         guard case .object(let pointer) = value else { return nil }
         guard case .string(let blobId) = pointer[BlobPointer.blobIdKey] ?? .null,

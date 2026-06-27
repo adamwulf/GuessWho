@@ -224,11 +224,6 @@ public final class GuessWhoSync: @unchecked Sendable {
         contentType: String
     ) throws -> String {
         let newBlobId = UUID().uuidString.lowercased()
-        // Write the bytes FIRST so the pointer never dangles: if the envelope
-        // write below fails, an orphaned `.dat` is swept later; but a pointer
-        // with no `.dat` would read as a permanent "pending" miss.
-        try sidecars.writeBlob(data, blobId: newBlobId, for: key)
-
         let pointer = BlobPointer(
             blobId: newBlobId,
             contentType: contentType,
@@ -239,6 +234,16 @@ public final class GuessWhoSync: @unchecked Sendable {
         // write commits the repoint.
         var supersededBlobId: String?
         try sidecarLocks.withLock(forKey: key) {
+            // Write the bytes FIRST, but INSIDE the per-key lock: the orphan
+            // sweep re-reads this key's envelope under the same lock, so writing
+            // the `.dat` and committing the pointer atomically (w.r.t. the lock)
+            // closes the window where a concurrent sweep would see the fresh
+            // `.dat` on disk, find it unreferenced (the repoint hasn't landed),
+            // and delete it as a false orphan. Order within the lock still
+            // writes the `.dat` before the envelope so a mid-failure leaves an
+            // orphan (swept later), never a dangling pointer.
+            try sidecars.writeBlob(data, blobId: newBlobId, for: key)
+
             let existing = try sidecars.read(key)
             var fields = existing?.fields ?? [:]
             let now = Date()
@@ -376,9 +381,12 @@ public final class GuessWhoSync: @unchecked Sendable {
                     guard cell.deletedAt == nil,
                           SidecarField.type(of: cell) == .blob,
                           case .object(let inner) = cell.value,
-                          let pointer = BlobPointer(from: inner[SidecarField.innerValueKey] ?? .null)
+                          // Lenient: protect a `.dat` whenever ANY live cell
+                          // names its blobId, even if the rest of the pointer
+                          // is malformed — never sweep a still-referenced blob.
+                          let blobId = BlobPointer.referencedBlobId(from: inner[SidecarField.innerValueKey] ?? .null)
                     else { continue }
-                    referenced.insert(pointer.blobId)
+                    referenced.insert(blobId)
                 }
             } catch {
                 anyEnvelopeUnreadable = true
@@ -418,9 +426,10 @@ public final class GuessWhoSync: @unchecked Sendable {
                             guard cell.deletedAt == nil,
                                   SidecarField.type(of: cell) == .blob,
                                   case .object(let inner) = cell.value,
-                                  let pointer = BlobPointer(from: inner[SidecarField.innerValueKey] ?? .null)
+                                  // Lenient blobId (see the global harvest above).
+                                  let blobId = BlobPointer.referencedBlobId(from: inner[SidecarField.innerValueKey] ?? .null)
                             else { continue }
-                            liveHere.insert(pointer.blobId)
+                            liveHere.insert(blobId)
                         }
                     }
                     var localDeleted: [BlobSweepReport.Deleted] = []

@@ -107,6 +107,55 @@ struct OrphanBlobSweepTests {
     }
 
     @Test
+    func sweepImmediatelyAfterSetBlobFieldKeepsTheFreshBlob() throws {
+        // REGRESSION (write→sweep race): setBlobField writes the `.dat` and
+        // commits the pointer atomically under the per-key lock the sweep also
+        // takes. So a sweep that runs right after setBlobField returns can never
+        // see the fresh `.dat` as a referenced-but-unrepointed orphan. (Before
+        // the fix the `.dat` was written OUTSIDE the lock; a sweep interleaving
+        // the write→repoint window would delete it — a lost previous photo.)
+        let (sync, sidecars) = makeOrchestrator()
+        let blobId = try sync.setBlobField(at: contactKey, field: "previousPhoto", data: Data([0xaa]), contentType: "image/jpeg")
+
+        let report = try sync.sweepOrphanBlobs()
+        #expect(report.deletionSkipped == false)
+        #expect(report.deleted.isEmpty)
+        #expect(try sidecars.blobIds(for: contactKey) == [blobId])
+        #expect(try sync.blobFieldData(at: contactKey, field: "previousPhoto") == Data([0xaa]))
+    }
+
+    @Test
+    func sweepKeepsBlobWhosePointerHasMalformedMetadata() throws {
+        // REGRESSION (over-strict harvest): a live `.blob` cell whose pointer has
+        // a valid blobId but malformed contentType/byteCount must STILL protect
+        // its `.dat` — the sweep's reference-counting keys on the blobId alone
+        // (BlobPointer.referencedBlobId), never the full strict decode. A strict
+        // harvest would treat the blob as unreferenced and delete it (data loss).
+        let (sync, sidecars) = makeOrchestrator()
+        let blobId = try sync.setBlobField(at: contactKey, field: "previousPhoto", data: Data([0xdd]), contentType: "image/jpeg")
+
+        // Corrupt the pointer's metadata in place (keep the blobId), so the
+        // strict BlobPointer(from:) would return nil but referencedBlobId still
+        // recovers the blobId.
+        let envelope = try #require(try sync.sidecar(at: contactKey))
+        let (cellID, cell) = try #require(envelope.fields.first)
+        guard case .object(var inner) = cell.value,
+              case .object(var pointer) = inner[SidecarField.innerValueKey] ?? .null else {
+            Issue.record("unexpected cell shape"); return
+        }
+        pointer.removeValue(forKey: BlobPointer.contentTypeKey) // malform: drop contentType
+        inner[SidecarField.innerValueKey] = .object(pointer)
+        var fields = envelope.fields
+        fields[cellID] = SidecarCell(value: .object(inner), modifiedAt: cell.modifiedAt, modifiedBy: cell.modifiedBy, deletedAt: nil)
+        try sidecars.write(SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields), at: contactKey)
+
+        // Strict decode now fails, but the sweep must not delete the `.dat`.
+        let report = try sync.sweepOrphanBlobs()
+        #expect(report.deleted.isEmpty)
+        #expect(try sidecars.blobIds(for: contactKey) == [blobId])
+    }
+
+    @Test
     func sweepDoesNotDeleteSoftDeletedFieldBlobUntilDereferenced() throws {
         // A soft-deleted `.blob` field no longer counts as a live reference, so
         // its `.dat` becomes orphan and is swept.

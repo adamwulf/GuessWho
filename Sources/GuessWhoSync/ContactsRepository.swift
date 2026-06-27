@@ -341,9 +341,14 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// The single-slot field name the previous-photo snapshot lives under. If
-    /// ever surfaced in UI it is user-safe as "previous photo" (plain language;
-    /// no sidecar/blob vocabulary leaks) — but v1 only guarantees capture.
+    /// The single-slot field name the previous-photo snapshot lives under. This
+    /// is an INTERNAL identifier, NOT a display string: the `.blob` field it
+    /// names is excluded from the user-visible custom-fields list by
+    /// `fields(for:)` (a `.blob` is infrastructure, not a user-editable field),
+    /// so the raw "previousPhoto" token never reaches the UI. A future
+    /// "previous photo" feature would render its own plain-language label and
+    /// read the bytes via `GuessWhoSync.blobFieldData`, not surface this name.
+    /// v1 only guarantees capture.
     static let previousPhotoFieldName = "previousPhoto"
 
     /// Best-effort MIME sniff for the snapshot pointer's `contentType`. CN
@@ -825,12 +830,19 @@ public final class ContactsRepository: NSObject {
         return noteID
     }
 
-    /// All live (non-deleted) sidecar fields on the contact, by `ContactID`.
-    /// Returns empty for an unreconciled id (no mint on read).
+    /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
+    /// `ContactID`. Returns empty for an unreconciled id (no mint on read).
+    ///
+    /// `.blob` fields are EXCLUDED: they are internal infrastructure (e.g. the
+    /// `previousPhoto` snapshot), not user-editable custom fields. Surfacing one
+    /// would render a phantom row (e.g. literally "previousPhoto") in the
+    /// contact's custom-fields UI — a product-principle violation. The contact
+    /// custom-fields surface is text/date/checkbox only; blobs are read through
+    /// their own typed accessors (`GuessWhoSync.blobFieldData`).
     public func fields(for id: ContactID) -> [SidecarField] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let all = (try? sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))) ?? []
-        return all.filter { $0.deletedAt == nil }
+        return all.filter { $0.deletedAt == nil && $0.type != .blob }
     }
 
     /// Upsert a named free-text sidecar field on the contact, by `field` name:

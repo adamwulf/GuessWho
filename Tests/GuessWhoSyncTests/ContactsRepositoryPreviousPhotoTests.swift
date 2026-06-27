@@ -154,6 +154,41 @@ struct ContactsRepositoryPreviousPhotoTests {
     }
 
     @Test @MainActor
+    func previousPhotoBlobIsHiddenFromUserVisibleFields() async throws {
+        // REGRESSION: the previousPhoto `.blob` is internal infrastructure and
+        // must NOT surface in `fields(for:)` (which drives the user-facing
+        // custom-fields UI) — otherwise a phantom "previousPhoto" row appears
+        // once a photo is replaced (a product-principle violation). User-added
+        // text/date/checkbox fields still show; only `.blob` is filtered.
+        let contact = Contact(localID: "ada", givenName: "Ada", imageDataAvailable: true)
+        let contactStore = InMemoryContactStore(contacts: [contact])
+        await contactStore.setImageData(Data([0xFF, 0xD8, 0xFF, 0x01]), thumbnail: Data([0xFF]), for: "ada")
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(contacts: contactStore, sidecars: sidecars)
+        let repository = ContactsRepository(contacts: contactStore, sync: sync)
+        await repository.reload()
+
+        let id = try #require(repository.contact(localID: "ada")).contactID
+        // Add a normal user field, then replace the photo (which snapshots a
+        // previousPhoto `.blob`).
+        _ = try await repository.upsertField(for: id, field: "Nickname", value: "Ace", type: .note)
+        _ = try await repository.setContactPhoto(for: id, imageData: Data([0x10, 0x20]))
+
+        // Re-resolve the id (a sidecar write may have minted the GuessWho UUID).
+        let freshID = try #require(repository.contact(localID: "ada")).contactID
+        let visible = repository.fields(for: freshID)
+        // The user field is visible; the previousPhoto blob is NOT.
+        #expect(visible.contains { $0.field == "Nickname" && $0.type == .note })
+        #expect(!visible.contains { $0.field == ContactsRepository.previousPhotoFieldName })
+        #expect(!visible.contains { $0.type == .blob })
+
+        // But the snapshot bytes are still retrievable through the typed accessor
+        // (filtering hides it from the field LIST, not from blob reads).
+        let key = try contactKey(repository, localID: "ada")
+        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) != nil)
+    }
+
+    @Test @MainActor
     func photoWriteSucceedsWhenSyncEngineUnavailable() async throws {
         // No sync engine → snapshot is silently skipped; the photo write still
         // proceeds (the snapshot must never block it).

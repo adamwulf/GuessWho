@@ -48,7 +48,6 @@ struct ContactDetailView: View {
     // `.photosPicker(isPresented:)` opens the picker once the dialog is gone.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
-    @State private var isSavingPhoto = false
     @State private var photoSaveError: String?
     @State private var notesStore: NotesStore?
     @State private var fieldsStore: FieldsStore?
@@ -606,8 +605,6 @@ struct ContactDetailView: View {
     /// again re-fires.
     private func applyPickedPhoto(_ item: PhotosPickerItem) async {
         defer { photoPickerItem = nil }
-        isSavingPhoto = true
-        defer { isSavingPhoto = false }
         do {
             guard let rawData = try await item.loadTransferable(type: Data.self) else {
                 photoSaveError = "That photo couldn't be loaded."
@@ -627,8 +624,6 @@ struct ContactDetailView: View {
     }
 
     private func removePhoto() async {
-        isSavingPhoto = true
-        defer { isSavingPhoto = false }
         do {
             try await writePhoto(nil)
         } catch {
