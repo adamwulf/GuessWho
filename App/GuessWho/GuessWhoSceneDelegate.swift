@@ -706,6 +706,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     do {
                         let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
                         Self.handoffLog.log("confirm: saved \(updated.givenName, privacy: .public) \(updated.familyName, privacy: .public)")
+                        // Nudge an open ContactDetailView to reload — the package
+                        // cache is fresh after applyLinkedIn, but the SwiftUI view
+                        // doesn't know to re-read until told.
+                        await MainActor.run {
+                            NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+                        }
                     } catch {
                         Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription, privacy: .public)")
                     }

@@ -1,6 +1,17 @@
 import Foundation
 import GuessWhoSync
 
+extension Notification.Name {
+    /// Posted after a LinkedIn import saves changes to a contact. `userInfo`
+    /// carries the contact's localID under `LinkedInImport.contactLocalIDKey` so
+    /// an open ContactDetailView can reload if it's showing that contact.
+    static let linkedInImportDidSave = Notification.Name("LinkedInImportDidSave")
+}
+
+enum LinkedInImport {
+    static let contactLocalIDKey = "contactLocalID"
+}
+
 /// One field's before/after for the LinkedIn confirm dialog. Presentation-only
 /// (app side) — the package owns matching, this owns how a match is shown and
 /// which fields the user chose. Each row is independently includable.

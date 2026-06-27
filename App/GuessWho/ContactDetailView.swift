@@ -234,6 +234,13 @@ struct ContactDetailView: View {
             // if commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .linkedInImportDidSave)) { _ in
+            // A LinkedIn import just saved changes to a contact. Re-read so the
+            // open card reflects the new fields/notes immediately instead of
+            // showing stale data until re-selected. preferFresh re-reads the
+            // record + sidecar fields through the fresh path.
+            Task { await loadContact(preferFresh: true) }
+        }
     }
 
     @ViewBuilder
