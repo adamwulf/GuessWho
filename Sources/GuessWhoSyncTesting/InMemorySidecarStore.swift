@@ -6,6 +6,10 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
     private var envelopes: [SidecarKey: SidecarEnvelope] = [:]
     private var scriptedConflicts: [SidecarKey: [Data]] = [:]
+    // Per-key blob payloads: blobId → bytes. No encryption in-memory — the
+    // store's contract is bytes-in / bytes-out (the FS store is where the
+    // AES-GCM `.dat` encryption lives).
+    private var blobs: [SidecarKey: [String: Data]] = [:]
 
     public init() {}
 
@@ -26,6 +30,36 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         defer { lock.unlock() }
         envelopes.removeValue(forKey: key)
         scriptedConflicts.removeValue(forKey: key)
+        blobs.removeValue(forKey: key)
+    }
+
+    // MARK: - Blob payload I/O (bytes-in / bytes-out; no encryption)
+
+    public func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        blobs[key, default: [:]][blobId] = data
+    }
+
+    public func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return blobs[key]?[blobId]
+    }
+
+    public func deleteBlob(blobId: String, for key: SidecarKey) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        blobs[key]?.removeValue(forKey: blobId)
+        if blobs[key]?.isEmpty == true {
+            blobs.removeValue(forKey: key)
+        }
+    }
+
+    public func blobIds(for key: SidecarKey) throws -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(blobs[key]?.keys ?? [:].keys)
     }
 
     public func allKeys() throws -> [SidecarKey] {

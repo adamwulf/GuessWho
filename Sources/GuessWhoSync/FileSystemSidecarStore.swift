@@ -27,6 +27,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // cannot be triggered against a local filesystem.
     private let ubiquity: SidecarUbiquityProvider
 
+    // Seam over `.blob` `.dat` payload encryption. Production uses a key from
+    // the iCloud-synchronizable keychain (KeychainBlobCrypto); tests inject a
+    // deterministic in-memory key (InMemoryBlobCrypto) so unit tests exercise
+    // encrypt/decrypt end-to-end WITHOUT touching the real keychain.
+    private let blobCrypto: SidecarBlobCrypto
+
     // Background queue the coordinator runs on so the calling thread can
     // wait with a timeout. One serial queue per store instance — coordinator
     // calls are coarse-grained and don't need parallel dispatch.
@@ -51,6 +57,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.busyHandler = busyHandler
         self.perAttemptTimeout = perAttemptTimeout
         self.ubiquity = ProductionUbiquityProvider()
+        self.blobCrypto = Self.defaultProductionBlobCrypto()
     }
 
     // SPI-gated constructor that lets tests inject a fake ubiquity provider.
@@ -60,6 +67,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     public init(
         root: URL,
         ubiquity: SidecarUbiquityProvider,
+        blobCrypto: SidecarBlobCrypto? = nil,
         busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
         perAttemptTimeout: TimeInterval = 1.0
     ) {
@@ -67,6 +75,18 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.busyHandler = busyHandler
         self.perAttemptTimeout = perAttemptTimeout
         self.ubiquity = ubiquity
+        self.blobCrypto = blobCrypto ?? Self.defaultProductionBlobCrypto()
+    }
+
+    // The production blob-crypto seam: a keychain-backed AES-GCM key where
+    // Security is available, else a throwing placeholder (no Apple platform we
+    // ship on lacks Security, but keep the type total for SwiftPM linux CI).
+    private static func defaultProductionBlobCrypto() -> SidecarBlobCrypto {
+        #if canImport(Security)
+        return KeychainBlobCrypto()
+        #else
+        return UnavailableBlobCrypto()
+        #endif
     }
 
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
@@ -214,6 +234,136 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         try ubiquity.startDownloading(at: url)
     }
 
+    // MARK: - Blob payload I/O
+
+    // Encrypt `data` and write it to `<key.id>.<blobId>.dat` in the same
+    // per-kind directory as the envelope, under the SAME iCloud root so it
+    // syncs. Reuses the coordinated-write + busy-handler machinery (those
+    // compose for any URL).
+    public func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {
+        let sealed = try blobCrypto.encrypt(data)
+        try fileLocks.withLock(forKey: key) {
+            let url = blobURL(for: key, blobId: blobId)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            var writeError: Error?
+            try coordinatedWrite(key: key, at: url) { safeURL in
+                do {
+                    try sealed.write(to: safeURL, options: [.atomic])
+                } catch {
+                    writeError = error
+                }
+            }
+            if let writeError { throw writeError }
+        }
+    }
+
+    // Read + decrypt the blob for (key, blobId). Returns nil when the `.dat`
+    // is not materialized on this device yet — either truly absent, or present
+    // only as an iCloud `.<name>.dat.icloud` placeholder. In the placeholder
+    // case we kick off a download (best-effort) and still return nil, so a
+    // referenced-but-not-yet-downloaded blob reads as "pending," NOT an error.
+    // (This mirrors how `read()` treats a `.json` placeholder, but returns nil
+    // instead of throwing — a missing previous-photo is benign.)
+    public func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
+        let url = blobURL(for: key, blobId: blobId)
+        let fm = FileManager.default
+
+        enum Outcome {
+            case bytes(Data)
+            case placeholderPresent
+            case missing
+            case failed(Error)
+        }
+        var outcome: Outcome = .missing
+        try coordinatedRead(key: key, at: url) { safeURL in
+            if fm.fileExists(atPath: safeURL.path) {
+                do {
+                    outcome = .bytes(try Data(contentsOf: safeURL))
+                } catch {
+                    outcome = .failed(error)
+                }
+            } else if fm.fileExists(atPath: self.placeholderURL(for: safeURL).path) {
+                outcome = .placeholderPresent
+            } else {
+                outcome = .missing
+            }
+        }
+
+        switch outcome {
+        case .bytes(let sealed):
+            return try blobCrypto.decrypt(sealed)
+        case .placeholderPresent:
+            // Materialized bytes aren't here yet; ask iCloud to fetch them and
+            // report "pending" (nil), not "gone" — the caller retries later.
+            try? ubiquity.startDownloading(at: url)
+            return nil
+        case .missing:
+            return nil
+        case .failed(let error):
+            throw error
+        }
+    }
+
+    public func deleteBlob(blobId: String, for key: SidecarKey) throws {
+        try fileLocks.withLock(forKey: key) {
+            let url = blobURL(for: key, blobId: blobId)
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            var deleteError: Error?
+            try coordinatedDelete(key: key, at: url) { safeURL in
+                do {
+                    try FileManager.default.removeItem(at: safeURL)
+                } catch {
+                    deleteError = error
+                }
+            }
+            if let deleteError { throw deleteError }
+        }
+    }
+
+    // List the per-kind directory and return the blobId of every `.dat` (or
+    // its `.icloud` placeholder) belonging to `key`. A `.dat` is named
+    // `<key.id>.<blobId>.dat`; a not-yet-downloaded one is `.<that>.icloud`.
+    // This is `.dat`-specific on purpose: `allKeys()`/`listKeys` stay
+    // `.json`-only so envelope enumeration is unaffected.
+    public func blobIds(for key: SidecarKey) throws -> [String] {
+        let fm = FileManager.default
+        let directory = root.appendingPathComponent(directoryName(for: key.kind))
+        guard fm.fileExists(atPath: directory.path) else { return [] }
+        let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+
+        let prefix = "\(key.id.lowercased())."
+        var seen = Set<String>()
+        var result: [String] = []
+        for entry in entries {
+            let fullName = entry.lastPathComponent
+            // Recover the real `<id>.<blobId>.dat` name from a placeholder, or
+            // take the name as-is for a materialized `.dat`.
+            let realName: String
+            if fullName.hasSuffix(".dat") {
+                realName = fullName
+            } else if let recovered = realBlobNameFromPlaceholder(fullName) {
+                let realURL = directory.appendingPathComponent(recovered)
+                // Surface the blob now so the orphan sweep counts it; kick off
+                // a download so a later read can succeed.
+                try? ubiquity.startDownloading(at: realURL)
+                realName = recovered
+            } else {
+                continue
+            }
+            // Match this key's blobs only: `<id>.<blobId>.dat`.
+            guard realName.hasPrefix(prefix), realName.hasSuffix(".dat") else { continue }
+            let middle = realName.dropFirst(prefix.count).dropLast(".dat".count)
+            let blobId = String(middle)
+            guard !blobId.isEmpty else { continue }
+            guard seen.insert(blobId).inserted else { continue }
+            result.append(blobId)
+        }
+        return result
+    }
+
     @_spi(ConflictReconcile)
     public func reconcileConflict(
         at key: SidecarKey,
@@ -333,6 +483,26 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private func fileURL(for key: SidecarKey) -> URL {
         root.appendingPathComponent(directoryName(for: key.kind))
             .appendingPathComponent(safeFilename(for: key))
+    }
+
+    // The `.dat` payload URL for (key, blobId): `<id>.<blobId>.dat` in the
+    // same per-kind directory as the envelope `.json`, so it syncs the same
+    // way. Mirrors `fileURL(for:)`/`safeFilename(for:)`; the id is lowercased
+    // to match the canonical filename casing used everywhere else.
+    private func blobURL(for key: SidecarKey, blobId: String) -> URL {
+        root.appendingPathComponent(directoryName(for: key.kind))
+            .appendingPathComponent("\(key.id.lowercased()).\(blobId).dat")
+    }
+
+    // `.dat` sibling of `realNameFromPlaceholder` (which is `.json`-only).
+    // Recovers a `<id>.<blobId>.dat` filename from its `.<that>.icloud` stub;
+    // returns nil when the entry is not a `.dat` placeholder.
+    private func realBlobNameFromPlaceholder(_ fullName: String) -> String? {
+        guard fullName.hasPrefix("."), fullName.hasSuffix(".icloud") else { return nil }
+        let withoutDot = fullName.dropFirst()
+        let withoutSuffix = withoutDot.dropLast(".icloud".count)
+        guard withoutSuffix.hasSuffix(".dat") else { return nil }
+        return String(withoutSuffix)
     }
 
     private func directoryName(for kind: SidecarKind) -> String {

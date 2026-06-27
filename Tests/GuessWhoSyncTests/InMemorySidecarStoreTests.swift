@@ -217,6 +217,66 @@ struct InMemorySidecarStoreTests {
         let store = InMemorySidecarStore()
         try store.requestDownload(contactKey())
     }
+
+    // MARK: - Blob payloads (bytes-in / bytes-out)
+
+    @Test
+    func blobWriteThenReadRoundTrips() throws {
+        let store = InMemorySidecarStore()
+        let key = contactKey()
+        let payload = Data([0x01, 0x02, 0x03])
+        try store.writeBlob(payload, blobId: "b1", for: key)
+        #expect(try store.readBlob(blobId: "b1", for: key) == payload)
+    }
+
+    @Test
+    func readOfMissingBlobReturnsNil() throws {
+        let store = InMemorySidecarStore()
+        #expect(try store.readBlob(blobId: "absent", for: contactKey()) == nil)
+    }
+
+    @Test
+    func blobIdsListsEveryBlobForKey() throws {
+        let store = InMemorySidecarStore()
+        let key = contactKey()
+        try store.writeBlob(Data([0x01]), blobId: "b1", for: key)
+        try store.writeBlob(Data([0x02]), blobId: "b2", for: key)
+        #expect(Set(try store.blobIds(for: key)) == Set(["b1", "b2"]))
+    }
+
+    @Test
+    func deleteBlobRemovesOnlyThatBlob() throws {
+        let store = InMemorySidecarStore()
+        let key = contactKey()
+        try store.writeBlob(Data([0x01]), blobId: "b1", for: key)
+        try store.writeBlob(Data([0x02]), blobId: "b2", for: key)
+        try store.deleteBlob(blobId: "b1", for: key)
+        #expect(try store.readBlob(blobId: "b1", for: key) == nil)
+        #expect(try store.readBlob(blobId: "b2", for: key) != nil)
+        #expect(try store.blobIds(for: key) == ["b2"])
+    }
+
+    @Test
+    func blobsAreScopedPerKey() throws {
+        let store = InMemorySidecarStore()
+        let a = SidecarKey(kind: .contact, id: "a")
+        let b = SidecarKey(kind: .contact, id: "b")
+        try store.writeBlob(Data([0x0a]), blobId: "shared", for: a)
+        try store.writeBlob(Data([0x0b]), blobId: "shared", for: b)
+        #expect(try store.readBlob(blobId: "shared", for: a) == Data([0x0a]))
+        #expect(try store.readBlob(blobId: "shared", for: b) == Data([0x0b]))
+    }
+
+    @Test
+    func deletingEnvelopeAlsoDropsItsBlobs() throws {
+        let store = InMemorySidecarStore()
+        let key = contactKey()
+        try store.write(envelope(), at: key)
+        try store.writeBlob(Data([0x01]), blobId: "b1", for: key)
+        try store.delete(key)
+        #expect(try store.readBlob(blobId: "b1", for: key) == nil)
+        #expect(try store.blobIds(for: key).isEmpty)
+    }
 }
 
 // A minimal SidecarStoreProtocol conformer that implements only the v1
@@ -279,6 +339,18 @@ struct ProtocolDefaultsTests {
     func defaultRequestDownloadIsNoOp() throws {
         let store = MinimalSidecarStore()
         try store.requestDownload(SidecarKey(kind: .contact, id: "x"))
+    }
+
+    @Test
+    func defaultBlobMethodsAreNoOpAndEmpty() throws {
+        // A third-party store with no binary storage gets the protocol
+        // defaults: write/delete no-op, read returns nil, blobIds returns [].
+        let store = MinimalSidecarStore()
+        let key = SidecarKey(kind: .contact, id: "x")
+        try store.writeBlob(Data([0x01]), blobId: "b1", for: key)
+        #expect(try store.readBlob(blobId: "b1", for: key) == nil)
+        #expect(try store.blobIds(for: key).isEmpty)
+        try store.deleteBlob(blobId: "b1", for: key)
     }
 
     @Test
