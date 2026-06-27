@@ -623,8 +623,8 @@ struct ContactDetailView: View {
                     case .row(let row):
                         InfoRow(data: row)
                             .centeredRowContent()
-                    case .disclosure(let group, _):
-                        moreDisclosureRow(for: group)
+                    case .disclosure(let group, let hiddenCount):
+                        moreDisclosureRow(for: group, hiddenCount: hiddenCount)
                             .centeredRowContent()
                     }
                 }
@@ -716,6 +716,11 @@ struct ContactDetailView: View {
             let run = rows[index..<runEnd]
             let visible = run.filter { !$0.isOld }
             let hidden = run.filter { $0.isOld }
+            // Deliberate: when EVERY value in a group is "old", `visible` is empty
+            // and the group renders as a lone "more…" with no row above it. That
+            // matches the rule the user asked for — "old" values always hide
+            // behind "more…" — rather than special-casing all-old groups to show
+            // un-collapsed. Tapping "more…" reveals them.
             for r in visible { elements.append(.row(r)) }
             if expandedFieldGroups.contains(group) {
                 for r in hidden { elements.append(.row(r)) }
@@ -729,8 +734,10 @@ struct ContactDetailView: View {
     }
 
     /// The "more…" / "less…" toggle row for a field group's hidden "old" rows.
+    /// Collapsed shows the hidden count ("more… (2)") so the user knows how many
+    /// rows are tucked away; expanded shows "less…".
     @ViewBuilder
-    private func moreDisclosureRow(for group: InfoRowData.FieldGroup) -> some View {
+    private func moreDisclosureRow(for group: InfoRowData.FieldGroup, hiddenCount: Int) -> some View {
         let isExpanded = expandedFieldGroups.contains(group)
         Button {
             withAnimation {
@@ -741,7 +748,7 @@ struct ContactDetailView: View {
                 }
             }
         } label: {
-            Text(isExpanded ? "less…" : "more…")
+            Text(isExpanded ? "less…" : "more… (\(hiddenCount))")
                 .font(.body)
                 .foregroundStyle(.tint)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1632,7 +1639,6 @@ private struct InfoRowData: Identifiable {
         case url
     }
 
-    let id = UUID()
     let label: String
     let kind: Kind
     /// Which collapsible group this row participates in, if any.
@@ -1640,6 +1646,27 @@ private struct InfoRowData: Identifiable {
     /// True when this row's raw label is the user's "old" custom label, so it
     /// hides behind its group's "more…" disclosure.
     var isOld: Bool = false
+
+    /// Content-derived stable identity. A per-render `UUID()` would re-mint each
+    /// time `infoRows(for:)` runs in the view body, so the "old"-row reveal
+    /// `withAnimation` would see every row as new and re-lay-out the whole info
+    /// card instead of sliding in only the revealed rows. Keying on the row's
+    /// own content keeps identity stable across renders, so the animation
+    /// affects only the rows that actually appear/disappear.
+    var id: String {
+        let kindKey: String
+        switch kind {
+        case .text(let value, _, _): kindKey = "text|\(value)"
+        case .phone(let number): kindKey = "phone|\(number)"
+        case .email(let address): kindKey = "email|\(address)"
+        case .url(let urlString): kindKey = "url|\(urlString)"
+        case .address(let address): kindKey = "address|\(String(describing: address))"
+        case .date(_, let formatted): kindKey = "date|\(formatted)"
+        case .contactLink(let displayName, let contactID): kindKey = "contactLink|\(displayName)|\(String(describing: contactID))"
+        case .backReference(let displayName, let descriptor, let contactID): kindKey = "backRef|\(displayName)|\(descriptor)|\(String(describing: contactID))"
+        }
+        return "\(label)|\(kindKey)"
+    }
 
     static func text(label: String, value: String, monospaced: Bool = false, valueColor: Color? = nil) -> InfoRowData {
         InfoRowData(label: label, kind: .text(value: value, monospaced: monospaced, valueColor: valueColor))
