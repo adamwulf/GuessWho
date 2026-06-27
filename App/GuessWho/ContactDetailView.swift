@@ -773,22 +773,57 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func infoSection(_ contact: Contact) -> some View {
-        // Mirror Apple's Contacts: one card with every populated field as
-        // a label-above-value row, in roughly the same order Contacts uses.
+        // Label-above-value rows in roughly the order Contacts stores them, but
+        // split so each multi-value TYPE (phone, email, url, address) lives in
+        // its OWN section. (This intentionally departs from Apple's Contacts,
+        // which packs every field type into a single card — we want one section
+        // per type here.) The per-group "old"-row disclosure renders as a small
+        // blue-link section FOOTER instead of an inline row, so it sits outside
+        // the section's grouped background. Ungrouped rows (department, dates,
+        // social, IM, relations) keep their relative position by collapsing into
+        // contiguous "other" sections.
         let rows = infoRows(for: contact)
-        let elements = infoDisplayElements(for: rows)
-        if !elements.isEmpty {
-            Section {
-                ForEach(elements) { element in
-                    switch element {
-                    case .row(let row):
+        let runs = infoSectionRuns(for: rows)
+        ForEach(runs) { run in
+            switch run {
+            case .group(let group, let visible, let hidden):
+                groupedInfoSection(group: group, visible: visible, hidden: hidden)
+            case .other(_, let rows):
+                Section {
+                    ForEach(rows) { row in
                         InfoRow(data: row)
-                            .centeredRowContent()
-                    case .disclosure(let group, let hiddenCount):
-                        moreDisclosureRow(for: group, hiddenCount: hiddenCount)
                             .centeredRowContent()
                     }
                 }
+            }
+        }
+    }
+
+    /// One info section for a single multi-value field group (phone/email/url/
+    /// address). No header. The group's "old"-labeled rows hide behind a "more…"
+    /// section FOOTER styled as a small blue link; tapping it reveals them (the
+    /// hidden rows then render in the section body and the footer disappears).
+    @ViewBuilder
+    private func groupedInfoSection(group: InfoRowData.FieldGroup, visible: [InfoRowData], hidden: [InfoRowData]) -> some View {
+        let isExpanded = expandedFieldGroups.contains(group)
+        Section {
+            ForEach(visible) { row in
+                InfoRow(data: row)
+                    .centeredRowContent()
+            }
+            if isExpanded {
+                // Once revealed, the "old" rows render in the section body and
+                // the footer disappears — no "less…" / re-collapse affordance.
+                // The group re-collapses only when the view is rebuilt (navigate
+                // away and back), since expansion is per-view-instance @State.
+                ForEach(hidden) { row in
+                    InfoRow(data: row)
+                        .centeredRowContent()
+                }
+            }
+        } footer: {
+            if !isExpanded, !hidden.isEmpty {
+                moreDisclosureFooter(for: group, hiddenCount: hidden.count)
             }
         }
     }
@@ -838,85 +873,90 @@ struct ContactDetailView: View {
         }
     }
 
-    /// A single positioned cell in the info section: either a field row or the
-    /// per-group "more…" disclosure that reveals the group's hidden "old"-labeled
-    /// rows (one-way; the rows then replace the disclosure).
-    private enum InfoDisplayElement: Identifiable {
-        case row(InfoRowData)
-        case disclosure(group: InfoRowData.FieldGroup, hiddenCount: Int)
+    /// One section's worth of info rows: either a single multi-value field group
+    /// (phone/email/url/address) with its visible + hidden ("old") rows split
+    /// out, or a contiguous run of ungrouped rows that share one plain section.
+    private enum InfoSectionRun: Identifiable {
+        case group(group: InfoRowData.FieldGroup, visible: [InfoRowData], hidden: [InfoRowData])
+        /// `order` is the run's position among ungrouped runs, so two separate
+        /// "other" runs (e.g. work parts before the groups, dates after) get
+        /// distinct ids even when their rows would otherwise collide.
+        case other(order: Int, rows: [InfoRowData])
 
         var id: AnyHashable {
             switch self {
-            case .row(let r): return AnyHashable("row-\(r.id)")
-            case .disclosure(let g, _): return AnyHashable("more-\(g)")
+            case .group(let g, _, _): return AnyHashable("group-\(g)")
+            case .other(let order, _): return AnyHashable("other-\(order)")
             }
         }
     }
 
-    /// Flatten the ordered `rows` into display cells, collapsing each field
-    /// group's "old"-labeled rows behind a "more…" disclosure unless the group
-    /// is expanded. The disclosure is emitted at the END of its group (after the
-    /// always-visible rows), so a phone with one old number reads "phone, more…".
-    /// Once expanded the hidden rows REPLACE the disclosure ("phone, old phone"),
-    /// with no "less…" row — see `moreDisclosureRow`.
-    private func infoDisplayElements(for rows: [InfoRowData]) -> [InfoDisplayElement] {
-        var elements: [InfoDisplayElement] = []
+    /// Partition the ordered `rows` into section runs, preserving overall order.
+    /// Each contiguous run of same-group rows becomes its own `.group` run (with
+    /// visible/hidden split so the view can footer-collapse the "old" rows);
+    /// contiguous ungrouped rows collapse into one `.other` run. So a contact
+    /// reads as: [other: dept] [group: phone] [group: email] … [other: dates,
+    /// relations] — one section per type, ungrouped rows sharing a section.
+    private func infoSectionRuns(for rows: [InfoRowData]) -> [InfoSectionRun] {
+        var runs: [InfoSectionRun] = []
+        var otherOrder = 0
         var index = rows.startIndex
         while index < rows.endIndex {
             let row = rows[index]
             guard let group = row.group else {
-                // Ungrouped row (name parts, dates, relations, …): always shown.
-                elements.append(.row(row))
-                index += 1
+                // Consume the contiguous run of ungrouped rows into one section.
+                var runEnd = index
+                while runEnd < rows.endIndex, rows[runEnd].group == nil { runEnd += 1 }
+                runs.append(.other(order: otherOrder, rows: Array(rows[index..<runEnd])))
+                otherOrder += 1
+                index = runEnd
                 continue
             }
-            // Consume the whole contiguous run for this group at once so the
-            // "more…" disclosure lands at the group's tail regardless of how
-            // many rows it spans.
+            // Consume the whole contiguous run for this group at once.
             var runEnd = index
             while runEnd < rows.endIndex, rows[runEnd].group == group { runEnd += 1 }
             let run = rows[index..<runEnd]
-            let visible = run.filter { !$0.isOld }
-            let hidden = run.filter { $0.isOld }
             // Deliberate: when EVERY value in a group is "old", `visible` is empty
-            // and the group renders as a lone "more…" with no row above it. That
-            // matches the rule the user asked for — "old" values always hide
-            // behind "more…" — rather than special-casing all-old groups to show
-            // un-collapsed. Tapping "more…" reveals them.
-            for r in visible { elements.append(.row(r)) }
-            if expandedFieldGroups.contains(group) {
-                // Once revealed, the "old" rows REPLACE the "more…" row — no
-                // re-collapse affordance. The group re-collapses only when the
-                // view is rebuilt (navigate away and back), since expansion is
-                // per-view-instance @State.
-                for r in hidden { elements.append(.row(r)) }
-            } else if !hidden.isEmpty {
-                elements.append(.disclosure(group: group, hiddenCount: hidden.count))
-            }
+            // and the section renders as a lone "more…" footer with no row above
+            // it. That matches the rule the user asked for — "old" values always
+            // hide behind "more…" — rather than special-casing all-old groups.
+            runs.append(.group(
+                group: group,
+                visible: run.filter { !$0.isOld },
+                hidden: run.filter { $0.isOld }
+            ))
             index = runEnd
         }
-        return elements
+        return runs
     }
 
-    /// The "more…" disclosure row for a field group's hidden "old" rows. Shows
-    /// the hidden count ("more… (2)") so the user knows how many rows are tucked
-    /// away. Tapping it is one-way: the hidden rows REPLACE this row and there is
-    /// no "less…" / re-collapse affordance — the group re-collapses only when the
-    /// view is rebuilt (navigate away and back).
+    /// The "more…" section footer for a field group's hidden "old" rows. Shows
+    /// the hidden count ("more… (2)") in small, blue-link style (footnote +
+    /// tint), sitting outside the section's grouped background. Tapping it is
+    /// one-way: the hidden rows render in the section body and this footer
+    /// disappears — there is no "less…" / re-collapse affordance. The group
+    /// re-collapses only when the view is rebuilt (navigate away and back).
     @ViewBuilder
-    private func moreDisclosureRow(for group: InfoRowData.FieldGroup, hiddenCount: Int) -> some View {
+    private func moreDisclosureFooter(for group: InfoRowData.FieldGroup, hiddenCount: Int) -> some View {
         Button {
             withAnimation {
                 _ = expandedFieldGroups.insert(group)
             }
         } label: {
             Text("more… (\(hiddenCount))")
-                .font(.body)
+                .font(.footnote)
                 .foregroundStyle(.tint)
+                // Pin the link to the leading edge so it reads as a normal
+                // left-aligned footer link on every platform — without this the
+                // Button collapses to its intrinsic width and could center.
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // centeredSectionHeader() is named for headers but is exactly what a
+        // footer wants here too: top padding + the Catalyst 560-column clamp so
+        // the link lines up with the section's rows. Not a copy-paste slip.
+        .centeredSectionHeader()
     }
 
     /// "Recent Events": up to 10 EventKit events where this contact appears
