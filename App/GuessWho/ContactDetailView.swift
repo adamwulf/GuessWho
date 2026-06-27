@@ -337,6 +337,7 @@ struct ContactDetailView: View {
         SocialProfileRow(model: binding)
         IMRow(model: binding)
         PhoneticNameRow(model: binding)
+        editableSidecarFieldsSection
         Section {
             Button(role: .destructive) {
                 showDeleteConfirm = true
@@ -349,6 +350,37 @@ struct ContactDetailView: View {
             }
             .disabled(isSavingEdit)
             .centeredRowContent()
+        }
+    }
+
+    /// Editable custom (sidecar) fields shown inside contact-edit mode. The KEY
+    /// (field name) is read-only; the VALUE is editable. Edits/deletes save
+    /// immediately via `fieldsStore` (separate from the CNContact edit model).
+    /// No add (out of scope). Hidden when the contact has no custom fields.
+    @ViewBuilder
+    private var editableSidecarFieldsSection: some View {
+        let fields = fieldsStore?.fields ?? []
+        if !fields.isEmpty {
+            Section {
+                ForEach(fields, id: \.id) { field in
+                    EditableSidecarFieldRow(
+                        name: field.field,
+                        initialValue: Self.fieldDisplayValue(field),
+                        onCommit: { value in
+                            Task { await fieldsStore?.editField(field.id, value: value) }
+                        }
+                    )
+                    .centeredRowContent()
+                }
+                .onDelete { offsets in
+                    for i in offsets {
+                        let fieldID = fields[i].id
+                        Task { await fieldsStore?.deleteField(fieldID) }
+                    }
+                }
+            } header: {
+                Text("Custom Fields").centeredSectionHeader()
+            }
         }
     }
 
@@ -1731,6 +1763,44 @@ private struct AddressRow: View {
         let item = MKMapItem(placemark: placemark)
         item.name = formatted
         item.openInMaps(launchOptions: nil)
+    }
+}
+
+/// One editable custom-field row for contact-edit mode: read-only name label
+/// above an editable value field. Commits the value via `onCommit` when the
+/// field loses focus or the user submits — only if it actually changed.
+private struct EditableSidecarFieldRow: View {
+    let name: String
+    let initialValue: String
+    let onCommit: (String) -> Void
+
+    @State private var draft: String
+    @FocusState private var focused: Bool
+
+    init(name: String, initialValue: String, onCommit: @escaping (String) -> Void) {
+        self.name = name
+        self.initialValue = initialValue
+        self.onCommit = onCommit
+        _draft = State(initialValue: initialValue)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name)
+                .font(.caption).foregroundStyle(.secondary)
+            TextField("Value", text: $draft, axis: .vertical)
+                .focused($focused)
+                .onSubmit(commit)
+        }
+        .onChange(of: focused) { _, isFocused in
+            if !isFocused { commit() }
+        }
+    }
+
+    private func commit() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != initialValue else { return }
+        onCommit(trimmed)
     }
 }
 
