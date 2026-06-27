@@ -40,6 +40,57 @@ public final class GuessWhoSync: @unchecked Sendable {
         self.contactCursorStore = contactCursorStore
     }
 
+    // MARK: - Per-key atomicity
+
+    /// The handle through which a key's sidecar envelope and its `.blob` `.dat`
+    /// neighbors are touched for a COMPOUND op. An instance exists only inside a
+    /// `withKeyLocked(_:)` body — i.e. only while this `GuessWhoSync` holds the
+    /// key's `sidecarLocks` lock — so every read-modify-write (read envelope →
+    /// write envelope; read envelope → read `.dat`; repoint pointer → delete
+    /// superseded `.dat`) is atomic against any other op on the same key by
+    /// construction. Routing the mutating ops through here is what makes the two
+    /// blob races we hit unrepresentable: a compound op cannot reach
+    /// `read`/`write`/`*Blob` for a key without first being inside its lock.
+    ///
+    /// Deliberate carve-outs (NOT bugs):
+    ///   - Single-call PURE READS (`field`/`fields`/`link`/`links`, the sweep's
+    ///     global harvest) call `sidecars.read` directly without locking: one
+    ///     `read(key)` is atomic on its own, so a lock would only add contention.
+    ///   - MULTI-KEY ops (identity-reconcile's winner/loser fold via
+    ///     `acquireLocks`, and the SPI `reconcileConflict`) lock several keys /
+    ///     use a different store API and so can't use this single-key context.
+    ///
+    /// Non-`Sendable` and non-escaping: the context must not outlive the locked
+    /// block (it would reference the store outside the lock). Distinct keys lock
+    /// independently, so unrelated contacts/events still run fully in parallel —
+    /// the lock is per-key, held only for the compound op's duration.
+    struct KeyLockedContext {
+        let key: SidecarKey
+        fileprivate let sidecars: SidecarStoreProtocol
+
+        func read() throws -> SidecarEnvelope? { try sidecars.read(key) }
+        func write(_ envelope: SidecarEnvelope) throws { try sidecars.write(envelope, at: key) }
+        func delete() throws { try sidecars.delete(key) }
+        func writeBlob(_ data: Data, blobId: String) throws { try sidecars.writeBlob(data, blobId: blobId, for: key) }
+        func readBlob(blobId: String) throws -> Data? { try sidecars.readBlob(blobId: blobId, for: key) }
+        func deleteBlob(blobId: String) throws { try sidecars.deleteBlob(blobId: blobId, for: key) }
+        func blobIds() throws -> [String] { try sidecars.blobIds(for: key) }
+    }
+
+    /// Run `body` holding `key`'s per-key lock, handing it the one
+    /// `KeyLockedContext` through which the key's envelope + blobs are reachable.
+    /// Every op that touches a key's sidecar data MUST go through here so the
+    /// compound op is atomic against concurrent ops on the same key. Do NOT nest
+    /// `withKeyLocked` for the SAME key inside a body — the underlying lock is
+    /// non-reentrant (`PerKeyLockTable` uses a plain `NSLock`); a body needing a
+    /// second key locks that other key, never the one it already holds.
+    @discardableResult
+    func withKeyLocked<T>(_ key: SidecarKey, _ body: (KeyLockedContext) throws -> T) rethrows -> T {
+        try sidecarLocks.withLock(forKey: key) {
+            try body(KeyLockedContext(key: key, sidecars: sidecars))
+        }
+    }
+
     // MARK: - External contact-change watcher
 
     /// Start observing external contact-store changes and posting
@@ -81,8 +132,8 @@ public final class GuessWhoSync: @unchecked Sendable {
         value: JSONValue
     ) throws -> UUID {
         try SidecarField.validate(value: value, against: type)
-        return try sidecarLocks.withLock(forKey: key) {
-            let existing = try sidecars.read(key)
+        return try withKeyLocked(key) { ctx in
+            let existing = try ctx.read()
             let id = UUID()
             let now = Date()
             let inner = SidecarField.makeInnerValue(
@@ -99,7 +150,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 entityID: existing?.entityID ?? key.id,
                 fields: fields
             )
-            try sidecars.write(envelope, at: key)
+            try ctx.write(envelope)
             return id
         }
     }
@@ -116,8 +167,8 @@ public final class GuessWhoSync: @unchecked Sendable {
         field: String,
         value: JSONValue
     ) throws {
-        try sidecarLocks.withLock(forKey: key) {
-            guard let existing = try sidecars.read(key),
+        try withKeyLocked(key) { ctx in
+            guard let existing = try ctx.read(),
                   let existingCell = existing.fields[id.uuidString]
             else { return }
             guard let type = SidecarField.type(of: existingCell) else { return }
@@ -142,7 +193,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 entityID: existing.entityID,
                 fields: fields
             )
-            try sidecars.write(envelope, at: key)
+            try ctx.write(envelope)
         }
     }
 
@@ -151,8 +202,8 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// preserved as a record of what was deleted. Silent no-op if the
     /// cell is missing or already soft-deleted.
     public func deleteField(at key: SidecarKey, id: UUID) throws {
-        try sidecarLocks.withLock(forKey: key) {
-            guard let existing = try sidecars.read(key),
+        try withKeyLocked(key) { ctx in
+            guard let existing = try ctx.read(),
                   let existingCell = existing.fields[id.uuidString]
             else { return }
             if existingCell.deletedAt != nil { return }
@@ -171,7 +222,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 entityID: existing.entityID,
                 fields: fields
             )
-            try sidecars.write(envelope, at: key)
+            try ctx.write(envelope)
         }
     }
 
@@ -233,18 +284,19 @@ public final class GuessWhoSync: @unchecked Sendable {
         // Capture the superseded blobId (if any) to delete after the envelope
         // write commits the repoint.
         var supersededBlobId: String?
-        try sidecarLocks.withLock(forKey: key) {
-            // Write the bytes FIRST, but INSIDE the per-key lock: the orphan
-            // sweep re-reads this key's envelope under the same lock, so writing
-            // the `.dat` and committing the pointer atomically (w.r.t. the lock)
-            // closes the window where a concurrent sweep would see the fresh
-            // `.dat` on disk, find it unreferenced (the repoint hasn't landed),
-            // and delete it as a false orphan. Order within the lock still
-            // writes the `.dat` before the envelope so a mid-failure leaves an
-            // orphan (swept later), never a dangling pointer.
-            try sidecars.writeBlob(data, blobId: newBlobId, for: key)
+        try withKeyLocked(key) { ctx in
+            // Write the bytes FIRST, but INSIDE the per-key lock (the only way to
+            // reach `ctx.writeBlob`): the orphan sweep re-reads this key's
+            // envelope under the same lock, so writing the `.dat` and committing
+            // the pointer atomically (w.r.t. the lock) closes the window where a
+            // concurrent sweep would see the fresh `.dat` on disk, find it
+            // unreferenced (the repoint hasn't landed), and delete it as a false
+            // orphan. Order within the lock still writes the `.dat` before the
+            // envelope so a mid-failure leaves an orphan (swept later), never a
+            // dangling pointer.
+            try ctx.writeBlob(data, blobId: newBlobId)
 
-            let existing = try sidecars.read(key)
+            let existing = try ctx.read()
             var fields = existing?.fields ?? [:]
             let now = Date()
 
@@ -312,17 +364,16 @@ public final class GuessWhoSync: @unchecked Sendable {
                 entityID: existing?.entityID ?? key.id,
                 fields: fields
             )
-            try sidecars.write(envelope, at: key)
+            try ctx.write(envelope)
 
             // Delete-on-overwrite fast path, INSIDE the lock: drop the superseded
             // `.dat` atomically with the repoint so a concurrent reader holding
             // this same per-key lock never captures a pointer to a blobId that's
             // about to be deleted out from under its `readBlob` (the read↔
             // overwrite race). A failure is non-fatal — the orphan sweep reclaims
-            // it later — so it does not propagate. (`deleteBlob` takes the store's
-            // own `fileLocks`, a different table, so no reentrancy here.)
+            // it later — so it does not propagate.
             if let supersededBlobId {
-                try? sidecars.deleteBlob(blobId: supersededBlobId, for: key)
+                try? ctx.deleteBlob(blobId: supersededBlobId)
             }
         }
 
@@ -340,8 +391,8 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// because the overwrite deleted that `.dat` in between (the read↔overwrite
     /// race). Holding the lock makes capture+read atomic against the overwrite.
     public func blobFieldData(at key: SidecarKey, field: String) throws -> Data? {
-        try sidecarLocks.withLock(forKey: key) {
-            guard let envelope = try sidecars.read(key) else { return nil }
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read() else { return nil }
             for (rawID, cell) in envelope.fields {
                 guard cell.deletedAt == nil,
                       let id = UUID(uuidString: rawID),
@@ -350,7 +401,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                       decoded.field == field,
                       let pointer = BlobPointer(from: decoded.value)
                 else { continue }
-                return try sidecars.readBlob(blobId: pointer.blobId, for: key)
+                return try ctx.readBlob(blobId: pointer.blobId)
             }
             return nil
         }
@@ -430,11 +481,11 @@ public final class GuessWhoSync: @unchecked Sendable {
         var deleted: [BlobSweepReport.Deleted] = []
         for key in keys {
             do {
-                let perKeyDeleted = try sidecarLocks.withLock(forKey: key) { () throws -> [BlobSweepReport.Deleted] in
-                    let onDisk = try sidecars.blobIds(for: key)
+                let perKeyDeleted = try withKeyLocked(key) { ctx -> [BlobSweepReport.Deleted] in
+                    let onDisk = try ctx.blobIds()
                     // Fresh live blobIds referenced by THIS key's current envelope.
                     var liveHere = Set<String>()
-                    if let envelope = try sidecars.read(key) {
+                    if let envelope = try ctx.read() {
                         for (_, cell) in envelope.fields {
                             guard cell.deletedAt == nil,
                                   SidecarField.type(of: cell) == .blob,
@@ -447,8 +498,8 @@ public final class GuessWhoSync: @unchecked Sendable {
                     }
                     var localDeleted: [BlobSweepReport.Deleted] = []
                     for blobId in onDisk where !referenced.contains(blobId) && !liveHere.contains(blobId) {
-                        try sidecars.deleteBlob(blobId: blobId, for: key)
-                        localDeleted.append(BlobSweepReport.Deleted(key: key, blobId: blobId))
+                        try ctx.deleteBlob(blobId: blobId)
+                        localDeleted.append(BlobSweepReport.Deleted(key: ctx.key, blobId: blobId))
                     }
                     return localDeleted
                 }
@@ -490,8 +541,8 @@ public final class GuessWhoSync: @unchecked Sendable {
                 ),
             ]
         )
-        try sidecarLocks.withLock(forKey: key) {
-            try sidecars.write(envelope, at: key)
+        try withKeyLocked(key) { ctx in
+            try ctx.write(envelope)
         }
         return Link(
             id: id,
@@ -510,8 +561,8 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// envelope is missing.
     public func setLinkNote(id: UUID, note: String) throws {
         let key = SidecarKey(kind: .link, id: id.uuidString)
-        try sidecarLocks.withLock(forKey: key) {
-            guard let existing = try sidecars.read(key) else { return }
+        try withKeyLocked(key) { ctx in
+            guard let existing = try ctx.read() else { return }
             let now = Date()
             var fields = existing.fields
             fields[Link.noteKey] = SidecarCell(
@@ -528,9 +579,8 @@ public final class GuessWhoSync: @unchecked Sendable {
                     modifiedBy: deviceID
                 )
             }
-            try sidecars.write(
-                SidecarEnvelope(schemaVersion: 1, entityID: existing.entityID, fields: fields),
-                at: key
+            try ctx.write(
+                SidecarEnvelope(schemaVersion: 1, entityID: existing.entityID, fields: fields)
             )
         }
     }
@@ -541,8 +591,8 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// the link is missing or already soft-deleted.
     public func removeLink(id: UUID) throws {
         let key = SidecarKey(kind: .link, id: id.uuidString)
-        try sidecarLocks.withLock(forKey: key) {
-            guard let existing = try sidecars.read(key) else { return }
+        try withKeyLocked(key) { ctx in
+            guard let existing = try ctx.read() else { return }
             // Already soft-deleted: silent no-op (no stamp churn).
             if let cell = existing.fields[Link.deletedAtKey], case .string = cell.value {
                 return
@@ -554,9 +604,8 @@ public final class GuessWhoSync: @unchecked Sendable {
                 modifiedAt: now,
                 modifiedBy: deviceID
             )
-            try sidecars.write(
-                SidecarEnvelope(schemaVersion: 1, entityID: existing.entityID, fields: fields),
-                at: key
+            try ctx.write(
+                SidecarEnvelope(schemaVersion: 1, entityID: existing.entityID, fields: fields)
             )
         }
     }
@@ -990,10 +1039,10 @@ public final class GuessWhoSync: @unchecked Sendable {
             let preBMatches = preBEnd.kind == .contact && mapping[preBEnd.id] != nil
             guard preAMatches || preBMatches else { continue }
 
-            try sidecarLocks.withLock(forKey: key) {
+            try withKeyLocked(key) { ctx in
                 // Re-read inside the lock: a concurrent setLinkNote or
                 // removeLink may have written between the pre-screen and now.
-                guard let envelope = try sidecars.read(key) else { return }
+                guard let envelope = try ctx.read() else { return }
                 guard let aCell = envelope.fields[Link.endpointAKey],
                       let bCell = envelope.fields[Link.endpointBKey],
                       let aEnd = Link.decodeEndpoint(aCell.value),
@@ -1018,9 +1067,8 @@ public final class GuessWhoSync: @unchecked Sendable {
                         modifiedBy: deviceID
                     )
                 }
-                try sidecars.write(
-                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
-                    at: key
+                try ctx.write(
+                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields)
                 )
 
                 guard let linkID = UUID(uuidString: key.id) else { return }
