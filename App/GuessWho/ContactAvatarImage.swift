@@ -28,10 +28,9 @@ enum ContactAvatarImage {
     }
 
     private static func backgroundColor(for contact: Contact) -> UIColor {
-        let seed = "\(contact.contactType)-\(contact.displayName)"
-        let value = seed.unicodeScalars.reduce(0) { partial, scalar in
-            (partial &* 31) &+ Int(scalar.value)
-        }
+        // Index comes from the shared `ContactAvatarPalette` so this UIKit path
+        // and the SwiftUI `ContactAvatar` path stay in lockstep. This palette
+        // MUST keep the same order/length as `ContactAvatarPalette.count`.
         let palette: [UIColor] = [
             .systemBlue,
             .systemGreen,
@@ -42,6 +41,6 @@ enum ContactAvatarImage {
             .systemRed,
             .systemTeal,
         ]
-        return palette[abs(value) % palette.count]
+        return palette[ContactAvatarPalette.index(for: contact)]
     }
 }
