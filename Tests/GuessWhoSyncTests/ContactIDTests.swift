@@ -36,6 +36,7 @@ private actor FailAfterSeedContactStore: ContactStoreProtocol {
     func changes(since token: Data?) async throws -> ContactChangeSet { throw StoreUnavailable() }
     func loadImageData(localID: String) async throws -> Data? { throw StoreUnavailable() }
     func loadThumbnailImageData(localID: String) async throws -> Data? { throw StoreUnavailable() }
+    func setImageData(localID: String, imageData: Data?) async throws { throw StoreUnavailable() }
     func fetchAllGroups() async throws -> [ContactGroup] { throw StoreUnavailable() }
     func fetchGroup(localID: String) async throws -> ContactGroup? { throw StoreUnavailable() }
     func createGroup(name: String) async throws -> ContactGroup { throw StoreUnavailable() }

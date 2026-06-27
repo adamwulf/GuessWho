@@ -637,7 +637,21 @@ principle: the user sees "contact / notes / job title", never "sidecar").
 
 ## Final phase — previous-photo preservation + `.blob` sidecar field type
 
-This is the **last phase** of the project (per user, 2026-06-26), built after the
+> **BUILT 2026-06-27.** Shipped on the contact-photo branch ahead of the
+> LinkedIn enrichment flow (the contact-photo feature needed the same
+> previous-photo snapshot). As built: `SidecarFieldType.blob` (pointer object),
+> AES-GCM-encrypted `.dat` neighbor files keyed by a synchronizable-keychain key
+> (`SidecarBlobCrypto` / `KeychainBlobCrypto`), store blob I/O
+> (`writeBlob`/`readBlob`/`deleteBlob`/`blobIds`), the orchestrator
+> `setBlobField` / `blobFieldData` / reference-counting `sweepOrphanBlobs`, and
+> the read-before-write snapshot in `ContactsRepository.setContactPhoto`. The
+> `previousPhoto` `.blob` is filtered out of the user-visible custom-fields list.
+> Open device-QA item: the real synchronizable-keychain read/write/sync and the
+> entitlements for the new keychain item are unverified on-device (unit tests
+> inject an in-memory key). v1 captures only — no revert UI. The design notes
+> below are retained as the as-built record.
+
+This was the **last phase** of the project (per user, 2026-06-26), built after the
 LinkedIn enrichment flow ships. It has two parts: a new sidecar field type, and
 the read-before-write snapshot that uses it.
 

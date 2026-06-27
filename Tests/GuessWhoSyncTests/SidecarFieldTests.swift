@@ -175,6 +175,162 @@ struct SidecarFieldTests {
         }
     }
 
+    // MARK: - Blob (.blob type)
+
+    private func blobPointer(
+        blobId: String = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        contentType: String = "image/jpeg",
+        byteCount: Double = 1234
+    ) -> JSONValue {
+        .object([
+            "blobId": .string(blobId),
+            "contentType": .string(contentType),
+            "byteCount": .number(byteCount),
+        ])
+    }
+
+    @Test
+    func addFieldBlobRoundTrip() throws {
+        let (sync, _) = makeOrchestrator()
+        let pointer = blobPointer()
+        let id = try sync.addField(at: contactKey, field: "previousPhoto", type: .blob, value: pointer)
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.id == id)
+        #expect(f.type == .blob)
+        #expect(f.value == pointer)
+        #expect(f.field == "previousPhoto")
+        #expect(f.deletedAt == nil)
+        #expect(f.createdAt != nil)
+        // The decoded pointer round-trips through BlobPointer too.
+        let decoded = try #require(BlobPointer(from: f.value))
+        #expect(decoded.blobId == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        #expect(decoded.contentType == "image/jpeg")
+        #expect(decoded.byteCount == 1234)
+    }
+
+    @Test
+    func blobPointerJSONValueRoundTripsThroughField() throws {
+        let (sync, _) = makeOrchestrator()
+        let pointer = BlobPointer(blobId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", contentType: "image/png", byteCount: 0)
+        let id = try sync.addField(at: contactKey, field: "p", type: .blob, value: pointer.jsonValue)
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(BlobPointer(from: f.value) == pointer)
+    }
+
+    @Test
+    func setFieldBlobUpdatesPointerInPlace() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "p", type: .blob, value: blobPointer(blobId: "11111111-0000-0000-0000-000000000001"))
+        let next = blobPointer(blobId: "11111111-0000-0000-0000-000000000002", byteCount: 999)
+        try sync.setField(at: contactKey, id: id, field: "p", value: next)
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.type == .blob)
+        #expect(f.value == next)
+    }
+
+    @Test
+    func addFieldBlobRejectsNonObjectValue() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: .string("not-an-object"))
+        }
+    }
+
+    @Test
+    func addFieldBlobRejectsMissingBlobId() {
+        let (sync, _) = makeOrchestrator()
+        let bad: JSONValue = .object([
+            "contentType": .string("image/jpeg"),
+            "byteCount": .number(10),
+        ])
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: bad)
+        }
+    }
+
+    @Test
+    func addFieldBlobRejectsEmptyBlobId() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: blobPointer(blobId: ""))
+        }
+    }
+
+    @Test
+    func addFieldBlobRejectsMissingContentType() {
+        let (sync, _) = makeOrchestrator()
+        let bad: JSONValue = .object([
+            "blobId": .string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            "byteCount": .number(10),
+        ])
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: bad)
+        }
+    }
+
+    @Test
+    func addFieldBlobRejectsWrongByteCountType() {
+        let (sync, _) = makeOrchestrator()
+        let bad: JSONValue = .object([
+            "blobId": .string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            "contentType": .string("image/jpeg"),
+            "byteCount": .string("1234"), // string, not number
+        ])
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: bad)
+        }
+    }
+
+    @Test
+    func addFieldBlobRejectsNegativeByteCount() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: blobPointer(byteCount: -1))
+        }
+    }
+
+    @Test
+    func addFieldBlobRejectsFractionalByteCount() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "p", type: .blob, value: blobPointer(byteCount: 12.5))
+        }
+    }
+
+    @Test
+    func addFieldBlobAcceptsZeroByteCount() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "p", type: .blob, value: blobPointer(byteCount: 0))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(BlobPointer(from: f.value)?.byteCount == 0)
+    }
+
+    @Test
+    func setFieldBlobRejectsTypeMismatch() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "p", type: .blob, value: blobPointer())
+        #expect(throws: SidecarStoreError.self) {
+            try sync.setField(at: contactKey, id: id, field: "p", value: .string("not-a-pointer"))
+        }
+    }
+
+    @Test
+    func blobFieldEncodeDecodeRoundTripThroughEnvelopeJSON() throws {
+        // A .blob cell survives a full JSON envelope encode/decode unchanged —
+        // the pointer object is a plain `.object`, so the envelope coder needs
+        // no special handling.
+        let (sync, sidecars) = makeOrchestrator()
+        let pointer = blobPointer(blobId: "cccccccc-cccc-cccc-cccc-cccccccccccc")
+        let id = try sync.addField(at: contactKey, field: "previousPhoto", type: .blob, value: pointer)
+        let envelope = try #require(try sidecars.read(contactKey))
+        let data = try JSONEncoder().encode(envelope)
+        let roundTripped = try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+        let cell = try #require(roundTripped.fields[id.uuidString])
+        let decoded = try #require(SidecarField.decode(id: id, from: cell))
+        #expect(decoded.type == .blob)
+        #expect(decoded.value == pointer)
+    }
+
     // MARK: - Forward compatibility
 
     @Test

@@ -1,6 +1,7 @@
 import SwiftUI
 import Contacts
 import MapKit
+import PhotosUI
 import GuessWhoSync
 
 struct ContactDetailView: View {
@@ -30,6 +31,24 @@ struct ContactDetailView: View {
 
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
+    // Drives the fullscreen, zoomable photo viewer. Set when the user taps the
+    // header photo (only possible when a real photo is loaded); the cover binds
+    // to this so the same image the header shows is the one presented. Wrapped
+    // in an Identifiable box because `.fullScreenCover(item:)` requires it and
+    // UIImage isn't Identifiable.
+    @State private var fullscreenPhoto: FullscreenPhoto?
+    // Edit-mode photo change. `showingPhotoOptions` drives the Choose/Remove
+    // confirmation dialog; `photoPickerItem` binds the PhotosPicker selection
+    // so the picked item can be loaded and written to the contact.
+    @State private var showingPhotoOptions = false
+    // Presents the system PhotosPicker. Driven by a flag (not a PhotosPicker
+    // nested in the confirmation dialog): a PhotosPicker inside a dialog's
+    // action list tears down with the dialog before it can present its sheet,
+    // so the dialog's "Choose Photo" sets this flag and a separate
+    // `.photosPicker(isPresented:)` opens the picker once the dialog is gone.
+    @State private var presentingPhotoPicker = false
+    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var photoSaveError: String?
     @State private var notesStore: NotesStore?
     @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
@@ -173,6 +192,20 @@ struct ContactDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
+        .fullScreenCover(item: $fullscreenPhoto) { photo in
+            ContactPhotoViewer(image: photo.image)
+        }
+        // Photo-change UI (dialog + picker + error) lives in one modifier so the
+        // body's modifier chain stays short enough for the type-checker.
+        .modifier(PhotoChangeModifier(
+            showingPhotoOptions: $showingPhotoOptions,
+            presentingPhotoPicker: $presentingPhotoPicker,
+            photoPickerItem: $photoPickerItem,
+            photoSaveError: $photoSaveError,
+            canRemovePhoto: contact?.imageDataAvailable == true,
+            onPick: { item in Task { await applyPickedPhoto(item) } },
+            onRemove: { Task { await removePhoto() } }
+        ))
         .confirmationDialog(
             "Delete contact?",
             isPresented: $showDeleteConfirm,
@@ -563,27 +596,84 @@ struct ContactDetailView: View {
         headerPhoto = image
     }
 
+    // MARK: - Edit-mode photo change
+
+    /// Loads the picked photo's bytes, downscales them to a sane contact-photo
+    /// size, and writes them to the underlying Contacts record. The write goes
+    /// to the CNContact itself (not a sidecar), so the new photo shows in
+    /// Contacts.app too. Resets the picker selection so picking the same asset
+    /// again re-fires.
+    private func applyPickedPhoto(_ item: PhotosPickerItem) async {
+        defer { photoPickerItem = nil }
+        do {
+            guard let rawData = try await item.loadTransferable(type: Data.self) else {
+                photoSaveError = "That photo couldn't be loaded."
+                return
+            }
+            // Downscale on a background task so a large asset doesn't hitch the
+            // main actor; contact photos don't need full camera resolution.
+            let jpegData = await Self.normalizedPhotoData(from: rawData)
+            guard let jpegData else {
+                photoSaveError = "That photo couldn't be processed."
+                return
+            }
+            try await writePhoto(jpegData)
+        } catch {
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    private func removePhoto() async {
+        do {
+            try await writePhoto(nil)
+        } catch {
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    /// Shared write tail for set/clear: persist to Contacts, drop the decoded
+    /// image cache (coarse — see `ContactPhotoLoader.invalidate`), reload the
+    /// contact so `imageDataAvailable` is current, then refresh the header.
+    private func writePhoto(_ imageData: Data?) async throws {
+        try await repository.setContactPhoto(for: id, imageData: imageData)
+        photoLoader.invalidate(loadedContactID ?? id)
+        await loadContact(preferFresh: true)
+        await loadHeaderPhoto()
+    }
+
+    /// Decode, downscale (longest side ≤ 1024pt), and re-encode the picked
+    /// bytes as JPEG off the main actor. Returns nil if the bytes don't decode
+    /// to an image. 1024 is plenty for a contact photo and keeps the write the
+    /// OS thumbnails small.
+    private static func normalizedPhotoData(from data: Data) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            guard let image = UIImage(data: data) else { return nil }
+            let maxSide: CGFloat = 1024
+            let longest = max(image.size.width, image.size.height)
+            let scaledImage: UIImage
+            if longest > maxSide {
+                let ratio = maxSide / longest
+                let newSize = CGSize(width: image.size.width * ratio, height: image.size.height * ratio)
+                let format = UIGraphicsImageRendererFormat.default()
+                format.scale = 1
+                scaledImage = UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
+                    image.draw(in: CGRect(origin: .zero, size: newSize))
+                }
+            } else {
+                scaledImage = image
+            }
+            return scaledImage.jpegData(compressionQuality: 0.85)
+        }.value
+    }
+
     /// Inline detail header used on macOS: large monogram circle, name,
     /// and a `job title · organization` subtitle. The nav-bar title is
     /// hidden in this configuration so the name only appears once.
     @ViewBuilder
     private func headerView(_ contact: Contact) -> some View {
         VStack(spacing: 12) {
-            ZStack {
-                if let headerPhoto {
-                    Image(uiImage: headerPhoto)
-                        .resizable()
-                        .scaledToFill()
-                        .clipShape(Circle())
-                } else {
-                    Circle()
-                        .fill(Color.secondary.opacity(0.15))
-                    Text(contact.initials)
-                        .font(.system(size: 36, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 96, height: 96)
+            photoCircle(contact)
+                .frame(width: 96, height: 96)
 
             VStack(spacing: 2) {
                 Text(contact.displayName)
@@ -598,6 +688,77 @@ struct ContactDetailView: View {
                         .multilineTextAlignment(.center)
                 }
             }
+        }
+    }
+
+    /// The circular profile image (photo or monogram fallback). Tapping it does
+    /// one of three things depending on state: in edit mode it offers
+    /// Choose/Remove (with a translucent viewfinder overlay signalling this); in
+    /// view mode with a photo it opens the fullscreen zoom/pan viewer; in view
+    /// mode WITHOUT a photo it jumps straight to the picker so a first photo can
+    /// be added without entering the editor.
+    @ViewBuilder
+    private func photoCircle(_ contact: Contact) -> some View {
+        let circle = ZStack {
+            if let headerPhoto {
+                Image(uiImage: headerPhoto)
+                    .resizable()
+                    .scaledToFill()
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(Color.secondary.opacity(0.15))
+                Text(contact.initials)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if isEditingContact {
+                // Translucent viewfinder over the circle while editing: a
+                // glanceable "tap to change photo" affordance. The dark scrim
+                // keeps the symbol legible over a light photo or monogram.
+                Circle()
+                    .fill(Color.black.opacity(0.35))
+                Image(.customPersonCropCircleViewfinder)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(22)
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+        }
+
+        if isEditingContact {
+            // In edit mode the circle is the "change photo" control: tapping
+            // it offers Choose / Remove. The viewfinder overlay above signals
+            // this is tappable.
+            Button {
+                showingPhotoOptions = true
+            } label: {
+                circle
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Change photo")
+        } else if headerPhoto != nil {
+            Button {
+                if let headerPhoto {
+                    fullscreenPhoto = FullscreenPhoto(image: headerPhoto)
+                }
+            } label: {
+                circle
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View photo")
+        } else {
+            // No photo, not editing: tapping the monogram is a shortcut to add
+            // a first photo without opening the editor. There's nothing to
+            // remove, so go straight to the picker (no Choose/Remove dialog).
+            Button {
+                presentingPhotoPicker = true
+            } label: {
+                circle
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add photo")
         }
     }
 
@@ -1629,6 +1790,55 @@ private extension Array {
     /// order the values.
     func stablePartitionedByOldLabel(_ label: (Element) -> String) -> [Element] {
         filter { !label($0).isOldFieldLabel } + filter { label($0).isOldFieldLabel }
+    }
+}
+
+/// Bundles the edit-mode photo-change surfaces — the Choose/Remove
+/// confirmation dialog, the system `PhotosPicker`, and the failure alert — into
+/// a single modifier. Extracted from `ContactDetailView.body` so that view's
+/// already-long modifier chain stays within the SwiftUI type-checker's budget.
+private struct PhotoChangeModifier: ViewModifier {
+    @Binding var showingPhotoOptions: Bool
+    @Binding var presentingPhotoPicker: Bool
+    @Binding var photoPickerItem: PhotosPickerItem?
+    @Binding var photoSaveError: String?
+    let canRemovePhoto: Bool
+    let onPick: (PhotosPickerItem) -> Void
+    let onRemove: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                "Photo",
+                isPresented: $showingPhotoOptions,
+                titleVisibility: .visible
+            ) {
+                // Just flip the flag here — the actual PhotosPicker is presented
+                // by the `.photosPicker` modifier below, AFTER this dialog tears
+                // down. A PhotosPicker nested in the dialog dismisses with the
+                // dialog before it can present.
+                Button("Choose Photo") { presentingPhotoPicker = true }
+                if canRemovePhoto {
+                    Button("Remove Photo", role: .destructive, action: onRemove)
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem, matching: .images)
+            .onChange(of: photoPickerItem) { _, newItem in
+                guard let newItem else { return }
+                onPick(newItem)
+            }
+            .alert(
+                "Couldn't update photo",
+                isPresented: Binding(
+                    get: { photoSaveError != nil },
+                    set: { if !$0 { photoSaveError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { photoSaveError = nil }
+            } message: {
+                Text(photoSaveError ?? "")
+            }
     }
 }
 

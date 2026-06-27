@@ -66,6 +66,21 @@ struct AdapterSmokeTests {
         _ = _useGroups
     }
 
+    // Compile-time smoke: the contact image read/write surface exists on the
+    // adapter. The body never runs (no Contacts authorization in the test
+    // process); the value is that it fails to compile if a photo method drops
+    // off or changes shape.
+    @Test
+    func cnAdapterExposesImageSurface() {
+        func _useImages(_ adapter: CNContactStoreAdapter) async throws {
+            _ = try await adapter.loadImageData(localID: "x")
+            _ = try await adapter.loadThumbnailImageData(localID: "x")
+            try await adapter.setImageData(localID: "x", imageData: Data())
+            try await adapter.setImageData(localID: "x", imageData: nil)
+        }
+        _ = _useImages
+    }
+
     // Compile-time smoke: the change-history delta read exists on the adapter.
     // The body never runs (no Contacts authorization in the test process); the
     // value is that it fails to compile if `changes(since:)` drops off.

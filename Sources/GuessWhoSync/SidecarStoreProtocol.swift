@@ -18,6 +18,36 @@ public protocol SidecarStoreProtocol {
     // Initiate a fetch of `key`'s bytes onto local storage. No-op for
     // backends that always have bytes locally.
     func requestDownload(_ key: SidecarKey) throws
+
+    // MARK: - Binary blob payloads (`.blob` field type)
+    //
+    // A `.blob` sidecar field is a pointer to a separate binary file that
+    // lives beside the envelope under the SAME storage root (so it syncs the
+    // same way). These four methods are the byte-level I/O for those files;
+    // the orchestrator owns the pointer bookkeeping (mint a fresh `blobId`
+    // per write, delete-on-overwrite, reference-counting orphan sweep).
+    //
+    // Backends with no binary storage get default no-op/empty implementations
+    // (below), so a third-party conformer compiles unchanged.
+
+    // Write `data` as the blob identified by `blobId` for `key`. Overwrites any
+    // existing file at that (key, blobId). The on-disk payload MAY be encrypted
+    // by the backend (FileSystemSidecarStore encrypts; the in-memory store does
+    // not — the contract is bytes-in / bytes-out).
+    func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws
+
+    // Read the blob bytes for (key, blobId). Returns nil when the blob is not
+    // materialized on this device yet (e.g. the `.dat` exists only as an iCloud
+    // placeholder) OR is absent — a missing blob is benign ("pending"/"gone"),
+    // never an error the caller must special-case.
+    func readBlob(blobId: String, for key: SidecarKey) throws -> Data?
+
+    // Delete the blob file for (key, blobId). No-op if it is already gone.
+    func deleteBlob(blobId: String, for key: SidecarKey) throws
+
+    // Every blobId that has a `.dat` (or not-yet-downloaded placeholder) on
+    // disk for `key`. Used by the orphan sweep to find unreferenced files.
+    func blobIds(for key: SidecarKey) throws -> [String]
 }
 
 // Conflict-reconcile plumbing is exposed via SPI so the two shipping stores
@@ -100,4 +130,12 @@ public extension SidecarStoreProtocol {
 
     // Default: backends with no remote tier do nothing.
     func requestDownload(_ key: SidecarKey) throws {}
+
+    // Default blob I/O: a backend with no binary storage stores nothing, has
+    // nothing to read or delete, and lists no blobIds. The two shipping stores
+    // (FileSystemSidecarStore, InMemorySidecarStore) override all four.
+    func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {}
+    func readBlob(blobId: String, for key: SidecarKey) throws -> Data? { nil }
+    func deleteBlob(blobId: String, for key: SidecarKey) throws {}
+    func blobIds(for key: SidecarKey) throws -> [String] { [] }
 }

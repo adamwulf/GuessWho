@@ -285,6 +285,82 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: edited.localID)
     }
 
+    /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
+    /// record, addressed by the app-facing `ContactID`. Image bytes go through
+    /// the store's dedicated photo-write path (not `save`), then the one record
+    /// is re-read so its `imageDataAvailable` flag reflects the write. The app
+    /// is responsible for invalidating any cached decoded image afterwards.
+    /// Returns `false` when the id no longer resolves to a contact.
+    ///
+    /// PREVIOUS-PHOTO SNAPSHOT: before overwriting an EXISTING photo, the
+    /// current bytes are captured into a single-slot "previous photo" so a
+    /// replacement is recoverable. This is a general rule on the contact-image
+    /// write path — every caller that replaces a photo gets it for free; the
+    /// app needs no change. Snapshotting is best-effort and never blocks the
+    /// actual photo write: a snapshot failure is recorded in `lastError` only.
+    @discardableResult
+    public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
+        guard let localID = contact(id: id)?.localID else { return false }
+        await snapshotCurrentPhotoIfPresent(for: id, localID: localID)
+        try await contactsStore.setImageData(localID: localID, imageData: imageData)
+        await refreshContact(localID: localID)
+        return true
+    }
+
+    /// Read-before-write: if the contact currently HAS a photo, snapshot those
+    /// bytes into a single-slot `previousPhoto` `.blob` before the caller
+    /// overwrites them. No current photo → snapshot nothing. Requires the sync
+    /// engine (the snapshot is a sidecar write); when nil, there's nowhere to
+    /// store it, so it's silently skipped — the photo write still proceeds.
+    ///
+    /// Resolving the contact's GuessWho UUID can MINT one for a previously-
+    /// unreconciled contact (same resolve-or-mint path the other sidecar writes
+    /// use), so the cache is refreshed if that happens.
+    private func snapshotCurrentPhotoIfPresent(for id: ContactID, localID: String) async {
+        guard let sync else { return }
+        do {
+            // Read the CURRENT full-size bytes that are about to be replaced.
+            guard let currentBytes = try await contactsStore.loadImageData(localID: localID),
+                  !currentBytes.isEmpty else { return }
+
+            let minted = id.guessWhoID == nil
+            let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+            let key = SidecarKey(kind: .contact, id: guessWhoID)
+            // Single-slot upsert: repoints the slot and reclaims the prior
+            // `.dat` (orphan sweep is the cross-device backstop).
+            _ = try sync.setBlobField(
+                at: key,
+                field: Self.previousPhotoFieldName,
+                data: currentBytes,
+                contentType: Self.imageContentType(of: currentBytes)
+            )
+            await refreshCacheIfMinted(minted, localID: localID)
+        } catch {
+            // Best-effort: the snapshot must never block the photo write.
+            lastError = "previous-photo snapshot failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// The single-slot field name the previous-photo snapshot lives under. This
+    /// is an INTERNAL identifier, NOT a display string: the `.blob` field it
+    /// names is excluded from the user-visible custom-fields list by
+    /// `fields(for:)` (a `.blob` is infrastructure, not a user-editable field),
+    /// so the raw "previousPhoto" token never reaches the UI. A future
+    /// "previous photo" feature would render its own plain-language label and
+    /// read the bytes via `GuessWhoSync.blobFieldData`, not surface this name.
+    /// v1 only guarantees capture.
+    static let previousPhotoFieldName = "previousPhoto"
+
+    /// Best-effort MIME sniff for the snapshot pointer's `contentType`. CN
+    /// usually hands back JPEG, sometimes PNG; anything else is recorded as a
+    /// generic octet-stream (the bytes are stored faithfully regardless).
+    static func imageContentType(of data: Data) -> String {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return "image/png" }
+        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
+        return "application/octet-stream"
+    }
+
     /// Apply selected fields from a parsed LinkedIn profile to an existing
     /// contact and return the refreshed contact. The single package-side entry
     /// point that owns the merge + save rules (the app only chooses which
@@ -754,12 +830,19 @@ public final class ContactsRepository: NSObject {
         return noteID
     }
 
-    /// All live (non-deleted) sidecar fields on the contact, by `ContactID`.
-    /// Returns empty for an unreconciled id (no mint on read).
+    /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
+    /// `ContactID`. Returns empty for an unreconciled id (no mint on read).
+    ///
+    /// `.blob` fields are EXCLUDED: they are internal infrastructure (e.g. the
+    /// `previousPhoto` snapshot), not user-editable custom fields. Surfacing one
+    /// would render a phantom row (e.g. literally "previousPhoto") in the
+    /// contact's custom-fields UI — a product-principle violation. The contact
+    /// custom-fields surface is text/date/checkbox only; blobs are read through
+    /// their own typed accessors (`GuessWhoSync.blobFieldData`).
     public func fields(for id: ContactID) -> [SidecarField] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let all = (try? sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))) ?? []
-        return all.filter { $0.deletedAt == nil }
+        return all.filter { $0.deletedAt == nil && $0.type != .blob }
     }
 
     /// Upsert a named free-text sidecar field on the contact, by `field` name:

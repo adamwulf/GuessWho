@@ -44,6 +44,14 @@ public protocol ContactStoreProtocol: Actor {
     func loadImageData(localID: String) async throws -> Data?
     func loadThumbnailImageData(localID: String) async throws -> Data?
 
+    /// Write (or clear, with `nil`) the contact's photo bytes. Image bytes are
+    /// owned on this dedicated path rather than through `save(_:)` — the latter
+    /// deliberately preserves whatever bytes already exist so a field
+    /// round-trip never disturbs the photo. Setting `imageData` writes the
+    /// full-size photo; the OS derives the thumbnail. Throws
+    /// `ContactStoreError.contactNotFound` when `localID` does not resolve.
+    func setImageData(localID: String, imageData: Data?) async throws
+
     // Groups — mirror Contacts.app groups. The sidecar does not mirror group
     // metadata; these methods read/write Contacts directly. Group identity
     // is the `localID` issued by Contacts at create time.

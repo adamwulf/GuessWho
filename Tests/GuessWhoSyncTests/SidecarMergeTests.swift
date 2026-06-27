@@ -175,6 +175,34 @@ struct SidecarMergeTests {
 
     // MARK: - helpers
 
+    // The cross-device previous-photo race: the SAME single-slot `.blob`
+    // field-instance cell is repointed on two devices to DIFFERENT blobIds.
+    // Whole-cell LWW must keep exactly the winner's pointer intact and never
+    // resurrect or blend in the loser's blobId (which the sweep then reclaims).
+    @Test
+    func blobPointerWholeCellLWWKeepsWinnerPointer() throws {
+        func blobCell(blobId: String, at: Date, by: String) -> SidecarCell {
+            let inner = SidecarField.makeInnerValue(
+                field: "previousPhoto",
+                type: .blob,
+                value: BlobPointer(blobId: blobId, contentType: "image/jpeg", byteCount: 10).jsonValue,
+                createdAt: t1
+            )
+            return SidecarCell(value: inner, modifiedAt: at, modifiedBy: by)
+        }
+        let cellKey = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        let older = SidecarEnvelope(entityID: "e", fields: [cellKey: blobCell(blobId: "blob-OLD", at: t1, by: "device-A")])
+        let newer = SidecarEnvelope(entityID: "e", fields: [cellKey: blobCell(blobId: "blob-NEW", at: t2, by: "device-B")])
+
+        let merged = try merge(older, newer).get()
+        let cell = try #require(merged.fields[cellKey])
+        let decoded = try #require(SidecarField.decode(id: UUID(uuidString: cellKey)!, from: cell))
+        let pointer = try #require(BlobPointer(from: decoded.value))
+        // Winner (newer) pointer survives intact; loser's blobId is gone.
+        #expect(pointer.blobId == "blob-NEW")
+        #expect(cell.modifiedBy == "device-B")
+    }
+
     private func live(_ value: JSONValue, at: Date, by: String) -> SidecarCell {
         SidecarCell(value: value, modifiedAt: at, modifiedBy: by)
     }

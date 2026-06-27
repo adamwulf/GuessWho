@@ -86,6 +86,29 @@ extension SidecarField {
             guard case .bool = value else {
                 throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
             }
+        case .blob:
+            // The value is a pointer OBJECT, not bytes:
+            //   { "blobId": <non-empty string>, "contentType": <string>,
+            //     "byteCount": <integer >= 0> }
+            // Anything else (non-object, empty/missing blobId, missing or
+            // non-string contentType, missing/negative/fractional byteCount)
+            // is a shape failure. Mirrors how `.date` rejects non-ISO8601.
+            guard case .object(let pointer) = value else {
+                throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
+            }
+            guard case .string(let blobId) = pointer[BlobPointer.blobIdKey] ?? .null,
+                  !blobId.isEmpty else {
+                throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
+            }
+            guard case .string = pointer[BlobPointer.contentTypeKey] ?? .null else {
+                throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
+            }
+            // JSONValue has no integer case; byteCount arrives as `.number`.
+            // Require a whole, non-negative value.
+            guard case .number(let count) = pointer[BlobPointer.byteCountKey] ?? .null,
+                  count >= 0, count.rounded() == count else {
+                throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
+            }
         }
     }
 
