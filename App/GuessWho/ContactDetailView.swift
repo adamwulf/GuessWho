@@ -849,22 +849,32 @@ struct ContactDetailView: View {
         // "old" rows behind a "more…" disclosure (see `infoSection`).
         // Partitioning here guarantees the visible rows precede the hidden ones
         // regardless of the order Contacts stored the values in.
+        // `groupOccurrence` is the row's index within its (partitioned) group so
+        // the id stays unique even when a contact has duplicate values.
         let phones = contact.phoneNumbers.stablePartitionedByOldLabel { $0.label }
-        for item in phones {
-            rows.append(.phone(label: localizedLabel(item.label), number: item.value, isOld: item.label.isOldFieldLabel))
+        for (i, item) in phones.enumerated() {
+            var row = InfoRowData.phone(label: localizedLabel(item.label), number: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
         let emails = contact.emailAddresses.stablePartitionedByOldLabel { $0.label }
-        for item in emails {
-            rows.append(.email(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel))
+        for (i, item) in emails.enumerated() {
+            var row = InfoRowData.email(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
         let urls = contact.userVisibleURLAddresses.stablePartitionedByOldLabel { $0.label }
-        for item in urls {
-            rows.append(.url(label: localizedLabel(item.label), urlString: item.value, isOld: item.label.isOldFieldLabel))
+        for (i, item) in urls.enumerated() {
+            var row = InfoRowData.url(label: localizedLabel(item.label), urlString: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
 
         let addresses = contact.postalAddresses.stablePartitionedByOldLabel { $0.label }
-        for item in addresses {
-            rows.append(.address(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel))
+        for (i, item) in addresses.enumerated() {
+            var row = InfoRowData.address(label: localizedLabel(item.label), address: item.value, isOld: item.label.isOldFieldLabel)
+            row.groupOccurrence = i
+            rows.append(row)
         }
 
         if let bday = contact.birthday {
@@ -1651,13 +1661,19 @@ private struct InfoRowData: Identifiable {
     /// True when this row's raw label is the user's "old" custom label, so it
     /// hides behind its group's "more…" disclosure.
     var isOld: Bool = false
+    /// Position of this row within its field group, assigned in `infoRows(for:)`.
+    /// Disambiguates the id of genuinely-duplicate values (e.g. two phones both
+    /// labeled "other" with the same number — degenerate but real address-book
+    /// data) so `ForEach` never sees colliding ids.
+    var groupOccurrence: Int = 0
 
     /// Content-derived stable identity. A per-render `UUID()` would re-mint each
     /// time `infoRows(for:)` runs in the view body, so the "old"-row reveal
     /// `withAnimation` would see every row as new and re-lay-out the whole info
     /// card instead of sliding in only the revealed rows. Keying on the row's
-    /// own content keeps identity stable across renders, so the animation
-    /// affects only the rows that actually appear/disappear.
+    /// own content (plus group/isOld and the per-group occurrence index for
+    /// duplicate values) keeps identity stable across renders AND unique, so the
+    /// animation affects only the rows that actually appear/disappear.
     var id: String {
         let kindKey: String
         switch kind {
@@ -1670,7 +1686,8 @@ private struct InfoRowData: Identifiable {
         case .contactLink(let displayName, let contactID): kindKey = "contactLink|\(displayName)|\(String(describing: contactID))"
         case .backReference(let displayName, let descriptor, let contactID): kindKey = "backRef|\(displayName)|\(descriptor)|\(String(describing: contactID))"
         }
-        return "\(label)|\(kindKey)"
+        let groupKey = group.map { String(describing: $0) } ?? "none"
+        return "\(groupKey)|\(isOld ? "old" : "cur")|\(groupOccurrence)|\(label)|\(kindKey)"
     }
 
     static func text(label: String, value: String, monospaced: Bool = false, valueColor: Color? = nil) -> InfoRowData {
