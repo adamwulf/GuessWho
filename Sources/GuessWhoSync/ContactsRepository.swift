@@ -380,13 +380,15 @@ public final class ContactsRepository: NSObject {
 
         try await saveContact(edited, for: id)
 
-        // Sidecar notes (prefixed so the user sees the source). About/location
-        // aren't CNContact fields, so they live in the sidecar.
+        // Sidecar key/value fields (about/location aren't CNContact fields). Use
+        // UPSERT by name (not append-only notes) so re-importing the same profile
+        // updates the value instead of duplicating it. Field names are prefixed
+        // "LinkedIn " so the source is obvious.
         if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
-            _ = try await addNote(for: id, body: "LinkedIn About: \(about)")
+            _ = try await upsertField(for: id, field: "LinkedIn About", value: about)
         }
         if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
-            _ = try await addNote(for: id, body: "LinkedIn Location: \(loc)")
+            _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc)
         }
 
         return contact(id: id) ?? edited
@@ -748,6 +750,40 @@ public final class ContactsRepository: NSObject {
         let noteID = try sync.addNote(at: SidecarKey(kind: .contact, id: guessWhoID), body: body)
         await refreshCacheIfMinted(minted, localID: id.localID)
         return noteID
+    }
+
+    /// All live (non-deleted) sidecar fields on the contact, by `ContactID`.
+    /// Returns empty for an unreconciled id (no mint on read).
+    public func fields(for id: ContactID) -> [SidecarField] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        let all = (try? sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))) ?? []
+        return all.filter { $0.deletedAt == nil }
+    }
+
+    /// Upsert a named free-text sidecar field on the contact: if a live field
+    /// with the same `field` name exists, update its value; otherwise create it.
+    /// This gives stable, re-importable key/value storage (unlike notes, which
+    /// append). Resolves-or-mints first, then refreshes the cache if minted.
+    /// Returns the field's id. Throws `SidecarUnavailableError` if no engine.
+    @discardableResult
+    public func upsertField(for id: ContactID, field: String, value: String) async throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+
+        let existing = ((try? sync.fields(at: key)) ?? [])
+            .first { $0.deletedAt == nil && $0.field == field }
+
+        let fieldID: UUID
+        if let existing {
+            try sync.setField(at: key, id: existing.id, field: field, value: .string(value))
+            fieldID = existing.id
+        } else {
+            fieldID = try sync.addField(at: key, field: field, type: .note, value: .string(value))
+        }
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        return fieldID
     }
 
     /// Edit an existing note's body on the contact identified by `id`. The two

@@ -134,18 +134,40 @@ struct LinkedInApplyTests {
         #expect(result.urlAddresses.allSatisfy { $0.label != "LinkedIn" })
     }
 
-    @Test func aboutAndLocation_storedAsPrefixedNotes() async throws {
+    @Test func aboutAndLocation_storedAsNamedSidecarFields() async throws {
         let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
         _ = try await repo.applyLinkedIn(
             profile: profile(location: "Tomball, Texas", about: "My work centers on…"),
             to: id, fields: [.about, .location]
         )
-        // addNote mints a guessWhoID, so read notes back via the now-reconciled
-        // ContactID (the original `id` is pre-mint / stale for note reads).
+        // Stored as named key/value fields (not notes), read via the now-
+        // reconciled ContactID (apply minted a guessWhoID).
         let reconciledID = repo.contact(localID: "T")!.contactID
-        let bodies = repo.notes(for: reconciledID).map(\.body)
-        #expect(bodies.contains { $0 == "LinkedIn About: My work centers on…" })
-        #expect(bodies.contains { $0 == "LinkedIn Location: Tomball, Texas" })
+        let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: reconciledID).map { ($0.field, $0) })
+        #expect(byName["LinkedIn About"]?.value == .string("My work centers on…"))
+        #expect(byName["LinkedIn Location"]?.value == .string("Tomball, Texas"))
+    }
+
+    @Test func reimport_updatesFields_doesNotDuplicate() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        // First import.
+        _ = try await repo.applyLinkedIn(
+            profile: profile(location: "Tomball, Texas", about: "First bio"),
+            to: id, fields: [.about, .location]
+        )
+        let reconciledID = repo.contact(localID: "T")!.contactID
+        // Second import with a changed bio (simulating a later LinkedIn save).
+        _ = try await repo.applyLinkedIn(
+            profile: profile(location: "Austin, Texas", about: "Updated bio"),
+            to: reconciledID, fields: [.about, .location]
+        )
+        let about = repo.fields(for: reconciledID).filter { $0.field == "LinkedIn About" }
+        let location = repo.fields(for: reconciledID).filter { $0.field == "LinkedIn Location" }
+        // Exactly one of each — updated, not duplicated.
+        #expect(about.count == 1)
+        #expect(about.first?.value == .string("Updated bio"))
+        #expect(location.count == 1)
+        #expect(location.first?.value == .string("Austin, Texas"))
     }
 
     @Test func emptyIncomingValues_areIgnored() async throws {
