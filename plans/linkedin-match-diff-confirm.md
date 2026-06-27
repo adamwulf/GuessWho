@@ -1,17 +1,41 @@
 # Plan: LinkedIn match → diff → confirm (app process)
 
-## Status (2026-06-26)
+## Status (2026-06-26) — MOSTLY BUILT
 
-Planning. The parse + transfer layer is done and proven end-to-end (text,
-contact info, full-res photo all flow LinkedIn → content script → App Group →
-app). This plan covers what the **app process** does with that payload: match it
-to an existing contact, show a per-field before/after diff with checkboxes, and
-(later) save the chosen fields.
+The match → diff → confirm → **save** flow is built and working end-to-end for
+all fields EXCEPT the photo (the contact-image write path is still a no-op — the
+one remaining piece). What ships today:
+
+- ✅ Package matching (`matchLinkedIn`: URL → email → name) + `LinkedInProfile`
+  model + URL normalizer, unit-tested.
+- ✅ Decode the handoff in `GuessWhoSceneDelegate` and match.
+- ✅ `LinkedInDiff` builder + `LinkedInConfirmView` (per-field checkboxes,
+  existing-left/incoming-right, unchanged rows de-emphasized, merge-not-replace
+  for emails/websites, scheme-insensitive URL dedup, hides the `guesswho://`
+  identity URL, Escape-cancel / accent-checkmark-save).
+- ✅ Save on Confirm via `ContactsRepository.applyLinkedIn(profile:to:fields:)
+  async -> Contact`: CNContact fields merge-saved (default labels, LinkedIn
+  social profile stored as USERNAME); about/location stored as **upsertable
+  named sidecar fields** (NOT append-only notes), prefixed "LinkedIn ".
+- ✅ **Beyond the original plan** (added during the build):
+  - Sidecar fields are displayed, editable, and deletable in `ContactDetailView`
+    (read-mode context menu + in-edit-mode "Custom Fields" section; value
+    editable, key read-only). `FieldsStore` view model + `editField`/`deleteField`.
+  - New `multilineNote` `SidecarFieldType` — "LinkedIn About" is multi-line,
+    "LinkedIn Location" single-line; `upsertField` can change a field's type by
+    replace.
+  - Edit mode uses a single accent checkmark Done (no Cancel/Save) since some
+    edits commit immediately.
+  - The old unified "Activity" timeline was split into Notes / Linked Contacts /
+    Linked Organizations / Linked Events sections.
+  - The open contact card refreshes after a save (`.linkedInImportDidSave`).
+- ⏳ **Photo write path — NOT built.** The `.photo` field is accepted but
+  applying it is a no-op. This is the net-new package work (`apply()` skips
+  image data); see the storage split + build order below.
+- ⏳ No-match → new-contact screen: deferred (no create flow in the app yet).
 
 Companion docs: `docs/linkedin-safari-extension.md` (mechanism),
-`plans/linkedin-safari-extension.md` (overall feature). The handoff currently
-lands in `GuessWhoSceneDelegate.handleLinkedInHandoff` (logs only) — that's where
-this flow hooks in.
+`plans/linkedin-safari-extension.md` (overall feature).
 
 ## Matching rules (user-specified)
 
@@ -149,22 +173,23 @@ write path (photo).
 
 ## Build order
 
-1. **Package:** `LinkedInProfile` Codable model + LinkedIn-URL normalizer +
-   `contactIDs(matchingLinkedInURL:)` (+ index) + `matchLinkedIn(profile:)`
-   entry point, with unit tests in `Tests/GuessWhoSyncTests`. (`swift test`.)
-2. **App:** decode the handoff JSON into `LinkedInProfile` in the scene delegate
-   (replace the log-only receiver); call `matchLinkedIn`. Verify the real
-   payload decodes and matches.
-3. `LinkedInDiff` builder (app, presentation).
-4. `LinkedInConfirmView` SwiftUI dialog (left/right + checkboxes, all ON,
-   unchanged rows de-emphasized), presented on match.
-5. **Save on Confirm** — apply checked rows across the three write paths:
-   `saveContact` (name/title/org/emails/websites/LinkedIn-URL),
-   `addNote` (bio; location sidecar field), and the **net-new contact-image
-   write path** (photo). Build the photo write path as part of this step.
-6. (Later) no-match create-new screen; `.blob` previous-photo; iOS target.
+1. ✅ **Package:** `LinkedInProfile` model + LinkedIn-URL normalizer +
+   `contactIDs(matchingLinkedInURL:)` + `matchLinkedIn(profile:)`, unit-tested.
+2. ✅ **App:** decode the handoff into `LinkedInProfile` and match.
+3. ✅ `LinkedInDiff` builder (now also reads existing sidecar values so re-import
+   shows the existing side and marks unchanged rows).
+4. ✅ `LinkedInConfirmView` dialog (per-field checkboxes, unchanged de-emphasized).
+5. ✅ **Save on Confirm** via `applyLinkedIn` — CNContact merge-save + upsert
+   sidecar fields. (Note: bio/location are UPSERT FIELDS, not `addNote` as
+   originally written here.)
+6. ⏳ **Photo write path (THE remaining piece).** Net-new package work: a
+   `setImageData`-shaped API that re-fetches with image keys and issues an
+   image-including save (since `apply()` skips image data), then wire the
+   `.photo` field in `applyLinkedIn` to write the decoded bytes.
+7. (Later) no-match create-new screen; `.blob` previous-photo; iOS target.
 
-## Out of scope here
+## Out of scope here (still later)
 
-The contact-image WRITE path, the new-contact creation screen, the `.blob`
-previous-photo work, and the iOS target — all later, per the overall plan.
+The new-contact creation screen, the `.blob` previous-photo work, and the iOS
+target — all later, per the overall plan. (The contact-image WRITE path was in
+scope for this phase but remains the one unbuilt item — see step 6.)

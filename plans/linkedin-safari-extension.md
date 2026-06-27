@@ -828,9 +828,16 @@ Extensions + per-site allow) until we actually add the target.
 
 ## Suggested build order
 
+### Progress (2026-06-26)
+
+Steps 0–2 ✅ done. Step 4 (match + diff + save) ✅ done **except the photo**.
+Step 3 (the contact-image **write path**) ⏳ is the ONE remaining v1 item — the
+`.photo` field flows all the way to the app but applying it is still a no-op.
+Detailed app-side status: `plans/linkedin-match-diff-confirm.md`.
+
 ### v1 (this feature)
 
-0. **Architecture spike (do FIRST, post-review)** — prove the
+0. ✅ **Architecture spike (do FIRST, post-review)** — prove the
    **extension → app handoff**: content/background → `sendNativeMessage` →
    `SafariWebExtensionHandler` (extension process) → park a payload in the App
    Group → **wake the app** → app reads it. Settle the wake mechanism (URL
@@ -838,22 +845,18 @@ Extensions + per-site allow) until we actually add the target.
    biggest unknown before any feature work. Confirm the App Group entitlement on
    both targets and that the **app** (not extension) holds the iCloud/Contacts
    entitlements.
-1. **Extension target + pipe** — add the Safari Web Extension target and prove
-   the round-trip end to end. Stop and hand residual GUI steps to user if
-   `.pbxproj` surgery gets risky (likely outcome given xcconfig-driven, per-SDK
-   entitlements + Catalyst sandbox — treat GUI hand-off as expected, not fallback).
-2. **Parser + fixtures** — `extractProfile` (+ photo-bytes + Contact-info modal)
-   developed against the minimal committed fixture, unit tested; live-Chrome
-   harness handed to user for real-DOM validation. (Contact-info modal is the
-   least fixture-coverable piece — budget live validation for it.)
-3. **Contact-image write path** — net-new `GuessWhoSync` API: dedicated
+1. ✅ **Extension target + pipe** — Safari Web Extension target added, handoff
+   proven on Catalyst.
+2. ✅ **Parser** — `extractProfile` parses name/headline/title/org/location/about
+   (newline-preserving) + Contact-info modal + in-session photo-bytes fetch.
+3. ⏳ **Contact-image write path** — net-new `GuessWhoSync` API: dedicated
    fetch-with-image-keys + separate image-including save request (NOT a tweak to
-   `saveContact`, which deliberately skips image data). Needed before save-photo.
-4. **Match + diff + save (in the app process)** — match via name + email
-   (existing primitives; add a social-profile-URL primitive only if needed),
-   build before/after for **all** v1 fields (text + photo + emails + websites),
-   app UI renders the diff with per-field toggles, save/discard.
-   **Enrich-existing-only** in v1.
+   `saveContact`, which deliberately skips image data). **NOT YET BUILT** — the
+   one remaining v1 item.
+4. ✅ **Match + diff + save (app process)** — `matchLinkedIn` (URL → email →
+   name), `LinkedInConfirmView` per-field checkbox diff, `applyLinkedIn`
+   merge-save. **Enrich-existing-only.** Photo row exists in the diff but its
+   save is a no-op pending step 3.
 
 ### Phase 2 (follow-on, explicitly deferred)
 
