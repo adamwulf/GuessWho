@@ -14,7 +14,13 @@ import os.log
 /// formatted line + `\n`. Rotates at 10 MB (keeping a capped number of rotated
 /// siblings) and prunes any file in the directory older than 7 days. Every file
 /// op is wrapped so an I/O error degrades to console logging — never a crash.
-final class LogFileWriter {
+///
+/// `@unchecked Sendable` (SF5): swift-log's `LogHandler` is `Sendable`, so the
+/// `LogfmtLogHandler` that captures this writer must be too. All mutable state
+/// (`handle`, `lastPruneUptime`) is confined to the private serial queue — the
+/// queue *is* the synchronization mechanism — so the unchecked conformance is
+/// correct and future-proofs the package against Swift 6 / strict concurrency.
+final class LogFileWriter: @unchecked Sendable {
 
     /// Rotate the active file once it reaches this size.
     private static let maxFileBytes: UInt64 = 10 * 1024 * 1024
@@ -125,6 +131,11 @@ final class LogFileWriter {
     /// Roll the active file when it reaches the size cap:
     /// `app-(n).log` → `app-(n+1).log` (oldest deleted), then `app.log` →
     /// `app-1.log`, then a fresh empty `app.log` is opened on the next write.
+    ///
+    /// SF1: rotation is checked *before* each write, so the active file can
+    /// overshoot the cap by at most the one record being written before the next
+    /// write rolls it. That bounded overshoot is intentional — re-stating the
+    /// size after every write would double the `stat` cost for no real benefit.
     private func rotateIfNeeded() {
         guard currentActiveSize() >= Self.maxFileBytes else { return }
 
@@ -156,7 +167,18 @@ final class LogFileWriter {
         do {
             try fm.moveItem(at: activeURL, to: firstRotated)
         } catch {
-            Self.breadcrumbLog.error("rotation move failed: \(error.localizedDescription, privacy: .public)")
+            // SF2: if the rename fails, the oversized active file would otherwise
+            // stay in place and trip rotateIfNeeded on every subsequent write,
+            // growing past the cap indefinitely. Fall back to truncating the
+            // active file in place so the 10 MB bound still holds. (Truncation
+            // loses the over-cap tail rather than preserving it as a rotated
+            // sibling — an acceptable degradation when the filesystem won't let
+            // us rename.)
+            Self.breadcrumbLog.error("rotation move failed, truncating in place: \(error.localizedDescription, privacy: .public)")
+            if let truncating = try? FileHandle(forWritingTo: activeURL) {
+                try? truncating.truncate(atOffset: 0)
+                try? truncating.close()
+            }
         }
     }
 
@@ -176,6 +198,15 @@ final class LogFileWriter {
     /// N4: pruning a file another process holds open is benign on APFS — the
     /// file is unlinked but stays valid for the holder until it closes. This is
     /// intentional; we never coordinate cross-process file ownership for prune.
+    ///
+    /// SF3: we must NOT prune our *own* active file, however. A process running
+    /// continuously for >7 days writing to an un-rotated `app.log` would
+    /// otherwise unlink the file out from under its own open handle — on APFS the
+    /// handle stays valid (unlinked-but-open) so writes keep "succeeding" into an
+    /// inode no longer reachable through `app.log`, silently losing that data on
+    /// close. So we skip `activeURL` here. As a belt-and-suspenders guard, if the
+    /// active file no longer exists after pruning (e.g. deleted externally), drop
+    /// the stale handle so the next write reopens a fresh `app.log`.
     private func pruneIfNeeded(force: Bool) {
         let now = ProcessInfo.processInfo.systemUptime
         if !force, let last = lastPruneUptime, now - last < Self.pruneInterval {
@@ -192,11 +223,20 @@ final class LogFileWriter {
 
         let cutoff = Date().addingTimeInterval(-Self.maxFileAge)
         for url in entries where url.pathExtension == "log" {
+            // Never prune our own active file (SF3).
+            if url.standardizedFileURL == activeURL.standardizedFileURL { continue }
             let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             guard let modified = values?.contentModificationDate else { continue }
             if modified < cutoff {
                 try? fm.removeItem(at: url)
             }
+        }
+
+        // If the active file vanished (external deletion), the held handle now
+        // points at an unlinked inode — drop it so the next write recreates it.
+        if handle != nil, !fm.fileExists(atPath: activeURL.path) {
+            try? handle?.close()
+            handle = nil
         }
     }
 }

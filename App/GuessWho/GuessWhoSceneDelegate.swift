@@ -618,14 +618,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     // MARK: - LinkedIn handoff spike (step-0)
 
     /// App Group shared with the `GuessWhoLinkedIn` Safari Web Extension.
-    /// Read from the `GuessWhoAppGroup` Info.plist key (fed by
-    /// `GUESSWHO_APP_GROUP` in the xcconfig) so it matches the per-platform
-    /// entitlement — `group.`-prefixed on iOS, `<TeamID>.`-prefixed on Mac
-    /// Catalyst. Used ONLY for the ephemeral handoff file the extension parks;
-    /// synced GuessWho data lives in the iCloud ubiquity container, never here.
-    private static let handoffAppGroupID: String =
-        Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup") as? String
-            ?? "group.com.milestonemade.guesswho"
+    /// Centralized in `AppGroup.id` (resolved from the `GuessWhoAppGroup`
+    /// Info.plist key, fed by `GUESSWHO_APP_GROUP` in the xcconfig) so the
+    /// app-side derivation lives in exactly one place. Used ONLY for the
+    /// ephemeral handoff file the extension parks; synced GuessWho data lives in
+    /// the iCloud ubiquity container, never here.
+    private static let handoffAppGroupID: String = AppGroup.id
 
     /// Filename the extension's native handler writes into the App Group.
     private static let handoffFilename = "pending-handoff.json"

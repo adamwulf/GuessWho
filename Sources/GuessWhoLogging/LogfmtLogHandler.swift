@@ -5,15 +5,21 @@ import Logfmt
 /// A swift-log `LogHandler` that formats each record as a single clean
 /// **logfmt** line and appends it to a `LogFileWriter`.
 ///
-/// Line shape (stable leading key order, then logfmt-sorted trailing pairs):
+/// Line shape — the fixed leading fields are ordered; the trailing pairs are
+/// alphabetically sorted by key:
 /// ```
-/// ts=2026-06-27T12:34:56.789Z level=info label=app.linkedin-handoff msg="…" key=val …
+/// ts=2026-06-27T12:34:56.789Z level=info label=app.linkedin-handoff <sorted key=val pairs incl. msg=…>
 /// ```
 /// The fixed leading fields (`ts`, `level`, `label`) are emitted by hand so
 /// their order is stable. Everything after them (`msg` + flattened metadata)
 /// comes from a single `String.logfmt(_:)` call over one dictionary — which is
-/// a whole-object formatter that emits `key=value` pairs, sorts keys, and
-/// quotes/escapes values (B2).
+/// a whole-object formatter that emits `key=value` pairs, **sorts keys
+/// alphabetically**, and quotes/escapes values (B2).
+///
+/// SF4: because the trailing pairs are key-sorted, `msg` is NOT guaranteed to
+/// come first — any metadata key that sorts before `"msg"` (e.g. `code`,
+/// `error`) precedes it. This is fine: logfmt is order-independent and consumers
+/// parse by key, not position. Do not assume `msg` leads the trailing pairs.
 ///
 /// **One record = one line (B3):** `String.logfmt` quotes and backslash-escapes
 /// but has no newline handling, so we strip `\r`/`\n` (and other control
@@ -102,11 +108,12 @@ struct LogfmtLogHandler: LogHandler {
         return line
     }
 
-    /// ISO-8601 with fractional seconds in UTC. The formatter is created per
-    /// call's-worth cheaply via a cached static; `ISO8601DateFormatter` is not
-    /// `Sendable`-safe to mutate, so we keep one per thread is overkill — a
-    /// single cached instance read-only after configuration is fine here since
-    /// `string(from:)` is thread-safe on a configured formatter.
+    /// ISO-8601 with fractional seconds in UTC. Configured once in this static
+    /// initializer and never mutated afterward; the line is built synchronously
+    /// on the caller's thread (before `writer.write` hops to its queue), so
+    /// `string(from:)` is called concurrently from multiple logging threads —
+    /// which is safe on a configured-and-never-mutated formatter (iOS 13+ /
+    /// macOS 10.15+), well within the package's iOS 17 / macOS 14 floors.
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

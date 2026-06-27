@@ -73,9 +73,16 @@ public enum GuessWhoLog {
         }
     }
 
-    /// A labeled swift-log `Logger`. Safe to call before `bootstrap` (swift-log
-    /// returns a logger against whatever factory is currently installed), but
-    /// callers should bootstrap first so records reach the file.
+    /// A labeled swift-log `Logger`.
+    ///
+    /// NH1 — bootstrap ordering is load-bearing: `Logger(label:)` binds its
+    /// handler at *construction* (against whatever factory is currently
+    /// installed), not lazily at log time. A logger built BEFORE `bootstrap(...)`
+    /// runs will bind to swift-log's default stderr handler and will **never
+    /// write to the log file**, even after a later bootstrap. So bootstrap first.
+    /// The migrated call sites are all lazy `static let` loggers first accessed
+    /// after their process's bootstrap call, so they bind to the file factory —
+    /// but any future top-level/eager logger must respect this ordering.
     public static func logger(_ label: String) -> Logger {
         Logger(label: label)
     }

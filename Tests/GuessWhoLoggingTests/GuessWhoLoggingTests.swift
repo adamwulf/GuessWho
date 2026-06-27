@@ -160,6 +160,36 @@ final class GuessWhoLoggingTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: freshURL.path), "fresh file should survive prune")
     }
 
+    /// SF3: the writer must NOT prune its own active file even when it is older
+    /// than the 7-day cutoff — doing so would unlink the file out from under the
+    /// open handle and silently lose writes on APFS.
+    func testPruneNeverDeletesOwnActiveFile() throws {
+        let dir = try makeLogsDir()
+        let fm = FileManager.default
+
+        // Pre-create app.log and back-date it past the 7-day cutoff.
+        let activeURL = dir.appendingPathComponent("app.log")
+        fm.createFile(atPath: activeURL.path, contents: Data("stale-but-active".utf8))
+        let eightDaysAgo = Date().addingTimeInterval(-8 * 24 * 60 * 60)
+        try fm.setAttributes([.modificationDate: eightDaysAgo], ofItemAtPath: activeURL.path)
+
+        // Constructing the writer for "app" runs a forced prune on init; the
+        // active file is app.log, which must be excluded from the prune.
+        let writer = LogFileWriter(directory: dir, processName: "app")
+        writer.flush()
+
+        XCTAssertTrue(
+            fm.fileExists(atPath: activeURL.path),
+            "the writer's own active file must survive prune even when older than the cutoff"
+        )
+
+        // And it must still be writable afterward (handle intact).
+        writer.write("after prune")
+        writer.flush()
+        let contents = try String(contentsOf: activeURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("after prune"), "active file should still accept writes after prune")
+    }
+
     // MARK: - Graceful degradation on a bad directory
 
     func testWriteToUnwritableDirectoryDoesNotCrash() throws {
