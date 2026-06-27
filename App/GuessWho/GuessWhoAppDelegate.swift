@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import GuessWhoSync
+import GuessWhoLogging
 
 /// UIKit application entry point. Replaces the previous SwiftUI `App`
 /// (`@main GuessWhoApp`) so we can drive the window with a UIKit
@@ -27,6 +28,13 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     let contactPhotoLoader: ContactPhotoLoader
 
     override init() {
+        // Bootstrap file logging FIRST — before UserDefaults.register and before
+        // SyncService() — so the logging backend is live before any logger in the
+        // construction path can fire. processName "app" gives this process its own
+        // <AppGroup>/Logs/app.log. Idempotent and lock-guarded; safe to call once
+        // here. (Bodies are developer-facing; see GuessWhoLogging notes.)
+        GuessWhoLog.bootstrap(processName: "app", appGroupID: AppGroup.id)
+
         // Register defaults so non-@AppStorage readers and the iOS
         // Settings pane both see the canonical default before the user
         // toggles it. Mirrors what `GuessWhoApp.init()` used to do.

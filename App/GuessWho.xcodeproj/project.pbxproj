@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		A100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D2 /* GuessWhoSync */; };
+		A100000000000000000000D5 /* GuessWhoLogging in Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D4 /* GuessWhoLogging */; };
+		B200000000000000000000D5 /* GuessWhoLogging in Frameworks */ = {isa = PBXBuildFile; productRef = B200000000000000000000D4 /* GuessWhoLogging */; };
 		B200000000000000000000F1 /* GuessWhoLinkedIn.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -100,6 +102,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A100000000000000000000D3 /* GuessWhoSync in Frameworks */,
+				A100000000000000000000D5 /* GuessWhoLogging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -107,6 +110,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B200000000000000000000D5 /* GuessWhoLogging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -176,6 +180,7 @@
 			name = GuessWho;
 			packageProductDependencies = (
 				A100000000000000000000D2 /* GuessWhoSync */,
+				A100000000000000000000D4 /* GuessWhoLogging */,
 			);
 			productName = GuessWho;
 			productReference = A100000000000000000000C0 /* GuessWho.app */;
@@ -198,6 +203,7 @@
 			);
 			name = GuessWhoLinkedIn;
 			packageProductDependencies = (
+				B200000000000000000000D4 /* GuessWhoLogging */,
 			);
 			productName = GuessWhoLinkedIn;
 			productReference = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */;
@@ -669,6 +675,14 @@
 		A100000000000000000000D2 /* GuessWhoSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GuessWhoSync;
+		};
+		A100000000000000000000D4 /* GuessWhoLogging */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoLogging;
+		};
+		B200000000000000000000D4 /* GuessWhoLogging */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoLogging;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

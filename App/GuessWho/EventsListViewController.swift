@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import GuessWhoSync
+import GuessWhoLogging
 
 /// UIKit Events list for the Catalyst 3-column shell. Single-section
 /// diffable data source keyed on `Event.id` (UUID). Mirrors the
@@ -37,6 +38,17 @@ final class EventsListViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
+    /// Observes `UserDefaults.didChangeNotification` so the debug-mode-only
+    /// Export Logs button appears/disappears live when the toggle flips while
+    /// the app is open (same `nonisolated(unsafe)` rationale as `reloadObserver`).
+    private nonisolated(unsafe) var debugModeObserver: NSObjectProtocol?
+
+    /// The "+" add button — always present.
+    private var addButton: UIBarButtonItem!
+    /// Debug-mode-only "Export Logs" button. Built once; included in the navbar
+    /// only while debug mode is enabled.
+    private var exportLogsButton: UIBarButtonItem!
+
     init(repository: EventsRepository, service: SyncService) {
         self.repository = repository
         self.service = service
@@ -52,6 +64,9 @@ final class EventsListViewController: UIViewController {
     deinit {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
+        }
+        if let debugModeObserver {
+            NotificationCenter.default.removeObserver(debugModeObserver)
         }
     }
 
@@ -75,6 +90,10 @@ final class EventsListViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+        // Re-evaluate the debug-mode Export Logs button each appearance (the
+        // toggle lives in the system Settings app and may have changed while we
+        // were backgrounded; the UserDefaults observer covers in-app flips).
+        updateNavigationButtons()
     }
 
     // MARK: - Table view
@@ -141,13 +160,51 @@ final class EventsListViewController: UIViewController {
     }
 
     private func configureAddButton() {
-        let addButton = UIBarButtonItem(
+        addButton = UIBarButtonItem(
             systemItem: .add,
             primaryAction: UIAction { [weak self] _ in
                 self?.presentLinkSheet()
             }
         )
-        navigationItem.rightBarButtonItem = addButton
+
+        // Debug-mode-only Export Logs button. This is a sanctioned debug-only
+        // surface (like the contact-row reconcile checkmark): the label stays
+        // plain ("Export Logs"). Gated below so it never shows without the
+        // debug toggle.
+        exportLogsButton = UIBarButtonItem(
+            image: UIImage(systemName: "square.and.arrow.up"),
+            primaryAction: UIAction { [weak self] _ in
+                self?.exportLogs()
+            }
+        )
+        exportLogsButton.title = "Export Logs"
+        exportLogsButton.accessibilityLabel = "Export Logs"
+
+        // Use the PLURAL `rightBarButtonItems` so adding Export Logs doesn't
+        // clobber the "+" button (S5). Observe `UserDefaults` so the button
+        // appears/disappears live when debug mode flips while the app is open;
+        // `viewWillAppear` also re-evaluates.
+        debugModeObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateNavigationButtons()
+            }
+        }
+        updateNavigationButtons()
+    }
+
+    /// Re-evaluate which right-bar buttons to show. The "+" is always present;
+    /// Export Logs is appended only while debug mode is enabled.
+    private func updateNavigationButtons() {
+        let debugEnabled = UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled)
+        // Right bar items render right-to-left: the first array element is the
+        // rightmost. Keep "+" rightmost (as before), Export Logs to its left.
+        navigationItem.rightBarButtonItems = debugEnabled
+            ? [addButton, exportLogsButton]
+            : [addButton]
     }
 
     private func presentLinkSheet() {
@@ -168,6 +225,54 @@ final class EventsListViewController: UIViewController {
         .environment(service)
         let host = UIHostingController(rootView: sheet)
         present(host, animated: true)
+    }
+
+    // MARK: - Export Logs (debug mode only)
+
+    /// Zip the shared `Logs/` directory off the main thread, then present a save
+    /// dialog (Catalyst) / share sheet (iOS) on the main thread. Debug-mode-only
+    /// action; failures surface in a plain-copy alert.
+    private func exportLogs() {
+        let appGroupID = AppGroup.id
+        // Zip creation touches the filesystem (coordination + copy) — keep it
+        // off the main thread; present back on main.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let zipURL = try LogExporter.exportLogs(appGroupID: appGroupID)
+                DispatchQueue.main.async {
+                    self?.presentExport(zipURL: zipURL)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.presentExportFailure(error)
+                }
+            }
+        }
+    }
+
+    private func presentExport(zipURL: URL) {
+        #if targetEnvironment(macCatalyst)
+        // On Catalyst this surfaces the macOS save/export panel — the cleanest
+        // cross-Catalyst path (no AppKit bridging).
+        let picker = UIDocumentPickerViewController(forExporting: [zipURL])
+        present(picker, animated: true)
+        #else
+        let activity = UIActivityViewController(activityItems: [zipURL], applicationActivities: nil)
+        // Anchor the popover to the bar button so it doesn't crash on iPad.
+        activity.popoverPresentationController?.barButtonItem = exportLogsButton
+        present(activity, animated: true)
+        #endif
+    }
+
+    /// Plain-copy failure alert (debug-only surface, so no internal vocabulary).
+    private func presentExportFailure(_ error: Error) {
+        let alert = UIAlertController(
+            title: "Couldn't export logs",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     // MARK: - Snapshot wiring
