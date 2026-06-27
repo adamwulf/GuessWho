@@ -27,6 +27,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     let eventsRepository: EventsRepository
     let contactPhotoLoader: ContactPhotoLoader
 
+    /// App-process lifecycle breadcrumbs. Routes through swift-log so it lands in
+    /// `<AppGroup>/Logs/app.log` (and echoes to Console). The scene-level
+    /// transitions (connect / active / background / disconnect) are logged from
+    /// `GuessWhoSceneDelegate` under `app.lifecycle.scene`; this app-process
+    /// logger only covers events UIKit delivers to the *application* delegate
+    /// (process launch + termination). Developer-facing label; see
+    /// GuessWhoLogging notes.
+    private static let lifecycleLog = GuessWhoLog.logger("app.lifecycle")
+
     override init() {
         // Bootstrap file logging FIRST — before UserDefaults.register and before
         // SyncService() — so the logging backend is live before any logger in the
@@ -55,6 +64,16 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // First app-process breadcrumb: the process has launched. `hasURL`
+        // records whether UIKit handed us a launch URL here (vs. delivering it
+        // to the scene) so a cold-launch deep link is traceable from the very
+        // first line. The handoff URL itself arrives in the scene delegate, not
+        // here, but logging the launch options' shape disambiguates the path.
+        Self.lifecycleLog.notice("app didFinishLaunching", [
+            "hasLaunchOptions": launchOptions != nil,
+            "hasURL": launchOptions?[.url] != nil
+        ])
+
         // Sidecar-only migration runs BEFORE any permission prompt so it
         // executes even when Contacts/Events access is denied. Moved out
         // of the old SwiftUI RootView.task to keep the same "migrate
@@ -101,5 +120,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         service.startContactChangeWatcher()
 
         return true
+    }
+
+    /// Last app-process breadcrumb. UIKit calls this when the app is about to
+    /// terminate (rare on iOS — the system usually suspends rather than
+    /// terminates — but reliable on Mac Catalyst quit). Pairs with the
+    /// `didFinishLaunching` line to bracket a process's whole lifetime in the
+    /// log.
+    func applicationWillTerminate(_ application: UIApplication) {
+        Self.lifecycleLog.notice("app willTerminate")
     }
 }

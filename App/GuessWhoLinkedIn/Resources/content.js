@@ -143,11 +143,24 @@ async function probe() {
 // The popup triggers the handoff; the content script answers with the probe.
 // `probe()` is async, so resolve it then call sendResponse; returning true
 // keeps the message channel open for the async reply.
+//
+// Breadcrumbs here (read in the PAGE's Web Inspector console, not the popup's)
+// are the content half of the pipe — they prove the probe ran in the tab and
+// what it returned to the popup.
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "guesswho.probe") return false;
-  probe().then(sendResponse).catch((e) => {
-    console.log("[GuessWho] probe failed:", e);
-    sendResponse(minimalProbe());
-  });
+  console.log("[GuessWho][content] probe requested by popup");
+  probe()
+    .then((result) => {
+      console.log("[GuessWho][content] probe responding", {
+        fallback: !!result._fallback,
+        hasPhoto: !!result.photo,
+      });
+      sendResponse(result);
+    })
+    .catch((e) => {
+      console.log("[GuessWho][content] probe failed, sending minimal probe:", e);
+      sendResponse(minimalProbe());
+    });
   return true;
 });
