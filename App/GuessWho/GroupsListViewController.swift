@@ -43,6 +43,14 @@ final class GroupsListViewController: UIViewController {
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
+    /// Flips true once the first `loadGroups()` completes. Drives the
+    /// spinner-vs-empty-label choice in `updateEmptyState()` — a LOCAL flag
+    /// rather than `repository.isLoading` because `loadGroups()` deliberately
+    /// does not touch `isLoading` (sharing it with the contacts reload would
+    /// risk cross-talk between the two independent loads). Mirrors
+    /// `GroupMembersListViewController.hasLoaded`.
+    private var hasGroupsLoaded = false
+
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale (written once on main, read only from the
     /// nonisolated `deinit`).
@@ -76,10 +84,17 @@ final class GroupsListViewController: UIViewController {
 
         // Paint whatever the repository already cached, then kick a fresh fetch.
         // Groups are not loaded by the AppDelegate's contact reload, so this VC
-        // owns triggering `loadGroups()`; the resulting `.contactsRepositoryDidReload`
-        // re-applies the snapshot when the fetch lands.
+        // owns triggering `loadGroups()`. The resulting `.contactsRepositoryDidReload`
+        // re-applies the snapshot when the fetch lands; we additionally flip
+        // `hasGroupsLoaded` in the continuation so the empty state can show the
+        // spinner until the first fetch settles (repository is @MainActor, so the
+        // continuation already resumes on main).
         applySnapshot(animated: false)
-        Task { await repository.loadGroups() }
+        Task {
+            await repository.loadGroups()
+            hasGroupsLoaded = true
+            applySnapshot(animated: true)
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -208,13 +223,16 @@ final class GroupsListViewController: UIViewController {
 
     private func updateEmptyState() {
         let isEmpty = repository.groups.isEmpty
-        emptyLabel.isHidden = !isEmpty || repository.isLoading
-        if isEmpty && repository.isLoading {
+        // Show the spinner only while the first fetch is in flight; once it lands
+        // (`hasGroupsLoaded`), an empty group set surfaces the "No Groups" label.
+        // The label text is fixed (set in configureEmptyState) — there is no
+        // search-empty variant here, so it never needs re-assigning.
+        emptyLabel.isHidden = !isEmpty || !hasGroupsLoaded
+        if isEmpty && !hasGroupsLoaded {
             activityIndicator.startAnimating()
         } else {
             activityIndicator.stopAnimating()
         }
-        emptyLabel.text = "No Groups"
     }
 }
 
@@ -275,7 +293,8 @@ private final class GroupCell: UITableViewCell {
         iconView.contentMode = .scaleAspectFit
         iconView.tintColor = .secondaryLabel
         iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .title2)
-        iconView.image = UIImage(systemName: "person.3.fill")
+        // Keep the row icon in lockstep with the Groups tab/sidebar icon.
+        iconView.image = UIImage(systemName: SidebarTab.groups.systemImage)
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         nameLabel.font = .preferredFont(forTextStyle: .body)

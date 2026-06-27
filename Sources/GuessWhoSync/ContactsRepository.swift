@@ -180,9 +180,11 @@ public final class ContactsRepository: NSObject {
     /// the correct key for membership — groups are not GuessWho-ID'd.
     public func members(ofGroup groupLocalID: String) async -> [Contact] {
         do {
-            let members = try await contactsStore.fetchMembers(ofGroup: groupLocalID)
-            lastError = nil
-            return members
+            // A pure read must NOT clear `lastError` on success — `lastError` is
+            // a shared slot that a concurrent contacts reload may have set, and
+            // clearing it here could mask a genuine reload failure. Only the
+            // failure path below writes it.
+            return try await contactsStore.fetchMembers(ofGroup: groupLocalID)
         } catch {
             lastError = "Group members fetch failed: \(error.localizedDescription)"
             return []

@@ -201,14 +201,15 @@ final class GroupMembersListViewController: UIViewController {
     private func updateEmptyState() {
         let isEmpty = sectionLetters.isEmpty
         // Show the spinner only while the first fetch is in flight; once it lands
-        // (`hasLoaded`), an empty member set surfaces the "No Members" label.
+        // (`hasLoaded`), an empty member set surfaces the "No Members" label. The
+        // label text is fixed (set in configureEmptyState) and has no search-empty
+        // variant, so it never needs re-assigning here.
         emptyLabel.isHidden = !isEmpty || !hasLoaded
         if isEmpty && !hasLoaded {
             activityIndicator.startAnimating()
         } else {
             activityIndicator.stopAnimating()
         }
-        emptyLabel.text = "No Members"
     }
 }
 
