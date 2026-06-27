@@ -1,7 +1,7 @@
 import UIKit
 import SwiftUI
 import GuessWhoSync
-import os.log
+import GuessWhoLogging
 
 /// UIKit `UIWindowSceneDelegate` that owns the per-scene `UIWindow`
 /// and picks its root view controller based on the build target:
@@ -638,10 +638,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// unexpectedly huge or hostile file. Never read unbounded.
     private static let handoffMaxBytes = 8 * 1024 * 1024
 
-    private static let handoffLog = Logger(
-        subsystem: "com.milestonemade.guesswho",
-        category: "linkedin-handoff"
-    )
+    /// LinkedIn-handoff breadcrumbs now route through swift-log so they land in
+    /// `<AppGroup>/Logs/app.log` (and still echo to Console via the stderr
+    /// handler). Label is developer-facing; see GuessWhoLogging notes.
+    private static let handoffLog = GuessWhoLog.logger("app.linkedin-handoff")
 
     /// Drains a LinkedIn handoff wake. Only `guesswho-linkedin://handoff`
     /// URLs are acted on; anything else (including the `guesswho://` identity
@@ -653,8 +653,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         guard isHandoff else { return }
 
-        Self.handoffLog.log("APP resolved App Group id=\(Self.handoffAppGroupID, privacy: .public)")
-        Self.handoffLog.log("LinkedIn handoff wake received")
+        Self.handoffLog.notice("APP resolved App Group id=\(Self.handoffAppGroupID)")
+        Self.handoffLog.notice("LinkedIn handoff wake received")
 
         guard let data = readAndClearHandoffPayload() else { return }
 
@@ -665,20 +665,20 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
             profile = envelope.payload
         } catch {
-            Self.handoffLog.error("decode: \(error.localizedDescription, privacy: .public)")
+            Self.handoffLog.error("decode: \(error.localizedDescription)")
             return
         }
 
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
         let repo = appDelegate.contactsRepository
         let matches = repo.matchLinkedIn(profile: profile)
-        Self.handoffLog.log(
-            "match: \(matches.count) contact(s) for \(profile.fullName ?? "?", privacy: .public) (url=\(profile.contactInfo?.profileUrl ?? "-", privacy: .public))"
+        Self.handoffLog.notice(
+            "match: \(matches.count) contact(s) for \(profile.fullName ?? "?") (url=\(profile.contactInfo?.profileUrl ?? "-"))"
         )
 
         // No match: a new-contact screen is a later step. For now, log and stop.
         guard let matchID = matches.first, let contact = repo.contact(id: matchID) else {
-            Self.handoffLog.log("match: none — new-contact flow not built yet")
+            Self.handoffLog.notice("match: none — new-contact flow not built yet")
             return
         }
 
@@ -704,11 +704,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.dismissPresented()
                 guard let repo else { return }
                 let fields = Self.packageFields(from: selected)
-                Self.handoffLog.log("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)")
+                Self.handoffLog.notice("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","))")
                 Task {
                     do {
                         let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
-                        Self.handoffLog.log("confirm: saved \(updated.givenName, privacy: .public) \(updated.familyName, privacy: .public)")
+                        Self.handoffLog.notice("confirm: saved \(updated.givenName) \(updated.familyName)")
                         // Nudge an open ContactDetailView to reload — the package
                         // cache is fresh after applyLinkedIn, but the SwiftUI view
                         // doesn't know to re-read until told.
@@ -716,7 +716,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                             NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
                         }
                     } catch {
-                        Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription, privacy: .public)")
+                        Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription)")
                     }
                 }
             },
@@ -795,18 +795,18 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// decoding. Returns nil on any failure (this is a receiver, not production
     /// error handling — failures are logged).
     private func readAndClearHandoffPayload() -> Data? {
-        Self.handoffLog.log("read: resolving App Group id=\(Self.handoffAppGroupID, privacy: .public)")
+        Self.handoffLog.notice("read: resolving App Group id=\(Self.handoffAppGroupID)")
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.handoffAppGroupID) else {
-            Self.handoffLog.error("read: App Group container unavailable: \(Self.handoffAppGroupID, privacy: .public)")
+            Self.handoffLog.error("read: App Group container unavailable: \(Self.handoffAppGroupID)")
             return nil
         }
 
         let fileURL = container.appendingPathComponent(Self.handoffFilename)
-        Self.handoffLog.log("read: looking for \(fileURL.path, privacy: .public)")
+        Self.handoffLog.notice("read: looking for \(fileURL.path)")
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            Self.handoffLog.error("read: No \(Self.handoffFilename, privacy: .public) at \(fileURL.path, privacy: .public)")
+            Self.handoffLog.error("read: No \(Self.handoffFilename) at \(fileURL.path)")
             return nil
         }
 
@@ -826,7 +826,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             try FileManager.default.removeItem(at: fileURL)
             return data
         } catch {
-            Self.handoffLog.error("read: failed to read/clear handoff: \(error.localizedDescription, privacy: .public)")
+            Self.handoffLog.error("read: failed to read/clear handoff: \(error.localizedDescription)")
             return nil
         }
     }

@@ -1,6 +1,6 @@
 import Foundation
 import SafariServices
-import os.log
+import GuessWhoLogging
 
 /// Step-0 handoff spike — native handler. Runs in the EXTENSION process.
 ///
@@ -30,17 +30,26 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// existing `guesswho://contact/<uuid>` identity scheme to avoid collision.
     static let handoffURL = URL(string: "guesswho-linkedin://handoff")!
 
-    private static let log = Logger(subsystem: "com.milestonemade.guesswho.safari", category: "handoff")
+    /// Handoff breadcrumbs route through swift-log so they land in
+    /// `<AppGroup>/Logs/extension.log` (and still echo to Console via the stderr
+    /// handler). Label is developer-facing; see GuessWhoLogging notes.
+    private static let log = GuessWhoLog.logger("extension.handoff")
 
     func beginRequest(with context: NSExtensionContext) {
+        // Bootstrap file logging idempotently. beginRequest runs per request, so
+        // the once-per-process guard inside bootstrap (lock-protected) makes
+        // repeated calls safe. processName "extension" gives this process its own
+        // extension.log; appGroupID is the extension's own resolved id.
+        GuessWhoLog.bootstrap(processName: "extension", appGroupID: Self.appGroupID)
+
         let request = context.inputItems.first as? NSExtensionItem
         let rawMessage = request?.userInfo?[SFExtensionMessageKey]
 
         // Log the raw shape + the App Group id this process resolved, so we can
-        // see in Console (subsystem com.milestonemade.guesswho.safari, category
-        // handoff) both what Safari delivered and which container we'll write to.
-        Self.log.log("EXTENSION resolved App Group id=\(Self.appGroupID, privacy: .public)")
-        Self.log.log("native message received: \(String(describing: rawMessage), privacy: .public)")
+        // see (in extension.log and Console, label extension.handoff) both what
+        // Safari delivered and which container we'll write to.
+        Self.log.notice("EXTENSION resolved App Group id=\(Self.appGroupID)")
+        Self.log.notice("native message received: \(String(describing: rawMessage))")
 
         var ack: [String: Any] = ["received": false]
 
@@ -50,7 +59,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             // note below. It returns the URL for the popup to open.
             ack = ["received": true, "parked": parked, "wakeURL": Self.handoffURL.absoluteString]
         } else {
-            Self.log.error("handoff message missing payload (raw: \(String(describing: rawMessage), privacy: .public))")
+            Self.log.error("handoff message missing payload (raw: \(String(describing: rawMessage)))")
         }
 
         let response = NSExtensionItem()
@@ -76,22 +85,22 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// Writes the handoff payload as a small JSON file in the App Group container.
     /// Returns true on success. The app reads (and clears) it on wake.
     private func parkPayload(_ payload: Any) -> Bool {
-        Self.log.log("park: resolving App Group id=\(Self.appGroupID, privacy: .public)")
+        Self.log.notice("park: resolving App Group id=\(Self.appGroupID)")
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID) else {
-            Self.log.error("park: App Group container UNAVAILABLE for id=\(Self.appGroupID, privacy: .public) — entitlement not granting this group at runtime")
+            Self.log.error("park: App Group container UNAVAILABLE for id=\(Self.appGroupID) — entitlement not granting this group at runtime")
             return false
         }
         let url = container.appendingPathComponent("pending-handoff.json")
-        Self.log.log("park: writing to \(url.path, privacy: .public)")
+        Self.log.notice("park: writing to \(url.path)")
         do {
             let envelope: [String: Any] = ["payload": payload, "stampedBy": "extension"]
             let data = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted])
             try data.write(to: url, options: [.atomic])
-            Self.log.log("park: wrote \(data.count) bytes OK to \(url.path, privacy: .public)")
+            Self.log.notice("park: wrote \(data.count) bytes OK to \(url.path)")
             return true
         } catch {
-            Self.log.error("park: write FAILED to \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.log.error("park: write FAILED to \(url.path): \(error.localizedDescription)")
             return false
         }
     }

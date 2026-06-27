@@ -1,9 +1,16 @@
 import Foundation
 import GuessWhoSync
+import GuessWhoLogging
 
 @MainActor
 @Observable
 final class SyncService {
+    /// Storage-resolution breadcrumbs now route through swift-log so they land
+    /// in `<AppGroup>/Logs/app.log` (and still echo to Console). The `[GuessWho]`
+    /// prefix is a developer-facing log body — exempt from the
+    /// no-internal-vocabulary rule (see GuessWhoLogging notes).
+    private static let log = GuessWhoLog.logger("app.sync-service")
+
     enum SidecarLocation: Equatable {
         case iCloud(URL)
         case localFallback(URL, reason: String)
@@ -91,7 +98,7 @@ final class SyncService {
             // failed to provision and we fell back to Application
             // Support. Not user-actionable here — the banner explains
             // the trade-off (local-only, no cross-device sync).
-            NSLog("[GuessWho] storage fallback to local: %@", reason)
+            Self.log.notice("[GuessWho] storage fallback to local: \(reason)")
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
                 contacts: adapter,
@@ -105,7 +112,7 @@ final class SyncService {
             // Hard failure — neither iCloud nor Application Support was
             // writable. Log loudly so it surfaces in Console.app even if
             // the user never sees the banner.
-            NSLog("[GuessWho] storage unavailable: %@", reason)
+            Self.log.error("[GuessWho] storage unavailable: \(reason)")
             self.sync = nil
             self.favoritesStore = nil
         }
