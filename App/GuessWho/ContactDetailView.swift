@@ -773,13 +773,15 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func infoSection(_ contact: Contact) -> some View {
-        // Mirror Apple's Contacts: label-above-value rows in roughly the same
-        // order Contacts uses, but split so each multi-value TYPE (phone, email,
-        // url, address) lives in its OWN section. The per-group "old"-row
-        // disclosure renders as a small blue-link section FOOTER instead of an
-        // inline row, so it sits outside the section's grouped background.
-        // Ungrouped rows (department, dates, social, IM, relations) keep their
-        // relative position by collapsing into contiguous "other" sections.
+        // Label-above-value rows in roughly the order Contacts stores them, but
+        // split so each multi-value TYPE (phone, email, url, address) lives in
+        // its OWN section. (This intentionally departs from Apple's Contacts,
+        // which packs every field type into a single card — we want one section
+        // per type here.) The per-group "old"-row disclosure renders as a small
+        // blue-link section FOOTER instead of an inline row, so it sits outside
+        // the section's grouped background. Ungrouped rows (department, dates,
+        // social, IM, relations) keep their relative position by collapsing into
+        // contiguous "other" sections.
         let rows = infoRows(for: contact)
         let runs = infoSectionRuns(for: rows)
         ForEach(runs) { run in
@@ -944,9 +946,16 @@ struct ContactDetailView: View {
             Text("more… (\(hiddenCount))")
                 .font(.footnote)
                 .foregroundStyle(.tint)
+                // Pin the link to the leading edge so it reads as a normal
+                // left-aligned footer link on every platform — without this the
+                // Button collapses to its intrinsic width and could center.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // centeredSectionHeader() is named for headers but is exactly what a
+        // footer wants here too: top padding + the Catalyst 560-column clamp so
+        // the link lines up with the section's rows. Not a copy-paste slip.
         .centeredSectionHeader()
     }
 
