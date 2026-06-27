@@ -385,10 +385,12 @@ public final class ContactsRepository: NSObject {
         // updates the value instead of duplicating it. Field names are prefixed
         // "LinkedIn " so the source is obvious.
         if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
-            _ = try await upsertField(for: id, field: "LinkedIn About", value: about)
+            // About is multi-line prose.
+            _ = try await upsertField(for: id, field: "LinkedIn About", value: about, type: .multilineNote)
         }
         if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
-            _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc)
+            // Location is a single line.
+            _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
         }
 
         return contact(id: id) ?? edited
@@ -760,13 +762,25 @@ public final class ContactsRepository: NSObject {
         return all.filter { $0.deletedAt == nil }
     }
 
-    /// Upsert a named free-text sidecar field on the contact: if a live field
-    /// with the same `field` name exists, update its value; otherwise create it.
-    /// This gives stable, re-importable key/value storage (unlike notes, which
+    /// Upsert a named free-text sidecar field on the contact, by `field` name:
+    ///  - no existing field → create it with `type`;
+    ///  - existing field, SAME type → update its value in place;
+    ///  - existing field, DIFFERENT type → replace it (delete + recreate) so the
+    ///    type can change. The per-cell type is write-once, but replacing the
+    ///    whole field programmatically is allowed (the UI keeps the type fixed;
+    ///    this lets an import upgrade e.g. a single-line `.note` to a
+    ///    `.multilineNote`).
+    ///
+    /// Gives stable, re-importable key/value storage (unlike notes, which
     /// append). Resolves-or-mints first, then refreshes the cache if minted.
     /// Returns the field's id. Throws `SidecarUnavailableError` if no engine.
     @discardableResult
-    public func upsertField(for id: ContactID, field: String, value: String) async throws -> UUID {
+    public func upsertField(
+        for id: ContactID,
+        field: String,
+        value: String,
+        type: SidecarFieldType = .note
+    ) async throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
@@ -776,11 +790,16 @@ public final class ContactsRepository: NSObject {
             .first { $0.deletedAt == nil && $0.field == field }
 
         let fieldID: UUID
-        if let existing {
+        if let existing, existing.type == type {
+            // Same type — update in place.
             try sync.setField(at: key, id: existing.id, field: field, value: .string(value))
             fieldID = existing.id
         } else {
-            fieldID = try sync.addField(at: key, field: field, type: .note, value: .string(value))
+            // Different type (or new) — replace: soft-delete the old, create new.
+            if let existing {
+                try sync.deleteField(at: key, id: existing.id)
+            }
+            fieldID = try sync.addField(at: key, field: field, type: type, value: .string(value))
         }
         await refreshCacheIfMinted(minted, localID: id.localID)
         return fieldID

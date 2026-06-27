@@ -191,6 +191,31 @@ struct LinkedInApplyTests {
         #expect(after?.value == .string("Edited"))
     }
 
+    @Test func about_storedAsMultilineNote_location_asNote() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(location: "Tomball", about: "Line 1\nLine 2"),
+            to: id, fields: [.about, .location]
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: rid).map { ($0.field, $0) })
+        #expect(byName["LinkedIn About"]?.type == .multilineNote)
+        #expect(byName["LinkedIn Location"]?.type == .note)
+    }
+
+    @Test func upsert_changingType_replacesField() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        // Create as single-line .note.
+        _ = try await repo.upsertField(for: id, field: "Bio", value: "v1", type: .note)
+        let rid = repo.contact(localID: "T")!.contactID
+        // Upsert the same name with a DIFFERENT type — should replace, not error.
+        _ = try await repo.upsertField(for: rid, field: "Bio", value: "v2", type: .multilineNote)
+        let bio = repo.fields(for: rid).filter { $0.field == "Bio" }
+        #expect(bio.count == 1)
+        #expect(bio.first?.type == .multilineNote)
+        #expect(bio.first?.value == .string("v2"))
+    }
+
     @Test func deleteField_removesIt() async throws {
         let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
         _ = try await repo.applyLinkedIn(

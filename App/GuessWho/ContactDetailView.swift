@@ -357,6 +357,7 @@ struct ContactDetailView: View {
                     EditableSidecarFieldRow(
                         name: field.field,
                         initialValue: Self.fieldDisplayValue(field),
+                        isMultiline: field.type == .multilineNote,
                         onCommit: { value in
                             Task { await fieldsStore?.editField(field.id, value: value) }
                         }
@@ -1770,14 +1771,18 @@ private struct AddressRow: View {
 private struct EditableSidecarFieldRow: View {
     let name: String
     let initialValue: String
+    /// Multi-line fields let Return insert newlines; single-line fields submit on
+    /// Return and never contain a `\n` (though they may visually wrap).
+    let isMultiline: Bool
     let onCommit: (String) -> Void
 
     @State private var draft: String
     @FocusState private var focused: Bool
 
-    init(name: String, initialValue: String, onCommit: @escaping (String) -> Void) {
+    init(name: String, initialValue: String, isMultiline: Bool, onCommit: @escaping (String) -> Void) {
         self.name = name
         self.initialValue = initialValue
+        self.isMultiline = isMultiline
         self.onCommit = onCommit
         _draft = State(initialValue: initialValue)
     }
@@ -1786,9 +1791,20 @@ private struct EditableSidecarFieldRow: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(name)
                 .font(.caption).foregroundStyle(.secondary)
-            TextField("Value", text: $draft, axis: .vertical)
-                .focused($focused)
-                .onSubmit(commit)
+            Group {
+                if isMultiline {
+                    // Return inserts a newline; grows vertically.
+                    TextField("Value", text: $draft, axis: .vertical)
+                } else {
+                    // Single line: Return submits (commits); strip any pasted \n.
+                    TextField("Value", text: $draft)
+                        .onChange(of: draft) { _, new in
+                            if new.contains("\n") { draft = new.replacingOccurrences(of: "\n", with: " ") }
+                        }
+                }
+            }
+            .focused($focused)
+            .onSubmit(commit)
         }
         .onChange(of: focused) { _, isFocused in
             if !isFocused { commit() }
