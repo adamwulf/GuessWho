@@ -1,4 +1,5 @@
 .build/
+.build-dd/
 .swiftpm/
 DerivedData/
 .DS_Store
