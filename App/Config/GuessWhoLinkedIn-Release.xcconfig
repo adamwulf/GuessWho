@@ -1,0 +1,18 @@
+// GuessWhoLinkedIn-Release.xcconfig
+// Release-configuration identifiers for the GuessWhoLinkedIn Safari Web
+// Extension target. Wired as the extension's Release baseConfigurationReference.
+
+#include "GuessWhoLinkedIn-Shared.xcconfig"
+
+// Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.safari).
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari
+
+// App Group — shared with the app so the extension can hand off scraped data via
+// the shared container. Must match GUESSWHO_APP_GROUP in GuessWho-Release.xcconfig.
+// DIFFERENT per platform (group. on iOS, <TeamID>. on Catalyst).
+GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
+
+// Entitlements — App Group only (no iCloud, no Contacts).
+CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements

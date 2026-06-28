@@ -585,7 +585,7 @@ final class SyncService {
 
     private static func resolveSidecarLocation() -> SidecarLocation {
         let fm = FileManager.default
-        if let ubiquity = fm.url(forUbiquityContainerIdentifier: "iCloud.com.milestonemade.guesswho") {
+        if let ubiquity = fm.url(forUbiquityContainerIdentifier: ICloudContainer.id) {
             let documents = ubiquity.appendingPathComponent("Documents", isDirectory: true)
             do {
                 try fm.createDirectory(at: documents, withIntermediateDirectories: true)

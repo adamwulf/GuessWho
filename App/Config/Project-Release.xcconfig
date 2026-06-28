@@ -3,6 +3,11 @@
 
 #include "Project-Shared.xcconfig"
 
+// Per-configuration identifiers (Release bundle id / App Group / iCloud
+// container / entitlements) live in the per-target Release xcconfigs —
+// GuessWho-Release.xcconfig and GuessWhoLinkedIn-Release.xcconfig. Nothing
+// identifier-related is set at this project level.
+
 DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
 ENABLE_NS_ASSERTIONS = NO
 MTL_ENABLE_DEBUG_INFO = NO

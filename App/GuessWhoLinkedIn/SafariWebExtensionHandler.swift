@@ -20,9 +20,13 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// `GuessWhoAppGroup` Info.plist key (fed by `GUESSWHO_APP_GROUP` in the
     /// xcconfig) so it is the RIGHT id per platform — `group.`-prefixed on iOS,
     /// `<TeamID>.`-prefixed on Mac Catalyst — and can never diverge from the
-    /// entitlement. Used ONLY for ephemeral handoff, NOT synced data.
+    /// entitlement. Used ONLY for ephemeral handoff, NOT synced data. An empty
+    /// string is treated as "missing" so an unset `GUESSWHO_APP_GROUP` (which
+    /// expands to "" in the plist) falls back to the iOS literal rather than
+    /// resolving an empty container identifier.
     static let appGroupID: String = {
-        Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup") as? String
+        (Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup") as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
             ?? "group.com.milestonemade.guesswho"
     }()
 

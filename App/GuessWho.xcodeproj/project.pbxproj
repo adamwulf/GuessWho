@@ -51,6 +51,11 @@
 		A100000000000000000000E3 /* Project-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Debug.xcconfig"; sourceTree = "<group>"; };
 		A100000000000000000000E4 /* Project-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Release.xcconfig"; sourceTree = "<group>"; };
 		A100000000000000000000E5 /* GuessWho-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Shared.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Shared.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E7 /* GuessWho-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Debug.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E8 /* GuessWho-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Release.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Debug.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Release.xcconfig"; sourceTree = "<group>"; };
 		B200000000000000000000C0 /* GuessWhoLinkedIn.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoLinkedIn.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -153,6 +158,11 @@
 				A100000000000000000000E3 /* Project-Debug.xcconfig */,
 				A100000000000000000000E4 /* Project-Release.xcconfig */,
 				A100000000000000000000E5 /* GuessWho-Shared.xcconfig */,
+				A100000000000000000000E7 /* GuessWho-Debug.xcconfig */,
+				A100000000000000000000E8 /* GuessWho-Release.xcconfig */,
+				A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */,
+				A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */,
+				A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -356,7 +366,7 @@
 		};
 		A100000000000000000000C21 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E5 /* GuessWho-Shared.xcconfig */;
+			baseConfigurationReference = A100000000000000000000E7 /* GuessWho-Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ENABLE_APP_SANDBOX = YES;
@@ -382,7 +392,7 @@
 		};
 		A100000000000000000000C22 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E5 /* GuessWho-Shared.xcconfig */;
+			baseConfigurationReference = A100000000000000000000E8 /* GuessWho-Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ENABLE_APP_SANDBOX = YES;
@@ -408,71 +418,15 @@
 		};
 		B200000000000000000000C21 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
+			baseConfigurationReference = A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */;
 			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = T68Z94627S;
-				ENABLE_APP_SANDBOX = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
-				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
-				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = YES;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
 		B200000000000000000000C22 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E1 /* SharedVersion.xcconfig */;
+			baseConfigurationReference = A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */;
 			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements;
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = T68Z94627S;
-				ENABLE_APP_SANDBOX = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho;
-				"GUESSWHO_APP_GROUP[sdk=macosx*]" = "$(DEVELOPMENT_TEAM).com.milestonemade.guesswho";
-				INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = YES;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};

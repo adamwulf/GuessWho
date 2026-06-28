@@ -1,0 +1,47 @@
+// GuessWhoLinkedIn-Shared.xcconfig
+// Config-invariant TARGET-level settings for the GuessWhoLinkedIn Safari Web
+// Extension target. The per-configuration identifier settings — bundle id,
+// App Group, and entitlements file — live in GuessWhoLinkedIn-Debug.xcconfig
+// and GuessWhoLinkedIn-Release.xcconfig, each wired as that configuration's
+// baseConfigurationReference in the project.
+//
+// (These settings previously lived inline in the project file; they were
+// hoisted here so the extension's ids are managed in xcconfig like the app's.)
+
+#include "SharedVersion.xcconfig"
+
+// Identity (config-invariant part). PRODUCT_BUNDLE_IDENTIFIER is per-config and
+// lives in GuessWhoLinkedIn-Debug/Release.xcconfig — the extension bundle id
+// must stay prefixed by the app bundle id (…guesswho.safari /
+// …guesswho.debug.safari).
+PRODUCT_NAME = $(TARGET_NAME)
+
+// Signing
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+REGISTER_APP_GROUPS = YES
+
+// Sandbox
+ENABLE_APP_SANDBOX = YES
+
+// Swift
+CLANG_ENABLE_MODULES = YES
+SWIFT_VERSION = 6.0
+SWIFT_EMIT_LOC_STRINGS = YES
+
+// Info.plist
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist
+
+// Platforms / devices (iPhone + iPad + Mac Catalyst)
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx
+IPHONEOS_DEPLOYMENT_TARGET = 26.0
+MACOSX_DEPLOYMENT_TARGET = 14.0
+TARGETED_DEVICE_FAMILY = 1,2
+SUPPORTS_MACCATALYST = YES
+SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO
+
+SKIP_INSTALL = YES
+
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks

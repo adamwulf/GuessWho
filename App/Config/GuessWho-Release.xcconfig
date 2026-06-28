@@ -1,0 +1,31 @@
+// GuessWho-Release.xcconfig
+// Release-configuration identifiers for the GuessWho app target. Wired as the
+// app target's Release baseConfigurationReference. The Debug counterpart
+// (GuessWho-Debug.xcconfig) carries the ".debug"-suffixed ids so a debug
+// install never collides with a release install.
+
+#include "GuessWho-Shared.xcconfig"
+
+// Bundle id
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
+
+// App Group identifier — DIFFERENT per platform (per Apple guidance):
+//   * iOS/iPadOS: must be `group.`-prefixed (the only form iOS supports), and
+//     requires provisioning (handled by REGISTER_APP_GROUPS in the shared file).
+//   * Mac Catalyst: use the `<TeamID>.<name>` form. It is self-authorizing by
+//     code signature, needs NO provisioning profile and NO developer-portal
+//     registration, and avoids the macOS 15+ "access data from other
+//     applications" prompt. This form is NOT supported on iOS.
+// Read at runtime via the GuessWhoAppGroup Info.plist key (AppGroup.id).
+GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
+
+// iCloud ubiquity container id. Read at runtime via the GuessWhoiCloudContainer
+// Info.plist key (ICloudContainer.id) so the entitlement and the runtime lookup
+// never diverge.
+GUESSWHO_ICLOUD_CONTAINER = iCloud.com.milestonemade.guesswho
+
+// Entitlements — per-target, per-SDK. The Catalyst file uses the `<TeamID>.`
+// App Group form; the iOS file uses the `group.` form.
+CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho.entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWho/GuessWho-MacCatalyst.entitlements

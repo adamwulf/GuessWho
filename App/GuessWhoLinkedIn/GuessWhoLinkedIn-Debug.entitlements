@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Debug variant of GuessWhoLinkedIn.entitlements: ".debug"-suffixed App Group
+     so the Debug extension shares storage only with the Debug app. Pointed at
+     by CODE_SIGN_ENTITLEMENTS in GuessWhoLinkedIn-Debug.xcconfig. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.milestonemade.guesswho.debug</string>
+	</array>
+</dict>
+</plist>
