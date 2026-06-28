@@ -830,6 +830,47 @@ public final class ContactsRepository: NSObject {
         return noteID
     }
 
+    // MARK: - Contact timestamp stamps (reconcile-on-write)
+    //
+    // Each stamp upserts ONE named timestamp cell on the contact sidecar and,
+    // like every other write here, resolves-or-mints the GuessWho UUID first —
+    // so the FIRST stamp to an unreconciled contact reconciles + mints, then
+    // refreshes the cache so the now-reconciled row appears. The three stamps
+    // are identical apart from which cell they target.
+
+    /// Stamp `lastModified = now` on the contact identified by `id`. Mirrors
+    /// `addNote`: resolve-or-mint, write the cell, refresh on mint.
+    public func stampModified(_ id: ContactID) async throws {
+        try await stampTimestamp(.modified, for: id)
+    }
+
+    /// Stamp `lastInteracted = now` on the contact identified by `id`. Mirrors
+    /// `addNote`: resolve-or-mint, write the cell, refresh on mint.
+    public func stampInteracted(_ id: ContactID) async throws {
+        try await stampTimestamp(.interacted, for: id)
+    }
+
+    /// Stamp `lastViewed = now` on the contact identified by `id`. The
+    /// reconcile that satisfies "always reconcile when stamping the viewed
+    /// timestamp" happens INSIDE `resolveOrMintGuessWhoID(for:)` — an
+    /// unreconciled contact mints its GuessWho UUID as part of this write.
+    /// Mirrors `addNote`: resolve-or-mint, write the cell, refresh on mint.
+    public func stampViewed(_ id: ContactID) async throws {
+        try await stampTimestamp(.viewed, for: id)
+    }
+
+    /// Shared body of the three stamp verbs. Throws `SidecarUnavailableError`
+    /// when the engine is unavailable; otherwise resolves-or-mints the GuessWho
+    /// UUID (reconciling an unreconciled contact), writes the one timestamp
+    /// cell at `now`, and refreshes the cache if the resolve minted.
+    private func stampTimestamp(_ which: ContactTimestampKind, for id: ContactID) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        try sync.stampContactTimestamp(which, at: SidecarKey(kind: .contact, id: guessWhoID), now: Date())
+        await refreshCacheIfMinted(minted, localID: id.localID)
+    }
+
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
     /// `ContactID`. Returns empty for an unreconciled id (no mint on read).
     ///
