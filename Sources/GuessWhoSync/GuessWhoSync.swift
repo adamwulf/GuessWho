@@ -631,6 +631,57 @@ public final class GuessWhoSync: @unchecked Sendable {
         return result
     }
 
+    // MARK: - Contact timestamp cells
+
+    /// Upserts ONE named timestamp cell on the envelope at `key`, writing
+    /// `now` as an ISO8601 string. Follows the named-cell write style of
+    /// `addLink`/`setLinkNote`: read the existing envelope (so the other
+    /// cells are preserved), replace just the one targeted cell, and write
+    /// back under the same `entityID`. If no envelope exists yet, a fresh one
+    /// is minted with `entityID = key.id` — the same envelope-on-demand
+    /// behavior `addField` uses for a first write to a contact. ADDITIVE and
+    /// schema-stable: only the one timestamp cell changes.
+    public func stampContactTimestamp(_ which: ContactTimestampKind, at key: SidecarKey, now: Date) throws {
+        try withKeyLocked(key) { ctx in
+            let existing = try ctx.read()
+            var fields = existing?.fields ?? [:]
+            fields[which.cellKey] = SidecarCell(
+                value: .string(SidecarISO8601.string(from: now)),
+                modifiedAt: now,
+                modifiedBy: deviceID
+            )
+            try ctx.write(
+                SidecarEnvelope(
+                    schemaVersion: 1,
+                    entityID: existing?.entityID ?? key.id,
+                    fields: fields
+                )
+            )
+        }
+    }
+
+    /// Reads the three timestamp cells off the envelope at `key`. Returns
+    /// `ContactTimestamps(nil, nil, nil)` when the envelope is missing or
+    /// carries none of the cells — a pure read, never mints.
+    public func contactTimestamps(at key: SidecarKey) throws -> ContactTimestamps {
+        guard let envelope = try sidecars.read(key) else { return ContactTimestamps() }
+        return ContactTimestamps(from: envelope)
+    }
+
+    /// Bulk-reads the timestamps for EVERY contact sidecar, keyed by the
+    /// envelope's `key.id` (the lowercased GuessWho UUID). Enumerates all
+    /// sidecar keys and reads only the `.contact` ones; an envelope that fails
+    /// to read is skipped (no entry), mirroring `links(at:)`'s skip-on-nil
+    /// harvest. O(N contacts).
+    public func allContactTimestamps() throws -> [String: ContactTimestamps] {
+        var result: [String: ContactTimestamps] = [:]
+        for key in try sidecars.allKeys() where key.kind == .contact {
+            guard let envelope = try sidecars.read(key) else { continue }
+            result[key.id] = ContactTimestamps(from: envelope)
+        }
+        return result
+    }
+
     public func reconcileSidecars() throws -> SidecarReconcileReport {
         // A third-party SidecarStoreProtocol conformer with no concept of
         // multi-version conflicts has nothing to reconcile.
