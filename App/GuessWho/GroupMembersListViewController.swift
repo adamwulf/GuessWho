@@ -49,6 +49,12 @@ final class GroupMembersListViewController: UIViewController {
 
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
+    /// Opaque observer token for `.contactsRepositoryDidReload` so a global
+    /// sort change re-sorts this member list too. See
+    /// `ContactsListViewController.reloadObserver` for the `nonisolated(unsafe)`
+    /// rationale (written once on main, read only from `deinit`).
+    private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
+
     init(group: ContactGroup, repository: ContactsRepository, photoLoader: ContactPhotoLoader) {
         self.group = group
         self.repository = repository
@@ -62,13 +68,21 @@ final class GroupMembersListViewController: UIViewController {
         fatalError("init(coder:) is unsupported — GroupMembersListViewController is code-only")
     }
 
+    deinit {
+        if let reloadObserver {
+            NotificationCenter.default.removeObserver(reloadObserver)
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
         configureTableView()
+        configureSortMenu()
         configureEmptyState()
         configureDataSource()
+        observeRepositoryReloads()
 
         applySnapshot(animated: false)
         Task { await loadMembers() }
@@ -94,6 +108,42 @@ final class GroupMembersListViewController: UIViewController {
         membersByID = byID
         hasLoaded = true
         applySnapshot(animated: true)
+    }
+
+    // MARK: - Sort menu
+
+    /// Install the global sort pull-down as the nav bar's right item. Shared
+    /// with the People / Organizations lists via `makeSortBarButtonItem` so the
+    /// member list offers the same orders + checkmark.
+    private func configureSortMenu() {
+        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+    }
+
+    /// Rebuild the sort button's menu so its checkmark tracks the live global
+    /// order. Called from the reload observer.
+    private func refreshSortMenu() {
+        navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
+    }
+
+    /// Observe `.contactsRepositoryDidReload` so a GLOBAL sort change (posted by
+    /// the repository's `sortOrder` `didSet`) re-sorts THIS member list too.
+    /// The member set itself is fetched once in `loadMembers()` and doesn't
+    /// change here — re-applying the snapshot only re-sorts/re-sections the
+    /// already-loaded members by the new order. Same `OperationQueue.main` +
+    /// `MainActor.assumeIsolated` pattern as the contact lists (the diffable
+    /// apply is main-thread-only).
+    @MainActor
+    private func observeRepositoryReloads() {
+        reloadObserver = NotificationCenter.default.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshSortMenu()
+                self?.applySnapshot(animated: true)
+            }
+        }
     }
 
     // MARK: - Table view
@@ -155,8 +205,15 @@ final class GroupMembersListViewController: UIViewController {
     // MARK: - Snapshot wiring
 
     private func applySnapshot(animated: Bool) {
-        let sections = sectionedMembers()
+        // Sort + section this group's members by the CURRENT global sort order
+        // via the package, so the member list honors the same picker as the
+        // People / Organizations lists (name A–Z or a relative-time bucket
+        // order). Replaces this VC's old inline name-only `sectionedMembers()`.
+        let sections = repository.sectionedIDs(forMembers: Array(membersByID.values))
         sectionLetters = sections.map { $0.0 }
+        // Hide the A–Z scrubber for time orders (bucket-name sections) — see
+        // ContactsListViewController.applySnapshot.
+        dataSource.showsSectionIndex = !repository.sortOrder.isTimeOrder
 
         var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
@@ -174,28 +231,6 @@ final class GroupMembersListViewController: UIViewController {
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()
-    }
-
-    /// Sections the fetched members A–Z exactly like the repository's People /
-    /// Organizations projections: sort by `lastNameSortKey` (then display name),
-    /// group by `sectionLetter`, and order sections alphabetically with "#" last.
-    /// People and organizations are intermixed in one flat A–Z list.
-    private func sectionedMembers() -> [(String, [ContactID])] {
-        let sorted = membersByID.values.sorted {
-            let primary = $0.lastNameSortKey.localizedCaseInsensitiveCompare($1.lastNameSortKey)
-            if primary != .orderedSame { return primary == .orderedAscending }
-            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-        let grouped = Dictionary(grouping: sorted, by: \.sectionLetter)
-        return grouped.map { letter, members in
-            (letter, members.map { $0.contactID })
-        }.sorted {
-            switch ($0.0, $1.0) {
-            case ("#", _): return false
-            case (_, "#"): return true
-            default: return $0.0 < $1.0
-            }
-        }
     }
 
     private func updateEmptyState() {
@@ -270,12 +305,18 @@ private extension GroupMembersListViewController {
 /// Diffable data source subclass that forwards A–Z section headers and the
 /// index scrubber. Same rationale as `ContactsListViewController.SectionedDataSource`.
 private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
+    /// Whether the right-side A–Z scrubber is shown. The VC sets this to
+    /// `!repository.sortOrder.isTimeOrder` before each apply — see
+    /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
+    var showsSectionIndex = true
+
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         let ids = snapshot().sectionIdentifiers
         return ids.indices.contains(section) ? ids[section] : nil
     }
 
     override func sectionIndexTitles(for tableView: UITableView) -> [String]? {
+        guard showsSectionIndex else { return nil }
         let titles = snapshot().sectionIdentifiers
         return titles.isEmpty ? nil : titles
     }
