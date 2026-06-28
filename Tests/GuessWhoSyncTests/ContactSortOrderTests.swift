@@ -143,6 +143,45 @@ struct ContactSortOrderTests {
     }
 
     @Test
+    func bucketTitle_classifiesAllFourBuckets() {
+        // Drive `bucketTitle` directly with a FIXED calendar so the boundaries
+        // are deterministic regardless of the test machine's locale (the
+        // week-start day in particular). Gregorian, UTC, week starts Monday.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        calendar.firstWeekday = 2  // Monday — so a Mon–Sun week is one bucket.
+
+        // 'now' = Wednesday 2026-06-17 12:00 UTC (mid-week, mid-month, so each
+        // bucket has unambiguous room before it).
+        let now = calendar.date(from: DateComponents(
+            year: 2026, month: 6, day: 17, hour: 12
+        ))!
+
+        // Today: same calendar day, a few hours earlier.
+        let today = calendar.date(byAdding: .hour, value: -5, to: now)!
+        // This Week: Monday 2026-06-15 (same Mon-start week as Wed the 17th),
+        // which is NOT the same day → "This Week", not "Today".
+        let thisWeek = calendar.date(from: DateComponents(
+            year: 2026, month: 6, day: 15, hour: 9
+        ))!
+        // This Month: the 3rd — same June 2026, but a prior week → "This Month".
+        let thisMonth = calendar.date(from: DateComponents(
+            year: 2026, month: 6, day: 3, hour: 9
+        ))!
+        // Earlier: a prior month.
+        let earlier = calendar.date(from: DateComponents(
+            year: 2026, month: 4, day: 20, hour: 9
+        ))!
+
+        #expect(ContactsRepository.bucketTitle(for: today, now: now, calendar: calendar) == "Today")
+        #expect(ContactsRepository.bucketTitle(for: thisWeek, now: now, calendar: calendar) == "This Week")
+        #expect(ContactsRepository.bucketTitle(for: thisMonth, now: now, calendar: calendar) == "This Month")
+        #expect(ContactsRepository.bucketTitle(for: earlier, now: now, calendar: calendar) == "Earlier")
+        // nil always buckets as "Earlier".
+        #expect(ContactsRepository.bucketTitle(for: nil, now: now, calendar: calendar) == "Earlier")
+    }
+
+    @Test
     func timeBuckets_neverStamped_isEarlier() async {
         // A reconciled but never-stamped contact buckets as "Earlier" under a
         // time order (nil timestamp → Earlier).

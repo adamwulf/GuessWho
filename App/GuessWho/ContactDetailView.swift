@@ -551,9 +551,14 @@ struct ContactDetailView: View {
             // Record the edit on the contact's lastModified timestamp so the
             // "Last Modified" sort reflects this save. Runs AFTER the fresh
             // reload so `loadedContactID` carries the resolved guessWhoID.
-            // Unlike a CONTACT-field edit (which intentionally does NOT mint a
-            // sidecar URL), this stamp is a sidecar write and resolves-or-mints
-            // by design.
+            //
+            // This is NOT in tension with the "no reconcile here" note above:
+            // that note is about the CONTACT-field WRITE (saveContact), which
+            // stays mint-free. The lastModified stamp is a separate, deliberate
+            // sidecar write that resolves-or-mints by design — and in practice
+            // the record is already reconciled (the view-open `stampViewed()`
+            // minted it), so this mint is a no-op on all but a pathological
+            // never-viewed-yet-saved path.
             await stampModified()
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
@@ -2211,9 +2216,10 @@ private struct TappableInfoRow: View {
                     Spacer(minLength: 8)
                     // Trailing Copy button, revealed on hover. `opacity` (not a
                     // conditional insert) keeps the row height stable as it
-                    // fades in/out. The button's own tap copies + stamps and
-                    // must NOT also trigger the row's open, so it's a sibling of
-                    // the label, not nested in the Button's action.
+                    // fades in/out. It lives INSIDE the outer Button's label,
+                    // but as its own `.borderless` Button it claims a separate
+                    // hit region: a tap on the Copy glyph copies + stamps and
+                    // does NOT propagate to the outer row-open Button.
                     Button(action: copy) {
                         Image(systemName: "doc.on.doc")
                             .foregroundStyle(.tint)
