@@ -246,11 +246,13 @@ a `.debug` suffix in Debug builds and are bare in Release:
 
 > **Portal prerequisite:** the `group.`-prefixed App Group and the iCloud
 > container must be **registered in the Apple Developer portal** to be
-> provisioned (the `<TeamID>.` Catalyst App Group form is self-authorizing and
-> needs no registration). The `.debug` App Group and `iCloud.…guesswho.debug`
-> container must therefore be added to the portal before Debug **device** or
-> **Catalyst** signing will succeed. Debug **simulator** builds and all Release
-> builds are unaffected (the simulator does not enforce these entitlements).
+> provisioned (the `<TeamID>.` Catalyst App Group form is self-authorizing —
+> even with the `.debug` suffix — and needs no registration). So before Debug
+> signing succeeds on a real machine, register the `group.…guesswho.debug` App
+> Group (gates **device** builds) and the `iCloud.…guesswho.debug` container
+> (gates **device + Catalyst** builds). Debug **simulator** builds and all
+> Release builds are unaffected (the simulator does not enforce these
+> entitlements).
 
 ## The entitlement split (app does the heavy work)
 
@@ -319,7 +321,9 @@ file-system synchronized groups, matching the app target):
 `group.`-prefixed App Group exists on the Apple Developer portal and is enabled
 on both App IDs (`com.milestonemade.guesswho` and
 `com.milestonemade.guesswho.safari`); `REGISTER_APP_GROUPS = YES` drives the
-profile fetch.
+profile fetch. For **Debug** device/Catalyst builds the `.debug` variants need
+the same portal setup — see
+[Debug vs. Release identifiers](#debug-vs-release-identifiers).
 
 ## Out of scope here (later build steps)
 
