@@ -1,0 +1,60 @@
+// GuessWhoLinkedIn-Shared.xcconfig
+// TARGET-level settings for the GuessWhoLinkedIn Safari Web Extension target.
+//
+// Previously these lived inline in the project file. Hoisting them here lets
+// the extension derive its bundle id and App Group from the same base id +
+// per-configuration suffix as the app (GUESSWHO_BASE_ID / GUESSWHO_ID_SUFFIX),
+// so a Debug build gets ".debug"-suffixed identifiers that match the Debug app
+// and never collide with a Release install.
+
+#include "SharedVersion.xcconfig"
+
+// Identity. Base id and suffix come from GuessWho-Shared.xcconfig (base) and
+// Project-Debug/Release.xcconfig (suffix). The extension bundle id must remain
+// prefixed by the app bundle id, so the suffix goes between the base and the
+// ".safari" leaf: e.g. com.milestonemade.guesswho.debug.safari in Debug.
+GUESSWHO_BASE_ID = com.milestonemade.guesswho
+PRODUCT_NAME = $(TARGET_NAME)
+PRODUCT_BUNDLE_IDENTIFIER = $(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX).safari
+
+// App Group — DIFFERENT per platform, same split as the app target. The
+// extension shares the app's App Group so it can hand off scraped data via the
+// shared container. Keep in sync with GUESSWHO_APP_GROUP in GuessWho-Shared.xcconfig.
+GUESSWHO_APP_GROUP = group.$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
+
+// Signing
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+REGISTER_APP_GROUPS = YES
+
+// Entitlements — Debug/Release variants selected by GUESSWHO_ENTITLEMENTS_VARIANT
+// (set per-configuration in Project-Debug/Release.xcconfig), same scheme as the
+// app target. The extension entitlements carry only the App Group.
+CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn$(GUESSWHO_ENTITLEMENTS_VARIANT).entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst$(GUESSWHO_ENTITLEMENTS_VARIANT).entitlements
+
+// Sandbox
+ENABLE_APP_SANDBOX = YES
+
+// Swift
+CLANG_ENABLE_MODULES = YES
+SWIFT_VERSION = 6.0
+SWIFT_EMIT_LOC_STRINGS = YES
+
+// Info.plist
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = GuessWhoLinkedIn/Info.plist
+
+// Platforms / devices (iPhone + iPad + Mac Catalyst)
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx
+IPHONEOS_DEPLOYMENT_TARGET = 26.0
+MACOSX_DEPLOYMENT_TARGET = 14.0
+TARGETED_DEVICE_FAMILY = 1,2
+SUPPORTS_MACCATALYST = YES
+SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO
+
+SKIP_INSTALL = YES
+
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks

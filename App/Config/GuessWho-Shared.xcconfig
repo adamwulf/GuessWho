@@ -5,7 +5,14 @@
 
 // Identity
 PRODUCT_NAME = $(TARGET_NAME)
-PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
+
+// Base reverse-DNS id shared by the bundle id, App Group, and iCloud container.
+// GUESSWHO_ID_SUFFIX (set per-configuration in Project-Debug/Release.xcconfig)
+// is appended so Debug builds get distinct identifiers (".debug") and never
+// collide with a Release install. Keep all three ids derived from this single
+// base so they can never drift apart.
+GUESSWHO_BASE_ID = com.milestonemade.guesswho
+PRODUCT_BUNDLE_IDENTIFIER = $(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
 
 // Signing
 DEVELOPMENT_TEAM = T68Z94627S
@@ -29,8 +36,19 @@ REGISTER_APP_GROUPS = YES
 //     This form is NOT supported on iOS — hence the per-sdk split.
 // The Swift code reads the matching value via the GUESSWHO_APP_GROUP Info.plist
 // key (set from this var) so entitlement and runtime identifier never diverge.
-GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
-GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
+// The GUESSWHO_ID_SUFFIX suffix (".debug" in Debug, empty in Release) keeps the
+// debug App Group separate from the release one.
+GUESSWHO_APP_GROUP = group.$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
+
+// iCloud ubiquity container id. Set into the GuessWhoiCloudContainer Info.plist
+// key, which SyncService reads at runtime (mirroring how AppGroup.id reads
+// GuessWhoAppGroup) so the entitlement and the runtime lookup never diverge.
+// Debug appends GUESSWHO_ID_SUFFIX so the debug build syncs through a separate
+// iCloud document store. NOTE: the debug container (iCloud.<base>.debug) must
+// be registered in the Apple Developer portal / provisioning profile before
+// Debug signing will succeed.
+GUESSWHO_ICLOUD_CONTAINER = iCloud.$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
 // Per Apple guidance, Mac Catalyst should ship its own entitlements file
 // so Catalyst-specific keys (e.g. com.apple.security.app-sandbox tuning,
 // app-group / file-access bookmarks) can diverge without disturbing the
@@ -39,8 +57,15 @@ GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
 // container, same Contacts/Calendar entitlements — so iOS↔Mac sync
 // behaves identically. The per-sdk override only kicks in for macosx
 // builds; iOS / iPadOS continue to use GuessWho.entitlements unchanged.
-CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho.entitlements
-CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWho/GuessWho-MacCatalyst.entitlements
+//
+// Entitlement .plist files cannot interpolate build settings, so the App
+// Group and iCloud container ids are baked into the file content. Debug and
+// Release therefore need separate files: GUESSWHO_ENTITLEMENTS_VARIANT
+// (set per-configuration in Project-Debug/Release.xcconfig) selects "-Debug"
+// vs "" so Debug picks GuessWho-Debug.entitlements (the ".debug"-suffixed
+// ids) and Release picks GuessWho.entitlements.
+CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho$(GUESSWHO_ENTITLEMENTS_VARIANT).entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWho/GuessWho-MacCatalyst$(GUESSWHO_ENTITLEMENTS_VARIANT).entitlements
 
 // Swift
 SWIFT_VERSION = 6.0
