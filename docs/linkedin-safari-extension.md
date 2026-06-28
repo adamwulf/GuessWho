@@ -108,7 +108,12 @@ Concrete contract:
 
 The App Group is used **only** for this ephemeral handoff. It is NOT synced
 storage — the synced GuessWho sidecar lives in the **iCloud ubiquity container**
-(`iCloud.com.milestonemade.guesswho`), a different container entirely. See
+(`iCloud.com.milestonemade.guesswho` for Release,
+`iCloud.com.milestonemade.guesswho.debug` for Debug), a different container
+entirely. The container id is build-driven the same way the App Group is — see
+[Debug vs. Release identifiers](#debug-vs-release-identifiers) below — and is
+resolved at runtime via the `GuessWhoiCloudContainer` Info.plist key
+(`ICloudContainer.id`, mirroring `AppGroup.id`). See
 [`docs/contact-identity.md`](./contact-identity.md) and the sidecar storage
 code for that side.
 
@@ -121,10 +126,15 @@ failure. Per Apple's
 and
 [Accessing app group containers](https://developer.apple.com/documentation/xcode/accessing-app-group-containers):
 
-| Platform | App Group identifier | Why |
+| Platform | App Group identifier (Release) | Why |
 | --- | --- | --- |
 | iOS / iPadOS | `group.com.milestonemade.guesswho` | The `group.`-prefixed form is the only one iOS supports. It must be **provisioned** — set `REGISTER_APP_GROUPS = YES` so automatic signing fetches a profile that authorizes it. |
 | Mac Catalyst | `T68Z94627S.com.milestonemade.guesswho` (`<TeamID>.<name>`) | Self-authorizing by code signature — **no provisioning, no portal registration**, and it **avoids the macOS 15+ "GuessWho would like to access data from other applications" prompt**. This form is *not supported on iOS*, which is why the identifier must differ per platform. |
+
+Debug builds append a `.debug` suffix to the name (`group.com.milestonemade.guesswho.debug`
+/ `T68Z94627S.com.milestonemade.guesswho.debug`) so a debug install never shares
+a container with a release install — see
+[Debug vs. Release identifiers](#debug-vs-release-identifiers).
 
 Two installs on two platforms never share a container anyway (cross-device data
 syncs via iCloud, not the App Group), so different identifiers are harmless.
@@ -147,11 +157,15 @@ sudo launchctl procinfo `pgrep GuessWho`   # expect "entitlements validated"
 
 A mismatch between any of these silently breaks container resolution:
 
-1. **xcconfig var** — `GUESSWHO_APP_GROUP` in `App/Config/GuessWho-Shared.xcconfig`,
-   with a `[sdk=macosx*]` override:
+1. **xcconfig var** — `GUESSWHO_APP_GROUP`, composed from a shared base id and
+   the per-configuration `GUESSWHO_ID_SUFFIX` (`.debug` in Debug, empty in
+   Release), with a `[sdk=macosx*]` override. Defined in
+   `App/Config/GuessWho-Shared.xcconfig` for the app and
+   `App/Config/GuessWhoLinkedIn-Shared.xcconfig` for the extension:
    ```
-   GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
-   GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
+   GUESSWHO_BASE_ID = com.milestonemade.guesswho
+   GUESSWHO_APP_GROUP = group.$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
+   GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
    ```
 2. **Info.plist key** — both the app's and the extension's `Info.plist` carry
    `GuessWhoAppGroup = $(GUESSWHO_APP_GROUP)`.
@@ -159,21 +173,34 @@ A mismatch between any of these silently breaks container resolution:
    `GuessWhoSceneDelegate.handoffAppGroupID` read that Info.plist key
    (`Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup")`), never a
    hardcoded literal. So the runtime container always matches the entitlement.
-4. **Entitlements files** — per-target, per-SDK:
-   - App: `GuessWho.entitlements` (iOS, `group.` form) +
-     `GuessWho-MacCatalyst.entitlements` (`<TeamID>.` form), selected by
+4. **Entitlements files** — per-target, per-SDK, **and per-configuration** (the
+   id is baked into the plist content, so Debug and Release need separate files,
+   selected by `GUESSWHO_ENTITLEMENTS_VARIANT` — `-Debug` vs empty):
+   - App: `GuessWho.entitlements` / `GuessWho-Debug.entitlements` (iOS, `group.`
+     form) + `GuessWho-MacCatalyst.entitlements` /
+     `GuessWho-MacCatalyst-Debug.entitlements` (`<TeamID>.` form), selected by
      `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]`.
-   - Extension: `GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements` (iOS) +
-     `GuessWhoLinkedIn-MacCatalyst.entitlements` (`<TeamID>.`), same per-SDK
+   - Extension: `GuessWhoLinkedIn.entitlements` /
+     `GuessWhoLinkedIn-Debug.entitlements` (iOS) +
+     `GuessWhoLinkedIn-MacCatalyst.entitlements` /
+     `GuessWhoLinkedIn-MacCatalyst-Debug.entitlements` (`<TeamID>.`), same per-SDK
      override. **App Group only** — no iCloud, no Contacts.
 
 > **Gotcha (cost real debugging time):** the **extension target does NOT inherit
-> `GuessWho-Shared.xcconfig`** — that xcconfig is wired to the *app* target. Build
-> variables like `GUESSWHO_APP_GROUP` must be defined on the **extension's own**
-> build configurations in `App/GuessWho.xcodeproj/project.pbxproj` too. If you
-> forget, `$(GUESSWHO_APP_GROUP)` expands to **empty** in the extension's
-> Info.plist, the handler falls back to the iOS literal, and on Catalyst the
-> extension and app resolve **different containers** → the app reports "No
+> `GuessWho-Shared.xcconfig`** — that xcconfig is wired to the *app* target. The
+> extension has its **own** target xcconfig, `App/Config/GuessWhoLinkedIn-Shared.xcconfig`,
+> which composes `GUESSWHO_APP_GROUP` from the same `GUESSWHO_BASE_ID` +
+> per-configuration `GUESSWHO_ID_SUFFIX` so the app and extension always resolve
+> the **same** App Group on a given platform/configuration. (The
+> `GUESSWHO_ID_SUFFIX` / `GUESSWHO_ENTITLEMENTS_VARIANT` vars are defined at the
+> *project* level in `Project-Debug/Release.xcconfig`, so they reach the
+> extension's target xcconfig via Xcode's layered resolution even though that
+> file does not `#include` them.) The extension's Debug/Release `buildSettings`
+> in `App/GuessWho.xcodeproj/project.pbxproj` are intentionally **empty** — do
+> not re-add id settings there; edit `GuessWhoLinkedIn-Shared.xcconfig` instead.
+> If `GUESSWHO_APP_GROUP` ever expanded to **empty** in the extension's
+> Info.plist, the handler would fall back to the iOS literal and on Catalyst the
+> extension and app would resolve **different containers** → the app reports "No
 > pending-handoff.json". Verify the built bundles:
 > ```sh
 > plutil -extract GuessWhoAppGroup raw \
@@ -182,6 +209,48 @@ A mismatch between any of these silently breaks container resolution:
 >   "$BUILT/GuessWho.app/Contents/PlugIns/GuessWhoLinkedIn.appex/Contents/Info.plist"
 > # both must print the SAME id on a given platform.
 > ```
+
+## Debug vs. Release identifiers
+
+A Debug install must be able to coexist with a Release/TestFlight install on the
+same device without sharing data. All three identity-bearing ids therefore carry
+a `.debug` suffix in Debug builds and are bare in Release:
+
+| Identifier | Release | Debug |
+| --- | --- | --- |
+| App bundle id | `com.milestonemade.guesswho` | `com.milestonemade.guesswho.debug` |
+| Extension bundle id | `com.milestonemade.guesswho.safari` | `com.milestonemade.guesswho.debug.safari` |
+| App Group (iOS) | `group.com.milestonemade.guesswho` | `group.com.milestonemade.guesswho.debug` |
+| App Group (Catalyst) | `T68Z94627S.com.milestonemade.guesswho` | `T68Z94627S.com.milestonemade.guesswho.debug` |
+| iCloud container | `iCloud.com.milestonemade.guesswho` | `iCloud.com.milestonemade.guesswho.debug` |
+
+**How the suffix is applied (single source of truth):**
+
+- `GUESSWHO_ID_SUFFIX` is defined per-configuration at the **project** level —
+  `.debug` in `Project-Debug.xcconfig`, empty in `Project-Release.xcconfig`. Being
+  project-level, it reaches every target's xcconfig via Xcode's layered
+  resolution regardless of that target's `baseConfigurationReference`.
+- `GUESSWHO_BASE_ID` (`com.milestonemade.guesswho`) lives in the target xcconfigs;
+  the bundle id, `GUESSWHO_APP_GROUP`, and `GUESSWHO_ICLOUD_CONTAINER` are all
+  composed as `…$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)…` so the three ids can
+  never drift apart. The extension bundle id inserts the suffix before the
+  `.safari` leaf so it stays prefixed by the app id (an Apple requirement for
+  app extensions).
+- Entitlement `.plist` files can't interpolate build settings, so the ids are
+  baked into the file content and Debug/Release get separate files, selected by
+  `GUESSWHO_ENTITLEMENTS_VARIANT` (`-Debug` vs empty) in `CODE_SIGN_ENTITLEMENTS`.
+- The iCloud container is read at runtime from the `GuessWhoiCloudContainer`
+  Info.plist key via `ICloudContainer.id` (mirroring how `AppGroup.id` reads
+  `GuessWhoAppGroup`), so the runtime lookup in `SyncService` always matches the
+  signed entitlement.
+
+> **Portal prerequisite:** the `group.`-prefixed App Group and the iCloud
+> container must be **registered in the Apple Developer portal** to be
+> provisioned (the `<TeamID>.` Catalyst App Group form is self-authorizing and
+> needs no registration). The `.debug` App Group and `iCloud.…guesswho.debug`
+> container must therefore be added to the portal before Debug **device** or
+> **Catalyst** signing will succeed. Debug **simulator** builds and all Release
+> builds are unaffected (the simulator does not enforce these entitlements).
 
 ## The entitlement split (app does the heavy work)
 
