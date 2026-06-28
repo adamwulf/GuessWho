@@ -317,9 +317,13 @@ file-system synchronized groups, matching the app target):
 - The extension's `Info.plist` carries the `NSExtension` dict
   (`NSExtensionPointIdentifier = com.apple.Safari.web-extension`,
   `NSExtensionPrincipalClass = $(PRODUCT_MODULE_NAME).SafariWebExtensionHandler`).
-- The extension's build configs use `Config/SharedVersion.xcconfig` as their base
-  config so its version tracks the app's; **but they do not inherit
-  `GuessWho-Shared.xcconfig`** — see the App Group gotcha above.
+- The extension's build configs use the per-configuration
+  `Config/GuessWhoLinkedIn-Debug.xcconfig` / `Config/GuessWhoLinkedIn-Release.xcconfig`
+  as their base config; each `#include`s `GuessWhoLinkedIn-Shared.xcconfig`,
+  which in turn `#include`s `Config/SharedVersion.xcconfig`, so the extension's
+  version tracks the app's transitively. The extension has its **own** xcconfig
+  stack, separate from the app's `GuessWho-*.xcconfig` — see the App Group gotcha
+  above.
 
 **App Group provisioning for a clean machine / CI:** automatic signing registers
 `group.com.milestonemade.guesswho` (iOS) during a local build, and the Catalyst
