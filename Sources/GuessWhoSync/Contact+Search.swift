@@ -18,8 +18,34 @@ extension Contact {
         return ""
     }
 
+    /// Sort key for the `.firstLast` order: given name first, mirroring
+    /// `lastNameSortKey`'s fallback chain but leading with `givenName`. A
+    /// contact with no given name (an org, a single-name nickname-only record)
+    /// falls back to the organization name, then family name, then nickname, so
+    /// it still sorts sensibly. Empty only when the contact has no name at all.
+    public var firstNameSortKey: String {
+        for candidate in [givenName, organizationName, familyName, nickname] {
+            let trimmed = candidate.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return ""
+    }
+
     public var sectionLetter: String {
-        guard let scalar = lastNameSortKey.unicodeScalars.first(where: { !CharacterSet.whitespaces.contains($0) }) else {
+        Contact.sectionLetter(for: lastNameSortKey)
+    }
+
+    /// Section letter for the `.firstLast` order — the leading A–Z letter of
+    /// `firstNameSortKey` (or "#" for anything that doesn't fold to A–Z).
+    public var firstNameSectionLetter: String {
+        Contact.sectionLetter(for: firstNameSortKey)
+    }
+
+    /// Leading A–Z section letter of an arbitrary sort key, folding diacritics;
+    /// "#" when the key is empty or its first letter isn't A–Z. Shared by the
+    /// last-name and first-name section helpers so both bucket identically.
+    static func sectionLetter(for sortKey: String) -> String {
+        guard let scalar = sortKey.unicodeScalars.first(where: { !CharacterSet.whitespaces.contains($0) }) else {
             return "#"
         }
         let folded = String(scalar).folding(options: .diacriticInsensitive, locale: .current).uppercased()

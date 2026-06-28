@@ -103,6 +103,29 @@ public final class ContactsRepository: NSObject {
     /// `contactIDs(matchingEmail:)`.
     private var contactsByEmail: [String: [Contact]] = [:]
 
+    /// Bulk cache of every contact's sidecar timestamps, keyed on the lowercased
+    /// GuessWho UUID (matching `GuessWhoSync.allContactTimestamps()` and
+    /// `ContactID.guessWhoID`). Refreshed wholesale in `reload()` and after each
+    /// stamp write, robustly (a failed read leaves it empty). Backs the three
+    /// time-ordered sorts and their relative-time bucketing; an unreconciled
+    /// contact (no GuessWho UUID) has no entry and sorts/buckets as "no
+    /// timestamp" (oldest / "Earlier"). It is purely derived read-model state,
+    /// so it is NOT `@Observable`-tracked — list re-renders are driven by the
+    /// `contacts`/`sortOrder` changes and `postDidReload()`.
+    @ObservationIgnored private var contactTimestampsByID: [String: ContactTimestamps] = [:]
+
+    /// The CURRENT global list sort order. The repository holds it; the APP owns
+    /// persistence (e.g. `UserDefaults`, via the stable `rawValue`s) and sets it
+    /// here. Setting it re-renders every list: it is `@Observable`-tracked AND
+    /// posts `.contactsRepositoryDidReload` (via `didSet`) so both Observation
+    /// and notification-based consumers (the UIKit diffable lists) refresh.
+    public var sortOrder: ContactSortOrder = .lastFirst {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            postDidReload()
+        }
+    }
+
     /// - Parameter notificationCenter: the center to observe
     ///   `.guessWhoContactsDidChange` on. Defaults to `.default` (production
     ///   wiring); tests pass a fresh `NotificationCenter()` per instance so a
@@ -139,10 +162,20 @@ public final class ContactsRepository: NSObject {
             setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
+        refreshTimestampCache()
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
         postDidReload()
+    }
+
+    /// Reload the bulk timestamp cache from the engine, wholesale. ROBUST: a
+    /// nil engine or a failed read leaves the cache EMPTY (every contact then
+    /// sorts/buckets as "no timestamp") rather than throwing. Called after a
+    /// full `reload()` and after each stamp write so the time-ordered lists
+    /// reflect the latest timestamps.
+    private func refreshTimestampCache() {
+        contactTimestampsByID = (try? sync?.allContactTimestamps()) ?? [:]
     }
 
     // MARK: - Groups (read-only)
@@ -868,7 +901,16 @@ public final class ContactsRepository: NSObject {
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
         try sync.stampContactTimestamp(which, at: SidecarKey(kind: .contact, id: guessWhoID), now: Date())
+        // The written timestamp changed; refresh the bulk cache so a time-ordered
+        // list re-sorts/re-buckets this contact. `refreshCacheIfMinted` re-reads
+        // the Contacts record only when a mint stamped a new GuessWho URL (so the
+        // row's identity settles); the timestamp cache is refreshed regardless.
+        refreshTimestampCache()
         await refreshCacheIfMinted(minted, localID: id.localID)
+        // On mint, `refreshCacheIfMinted` posts its own reload; on the common
+        // non-mint path, post so a time-ordered list re-renders with the new
+        // timestamp.
+        if !minted { postDidReload() }
     }
 
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
@@ -1386,16 +1428,78 @@ public final class ContactsRepository: NSObject {
         postDidReload()
     }
 
+    // MARK: - Sort & section (parameterized by `sortOrder`)
+
+    /// Filters by `predicate` + search query, then sorts by the CURRENT
+    /// `sortOrder`. Name orders sort alphabetically (with a stable
+    /// `lastNameSortKey` → `displayName` tie-break); time orders sort by the
+    /// relevant contact timestamp DESC (most recent first), with a nil timestamp
+    /// treated as `distantPast` so it lands at the END, and the same name
+    /// tie-break for a stable order among equal timestamps.
     private func filtered(matching query: String, where predicate: (Contact) -> Bool) -> [Contact] {
-        contacts.filter(predicate).filter { $0.matches(searchQuery: query) }.sorted {
-            let primary = $0.lastNameSortKey.localizedCaseInsensitiveCompare($1.lastNameSortKey)
-            if primary != .orderedSame { return primary == .orderedAscending }
-            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        let matched = contacts.filter(predicate).filter { $0.matches(searchQuery: query) }
+        switch sortOrder {
+        case .lastFirst:
+            return matched.sorted { lhs, rhs in
+                nameOrdered(lhs, rhs, primaryKey: \.lastNameSortKey)
+            }
+        case .firstLast:
+            return matched.sorted { lhs, rhs in
+                nameOrdered(lhs, rhs, primaryKey: \.firstNameSortKey)
+            }
+        case .lastModified, .lastInteracted, .lastViewed:
+            let kind = sortOrder.timestampKind ?? .modified
+            return matched.sorted { lhs, rhs in
+                let lt = timestamp(kind, for: lhs) ?? .distantPast
+                let rt = timestamp(kind, for: rhs) ?? .distantPast
+                if lt != rt { return lt > rt }   // DESC: most recent first
+                // Stable tie-break for equal (incl. both-nil) timestamps.
+                return nameOrdered(lhs, rhs, primaryKey: \.lastNameSortKey)
+            }
         }
     }
 
-    private func sectioned(_ contacts: [Contact]) -> [(String, [Contact])] {
-        Dictionary(grouping: contacts, by: \.sectionLetter).map { ($0.key, $0.value) }.sorted {
+    /// Shared alphabetical comparator: compare `primaryKey` case-insensitively,
+    /// breaking ties on `displayName`. Returns true when `lhs` sorts before `rhs`.
+    private func nameOrdered(_ lhs: Contact, _ rhs: Contact, primaryKey: KeyPath<Contact, String>) -> Bool {
+        let primary = lhs[keyPath: primaryKey].localizedCaseInsensitiveCompare(rhs[keyPath: primaryKey])
+        if primary != .orderedSame { return primary == .orderedAscending }
+        return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+    }
+
+    /// The cached timestamp `kind` for `contact`, or nil when the contact is
+    /// unreconciled (no GuessWho UUID → no cache entry) or has never been
+    /// stamped for that kind.
+    private func timestamp(_ kind: ContactTimestampKind, for contact: Contact) -> Date? {
+        guard let gw = ContactID(contact: contact).guessWhoID,
+              let ts = contactTimestampsByID[gw] else { return nil }
+        switch kind {
+        case .modified:    return ts.lastModified
+        case .interacted:  return ts.lastInteracted
+        case .viewed:      return ts.lastViewed
+        }
+    }
+
+    /// Sections an already-sorted contact list per the CURRENT `sortOrder`:
+    /// name orders → A–Z letter sections (first-name leading letter for
+    /// `.firstLast`, last-name for `.lastFirst`); time orders → relative-time
+    /// buckets. `now` is injectable so time-bucket tests are deterministic; the
+    /// public projections call it with `Date()`.
+    private func sectioned(_ contacts: [Contact], now: Date = Date()) -> [(String, [Contact])] {
+        switch sortOrder {
+        case .firstLast:
+            return lettered(contacts, by: \.firstNameSectionLetter)
+        case .lastFirst:
+            return lettered(contacts, by: \.sectionLetter)
+        case .lastModified, .lastInteracted, .lastViewed:
+            return timeBucketed(contacts, by: sortOrder.timestampKind ?? .modified, now: now)
+        }
+    }
+
+    /// Groups by an A–Z section-letter key, sorting "#" last. Preserves the
+    /// within-section order of the input list (already sorted by `filtered`).
+    private func lettered(_ contacts: [Contact], by letter: KeyPath<Contact, String>) -> [(String, [Contact])] {
+        Dictionary(grouping: contacts, by: { $0[keyPath: letter] }).map { ($0.key, $0.value) }.sorted {
             switch ($0.0, $1.0) {
             case ("#", _): return false
             case (_, "#"): return true
@@ -1404,18 +1508,78 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    // The fixed relative-time bucket titles, in display order. User-facing
+    // (these ARE shown), so plain language — no internal vocabulary.
+    static let todayBucket = "Today"
+    static let thisWeekBucket = "This Week"
+    static let thisMonthBucket = "This Month"
+    static let earlierBucket = "Earlier"
+    static let timeBucketOrder = [todayBucket, thisWeekBucket, thisMonthBucket, earlierBucket]
+
+    /// Buckets contacts by their `kind` timestamp relative to `now`, returning
+    /// only the NON-EMPTY buckets in the fixed `timeBucketOrder`. A contact with
+    /// no timestamp (unreconciled or never stamped for this kind) buckets as
+    /// "Earlier". Within each bucket the input order (timestamp DESC from
+    /// `filtered`) is preserved.
+    private func timeBucketed(_ contacts: [Contact], by kind: ContactTimestampKind, now: Date) -> [(String, [Contact])] {
+        let calendar = Calendar.current
+        var buckets: [String: [Contact]] = [:]
+        for contact in contacts {
+            let title = Self.bucketTitle(for: timestamp(kind, for: contact), now: now, calendar: calendar)
+            buckets[title, default: []].append(contact)
+        }
+        return Self.timeBucketOrder.compactMap { title in
+            guard let rows = buckets[title], !rows.isEmpty else { return nil }
+            return (title, rows)
+        }
+    }
+
+    /// Classifies a single timestamp into one of the four relative-time buckets.
+    /// nil → "Earlier"; same calendar day as `now` → "Today"; same week-of-year
+    /// + year → "This Week"; same month + year → "This Month"; otherwise
+    /// "Earlier". (A timestamp earlier this week but on a prior day lands in
+    /// "This Week", and one earlier this month in "This Month".)
+    static func bucketTitle(for date: Date?, now: Date, calendar: Calendar) -> String {
+        guard let date else { return earlierBucket }
+        if calendar.isDate(date, inSameDayAs: now) { return todayBucket }
+        let dateParts = calendar.dateComponents([.weekOfYear, .month, .year, .yearForWeekOfYear], from: date)
+        let nowParts = calendar.dateComponents([.weekOfYear, .month, .year, .yearForWeekOfYear], from: now)
+        if dateParts.weekOfYear == nowParts.weekOfYear,
+           dateParts.yearForWeekOfYear == nowParts.yearForWeekOfYear {
+            return thisWeekBucket
+        }
+        if dateParts.month == nowParts.month, dateParts.year == nowParts.year {
+            return thisMonthBucket
+        }
+        return earlierBucket
+    }
+
     /// Sections the contacts exactly like `sectioned(_:)`, then maps each row to
     /// its `ContactID`. EVERY row is kept — `ContactID(contact:)` never fails, so
     /// a contact with no GuessWho URL still vends a `localID`-identified row and
     /// no section can become empty by dropping. Section order and the
     /// within-section sort are inherited from the `Contact` list passed in
-    /// (already sorted by `filtered(matching:where:)`).
+    /// (already sorted by `filtered(matching:where:)`). For time orders the
+    /// section titles are the relative-time bucket names, not A–Z letters — the
+    /// app hides the A–Z index when `sortOrder.isTimeOrder`.
     private func sectionedIDs(_ contacts: [Contact]) -> [(String, [ContactID])] {
         sectioned(contacts).map { letter, rows in
             (letter, rows.map { ContactID(contact: $0) })
         }
     }
 
+}
+
+extension ContactSortOrder {
+    /// The timestamp cell a time order reads, or nil for the two name orders.
+    var timestampKind: ContactTimestampKind? {
+        switch self {
+        case .firstLast, .lastFirst: return nil
+        case .lastModified:          return .modified
+        case .lastInteracted:        return .interacted
+        case .lastViewed:            return .viewed
+        }
+    }
 }
 
 private extension String {
