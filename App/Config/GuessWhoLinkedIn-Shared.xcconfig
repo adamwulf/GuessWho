@@ -1,38 +1,25 @@
 // GuessWhoLinkedIn-Shared.xcconfig
-// TARGET-level settings for the GuessWhoLinkedIn Safari Web Extension target.
+// Config-invariant TARGET-level settings for the GuessWhoLinkedIn Safari Web
+// Extension target. The per-configuration identifier settings — bundle id,
+// App Group, and entitlements file — live in GuessWhoLinkedIn-Debug.xcconfig
+// and GuessWhoLinkedIn-Release.xcconfig, each wired as that configuration's
+// baseConfigurationReference in the project.
 //
-// Previously these lived inline in the project file. Hoisting them here lets
-// the extension derive its bundle id and App Group from the same base id +
-// per-configuration suffix as the app (GUESSWHO_BASE_ID / GUESSWHO_ID_SUFFIX),
-// so a Debug build gets ".debug"-suffixed identifiers that match the Debug app
-// and never collide with a Release install.
+// (These settings previously lived inline in the project file; they were
+// hoisted here so the extension's ids are managed in xcconfig like the app's.)
 
 #include "SharedVersion.xcconfig"
 
-// Identity. Base id and suffix come from GuessWho-Shared.xcconfig (base) and
-// Project-Debug/Release.xcconfig (suffix). The extension bundle id must remain
-// prefixed by the app bundle id, so the suffix goes between the base and the
-// ".safari" leaf: e.g. com.milestonemade.guesswho.debug.safari in Debug.
-GUESSWHO_BASE_ID = com.milestonemade.guesswho
+// Identity (config-invariant part). PRODUCT_BUNDLE_IDENTIFIER is per-config and
+// lives in GuessWhoLinkedIn-Debug/Release.xcconfig — the extension bundle id
+// must stay prefixed by the app bundle id (…guesswho.safari /
+// …guesswho.debug.safari).
 PRODUCT_NAME = $(TARGET_NAME)
-PRODUCT_BUNDLE_IDENTIFIER = $(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX).safari
-
-// App Group — DIFFERENT per platform, same split as the app target. The
-// extension shares the app's App Group so it can hand off scraped data via the
-// shared container. Keep in sync with GUESSWHO_APP_GROUP in GuessWho-Shared.xcconfig.
-GUESSWHO_APP_GROUP = group.$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
-GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).$(GUESSWHO_BASE_ID)$(GUESSWHO_ID_SUFFIX)
 
 // Signing
 DEVELOPMENT_TEAM = T68Z94627S
 CODE_SIGN_STYLE = Automatic
 REGISTER_APP_GROUPS = YES
-
-// Entitlements — Debug/Release variants selected by GUESSWHO_ENTITLEMENTS_VARIANT
-// (set per-configuration in Project-Debug/Release.xcconfig), same scheme as the
-// app target. The extension entitlements carry only the App Group.
-CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn$(GUESSWHO_ENTITLEMENTS_VARIANT).entitlements
-CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst$(GUESSWHO_ENTITLEMENTS_VARIANT).entitlements
 
 // Sandbox
 ENABLE_APP_SANDBOX = YES

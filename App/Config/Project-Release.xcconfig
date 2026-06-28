@@ -3,13 +3,10 @@
 
 #include "Project-Shared.xcconfig"
 
-// No id suffix for Release: the bundle id, App Group, and iCloud container use
-// the bare base ids. See GUESSWHO_ID_SUFFIX in Project-Debug.xcconfig.
-GUESSWHO_ID_SUFFIX =
-
-// Release uses the bare entitlement files (no "-Debug" infix). See
-// GUESSWHO_ENTITLEMENTS_VARIANT in Project-Debug.xcconfig.
-GUESSWHO_ENTITLEMENTS_VARIANT =
+// Per-configuration identifiers (Release bundle id / App Group / iCloud
+// container / entitlements) live in the per-target Release xcconfigs —
+// GuessWho-Release.xcconfig and GuessWhoLinkedIn-Release.xcconfig. Nothing
+// identifier-related is set at this project level.
 
 DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
 ENABLE_NS_ASSERTIONS = NO

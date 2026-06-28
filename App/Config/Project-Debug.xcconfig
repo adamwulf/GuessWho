@@ -3,21 +3,11 @@
 
 #include "Project-Shared.xcconfig"
 
-// Identifier suffix appended to the bundle id, App Group, and iCloud container
-// for Debug builds so a debug install never collides with a release install
-// (separate sandbox data, separate App Group, separate iCloud document store).
-// Release leaves this empty (see Project-Release.xcconfig). Defined at the
-// PROJECT level so every target inherits the correct per-configuration value
-// regardless of which xcconfig its baseConfigurationReference points at; the
-// id-composing vars live in GuessWho-Shared.xcconfig / GuessWhoLinkedIn-Shared.xcconfig.
-GUESSWHO_ID_SUFFIX = .debug
-
-// Filename infix selecting the Debug entitlement files (GuessWho-Debug.entitlements
-// etc.), which bake in the ".debug"-suffixed App Group + iCloud container ids.
-// Release leaves this empty so the bare entitlement files are used. See the
-// CODE_SIGN_ENTITLEMENTS settings in GuessWho-Shared.xcconfig /
-// GuessWhoLinkedIn-Shared.xcconfig.
-GUESSWHO_ENTITLEMENTS_VARIANT = -Debug
+// Per-configuration identifiers (Debug bundle id / App Group / iCloud container
+// / entitlements) live in the per-target Debug xcconfigs — GuessWho-Debug.xcconfig
+// and GuessWhoLinkedIn-Debug.xcconfig — which are wired as those targets' Debug
+// baseConfigurationReference. Nothing identifier-related is set at this project
+// level.
 
 DEBUG_INFORMATION_FORMAT = dwarf
 ENABLE_TESTABILITY = YES

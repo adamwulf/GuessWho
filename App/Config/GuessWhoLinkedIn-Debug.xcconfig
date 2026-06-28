@@ -1,0 +1,22 @@
+// GuessWhoLinkedIn-Debug.xcconfig
+// Debug-configuration identifiers for the GuessWhoLinkedIn Safari Web Extension
+// target. Wired as the extension's Debug baseConfigurationReference. The ".debug"
+// ids match the Debug app so the app ↔ extension App Group handoff stays
+// consistent, and never collide with a Release install.
+
+#include "GuessWhoLinkedIn-Shared.xcconfig"
+
+// Bundle id — the ".debug" suffix goes BEFORE the ".safari" leaf so the
+// extension id stays prefixed by the Debug app id
+// (…guesswho.debug ⊃ …guesswho.debug.safari).
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.debug.safari
+
+// App Group — shared with the Debug app. Must match GUESSWHO_APP_GROUP in
+// GuessWho-Debug.xcconfig. DIFFERENT per platform.
+GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho.debug
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho.debug
+
+// Entitlements — App Group only (no iCloud, no Contacts). The ".debug" id is
+// baked into these files' content.
+CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn-Debug.entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst-Debug.entitlements

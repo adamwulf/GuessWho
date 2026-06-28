@@ -52,6 +52,10 @@
 		A100000000000000000000E4 /* Project-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Project-Release.xcconfig"; sourceTree = "<group>"; };
 		A100000000000000000000E5 /* GuessWho-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Shared.xcconfig"; sourceTree = "<group>"; };
 		A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Shared.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E7 /* GuessWho-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Debug.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E8 /* GuessWho-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWho-Release.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Debug.xcconfig"; sourceTree = "<group>"; };
+		A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Release.xcconfig"; sourceTree = "<group>"; };
 		B200000000000000000000C0 /* GuessWhoLinkedIn.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoLinkedIn.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -154,7 +158,11 @@
 				A100000000000000000000E3 /* Project-Debug.xcconfig */,
 				A100000000000000000000E4 /* Project-Release.xcconfig */,
 				A100000000000000000000E5 /* GuessWho-Shared.xcconfig */,
+				A100000000000000000000E7 /* GuessWho-Debug.xcconfig */,
+				A100000000000000000000E8 /* GuessWho-Release.xcconfig */,
 				A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */,
+				A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */,
+				A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -358,7 +366,7 @@
 		};
 		A100000000000000000000C21 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E5 /* GuessWho-Shared.xcconfig */;
+			baseConfigurationReference = A100000000000000000000E7 /* GuessWho-Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ENABLE_APP_SANDBOX = YES;
@@ -384,7 +392,7 @@
 		};
 		A100000000000000000000C22 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E5 /* GuessWho-Shared.xcconfig */;
+			baseConfigurationReference = A100000000000000000000E8 /* GuessWho-Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ENABLE_APP_SANDBOX = YES;
@@ -410,14 +418,14 @@
 		};
 		B200000000000000000000C21 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */;
+			baseConfigurationReference = A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */;
 			buildSettings = {
 			};
 			name = Debug;
 		};
 		B200000000000000000000C22 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */;
+			baseConfigurationReference = A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */;
 			buildSettings = {
 			};
 			name = Release;

@@ -7,9 +7,8 @@
 	<!-- Debug variant. Extension holds the App Group ONLY (no iCloud, no
 	     Contacts). Mac Catalyst uses the <TeamID>.<name> form with the ".debug"
 	     suffix to match the Debug app's Catalyst entitlement. Keep in sync with
-	     GUESSWHO_APP_GROUP[sdk=macosx*] (resolved with GUESSWHO_ID_SUFFIX=.debug)
-	     in GuessWho-Shared.xcconfig and the app's
-	     GuessWho-MacCatalyst-Debug.entitlements. -->
+	     GUESSWHO_APP_GROUP[sdk=macosx*] in GuessWhoLinkedIn-Debug.xcconfig and the
+	     app's GuessWho-MacCatalyst-Debug.entitlements. -->
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>T68Z94627S.com.milestonemade.guesswho.debug</string>
