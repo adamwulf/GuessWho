@@ -1248,6 +1248,12 @@ public final class ContactsRepository: NSObject {
     public var peopleSections: [(String, [Contact])] { sectioned(people) }
     public var organizationsSections: [(String, [Contact])] { sectioned(organizations) }
 
+    /// Test seam: the People sections computed against an INJECTED `now` so the
+    /// relative-time bucketing of a time `sortOrder` is deterministic. The
+    /// public `peopleSections` is this with `now = Date()`. Not for app use —
+    /// the bucket boundaries should always be "now" in production.
+    func peopleSections(now: Date) -> [(String, [Contact])] { sectioned(people, now: now) }
+
     /// Transitional compatibility lookup. Duplicate display names collapse to
     /// the last cached contact; new callers should use `contacts(named:)`.
     public func lookupByDisplayName() -> [String: Contact] {
