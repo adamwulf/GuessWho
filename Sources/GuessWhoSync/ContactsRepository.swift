@@ -1444,6 +1444,18 @@ public final class ContactsRepository: NSObject {
     /// tie-break for a stable order among equal timestamps.
     private func filtered(matching query: String, where predicate: (Contact) -> Bool) -> [Contact] {
         let matched = contacts.filter(predicate).filter { $0.matches(searchQuery: query) }
+        return sorted(matched)
+    }
+
+    /// Sorts an arbitrary contact set by the CURRENT `sortOrder`. Name orders
+    /// sort alphabetically (with a stable `lastNameSortKey` → `displayName`
+    /// tie-break); time orders sort by the relevant contact timestamp DESC
+    /// (most recent first), with a nil timestamp treated as `distantPast` so it
+    /// lands at the END, and the same name tie-break for a stable order among
+    /// equal timestamps. Shared by `filtered(matching:where:)` (the People /
+    /// Organizations projections) and `sectionedIDs(forMembers:)` (the
+    /// group-members list) so every person list orders identically.
+    private func sorted(_ matched: [Contact]) -> [Contact] {
         switch sortOrder {
         case .lastFirst:
             return matched.sorted { lhs, rhs in
@@ -1572,6 +1584,18 @@ public final class ContactsRepository: NSObject {
         sectioned(contacts).map { letter, rows in
             (letter, rows.map { ContactID(contact: $0) })
         }
+    }
+
+    /// Sorts and sections an ARBITRARY contact set (e.g. one group's members)
+    /// by the current `sortOrder`, returning the same `[(title, [ContactID])]`
+    /// shape `peopleSectionIDs` does — A–Z letter sections for the name orders,
+    /// relative-time buckets for the time orders. The single entry point any
+    /// person list that ISN'T the People / Organizations projection should use,
+    /// so the global sort applies everywhere identically (no duplicated
+    /// comparator). Section titles follow the same contract: the app hides the
+    /// A–Z index when `sortOrder.isTimeOrder`.
+    public func sectionedIDs(forMembers members: [Contact]) -> [(String, [ContactID])] {
+        sectionedIDs(sorted(members))
     }
 
 }
