@@ -3,7 +3,14 @@
 .swiftpm/
 DerivedData/
 .DS_Store
-Package.resolved
+# Ignore the SwiftPM package-root lockfile (this repo's root is a library
+# package — its resolved file is a build artifact, not a committed lock).
+# Do NOT use a bare `Package.resolved` here: that glob also swallows the app's
+# Xcode workspace lockfile at
+# App/GuessWho.xcodeproj/.../xcshareddata/swiftpm/Package.resolved, which MUST
+# be committed — the app build has automatic dependency resolution disabled and
+# requires that pinned file to be present and tracked.
+/Package.resolved
 xcuserdata/
 *.xcuserstate
 AGENTS.md
