@@ -261,6 +261,16 @@ struct ContactDetailView: View {
             // has no sidecar data to show (correct), and the FIRST write mints
             // via the package's resolve-or-mint primitive.
             await loadContact()
+            // Stamp lastViewed ONCE per open. This lives in `.task` (which runs
+            // a single time per view appearance) rather than inside
+            // `loadContact()`, which re-runs on every save/import/delete
+            // reload — so a card the user opens and edits is "viewed" once, not
+            // once per keystroke-driven reload. NOTE: `stampViewed` reconciles +
+            // mints by design (Adam: "always reconcile when stamping the viewed
+            // timestamp") — opening a never-touched contact will mint its
+            // GuessWho UUID. That is the intended behavior, not a leak of the
+            // sidecar boundary. Fire-and-forget; never surface a stamp error.
+            await stampViewed()
         }
         .task(id: contact?.contactID) {
             await loadHeaderPhoto()
@@ -538,6 +548,18 @@ struct ContactDetailView: View {
             // view shows post-save state immediately rather than waiting for a
             // nav-away-and-back.
             await loadContact(preferFresh: true)
+            // Record the edit on the contact's lastModified timestamp so the
+            // "Last Modified" sort reflects this save. Runs AFTER the fresh
+            // reload so `loadedContactID` carries the resolved guessWhoID.
+            //
+            // This is NOT in tension with the "no reconcile here" note above:
+            // that note is about the CONTACT-field WRITE (saveContact), which
+            // stays mint-free. The lastModified stamp is a separate, deliberate
+            // sidecar write that resolves-or-mints by design — and in practice
+            // the record is already reconciled (the view-open `stampViewed()`
+            // minted it), so this mint is a no-op on all but a pathological
+            // never-viewed-yet-saved path.
+            await stampModified()
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
         }
@@ -791,7 +813,7 @@ struct ContactDetailView: View {
             case .other(_, let rows):
                 Section {
                     ForEach(rows) { row in
-                        InfoRow(data: row)
+                        infoRow(row)
                             .centeredRowContent()
                     }
                 }
@@ -808,7 +830,7 @@ struct ContactDetailView: View {
         let isExpanded = expandedFieldGroups.contains(group)
         Section {
             ForEach(visible) { row in
-                InfoRow(data: row)
+                infoRow(row)
                     .centeredRowContent()
             }
             if isExpanded {
@@ -817,7 +839,7 @@ struct ContactDetailView: View {
                 // The group re-collapses only when the view is rebuilt (navigate
                 // away and back), since expansion is per-view-instance @State.
                 ForEach(hidden) { row in
-                    InfoRow(data: row)
+                    infoRow(row)
                         .centeredRowContent()
                 }
             }
@@ -826,6 +848,15 @@ struct ContactDetailView: View {
                 moreDisclosureFooter(for: group, hiddenCount: hidden.count)
             }
         }
+    }
+
+    /// Build an `InfoRow`, threading the lastInteracted stamp closure so a CALL,
+    /// EMAIL, or COPY on a phone/email row registers as an interaction. The
+    /// closure is fire-and-forget on the MainActor and a no-op for non-phone/
+    /// email rows (which never invoke it). One helper so every info-row call
+    /// site supplies the SAME closure — DRY.
+    private func infoRow(_ row: InfoRowData) -> InfoRow {
+        InfoRow(data: row, onInteract: { Task { await stampInteracted() } })
     }
 
     /// Named key/value sidecar fields (e.g. "LinkedIn About", "LinkedIn
@@ -1575,6 +1606,34 @@ struct ContactDetailView: View {
         }
     }
 
+    // MARK: - Timestamp stamping
+    //
+    // Three fire-and-forget stamps record when the user last viewed, modified,
+    // or interacted with a contact, feeding the global time-ordered sorts. Each
+    // routes through the repository (which resolves-or-mints the GuessWho UUID
+    // as part of the write), runs on the MainActor, and swallows errors with
+    // `try?` — a failed stamp must never block the UI or surface to the user.
+    // All three prefer `loadedContactID` (carries the resolved `guessWhoID`)
+    // and fall back to the nav `id` before the first load resolves a contact.
+
+    /// Stamp `lastViewed` for the open contact. Called once per open from the
+    /// view's `.task`. See that call site for the once-per-open rationale and
+    /// the reconcile-on-view note.
+    private func stampViewed() async {
+        try? await repository.stampViewed(loadedContactID ?? id)
+    }
+
+    /// Stamp `lastModified` after a successful inline save.
+    private func stampModified() async {
+        try? await repository.stampModified(loadedContactID ?? id)
+    }
+
+    /// Stamp `lastInteracted` when the user calls, emails, or copies a phone /
+    /// email value. (URL and date taps do NOT count as interactions.)
+    private func stampInteracted() async {
+        try? await repository.stampInteracted(loadedContactID ?? id)
+    }
+
     /// (Re)build the notes/links stores keyed on the ContactID derived from the
     /// LOADED contact — NOT the nav `id`, whose `guessWhoID` is still nil after
     /// a first-write mint: `repository.notes(for:)` / `links(for:)` read
@@ -1971,6 +2030,13 @@ private struct InfoRowData: Identifiable {
 
 private struct InfoRow: View {
     let data: InfoRowData
+    /// Called when the user CALLS, EMAILS, or COPIES this row's value — i.e. a
+    /// genuine "interaction" with the contact. Supplied by `ContactDetailView`
+    /// as `{ Task { try? await repository.stampInteracted(id) } }`; defaults to
+    /// a no-op so rows that aren't phone/email (and call sites that don't care)
+    /// stay dumb. Only the `.phone` / `.email` cases ever invoke it — `.url`
+    /// and `.date` taps are not interactions (per product).
+    var onInteract: () -> Void = {}
     // Bridge to the outer UIKit nav controller (iPhone shell) for
     // contact-link and back-reference rows — pushes a fresh
     // ContactDetailView via SceneDelegate. Defaults to a no-op closure
@@ -1982,15 +2048,22 @@ private struct InfoRow: View {
         case .text(let value, let monospaced, let valueColor):
             labeledValue(label: data.label, value: value, monospaced: monospaced, valueColor: valueColor)
         case .phone(let number):
-            tappableRow(label: data.label, value: number, url: phoneURL(number))
+            // Phone taps call AND stamp lastInteracted; the row also offers a
+            // platform-specific Copy affordance that copies the raw number.
+            TappableInfoRow(label: data.label, value: number, url: phoneURL(number),
+                            stampsInteraction: true, allowsCopy: true, onInteract: onInteract)
         case .email(let address):
-            tappableRow(label: data.label, value: address, url: URL(string: "mailto:\(address)"))
+            TappableInfoRow(label: data.label, value: address, url: URL(string: "mailto:\(address)"),
+                            stampsInteraction: true, allowsCopy: true, onInteract: onInteract)
         case .url(let urlString):
-            tappableRow(label: data.label, value: urlString, url: URL(string: urlString))
+            // URL / date taps just open their target — not interactions, no copy.
+            TappableInfoRow(label: data.label, value: urlString, url: URL(string: urlString),
+                            stampsInteraction: false, allowsCopy: false)
         case .address(let address):
             AddressRow(label: data.label, address: address)
         case .date(let components, let formatted):
-            tappableRow(label: data.label, value: formatted, url: calendarURL(for: components))
+            TappableInfoRow(label: data.label, value: formatted, url: calendarURL(for: components),
+                            stampsInteraction: false, allowsCopy: false)
         case .contactLink(let displayName, let contactID):
             contactLinkRow(label: data.label, displayName: displayName, contactID: contactID)
         case .backReference(let displayName, let descriptor, let contactID):
@@ -2049,26 +2122,6 @@ private struct InfoRow: View {
         }
     }
 
-    @ViewBuilder
-    private func tappableRow(label: String, value: String, url: URL?) -> some View {
-        if let url {
-            // Apple's Contacts colors the value in tint and the whole row
-            // is the hit target — Link wrapping the VStack does both.
-            Link(destination: url) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(label)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(value)
-                        .foregroundStyle(.tint)
-                }
-            }
-            .buttonStyle(.plain)
-        } else {
-            labeledValue(label: label, value: value, monospaced: false, valueColor: nil)
-        }
-    }
-
     private func phoneURL(_ raw: String) -> URL? {
         // tel: requires digits only (plus '+'); strip everything else.
         let allowed = Set("+0123456789")
@@ -2092,6 +2145,142 @@ private struct InfoRow: View {
             return URL(string: "calshow:")
         }
         return URL(string: "calshow:\(Int(date.timeIntervalSinceReferenceDate))")
+    }
+}
+
+/// A tappable info value (phone / email / url / date). The whole row is the hit
+/// target and the value reads in tint, matching Apple's Contacts. Two behaviors
+/// layer on top, gated by the caller:
+///
+/// - `stampsInteraction` (phone / email): tapping the row STAMPS lastInteracted
+///   before opening the URL, so a call/email registers as an interaction. URL /
+///   date rows leave this off — opening a website or a calendar date isn't an
+///   interaction with the person (per product).
+/// - `allowsCopy` (phone / email): adds a "Copy" affordance that copies the RAW
+///   value (the number / address, never the label) and also stamps interacted.
+///   The affordance is platform-specific:
+///     • Mac Catalyst — a trailing Copy button revealed ON HOVER (Apple's Mac
+///       Contacts shows row actions on hover).
+///     • iOS / iPadOS — a LEADING swipe action (right-swipe) labeled "Copy",
+///       which is the native list idiom. The rows live in the detail `List`, so
+///       `.swipeActions` is valid here.
+///
+/// Stamp + copy both run on the MainActor via the injected `onInteract` closure
+/// (`ContactDetailView` supplies the fire-and-forget stamp); copying is a pure
+/// `UIPasteboard` write that never blocks.
+private struct TappableInfoRow: View {
+    let label: String
+    let value: String
+    let url: URL?
+    let stampsInteraction: Bool
+    let allowsCopy: Bool
+    var onInteract: () -> Void = {}
+
+    @Environment(\.openURL) private var openURL
+    // Drives the Catalyst hover-reveal of the trailing Copy button. Unused on
+    // iOS (the swipe action handles copy there) but harmless — `.onHover` only
+    // fires where a pointer exists.
+    @State private var isHovering = false
+
+    var body: some View {
+        if url != nil {
+            tappableContent
+                .copyAffordances(value: value, allowsCopy: allowsCopy, onCopy: copy)
+        } else {
+            // No URL to open: fall back to a plain, selectable label/value with
+            // no tap, stamp, or copy — exactly the old non-tappable behavior.
+            labeledValue
+        }
+    }
+
+    /// The tinted, whole-row-tappable content. On phone/email it routes the tap
+    /// through `onInteract` (stamp) then `openURL`; otherwise it just opens the
+    /// URL. A `Button` (not `Link`) is used so we can run the stamp before the
+    /// open while keeping the identical tinted-value look.
+    @ViewBuilder
+    private var tappableContent: some View {
+        Button {
+            if stampsInteraction { onInteract() }
+            if let url { openURL(url) }
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .foregroundStyle(.tint)
+                }
+                #if targetEnvironment(macCatalyst)
+                if allowsCopy {
+                    Spacer(minLength: 8)
+                    // Trailing Copy button, revealed on hover. `opacity` (not a
+                    // conditional insert) keeps the row height stable as it
+                    // fades in/out. It lives INSIDE the outer Button's label,
+                    // but as its own `.borderless` Button it claims a separate
+                    // hit region: a tap on the Copy glyph copies + stamps and
+                    // does NOT propagate to the outer row-open Button.
+                    Button(action: copy) {
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.tint)
+                    }
+                    .buttonStyle(.borderless)
+                    .opacity(isHovering ? 1 : 0)
+                    .accessibilityLabel("Copy")
+                }
+                #endif
+            }
+        }
+        .buttonStyle(.plain)
+        #if targetEnvironment(macCatalyst)
+        .onHover { hovering in isHovering = hovering }
+        #endif
+    }
+
+    @ViewBuilder
+    private var labeledValue: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.body)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// Copy the RAW value to the system pasteboard and stamp the interaction.
+    private func copy() {
+        UIPasteboard.general.string = value
+        onInteract()
+    }
+}
+
+private extension View {
+    /// Attach the iOS leading-swipe "Copy" action. A no-op on Catalyst (which
+    /// uses the hover button inside the row) and when the row doesn't allow
+    /// copy. Factored into a modifier so `TappableInfoRow.body` reads cleanly
+    /// and the `#if` platform fork lives in one place.
+    @ViewBuilder
+    func copyAffordances(value: String, allowsCopy: Bool, onCopy: @escaping () -> Void) -> some View {
+        #if targetEnvironment(macCatalyst)
+        // Catalyst copy is the in-row hover button (see TappableInfoRow); no
+        // swipe action here.
+        self
+        #else
+        if allowsCopy {
+            self.swipeActions(edge: .leading, allowsFullSwipe: false) {
+                Button {
+                    onCopy()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .tint(.blue)
+            }
+        } else {
+            self
+        }
+        #endif
     }
 }
 

@@ -76,6 +76,7 @@ final class ContactsListViewController: UIViewController {
 
         configureTableView()
         configureSearch()
+        configureSortMenu()
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
@@ -121,6 +122,23 @@ final class ContactsListViewController: UIViewController {
         searchController.searchBar.placeholder = "Search people"
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+    }
+
+    /// Install the global sort pull-down as the nav bar's right item. The menu
+    /// is rebuilt from `repository.sortOrder` on every call (see
+    /// `makeSortBarButtonItem` in `SortOrderSetting`), so installing here covers
+    /// the initial checkmark; `refreshSortMenu()` re-installs it in the reload
+    /// observer so a change made from another list moves the checkmark here too.
+    private func configureSortMenu() {
+        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+    }
+
+    /// Rebuild the sort button's menu so its checkmark tracks the live global
+    /// order. Called from the reload observer because the sort change posts
+    /// `.contactsRepositoryDidReload` and the menu is otherwise cached at the
+    /// order it was built with.
+    private func refreshSortMenu() {
+        navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
     }
 
     private func configureEmptyState() {
@@ -187,6 +205,10 @@ final class ContactsListViewController: UIViewController {
             // explicitly so the diffable apply runs in the right
             // isolation context.
             MainActor.assumeIsolated {
+                // Move the sort button's checkmark first: a global sort change
+                // posts this same notification, so the menu must re-read the
+                // live order even though only the snapshot strictly "changed".
+                self?.refreshSortMenu()
                 self?.applySnapshot(animated: true)
             }
         }
@@ -195,6 +217,12 @@ final class ContactsListViewController: UIViewController {
     private func applySnapshot(animated: Bool) {
         let sections = repository.peopleSectionIDs
         sectionLetters = sections.map { $0.0 }
+        // Time orders section into relative-time buckets ("Today", "This
+        // Week", …), where an A–Z scrubber is meaningless — hide it. Name
+        // orders keep the A–Z index. The data source reads this flag from
+        // `sectionIndexTitles(for:)`; set it before apply so the index appears/
+        // disappears in the same pass as the new sections.
+        dataSource.showsSectionIndex = !repository.sortOrder.isTimeOrder
 
         var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
@@ -313,6 +341,13 @@ extension ContactsListViewController: ScrollsToTop {
 /// is the documented way to add A–Z section headers + the right-side
 /// index scrubber.
 private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
+    /// Whether the right-side A–Z scrubber is shown. The VC sets this to
+    /// `!repository.sortOrder.isTimeOrder` before each apply: for NAME orders
+    /// the section identifiers are A–Z letters and the index is a useful
+    /// scrubber; for TIME orders they are bucket names ("Today", "This Week",
+    /// …) where an alphabetical index is meaningless, so it is hidden.
+    var showsSectionIndex = true
+
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         // The snapshot's section identifier IS the letter, so the
         // header text is just the section identifier itself.
@@ -320,6 +355,9 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     }
 
     override func sectionIndexTitles(for tableView: UITableView) -> [String]? {
+        // Suppress the scrubber entirely for time orders — the bucket-name
+        // section identifiers don't form an alphabetical index.
+        guard showsSectionIndex else { return nil }
         let titles = snapshot().sectionIdentifiers
         return titles.isEmpty ? nil : titles
     }

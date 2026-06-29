@@ -61,6 +61,7 @@ final class OrganizationsListViewController: UIViewController {
 
         configureTableView()
         configureSearch()
+        configureSortMenu()
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
@@ -100,6 +101,21 @@ final class OrganizationsListViewController: UIViewController {
         searchController.searchBar.placeholder = "Search organizations"
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+    }
+
+    /// Install the global sort pull-down as the nav bar's right item. See
+    /// `ContactsListViewController.configureSortMenu` — identical wiring; the
+    /// menu is shared via `makeSortBarButtonItem` so all three person lists
+    /// present the same orders + checkmark rule.
+    private func configureSortMenu() {
+        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+    }
+
+    /// Rebuild the sort button's menu so its checkmark tracks the live global
+    /// order. Called from the reload observer (a global sort change posts
+    /// `.contactsRepositoryDidReload`).
+    private func refreshSortMenu() {
+        navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
     }
 
     private func configureEmptyState() {
@@ -148,6 +164,10 @@ final class OrganizationsListViewController: UIViewController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                // Move the sort button's checkmark first (see
+                // ContactsListViewController) — the global sort change posts
+                // this same notification.
+                self?.refreshSortMenu()
                 self?.applySnapshot(animated: true)
             }
         }
@@ -156,6 +176,10 @@ final class OrganizationsListViewController: UIViewController {
     private func applySnapshot(animated: Bool) {
         let sections = repository.organizationsSectionIDs
         sectionLetters = sections.map { $0.0 }
+        // Hide the A–Z scrubber for time orders, whose section identifiers are
+        // relative-time bucket names rather than index letters (see
+        // ContactsListViewController.applySnapshot).
+        dataSource.showsSectionIndex = !repository.sortOrder.isTimeOrder
 
         var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
@@ -262,12 +286,18 @@ extension OrganizationsListViewController: ScrollsToTop {
 /// and the index scrubber. Same rationale as
 /// `ContactsListViewController.SectionedDataSource`.
 private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
+    /// Whether the right-side A–Z scrubber is shown. The VC sets this to
+    /// `!repository.sortOrder.isTimeOrder` before each apply — see
+    /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
+    var showsSectionIndex = true
+
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         let ids = snapshot().sectionIdentifiers
         return ids.indices.contains(section) ? ids[section] : nil
     }
 
     override func sectionIndexTitles(for tableView: UITableView) -> [String]? {
+        guard showsSectionIndex else { return nil }
         let titles = snapshot().sectionIdentifiers
         return titles.isEmpty ? nil : titles
     }

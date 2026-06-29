@@ -74,6 +74,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             "hasURL": launchOptions?[.url] != nil
         ])
 
+        // Restore the persisted global contact-list sort order BEFORE the
+        // first list renders, so a relaunch shows the order the user last
+        // chose. Setting `repository.sortOrder` only posts the reload when the
+        // value actually changes, so seeding the default-on-default case is
+        // silent. This is the launch half of the single source of truth in
+        // `SortOrderSetting` — the picker owns the runtime half.
+        SortOrderSetting.restore(into: contactsRepository)
+
         // Sidecar-only migration runs BEFORE any permission prompt so it
         // executes even when Contacts/Events access is denied. Moved out
         // of the old SwiftUI RootView.task to keep the same "migrate
