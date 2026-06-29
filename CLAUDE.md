@@ -78,6 +78,32 @@ products (easier dependency analysis).
     -derivedDataPath .build/DerivedData build
   ```
 
+### `Package.resolved` MUST be committed (app lockfile)
+
+The Xcode workspace lockfile at
+`App/GuessWho.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+**must always be committed.** It is the app's dependency lockfile, and the app
+build has automatic dependency resolution disabled — so a missing, stale, or
+untracked `Package.resolved` breaks the build with:
+
+> resolved file is required when automatic dependency resolution is disabled
+> and should be placed at … `Package.resolved`
+
+After adding, removing, or repinning any package dependency in `Package.swift`
+or the Xcode project, re-resolve and commit the updated lockfile:
+
+```sh
+xcodebuild -project App/GuessWho.xcodeproj -scheme GuessWho \
+  -resolvePackageDependencies -derivedDataPath .build/DerivedData
+git add App/GuessWho.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+```
+
+`.gitignore` ignores only the package-root `/Package.resolved` (the root is a
+library package whose resolved file is a build artifact). Never broaden that to
+a bare `Package.resolved` glob — it would also swallow the app workspace
+lockfile above, which must stay tracked. Don't hand-edit the resolved file;
+change `Package.swift` / the project and re-resolve.
+
 ### Sync package (`swift`)
 
 The `GuessWhoSync` package (storage + sync engine, no app shell) builds
