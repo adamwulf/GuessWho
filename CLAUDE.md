@@ -78,31 +78,39 @@ products (easier dependency analysis).
     -derivedDataPath .build/DerivedData build
   ```
 
-### `Package.resolved` MUST be committed (app lockfile)
+### `Package.resolved` is ALWAYS committed, NEVER gitignored
 
-The Xcode workspace lockfile at
-`App/GuessWho.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
-**must always be committed.** It is the app's dependency lockfile, and the app
-build has automatic dependency resolution disabled — so a missing, stale, or
-untracked `Package.resolved` breaks the build with:
+**Both** `Package.resolved` lockfiles are always committed and are never
+gitignored, so the exact built dependency set is recorded at every commit hash:
+
+1. the **package-root** lockfile next to `Package.swift`
+   (`./Package.resolved`), regenerated with `swift package resolve`; and
+2. the **app workspace** lockfile at
+   `App/GuessWho.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+
+There is **no** `Package.resolved` ignore rule anywhere in `.gitignore` — not
+even a root-only `/Package.resolved`. We always commit both files so that we
+know exactly what was built at each commit hash.
+
+The app workspace lockfile is also load-bearing for the build: the app build
+has automatic dependency resolution disabled, so a missing, stale, or untracked
+`Package.resolved` breaks the build with:
 
 > resolved file is required when automatic dependency resolution is disabled
 > and should be placed at … `Package.resolved`
 
 After adding, removing, or repinning any package dependency in `Package.swift`
-or the Xcode project, re-resolve and commit the updated lockfile:
+or the Xcode project, re-resolve and commit **both** updated lockfiles. Don't
+hand-edit a resolved file; change `Package.swift` / the project and re-resolve:
 
 ```sh
+swift package resolve
+git add Package.resolved
+
 xcodebuild -project App/GuessWho.xcodeproj -scheme GuessWho \
   -resolvePackageDependencies -derivedDataPath .build/DerivedData
 git add App/GuessWho.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 ```
-
-`.gitignore` ignores only the package-root `/Package.resolved` (the root is a
-library package whose resolved file is a build artifact). Never broaden that to
-a bare `Package.resolved` glob — it would also swallow the app workspace
-lockfile above, which must stay tracked. Don't hand-edit the resolved file;
-change `Package.swift` / the project and re-resolve.
 
 ### Sync package (`swift`)
 
