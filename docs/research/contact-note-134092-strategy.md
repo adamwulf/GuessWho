@@ -244,6 +244,17 @@ macOS/Catalyst-only**; this is an inference from the platform model + the field
 report. Treat "Catalyst-only" as **strongly indicated but not yet confirmed**
 until step A rules out the confound.
 
+One scoping nuance worth stating precisely: the notes gate that IS documented is
+an **entitlement**-level sub-gate (`com.apple.developer.contacts.notes`),
+documented for iOS+iPadOS+Catalyst+macOS equally, whose *documented* read-failure
+is `unauthorizedKeys` — **not** 134092. Whether macOS *additionally* has a
+**TCC-service-level** notes sub-gate that iOS lacks is **UNKNOWN** (the best public
+TCC reference, HackTricks, is now paywalled; Stack Overflow was unreachable from
+the research crawler). So do not assert a *TCC-service*-level mechanism; the
+defensible claim is the broader one — Catalyst runs the stricter macOS App-Sandbox
++ code-signing enforcement, and the 134092 save-fault is empirically a macOS-path
+behavior.
+
 ### Confound to eliminate FIRST
 
 ⚠️ **Before concluding a true platform difference, rule out the boring
