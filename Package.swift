@@ -11,13 +11,16 @@ let package = Package(
         .library(name: "GuessWhoSync", targets: ["GuessWhoSync"]),
         .library(name: "GuessWhoSyncTesting", targets: ["GuessWhoSyncTesting"]),
         // logfmt file logging shared by the GuessWho app + its Safari Web
-        // Extension. Kept lean (swift-log + Logfmt only) — the extension links
-        // it and appex memory budgets are tight.
+        // Extension. A thin facade (GuessWhoLog) over FellerBuncher's swift-log
+        // bootstrap — the extension links it and appex memory budgets are tight,
+        // so FellerBuncher's lean footprint matters here.
         .library(name: "GuessWhoLogging", targets: ["GuessWhoLogging"]),
     ],
     dependencies: [
-        // swift-log: the `Logger` / `LogHandler` API our custom logfmt handler
-        // plugs into. Pinned to the 1.14.x line.
+        // swift-log: the `Logger` API every call site uses; FellerBuncher
+        // installs the backend it routes to. GuessWhoSync depends on this
+        // directly (not GuessWhoLogging) so a plain `Logger` there still reaches
+        // the file. Pinned to the 1.14.x line.
         .package(url: "https://github.com/apple/swift-log.git", .upToNextMinor(from: "1.14.0")),
         // FellerBuncher: owns the swift-log bootstrap + destination fan-out
         // (rotating, self-pruning logfmt file + console echo + in-memory ring
