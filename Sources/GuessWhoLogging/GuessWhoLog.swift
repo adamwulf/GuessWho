@@ -8,12 +8,17 @@ import FellerBuncher
 ///
 /// FellerBuncher owns the bootstrap and the destination fan-out; there is no
 /// custom handler or file writer here anymore. Every `Logger(label:)` in the
-/// app and packages routes to the same `<AppGroup>/Logs/<process>.log` file.
+/// app and packages routes to the same per-process file under
+/// `<AppGroup>/Logs/`.
+///
+/// Files are date-stamped and rotate daily: the active file is
+/// `<AppGroup>/Logs/<process>-yyyy-MM-dd.log` (date in UTC) and rolls at the day
+/// boundary, with FellerBuncher pruning files older than its 7-day retention.
 ///
 /// Both the GuessWho app and its Safari Web Extension call `bootstrap(...)` with
-/// their own `processName` so each process writes its own file
-/// (`<AppGroup>/Logs/app.log`, `<AppGroup>/Logs/extension.log`) — no
-/// cross-process file locking.
+/// their own `processName` so each process writes its own daily file
+/// (`<AppGroup>/Logs/app-yyyy-MM-dd.log`,
+/// `<AppGroup>/Logs/extension-yyyy-MM-dd.log`) — no cross-process file locking.
 public enum GuessWhoLog {
 
     /// swift-log channel for the one-shot bootstrap-failure breadcrumb. Routed
@@ -61,11 +66,18 @@ public enum GuessWhoLog {
         }
 
         do {
-            // Use FellerBuncher's defaults (size-based rotation, keep 5, 7-day
-            // retention, OSLog console echo, default logfmt format). Simple by
-            // design — the only things we pass are the per-process file name and
-            // its directory.
-            _ = try FellerBuncher.bootstrap(processName: processName, logDir: logsDir)
+            // Date-based rotation using FellerBuncher's defaults: `.dateStamped()`
+            // takes the default `.day` granularity and `.gmt` zone, so the active
+            // file is `<process>-yyyy-MM-dd.log` (UTC date) and rolls at the day
+            // boundary — one file per day, with file names stable regardless of
+            // the device's local time zone or DST. Everything else is also
+            // FellerBuncher's defaults (7-day age-based retention, OSLog console
+            // echo, default logfmt format).
+            _ = try FellerBuncher.bootstrap(
+                processName: processName,
+                logDir: logsDir,
+                rotationPolicy: .dateStamped()
+            )
         } catch {
             // File destination couldn't be created (e.g. the dir became
             // unwritable between resolution and open). Logging stays alive via

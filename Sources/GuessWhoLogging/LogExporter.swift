@@ -1,8 +1,9 @@
 import Foundation
 
-/// Zips the shared `Logs/` directory (both `app*.log` and `extension*.log`) into
-/// a single file for the debug-mode "Export Logs" action — so one export
-/// captures both processes, matching "one place".
+/// Zips the shared `Logs/` directory (every dated `app-*.log` and
+/// `extension-*.log`) into a single file for the debug-mode "Export Logs"
+/// action — so one export captures both processes across all retained days,
+/// matching "one place".
 ///
 /// Uses Foundation-only zipping via `NSFileCoordinator` with the `.forUploading`
 /// reading intent, which produces a **zip** of the directory at a temporary URL
