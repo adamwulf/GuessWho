@@ -10,10 +10,24 @@ sub-agent `agent-28aab3ee`).
 
 ## TL;DR — ranked recommendation
 
-1. **Graceful-degrade is the recommended strategy (high confidence).** No
-   source — Apple docs, Apple Developer Forums (threads 723695, 718743, 757133,
-   125408), Stack Overflow, or third-party plugin changelogs — documents *any*
-   client-side way to `update()` a note-bearing contact without the
+0. **NEW & possibly decisive — the bug appears to be Mac Catalyst-only (iOS
+   works).** Adam reports the same unentitled binary saving the same contact
+   *succeeds on iOS, fails with 134092 only on Catalyst.* macOS/Catalyst runs a
+   stricter sandbox+TCC+code-signing privacy stack than iOS (incl. the macOS-only
+   `com.apple.security.personal-information.addressbook` sandbox grant), which
+   makes a platform difference mechanistically plausible — though Apple's docs say
+   the notes entitlement applies to *both* iOS 13+ and macOS 13+, so this is an
+   enforcement divergence, not a documented one. **First confirm it isn't a
+   confound** (the iOS contact may simply lack the synced note — test step A). If
+   confirmed, the recommendation below becomes **platform-scoped: degrade only on
+   Catalyst, leave iOS untouched.** Full treatment:
+   [Platform difference: iOS vs Mac Catalyst](#platform-difference-ios-vs-mac-catalyst-this-likely-reframes-the-whole-fix).
+
+1. **Graceful-degrade is the recommended strategy (high confidence) — scoped to
+   the affected platform (Catalyst) if #0 confirms.** No source — Apple docs,
+   Apple Developer Forums (threads 723695, 718743, 757133, 125408), Stack
+   Overflow, or third-party plugin changelogs — documents *any* client-side way to
+   `update()` a note-bearing contact without the
    `com.apple.developer.contacts.notes` entitlement and without 134092. The
    failure is in the **Contacts daemon's** `willSave` re-index of the *stored*
    record, which the client's `keysToFetch` / `CNMutableContact` shape cannot
@@ -177,6 +191,112 @@ if both signatures are identical except for `get-task-allow`, the cause is lever
 
 ---
 
+## Platform difference: iOS vs Mac Catalyst (this likely reframes the whole fix)
+
+**New field data from Adam:** the *same unentitled binary* saving the *same
+contact* **succeeds on iOS but fails with 134092 only on Mac Catalyst.** If that
+holds up (see the confound in [step A](#confound-to-eliminate-first) below), it is
+the single most important fact in this document, because it means the bug is
+**Catalyst/macOS-only** and the fix should be **platform-scoped**, not global.
+
+### Why a platform difference is mechanistically plausible (high confidence on the model; medium on it being THE cause)
+
+The iOS and macOS Contacts *privacy enforcement models are genuinely different*,
+and a Catalyst app runs under the **macOS** model:
+
+- **macOS has an App-Sandbox address-book entitlement that iOS does not.**
+  `com.apple.security.personal-information.addressbook` is documented **macOS-only**
+  ("Available on: macOS 10.7+") and grants App-Sandbox *"read-write access to
+  contacts in the user's address book."*[^addressbook-ent] There is **no iOS
+  counterpart** — iOS gates Contacts purely through the TCC prompt +
+  `NSContactsUsageDescription`.[^accessing-store] GuessWho's Catalyst build carries
+  this macOS sandbox entitlement (per project config); the iOS build cannot and
+  does not. So on Catalyst the Contacts write passes through a **macOS sandbox +
+  macOS TCC + macOS code-signing** enforcement stack that simply isn't present on
+  iOS.
+- **The daemon-side note-fault is observed on the Mac console, and the iOS path is
+  faster.** In thread 723695 the `[api] Attempt to read notes by an unentitled
+  app` line is reported on *"the console in the Mac,"* and a reporter notes the iOS
+  save (~0.005s) is far faster than macOS (~0.35s)[^thread723695-platform] —
+  consistent with macOS doing extra indexing/validation work (the `willSave`
+  re-index that faults) that iOS skips or enforces differently.
+- **Catalyst inherits the stricter macOS enforcement (analogous corroboration).**
+  The "works on iOS, fails on Catalyst" pattern is a known class of Catalyst issue:
+  a community answer on an analogous *Keychain* entitlement notes that *"Mac
+  Catalyst requires additional considerations for entitlements and signing because
+  it's essentially an iOS app running in a macOS environment with stricter sandbox
+  (App Sandbox) enforcement."*[^catalyst-macos-model] This is not Apple-official and
+  not about Contacts notes specifically, so treat it as *pattern* corroboration —
+  it explains *why* the same binary diverges, not proof that Contacts notes is one
+  such case.
+
+### What the documentation says (the honest counterweight)
+
+**Apple's docs do NOT describe the notes entitlement as macOS-only.** Both the
+`CNContact.note` doc and the "Accessing the contact store" article state the
+entitlement is required *"in iOS 13, macOS 13, or later"*[^notedoc][^accessing-store-notes]
+— i.e. *by the written contract* the gate applies to **both** platforms equally.
+So the iOS-works/Catalyst-fails behavior is most likely an **enforcement /
+implementation divergence at the `contactsd` re-index layer** (macOS faults the
+stored note where iOS does not), **not** a documented API difference. I found **no
+Apple doc or forum post that explicitly states the 134092 save-fault is
+macOS/Catalyst-only**; this is an inference from the platform model + the field
+report. Treat "Catalyst-only" as **strongly indicated but not yet confirmed**
+until step A rules out the confound.
+
+### Confound to eliminate FIRST
+
+⚠️ **Before concluding a true platform difference, rule out the boring
+explanation:** the iOS save may "work" simply because **that device's copy of the
+contact has no non-empty note** at save time — e.g. iCloud/CardDAV sync lag, or the
+note physically lives on a backing account card that isn't present/linked on the
+iOS device. The bug is triggered by the *presence of a stored note on the record
+the daemon resolves*, so a note-free copy on iOS would succeed for a reason that
+has nothing to do with the platform. **Adam must confirm the iOS contact actually
+carries the same non-empty note** (open it in Contacts.app on the iOS device and
+verify the note text is present) before we treat this as a platform difference.
+This is **test step A** below and gates the whole platform conclusion.
+
+### Fix implications if it IS Catalyst-only (this changes the ranked recommendation)
+
+If step A confirms Catalyst-only:
+
+1. **Scope the graceful-degrade to Catalyst.** The detection predicate and the
+   soft-fail path should be gated `#if targetEnvironment(macCatalyst)` (or a
+   runtime `ProcessInfo.isMacCatalystApp` / `isiOSAppOnMac` check). The iOS build
+   keeps the **current unmodified unified-contact update path** — no degradation,
+   no behavior change — because it doesn't hit the fault. This is strictly better
+   than a global degrade: iOS users get full Contacts writes; only Catalyst
+   soft-fails the note-bearing case.
+2. **The "graceful-degrade can't write Apple fields" cost shrinks dramatically.**
+   The functional casualty (a phone/name edit not reaching Contacts.app for a
+   note-bearing contact) would be **Catalyst-only**, and iOS — likely the primary
+   usage surface — is unaffected. That makes graceful-degrade much more palatable
+   as a bridge, and lowers the urgency of the sidecar-mirrors-Apple-fields design
+   question for iOS.
+3. **The macOS sandbox addressbook entitlement is almost certainly NOT the lever
+   to remove.** Dropping `com.apple.security.personal-information.addressbook`
+   would remove Contacts read-write access entirely on Catalyst (it's the sandbox
+   grant for *all* contact access, not a notes sub-gate) — it does not gate the
+   note specifically and removing it makes things worse, not better.[^addressbook-ent]
+   Do not touch it as a "fix."
+4. **Adopt-on-first-write (the `guesswho://` URL mint) is also a contact write**,
+   so on Catalyst it will fault for note-bearing contacts too — the platform-scoped
+   degrade path must cover the mint, not just user-field edits.
+
+### Updated ranked recommendation (superseding the TL;DR if step A confirms Catalyst-only)
+
+- **#1 becomes: platform-scoped graceful-degrade — degrade ONLY on Mac Catalyst**,
+  with the precise predicate; leave iOS on the current full-write path. Everything
+  in [Recommended strategy](#recommended-strategy-graceful-degrade-with-a-precise-error-predicate)
+  still applies, now wrapped in a Catalyst gate.
+- If step A shows the iOS contact had **no** note (confound), then there is **no
+  proven platform difference**, the original global recommendation stands, and we
+  simply haven't yet seen iOS fail because we haven't tested iOS with a genuinely
+  note-bearing synced contact.
+
+---
+
 ## Per-candidate verdicts
 
 ### Candidate 1 — Build a FRESH `CNMutableContact` (only `identifier` + the changed field) and `update()` it
@@ -242,9 +362,9 @@ if both signatures are identical except for `get-task-allow`, the cause is lever
   app, so it's also lossy for that field — but the dispositive point is it isn't a
   write path.) **No help.**
 
-### Candidate 5 — Is it fixed in a newer OS?
+### Candidate 5 — Is it fixed in a newer OS? (and note the platform axis)
 
-**Verdict: NO evidence of a fix on the SAVE path in any shipping OS (medium-high confidence). Reproductions span iOS 13 → macOS 14.5 (Jun 2024); nothing reports it cured.**
+**Verdict: NO evidence of a fix on the SAVE path in any shipping OS (medium-high confidence). Reproductions span iOS 13 → macOS 14.5 (Jun 2024); nothing reports it cured. The bigger story here is the *platform* axis, not the version axis — see [Platform difference: iOS vs Mac Catalyst](#platform-difference-ios-vs-mac-catalyst-this-likely-reframes-the-whole-fix).**
 
 - Reports run from the entitlement's introduction (iOS 13 / macOS 13, Fall 2022)
   through the most recent dated post in thread 723695 (`await`, Jun 2024,
@@ -417,7 +537,19 @@ log.[^adapter-logfailure]
 "test note"). Confirm the GuessWho build in use has **no** `com.apple.developer.contacts.notes`
 entitlement (the distribution profile).
 
-**Step 0 — Capture the real thrown error (do this first).**
+**Step A — Confirm the platform difference is real, not a confound (do this FIRST,
+it gates the recommendation).** On the **iOS** device where the save "works," open
+the *same* contact in Contacts.app and **verify the note text is actually present**
+(not blank, not missing due to sync lag or living on an unsynced account). Then,
+on a distribution-signed build, perform the *identical* note-bearing field edit on
+**both** iOS and Mac Catalyst and record pass/fail for each. Outcomes:
+- iOS contact **has** the note AND iOS save succeeds while Catalyst fails →
+  **true platform difference**; proceed with platform-scoped degrade.
+- iOS contact has **no/blank** note → confound; the "iOS works" result is
+  meaningless and there is no proven platform difference. Re-test iOS with a
+  genuinely note-bearing, synced contact.
+
+**Step 0 — Capture the real thrown error (do this first, on Catalyst).**
 Edit a normal field (e.g. add a phone number) on the note-bearing contact through
 the current code path. Confirm it throws 134092, then **read the adapter log** and
 record: is `NSUnderlyingException` present in `userInfo`? Does any
@@ -498,6 +630,10 @@ mechanism is in play — do it alongside step 0.
 | Graceful-degrade preserves *Apple-field* edits | **Low — NOT a current capability** | Sidecar doesn't mirror Apple fields; that's a separate design change. |
 | Debug works / TestFlight fails = `get-task-allow`/dev-signature relaxes the note gate (lever 1) | **Medium — INFERENCE, not documented** | No Apple sentence says the gate is skipped for dev signatures. Best-supported inference from get-task-allow/TCC sources + the reproduced asymmetry. Test step 7 settles which lever. |
 | The Debug/distribution difference is *which profile signed it + its capabilities* | High | TN2415: entitlements transferred from the signing profile and must match the signature.[^tn2415] |
+| Bug is Mac Catalyst-only; iOS unaffected | **Medium — field report, NOT yet confound-cleared** | Adam's same-binary/same-contact observation; mechanistically plausible (macOS sandbox+TCC stack). Gated on test step A (confirm iOS contact actually has the note). |
+| iOS vs macOS Contacts privacy models genuinely differ | High | macOS-only sandbox addressbook entitlement[^addressbook-ent]; iOS is TCC-prompt-only.[^accessing-store] |
+| Notes entitlement is macOS-only by documentation | **False** | Docs say iOS 13+ AND macOS 13+; any platform split is enforcement divergence, not documented.[^accessing-store-notes][^notedoc] |
+| Removing the macOS addressbook entitlement would "fix" it | **False — would break Contacts access** | It's the sandbox grant for ALL contact access, not a notes sub-gate.[^addressbook-ent] |
 
 ---
 
@@ -509,6 +645,9 @@ mechanism is in play — do it alongside step 0.
 [^mutablecontact]: [Apple — CNMutableContact: "You may modify only those properties whose values you fetched from the contacts database… you can modify only those properties for which a value exists."](https://developer.apple.com/documentation/contacts/cnmutablecontact)
 [^notedoc]: [Apple — CNContact.note: "To fetch the note property in iOS 13 or later or macOS 13 or later, add the com.apple.developer.contacts.notes entitlement… you can't publicly distribute your app until you have permission to use it."](https://developer.apple.com/documentation/contacts/cncontact/note)
 [^entitlementdoc]: [Apple — com.apple.developer.contacts.notes: "When your app tries to fetch notes without the entitlement, it receives an unauthorizedKeys error. Your app only needs the entitlement if it reads or writes notes."](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.contacts.notes)
+[^addressbook-ent]: [Apple — Address book entitlement (com.apple.security.personal-information.addressbook): macOS-only ("Available on: macOS 10.7+"); grants App-Sandbox "read-write access to contacts in the user's address book." No iOS equivalent.](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.personal-information.addressbook)
+[^accessing-store]: [Apple — Accessing the contact store: cross-platform Contacts access is gated by the TCC prompt + NSContactsUsageDescription (no iOS sandbox entitlement)](https://developer.apple.com/documentation/contacts/accessing-the-contact-store)
+[^accessing-store-notes]: [Apple — Accessing the contact store, "Add entitlement to view or update notes": entitlement required "in iOS 13, macOS 13, or later" — i.e. BOTH platforms per the written contract](https://developer.apple.com/documentation/contacts/accessing-the-contact-store)
 [^vcard]: [Apple — CNContactVCardSerialization: only data(with:) (to vCard) and contacts(with:) (from vCard); no store-write method](https://developer.apple.com/documentation/contacts/cncontactvcardserialization)
 [^refetch]: [Apple — CNSaveRequest.shouldRefetchContacts: default true; "refetches added and updated contacts… Set to false to suppress the refetch behavior and reduce the save request's execution time." (iOS 15.4+/macOS 12.3+)](https://developer.apple.com/documentation/contacts/cnsaverequest/shouldrefetchcontacts)
 [^coredataerrors]: [CoreDataErrors.h (iPhoneOS9.3 SDK) — 134092 has no named constant; brackets: NSPersistentStoreUnsupportedRequestTypeError=134091, NSPersistentStoreIncompatibleVersionHashError=134100](https://github.com/theos/sdks/blob/master/iPhoneOS9.3.sdk/System/Library/Frameworks/CoreData.framework/Headers/CoreDataErrors.h)
@@ -522,6 +661,8 @@ mechanism is in play — do it alongside step 0.
 [^thread757133]: [Apple Developer Forums thread 757133 — "Contact Note Entitlement Disappearing": entitlement requires Apple approval per Team ID and a fresh provisioning profile](https://developer.apple.com/forums/thread/757133)
 [^thread757133-debug]: [Apple Developer Forums thread 757133 — vizcosity, Jun '24: the Contact Notes capability "appears for a few seconds, then disappears when I move to a different tab and return. This does not happen for the 'Debug' configuration."](https://developer.apple.com/forums/thread/757133)
 [^thread723695-debug]: [Apple Developer Forums thread 723695 — BillChen2k: "In debugging mode inside Xcode, the contact will still be updated… But if I execute the compiled release binary in terminal… The contact will not be updated."](https://developer.apple.com/forums/thread/723695)
+[^thread723695-platform]: [Apple Developer Forums thread 723695 — nigelhamilton compares the same shared code on iOS vs macOS; the "[api] Attempt to read notes by an unentitled app" line is on "the console in the Mac"; iOS save ~0.005s vs macOS ~0.35s](https://developer.apple.com/forums/thread/723695)
+[^catalyst-macos-model]: [Microsoft Learn Q&A (community answer, analogous Keychain case) — "Mac Catalyst requires additional considerations for entitlements and signing because it's essentially an iOS app running in a macOS environment with stricter sandbox (App Sandbox) enforcement." (NOT Apple-official; not Contacts-specific — pattern corroboration only.)](https://learn.microsoft.com/en-us/answers/questions/5578082/mac-catalyst-keychain-access-fails-with-missingent)
 [^thread125408]: [Apple Developer Forums thread 125408 — Contact Note Field Access entitlement granted on request; requires a new provisioning profile](https://developer.apple.com/forums/thread/125408)
 [^mbs]: [MBS FileMaker Plugin changelog (CNContactStore.Contacts), v10.1 — fixed READ/fetch functions to work without the notes entitlement (by not requesting the note key); does not address the save path](https://www.mbsplugins.eu/CNContactStoreContacts.shtml)
 
