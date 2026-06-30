@@ -184,7 +184,46 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 Self.apply(contact, to: mutable)
                 saveRequest.add(mutable, toContainerWithIdentifier: nil)
             }
-            try store.execute(saveRequest)
+            do {
+                try store.execute(saveRequest)
+            } catch {
+                // DEBUG BREADCRUMB (developer surface, never user-facing): a
+                // CNSaveRequest.execute() rejection arrives as a terse
+                // "Cocoa error <code>" with the actionable detail buried in
+                // userInfo / NSUnderlyingError. We log the full chain so the
+                // failing account/property is visible in the device log, then
+                // re-throw the ORIGINAL error so categorization (and the alert
+                // the user sees) is unchanged. The most common cause is a
+                // contact unified across accounts where one backing card lives
+                // in a read-only source (Exchange/Google directory, social
+                // card); the write is fanned out to that card and rejected.
+                Self.logSaveFailure(error, contactLocalID: contact.localID)
+                throw error
+            }
+        }
+    }
+
+    /// Emits the full error chain for a failed contact save to the OS log. This
+    /// is an OS-level NSLog breadcrumb (a sanctioned debug surface) and is NOT
+    /// shown to the user — `saveErrorCategory` owns the user-facing message.
+    /// Walks `NSUnderlyingError` so the buried `CNError` / per-property detail
+    /// (which names the offending account or field) is captured alongside the
+    /// top-level "Cocoa error <code>".
+    nonisolated static func logSaveFailure(_ error: Error, contactLocalID: String) {
+        let ns = error as NSError
+        NSLog(
+            "[GuessWho] contact save failed localID=%@ domain=%@ code=%ld userInfo=%@",
+            contactLocalID, ns.domain, ns.code, ns.userInfo
+        )
+        var underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+        var depth = 0
+        while let u = underlying, depth < 5 {
+            NSLog(
+                "[GuessWho] contact save underlying[%d] domain=%@ code=%ld userInfo=%@",
+                depth, u.domain, u.code, u.userInfo
+            )
+            underlying = u.userInfo[NSUnderlyingErrorKey] as? NSError
+            depth += 1
         }
     }
 

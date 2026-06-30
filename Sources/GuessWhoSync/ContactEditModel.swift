@@ -189,6 +189,25 @@ public struct ContactEditModel: Equatable {
         /// For the save path this is an error; for delete it should be
         /// treated as success by the caller.
         case recordDoesNotExist
+        /// The Contacts backing store rejected the write with a generic
+        /// `NSCocoaErrorDomain` persistent-store save error (the one seen in
+        /// the field is 134092). These previously fell through the
+        /// `CNErrorDomain`-only guard to an opaque `.unknown("…Cocoa error
+        /// 134092.")` message.
+        ///
+        /// We deliberately do NOT claim a cause here. An early theory was a
+        /// read-only account, but that's disproven for the reported contact:
+        /// the same `CNSaveRequest` path successfully stamped its `guesswho://`
+        /// identity URL, so the record is writable. The true trigger (a
+        /// field-level validation rejection, a save conflict on a stale
+        /// snapshot, etc.) is buried in `NSUnderlyingError`, which the adapter
+        /// now logs at the `execute()` site. Until that's pinned down, this
+        /// case carries the underlying `localizedDescription` and shows a
+        /// plain, honest "couldn't save this change" message — strictly better
+        /// than the raw "Cocoa error 134092" the user saw, without asserting a
+        /// cause we can't stand behind. Opening Settings can't fix it, so this
+        /// case must NOT offer the Contacts-settings button.
+        case storeRejected(String)
         /// Anything else; carries the underlying error's
         /// `localizedDescription`.
         case unknown(String)
@@ -202,6 +221,8 @@ public struct ContactEditModel: Equatable {
                 return "One of the fields was rejected by the system: \(detail)"
             case .recordDoesNotExist:
                 return "This contact has been deleted on another device. Tap Cancel to refresh."
+            case .storeRejected(let detail):
+                return "This change to the contact couldn’t be saved: \(detail)"
             case .unknown(let detail):
                 return detail
             }
@@ -218,26 +239,35 @@ public struct ContactEditModel: Equatable {
                 return "The system rejected the delete: \(detail)"
             case .recordDoesNotExist:
                 return "Contact already deleted."
+            case .storeRejected(let detail):
+                return "This contact couldn’t be deleted: \(detail)"
             case .unknown(let detail):
                 return detail
             }
         }
     }
 
-    /// Map an arbitrary `Error` (typically `CNError`) into a category.
-    /// Works without importing `Contacts` by matching the
-    /// `CNErrorDomain` constant and the documented integer codes — so
-    /// this module stays buildable on platforms where `Contacts`
-    /// might be unavailable.
+    /// Map an arbitrary `Error` (typically `CNError`, but also the
+    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws)
+    /// into a category. Works without importing `Contacts` by matching the
+    /// stable domain strings and the documented integer codes — so this
+    /// module stays buildable on platforms where `Contacts` might be
+    /// unavailable.
     public static func saveErrorCategory(_ error: Error) -> SaveErrorCategory {
         let ns = error as NSError
-        // CNErrorDomain — match by string so we don't have to import Contacts.
-        // Apple documents this as a stable domain identifier.
-        guard ns.domain == "CNErrorDomain" else {
+        switch ns.domain {
+        case "CNErrorDomain":
+            return cnErrorCategory(code: ns.code, description: ns.localizedDescription)
+        case "NSCocoaErrorDomain":
+            return cocoaErrorCategory(code: ns.code, description: ns.localizedDescription)
+        default:
             return .unknown(ns.localizedDescription)
         }
-        // CNError.Code raw values per Apple's headers.
-        switch ns.code {
+    }
+
+    /// `CNError.Code` raw values per Apple's headers.
+    private static func cnErrorCategory(code: Int, description: String) -> SaveErrorCategory {
+        switch code {
         case 100:
             // CNErrorCode.authorizationDenied
             return .authorizationDenied
@@ -246,14 +276,35 @@ public struct ContactEditModel: Equatable {
             return .recordDoesNotExist
         case 201, 202:
             // CNErrorCode.insertedRecordAlreadyExists / containmentCycle
-            return .invalidField(ns.localizedDescription)
+            return .invalidField(description)
         case 1700, 1701:
             // CNErrorCode.validationConfigurationError /
             // validationMultipleErrors-ish; these are the "system
             // rejected a field" family.
-            return .invalidField(ns.localizedDescription)
+            return .invalidField(description)
         default:
-            return .unknown(ns.localizedDescription)
+            return .unknown(description)
+        }
+    }
+
+    /// `NSCocoaErrorDomain` codes the Contacts (Core Data backed) store raises
+    /// when `CNSaveRequest.execute()` is rejected. The persistent-store
+    /// save-failure family (134060–134095, which includes the field-reported
+    /// 134092) all mean "the store rejected this write" — but the SPECIFIC
+    /// cause lives in `NSUnderlyingError`, not the code. So we route the whole
+    /// family to `.storeRejected` (carrying the description) WITHOUT asserting
+    /// a cause. This is a strict improvement over the old behavior, where these
+    /// fell through the `CNErrorDomain`-only guard to `.unknown` and surfaced
+    /// the bare "Cocoa error 134092" string; the adapter's `execute()`-site log
+    /// captures the underlying detail that will drive the real fix.
+    private static func cocoaErrorCategory(code: Int, description: String) -> SaveErrorCategory {
+        switch code {
+        case 134060...134095:
+            // NSPersistentStoreSaveError (134060) … generic Core Data save
+            // failures (incl. 134092). The store rejected the write; cause TBD.
+            return .storeRejected(description)
+        default:
+            return .unknown(description)
         }
     }
 }

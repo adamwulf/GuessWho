@@ -282,6 +282,43 @@ struct ContactEditModelTests {
         )
     }
 
+    @Test("NSCocoaErrorDomain 134092 (the field-reported save failure) maps to .storeRejected")
+    func testCocoaSaveError134092Mapping() {
+        // The exact code the user saw: "Couldn't save … (Cocoa error 134092.)".
+        // Before the fix this fell through to .unknown and surfaced the bare
+        // "Cocoa error 134092" string; it must now categorize as .storeRejected.
+        let err = NSError(domain: "NSCocoaErrorDomain", code: 134092, userInfo: [
+            NSLocalizedDescriptionKey: "The operation couldn’t be completed. (Cocoa error 134092.)"
+        ])
+        #expect(
+            ContactEditModel.saveErrorCategory(err)
+                == .storeRejected("The operation couldn’t be completed. (Cocoa error 134092.)")
+        )
+    }
+
+    @Test("NSCocoaErrorDomain persistent-store save-failure range maps to .storeRejected at both bounds")
+    func testCocoaSaveErrorRangeBounds() {
+        let low = NSError(domain: "NSCocoaErrorDomain", code: 134060, userInfo: [
+            NSLocalizedDescriptionKey: "low bound"
+        ])
+        let high = NSError(domain: "NSCocoaErrorDomain", code: 134095, userInfo: [
+            NSLocalizedDescriptionKey: "high bound"
+        ])
+        #expect(ContactEditModel.saveErrorCategory(low) == .storeRejected("low bound"))
+        #expect(ContactEditModel.saveErrorCategory(high) == .storeRejected("high bound"))
+    }
+
+    @Test("NSCocoaErrorDomain codes outside the save-failure range fall through to .unknown")
+    func testCocoaNonSaveCodeMapping() {
+        // A Cocoa error unrelated to persistent-store saves (e.g. a file read
+        // error, NSFileReadNoSuchFileError = 260) must not be mislabeled as a
+        // store rejection.
+        let err = NSError(domain: "NSCocoaErrorDomain", code: 260, userInfo: [
+            NSLocalizedDescriptionKey: "No such file"
+        ])
+        #expect(ContactEditModel.saveErrorCategory(err) == .unknown("No such file"))
+    }
+
     // MARK: - Carry-through of non-edited fields
 
     @Test("Editing visible fields does not clear non-surfaced Contact fields on the edited struct")
