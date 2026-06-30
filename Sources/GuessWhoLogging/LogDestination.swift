@@ -13,8 +13,9 @@ import Logging
 /// never crashes. The fallback is announced once via swift-log — buffered and
 /// replayed by FellerBuncher's pre-config capture when this fires during
 /// bootstrap — and is therefore diagnosable. In the fallback state the
-/// extension's `extension.log` lands in the appex Caches and the app's exporter
-/// (which zips the App Group `Logs/`) won't see it — acceptable degradation.
+/// extension's dated `extension-*.log` lands in the appex Caches and the app's
+/// exporter (which zips the App Group `Logs/`) won't see it — acceptable
+/// degradation.
 enum LogDestination {
 
     /// swift-log channel for the fallback breadcrumbs. Routed through swift-log
