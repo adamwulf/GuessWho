@@ -1,9 +1,14 @@
 import Foundation
 import Logging
+import FellerBuncher
 
 /// Public entry point for file logging. Bootstraps swift-log once per process
-/// onto a logfmt file handler (+ a stderr console echo) and vends labeled
-/// loggers.
+/// onto FellerBuncher (a rotating, self-pruning logfmt file destination + an
+/// OSLog console echo) and vends labeled loggers.
+///
+/// FellerBuncher owns the bootstrap and the destination fan-out; there is no
+/// custom handler or file writer here anymore. Every `Logger(label:)` in the
+/// app and packages routes to the same `<AppGroup>/Logs/<process>.log` file.
 ///
 /// Both the GuessWho app and its Safari Web Extension call `bootstrap(...)` with
 /// their own `processName` so each process writes its own file
@@ -11,78 +16,69 @@ import Logging
 /// cross-process file locking.
 public enum GuessWhoLog {
 
-    /// Guards the one-time `LoggingSystem.bootstrap` call. swift-log's
-    /// `LoggingSystem.bootstrap` is genuinely once-per-process and **traps** on
-    /// a second call. The extension calls `beginRequest` per request, so this
-    /// guard is mandatory and must wrap the `LoggingSystem.bootstrap` call
-    /// itself (S4). `NSLock` makes it safe under concurrent `beginRequest`
-    /// invocations.
-    private static let bootstrapLock = NSLock()
-    private static var didBootstrap = false
+    /// swift-log channel for the one-shot bootstrap-failure breadcrumb. Routed
+    /// through swift-log (never `os.Logger`) like everything else: FellerBuncher's
+    /// `installPreConfigCapture()` runs before this could fire, so even a record
+    /// emitted when the file destination couldn't be set up is buffered and
+    /// replayed (or, in the total-failure case, kept in the bounded ring).
+    /// Developer-facing only; never surfaced in the UI.
+    private static let breadcrumbLog = Logger(label: "logging.bootstrap")
 
-    /// Bootstrap swift-log onto the logfmt file handler. Idempotent: the first
-    /// call wins, every later call is a no-op (so calling it on every extension
-    /// request is safe).
+    /// Bootstrap swift-log onto FellerBuncher. Idempotent: FellerBuncher's
+    /// `bootstrap` returns the existing handle on a second call (it does NOT trap
+    /// like a raw `LoggingSystem.bootstrap`), so calling this on every extension
+    /// request is safe.
     ///
     /// - Parameters:
     ///   - processName: distinguishes the per-process file. Use `"app"` and
     ///     `"extension"`.
     ///   - appGroupID: the resolved App Group id (caller-provided; the package
     ///     stays id-agnostic).
-    ///   - consoleEcho: when true (default) records also go to stderr via
-    ///     swift-log's `StreamLogHandler.standardError`, so existing Console
-    ///     workflows keep working.
     ///   - baseOverride: tests inject a temp base dir here so they never touch
     ///     the real container. Production callers leave it nil.
     public static func bootstrap(
         processName: String,
         appGroupID: String,
-        consoleEcho: Bool = true,
         baseOverride: URL? = nil
     ) {
-        bootstrapLock.lock()
-        defer { bootstrapLock.unlock() }
+        // Install the pre-config capturing handler FIRST so any `Logger(label:)`
+        // created before this bootstrap completes isn't lost — FellerBuncher
+        // buffers those records and replays them into the file once the real
+        // destinations come up. This is the single `LoggingSystem.bootstrap`
+        // call; the `bootstrap(...)` below activates the same coordinator rather
+        // than bootstrapping again. Idempotent.
+        installPreConfigCapture()
 
-        guard !didBootstrap else { return }
-        didBootstrap = true
+        guard let logsDir = LogDestination.logsDirectoryURL(
+            appGroupID: appGroupID,
+            baseOverride: baseOverride
+        ) else {
+            // No writable directory at all — the pre-config capture above keeps
+            // logging alive (records buffer, then drop oldest), and we announce
+            // the degradation once. We do NOT crash: logging is never fatal.
+            breadcrumbLog.error("Logs directory unavailable; file logging disabled this run")
+            return
+        }
 
-        // Resolve the shared Logs/ dir and build the file handler. If the dir
-        // can't be resolved at all, we still bootstrap (console-only) so logging
-        // never crashes and not-yet-migrated os.log/NSLog sites keep working.
-        let writer = LogDestination.logsDirectoryURL(appGroupID: appGroupID, baseOverride: baseOverride)
-            .map { LogFileWriter(directory: $0, processName: processName) }
-
-        LoggingSystem.bootstrap { label in
-            var handlers: [LogHandler] = []
-            if let writer {
-                handlers.append(LogfmtLogHandler(label: label, writer: writer))
-            }
-            if consoleEcho {
-                handlers.append(StreamLogHandler.standardError(label: label))
-            }
-            // MultiplexLogHandler requires at least one handler; if both the
-            // file writer failed AND console echo is off, fall back to the
-            // swift-log no-op handler so bootstrap still succeeds.
-            if handlers.isEmpty {
-                return SwiftLogNoOpLogHandler()
-            }
-            if handlers.count == 1 {
-                return handlers[0]
-            }
-            return MultiplexLogHandler(handlers)
+        do {
+            // Use FellerBuncher's defaults (size-based rotation, keep 5, 7-day
+            // retention, OSLog console echo, default logfmt format). Simple by
+            // design — the only things we pass are the per-process file name and
+            // its directory.
+            _ = try FellerBuncher.bootstrap(processName: processName, logDir: logsDir)
+        } catch {
+            // File destination couldn't be created (e.g. the dir became
+            // unwritable between resolution and open). Logging stays alive via
+            // the pre-config capture; announce once and carry on.
+            breadcrumbLog.error("FellerBuncher bootstrap failed", ["error": error.localizedDescription])
         }
     }
 
-    /// A labeled swift-log `Logger`.
-    ///
-    /// NH1 — bootstrap ordering is load-bearing: `Logger(label:)` binds its
-    /// handler at *construction* (against whatever factory is currently
-    /// installed), not lazily at log time. A logger built BEFORE `bootstrap(...)`
-    /// runs will bind to swift-log's default stderr handler and will **never
-    /// write to the log file**, even after a later bootstrap. So bootstrap first.
-    /// The migrated call sites are all lazy `static let` loggers first accessed
-    /// after their process's bootstrap call, so they bind to the file factory —
-    /// but any future top-level/eager logger must respect this ordering.
+    /// A labeled swift-log `Logger`. Thin wrapper over `Logger(label:)` — kept so
+    /// call sites read against this package's facade. With FellerBuncher's
+    /// pre-config capture installed in `bootstrap`, a logger built before
+    /// bootstrap is no longer lost: its records are buffered and replayed once
+    /// the file destination comes up.
     public static func logger(_ label: String) -> Logger {
         Logger(label: label)
     }

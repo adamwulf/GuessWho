@@ -13,9 +13,9 @@ import Logging
 /// ```
 /// Values are `CustomStringConvertible` (so `Int`, `String`, `URL`, `UUID`, …
 /// all work directly and the compiler rejects nonsensical values), and each is
-/// bridged to `.stringConvertible`, which `LogfmtLogHandler` already flattens
-/// into the logfmt line. The trailing `file`/`function`/`line` are forwarded so
-/// swift-log's source attribution is preserved.
+/// bridged to `.stringConvertible`, which FellerBuncher's logfmt formatter
+/// flattens into the line. The trailing `file`/`function`/`line` are forwarded
+/// so swift-log's source attribution is preserved.
 extension Logger {
 
     /// `trace` with a plain `[String: CustomStringConvertible]` metadata bag.
@@ -83,7 +83,8 @@ extension Logger {
 
     /// Bridge a `[String: CustomStringConvertible]` bag into `Logger.Metadata`,
     /// wrapping each value as `.stringConvertible` so the value's own
-    /// `description` is used (and `LogfmtLogHandler` flattens it consistently).
+    /// `description` is used (and FellerBuncher's formatter flattens it
+    /// consistently).
     private static func bridge(_ metadata: [String: CustomStringConvertible]) -> Logger.Metadata {
         var out = Logger.Metadata()
         out.reserveCapacity(metadata.count)

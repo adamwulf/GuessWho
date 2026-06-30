@@ -1,5 +1,5 @@
 import Foundation
-import os.log
+import Logging
 
 /// Resolves the shared directory log files are written into.
 ///
@@ -10,18 +10,17 @@ import os.log
 ///
 /// If the App Group container is unavailable at runtime (e.g. the entitlement
 /// isn't granted), we fall back to the process's Caches directory so logging
-/// never crashes. The fallback is announced once via `os.log` — which survives
-/// the fallback and is therefore diagnosable. In the fallback state the
+/// never crashes. The fallback is announced once via swift-log — buffered and
+/// replayed by FellerBuncher's pre-config capture when this fires during
+/// bootstrap — and is therefore diagnosable. In the fallback state the
 /// extension's `extension.log` lands in the appex Caches and the app's exporter
 /// (which zips the App Group `Logs/`) won't see it — acceptable degradation.
 enum LogDestination {
 
-    /// `os.log` channel for the one-shot fallback breadcrumb. Developer-facing
-    /// only; never surfaced in the UI.
-    private static let breadcrumbLog = Logger(
-        subsystem: "com.milestonemade.guesswho.logging",
-        category: "destination"
-    )
+    /// swift-log channel for the fallback breadcrumbs. Routed through swift-log
+    /// (never `os.Logger`) like all our logging. Developer-facing only; never
+    /// surfaced in the UI.
+    private static let breadcrumbLog = Logger(label: "logging.destination")
 
     /// Resolve `<AppGroup>/Logs/`, creating it if missing. Falls back to
     /// `<Caches>/Logs/` when the App Group container can't be resolved.
@@ -42,7 +41,8 @@ enum LogDestination {
 
         // App Group unavailable — fall back to Caches so logging never crashes.
         breadcrumbLog.error(
-            "App Group container unavailable for id=\(appGroupID, privacy: .public); falling back to Caches (extension.log will not reach the app's export in this state)"
+            "App Group container unavailable; falling back to Caches (extension.log will not reach the app's export in this state)",
+            ["appGroupID": appGroupID]
         )
         guard let caches = try? fm.url(
             for: .cachesDirectory,
@@ -64,7 +64,10 @@ enum LogDestination {
             try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
             return logs
         } catch {
-            breadcrumbLog.error("Failed to create Logs dir at \(logs.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            breadcrumbLog.error(
+                "Failed to create Logs dir",
+                ["path": logs.path, "error": error.localizedDescription]
+            )
             return nil
         }
     }
