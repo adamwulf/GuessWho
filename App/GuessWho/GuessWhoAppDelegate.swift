@@ -177,15 +177,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         builder.insertChild(menu, atEndOfMenu: .help)
     }
 
+    // These run on the main thread (UIKit delivers menu actions there) and the
+    // AppDelegate is already `@MainActor`-isolated via its `UIApplicationDelegate`
+    // conformance, so they can call the `@MainActor` presenter directly.
     @objc private func exportDebugLogsMenuAction() {
-        MainActor.assumeIsolated {
-            DebugMenuActions.exportLogs()
-        }
+        DebugMenuActions.exportLogs()
     }
 
     @objc private func openContainerFolderMenuAction() {
-        MainActor.assumeIsolated {
-            DebugMenuActions.openContainerFolder()
-        }
+        DebugMenuActions.openContainerFolder()
     }
 }
