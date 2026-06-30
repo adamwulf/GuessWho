@@ -138,4 +138,54 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     func applicationWillTerminate(_ application: UIApplication) {
         Self.lifecycleLog.notice("app willTerminate")
     }
+
+    // MARK: - Help menu (developer-facing debug actions)
+
+    /// Append two developer-facing items to the **Help** menu:
+    /// "Export Debug Logs" (zip + save panel / share sheet) and
+    /// "Open Container Folder" (reveal the App Group container — in Finder on
+    /// Mac Catalyst). Both are sanctioned debug-mode surfaces per the project's
+    /// product principle: they exist to diagnose silent failures, so they are
+    /// intentionally always visible rather than gated on app state.
+    ///
+    /// The commands target this AppDelegate (always live in the responder
+    /// chain), and each `@objc` action just forwards into the self-presenting
+    /// `DebugMenuActions` presenter, which resolves its own frontmost view
+    /// controller — so presentation never depends on what happens to be focused.
+    override func buildMenu(with builder: any UIMenuBuilder) {
+        super.buildMenu(with: builder)
+
+        // Only the main menu bar carries the Help menu (Catalyst). On iOS the
+        // physical-keyboard menu has no Help menu, so insertion is a no-op
+        // there — guarding on `.main` keeps us from touching contextual menus.
+        guard builder.system == .main else { return }
+
+        let exportLogs = UICommand(
+            title: "Export Debug Logs",
+            action: #selector(exportDebugLogsMenuAction)
+        )
+        let openContainer = UICommand(
+            title: "Open Container Folder",
+            action: #selector(openContainerFolderMenuAction)
+        )
+
+        let menu = UIMenu(
+            title: "",
+            options: .displayInline,
+            children: [exportLogs, openContainer]
+        )
+        builder.insertChild(menu, atEndOfMenu: .help)
+    }
+
+    @objc private func exportDebugLogsMenuAction() {
+        MainActor.assumeIsolated {
+            DebugMenuActions.exportLogs()
+        }
+    }
+
+    @objc private func openContainerFolderMenuAction() {
+        MainActor.assumeIsolated {
+            DebugMenuActions.openContainerFolder()
+        }
+    }
 }
