@@ -19,10 +19,13 @@ let package = Package(
         // swift-log: the `Logger` / `LogHandler` API our custom logfmt handler
         // plugs into. Pinned to the 1.14.x line.
         .package(url: "https://github.com/apple/swift-log.git", .upToNextMinor(from: "1.14.0")),
-        // Logfmt: provides `String.logfmt(_:)` for clean logfmt output. Pinned to
-        // a specific commit (its swift-log LogHandler integration is still in
-        // progress, so we write our own handler that formats via this).
-        .package(url: "https://github.com/adamwulf/Logfmt.git", revision: "a6d6eb29177f65f3e252610a2176d318026d634c"),
+        // FellerBuncher: owns the swift-log bootstrap + destination fan-out
+        // (rotating, self-pruning logfmt file + console echo + in-memory ring
+        // buffer). It consumes the stock `Logger(label:)`, so `GuessWhoLog` is a
+        // thin facade over its bootstrap and every `Logger` in the app/packages
+        // routes to the same file. Replaces the in-house LogFileWriter /
+        // LogfmtLogHandler this package used to ship.
+        .package(url: "https://github.com/adamwulf/FellerBuncher.git", branch: "main"),
     ],
     targets: [
         // Thin Objective-C shim over the Swift-unavailable
@@ -47,13 +50,15 @@ let package = Package(
             name: "GuessWhoSyncTests",
             dependencies: ["GuessWhoSync", "GuessWhoSyncTesting"]
         ),
-        // GuessWhoLogging — Logfmt's product name is "Logfmt" and its package
-        // name is "Logfmt"; swift-log's product is "Logging".
+        // GuessWhoLogging — swift-log's product is "Logging"; FellerBuncher's
+        // product and module are both "FellerBuncher". FellerBuncher owns the
+        // file writer + logfmt formatting now, so this target no longer needs a
+        // direct Logfmt dependency.
         .target(
             name: "GuessWhoLogging",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "Logfmt", package: "Logfmt"),
+                .product(name: "FellerBuncher", package: "FellerBuncher"),
             ]
         ),
         .testTarget(

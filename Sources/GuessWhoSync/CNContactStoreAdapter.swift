@@ -8,11 +8,19 @@
 // dedicated `.userInitiated` queue.
 @preconcurrency import Contacts
 import Foundation
+import Logging
 // Bridges the Swift-unavailable enumeratorForChangeHistoryFetchRequest call.
 import GuessWhoSyncObjC
 
 public actor CNContactStoreAdapter: ContactStoreProtocol {
     private let store: CNContactStore
+
+    /// Routes contact-save failure breadcrumbs through swift-log. With the app's
+    /// logging backend bootstrapped these land in `<AppGroup>/Logs/app.log` (and
+    /// echo to the OS console); under `swift test` (no bootstrap) they fall back
+    /// to swift-log's default handler. Developer-facing — internal vocabulary is
+    /// fine in the message body. Stable label so the lines are greppable.
+    private static let saveLog = Logger(label: "sync.contact-save")
 
     /// Dedicated serial queue that runs every blocking CNContactStore call.
     /// Pinned to `.userInitiated` so the actor's executor — which can be
@@ -203,25 +211,43 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
-    /// Emits the full error chain for a failed contact save to the OS log. This
-    /// is an OS-level NSLog breadcrumb (a sanctioned debug surface) and is NOT
-    /// shown to the user — `saveErrorCategory` owns the user-facing message.
+    /// Emits the full error chain for a failed contact save through swift-log
+    /// (so it lands in `<AppGroup>/Logs/app.log` via FellerBuncher, NOT just the
+    /// OS unified log where the detail is `<private>`-redacted). This is a
+    /// developer-facing debug breadcrumb and is NOT shown to the user —
+    /// `saveErrorCategory` owns the user-facing message.
+    ///
     /// Walks `NSUnderlyingError` so the buried `CNError` / per-property detail
-    /// (which names the offending account or field) is captured alongside the
-    /// top-level "Cocoa error <code>".
+    /// (which names the offending account or field — e.g. the keys behind a
+    /// 134092 rejection) is captured alongside the top-level "Cocoa error
+    /// <code>". One log line per level (top, then `underlying[0]`, `[1]`, …) so
+    /// each level is independently greppable. The whole `userInfo` dict is
+    /// dumped (no key allowlist) since the actionable key is often undocumented;
+    /// file output is not subject to the OS `<private>` redaction, so it lands in
+    /// full.
     nonisolated static func logSaveFailure(_ error: Error, contactLocalID: String) {
+        // Native swift-log metadata form (matches ContactChangeWatcher): this
+        // package depends on swift-log directly, NOT GuessWhoLogging, so the
+        // positional `[String: CustomStringConvertible]` convenience overload
+        // isn't in scope here.
         let ns = error as NSError
-        NSLog(
-            "[GuessWho] contact save failed localID=%@ domain=%@ code=%ld userInfo=%@",
-            contactLocalID, ns.domain, ns.code, ns.userInfo
-        )
+        saveLog.error("contact save failed", metadata: [
+            "localID": .string(contactLocalID),
+            "domain": .string(ns.domain),
+            "code": .stringConvertible(ns.code),
+            "localizedDescription": .string(ns.localizedDescription),
+            "userInfo": .string(String(describing: ns.userInfo)),
+        ])
         var underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
         var depth = 0
         while let u = underlying, depth < 5 {
-            NSLog(
-                "[GuessWho] contact save underlying[%d] domain=%@ code=%ld userInfo=%@",
-                depth, u.domain, u.code, u.userInfo
-            )
+            saveLog.error("contact save underlying", metadata: [
+                "depth": .stringConvertible(depth),
+                "domain": .string(u.domain),
+                "code": .stringConvertible(u.code),
+                "localizedDescription": .string(u.localizedDescription),
+                "userInfo": .string(String(describing: u.userInfo)),
+            ])
             underlying = u.userInfo[NSUnderlyingErrorKey] as? NSError
             depth += 1
         }

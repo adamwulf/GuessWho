@@ -1,11 +1,21 @@
 {
-  "originHash" : "861808a7e855ccad3628280de7c727feb2b5ce986a48c7aa965c080c714bbe5f",
+  "originHash" : "f479a4ea7c268015179e56c81488a16073057853aa8d63c59a502526ac2e91cd",
   "pins" : [
+    {
+      "identity" : "fellerbuncher",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/adamwulf/FellerBuncher.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "39a70d805ceaa33f76c9e08c6371c4776ecc73f6"
+      }
+    },
     {
       "identity" : "logfmt",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/adamwulf/Logfmt.git",
       "state" : {
+        "branch" : "main",
         "revision" : "a6d6eb29177f65f3e252610a2176d318026d634c"
       }
     },
