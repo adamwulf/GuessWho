@@ -2,6 +2,7 @@ import SwiftUI
 import Contacts
 import MapKit
 import PhotosUI
+import UniformTypeIdentifiers
 import GuessWhoSync
 
 struct ContactDetailView: View {
@@ -805,9 +806,21 @@ struct ContactDetailView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add photo")
-            .dropDestination(for: Data.self) { items, _ in
-                guard let data = items.first else { return false }
-                Task { await applyDroppedPhoto(data) }
+            .onDrop(of: [.image], isTargeted: nil) { providers, _ in
+                // Gate on the Contacts record's own flag, not `headerPhoto`:
+                // this branch is also reached transiently while an existing
+                // photo is still async-loading (see `loadHeaderPhoto`), and a
+                // drop during that window must not silently overwrite it.
+                // Restricting to `.image` (rather than the generic `Data`
+                // Transferable) rejects non-image drops — e.g. a PDF or zip —
+                // up front instead of accepting them and failing later.
+                guard !contact.imageDataAvailable,
+                      let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) })
+                else { return false }
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data else { return }
+                    Task { await applyDroppedPhoto(data) }
+                }
                 return true
             }
         }
