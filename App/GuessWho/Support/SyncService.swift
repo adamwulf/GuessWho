@@ -5,71 +5,68 @@ import GuessWhoLogging
 @MainActor
 @Observable
 final class SyncService {
-    /// Storage-resolution breadcrumbs route through swift-log so they land in
-    /// `<AppGroup>/Logs/app.log` (and echo to Console). The `[GuessWho]` prefix
-    /// is a developer-facing log body — exempt from the no-internal-vocabulary
-    /// rule (see GuessWhoLogging notes).
+    /// Storage-resolution breadcrumbs route through swift-log to
+    /// `<AppGroup>/Logs/app.log` (echoed to Console). The `[GuessWho]` prefix is
+    /// a developer-facing log body — exempt from the no-internal-vocabulary rule
+    /// (see GuessWhoLogging notes).
     private static let log = GuessWhoLog.logger("app.sync-service")
 
     enum SidecarLocation: Equatable {
         case iCloud(URL)
         case localFallback(URL, reason: String)
-        // Fail-closed: no writable sidecar root could be resolved. Reads
-        // return safe defaults, writes are refused with this reason.
-        // Better than silently writing to a purgeable tmp dir.
+        // Fail-closed: no writable sidecar root resolved. Reads return safe
+        // defaults, writes are refused with this reason — better than silently
+        // writing to a purgeable tmp dir.
         case unavailable(reason: String)
     }
 
     private(set) var sidecarLocation: SidecarLocation
-    // The package's neutral `StoreAuthorizationStatus` is the UI-facing
-    // authorization type directly — its four cases (`.notDetermined`,
-    // `.authorized`, `.denied`, `.restricted`) are exactly what the gate and
-    // banners switch on, so there is no app-side enum or mapping to maintain.
+    // The package's neutral `StoreAuthorizationStatus` is the UI-facing type
+    // directly — its four cases (`.notDetermined`, `.authorized`, `.denied`,
+    // `.restricted`) are exactly what the gate and banners switch on, so there's
+    // no app-side enum or mapping to maintain.
     private(set) var contactsAuthorization: StoreAuthorizationStatus = .notDetermined
     private(set) var eventsAuthorization: StoreAuthorizationStatus = .notDetermined
     private(set) var lastError: String?
 
-    // Exposed so view-models that mint records carrying a writer ID
-    // (e.g. NotesStore stamping ContactNote.modifiedBy) stamp with the
-    // same identifier the package's setField will stamp the outer cell
-    // with. Same source, same value — avoids drifting writer-ID schemes.
+    // Exposed so view-models that mint records carrying a writer ID (e.g.
+    // NotesStore stamping ContactNote.modifiedBy) use the same identifier the
+    // package's setField stamps the outer cell with — same source, same value,
+    // no drifting writer-ID schemes.
     let deviceID: String
 
     private let contactsAdapter: CNContactStoreAdapter
     private let eventsAdapter: EKEventStoreAdapter
     private let sync: GuessWhoSync?
     // nil only when `sidecarLocation == .unavailable` — favorites need a
-    // writable root, same as `sync`. The unqualified `FavoritesStore`
-    // refers to the package type; the app-side view-model with the same
-    // name lives outside this file and never collides here.
+    // writable root, like `sync`. The unqualified `FavoritesStore` is the
+    // package type; the same-named app-side view-model lives outside this file
+    // and never collides here.
     private let favoritesStore: FavoritesStore?
 
-    // Known v1 limitation: sidecarLocation and sync are resolved once
-    // in init() and never refreshed. If the app launches while iCloud
-    // Drive is offline and the user signs in mid-session, the app
-    // remains in .localFallback (or .unavailable) until relaunch.
-    // A future refreshSidecarLocation() could rebuild `sync` on
-    // ScenePhase.active transitions, but rebuilding the sidecar root
-    // mid-session has implications (in-flight ops, cache state) that
-    // are out of scope for the v1 sample.
+    // Known v1 limitation: sidecarLocation and sync are resolved once in init()
+    // and never refreshed. If the app launches with iCloud Drive offline and the
+    // user signs in mid-session, it stays in .localFallback (or .unavailable)
+    // until relaunch. A future refreshSidecarLocation() could rebuild `sync` on
+    // ScenePhase.active, but rebuilding the root mid-session (in-flight ops,
+    // cache state) is out of scope for the v1 sample.
     init() {
-        // The Contacts adapter (isolated to its own actor) owns the one true
-        // CNContactStore for fetch/save work AND for the permission request;
-        // SyncService constructs no Apple store of its own. The adapter vends a
-        // neutral `StoreAuthorizationStatus`, so this target never imports
-        // `Contacts` to reason about permission state.
+        // The Contacts adapter (its own actor) owns the one true CNContactStore
+        // for fetch/save AND the permission request; SyncService constructs no
+        // Apple store of its own. It vends a neutral `StoreAuthorizationStatus`,
+        // so this target never imports `Contacts` to reason about permission.
         let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
         // Device-local persistence for the contact change-history cursor, handed
-        // to the package's GuessWhoSync so its watcher can advance it. Lives in
-        // the container's Application Support — NOT the sidecar root, which can be
-        // iCloud-backed: a CNContactStore history token is per-device, so syncing
-        // it would make another device think it was caught up and skip real edits.
+        // to GuessWhoSync so its watcher can advance it. Lives in the container's
+        // Application Support, NOT the (possibly iCloud-backed) sidecar root: a
+        // CNContactStore history token is per-device, so syncing it would make
+        // another device think it was caught up and skip real edits.
         let cursorStore = ContactSyncCursorStore(url: Self.contactCursorURL())
 
         // The EventKit adapter constructs and owns its own EKEventStore (its
-        // `init()` defaults `store:` to a fresh EKEventStore) and runs the
-        // events permission request itself. SyncService holds no EKEventStore.
+        // `init()` defaults `store:` to a fresh one) and runs the events
+        // permission request itself. SyncService holds no EKEventStore.
         let ekAdapter = EKEventStoreAdapter()
         self.eventsAdapter = ekAdapter
 
@@ -89,15 +86,13 @@ final class SyncService {
                 deviceID: id,
                 contactCursorStore: cursorStore
             )
-            // Favorites.json lives as a sibling of the sidecar
-            // `contacts/`/`events/`/`links/` directories under the same
-            // root the sidecar store uses.
+            // Favorites.json is a sibling of the sidecar
+            // `contacts/`/`events/`/`links/` directories under the same root.
             self.favoritesStore = FavoritesStore(root: url)
         case .localFallback(let url, let reason):
-            // Worth a breadcrumb so debug builds can see when iCloud
-            // failed to provision and we fell back to Application
-            // Support. Not user-actionable here — the banner explains
-            // the trade-off (local-only, no cross-device sync).
+            // Breadcrumb so debug builds can see iCloud failed to provision and
+            // we fell back to Application Support. Not user-actionable here — the
+            // banner explains the trade-off (local-only, no cross-device sync).
             Self.log.notice("storage fallback to local", ["reason": reason])
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
@@ -109,28 +104,27 @@ final class SyncService {
             )
             self.favoritesStore = FavoritesStore(root: url)
         case .unavailable(let reason):
-            // Hard failure — neither iCloud nor Application Support was
-            // writable. Log loudly so it surfaces in Console.app even if
-            // the user never sees the banner.
+            // Hard failure — neither iCloud nor Application Support was writable.
+            // Log loudly so it surfaces in Console.app even if the user never
+            // sees the banner.
             Self.log.error("storage unavailable", ["reason": reason])
             self.sync = nil
             self.favoritesStore = nil
         }
 
         // Authorization starts at `.notDetermined`; `init` does NOT read system
-        // status (an init can't `await`, and an instance-independent status read
-        // here would only buy a single frame before the launch-time request
-        // methods run anyway). `GuessWhoAppDelegate` awaits
-        // `requestContactsAccessIfNeeded()` / `requestEventsAccessIfNeeded()`
-        // immediately after construction, which populates the real status before
-        // first interaction.
+        // status (an init can't `await`, and a status read here would only buy a
+        // single frame before the launch-time request methods run).
+        // `GuessWhoAppDelegate` awaits `requestContactsAccessIfNeeded()` /
+        // `requestEventsAccessIfNeeded()` right after construction, populating
+        // the real status before first interaction.
     }
 
     func requestContactsAccessIfNeeded() async {
-        // The adapter owns the CNContactStore and runs the request on it,
-        // returning the neutral `StoreAuthorizationStatus` the UI binds to
-        // directly (`.limited` already collapsed to `.authorized`). A thrown
-        // request (not a plain user-denial) sets `lastError`.
+        // The adapter runs the request on its CNContactStore, returning the
+        // neutral `StoreAuthorizationStatus` the UI binds to directly (`.limited`
+        // already collapsed to `.authorized`). A thrown request (not a plain
+        // user-denial) sets `lastError`.
         let result = await contactsAdapter.requestContactsAccess()
         contactsAuthorization = result.status
         if let description = result.failureDescription {
@@ -139,10 +133,10 @@ final class SyncService {
     }
 
     func requestEventsAccessIfNeeded() async {
-        // The adapter owns the EKEventStore and runs the request on it, mapping
-        // status internally (fullAccess / pre-17 authorized → authorized,
-        // writeOnly → denied, the iOS17/macOS14 `requestFullAccessToEvents` vs
-        // legacy `requestAccess(to:)` branch). A thrown request sets `lastError`.
+        // The adapter runs the request on its EKEventStore, mapping status
+        // internally (fullAccess / pre-17 authorized → authorized, writeOnly →
+        // denied; iOS17/macOS14 `requestFullAccessToEvents` vs legacy
+        // `requestAccess(to:)`). A thrown request sets `lastError`.
         let result = await eventsAdapter.requestEventsAccess()
         eventsAuthorization = result.status
         if let description = result.failureDescription {
@@ -151,7 +145,7 @@ final class SyncService {
     }
 
     // Routes the windowed read through the orchestrator's Option-C projection
-    // (`sync.eventsWindow`). EventKit inclusion is gated here — the orchestrator
+    // (`sync.eventsWindow`). EventKit inclusion is gated here so the orchestrator
     // stays permission-agnostic.
     func fetchEventsRange(from start: Date, to end: Date) -> [Event] {
         guard let sync else { return [] }
@@ -164,9 +158,9 @@ final class SyncService {
         }
     }
 
-    // Sidecar-only read; does NOT require eventsAuthorization. The package's
-    // `event(at:)` falls back to the cached projection when EventKit access is
-    // denied or the live event is gone.
+    // Sidecar-only read; does NOT require eventsAuthorization. `event(at:)`
+    // falls back to the cached projection when EventKit access is denied or the
+    // live event is gone.
     func event(uuid: String) -> Event? {
         guard let sync else { return nil }
         do {
@@ -231,15 +225,14 @@ final class SyncService {
         )
     }
 
-    /// Link-existing: takes an EventKit identifier and either reuses the
-    /// existing sidecar (when one already points at this ekid) or mints a
-    /// fresh UUID-keyed sidecar seeded from the live snapshot.
+    /// Link-existing: from an EventKit identifier, reuses the existing sidecar
+    /// (if one already points at this ekid) or mints a fresh UUID-keyed sidecar
+    /// seeded from the live snapshot.
     @discardableResult
     func linkEvent(toEventKitID ekid: String) throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
         guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
-        // Pre-dedup: if a sidecar already points at this ekid, return its UUID
-        // and skip the mint.
+        // Pre-dedup: if a sidecar already points at this ekid, return it, no mint.
         if let existing = try sync.eventUUID(forEventKitID: ekid) {
             return existing
         }
@@ -255,10 +248,9 @@ final class SyncService {
         try sync.deleteEvent(at: SidecarKey(kind: .event, id: uuid))
     }
 
-    /// Edit an event's fields. When the sidecar is linked, the EKEvent is
-    /// updated (requires authorized access) and the cache is refreshed from
-    /// the post-write read; when unlinked, the cache cells are written
-    /// directly (no permission required).
+    /// Edit an event's fields. Linked: the EKEvent is updated (requires
+    /// authorized access) and the cache refreshed from the post-write read.
+    /// Unlinked: the cache cells are written directly (no permission required).
     func updateEvent(
         uuid: String,
         title: String,
@@ -269,9 +261,9 @@ final class SyncService {
     ) throws {
         guard let sync else { throw SidecarUnavailableError() }
         let key = SidecarKey(kind: .event, id: uuid)
-        // If the sidecar is linked AND the EKEvent resolves live, this is an
-        // EKEventStore write — gate it on authorized access. The orchestrator
-        // handles the unlinked/dead-pointer branches sidecar-only.
+        // Linked AND the EKEvent resolves live → an EKEventStore write, so gate
+        // on authorized access. The orchestrator handles the unlinked/dead-pointer
+        // branches sidecar-only.
         if let projected = try sync.event(at: key),
            let ekid = projected.eventKitID,
            let _ = try eventsAdapter.fetch(eventKitID: ekid)
@@ -292,8 +284,8 @@ final class SyncService {
 
     private static let refreshDebounceInterval: TimeInterval = 60
 
-    /// Per-session debounce: maps a sidecar key to the last refresh time.
-    /// In-memory only (cleared on launch). @MainActor guarantees serial access.
+    /// Per-session debounce: sidecar key → last refresh time. In-memory only
+    /// (cleared on launch). @MainActor guarantees serial access.
     private var recentlyRefreshed: [SidecarKey: Date] = [:]
 
     /// Silent best-effort refresh of an event sidecar's cache cells. Skipped
@@ -316,15 +308,15 @@ final class SyncService {
         }
     }
 
-    /// Silent refresh of every event sidecar in `eventUUIDs`. Uses the same
-    /// per-event debounce window as `refreshEvent`. Initial-load-only pattern —
-    /// callers invoke this once when a contact loads, not on every redraw.
+    /// Silent refresh of every event sidecar in `eventUUIDs`, sharing
+    /// `refreshEvent`'s per-event debounce. Initial-load-only — callers invoke
+    /// it once when a contact loads, not on every redraw.
     ///
-    /// The contact endpoint is resolved by the repository
-    /// (`ContactsRepository.linkedEventUUIDs(for:)`) so the bare event UUIDs
-    /// arrive pre-resolved here — SyncService builds no `.contact` `SidecarKey`
-    /// to walk the links. This is an event-cache concern that stays on
-    /// SyncService until the deferred event-identity migration.
+    /// The repository resolves the contact endpoint
+    /// (`ContactsRepository.linkedEventUUIDs(for:)`), so the event UUIDs arrive
+    /// pre-resolved and SyncService builds no `.contact` `SidecarKey` to walk the
+    /// links. An event-cache concern that stays here until the deferred
+    /// event-identity migration.
     func refreshLinkedEvents(eventUUIDs: [String]) {
         guard sync != nil else { return }
         for uuid in eventUUIDs {
@@ -415,11 +407,11 @@ final class SyncService {
         }
     }
 
-    /// EventKit events where any of `emails` appears as an attendee. Backs
-    /// the contact detail "Recent Events" section. Scans a 10y-past / 1y-
-    /// future window via the package's async wrapper (which hops to a
-    /// background queue), most-recent first, capped at `limit`. Returns `[]`
-    /// when calendar access is denied or `emails` is empty.
+    /// EventKit events where any of `emails` appears as an attendee. Backs the
+    /// contact detail "Recent Events" section. Scans a 10y-past / 1y-future
+    /// window via the package's async wrapper (which hops to a background queue),
+    /// most-recent first, capped at `limit`. Returns `[]` when calendar access is
+    /// denied or `emails` is empty.
     func recentEvents(forEmails emails: Set<String>, limit: Int = 10) async -> [Event] {
         guard eventsAuthorization == .authorized, let sync, !emails.isEmpty else { return [] }
         do {
@@ -432,11 +424,10 @@ final class SyncService {
 
     // MARK: - Migration
 
-    /// Best-effort one-shot migration of legacy event sidecars to the
-    /// UUID-keyed shape. Idempotent — safe to call on every launch. Does NOT
-    /// require any permission. Called from
-    /// `GuessWhoAppDelegate.didFinishLaunchingWithOptions` BEFORE any
-    /// permission gate so it runs even when Contacts/Events access is denied.
+    /// Best-effort one-shot migration of legacy event sidecars to the UUID-keyed
+    /// shape. Idempotent (safe every launch) and permission-free. Called from
+    /// `GuessWhoAppDelegate.didFinishLaunchingWithOptions` BEFORE any permission
+    /// gate, so it runs even when Contacts/Events access is denied.
     func migrateEventsIfNeeded() {
         guard let sync else { return }
         _ = try? sync.migrateEventsToSidecarFirst()
@@ -453,13 +444,12 @@ final class SyncService {
     }
 
     /// Builds the package-owned contact read repository over the same adapter
-    /// used by this service for authorization and writes. UI clients should
-    /// retain and read this repository instead of fetching Contacts directly.
+    /// this service uses for authorization and writes. UI clients should retain
+    /// and read this repository instead of fetching Contacts directly.
     func makeContactsRepository() -> ContactsRepository {
         // Hand the repository the SAME sidecar engine and favorites store this
-        // service holds (both Optional — nil in the `.unavailable` storage
-        // state) so it can reconcile-on-write and key the contact-favorite path
-        // itself.
+        // service holds (both nil in the `.unavailable` storage state) so it can
+        // reconcile-on-write and key the contact-favorite path itself.
         ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
     }
 
@@ -467,10 +457,10 @@ final class SyncService {
 
     /// Start the package-owned external-contact-change watcher. The package owns
     /// the `.CNContactStoreDidChange` observer, the change-history cursor, and
-    /// the coalescing; it posts `.guessWhoContactsDidChange` when an external
-    /// edit lands. The repositories subscribe to that notification. Call once at
-    /// launch, after the initial reload, so the watcher begins observing for
-    /// subsequent edits. A no-op when storage is unavailable (`sync == nil`).
+    /// the coalescing, and posts `.guessWhoContactsDidChange` (which the
+    /// repositories subscribe to) when an external edit lands. Call once at
+    /// launch, after the initial reload. A no-op when storage is unavailable
+    /// (`sync == nil`).
     func startContactChangeWatcher() {
         sync?.startContactChangeWatcher()
     }
@@ -478,22 +468,20 @@ final class SyncService {
     // SyncService performs no contact-identity translation: the app keys every
     // contact-sidecar operation on a `ContactID` through `ContactsRepository`,
     // and reconcile is a package-INTERNAL, WRITE-ONLY side effect of a
-    // sidecar/favorite write (resolve-or-mint). The EVENT sidecar surface and
-    // the SHARED favorites methods live here — favorites are contact+event
-    // shared via `FavoriteKind`.
+    // sidecar/favorite write (resolve-or-mint). The EVENT sidecar surface and the
+    // SHARED favorites methods (contact+event, via `FavoriteKind`) live here.
 
     // MARK: - Edit
 
     /// Writes the edited contact back through the adapter.
     ///
     /// **Caller contract:** refresh the repository cache after this returns so
-    /// the list-view caches reflect the changes. SyncService intentionally does
+    /// the list-view caches reflect the change. SyncService intentionally does
     /// NOT touch the repository — ContactsRepository already holds SyncService,
-    /// so injecting the reverse direction adds coupling without an upside.
-    /// Contact detail editing routes through
-    /// `ContactsRepository.saveContact(_:for:)`, which refreshes the edited
-    /// record inside the package; no reconcile, since a CONTACT-field edit is
-    /// not a sidecar write.
+    /// so the reverse direction adds coupling with no upside. Contact detail
+    /// editing routes through `ContactsRepository.saveContact(_:for:)`, which
+    /// refreshes the edited record inside the package; no reconcile, since a
+    /// CONTACT-field edit is not a sidecar write.
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }
@@ -501,7 +489,7 @@ final class SyncService {
     // MARK: - Contact ↔ Event links (event side)
     //
     // The CONTACT-keyed notes/links/event-link methods live on
-    // `ContactsRepository`, keyed on `ContactID`. The EVENT-side reads below
+    // `ContactsRepository` (keyed on `ContactID`). The EVENT-side reads below
     // stay here until the deferred event-identity migration.
 
     func contactLinks(forEventUUID uuid: String) -> [Link] {
@@ -581,8 +569,8 @@ final class SyncService {
                 try fm.createDirectory(at: documents, withIntermediateDirectories: true)
                 return .iCloud(documents)
             } catch {
-                // iCloud container exists but is unwritable — try local
-                // fallback before giving up.
+                // iCloud container exists but is unwritable — try local fallback
+                // before giving up.
                 if let local = try? localFallbackURL() {
                     return .localFallback(
                         local,
@@ -619,12 +607,11 @@ final class SyncService {
         return dir
     }
 
-    /// Device-local file backing the contact change-history cursor. Always in
-    /// the container's Application Support (`.userDomainMask`), independent of
-    /// where the sidecar root resolves — the cursor must never ride iCloud. If
-    /// Application Support cannot be resolved, fall back to a temp-dir path so
-    /// the store is always constructible; a lost cursor just forces one full
-    /// reload, which is safe.
+    /// Device-local file backing the contact change-history cursor. Always in the
+    /// container's Application Support (`.userDomainMask`), independent of the
+    /// sidecar root — the cursor must never ride iCloud. Falls back to a temp-dir
+    /// path if Application Support can't be resolved, so the store is always
+    /// constructible; a lost cursor just forces one safe full reload.
     private static func contactCursorURL() -> URL {
         let fm = FileManager.default
         let base = (try? fm.url(
