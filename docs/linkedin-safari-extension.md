@@ -301,8 +301,9 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    merge + save rules. CNContact fields (name/jobTitle/organization/emails/
    websites/LinkedIn social profile) merge-save; About/Location upsert as named
    `"LinkedIn …"`-prefixed sidecar fields (not append-only notes, so a re-import
-   updates rather than duplicates). It then posts `.linkedInImportDidSave` so an
-   open `ContactDetailView` reloads.
+   updates rather than duplicates). After `applyLinkedIn` returns, the scene
+   delegate posts the app-layer `.linkedInImportDidSave` notification so an open
+   `ContactDetailView` reloads (the package never posts app notifications).
 
 Two pieces of this flow are **still future work** (both logged, not silent):
 

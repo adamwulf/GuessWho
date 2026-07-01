@@ -43,11 +43,16 @@ swift test           # run the package test suites
 invocations (Mac Catalyst and iPhone simulator destinations, local
 DerivedData).
 
-Deployment floor: iOS 17, macOS 14, Mac Catalyst 17. **Mac Catalyst is the
-macOS strategy** (not native macOS); the AppKit bridge bundle covers the few
-AppKit-only affordances. The package itself has no third-party dependencies
-(Foundation + Contacts + EventKit); the app adds swift-log + FellerBuncher
-for file logging.
+Deployment floor: the SwiftPM package targets iOS 17 / macOS 14; the app
+target is pinned higher (currently iOS 26) in the Xcode project. **Mac
+Catalyst is the macOS strategy** (not native macOS); the AppKit bridge
+bundle covers the few AppKit-only affordances.
+
+Dependencies: `GuessWhoSync` is Foundation + Contacts + EventKit plus
+[swift-log](https://github.com/apple/swift-log) (the `Logger` API every
+call site uses); `GuessWhoLogging` adds
+[FellerBuncher](https://github.com/adamwulf/FellerBuncher), which owns the
+swift-log bootstrap and file-destination fan-out.
 
 ## Running the app
 
