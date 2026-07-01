@@ -251,6 +251,11 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         let location = (e.location?.isEmpty ?? true) ? nil : e.location
         let notes = (e.notes?.isEmpty ?? true) ? nil : e.notes
         let attendees = (e.attendees ?? []).map(Self.toAttendee)
+        // Mirror the source calendar's name + color so the list can
+        // disambiguate the same event duplicated across calendars.
+        let calendar = e.calendar
+        let calendarName = (calendar?.title.isEmpty ?? true) ? nil : calendar?.title
+        let calendarColorHex = calendar?.cgColor.flatMap(Self.hexString(from:))
         return Event(
             id: Event.stableID(forEventKitID: ekid),
             eventKitID: ekid,
@@ -260,8 +265,27 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             isAllDay: e.isAllDay,
             location: location,
             eventKitNotes: notes,
-            attendees: attendees
+            attendees: attendees,
+            calendarName: calendarName,
+            calendarColorHex: calendarColorHex
         )
+    }
+
+    /// Convert a `CGColor` to an `#RRGGBB` hex string. EventKit calendar
+    /// colors are RGB, but we convert through the sRGB space defensively so a
+    /// grayscale or otherwise-modeled color still yields sensible channels.
+    /// Returns nil if the color can't be resolved into RGB components.
+    static func hexString(from cgColor: CGColor) -> String? {
+        guard
+            let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
+            let converted = cgColor.converted(to: sRGB, intent: .defaultIntent, options: nil),
+            let components = converted.components,
+            components.count >= 3
+        else { return nil }
+        let clamp = { (value: CGFloat) -> Int in
+            Int((min(max(value, 0), 1) * 255).rounded())
+        }
+        return String(format: "#%02X%02X%02X", clamp(components[0]), clamp(components[1]), clamp(components[2]))
     }
 
     /// Convert an `EKParticipant` into our `EventAttendee` model.

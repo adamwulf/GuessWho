@@ -26,6 +26,19 @@ public struct Event: Hashable, Sendable, Codable {
     /// (sidecar-only) events and for calendar events with no invitees.
     public var attendees: [EventAttendee]
 
+    /// Display name of the calendar the event lives in (`EKEvent.calendar.title`).
+    /// nil for manual (sidecar-only) events and for calendar events whose
+    /// calendar can't be resolved. Read-only mirror — never written back.
+    /// Lets the UI disambiguate the same event duplicated across several
+    /// calendars (e.g. one copy per audience the user shares with).
+    public var calendarName: String?
+
+    /// Hex string (`#RRGGBB`) of the event's calendar color
+    /// (`EKCalendar.cgColor`). nil for manual events and when no color is
+    /// available. Paired with `calendarName` so the UI can render a colored
+    /// swatch matching Calendar.app. Read-only mirror — never written back.
+    public var calendarColorHex: String?
+
     public init(
         id: UUID = UUID(),
         eventKitID: String? = nil,
@@ -35,7 +48,9 @@ public struct Event: Hashable, Sendable, Codable {
         isAllDay: Bool = false,
         location: String? = nil,
         eventKitNotes: String? = nil,
-        attendees: [EventAttendee] = []
+        attendees: [EventAttendee] = [],
+        calendarName: String? = nil,
+        calendarColorHex: String? = nil
     ) {
         self.id = id
         self.eventKitID = eventKitID
@@ -46,6 +61,8 @@ public struct Event: Hashable, Sendable, Codable {
         self.location = location
         self.eventKitNotes = eventKitNotes
         self.attendees = attendees
+        self.calendarName = calendarName
+        self.calendarColorHex = calendarColorHex
     }
 }
 
