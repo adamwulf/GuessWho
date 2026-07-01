@@ -4,6 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Blesses files the user picks in the in-process NSOpenPanel (the
+	     Catalyst photo-change dialog driven by the AppKitBridge bundle). The
+	     powerbox grant that lets us read a user-chosen file requires this. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
 	<key>com.apple.security.personal-information.addressbook</key>
 	<true/>
 	<key>com.apple.security.personal-information.calendars</key>

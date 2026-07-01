@@ -40,11 +40,11 @@ struct ContactDetailView: View {
     // UIImage isn't Identifiable.
     @State private var fullscreenPhoto: FullscreenPhoto?
     // Edit-mode photo change. Presents the system PhotosPicker on
-    // iOS/iPadOS, or a `UIDocumentPickerViewController` Open panel on
-    // Catalyst (see `PhotoChangeModifier`) — no intermediate Choose/Remove
-    // menu. `photoPickerItem` binds the PhotosPicker selection on
-    // iOS/iPadOS so the picked item can be loaded and written to the
-    // contact.
+    // iOS/iPadOS, or a native macOS file Open panel on Catalyst — driven
+    // in-process by the AppKitBridge bundle, NOT a document-picker sheet
+    // (see `PhotoChangeModifier`) — with no intermediate Choose/Remove menu.
+    // `photoPickerItem` binds the PhotosPicker selection on iOS/iPadOS so the
+    // picked item can be loaded and written to the contact.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
@@ -1983,16 +1983,23 @@ private struct PhotoChangeModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             #if targetEnvironment(macCatalyst)
-            .sheet(isPresented: $presentingPhotoPicker) {
-                ImageDocumentPicker { data, loadError in
-                    // The document picker dismisses itself (pick or cancel)
-                    // without telling SwiftUI, so `presentingPhotoPicker`
-                    // must be reset here or the next tap silently no-ops
-                    // (setting an already-true Bool fires no state change).
-                    presentingPhotoPicker = false
-                    guard data != nil || loadError != nil else { return }
-                    onPickFileData(data, loadError)
-                }
+            // Catalyst drives a native, in-process `NSOpenPanel` through the
+            // AppKitBridge bundle rather than presenting a
+            // `UIDocumentPickerViewController` — the latter's presenter
+            // detaches from the window mid-present on Catalyst, so the powerbox
+            // never shows and the whole window deadlocks (no dialog, frozen to
+            // mouse input). The bundle runs the panel modelessly on the main
+            // thread and calls back with the picked file URLs.
+            //
+            // We hang this off `onChange(of: presentingPhotoPicker)` rather
+            // than a `.sheet` so all the existing call sites that just set
+            // `presentingPhotoPicker = true` keep working unchanged. We reset
+            // the flag immediately (the panel is its own window, not a SwiftUI
+            // presentation) so the next tap re-triggers the change.
+            .onChange(of: presentingPhotoPicker) { _, isPresenting in
+                guard isPresenting else { return }
+                presentingPhotoPicker = false
+                presentOpenPanelForPhoto()
             }
             #else
             .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem, matching: .images)
@@ -2013,67 +2020,46 @@ private struct PhotoChangeModifier: ViewModifier {
                 Text(photoSaveError ?? "")
             }
     }
-}
 
-#if targetEnvironment(macCatalyst)
-/// Catalyst's photo-change surface: a `UIDocumentPickerViewController`
-/// configured for images, which bridges to the native macOS file Open
-/// panel. Reads the picked file's bytes under its security scope (required
-/// for any URL a document picker returns) and hands raw `Data` back to
-/// `onPick`, matching the `NSItemProvider` completion shape the drag-and-drop
-/// path already uses so both can share the same downscale/write tail.
-private struct ImageDocumentPicker: UIViewControllerRepresentable {
-    let onPick: (Data?, Error?) -> Void
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image])
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onPick: onPick)
-    }
-
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (Data?, Error?) -> Void
-
-        init(onPick: @escaping (Data?, Error?) -> Void) {
-            self.onPick = onPick
+    #if targetEnvironment(macCatalyst)
+    /// Drives the native macOS file Open panel (via the in-process AppKitBridge
+    /// bundle) and feeds the picked image's bytes into the shared downscale/
+    /// write tail as raw `Data` — matching the `NSItemProvider` completion
+    /// shape the drag-and-drop path already uses. The panel's completion fires
+    /// on the main thread; we read the file off the main thread so a large
+    /// image can't stall the UI, then hop back for the callback.
+    private func presentOpenPanelForPhoto() {
+        guard let bridge = AppKitBridgeLoader.shared else {
+            // Bundle failed to load — surface a plain-language error rather
+            // than silently no-op'ing the tap. (Debug breadcrumbs are logged
+            // by AppKitBridgeLoader itself.)
+            photoSaveError = "The photo picker couldn't be opened."
+            return
         }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        bridge.presentOpenPanel(
+            allowedExtensions: ["png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "bmp", "webp"],
+            allowsMultiple: false
+        ) { urls in
+            // Main thread; an empty array means the user cancelled.
             guard let url = urls.first else { return }
+            // The in-process panel selection is already blessed against the
+            // sandbox, so a same-launch read needs no security-scoped bracket.
+            // We keep the defensive start/stop anyway (harmless) and read off
+            // the main thread so a large file doesn't stall the UI.
             let didStartAccessing = url.startAccessingSecurityScopedResource()
-            // Read on a background queue via a plain completion handler —
-            // mirrors the drop path's `NSItemProvider.loadDataRepresentation`
-            // shape — rather than `Task.detached`, which under Swift 6
-            // strict concurrency can't safely send this non-Sendable
-            // closure across the actor hop. The security scope stays valid
-            // for the app process, not just the calling thread, so it's
-            // safe to hold it open across the queue hop.
             DispatchQueue.global(qos: .userInitiated).async {
                 defer { if didStartAccessing { url.stopAccessingSecurityScopedResource() } }
                 do {
                     let data = try Data(contentsOf: url)
-                    DispatchQueue.main.async { self.onPick(data, nil) }
+                    DispatchQueue.main.async { onPickFileData(data, nil) }
                 } catch {
-                    DispatchQueue.main.async { self.onPick(nil, error) }
+                    DispatchQueue.main.async { onPickFileData(nil, error) }
                 }
             }
         }
-
-        // User dismissed the panel without picking a file. Reported as a
-        // nil/nil pair so the caller can reset its `isPresented` state
-        // without treating this as a load failure.
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            onPick(nil, nil)
-        }
     }
+    #endif
 }
-#endif
 
 private struct InfoRowData: Identifiable {
     enum Kind {
