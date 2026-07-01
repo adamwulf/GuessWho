@@ -159,6 +159,39 @@ struct EventWindowTests {
     }
 
     @Test
+    func eventsWindowLinkedEventRetainsCalendarNameAndColor() throws {
+        let (sync, _, events) = makeOrchestrator()
+        let now = Date()
+        let from = now
+        let to = now.addingTimeInterval(3600)
+
+        // A live EKEvent carrying its source calendar's name + color. Inject
+        // it directly so the fields survive (createEvent can't set them).
+        let live = Event(
+            id: UUID(),
+            eventKitID: "ek-cal-1",
+            title: "Shared event",
+            startDate: now.addingTimeInterval(60),
+            endDate: now.addingTimeInterval(120),
+            isAllDay: false,
+            location: nil,
+            calendarName: "Family",
+            calendarColorHex: "#34C759"
+        )
+        try events._injectForTest(event: live)
+
+        // Adopt it: minting a sidecar makes the row take the linked-overlay
+        // branch of eventsWindow (the case that previously stripped these).
+        _ = try sync.linkEvent(toEventKitID: "ek-cal-1", snapshot: live)
+
+        let window = try sync.eventsWindow(from: from, to: to)
+        let projected = try #require(window.first(where: { $0.title == "Shared event" }))
+        #expect(projected.isLinked)
+        #expect(projected.calendarName == "Family")
+        #expect(projected.calendarColorHex == "#34C759")
+    }
+
+    @Test
     func eventsWindowEphemeralRowsUseStableID() throws {
         let (sync, _, _, inner) = makeOrchestratorWithCountingEvents()
         let now = Date()

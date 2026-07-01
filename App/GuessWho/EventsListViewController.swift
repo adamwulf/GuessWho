@@ -499,13 +499,20 @@ extension EventsListViewController: UISearchResultsUpdating {
 
 // MARK: - Row cell
 
-/// Two-line event row: leading calendar icon, title label (falling
-/// back to "(Untitled event)" when blank), caption start-date
-/// subtitle.
+/// Event row: leading calendar icon, title label (falling back to
+/// "(Untitled event)" when blank), caption start-date subtitle, and — for
+/// events sourced from a calendar — a third line with a color swatch and
+/// the calendar's name. The calendar line lets the user tell apart the same
+/// event duplicated across several calendars (a common pattern when one copy
+/// is shared per audience). Manual events omit the third line and stay
+/// two-line; the row self-sizes so its height follows the content.
 private final class EventCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let dateLabel = UILabel()
+    private let calendarSwatch = UIView()
+    private let calendarLabel = UILabel()
+    private let calendarRow = UIStackView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -544,7 +551,28 @@ private final class EventCell: UITableViewCell {
         dateLabel.translatesAutoresizingMaskIntoConstraints = false
         dateLabel.numberOfLines = 1
 
-        let textStack = UIStackView(arrangedSubviews: [titleLabel, dateLabel])
+        // Color swatch matching the source calendar's color. A small rounded
+        // square, vertically centered against the calendar name's cap height.
+        calendarSwatch.translatesAutoresizingMaskIntoConstraints = false
+        calendarSwatch.layer.cornerRadius = 3
+        calendarSwatch.layer.cornerCurve = .continuous
+        calendarSwatch.setContentHuggingPriority(.required, for: .horizontal)
+        calendarSwatch.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        calendarLabel.font = .preferredFont(forTextStyle: .caption1)
+        calendarLabel.textColor = .secondaryLabel
+        calendarLabel.adjustsFontForContentSizeCategory = true
+        calendarLabel.translatesAutoresizingMaskIntoConstraints = false
+        calendarLabel.numberOfLines = 1
+
+        calendarRow.axis = .horizontal
+        calendarRow.alignment = .center
+        calendarRow.spacing = 5
+        calendarRow.translatesAutoresizingMaskIntoConstraints = false
+        calendarRow.addArrangedSubview(calendarSwatch)
+        calendarRow.addArrangedSubview(calendarLabel)
+
+        let textStack = UIStackView(arrangedSubviews: [titleLabel, dateLabel, calendarRow])
         textStack.axis = .vertical
         textStack.alignment = .leading
         textStack.spacing = 4
@@ -558,6 +586,8 @@ private final class EventCell: UITableViewCell {
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
+            calendarSwatch.widthAnchor.constraint(equalToConstant: 10),
+            calendarSwatch.heightAnchor.constraint(equalToConstant: 10),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
@@ -569,6 +599,23 @@ private final class EventCell: UITableViewCell {
         iconView.image = UIImage(systemName: "calendar")
         titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
         dateLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
+
+        // Third line appears only for calendar-sourced events that carry a
+        // calendar name; manual events stay two-line. Both branches fully
+        // reset the row's mutable state so nothing leaks across reused cells.
+        if let name = event.calendarName, !name.isEmpty {
+            calendarLabel.text = name
+            // Swatch shows only when we have a color; otherwise hide it and
+            // let the name alone identify the calendar.
+            let color = event.calendarColorHex.flatMap(UIColor.init(hexString:))
+            calendarSwatch.backgroundColor = color
+            calendarSwatch.isHidden = (color == nil)
+            calendarRow.isHidden = false
+        } else {
+            calendarLabel.text = nil
+            calendarSwatch.backgroundColor = nil
+            calendarRow.isHidden = true
+        }
     }
 }
 
