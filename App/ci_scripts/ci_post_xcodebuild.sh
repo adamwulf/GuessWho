@@ -2,19 +2,16 @@
 
 set -e
 
-# Define a function to push to the remote repo with input username and token
-git_push_tags_with_token() {
+# Build a tokenized push URL for origin from input username and token
+github_authed_url() {
     # Get the original URL
     original_url=$(git remote get-url origin)
-    # Extract the protocol and the rest of the URL
-    protocol=${original_url%%://*}
+    # Extract the rest of the URL after the protocol
     rest_url=${original_url#*://}
     # Extract everything after github.com/
     github_path=${rest_url#*github.com/}
     # Construct the new URL with the token
-    new_url="https://${1}:${2}@github.com/${github_path}"
-    # Push the tags
-    git push $new_url --tags -f
+    echo "https://${1}:${2}@github.com/${github_path}"
 }
 
 # Fetch the current version number from the built app
@@ -47,13 +44,21 @@ get_app_version() {
 if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     echo "Build succeeded"
     tag="build/$CI_BUILD_NUMBER"
-    echo "Tagging $tag"
-    git tag -a -m "Build $CI_BUILD_NUMBER" $tag
 
     # GITHUB_TOKEN can be configured in github -> account settings -> developer settings -> personal access tokens -> fine grained token -> read/write access to code
-    git_push_tags_with_token $GITHUB_USERNAME $GITHUB_TOKEN
+    remote_url=$(github_authed_url $GITHUB_USERNAME $GITHUB_TOKEN)
 
-    echo "Successfully pushed tag to remote repo."
+    # This script runs once per xcodebuild action, so the same build can reach
+    # here more than once. Skip if the tag is already on the remote — never
+    # force-push, so an existing build/N tag can't be moved to a new commit.
+    if git ls-remote --tags "$remote_url" "refs/tags/$tag" | grep -q "refs/tags/$tag"; then
+        echo "Tag $tag already exists on remote, skipping."
+    else
+        echo "Tagging $tag"
+        git tag -a -m "Build $CI_BUILD_NUMBER" $tag
+        git push "$remote_url" --tags
+        echo "Successfully pushed tag to remote repo."
+    fi
 else
     echo "Build failed"
     # Build failed
