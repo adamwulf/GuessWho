@@ -82,11 +82,11 @@ final class ContactsListViewController: UIViewController {
         observeRepositoryReloads()
 
         // First paint from whatever the AppDelegate's initial reload
-        // already produced — Phase 3's AppDelegate kicks
-        // `repository.reload()` from didFinishLaunching, so by the time
-        // the user picks People in the sidebar the array is usually
-        // populated. Re-applying here also covers the "navigated away
-        // and back" case where the cached snapshot still matches.
+        // already produced — it kicks `repository.reload()` from
+        // didFinishLaunching, so by the time the user picks People in the
+        // sidebar the array is usually populated. Re-applying here also
+        // covers the "navigated away and back" case where the cached
+        // snapshot still matches.
         applySnapshot(animated: false)
     }
 

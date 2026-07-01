@@ -4,9 +4,9 @@ import SwiftUI
 ///
 /// On Catalyst the contact-detail `List` stays full-bleed so its scroll view
 /// (and scrollbar) reach the pane edges, while each row's *content* is clamped
-/// to a centered column of this width. This is the look the old
-/// `.frame(maxWidth: 560)` on the whole `List` produced, minus the inert
-/// non-scrolling side gutters that clamp left outside the scroll view.
+/// to a centered column of this width. This gives the centered-card look of a
+/// `.frame(maxWidth: 560)` on the whole `List`, minus the inert non-scrolling
+/// side gutters that clamp left outside the scroll view.
 ///
 /// The clamp is applied per ROW (see `centeredRowContent()`), never per
 /// `Section`: a `Section` is a structural list element, not a laid-out view, so
@@ -51,7 +51,7 @@ extension View {
             .frame(maxWidth: maxWidth)
             .frame(maxWidth: .infinity)
             // Pull the separators in to the centered column so they don't run
-            // the full pane width — matching the old clamped-card look.
+            // the full pane width — keeping them aligned to the clamped card.
             .alignmentGuide(.listRowSeparatorLeading) { dimensions in
                 max(0, (dimensions.width - maxWidth) / 2)
             }

@@ -21,12 +21,12 @@ struct ContactDetailView: View {
 
     /// The view's identity is the opaque, package-vended `ContactID` — NEVER a
     /// raw `localID`. It is the nav identity the scene delegate hands in; the
-    /// view resolves it to a `Contact` via `repository.contact(id:)`. Since 6b2
-    /// made `contact(id:)` reconcile-stable (it falls back to the `ContactID`'s
+    /// view resolves it to a `Contact` via `repository.contact(id:)`.
+    /// `contact(id:)` is reconcile-stable — it falls back to the `ContactID`'s
     /// always-present `localID` when the captured token's `guessWhoID` is still
-    /// nil after a first-write reconcile), the view re-loads off this same captured
-    /// `id` and needs no separately-threaded `localID` token. The handful of
-    /// contact-LIFECYCLE boundary calls that genuinely need a
+    /// nil after a first-write reconcile — so the view re-loads off this same
+    /// captured `id` and needs no separately-threaded `localID` token. The
+    /// handful of contact-LIFECYCLE boundary calls that genuinely need a
     /// `CNContact.identifier` (edit/save/delete/fetch) read it from the loaded
     /// `Contact` at the call site.
     let id: ContactID
@@ -100,10 +100,9 @@ struct ContactDetailView: View {
     // and its working text.
     @State private var editingField: SidecarField?
     @State private var fieldDraft: String = ""
-    // Body captured at edit-start, used by §12.5's no-op-tap rule: commit
-    // is a no-op only when the draft is unchanged from this snapshot —
-    // never the current on-disk value. Matters when a reconcile lands
-    // mid-edit and rewrites the on-disk body.
+    // Body captured at edit-start: commit is a no-op only when the draft is
+    // unchanged from this snapshot — never the current on-disk value. Matters
+    // when a reconcile lands mid-edit and rewrites the on-disk body.
     @State private var editStartSnapshot: String = ""
 
     @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
@@ -112,7 +111,7 @@ struct ContactDetailView: View {
     // rows revealed via the per-group "more…" disclosure. Empty = all collapsed.
     @State private var expandedFieldGroups: Set<InfoRowData.FieldGroup> = []
 
-    // Contact-link edit state (lifted from the old ConnectionsSection).
+    // Contact-link edit state.
     @State private var editingLinkID: UUID?
     @State private var draftLinkNote: String = ""
     @State private var editLinkStartSnapshot: String = ""
@@ -124,10 +123,6 @@ struct ContactDetailView: View {
     private var isEditingContact: Bool {
         editModel != nil
     }
-
-    // The unified-timeline `activityItems` was split into per-kind sections
-    // (Notes / Linked Contacts / Linked Organizations / Linked Events), each
-    // sorted createdAt ASC, instead of intertwining them.
 
     private var noteItems: [ContactNote] {
         (notesStore?.notes ?? []).sorted { $0.createdAt < $1.createdAt }
@@ -253,10 +248,10 @@ struct ContactDetailView: View {
         }
         .task {
             // Just load the contact by its `ContactID` — no reconcile on open.
-            // Reconcile is WRITE-ONLY (6f reverses the 6c detail-open reconcile):
-            // displaying a contact needs no GuessWho URL, an unstamped contact
-            // has no sidecar data to show (correct), and the FIRST write mints
-            // via the package's resolve-or-mint primitive.
+            // Reconcile is WRITE-ONLY: displaying a contact needs no GuessWho
+            // URL, an unstamped contact has no sidecar data to show (correct),
+            // and the FIRST write mints via the package's resolve-or-mint
+            // primitive.
             await loadContact()
             // Stamp lastViewed ONCE per open. This lives in `.task` (which runs
             // a single time per view appearance) rather than inside
@@ -536,7 +531,7 @@ struct ContactDetailView: View {
             try await repository.saveContact(model.edited, for: id)
             editModel = nil
             editMode = .inactive
-            // No reconcile here (6f): editing a contact's CONTACT fields is not a
+            // No reconcile here: editing a contact's CONTACT fields is not a
             // GuessWho-sidecar write, so it must not stamp a guesswho:// URL — an
             // unstamped contact stays unstamped until the user adds notes/tags/
             // links/favorites, each of which mints via resolve-or-mint. Just
@@ -548,14 +543,10 @@ struct ContactDetailView: View {
             // Record the edit on the contact's lastModified timestamp so the
             // "Last Modified" sort reflects this save. Runs AFTER the fresh
             // reload so `loadedContactID` carries the resolved guessWhoID.
-            //
-            // This is NOT in tension with the "no reconcile here" note above:
-            // that note is about the CONTACT-field WRITE (saveContact), which
-            // stays mint-free. The lastModified stamp is a separate, deliberate
-            // sidecar write that resolves-or-mints by design — and in practice
-            // the record is already reconciled (the view-open `stampViewed()`
-            // minted it), so this mint is a no-op on all but a pathological
-            // never-viewed-yet-saved path.
+            // Unlike the mint-free CONTACT-field write above, this is a
+            // deliberate sidecar write that resolves-or-mints by design — though
+            // in practice the view-open `stampViewed()` already minted the
+            // record, so this is a no-op on all but a never-viewed-yet-saved path.
             await stampModified()
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
@@ -1064,9 +1055,8 @@ struct ContactDetailView: View {
     /// "Recent Events": up to 10 EventKit events where this contact appears
     /// as an attendee, matched by any email on the card. Distinct from the
     /// user-curated linked events that surface in the "Linked Events" section.
-    /// Tapping
-    /// a row pushes the event detail; the `eventKitID` hint lets the detail
-    /// view's adopt-on-load path mint a sidecar on first open.
+    /// Tapping a row pushes the event detail; the `eventKitID` hint lets the
+    /// detail view's adopt-on-load path mint a sidecar on first open.
     @ViewBuilder
     private var recentEventsSection: some View {
         if !recentEvents.isEmpty {
@@ -1252,20 +1242,19 @@ struct ContactDetailView: View {
             rows.append(.text(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true))
         }
 
-        // The reconcile-outcome and raw-sidecar-envelope debug readouts were
-        // dropped in Stage 6: reconcile is now a package-internal side effect
-        // the view no longer drives (so there's no app-side outcome to show),
-        // and surfacing it would mean retaining new per-contact package state
-        // purely for a debug row. The package-vended identity diagnostics above
-        // remain under the debug carve-out.
+        // No reconcile-outcome / raw-sidecar-envelope debug readouts: reconcile
+        // is a package-internal side effect the view doesn't drive (so there's
+        // no app-side outcome to show), and surfacing it would mean retaining
+        // new per-contact package state purely for a debug row. The
+        // package-vended identity diagnostics above remain under the debug
+        // carve-out.
 
         return rows
     }
 
     // MARK: - Notes / Linked Contacts / Organizations / Events
     //
-    // Formerly one intertwined "Activity" timeline; split into per-kind sections,
-    // each sorted createdAt ASC.
+    // One section per kind, each sorted createdAt ASC.
 
     @ViewBuilder
     private var notesSection: some View {
@@ -1584,10 +1573,9 @@ struct ContactDetailView: View {
         let linkID = loadedContactID ?? id
         eventLinks = repository.eventLinks(for: linkID)
         // The EventKit cache refresh stays on SyncService (an event-surface
-        // concern, out of Stage 6 scope). The repository resolves the linked
-        // event UUIDs (so the app builds no `.contact` SidecarKey to walk the
-        // links); SyncService then debounces-and-refreshes each. Option C
-        // cache-refresh trigger (b): fire on initial contact load only.
+        // concern). The repository resolves the linked event UUIDs (so the app
+        // builds no `.contact` SidecarKey to walk the links); SyncService then
+        // debounces-and-refreshes each. Fired on initial contact load only.
         service.refreshLinkedEvents(eventUUIDs: repository.linkedEventUUIDs(for: linkID))
     }
 
@@ -1604,8 +1592,8 @@ struct ContactDetailView: View {
         // `loadedContactID` carries the new guessWhoID, then re-read event links
         // off it and re-key the notes/links stores onto the minted identity. We
         // do this targeted re-read (not a full loadContact) to avoid refiring
-        // refreshLinkedEvents — see E4 / C-REFRESH-FANOUT; the freshly-added
-        // event refreshes when the user opens its detail view.
+        // refreshLinkedEvents; the freshly-added event refreshes when the user
+        // opens its detail view.
         contact = repository.contact(id: id)
         if let contact { rebuildSidecarStores(for: contact) }
         eventLinks = repository.eventLinks(for: loadedContactID ?? id)
@@ -1613,8 +1601,8 @@ struct ContactDetailView: View {
 
     private func removeEventLink(_ id: UUID) {
         // Clear edit state first: setLinkNote on a soft-deleted link
-        // undeletes it (§13 link API), so a pending edit must NOT be
-        // committed after the delete lands.
+        // undeletes it, so a pending edit must NOT be committed after the
+        // delete lands.
         if editingLinkID == id {
             editingLinkID = nil
             draftLinkNote = ""
@@ -1628,9 +1616,9 @@ struct ContactDetailView: View {
         } catch {
             service.recordError("remove link failed: \(error.localizedDescription)")
         }
-        // Do NOT refire refreshLinkedEvents — see E4 / C-REFRESH-FANOUT. The
-        // contact already has a UUID (it had event links to remove), so reading
-        // off `loadedContactID` resolves; `self.id` is the fallback.
+        // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
+        // had event links to remove), so reading off `loadedContactID`
+        // resolves; `self.id` is the fallback.
         eventLinks = repository.eventLinks(for: loadedContactID ?? self.id)
     }
 
@@ -1642,12 +1630,12 @@ struct ContactDetailView: View {
     }
 
     private func loadContact(preferFresh: Bool = false) async {
-        // Resolve the live contact off the view's captured `ContactID`. Since
-        // 6b2 made `contact(id:)` reconcile-stable (it chases the guessWhoID
-        // pointer when present, else falls back to the token's always-present
-        // `localID`), the captured `id` keeps resolving even after a first-write
-        // reconcile re-keys the contact's effective identity — no separately
-        // threaded `localID` needed.
+        // Resolve the live contact off the view's captured `ContactID`.
+        // `contact(id:)` is reconcile-stable (it chases the guessWhoID pointer
+        // when present, else falls back to the token's always-present
+        // `localID`), so the captured `id` keeps resolving even after a
+        // first-write reconcile re-keys the contact's effective identity — no
+        // separately threaded `localID` needed.
         let loaded: Contact?
         if preferFresh, let fresh = try? await repository.editableContact(id: id) {
             // Post-save read: route through unifiedContact(withIdentifier:)
@@ -1875,8 +1863,8 @@ struct ContactDetailView: View {
 
     private func deleteLink(_ id: UUID) {
         // Clear edit state first: setLinkNote on a soft-deleted link
-        // undeletes it (§13 link API), so a pending edit must NOT be
-        // committed after the delete lands.
+        // undeletes it, so a pending edit must NOT be committed after the
+        // delete lands.
         if editingLinkID == id {
             editingLinkID = nil
             draftLinkNote = ""
@@ -2307,7 +2295,7 @@ private struct TappableInfoRow: View {
                 .copyAffordances(value: value, allowsCopy: allowsCopy, onCopy: copy)
         } else {
             // No URL to open: fall back to a plain, selectable label/value with
-            // no tap, stamp, or copy — exactly the old non-tappable behavior.
+            // no tap, stamp, or copy.
             labeledValue
         }
     }

@@ -3,7 +3,7 @@ import UIKit
 /// UIKit primary-column (sidebar) for the Catalyst 3-column shell.
 /// Backed by a diffable data source so future dynamic content
 /// (favorites, tag filters, …) can drop in without rewriting the
-/// reload path. Phase 2 only needs the static `SidebarTab` rows.
+/// reload path, though it currently shows only the static `SidebarTab` rows.
 final class SidebarViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can wire
     /// the sidebar to whichever content view controller is mounted in

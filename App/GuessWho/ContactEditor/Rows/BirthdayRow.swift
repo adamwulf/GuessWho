@@ -12,8 +12,8 @@ struct BirthdayRow: View {
                 // false, the picker still shows the year wheel populated
                 // with the sentinel year (2000); the data layer strips it
                 // on save via ContactEditModel.setBirthday. The "Include
-                // year" toggle is the user-visible control for the
-                // year-vs-no-year intent — see the comment on the toggle.
+                // year" toggle below is the user-visible control for the
+                // year-vs-no-year intent.
                 DatePicker(
                     "Birthday",
                     selection: Binding(
@@ -24,10 +24,8 @@ struct BirthdayRow: View {
                 )
                 .labelsHidden()
                 .centeredRowContent()
-                // When "Include year" is off, the year shown above is
-                // a sentinel (2000) and is dropped on save. The toggle
-                // is how the user signals intent; the picker itself
-                // can't hide its year wheel.
+                // How the user signals year-vs-no-year intent (the picker
+                // can't hide its year wheel; see the DatePicker above).
                 Toggle("Include year", isOn: Binding(
                     get: { model.birthdayHasYear },
                     set: { newValue in

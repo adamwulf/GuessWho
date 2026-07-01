@@ -22,12 +22,12 @@ extension ContactLink {
     /// the contact is neither endpoint (shouldn't happen for links surfaced
     /// from `links(at:)`, defensive guard).
     ///
-    /// NO app-side identity compare (the former Stage-6e carve-out is RETIRED):
-    /// the identity comparison lives in the package via `SidecarKey.matches(_:)`,
-    /// which compares the endpoint key against `contactID.guessWhoID` (a `package`
-    /// field the app can't read). This method only READS the package's already-
-    /// fetched `SidecarKey` endpoints (`endpointA`/`endpointB`) to label which end
-    /// is the far contact — it constructs no key and reads no bare UUID.
+    /// NO app-side identity compare: the identity comparison lives in the
+    /// package via `SidecarKey.matches(_:)`, which compares the endpoint key
+    /// against `contactID.guessWhoID` (a `package` field the app can't read).
+    /// This method only READS the package's already-fetched `SidecarKey`
+    /// endpoints (`endpointA`/`endpointB`) to label which end is the far
+    /// contact — it constructs no key and reads no bare UUID.
     func direction(for contactID: ContactID) -> LinkDirection? {
         if endpointA.matches(contactID) { return .outgoing(other: endpointB) }
         if endpointB.matches(contactID) { return .incoming(other: endpointA) }
@@ -142,9 +142,9 @@ struct LinkRow: View {
     }
 }
 
-/// Shared row layout for the merged Activity section: a leading icon column
-/// (or empty space, for note rows) and a content column. Keeps note text,
-/// connection bodies, and event titles vertically aligned across types.
+/// Shared row layout for the activity rows: a leading icon column (or empty
+/// space, for note rows) and a content column. Keeps note text, connection
+/// bodies, and event titles vertically aligned across types.
 ///
 /// The leading column accepts either an SF Symbol name (the common case) or an
 /// arbitrary view (used by connection rows to show a contact avatar). Both
@@ -197,9 +197,9 @@ struct AddLinkSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     /// The opaque ContactID of the contact we're linking FROM. Keyed on the
-    /// stable identity, not a bare UUID — the from-contact may be unreconciled
-    /// (the gate dropped in 6d), and the link WRITE reconciles + mints both
-    /// endpoints internally, so no UUID is needed here.
+    /// stable identity, not a bare UUID — the from-contact may be unreconciled,
+    /// and the link WRITE reconciles + mints both endpoints internally, so no
+    /// UUID is needed here.
     let currentContactID: ContactID
     /// Hands back the far endpoint's ContactID (not a bare UUID): the store's
     /// async `addLink(to:note:)` resolves-or-mints both endpoints.
