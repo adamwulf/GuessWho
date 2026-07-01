@@ -282,8 +282,8 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             let components = converted.components,
             components.count >= 3
         else { return nil }
-        let clamp = { (value: CGFloat) -> Int in
-            Int((min(max(value, 0), 1) * 255).rounded())
+        let clamp = { (value: CGFloat) -> UInt in
+            UInt((min(max(value, 0), 1) * 255).rounded())
         }
         return String(format: "#%02X%02X%02X", clamp(components[0]), clamp(components[1]), clamp(components[2]))
     }

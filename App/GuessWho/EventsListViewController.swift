@@ -601,7 +601,8 @@ private final class EventCell: UITableViewCell {
         dateLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
 
         // Third line appears only for calendar-sourced events that carry a
-        // calendar name; manual events stay two-line.
+        // calendar name; manual events stay two-line. Both branches fully
+        // reset the row's mutable state so nothing leaks across reused cells.
         if let name = event.calendarName, !name.isEmpty {
             calendarLabel.text = name
             let color = event.calendarColorHex.flatMap(UIColor.init(hexString:))
@@ -609,6 +610,8 @@ private final class EventCell: UITableViewCell {
             calendarSwatch.isHidden = (color == nil)
             calendarRow.isHidden = false
         } else {
+            calendarLabel.text = nil
+            calendarSwatch.backgroundColor = nil
             calendarRow.isHidden = true
         }
     }
