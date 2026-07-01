@@ -2,7 +2,9 @@ import SwiftUI
 import Contacts
 import MapKit
 import PhotosUI
+import UniformTypeIdentifiers
 import GuessWhoSync
+import GuessWhoLogging
 
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
@@ -612,6 +614,13 @@ struct ContactDetailView: View {
 
     // MARK: - Edit-mode photo change
 
+    /// Developer-facing breadcrumb for photo load/decode/save failures (the
+    /// user only ever sees the plain-language `photoSaveError` alert text).
+    /// The underlying CNContact save failure itself is logged in more detail
+    /// by `CNContactStoreAdapter.setImageData` — this logger covers the
+    /// UI-layer load/decode failures that never reach the store.
+    private static let photoLog = GuessWhoLog.logger("contact.photo")
+
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
     /// size, and writes them to the underlying Contacts record. The write goes
     /// to the CNContact itself (not a sidecar), so the new photo shows in
@@ -621,6 +630,7 @@ struct ContactDetailView: View {
         defer { photoPickerItem = nil }
         do {
             guard let rawData = try await item.loadTransferable(type: Data.self) else {
+                Self.photoLog.error("picked photo returned no data")
                 photoSaveError = "That photo couldn't be loaded."
                 return
             }
@@ -628,11 +638,13 @@ struct ContactDetailView: View {
             // main actor; contact photos don't need full camera resolution.
             let jpegData = await Self.normalizedPhotoData(from: rawData)
             guard let jpegData else {
+                Self.photoLog.error("picked photo failed to decode (\(rawData.count) bytes)")
                 photoSaveError = "That photo couldn't be processed."
                 return
             }
             try await writePhoto(jpegData)
         } catch {
+            Self.photoLog.error("picked photo save failed: \(error.localizedDescription)")
             photoSaveError = error.localizedDescription
         }
     }
@@ -641,6 +653,33 @@ struct ContactDetailView: View {
         do {
             try await writePhoto(nil)
         } catch {
+            Self.photoLog.error("photo removal failed: \(error.localizedDescription)")
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    /// Handles an image dropped directly onto the monogram (no existing
+    /// photo). `rawData`/`loadError` come straight from the `NSItemProvider`
+    /// completion handler (a nonisolated, arbitrary-queue callback), so this
+    /// MainActor-isolated method is where the load-failure branch is handled
+    /// too — the callback itself must stay free of MainActor-only state.
+    /// Otherwise shares the same downscale/write tail as the picker path.
+    private func applyDroppedPhoto(_ rawData: Data?, loadError: Error?) async {
+        guard let rawData else {
+            Self.photoLog.error("dropped photo failed to load: \(loadError?.localizedDescription ?? "none")")
+            photoSaveError = "That photo couldn't be loaded."
+            return
+        }
+        do {
+            let jpegData = await Self.normalizedPhotoData(from: rawData)
+            guard let jpegData else {
+                Self.photoLog.error("dropped photo failed to decode (\(rawData.count) bytes)")
+                photoSaveError = "That photo couldn't be processed."
+                return
+            }
+            try await writePhoto(jpegData)
+        } catch {
+            Self.photoLog.error("dropped photo save failed: \(error.localizedDescription)")
             photoSaveError = error.localizedDescription
         }
     }
@@ -780,6 +819,9 @@ struct ContactDetailView: View {
             // No photo, not editing: tapping the monogram is a shortcut to add
             // a first photo without opening the editor. There's nothing to
             // remove, so go straight to the picker (no Choose/Remove dialog).
+            // The monogram also accepts a dropped image file/photo directly
+            // (Catalyst drag from Finder/Photos, iPad split-view drag), so a
+            // first photo can be set without opening the picker at all.
             Button {
                 presentingPhotoPicker = true
             } label: {
@@ -787,6 +829,22 @@ struct ContactDetailView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add photo")
+            .onDrop(of: [.image], isTargeted: nil) { providers, _ in
+                // Gate on the Contacts record's own flag, not `headerPhoto`:
+                // this branch is also reached transiently while an existing
+                // photo is still async-loading (see `loadHeaderPhoto`), and a
+                // drop during that window must not silently overwrite it.
+                // Restricting to `.image` (rather than the generic `Data`
+                // Transferable) rejects non-image drops — e.g. a PDF or zip —
+                // up front instead of accepting them and failing later.
+                guard !contact.imageDataAvailable,
+                      let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) })
+                else { return false }
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, loadError in
+                    Task { await applyDroppedPhoto(data, loadError: loadError) }
+                }
+                return true
+            }
         }
     }
 
