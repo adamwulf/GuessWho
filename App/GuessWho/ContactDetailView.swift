@@ -37,15 +37,10 @@ struct ContactDetailView: View {
     // in an Identifiable box because `.fullScreenCover(item:)` requires it and
     // UIImage isn't Identifiable.
     @State private var fullscreenPhoto: FullscreenPhoto?
-    // Edit-mode photo change. `showingPhotoOptions` drives the Choose/Remove
-    // confirmation dialog; `photoPickerItem` binds the PhotosPicker selection
-    // so the picked item can be loaded and written to the contact.
-    @State private var showingPhotoOptions = false
-    // Presents the system PhotosPicker. Driven by a flag (not a PhotosPicker
-    // nested in the confirmation dialog): a PhotosPicker inside a dialog's
-    // action list tears down with the dialog before it can present its sheet,
-    // so the dialog's "Choose Photo" sets this flag and a separate
-    // `.photosPicker(isPresented:)` opens the picker once the dialog is gone.
+    // Edit-mode photo change. Presents the system PhotosPicker (PHPicker on
+    // iOS/iPadOS; the native Open panel on Catalyst) directly — no
+    // intermediate Choose/Remove menu. `photoPickerItem` binds the picker
+    // selection so the picked item can be loaded and written to the contact.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
@@ -195,16 +190,13 @@ struct ContactDetailView: View {
         .fullScreenCover(item: $fullscreenPhoto) { photo in
             ContactPhotoViewer(image: photo.image)
         }
-        // Photo-change UI (dialog + picker + error) lives in one modifier so the
+        // Photo-change UI (picker + error) lives in one modifier so the
         // body's modifier chain stays short enough for the type-checker.
         .modifier(PhotoChangeModifier(
-            showingPhotoOptions: $showingPhotoOptions,
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
             photoSaveError: $photoSaveError,
-            canRemovePhoto: contact?.imageDataAvailable == true,
-            onPick: { item in Task { await applyPickedPhoto(item) } },
-            onRemove: { Task { await removePhoto() } }
+            onPick: { item in Task { await applyPickedPhoto(item) } }
         ))
         .confirmationDialog(
             "Delete contact?",
@@ -714,8 +706,9 @@ struct ContactDetailView: View {
     }
 
     /// The circular profile image (photo or monogram fallback). Tapping it does
-    /// one of three things depending on state: in edit mode it offers
-    /// Choose/Remove (with a translucent viewfinder overlay signalling this); in
+    /// one of three things depending on state: in edit mode it jumps straight
+    /// to the platform picker (with a translucent viewfinder overlay signalling
+    /// this — long-press/right-click offers Remove when a photo exists); in
     /// view mode with a photo it opens the fullscreen zoom/pan viewer; in view
     /// mode WITHOUT a photo it jumps straight to the picker so a first photo can
     /// be added without entering the editor.
@@ -730,15 +723,19 @@ struct ContactDetailView: View {
             } else {
                 Circle()
                     .fill(Color.secondary.opacity(0.15))
-                Text(contact.initials)
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                if !isEditingContact {
+                    Text(contact.initials)
+                        .font(.system(size: 36, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if isEditingContact {
                 // Translucent viewfinder over the circle while editing: a
                 // glanceable "tap to change photo" affordance. The dark scrim
-                // keeps the symbol legible over a light photo or monogram.
+                // keeps the symbol legible over a light photo or monogram; the
+                // initials are hidden above so the scrim isn't fighting for
+                // legibility against them too.
                 Circle()
                     .fill(Color.black.opacity(0.35))
                 Image(.customPersonCropCircleViewfinder)
@@ -751,15 +748,24 @@ struct ContactDetailView: View {
 
         if isEditingContact {
             // In edit mode the circle is the "change photo" control: tapping
-            // it offers Choose / Remove. The viewfinder overlay above signals
-            // this is tappable.
+            // it jumps straight to the platform picker (PhotosPicker on
+            // iOS/iPadOS, the native Open panel on Catalyst) rather than
+            // stopping at an intermediate Choose/Remove menu. Removing an
+            // existing photo is still available via long-press / right-click.
             Button {
-                showingPhotoOptions = true
+                presentingPhotoPicker = true
             } label: {
                 circle
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Change photo")
+            .contextMenu {
+                if contact.imageDataAvailable {
+                    Button("Remove Photo", role: .destructive) {
+                        Task { await removePhoto() }
+                    }
+                }
+            }
         } else if headerPhoto != nil {
             Button {
                 if let headerPhoto {
@@ -1893,36 +1899,18 @@ private extension Array {
     }
 }
 
-/// Bundles the edit-mode photo-change surfaces — the Choose/Remove
-/// confirmation dialog, the system `PhotosPicker`, and the failure alert — into
-/// a single modifier. Extracted from `ContactDetailView.body` so that view's
-/// already-long modifier chain stays within the SwiftUI type-checker's budget.
+/// Bundles the edit-mode photo-change surfaces — the system `PhotosPicker`
+/// and the failure alert — into a single modifier. Extracted from
+/// `ContactDetailView.body` so that view's already-long modifier chain stays
+/// within the SwiftUI type-checker's budget.
 private struct PhotoChangeModifier: ViewModifier {
-    @Binding var showingPhotoOptions: Bool
     @Binding var presentingPhotoPicker: Bool
     @Binding var photoPickerItem: PhotosPickerItem?
     @Binding var photoSaveError: String?
-    let canRemovePhoto: Bool
     let onPick: (PhotosPickerItem) -> Void
-    let onRemove: () -> Void
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog(
-                "Photo",
-                isPresented: $showingPhotoOptions,
-                titleVisibility: .visible
-            ) {
-                // Just flip the flag here — the actual PhotosPicker is presented
-                // by the `.photosPicker` modifier below, AFTER this dialog tears
-                // down. A PhotosPicker nested in the dialog dismisses with the
-                // dialog before it can present.
-                Button("Choose Photo") { presentingPhotoPicker = true }
-                if canRemovePhoto {
-                    Button("Remove Photo", role: .destructive, action: onRemove)
-                }
-                Button("Cancel", role: .cancel) {}
-            }
             .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem, matching: .images)
             .onChange(of: photoPickerItem) { _, newItem in
                 guard let newItem else { return }
