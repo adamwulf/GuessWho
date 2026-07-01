@@ -5,12 +5,16 @@
 // app can't link AppKit itself.
 //
 // The bundle's Info.plist NSPrincipalClass must be the Swift-mangled
-// `<module>.<class>` string. With GENERATE_INFOPLIST_FILE=YES the module name
-// defaults to PRODUCT_BUNDLE_IDENTIFIER, so NSPrincipalClass =
-// `com.milestonemade.GuessWhoAppKitBridge.GuessWhoAppKitBridge`
-// (see INFOPLIST_KEY_NSPrincipalClass in GuessWhoAppKitBridge-Shared.xcconfig).
-// If that string and this class name ever drift apart, `bundle.principalClass`
-// resolves to nil and the loader silently finds no plugin.
+// `<module>.<class>` string — `Bundle.principalClass` looks up that mangled
+// symbol in the bundle image (it does NOT go through the Obj-C flat name
+// table, so the bare `@objc(...)` name alone won't do). Our Swift module name
+// is PRODUCT_MODULE_NAME (= PRODUCT_NAME = TARGET_NAME = `GuessWhoAppKitBridge`,
+// NOT the dotted bundle id), so the resolved NSPrincipalClass is
+// `GuessWhoAppKitBridge.GuessWhoAppKitBridge`
+// (set via INFOPLIST_KEY_NSPrincipalClass in GuessWhoAppKitBridge-Shared.xcconfig).
+// If that string and this class/module name ever drift apart,
+// `bundle.principalClass` resolves to nil and the loader silently finds no
+// plugin.
 
 import AppKit
 import Foundation
