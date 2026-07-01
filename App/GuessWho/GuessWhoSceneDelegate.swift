@@ -7,21 +7,18 @@ import GuessWhoLogging
 /// and picks its root view controller based on the build target:
 ///
 /// * Mac Catalyst → a 3-column `UISplitViewController` (sidebar /
-///   content / detail) — the UIKit shell introduced in Phase 2 and
-///   completed in Phases 3 / 4A–C with real list controllers.
-/// * iPhone (and iPad until Phase 6) → a `PermissionGateViewController`
-///   that swaps between a SwiftUI-parity ContentUnavailable gate and a
-///   `UITabBarController` of 4 navigation stacks (People /
-///   Organizations / Events / Favorites). Each tab reuses the same
-///   UIKit list controller the Catalyst columns host — selection
-///   pushes a `UIHostingController(rootView: ContactDetailView…)` or
-///   `EventDetailView` onto the tab's nav stack (iPhone uses push
-///   semantics; Catalyst uses column REPLACE).
+///   content / detail).
+/// * iPhone (and iPad regular-width, for now) → a
+///   `PermissionGateViewController` that swaps between a
+///   ContentUnavailable gate and a `UITabBarController` of navigation
+///   stacks (Favorites / People / Organizations / Events / Groups).
+///   Each tab reuses the same UIKit list controller the Catalyst columns
+///   host — selection pushes a `UIHostingController(rootView:
+///   ContactDetailView…)` or `EventDetailView` onto the tab's nav stack
+///   (iPhone uses push semantics; Catalyst uses column REPLACE).
 ///
-/// iPad regular-width loses the 3-column SwiftUI flow this phase —
-/// it falls back to the same UIKit tab shell as iPhone-compact until
-/// Phase 6 stands up the Catalyst-shaped `UISplitViewController` on
-/// iPad too. Documented in MIGRATION_STATUS.
+/// iPad regular-width uses the same UIKit tab shell as iPhone-compact
+/// rather than a Catalyst-shaped `UISplitViewController`.
 @objc(GuessWhoSceneDelegate)
 final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -118,15 +115,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     #if targetEnvironment(macCatalyst)
-    /// Phase-3 Catalyst shell. The sidebar's selection now drives real
-    /// content/detail column swaps:
-    ///   * .people → ContactsListViewController + ContactDetailView on selection
-    ///   * .organizations → OrganizationsListViewController + ContactDetailView on selection
-    /// Settings has no sidebar row: the Debug Mode toggle is reached
+    /// Catalyst shell. The sidebar's selection drives content/detail column
+    /// swaps (e.g. .people → ContactsListViewController + ContactDetailView on
+    /// selection). Settings has no sidebar row: the Debug Mode toggle is reached
     /// through the system Settings app via the bundled `Settings.bundle`
-    /// (Catalyst auto-renders it into the ⌘, preferences window).
-    /// When the user picks a tab that doesn't have a selected detail
-    /// the secondary column resets to a "Nothing Selected" placeholder.
+    /// (Catalyst auto-renders it into the ⌘, preferences window). When the user
+    /// picks a tab that doesn't have a selected detail the secondary column
+    /// resets to a "Nothing Selected" placeholder.
     private func makeCatalystSplit(appDelegate: GuessWhoAppDelegate) -> UISplitViewController {
         let split = UISplitViewController(style: .tripleColumn)
         split.preferredDisplayMode = .twoBesideSecondary
@@ -383,24 +378,20 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     // MARK: - iPhone / iPad (non-Catalyst) shell
 
-    /// Phase-5 iPhone shell. Mirrors the Catalyst structure (the four
-    /// content sections are the same UIKit list VCs the sidebar mounts
-    /// on Mac), but the entry point is a tab bar instead of a split
-    /// view, selection PUSHES detail onto each tab's nav stack instead
-    /// of REPLACING a secondary column, and there is no Settings tab
-    /// (iOS surfaces the Debug toggle through the system Settings app
-    /// via Settings.bundle, matching the pre-Phase-5 SwiftUI behaviour
-    /// — see the `sidebarTabs` filter the SwiftUI RootView used).
+    /// iPhone shell. Mirrors the Catalyst structure (the content sections are
+    /// the same UIKit list VCs the sidebar mounts on Mac), but the entry point
+    /// is a tab bar instead of a split view, selection PUSHES detail onto each
+    /// tab's nav stack instead of REPLACING a secondary column, and there is no
+    /// Settings tab (iOS surfaces the Debug toggle through the system Settings
+    /// app via Settings.bundle).
     ///
-    /// Wrapped in a `PermissionGateViewController` so the same three
-    /// Contacts-authorization ContentUnavailableView states the
-    /// SwiftUI RootView showed (notDetermined / denied / restricted)
-    /// surface here as `UIContentUnavailableConfiguration`s, swapping
-    /// to the tabs only once access flips to `.authorized`.
+    /// Wrapped in a `PermissionGateViewController` so the three
+    /// Contacts-authorization states (notDetermined / denied / restricted)
+    /// surface as `UIContentUnavailableConfiguration`s, swapping to the tabs
+    /// only once access flips to `.authorized`.
     ///
-    /// iPad regular-width currently also lands here — temporary
-    /// downgrade from the previous 3-column NavigationSplitView until
-    /// Phase 6 lifts iPad into the Catalyst-shaped `UISplitView` shell.
+    /// iPad regular-width currently also lands here rather than in a
+    /// Catalyst-shaped `UISplitView` shell.
     private func makeIPhoneRoot(appDelegate: GuessWhoAppDelegate) -> UIViewController {
         let tabs = makeIPhoneTabs(appDelegate: appDelegate)
         return PermissionGateViewController(service: appDelegate.service, tabs: tabs)
@@ -428,9 +419,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         // iOS 18 sidebar-adaptable tab bar surfaces as a bottom tab bar
         // on iPhone (compact) and as a leading sidebar on iPad
-        // (regular). Matches the previous SwiftUI `.sidebarAdaptable`
-        // tabViewStyle. Gated on iOS 18 — on iOS 17 the API doesn't
-        // exist and the plain bottom tab bar is the right fallback.
+        // (regular). Gated on iOS 18 — on iOS 17 the API doesn't exist
+        // and the plain bottom tab bar is the right fallback.
         if #available(iOS 18.0, *) {
             tabs.mode = .tabSidebar
         }
@@ -562,17 +552,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Push a fresh `UIHostingController<ContactDetailView>` onto the
     /// owning tab's nav stack. Mirrors `showContactDetail` on Catalyst
     /// but PUSHES (back-swipe pops) instead of REPLACING the secondary
-    /// column. Same three @Environment values
-    /// (`SyncService`, `ContactsRepository`, `FavoritesListStore`)
-    /// must be injected on the rootView because the hosted SwiftUI
-    /// view has no SwiftUI parent on iPhone now that RootView is gone.
+    /// column. The @Environment values (`SyncService`, `ContactsRepository`,
+    /// `ContactPhotoLoader`, `FavoritesListStore`) must be injected on the
+    /// rootView because the hosted SwiftUI view has no SwiftUI parent.
     ///
     /// Also injects the `pushContactReference` / `pushEventReference`
     /// env closures so SwiftUI rows inside the pushed detail (linked
     /// events on a contact, attendees on an event, etc.) can fan out
-    /// to more details onto the same UIKit nav stack. Without those,
-    /// the original `NavigationLink(value:)` callsites silently no-op
-    /// on iPhone after Phase 5 deleted `.contactAndEventDestinations`.
+    /// to more details onto the same UIKit nav stack. Without those, the
+    /// `NavigationLink(value:)` callsites silently no-op on iPhone.
     private func pushContactDetail(
         contact: Contact,
         on nav: UINavigationController?,
@@ -678,9 +666,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// unexpectedly huge or hostile file. Never read unbounded.
     private static let handoffMaxBytes = 8 * 1024 * 1024
 
-    /// LinkedIn-handoff breadcrumbs now route through swift-log so they land in
-    /// `<AppGroup>/Logs/app.log` (and still echo to Console via the stderr
-    /// handler). Label is developer-facing; see GuessWhoLogging notes.
+    /// LinkedIn-handoff breadcrumbs route through swift-log so they land in
+    /// `<AppGroup>/Logs/app.log` (and echo to Console via the stderr handler).
+    /// Label is developer-facing; see GuessWhoLogging notes.
     private static let handoffLog = GuessWhoLog.logger("app.linkedin-handoff")
 
     /// Per-scene lifecycle breadcrumbs. Every scene transition UIKit delivers

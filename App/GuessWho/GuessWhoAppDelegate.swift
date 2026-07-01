@@ -3,17 +3,16 @@ import SwiftUI
 import GuessWhoSync
 import GuessWhoLogging
 
-/// UIKit application entry point. Replaces the previous SwiftUI `App`
-/// (`@main GuessWhoApp`) so we can drive the window with a UIKit
-/// `UIWindowSceneDelegate` and host a `UISplitViewController` (Catalyst)
-/// or a `UITabBarController` (iPhone/iPad-compact) as the root.
-/// SceneDelegate picks the root based on `targetEnvironment(macCatalyst)`.
+/// UIKit application entry point. A UIKit delegate (rather than a SwiftUI
+/// `App`) lets us drive the window with a `UIWindowSceneDelegate` and host a
+/// `UISplitViewController` (Catalyst) or a `UITabBarController`
+/// (iPhone/iPad-compact) as the root. SceneDelegate picks the root based on
+/// `targetEnvironment(macCatalyst)`.
 @main
 final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
-    /// Hoisted to the AppDelegate so a single instance survives every
-    /// scene the user opens and so the SceneDelegate can read it when
-    /// constructing the root view controller. Matches the lifetime the
-    /// previous SwiftUI `@State` properties had under `GuessWhoApp`.
+    /// Owned by the AppDelegate so a single instance survives every scene the
+    /// user opens and so the SceneDelegate can read it when constructing the
+    /// root view controller.
     let service: SyncService
     let favoritesStore: FavoritesListStore
     /// Owned here so every UIKit list controller (iPhone tabs and
@@ -21,9 +20,8 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// paths (external-change notifications, list selections) all see
     /// the same instance.
     let contactsRepository: ContactsRepository
-    /// Owned here for the same reason as `contactsRepository`. After
-    /// Phase 5 the iPhone shell is also UIKit and consumes this repo,
-    /// so the gate that previously made this Catalyst-only is gone.
+    /// Owned here for the same reason as `contactsRepository`: both the iPhone
+    /// tab shell and the Catalyst columns consume this one instance.
     let eventsRepository: EventsRepository
     let contactPhotoLoader: ContactPhotoLoader
 
@@ -46,7 +44,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
 
         // Register defaults so non-@AppStorage readers and the iOS
         // Settings pane both see the canonical default before the user
-        // toggles it. Mirrors what `GuessWhoApp.init()` used to do.
+        // toggles it.
         UserDefaults.standard.register(defaults: [
             AppSettings.Key.debugModeEnabled: AppSettings.Default.debugModeEnabled
         ])
@@ -83,21 +81,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         SortOrderSetting.restore(into: contactsRepository)
 
         // Sidecar-only migration runs BEFORE any permission prompt so it
-        // executes even when Contacts/Events access is denied. Moved out
-        // of the old SwiftUI RootView.task to keep the same "migrate
-        // before gate" ordering now that the iPhone shell is UIKit.
+        // executes even when Contacts/Events access is denied.
         service.migrateEventsIfNeeded()
 
         // Kick the repositories' initial fetch so the UIKit list
         // controllers have data ready when the user picks a tab. Runs
         // even when access has not been granted yet — fetches return
         // empty in that case, and a later store-changed notification
-        // refreshes the list once permission flips. NO Catalyst-only
-        // gate: after Phase 5 the iPhone shell consumes this same
-        // AppDelegate-owned repo (Worker A had introduced a gate based
-        // on the pre-Phase-5 state where RootView built its own copy —
-        // the gate needed to come back out once iPhone migrated, which
-        // is now).
+        // refreshes the list once permission flips.
+        //
         // Request access BEFORE reload so Catalyst (which has no
         // PermissionGateViewController in its path) actually prompts;
         // the request methods are idempotent on iPhone where the gate
@@ -112,17 +104,16 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         // Start the package-owned external-contact-change watcher. The package
-        // now owns the `.CNContactStoreDidChange` observer, the change-history
+        // owns the `.CNContactStoreDidChange` observer, the change-history
         // cursor, and the coalescing; it posts `.guessWhoContactsDidChange` when
         // an external edit lands. The repositories subscribe to that (and
-        // `EventsRepository` also owns its own `.EKEventStoreChanged` observer)
-        // — so the AppDelegate no longer registers any store-change observer; it
-        // just owns the instances and kicks the watcher once at launch.
+        // `EventsRepository` also owns its own `.EKEventStoreChanged` observer),
+        // so the AppDelegate registers no store-change observer itself — it owns
+        // the instances and kicks the watcher once at launch.
         //
-        // Ordering doesn't matter: the reloads above are dispatched as Task
-        // blocks that have NOT completed by the time this synchronous call runs,
-        // so this does not gate on the baseline. It needn't — the watcher's
-        // first delta read is itself idempotent against the in-flight reload
+        // Ordering against the reloads above doesn't matter: they run as Task
+        // blocks not yet complete when this synchronous call fires, and the
+        // watcher's first delta read is idempotent against the in-flight reload
         // (first run yields a full-reload signal; later edits an incremental
         // delta), so whichever finishes first, the cache converges.
         service.startContactChangeWatcher()

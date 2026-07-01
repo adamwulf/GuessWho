@@ -5,10 +5,10 @@ import GuessWhoLogging
 @MainActor
 @Observable
 final class SyncService {
-    /// Storage-resolution breadcrumbs now route through swift-log so they land
-    /// in `<AppGroup>/Logs/app.log` (and still echo to Console). The `[GuessWho]`
-    /// prefix is a developer-facing log body — exempt from the
-    /// no-internal-vocabulary rule (see GuessWhoLogging notes).
+    /// Storage-resolution breadcrumbs route through swift-log so they land in
+    /// `<AppGroup>/Logs/app.log` (and echo to Console). The `[GuessWho]` prefix
+    /// is a developer-facing log body — exempt from the no-internal-vocabulary
+    /// rule (see GuessWhoLogging notes).
     private static let log = GuessWhoLog.logger("app.sync-service")
 
     enum SidecarLocation: Equatable {
@@ -54,10 +54,10 @@ final class SyncService {
     // are out of scope for the v1 sample.
     init() {
         // The Contacts adapter (isolated to its own actor) owns the one true
-        // CNContactStore for fetch/save work AND for the permission request —
-        // SyncService no longer constructs an Apple store of its own. The
-        // adapter vends a neutral `StoreAuthorizationStatus`, so this target
-        // never imports `Contacts` to reason about permission state.
+        // CNContactStore for fetch/save work AND for the permission request;
+        // SyncService constructs no Apple store of its own. The adapter vends a
+        // neutral `StoreAuthorizationStatus`, so this target never imports
+        // `Contacts` to reason about permission state.
         let adapter = CNContactStoreAdapter()
         self.contactsAdapter = adapter
         // Device-local persistence for the contact change-history cursor, handed
@@ -129,9 +129,8 @@ final class SyncService {
     func requestContactsAccessIfNeeded() async {
         // The adapter owns the CNContactStore and runs the request on it,
         // returning the neutral `StoreAuthorizationStatus` the UI binds to
-        // directly (`.limited` already collapsed to `.authorized`). When the
-        // request THREW (not a plain user-denial) we restore the same
-        // `lastError` write the pre-adapter code made.
+        // directly (`.limited` already collapsed to `.authorized`). A thrown
+        // request (not a plain user-denial) sets `lastError`.
         let result = await contactsAdapter.requestContactsAccess()
         contactsAuthorization = result.status
         if let description = result.failureDescription {
@@ -140,11 +139,10 @@ final class SyncService {
     }
 
     func requestEventsAccessIfNeeded() async {
-        // The adapter owns the EKEventStore and runs the request on it,
-        // preserving the prior semantics internally (fullAccess / pre-17
-        // authorized → authorized, writeOnly → denied, the iOS17/macOS14
-        // `requestFullAccessToEvents` vs legacy `requestAccess(to:)` branch).
-        // A thrown request restores the same `lastError` write as before.
+        // The adapter owns the EKEventStore and runs the request on it, mapping
+        // status internally (fullAccess / pre-17 authorized → authorized,
+        // writeOnly → denied, the iOS17/macOS14 `requestFullAccessToEvents` vs
+        // legacy `requestAccess(to:)` branch). A thrown request sets `lastError`.
         let result = await eventsAdapter.requestEventsAccess()
         eventsAuthorization = result.status
         if let description = result.failureDescription {
@@ -324,9 +322,9 @@ final class SyncService {
     ///
     /// The contact endpoint is resolved by the repository
     /// (`ContactsRepository.linkedEventUUIDs(for:)`) so the bare event UUIDs
-    /// arrive pre-resolved here — SyncService no longer builds a `.contact`
-    /// `SidecarKey` to walk the links. This is an event-cache concern that stays
-    /// on SyncService until the deferred event-identity migration.
+    /// arrive pre-resolved here — SyncService builds no `.contact` `SidecarKey`
+    /// to walk the links. This is an event-cache concern that stays on
+    /// SyncService until the deferred event-identity migration.
     func refreshLinkedEvents(eventUUIDs: [String]) {
         guard sync != nil else { return }
         for uuid in eventUUIDs {
@@ -458,19 +456,18 @@ final class SyncService {
     /// used by this service for authorization and writes. UI clients should
     /// retain and read this repository instead of fetching Contacts directly.
     func makeContactsRepository() -> ContactsRepository {
-        // Stage 6, Step 0: hand the repository the SAME sidecar engine and
-        // favorites store this service holds (both Optional — nil in the
-        // `.unavailable` storage state) so it can reconcile-on-write and key
-        // the contact-favorite path itself. Pure wiring; no behavior change yet
-        // (no repository write callers exist until sub-phase 6b).
+        // Hand the repository the SAME sidecar engine and favorites store this
+        // service holds (both Optional — nil in the `.unavailable` storage
+        // state) so it can reconcile-on-write and key the contact-favorite path
+        // itself.
         ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
     }
 
     // MARK: - Contact change history (incremental external sync)
 
-    /// Start the package-owned external-contact-change watcher. The package now
-    /// owns the `.CNContactStoreDidChange` observer, the change-history cursor,
-    /// and the coalescing; it posts `.guessWhoContactsDidChange` when an external
+    /// Start the package-owned external-contact-change watcher. The package owns
+    /// the `.CNContactStoreDidChange` observer, the change-history cursor, and
+    /// the coalescing; it posts `.guessWhoContactsDidChange` when an external
     /// edit lands. The repositories subscribe to that notification. Call once at
     /// launch, after the initial reload, so the watcher begins observing for
     /// subsequent edits. A no-op when storage is unavailable (`sync == nil`).
@@ -478,16 +475,12 @@ final class SyncService {
         sync?.startContactChangeWatcher()
     }
 
-    // The CONTACT-sidecar surface (`sidecar(for:)`, the bare-UUID
-    // notes/links/event-link methods) and the CONTACT-identity translation
-    // helpers formerly hosted here
-    // were removed in Stage 6: the app now keys every contact-sidecar operation
-    // on a `ContactID` through `ContactsRepository`, and reconcile is a
-    // package-INTERNAL, WRITE-ONLY side effect of a sidecar/favorite write
-    // (resolve-or-mint). SyncService performs no contact-identity translation.
-    // (The EVENT sidecar surface and the SHARED
-    // favorites methods remain — events are out of Stage 6 scope, and favorites
-    // are contact+event shared via `FavoriteKind`.)
+    // SyncService performs no contact-identity translation: the app keys every
+    // contact-sidecar operation on a `ContactID` through `ContactsRepository`,
+    // and reconcile is a package-INTERNAL, WRITE-ONLY side effect of a
+    // sidecar/favorite write (resolve-or-mint). The EVENT sidecar surface and
+    // the SHARED favorites methods live here — favorites are contact+event
+    // shared via `FavoriteKind`.
 
     // MARK: - Edit
 
@@ -496,23 +489,20 @@ final class SyncService {
     /// **Caller contract:** refresh the repository cache after this returns so
     /// the list-view caches reflect the changes. SyncService intentionally does
     /// NOT touch the repository — ContactsRepository already holds SyncService,
-    /// so injecting the reverse direction adds coupling without an upside (every
-    /// current caller already refreshes after its own post-save dance. Contact
-    /// detail editing now routes through `ContactsRepository.saveContact(_:for:)`,
-    /// which refreshes the edited record inside the package; no reconcile, since
-    /// a CONTACT-field edit is not a sidecar write — 6f).
+    /// so injecting the reverse direction adds coupling without an upside.
+    /// Contact detail editing routes through
+    /// `ContactsRepository.saveContact(_:for:)`, which refreshes the edited
+    /// record inside the package; no reconcile, since a CONTACT-field edit is
+    /// not a sidecar write.
     func saveContact(_ contact: Contact) async throws {
         try await contactsAdapter.save(contact)
     }
 
     // MARK: - Contact ↔ Event links (event side)
     //
-    // The CONTACT-keyed notes/links/event-link methods (notes/addNote/editNote/
-    // deleteNote, contactLinks/addContactLink/setContactLinkNote/
-    // removeContactLink, eventLinks, addContactEventLink) moved onto
-    // `ContactsRepository` keyed on `ContactID` in Stage 6 — they no longer take
-    // a bare contact UUID. The EVENT-side reads below stay here until the
-    // deferred event-identity migration.
+    // The CONTACT-keyed notes/links/event-link methods live on
+    // `ContactsRepository`, keyed on `ContactID`. The EVENT-side reads below
+    // stay here until the deferred event-identity migration.
 
     func contactLinks(forEventUUID uuid: String) -> [Link] {
         guard let sync else { return [] }
