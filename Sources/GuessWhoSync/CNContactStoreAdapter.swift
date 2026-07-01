@@ -373,7 +373,16 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             mutable.imageData = imageData
             let request = Self.makeSaveRequest()
             request.update(mutable)
-            try store.execute(request)
+            do {
+                try store.execute(request)
+            } catch {
+                // Same breadcrumb as `save(_:)` above: log the full
+                // Cocoa/CNError chain, then re-throw the original error
+                // unchanged so the caller's error categorization/alert is
+                // unaffected.
+                Self.logSaveFailure(error, contactLocalID: localID)
+                throw error
+            }
         }
     }
 
