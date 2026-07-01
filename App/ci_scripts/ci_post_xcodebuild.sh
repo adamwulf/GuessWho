@@ -48,12 +48,6 @@ if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     echo "Build succeeded"
     tag="build/$CI_BUILD_NUMBER"
     echo "Tagging $tag"
-    # Annotated tags need a committer identity, and Xcode Cloud's build
-    # environment doesn't configure one; set a repo-local identity if absent.
-    if ! git config user.email > /dev/null; then
-        git config user.name "Xcode Cloud"
-        git config user.email "ci@xcodecloud.apple.com"
-    fi
     git tag -a -m "Build $CI_BUILD_NUMBER" $tag
 
     # GITHUB_TOKEN can be configured in github -> account settings -> developer settings -> personal access tokens -> fine grained token -> read/write access to code
