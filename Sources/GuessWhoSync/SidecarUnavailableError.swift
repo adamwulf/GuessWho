@@ -6,15 +6,12 @@ import Foundation
 /// silently (return empty/false); writes must NOT silently no-op, so they
 /// surface this so the caller can present a "storage unavailable" state.
 ///
-/// This is the package twin of the app's existing `SidecarUnavailableError`.
-/// As Stage 6 migrates the app's contact-sidecar callers onto the repository
-/// (sub-phase 6d), they converge on this package type; until then both exist
-/// (the app's local copy shadows this within the app target without collision).
-///
-/// 6d CHECKLIST: when the app migrates onto the package write API, REMOVE the
-/// app's local same-named `SidecarUnavailableError` in favor of this one.
-/// Otherwise an app-side `catch is SidecarUnavailableError` binds the LOCAL
-/// type and silently misses the package error this primitive throws.
+/// The app target still declares its own same-named `SidecarUnavailableError`
+/// (in `SyncService`). While both types coexist, an app-side
+/// `catch is SidecarUnavailableError` binds the LOCAL type and silently misses
+/// the package error this primitive throws — so a caller relying on this
+/// package error must import and match THIS type. When the app fully migrates
+/// onto the package write API, remove the app's local copy in favor of this one.
 public struct SidecarUnavailableError: Error, LocalizedError {
     public init() {}
 
@@ -26,9 +23,8 @@ public struct SidecarUnavailableError: Error, LocalizedError {
 /// Thrown by the resolve-or-mint primitive when reconcile completed without
 /// leaving a readable GuessWho UUID on the contact — a pathological state
 /// (the reconcile neither reported an `assignedUUID` nor stamped a URL we can
-/// read back). Lives in the package now that reconcile is package-internal; the
-/// app no longer declares a twin (removed in Stage 6e — the app never triggers
-/// or names reconcile).
+/// read back). Package-internal, since the app never triggers or names
+/// reconcile.
 public struct ReconcileAssignmentFailedError: Error, LocalizedError {
     public init() {}
 

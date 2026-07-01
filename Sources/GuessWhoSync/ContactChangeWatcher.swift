@@ -4,18 +4,17 @@ import Contacts
 import Foundation
 import Logging
 
-/// Owns the external-contact-change pipeline that used to live in the app's
-/// `ContactsRepository`: the `.CNContactStoreDidChange` observer, the
-/// change-history cursor, the run-in-flight coalescing, and the delta read via
-/// `ContactStoreProtocol.changes(since:)`. Subscribers become dumb consumers of
-/// the `.guessWhoContactsDidChange` notification this watcher posts.
+/// Owns the external-contact-change pipeline: the `.CNContactStoreDidChange`
+/// observer, the change-history cursor, the run-in-flight coalescing, and the
+/// delta read via `ContactStoreProtocol.changes(since:)`. Subscribers become
+/// dumb consumers of the `.guessWhoContactsDidChange` notification this watcher
+/// posts.
 ///
-/// `@MainActor` for the same reason the old repository code was: it makes the
-/// `isApplying` check-and-set atomic (two `.CNContactStoreDidChange`
-/// notifications can land back-to-back), and it lets the apply path run with
-/// consistent state. The long-lived `GuessWhoSync` instance owns one of these
-/// and starts/stops it; it is opt-in (nothing observes until `start()`) so tests
-/// and non-UI contexts never auto-register.
+/// `@MainActor` makes the `isProcessing` check-and-set atomic (two
+/// `.CNContactStoreDidChange` notifications can land back-to-back), and lets the
+/// apply path run with consistent state. The long-lived `GuessWhoSync` instance
+/// owns one of these and starts/stops it; it is opt-in (nothing observes until
+/// `start()`) so tests and non-UI contexts never auto-register.
 ///
 /// Registration uses the **selector-based** `addObserver(_:selector:name:object:)`
 /// API, NOT the block API. Per Apple's docs, an app targeting iOS 9 /
@@ -151,10 +150,10 @@ public final class ContactChangeWatcher: NSObject {
             // Auth / I-O failure reading history → tell the subscriber to do a
             // full reload; leave the cursor untouched so the next attempt
             // retries from the same point. The watcher has no UI-visible error
-            // channel (it is not the old @Observable repository), so leave a
-            // breadcrumb: without it, a transient "read failed but the recovery
-            // reload succeeded" is otherwise invisible. Routes through swift-log
-            // so it lands in the log file alongside the rest of the app's logs.
+            // channel, so leave a breadcrumb: without it, a transient "read
+            // failed but the recovery reload succeeded" is otherwise invisible.
+            // Routes through swift-log so it lands in the log file alongside the
+            // rest of the app's logs.
             Self.log.error("contact change read failed", metadata: ["error": .string(String(describing: error))])
             postFullReload()
             return

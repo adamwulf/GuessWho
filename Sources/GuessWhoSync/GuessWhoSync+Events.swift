@@ -896,7 +896,7 @@ extension GuessWhoSync {
     }
 
     /// Migration-only helper. Mirrors the shape of
-    /// `rewriteLinkEndpoints` (`GuessWhoSync.swift:664`) but matches against
+    /// `rewriteLinkEndpoints` in `GuessWhoSync.swift` but matches against
     /// `.event` endpoints whose id appears in `mapping`. One envelope write
     /// per affected link, under the per-key `sidecarLocks` discipline. The
     /// mapping is keyed by the **lowercased** legacy `eventIdentifier` (so

@@ -28,8 +28,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     }
 
     /// Prompt for events access on this adapter's store and return the
-    /// resulting `StoreAccessResult`. Preserves the prior `SyncService`
-    /// semantics: only `.notDetermined` triggers a prompt;
+    /// resulting `StoreAccessResult`. Only `.notDetermined` triggers a prompt;
     /// `requestFullAccessToEvents()` is used on iOS 17 / macOS 14+, the legacy
     /// `requestAccess(to:)` before that. A thrown error surfaces as `.denied`
     /// with a non-nil `failureDescription` (the error's `localizedDescription`)

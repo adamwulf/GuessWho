@@ -191,9 +191,7 @@ public struct ContactEditModel: Equatable {
         case recordDoesNotExist
         /// The Contacts backing store rejected the write with a generic
         /// `NSCocoaErrorDomain` persistent-store save error (the one seen in
-        /// the field is 134092). These previously fell through the
-        /// `CNErrorDomain`-only guard to an opaque `.unknown("…Cocoa error
-        /// 134092.")` message.
+        /// the field is 134092).
         ///
         /// We deliberately do NOT claim a cause here. An early theory was a
         /// read-only account, but that's disproven for the reported contact:
@@ -293,10 +291,9 @@ public struct ContactEditModel: Equatable {
     /// 134092) all mean "the store rejected this write" — but the SPECIFIC
     /// cause lives in `NSUnderlyingError`, not the code. So we route the whole
     /// family to `.storeRejected` (carrying the description) WITHOUT asserting
-    /// a cause. This is a strict improvement over the old behavior, where these
-    /// fell through the `CNErrorDomain`-only guard to `.unknown` and surfaced
-    /// the bare "Cocoa error 134092" string; the adapter's `execute()`-site log
-    /// captures the underlying detail that will drive the real fix.
+    /// a cause, rather than surfacing a bare "Cocoa error 134092" string. The
+    /// adapter's `execute()`-site log captures the underlying detail that will
+    /// drive the real fix.
     private static func cocoaErrorCategory(code: Int, description: String) -> SaveErrorCategory {
         switch code {
         case 134060...134095:

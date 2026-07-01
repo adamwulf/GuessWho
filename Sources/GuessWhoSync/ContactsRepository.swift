@@ -22,15 +22,13 @@ public final class ContactsRepository: NSObject {
 
     // The sidecar write engine and the standalone favorites store. BOTH are
     // Optional and nil in the `.unavailable` storage state (no writable
-    // sidecar root) — exactly mirroring `SyncService.sync` / `.favoritesStore`.
-    // They are wired in here (Stage 6, Step 0) so the repository can reconcile
-    // and write a sidecar itself; pre-Stage-6 it held ONLY `contactsStore` and
-    // could not. Both are reference-type classes; holding them on this
+    // sidecar root), so the repository can reconcile and write a sidecar
+    // itself. Both are reference-type classes; holding them on this
     // `@MainActor`-isolated repository is what keeps access race-free —
     // `GuessWhoSync` is additionally `@unchecked Sendable` so the stored
-    // reference crosses no isolation boundary diagnostic. New methods that
-    // depend on either MUST degrade when nil: reads return empty/false, writes
-    // throw `SidecarUnavailableError`.
+    // reference crosses no isolation boundary diagnostic. Methods that depend
+    // on either MUST degrade when nil: reads return empty/false, writes throw
+    // `SidecarUnavailableError`.
     private let sync: GuessWhoSync?
     private let favorites: FavoritesStore?
 
@@ -52,8 +50,8 @@ public final class ContactsRepository: NSObject {
     /// each test repository a fresh `NotificationCenter()` confines its observer
     /// to posts made on that same center — the production refresh behavior is
     /// preserved (still `.default`), and parallel `swift test` becomes
-    /// deterministic. (Found in the 6d review: `swift test` PARALLEL flaked,
-    /// `--no-parallel` always passed.)
+    /// deterministic (without it, parallel `swift test` flakes while
+    /// `--no-parallel` always passes).
     private let notificationCenter: NotificationCenter
 
     public private(set) var contacts: [Contact] = []
@@ -250,13 +248,12 @@ public final class ContactsRepository: NSObject {
     /// `ContactID` minted at navigation whose `guessWhoID` is still nil, and the
     /// contact then reconciled. `localID` is the one identifier that does NOT
     /// move across the reconcile re-key, so resolution MUST go by `id.localID`
-    /// there. Do NOT "simplify" this branch away — it is the reason 6d can
-    /// delete `ContactDetailView.resolvedLocalID` (the captured token already
-    /// carries the `localID` the view used to thread by hand).
+    /// there. Do NOT "simplify" this branch away — the captured token carries
+    /// the `localID` a view would otherwise have to thread by hand.
     ///
-    /// The Case-D-loser subtlety the old doc raised (a stale `localID` re-
-    /// resolving to a merged-away duplicate) is MOOT, but for two reasons, not
-    /// one. A RECONCILED token (`guessWhoID` set) whose UUID is still in the book
+    /// The Case-D-loser subtlety (a stale `localID` re-resolving to a merged-
+    /// away duplicate) is MOOT, but for two reasons, not one. A RECONCILED token
+    /// (`guessWhoID` set) whose UUID is still in the book
     /// hits the pointer index and returns the canonical contact — it does not
     /// reach the `localID` branch. A reconciled token whose `guessWhoID` was
     /// REMOVED from the book (deleted, or a Case-D loser whose UUID was retired)
@@ -613,10 +610,10 @@ public final class ContactsRepository: NSObject {
 
     // MARK: - Reconcile-on-write (resolve-or-mint)
     //
-    // The INTERNAL plumbing every WRITE entry point (notes/links/favorite —
-    // landing in sub-phase 6b) routes through to obtain the GuessWho UUID it
-    // writes the sidecar at. Reconcile is a package-INTERNAL side effect of a
-    // write: the app never triggers, sees, or names it.
+    // The INTERNAL plumbing every WRITE entry point (notes/links/favorite)
+    // routes through to obtain the GuessWho UUID it writes the sidecar at.
+    // Reconcile is a package-INTERNAL side effect of a write: the app never
+    // triggers, sees, or names it.
 
     /// Resolves the GuessWho UUID a sidecar WRITE for `id` must key on, MINTING
     /// one via reconcile IFF the contact has none yet.
@@ -628,8 +625,7 @@ public final class ContactsRepository: NSObject {
     ///   on the contact, reconcile hits Case A and mints a fresh UUID
     ///   (`assignedUUID`). The defensive fall-through re-reads the now-canonical
     ///   record's URL for the pathological Case B/C/D path where reconcile
-    ///   stamped a URL without populating `assignedUUID` (mirrors the app's
-    ///   former `SyncService.reconcileIfNeeded`).
+    ///   stamped a URL without populating `assignedUUID`.
     ///
     /// DEGRADES when the engine is nil (the `.unavailable` storage state): a
     /// write to an unreconciled contact has nowhere to mint, so it THROWS
@@ -644,7 +640,7 @@ public final class ContactsRepository: NSObject {
     /// CANNOT be held across that `await`. This is accepted as a practical
     /// non-event (it needs a never-reconciled contact AND two simultaneous
     /// writes from different surfaces — effectively only Catalyst multi-window);
-    /// no async-serialization machinery is added here. See the Stage 6
+    /// no async-serialization machinery is added here. See the
     /// "CONCURRENCY (decision: ACCEPT double-mint...)" paragraph in
     /// `plans/package-vended-contact-identity.md` for the full rationale,
     /// including why single-device last-write-wins orphans a sidecar (harmless)
@@ -677,26 +673,23 @@ public final class ContactsRepository: NSObject {
 
     // MARK: - ContactID-keyed contact API (notes / links / favorites)
     //
-    // Sub-phase 6b — the PUBLIC contact-sidecar surface the app speaks, keyed
-    // exclusively on `ContactID`. Plain verbs (no "sidecar" in any name): the
-    // app never constructs a `SidecarKey` or sees the word — the repository
-    // translates a `ContactID` to `SidecarKey(kind: .contact, id: guessWhoID)`
-    // internally and calls the engine. Semantics mirror today's app
-    // `SyncService` contact-sidecar methods byte-for-byte (so 6d can repoint the
-    // app onto these with no behavior change).
+    // The PUBLIC contact-sidecar surface the app speaks, keyed exclusively on
+    // `ContactID`. Plain verbs (no "sidecar" in any name): the app never
+    // constructs a `SidecarKey` or sees the word — the repository translates a
+    // `ContactID` to `SidecarKey(kind: .contact, id: guessWhoID)` internally and
+    // calls the engine.
     //
     // READS are SYNCHRONOUS: `id.guessWhoID` is already on the value, so no
     // reconcile and no `await`. An UNRECONCILED contact (`id.guessWhoID == nil`)
     // has no sidecar yet, so reads return empty/false and MINT NOTHING — reads
-    // never reconcile (Design step 3).
+    // never reconcile.
     //
-    // WRITES are `async`: they resolve-or-mint the GuessWho UUID first (6a's
+    // WRITES are `async`: they resolve-or-mint the GuessWho UUID first (via
     // `resolveOrMintGuessWhoID`, which `await`s reconcile), then call the engine,
-    // then — if the resolve MINTED (decision B) — refresh the affected contact
-    // in the cache so the app needs no post-write reload. When the engine (or,
-    // for favorites, the favorites store) is nil — the `.unavailable` storage
-    // state — writes THROW `SidecarUnavailableError` rather than silently no-op,
-    // matching `SyncService`'s throw behavior.
+    // then — if the resolve MINTED — refresh the affected contact in the cache
+    // so the app needs no post-write reload. When the engine (or, for favorites,
+    // the favorites store) is nil — the `.unavailable` storage state — writes
+    // THROW `SidecarUnavailableError` rather than silently no-op.
 
     /// Live (non-deleted) notes on the contact identified by `id`, oldest first.
     /// Returns `[]` when the contact is unreconciled (no sidecar yet) or the
@@ -735,7 +728,7 @@ public final class ContactsRepository: NSObject {
     /// `[]` when the contact is unreconciled or the engine is unavailable.
     /// Mirrors `SyncService.eventLinks(forContactUUID:)`. (The CONTACT endpoint
     /// is keyed on `ContactID`; the EVENT endpoint stays a bare UUID until the
-    /// deferred event-identity migration — events are out of scope for Stage 6.)
+    /// deferred event-identity migration.)
     public func eventLinks(for id: ContactID) -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
@@ -1088,8 +1081,7 @@ public final class ContactsRepository: NSObject {
     /// Toggle the favorite state of the contact identified by `id`, returning
     /// the NEW state (`true` if just favorited, `false` if unfavorited).
     /// Resolves-or-mints the GuessWho UUID first (favoriting a never-touched
-    /// contact reconciles + mints, transparent to the caller — the deliberate
-    /// UX change that lets the favorite gate drop in 6d), then toggles the
+    /// contact reconciles + mints, transparent to the caller), then toggles the
     /// CONTACT favorite, then refreshes the cache if it minted. Throws
     /// `SidecarUnavailableError` when EITHER the engine (needed to mint) OR the
     /// favorites store is unavailable. Mirrors
@@ -1339,12 +1331,11 @@ public final class ContactsRepository: NSObject {
             // Pointer entry for RECONCILED contacts only — guessWhoID → localID
             // (canonical lowercase guessWhoID off `ContactID`). Last-writer-wins
             // on a duplicate guessWhoID: if two cached contacts momentarily share
-            // one, the later one in the array overwrites the pointer. This is the
-            // pointer analogue of today's last-writer-wins on the old fused index,
-            // and it occurs ONLY inside a transient, un-collapsed duplicate-
-            // guessWhoID window that reconciliation owns and resolves onto one
-            // canonical id. Consistent resolution there is what the list VCs'
-            // `effectiveID` dedup guard relies on to render one stable row.
+            // one, the later one in the array overwrites the pointer. This occurs
+            // ONLY inside a transient, un-collapsed duplicate-guessWhoID window
+            // that reconciliation owns and resolves onto one canonical id.
+            // Consistent resolution there is what the list VCs' `effectiveID`
+            // dedup guard relies on to render one stable row.
             // Rebuilding from scratch on every funnel call also drops a stale
             // guessWhoID/localID pointer automatically (delete, Case-D retire,
             // etc. are all handled by rebuild-from-scratch, no targeted eviction).

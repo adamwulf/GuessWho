@@ -7,9 +7,8 @@ public struct SidecarKey: Hashable, Sendable, Codable {
     public init(kind: SidecarKind, id: String) {
         self.kind = kind
         // Contact, event, and link UUIDs are canonicalized to lowercase so the
-        // same identifier can't be stored under two different cases. Events
-        // are now keyed by minted UUID (post-pivot), so the `.event` branch
-        // joins the lowercasing path.
+        // same identifier can't be stored under two different cases. Events are
+        // keyed by minted UUID, so `.event` takes the same lowercasing path.
         switch kind {
         case .contact, .link, .event:
             self.id = id.lowercased()
