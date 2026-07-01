@@ -747,10 +747,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        // About / Location live as named sidecar fields, not on the CNContact —
-        // read them so the diff shows current values on the existing side (and
-        // marks unchanged rows). `fields(for:)` returns [] for an unreconciled
-        // contact, so this is empty in that case.
+        // Headline / About / Location live as named sidecar fields, not on the
+        // CNContact — read them so the diff shows current values on the
+        // existing side (and marks unchanged rows). `fields(for:)` returns []
+        // for an unreconciled contact, so this is empty in that case.
         let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
         let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
         let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
