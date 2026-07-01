@@ -46,10 +46,11 @@ enum LinkedInDiff {
     static let locationFieldName = "LinkedIn Location"
 
     /// - Parameter existingSidecar: the contact's current sidecar field values
-    ///   keyed by field name (e.g. `["LinkedIn About": "…", "LinkedIn Location":
-    ///   "…"]`). About/Location aren't `CNContact` fields, so their existing
-    ///   value lives here, not on `contact`. Pass `[:]` when the contact is
-    ///   unreconciled (no sidecar fields yet) — every row then reads as new.
+    ///   keyed by field name (e.g. `["LinkedIn Headline": "…", "LinkedIn
+    ///   About": "…"]`). Headline/About/Location aren't `CNContact` fields, so
+    ///   their existing value lives here, not on `contact`. Pass `[:]` when the
+    ///   contact is unreconciled (no sidecar fields yet) — every row then reads
+    ///   as new.
     static func rows(
         existing contact: Contact,
         incoming profile: LinkedInProfile,

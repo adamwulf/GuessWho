@@ -392,8 +392,8 @@ public final class ContactsRepository: NSObject {
     /// Throws if the contact can't be fetched/saved. Returns the refreshed
     /// `Contact` (CNContact fields; sidecar notes are read separately).
     ///
-    /// NOTE: adding the about/location notes can MINT a GuessWho ID for a
-    /// previously-unreconciled contact. After this call, use the RETURNED
+    /// NOTE: adding the headline/about/location notes can MINT a GuessWho ID
+    /// for a previously-unreconciled contact. After this call, use the RETURNED
     /// contact's `contactID` for follow-up sidecar reads — an older `ContactID`
     /// held by the caller may be pre-mint (stale).
     @discardableResult
@@ -468,10 +468,10 @@ public final class ContactsRepository: NSObject {
 
         try await saveContact(edited, for: id)
 
-        // Sidecar key/value fields (about/location aren't CNContact fields).
-        // UPSERT by name (not append-only notes) so re-importing the same profile
-        // updates the value instead of duplicating it. Names are prefixed
-        // "LinkedIn " so the source is obvious.
+        // Sidecar key/value fields (headline/about/location aren't CNContact
+        // fields). UPSERT by name (not append-only notes) so re-importing the
+        // same profile updates the value instead of duplicating it. Names are
+        // prefixed "LinkedIn " so the source is obvious.
         if fields.contains(.headline), let head = profile.headline?.trimmed, !head.isEmpty {
             // The raw headline is a single free-text line. It's the only place
             // the title/bio survives when it doesn't parse as "<Title> at <Org>"
