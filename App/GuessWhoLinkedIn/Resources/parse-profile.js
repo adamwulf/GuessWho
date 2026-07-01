@@ -74,6 +74,14 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   // card. Keep the climb capped so we never accidentally select <main>/<body>.
   const isPronoun = (t) =>
     /^\(?\s*(he\/him|she\/her|they\/them)/i.test(t);
+  // Connection-degree badges ("· 1st", "· 2nd", "3rd+") render as their own
+  // <p> elements INSIDE the name row. If they survive this filter, the
+  // ancestor climb below stops at the name row and never reaches the real
+  // top card — headline and location come back as degree garbage/null
+  // (confirmed against a captured third-party profile, 2026-07).
+  const isDegree = (t) => /^[·\s]*\d+(st|nd|rd|th)\+?$/i.test(t);
+  // The "Contact info" trigger renders as a <p> in the location row.
+  const isChrome = (t) => /^contact info$/i.test(t);
 
   const topCardLines = safe(() => {
     if (!nameHeading) return [];
@@ -81,7 +89,7 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
       const lines = [...node.querySelectorAll("p")]
         .map((p) => text(p))
-        .filter((t) => t && t !== "·" && !isPronoun(t));
+        .filter((t) => t && t !== "·" && !isPronoun(t) && !isDegree(t) && !isChrome(t));
       // The top card is the first ancestor that yields real <p> lines (the
       // headline/location). Stop as soon as we find them.
       if (lines.length) return lines;
