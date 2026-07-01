@@ -1,0 +1,56 @@
+// GuessWhoAppKitBridge-Shared.xcconfig
+// Config-invariant TARGET-level settings for the GuessWhoAppKitBridge target —
+// a native-macOS loadable `.bundle` that hosts the AppKit `NSOpenPanel` the
+// Catalyst app can't link directly. The app embeds this bundle under
+// `<App>.app/Contents/PlugIns/` and loads it at runtime (see
+// App/GuessWho/AppKitBridgeLoader.swift).
+//
+// The per-configuration bundle id lives in GuessWhoAppKitBridge-Debug.xcconfig
+// and GuessWhoAppKitBridge-Release.xcconfig, each wired as that
+// configuration's baseConfigurationReference in the project.
+
+#include "SharedVersion.xcconfig"
+
+PRODUCT_NAME = $(TARGET_NAME)
+
+// Signing. The bundle carries NO entitlements of its own — a loaded bundle
+// inherits the host app's sandbox at runtime, and it's re-signed with the
+// app's identity on copy (CodeSignOnCopy in the app's Embed phase).
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+
+// Platform: NATIVE macOS, NOT Catalyst. SDKROOT=macosx is THE crucial setting
+// that makes `import AppKit` legal in the bundle's Swift source.
+SDKROOT = macosx
+SUPPORTED_PLATFORMS = macosx
+MACOSX_DEPLOYMENT_TARGET = 14.0
+
+// Loadable bundle packaging.
+MACH_O_TYPE = mh_bundle
+WRAPPER_EXTENSION = bundle
+SKIP_INSTALL = YES
+
+// Swift. This tiny AppKit shim builds in Swift 5 language mode (the proven
+// config for a loadable-bundle panel driver): the @objc `AppKitPlugin`
+// completion closure is a plain Obj-C block, and NSOpenPanel's own
+// main-thread contract — not Swift 6 actor isolation — is what keeps the
+// callback thread-correct. The shared `AppKitPlugin.swift` still compiles
+// clean under the app target's Swift 6 mode; only the bundle's private impl
+// stays in 5.0.
+CLANG_ENABLE_MODULES = YES
+SWIFT_VERSION = 5.0
+
+// Info.plist. GENERATE_INFOPLIST_FILE synthesizes the plist. NSPrincipalClass
+// must be the Swift-MANGLED `<module>.<class>` string: `Bundle.principalClass`
+// dlopens the bundle and looks up that mangled symbol in the bundle's image —
+// it does NOT go through the Obj-C flat name table, so the bare `@objc(...)`
+// name is only a fragile, coincidental fallback and must not be relied on.
+// Our Swift module name is PRODUCT_MODULE_NAME (= PRODUCT_NAME = TARGET_NAME =
+// `GuessWhoAppKitBridge`), NOT the dotted bundle id, so the qualified name is
+// `GuessWhoAppKitBridge.GuessWhoAppKitBridge`. Building it from
+// $(PRODUCT_MODULE_NAME) keeps it tracking the real module name. If this string
+// drifts from the actual `<module>.<class>`, `bundle.principalClass` resolves
+// to nil and the loader silently finds no plugin.
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_NSPrincipalClass = $(PRODUCT_MODULE_NAME).GuessWhoAppKitBridge
+INFOPLIST_KEY_NSHumanReadableCopyright =
