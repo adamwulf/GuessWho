@@ -395,6 +395,9 @@ private final class FavoriteCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let captionLabel = UILabel()
+    private let calendarSwatch = UIView()
+    private let calendarLabel = UILabel()
+    private let calendarRow = UIStackView()
     private var representedContactID: ContactID?
     private var photoTask: Task<Void, Never>?
 
@@ -414,6 +417,9 @@ private final class FavoriteCell: UITableViewCell {
         representedContactID = nil
         iconView.image = nil
         captionLabel.isHidden = false
+        calendarLabel.text = nil
+        calendarSwatch.backgroundColor = nil
+        calendarRow.isHidden = true
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -445,7 +451,30 @@ private final class FavoriteCell: UITableViewCell {
         captionLabel.translatesAutoresizingMaskIntoConstraints = false
         captionLabel.numberOfLines = 1
 
-        let textStack = UIStackView(arrangedSubviews: [titleLabel, captionLabel])
+        // Calendar line (swatch + name), shown only for resolved events that
+        // carry a calendar name — matches the Events list so the same event
+        // duplicated across calendars is disambiguated in both places.
+        calendarSwatch.translatesAutoresizingMaskIntoConstraints = false
+        calendarSwatch.layer.cornerRadius = 3
+        calendarSwatch.layer.cornerCurve = .continuous
+        calendarSwatch.setContentHuggingPriority(.required, for: .horizontal)
+        calendarSwatch.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        calendarLabel.font = .preferredFont(forTextStyle: .caption1)
+        calendarLabel.textColor = .secondaryLabel
+        calendarLabel.adjustsFontForContentSizeCategory = true
+        calendarLabel.translatesAutoresizingMaskIntoConstraints = false
+        calendarLabel.numberOfLines = 1
+
+        calendarRow.axis = .horizontal
+        calendarRow.alignment = .center
+        calendarRow.spacing = 5
+        calendarRow.translatesAutoresizingMaskIntoConstraints = false
+        calendarRow.isHidden = true
+        calendarRow.addArrangedSubview(calendarSwatch)
+        calendarRow.addArrangedSubview(calendarLabel)
+
+        let textStack = UIStackView(arrangedSubviews: [titleLabel, captionLabel, calendarRow])
         textStack.axis = .vertical
         textStack.alignment = .leading
         textStack.spacing = 4
@@ -459,6 +488,8 @@ private final class FavoriteCell: UITableViewCell {
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
+            calendarSwatch.widthAnchor.constraint(equalToConstant: 10),
+            calendarSwatch.heightAnchor.constraint(equalToConstant: 10),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
@@ -469,6 +500,10 @@ private final class FavoriteCell: UITableViewCell {
     func configure(with item: FavoriteListItem, photoLoader: ContactPhotoLoader) {
         cancelPhotoLoad()
         representedContactID = nil
+        // Default the calendar line off; only a resolved event turns it on.
+        calendarLabel.text = nil
+        calendarSwatch.backgroundColor = nil
+        calendarRow.isHidden = true
         switch item.kind {
         case .contact:
             if let contact = item.contact {
@@ -504,6 +539,13 @@ private final class FavoriteCell: UITableViewCell {
                 titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
                 captionLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
                 captionLabel.isHidden = false
+                if let name = event.calendarName, !name.isEmpty {
+                    calendarLabel.text = name
+                    let color = event.calendarColorHex.flatMap(UIColor.init(hexString:))
+                    calendarSwatch.backgroundColor = color ?? .separator
+                    calendarSwatch.isHidden = (color == nil)
+                    calendarRow.isHidden = false
+                }
             } else {
                 iconView.contentMode = .scaleAspectFit
                 iconView.image = UIImage(systemName: "calendar.badge.exclamationmark")
