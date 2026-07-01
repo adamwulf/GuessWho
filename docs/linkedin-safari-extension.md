@@ -290,18 +290,21 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    column shows the resulting set); URL dedup is scheme-insensitive; the
    internal `guesswho://contact/<uuid>` identity URL is hidden from the
    Websites column (display-only — the save still merges onto the *real*
-   `urlAddresses`, never reconstructs it from the filtered set). About/Location
-   read their existing value from the named sidecar fields so a re-import marks
-   unchanged rows.
+   `urlAddresses`, never reconstructs it from the filtered set).
+   Headline/About/Location read their existing value from the named sidecar
+   fields so a re-import marks unchanged rows. The Headline row carries the
+   **raw** title/bio line — Job title/Organization only populate when it parses
+   as `"<Title> at <Org>"`, so for free-form headlines ("Principal AI
+   Consultant | Driving…") the Headline row is the only carrier of that text.
 4. **Confirm** — `LinkedInConfirmView` (`App/GuessWho/LinkedInConfirmView.swift`),
    hosted in a `UIHostingController` form sheet: existing-left / LinkedIn-right,
    a checkbox per row (all on by default), unchanged rows de-emphasized.
    Save applies only the checked fields; Cancel writes nothing.
 5. **Save** — `ContactsRepository.applyLinkedIn(profile:to:fields:)` owns the
    merge + save rules. CNContact fields (name/jobTitle/organization/emails/
-   websites/LinkedIn social profile) merge-save; About/Location upsert as named
-   `"LinkedIn …"`-prefixed sidecar fields (not append-only notes, so a re-import
-   updates rather than duplicates). After `applyLinkedIn` returns, the scene
+   websites/LinkedIn social profile) merge-save; Headline/About/Location upsert
+   as named `"LinkedIn …"`-prefixed sidecar fields (not append-only notes, so a
+   re-import updates rather than duplicates). After `applyLinkedIn` returns, the scene
    delegate posts the app-layer `.linkedInImportDidSave` notification so an open
    `ContactDetailView` reloads (the package never posts app notifications).
 
@@ -332,6 +335,18 @@ is visible in Console:
 
 The `EXTENSION resolved … id=` and `APP resolved … id=` lines must be
 **identical**, and the `park: writing to …` path must match `read: looking for …`.
+
+To see **what the parser captured** for a given profile (e.g. "why is the
+headline missing?"), there are two payload dumps, one per side of the boundary:
+
+- **Page console** — `content.js` logs `[GuessWho] parse result:` (full parsed
+  JSON, photo bytes elided) in the LinkedIn tab's Web Inspector console. It
+  includes the `_topCardLines` debug field: the raw top-card `<p>` lines
+  *before* headline/location classification, which pinpoints whether a miss is
+  a DOM-walking problem or a classification problem.
+- **App log** — after decoding the parked payload, the scene delegate logs
+  `decoded payload: {…}` (photo elided) under `app.linkedin-handoff`, so "did
+  field X arrive in the app?" is answerable from `app.log` alone.
 
 ## Runtime validation (needs a human)
 

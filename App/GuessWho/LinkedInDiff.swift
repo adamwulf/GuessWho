@@ -17,7 +17,7 @@ enum LinkedInImport {
 /// which fields the user chose. Each row is independently includable.
 struct LinkedInDiffRow: Identifiable {
     enum Field: String {
-        case name, jobTitle, organization, location, about
+        case name, jobTitle, organization, headline, location, about
         case emails, websites, linkedInURL, photo
     }
 
@@ -38,8 +38,10 @@ struct LinkedInDiffRow: Identifiable {
 /// show an incoming-empty row). Photo is always first when present.
 enum LinkedInDiff {
     /// The sidecar field names `ContactsRepository.applyLinkedIn` writes the
-    /// LinkedIn About / Location values to. The diff reads the SAME names so a
-    /// re-import shows the contact's current value on the existing side.
+    /// LinkedIn Headline / About / Location values to. The diff reads the SAME
+    /// names so a re-import shows the contact's current value on the existing
+    /// side.
+    static let headlineFieldName = "LinkedIn Headline"
     static let aboutFieldName = "LinkedIn About"
     static let locationFieldName = "LinkedIn Location"
 
@@ -84,9 +86,14 @@ enum LinkedInDiff {
         add(.name, "Name", existingName, profile.fullName)
         add(.jobTitle, "Job title", contact.jobTitle, profile.title)
         add(.organization, "Organization", contact.organizationName, profile.org)
-        // Location / About are sidecar-only (not CNContact fields). Read the
-        // contact's current value from the named sidecar fields so a re-import
-        // shows the existing value and marks the row unchanged when it matches.
+        // Headline / Location / About are sidecar-only (not CNContact fields).
+        // Read the contact's current value from the named sidecar fields so a
+        // re-import shows the existing value and marks the row unchanged when it
+        // matches. The headline is the RAW title/bio line; job title and
+        // organization above are only populated when it parses as "<Title> at
+        // <Org>", so for free-form headlines this row is the only one carrying
+        // that text.
+        add(.headline, "Headline", existingSidecar[headlineFieldName], profile.headline)
         add(.location, "Location", existingSidecar[locationFieldName], profile.location)
         add(.about, "About", existingSidecar[aboutFieldName], profile.about)
 

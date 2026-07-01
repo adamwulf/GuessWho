@@ -384,8 +384,8 @@ public final class ContactsRepository: NSObject {
     ///   existing set (case-insensitive for emails; scheme-insensitive for URLs);
     ///   existing values — including the internal `guesswho://` identity URL —
     ///   are preserved. Name/title/org overwrite only when that field is chosen.
-    /// - Sidecar fields (about/location) are stored as notes prefixed with
-    ///   "LinkedIn …: " so the source is obvious to the user.
+    /// - Sidecar fields (headline/about/location) are stored as notes prefixed
+    ///   with "LinkedIn …: " so the source is obvious to the user.
     /// - `photo` is accepted in `fields` but not yet applied (the contact-image
     ///   write path is a separate step); it's a no-op here for now.
     ///
@@ -472,6 +472,12 @@ public final class ContactsRepository: NSObject {
         // UPSERT by name (not append-only notes) so re-importing the same profile
         // updates the value instead of duplicating it. Names are prefixed
         // "LinkedIn " so the source is obvious.
+        if fields.contains(.headline), let head = profile.headline?.trimmed, !head.isEmpty {
+            // The raw headline is a single free-text line. It's the only place
+            // the title/bio survives when it doesn't parse as "<Title> at <Org>"
+            // (e.g. "Principal AI Consultant | Driving Sustainable Value…").
+            _ = try await upsertField(for: id, field: "LinkedIn Headline", value: head, type: .note)
+        }
         if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
             // About is multi-line prose.
             _ = try await upsertField(for: id, field: "LinkedIn About", value: about, type: .multilineNote)

@@ -87,6 +87,6 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
 public enum LinkedInField: String, Sendable, CaseIterable {
     case name, jobTitle, organization
     case emails, websites, linkedInURL
-    case location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
+    case headline, location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
     case photo
 }
