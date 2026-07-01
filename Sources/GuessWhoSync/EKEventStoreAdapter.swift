@@ -282,8 +282,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             let components = converted.components,
             components.count >= 3
         else { return nil }
-        let clamp = { (value: CGFloat) -> UInt in
-            UInt((min(max(value, 0), 1) * 255).rounded())
+        // UInt32 bridges to the CUnsignedInt that the %X specifier expects.
+        let clamp = { (value: CGFloat) -> UInt32 in
+            UInt32((min(max(value, 0), 1) * 255).rounded())
         }
         return String(format: "#%02X%02X%02X", clamp(components[0]), clamp(components[1]), clamp(components[2]))
     }

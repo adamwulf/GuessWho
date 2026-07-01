@@ -605,8 +605,10 @@ private final class EventCell: UITableViewCell {
         // reset the row's mutable state so nothing leaks across reused cells.
         if let name = event.calendarName, !name.isEmpty {
             calendarLabel.text = name
+            // Swatch shows only when we have a color; otherwise hide it and
+            // let the name alone identify the calendar.
             let color = event.calendarColorHex.flatMap(UIColor.init(hexString:))
-            calendarSwatch.backgroundColor = color ?? .separator
+            calendarSwatch.backgroundColor = color
             calendarSwatch.isHidden = (color == nil)
             calendarRow.isHidden = false
         } else {

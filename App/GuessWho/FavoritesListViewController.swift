@@ -541,8 +541,10 @@ private final class FavoriteCell: UITableViewCell {
                 captionLabel.isHidden = false
                 if let name = event.calendarName, !name.isEmpty {
                     calendarLabel.text = name
+                    // Swatch shows only when we have a color; otherwise hide it
+                    // and let the name alone identify the calendar.
                     let color = event.calendarColorHex.flatMap(UIColor.init(hexString:))
-                    calendarSwatch.backgroundColor = color ?? .separator
+                    calendarSwatch.backgroundColor = color
                     calendarSwatch.isHidden = (color == nil)
                     calendarRow.isHidden = false
                 }
