@@ -39,10 +39,12 @@ struct ContactDetailView: View {
     // in an Identifiable box because `.fullScreenCover(item:)` requires it and
     // UIImage isn't Identifiable.
     @State private var fullscreenPhoto: FullscreenPhoto?
-    // Edit-mode photo change. Presents the system PhotosPicker (PHPicker on
-    // iOS/iPadOS; the native Open panel on Catalyst) directly — no
-    // intermediate Choose/Remove menu. `photoPickerItem` binds the picker
-    // selection so the picked item can be loaded and written to the contact.
+    // Edit-mode photo change. Presents the system PhotosPicker on
+    // iOS/iPadOS, or a `UIDocumentPickerViewController` Open panel on
+    // Catalyst (see `PhotoChangeModifier`) — no intermediate Choose/Remove
+    // menu. `photoPickerItem` binds the PhotosPicker selection on
+    // iOS/iPadOS so the picked item can be loaded and written to the
+    // contact.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
@@ -198,7 +200,8 @@ struct ContactDetailView: View {
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
             photoSaveError: $photoSaveError,
-            onPick: { item in Task { await applyPickedPhoto(item) } }
+            onPick: { item in Task { await applyPickedPhoto(item) } },
+            onPickFileData: { data, loadError in Task { await applyRawPhotoData(data, loadError: loadError) } }
         ))
         .confirmationDialog(
             "Delete contact?",
@@ -658,28 +661,31 @@ struct ContactDetailView: View {
         }
     }
 
-    /// Handles an image dropped directly onto the monogram (no existing
-    /// photo). `rawData`/`loadError` come straight from the `NSItemProvider`
-    /// completion handler (a nonisolated, arbitrary-queue callback), so this
-    /// MainActor-isolated method is where the load-failure branch is handled
-    /// too — the callback itself must stay free of MainActor-only state.
-    /// Otherwise shares the same downscale/write tail as the picker path.
-    private func applyDroppedPhoto(_ rawData: Data?, loadError: Error?) async {
+    /// Handles raw image bytes from a source that hands back `Data` directly
+    /// rather than a `PhotosPickerItem` — a drop onto the monogram, or the
+    /// Catalyst file Open panel. `rawData`/`loadError` are already hopped
+    /// back to the main thread by the caller (the drop path's
+    /// `NSItemProvider` completion runs on an arbitrary queue; the Catalyst
+    /// file-read explicitly re-enters via `DispatchQueue.main.async`), so
+    /// this method never has to reason about which thread produced them.
+    /// Otherwise shares the same downscale/write tail as the `PhotosPicker`
+    /// path.
+    private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
-            Self.photoLog.error("dropped photo failed to load: \(loadError?.localizedDescription ?? "none")")
+            Self.photoLog.error("photo failed to load: \(loadError?.localizedDescription ?? "none")")
             photoSaveError = "That photo couldn't be loaded."
             return
         }
         do {
             let jpegData = await Self.normalizedPhotoData(from: rawData)
             guard let jpegData else {
-                Self.photoLog.error("dropped photo failed to decode (\(rawData.count) bytes)")
+                Self.photoLog.error("photo failed to decode (\(rawData.count) bytes)")
                 photoSaveError = "That photo couldn't be processed."
                 return
             }
             try await writePhoto(jpegData)
         } catch {
-            Self.photoLog.error("dropped photo save failed: \(error.localizedDescription)")
+            Self.photoLog.error("photo save failed: \(error.localizedDescription)")
             photoSaveError = error.localizedDescription
         }
     }
@@ -788,7 +794,7 @@ struct ContactDetailView: View {
         if isEditingContact {
             // In edit mode the circle is the "change photo" control: tapping
             // it jumps straight to the platform picker (PhotosPicker on
-            // iOS/iPadOS, the native Open panel on Catalyst) rather than
+            // iOS/iPadOS, a file Open panel on Catalyst) rather than
             // stopping at an intermediate Choose/Remove menu. Removing an
             // existing photo is still available via long-press / right-click.
             Button {
@@ -841,7 +847,7 @@ struct ContactDetailView: View {
                       let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) })
                 else { return false }
                 provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, loadError in
-                    Task { await applyDroppedPhoto(data, loadError: loadError) }
+                    Task { await applyRawPhotoData(data, loadError: loadError) }
                 }
                 return true
             }
@@ -1957,23 +1963,44 @@ private extension Array {
     }
 }
 
-/// Bundles the edit-mode photo-change surfaces — the system `PhotosPicker`
-/// and the failure alert — into a single modifier. Extracted from
+/// Bundles the edit-mode photo-change surfaces — the platform picker
+/// (`PhotosPicker` on iOS/iPadOS, a file Open panel on Catalyst) and the
+/// failure alert — into a single modifier. Extracted from
 /// `ContactDetailView.body` so that view's already-long modifier chain stays
 /// within the SwiftUI type-checker's budget.
+///
+/// Catalyst gets a real file-system Open panel rather than the Photos
+/// picker: Catalyst users expect to browse the filesystem (Finder,
+/// AirDropped files, external drives), and `PhotosPicker` only surfaces the
+/// Photos library grid there, not a file dialog.
 private struct PhotoChangeModifier: ViewModifier {
     @Binding var presentingPhotoPicker: Bool
     @Binding var photoPickerItem: PhotosPickerItem?
     @Binding var photoSaveError: String?
     let onPick: (PhotosPickerItem) -> Void
+    let onPickFileData: (Data?, Error?) -> Void
 
     func body(content: Content) -> some View {
         content
+            #if targetEnvironment(macCatalyst)
+            .sheet(isPresented: $presentingPhotoPicker) {
+                ImageDocumentPicker { data, loadError in
+                    // The document picker dismisses itself (pick or cancel)
+                    // without telling SwiftUI, so `presentingPhotoPicker`
+                    // must be reset here or the next tap silently no-ops
+                    // (setting an already-true Bool fires no state change).
+                    presentingPhotoPicker = false
+                    guard data != nil || loadError != nil else { return }
+                    onPickFileData(data, loadError)
+                }
+            }
+            #else
             .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem, matching: .images)
             .onChange(of: photoPickerItem) { _, newItem in
                 guard let newItem else { return }
                 onPick(newItem)
             }
+            #endif
             .alert(
                 "Couldn't update photo",
                 isPresented: Binding(
@@ -1987,6 +2014,66 @@ private struct PhotoChangeModifier: ViewModifier {
             }
     }
 }
+
+#if targetEnvironment(macCatalyst)
+/// Catalyst's photo-change surface: a `UIDocumentPickerViewController`
+/// configured for images, which bridges to the native macOS file Open
+/// panel. Reads the picked file's bytes under its security scope (required
+/// for any URL a document picker returns) and hands raw `Data` back to
+/// `onPick`, matching the `NSItemProvider` completion shape the drag-and-drop
+/// path already uses so both can share the same downscale/write tail.
+private struct ImageDocumentPicker: UIViewControllerRepresentable {
+    let onPick: (Data?, Error?) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image])
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (Data?, Error?) -> Void
+
+        init(onPick: @escaping (Data?, Error?) -> Void) {
+            self.onPick = onPick
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            let didStartAccessing = url.startAccessingSecurityScopedResource()
+            // Read on a background queue via a plain completion handler —
+            // mirrors the drop path's `NSItemProvider.loadDataRepresentation`
+            // shape — rather than `Task.detached`, which under Swift 6
+            // strict concurrency can't safely send this non-Sendable
+            // closure across the actor hop. The security scope stays valid
+            // for the app process, not just the calling thread, so it's
+            // safe to hold it open across the queue hop.
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { if didStartAccessing { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let data = try Data(contentsOf: url)
+                    DispatchQueue.main.async { self.onPick(data, nil) }
+                } catch {
+                    DispatchQueue.main.async { self.onPick(nil, error) }
+                }
+            }
+        }
+
+        // User dismissed the panel without picking a file. Reported as a
+        // nil/nil pair so the caller can reset its `isPresented` state
+        // without treating this as a load failure.
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onPick(nil, nil)
+        }
+    }
+}
+#endif
 
 private struct InfoRowData: Identifiable {
     enum Kind {
