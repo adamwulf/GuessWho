@@ -10,25 +10,23 @@ public extension Notification.Name {
 
 /// Package-owned in-memory read repository for Contacts.
 ///
-/// The repository is deliberately a read-model cache, not a second source of
-/// truth: Contacts remains authoritative. It owns the full reload and
-/// incremental-change mechanics so all UI clients observe one coherent view
-/// of the address book. It currently also preserves the app's established list
-/// query behavior as a transitional compatibility API.
+/// Deliberately a read-model cache, not a second source of truth: Contacts
+/// remains authoritative. It owns the full reload and incremental-change
+/// mechanics so all UI clients observe one coherent view of the address book,
+/// and preserves the app's established list-query behavior as a transitional
+/// compatibility API.
 @MainActor
 @Observable
 public final class ContactsRepository: NSObject {
     private let contactsStore: ContactStoreProtocol
 
     // The sidecar write engine and the standalone favorites store. BOTH are
-    // Optional and nil in the `.unavailable` storage state (no writable
-    // sidecar root), so the repository can reconcile and write a sidecar
-    // itself. Both are reference-type classes; holding them on this
-    // `@MainActor`-isolated repository is what keeps access race-free —
-    // `GuessWhoSync` is additionally `@unchecked Sendable` so the stored
-    // reference crosses no isolation boundary diagnostic. Methods that depend
-    // on either MUST degrade when nil: reads return empty/false, writes throw
-    // `SidecarUnavailableError`.
+    // Optional and nil in the `.unavailable` storage state (no writable sidecar
+    // root). Both are reference-type classes; holding them on this
+    // `@MainActor`-isolated repository keeps access race-free (`GuessWhoSync` is
+    // `@unchecked Sendable`, so the stored reference crosses no isolation
+    // boundary). Methods that depend on either MUST degrade when nil: reads
+    // return empty/false, writes throw `SidecarUnavailableError`.
     private let sync: GuessWhoSync?
     private let favorites: FavoritesStore?
 
@@ -37,21 +35,17 @@ public final class ContactsRepository: NSObject {
     /// production wiring is unchanged: the live `ContactChangeWatcher` posts on
     /// `.default`, so a real external contact change still refreshes this repo.
     ///
-    /// It is INJECTABLE solely for test isolation. The watcher posts the change
-    /// notification with `object: self`, but the repository is constructed
-    /// separately from (and holds no reference to) its watcher, so it must
-    /// observe with `object: nil` to hear that process-wide "contacts changed"
-    /// signal. In production that is correct — there is exactly one repository,
-    /// so `object: nil` is harmless. In tests, though, many repositories live at
-    /// once on the shared `.default` center; a single `object: nil` observer on
-    /// each means ONE test's post of `.guessWhoContactsDidChange` fires EVERY
-    /// live repository's `contactsDidChange`, so a parallel test's repo applies a
-    /// change set for localIDs it never owned and its assertions corrupt. Giving
-    /// each test repository a fresh `NotificationCenter()` confines its observer
-    /// to posts made on that same center — the production refresh behavior is
-    /// preserved (still `.default`), and parallel `swift test` becomes
-    /// deterministic (without it, parallel `swift test` flakes while
-    /// `--no-parallel` always passes).
+    /// It is INJECTABLE solely for test isolation. The watcher posts with
+    /// `object: self`, but the repository holds no reference to its watcher, so
+    /// it must observe with `object: nil` to hear the process-wide "contacts
+    /// changed" signal. In production that is harmless — there is exactly one
+    /// repository. In tests, many repositories share `.default`, so one test's
+    /// post would fire EVERY live repo's `contactsDidChange` — a parallel test's
+    /// repo would apply a change set for localIDs it never owned and corrupt its
+    /// assertions. A fresh `NotificationCenter()` per test repository confines
+    /// its observer to that center: production refresh stays on `.default`, and
+    /// parallel `swift test` becomes deterministic (without it, parallel runs
+    /// flake while `--no-parallel` passes).
     private let notificationCenter: NotificationCenter
 
     public private(set) var contacts: [Contact] = []
@@ -73,17 +67,16 @@ public final class ContactsRepository: NSObject {
     // and `contactIDs(matchingEmail:)` O(1) synchronous main-actor reads. They
     // are NEVER mutated directly — every `contacts` assignment routes through
     // `setContacts(_:)`, which reassigns the array AND rebuilds all three
-    // indexes wholesale, so the array and indexes cannot drift. A wholesale
-    // rebuild (rather than an in-place patch) is what makes the reconciliation
-    // transition — a contact gaining a `guessWhoID` — re-key automatically: the
-    // new array yields a fresh `guessWhoIDToLocalID` pointer (and drops any
-    // stale one) while the contact's `localID` slot is unchanged.
+    // indexes wholesale, so they cannot drift. The wholesale rebuild also makes
+    // the reconciliation transition — a contact gaining a `guessWhoID` — re-key
+    // automatically: the new array yields a fresh `guessWhoIDToLocalID` pointer
+    // (dropping any stale one) while the `localID` slot is unchanged.
 
-    /// Keyed on `localID` (Apple's `CNContact.identifier`). One entry per
-    /// contact; backs the `contact(localID:)` Contacts-boundary accessor AND is
+    /// Keyed on `localID` (Apple's `CNContact.identifier`), one entry per
+    /// contact. Backs the `contact(localID:)` Contacts-boundary accessor AND is
     /// the SOLE `Contact` cache — every other identity lookup chases a pointer
     /// into this map, so there is exactly one `Contact` value per contact and
-    /// the copies cannot drift.
+    /// copies cannot drift.
     private var contactsByLocalID: [String: Contact] = [:]
 
     /// Pointer index: canonical (lowercase) `guessWhoID` → that contact's
@@ -91,8 +84,7 @@ public final class ContactsRepository: NSObject {
     /// `ContactID(contact:).guessWhoID != nil`); it stores no `Contact` value,
     /// just the `localID` to chase back into `contactsByLocalID`. Backs the
     /// guessWhoID branch of `contact(id:)` and all of `contact(guessWhoID:)`.
-    /// `guessWhoID` keys are already canonical-lowercase off `ContactID`, but we
-    /// are explicit about it everywhere this map is written/read.
+    /// Keys are canonical-lowercase off `ContactID`.
     private var guessWhoIDToLocalID: [String: String] = [:]
 
     /// Keyed on each lowercased+trimmed email address a contact carries; a
@@ -104,12 +96,12 @@ public final class ContactsRepository: NSObject {
     /// Bulk cache of every contact's sidecar timestamps, keyed on the lowercased
     /// GuessWho UUID (matching `GuessWhoSync.allContactTimestamps()` and
     /// `ContactID.guessWhoID`). Refreshed wholesale in `reload()` and after each
-    /// stamp write, robustly (a failed read leaves it empty). Backs the three
-    /// time-ordered sorts and their relative-time bucketing; an unreconciled
-    /// contact (no GuessWho UUID) has no entry and sorts/buckets as "no
-    /// timestamp" (oldest / "Earlier"). It is purely derived read-model state,
-    /// so it is NOT `@Observable`-tracked — list re-renders are driven by the
-    /// `contacts`/`sortOrder` changes and `postDidReload()`.
+    /// stamp write; a failed read leaves it empty. Backs the three time-ordered
+    /// sorts and their relative-time bucketing; an unreconciled contact (no
+    /// GuessWho UUID) has no entry and sorts/buckets as "no timestamp" (oldest /
+    /// "Earlier"). Purely derived read-model state, so NOT `@Observable`-tracked
+    /// — list re-renders come from the `contacts`/`sortOrder` changes and
+    /// `postDidReload()`.
     @ObservationIgnored private var contactTimestampsByID: [String: ContactTimestamps] = [:]
 
     /// The CURRENT global list sort order. The repository holds it; the APP owns
@@ -238,31 +230,23 @@ public final class ContactsRepository: NSObject {
     // `localID` carrier inside the value is consumed only by `contact(id:)`.
 
     /// Resolves a `ContactID` back to its cached `Contact`, GuessWho UUID FIRST
-    /// (canonical identity wins; a stale `localID` can never override a real
-    /// UUID match), else by `localID`. Returns `nil` when no cached contact
-    /// matches (deleted, or a retired/unknown id) — the "unavailable" contract
-    /// the UI renders, never a wrong-contact fallback.
+    /// (canonical identity wins; a stale `localID` can never override a real UUID
+    /// match), else by `localID`. Returns `nil` when no cached contact matches
+    /// (deleted, or a retired/unknown id) — the "unavailable" contract the UI
+    /// renders, never a wrong-contact fallback.
     ///
-    /// The `localID` branch is LOAD-BEARING, not a mere fallback: it is exactly
-    /// the captured-pre-reconcile-token case — a view holds an immutable
-    /// `ContactID` minted at navigation whose `guessWhoID` is still nil, and the
-    /// contact then reconciled. `localID` is the one identifier that does NOT
-    /// move across the reconcile re-key, so resolution MUST go by `id.localID`
-    /// there. Do NOT "simplify" this branch away — the captured token carries
-    /// the `localID` a view would otherwise have to thread by hand.
+    /// The `localID` branch is LOAD-BEARING: it is the captured-pre-reconcile-
+    /// token case — a view holds an immutable `ContactID` minted at navigation
+    /// whose `guessWhoID` is still nil, and the contact then reconciled.
+    /// `localID` is the one identifier that does NOT move across the reconcile
+    /// re-key, so resolution MUST go by `id.localID` there. Do NOT "simplify"
+    /// this branch away.
     ///
-    /// The Case-D-loser subtlety (a stale `localID` re-resolving to a merged-
-    /// away duplicate) is MOOT, but for two reasons, not one. A RECONCILED token
-    /// (`guessWhoID` set) whose UUID is still in the book
-    /// hits the pointer index and returns the canonical contact — it does not
-    /// reach the `localID` branch. A reconciled token whose `guessWhoID` was
-    /// REMOVED from the book (deleted, or a Case-D loser whose UUID was retired)
-    /// DOES fall through to the `localID` branch — but that is safe because Apple
-    /// never reuses a deleted record's `CNContact.identifier` for a different
-    /// unified contact, so that token's `localID` slot is empty and we return nil
-    /// (the "unavailable" contract), never a wrong contact. Only an UNRECONCILED
-    /// token (no `guessWhoID`) reaches the `localID` branch to find a real
-    /// contact, where `localID` legitimately IS the only identity.
+    /// It is safe even for a retired/Case-D-loser UUID: Apple never reuses a
+    /// deleted `CNContact.identifier`, so a token whose `guessWhoID` left the
+    /// book falls through to a `localID` slot that is now empty → nil, never a
+    /// wrong contact. (A reconciled token whose UUID is still present hits the
+    /// pointer index and never reaches this branch.)
     public func contact(id: ContactID) -> Contact? {
         if let gw = id.guessWhoID, let lid = guessWhoIDToLocalID[gw] {
             return contactsByLocalID[lid]
@@ -322,12 +306,11 @@ public final class ContactsRepository: NSObject {
     /// is responsible for invalidating any cached decoded image afterwards.
     /// Returns `false` when the id no longer resolves to a contact.
     ///
-    /// PREVIOUS-PHOTO SNAPSHOT: before overwriting an EXISTING photo, the
-    /// current bytes are captured into a single-slot "previous photo" so a
-    /// replacement is recoverable. This is a general rule on the contact-image
-    /// write path — every caller that replaces a photo gets it for free; the
-    /// app needs no change. Snapshotting is best-effort and never blocks the
-    /// actual photo write: a snapshot failure is recorded in `lastError` only.
+    /// PREVIOUS-PHOTO SNAPSHOT: before overwriting an EXISTING photo, the current
+    /// bytes are captured into a single-slot "previous photo" so a replacement is
+    /// recoverable — a general rule on the contact-image write path, so every
+    /// caller that replaces a photo gets it for free. Best-effort: it never
+    /// blocks the actual photo write; a failure is recorded in `lastError` only.
     @discardableResult
     public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
         guard let localID = contact(id: id)?.localID else { return false }
@@ -339,13 +322,13 @@ public final class ContactsRepository: NSObject {
 
     /// Read-before-write: if the contact currently HAS a photo, snapshot those
     /// bytes into a single-slot `previousPhoto` `.blob` before the caller
-    /// overwrites them. No current photo → snapshot nothing. Requires the sync
-    /// engine (the snapshot is a sidecar write); when nil, there's nowhere to
-    /// store it, so it's silently skipped — the photo write still proceeds.
+    /// overwrites them. No current photo → snapshot nothing. The snapshot is a
+    /// sidecar write, so a nil engine silently skips it — the photo write still
+    /// proceeds.
     ///
-    /// Resolving the contact's GuessWho UUID can MINT one for a previously-
-    /// unreconciled contact (same resolve-or-mint path the other sidecar writes
-    /// use), so the cache is refreshed if that happens.
+    /// Resolving the GuessWho UUID can MINT one for a previously-unreconciled
+    /// contact (the same resolve-or-mint path the other sidecar writes use), so
+    /// the cache is refreshed if that happens.
     private func snapshotCurrentPhotoIfPresent(for id: ContactID, localID: String) async {
         guard let sync else { return }
         do {
@@ -371,14 +354,13 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// The single-slot field name the previous-photo snapshot lives under. This
-    /// is an INTERNAL identifier, NOT a display string: the `.blob` field it
-    /// names is excluded from the user-visible custom-fields list by
-    /// `fields(for:)` (a `.blob` is infrastructure, not a user-editable field),
-    /// so the raw "previousPhoto" token never reaches the UI. A future
-    /// "previous photo" feature would render its own plain-language label and
-    /// read the bytes via `GuessWhoSync.blobFieldData`, not surface this name.
-    /// v1 only guarantees capture.
+    /// The single-slot field name the previous-photo snapshot lives under. An
+    /// INTERNAL identifier, NOT a display string: `fields(for:)` excludes its
+    /// `.blob` field from the user-visible custom-fields list, so the raw
+    /// "previousPhoto" token never reaches the UI. A future "previous photo"
+    /// feature would render its own plain-language label and read the bytes via
+    /// `GuessWhoSync.blobFieldData`, not surface this name. v1 only guarantees
+    /// capture.
     static let previousPhotoFieldName = "previousPhoto"
 
     /// Best-effort MIME sniff for the snapshot pointer's `contentType`. CN
@@ -412,8 +394,8 @@ public final class ContactsRepository: NSObject {
     ///
     /// NOTE: adding the about/location notes can MINT a GuessWho ID for a
     /// previously-unreconciled contact. After this call, use the RETURNED
-    /// contact's `contactID` for any follow-up sidecar reads — an older
-    /// `ContactID` held by the caller may be pre-mint (stale) for note reads.
+    /// contact's `contactID` for follow-up sidecar reads — an older `ContactID`
+    /// held by the caller may be pre-mint (stale).
     @discardableResult
     public func applyLinkedIn(
         profile: LinkedInProfile,
@@ -457,9 +439,9 @@ public final class ContactsRepository: NSObject {
         if fields.contains(.linkedInURL),
            let url = (profile.contactInfo?.profileUrl ?? profile.sourceUrl)?.trimmed, !url.isEmpty {
             let slug = LinkedInURL.slug(from: url) ?? ""
-            // A LinkedIn social profile is identified by its service ("LinkedIn")
-            // — existing ones may store only a username (no urlString), so match
-            // on service or a same-slug urlString/username, not urlString alone.
+            // A LinkedIn social profile is identified by its service ("LinkedIn");
+            // existing ones may store only a username (no urlString), so match on
+            // service or a same-slug urlString/username, not urlString alone.
             let existingIndex = edited.socialProfiles.firstIndex { lp in
                 let p = lp.value
                 if p.service.caseInsensitiveCompare("LinkedIn") == .orderedSame { return true }
@@ -468,8 +450,8 @@ public final class ContactsRepository: NSObject {
                 return false
             }
             // Contacts' LinkedIn social-profile field expects the USERNAME, not a
-            // URL (it derives the URL from the username; a stored URL shows blank
-            // in the normal card view). So store just the slug.
+            // URL — it derives the URL from the username, and a stored URL shows
+            // blank in the normal card view. So store just the slug.
             if let i = existingIndex {
                 // Already has a LinkedIn profile — don't duplicate. Fill in the
                 // username if it's missing.
@@ -486,9 +468,9 @@ public final class ContactsRepository: NSObject {
 
         try await saveContact(edited, for: id)
 
-        // Sidecar key/value fields (about/location aren't CNContact fields). Use
+        // Sidecar key/value fields (about/location aren't CNContact fields).
         // UPSERT by name (not append-only notes) so re-importing the same profile
-        // updates the value instead of duplicating it. Field names are prefixed
+        // updates the value instead of duplicating it. Names are prefixed
         // "LinkedIn " so the source is obvious.
         if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
             // About is multi-line prose.
@@ -554,22 +536,19 @@ public final class ContactsRepository: NSObject {
         removeContact(localID: localID)
     }
 
-    /// The reconciled GuessWho UUID carried by `contact`, or `nil` when the
-    /// contact has no valid `guesswho://` URL yet (un-reconciled). This is the
-    /// EFFECTIVE GuessWho identity — `ContactID(contact:).guessWhoID` — NOT the
-    /// `localID` fallback: a contact with no GuessWho URL has no sidecar data to
-    /// key on, so callers binding favorites/notes/links/tags must get `nil` (and
-    /// stand down) rather than a transient `localID`.
+    /// The reconciled GuessWho UUID carried by `contact` (`ContactID(contact:)
+    /// .guessWhoID`), or `nil` when the contact has no valid `guesswho://` URL
+    /// yet — NOT the `localID` fallback: an unreconciled contact has no sidecar
+    /// data to key on, so callers binding favorites/notes/links/tags must get
+    /// `nil` and stand down rather than a transient `localID`.
     ///
-    /// A PURE function of the passed contact — no cache read — so it reads the
-    /// UUID off the live record the caller already holds, with no cache-miss
-    /// window. Identity comes from `SidecarKey` exactly as `Contact.contactID`
-    /// and `contact(id:)` resolve it. The sanctioned way for the app to read an OPENED
-    /// contact's own GuessWho UUID without reaching into `ContactID.guessWhoID`
-    /// (which is `package`): the detail view holds the loaded `Contact` and binds
-    /// its sidecar stores on this. Semantics match the former
-    /// `SyncService.guessWhoUUID(in:)` byte-for-byte (it walked the same
-    /// `urlAddresses` via the same `SidecarKey` parser).
+    /// A PURE function of the passed contact — no cache read, so no cache-miss
+    /// window; it reads the UUID off the live record the caller already holds
+    /// via `SidecarKey`, exactly as `Contact.contactID` and `contact(id:)` do.
+    /// The sanctioned way for the app to read an OPENED contact's own GuessWho
+    /// UUID without reaching into `ContactID.guessWhoID` (which is `package`):
+    /// the detail view holds the loaded `Contact` and binds its sidecar stores
+    /// on this.
     package func guessWhoID(in contact: Contact) -> String? {
         ContactID(contact: contact).guessWhoID
     }
@@ -587,22 +566,20 @@ public final class ContactsRepository: NSObject {
 
     /// Resolves a BARE GuessWho UUID (a `SidecarKey` endpoint id, a
     /// `Favorite.id`, etc.) to its cached `Contact` via a clean pointer hop:
-    /// `guessWhoIDToLocalID[uuid]` → `contactsByLocalID[localID]`. NO confirm-
-    /// guard — `guessWhoIDToLocalID` is keyed ONLY on real `guessWhoID`s (it
-    /// excludes unreconciled contacts entirely), so it can never return a
-    /// `localID`-coincidence; the pure guessWhoID keyspace IS the guarantee the
-    /// old confirm-guard provided. Input is lowercased to match the canonical
-    /// lowercase keys (`SidecarKey` / `Favorite` already lowercase their ids —
-    /// defensive). Returns `nil` for an unknown/retired UUID, or for a string
-    /// that is only some contact's `localID` — the "unavailable" contract, never
-    /// a wrong-contact fallback.
+    /// `guessWhoIDToLocalID[uuid]` → `contactsByLocalID[localID]`. No confirm-
+    /// guard is needed — `guessWhoIDToLocalID` is keyed ONLY on real
+    /// `guessWhoID`s (unreconciled contacts are excluded), so it can never return
+    /// a `localID`-coincidence. Input is lowercased to match the canonical keys
+    /// (`SidecarKey` / `Favorite` already lowercase — defensive). Returns `nil`
+    /// for an unknown/retired UUID or a string that is only some contact's
+    /// `localID` — the "unavailable" contract, never a wrong-contact fallback.
     ///
     /// STAYS PUBLIC: favorites and links sync between devices and so persist the
     /// stable GuessWho UUID (not a `ContactID`, which carries the transient
-    /// `localID` and is not `Codable` for that reason). The app legitimately
-    /// reads bare guessWhoID strings off disk and resolves them here — the
-    /// bridge that lets it resolve a link endpoint / favorite without an app-side
-    /// `uuid → Contact` map.
+    /// `localID` and is not `Codable` for that reason). The app reads bare
+    /// guessWhoID strings off disk and resolves them here — the bridge that lets
+    /// it resolve a link endpoint / favorite without an app-side `uuid → Contact`
+    /// map.
     package func contact(guessWhoID: String) -> Contact? {
         guard let lid = guessWhoIDToLocalID[guessWhoID.lowercased()] else { return nil }
         return contactsByLocalID[lid]
@@ -629,19 +606,17 @@ public final class ContactsRepository: NSObject {
     ///
     /// DEGRADES when the engine is nil (the `.unavailable` storage state): a
     /// write to an unreconciled contact has nowhere to mint, so it THROWS
-    /// `SidecarUnavailableError` rather than silently no-op — matching the
-    /// existing app write behavior the caller expects.
+    /// `SidecarUnavailableError` rather than silently no-op.
     ///
     /// CONCURRENCY — accepts a rare double-mint by design; does NOT serialize.
     /// Two truly-concurrent writes to the SAME never-reconciled `ContactID`
-    /// could each mint before the other's write lands, because resolve-or-mint
-    /// must `await` the reconcile (which `await`s `contacts.fetch`) and the
-    /// engine's per-key locks (`PerKeyLockTable`) are SYNCHRONOUS `NSLock`s that
-    /// CANNOT be held across that `await`. This is accepted as a practical
-    /// non-event (it needs a never-reconciled contact AND two simultaneous
-    /// writes from different surfaces — effectively only Catalyst multi-window);
-    /// no async-serialization machinery is added here. See the
-    /// "CONCURRENCY (decision: ACCEPT double-mint...)" paragraph in
+    /// could each mint before the other's write lands: resolve-or-mint must
+    /// `await` the reconcile (which `await`s `contacts.fetch`), and the engine's
+    /// per-key locks (`PerKeyLockTable`) are SYNCHRONOUS `NSLock`s that CANNOT be
+    /// held across that `await`. Accepted as a practical non-event — it needs a
+    /// never-reconciled contact AND two simultaneous writes from different
+    /// surfaces (effectively only Catalyst multi-window). See the "CONCURRENCY
+    /// (decision: ACCEPT double-mint...)" paragraph in
     /// `plans/package-vended-contact-identity.md` for the full rationale,
     /// including why single-device last-write-wins orphans a sidecar (harmless)
     /// and only the multi-device case self-heals via Case-D.
@@ -660,10 +635,10 @@ public final class ContactsRepository: NSObject {
             return assigned
         }
         // Reconcile finished without an `assignedUUID` — Cases B/C/D may stamp
-        // the on-disk contact's URL without populating that field (e.g. a stale
-        // in-memory snapshot of a contact that already carried a valid URL).
-        // Re-fetch the single record post-write so we read the freshly written
-        // UUID, then derive it via the same `SidecarKey` parser `ContactID` uses.
+        // the on-disk URL without populating that field (e.g. a stale in-memory
+        // snapshot of a contact that already carried a valid URL). Re-fetch the
+        // record so we read the freshly written UUID, via the same `SidecarKey`
+        // parser `ContactID` uses.
         if let fresh = try? await contactsStore.fetch(localID: id.localID),
            let stamped = ContactID(contact: fresh).guessWhoID {
             return stamped
@@ -674,22 +649,21 @@ public final class ContactsRepository: NSObject {
     // MARK: - ContactID-keyed contact API (notes / links / favorites)
     //
     // The PUBLIC contact-sidecar surface the app speaks, keyed exclusively on
-    // `ContactID`. Plain verbs (no "sidecar" in any name): the app never
-    // constructs a `SidecarKey` or sees the word — the repository translates a
-    // `ContactID` to `SidecarKey(kind: .contact, id: guessWhoID)` internally and
-    // calls the engine.
+    // `ContactID`. Plain verbs, no "sidecar" in any name: the app never
+    // constructs a `SidecarKey` — the repository translates a `ContactID` to
+    // `SidecarKey(kind: .contact, id: guessWhoID)` internally and calls the
+    // engine.
     //
     // READS are SYNCHRONOUS: `id.guessWhoID` is already on the value, so no
     // reconcile and no `await`. An UNRECONCILED contact (`id.guessWhoID == nil`)
-    // has no sidecar yet, so reads return empty/false and MINT NOTHING — reads
-    // never reconcile.
+    // has no sidecar yet, so reads return empty/false and MINT NOTHING.
     //
     // WRITES are `async`: they resolve-or-mint the GuessWho UUID first (via
-    // `resolveOrMintGuessWhoID`, which `await`s reconcile), then call the engine,
-    // then — if the resolve MINTED — refresh the affected contact in the cache
-    // so the app needs no post-write reload. When the engine (or, for favorites,
-    // the favorites store) is nil — the `.unavailable` storage state — writes
-    // THROW `SidecarUnavailableError` rather than silently no-op.
+    // `resolveOrMintGuessWhoID`, which `await`s reconcile), call the engine,
+    // then — if the resolve MINTED — refresh the affected contact so the app
+    // needs no post-write reload. When the engine (or, for favorites, the
+    // favorites store) is nil — the `.unavailable` storage state — writes THROW
+    // `SidecarUnavailableError` rather than silently no-op.
 
     /// Live (non-deleted) notes on the contact identified by `id`, oldest first.
     /// Returns `[]` when the contact is unreconciled (no sidecar yet) or the
@@ -744,12 +718,11 @@ public final class ContactsRepository: NSObject {
 
     /// The bare EVENT-endpoint UUIDs of every live contact↔event link on the
     /// contact identified by `id`. The package resolves the far (event) endpoint
-    /// internally so the app never constructs a `.contact` `SidecarKey` to walk
-    /// a link — it hands its `ContactID` and gets back the event UUIDs it then
-    /// asks the event surface to refresh (an out-of-scope event-cache concern
-    /// that still lives on `SyncService`). Returns `[]` when the contact is
-    /// unreconciled or the engine is unavailable. (The EVENT endpoint stays a
-    /// bare UUID until the deferred event-identity migration.)
+    /// internally so the app never constructs a `.contact` `SidecarKey` to walk a
+    /// link — it hands its `ContactID` and gets back the event UUIDs to feed the
+    /// event surface's refresh (still on `SyncService`). Returns `[]` when the
+    /// contact is unreconciled or the engine is unavailable. (The EVENT endpoint
+    /// stays a bare UUID until the deferred event-identity migration.)
     public func linkedEventUUIDs(for id: ContactID) -> [String] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
@@ -861,8 +834,8 @@ public final class ContactsRepository: NSObject {
     // Each stamp upserts ONE named timestamp cell on the contact sidecar and,
     // like every other write here, resolves-or-mints the GuessWho UUID first —
     // so the FIRST stamp to an unreconciled contact reconciles + mints, then
-    // refreshes the cache so the now-reconciled row appears. The three stamps
-    // are identical apart from which cell they target.
+    // refreshes the cache. The three stamps differ only in which cell they
+    // target.
 
     /// Stamp `lastModified = now` on the contact identified by `id`. Mirrors
     /// `addNote`: resolve-or-mint, write the cell, refresh on mint.
@@ -877,10 +850,10 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Stamp `lastViewed = now` on the contact identified by `id`. The
-    /// reconcile that satisfies "always reconcile when stamping the viewed
-    /// timestamp" happens INSIDE `resolveOrMintGuessWhoID(for:)` — an
-    /// unreconciled contact mints its GuessWho UUID as part of this write.
-    /// Mirrors `addNote`: resolve-or-mint, write the cell, refresh on mint.
+    /// "always reconcile when stamping viewed" reconcile happens INSIDE
+    /// `resolveOrMintGuessWhoID(for:)` — an unreconciled contact mints its
+    /// GuessWho UUID as part of this write. Mirrors `addNote`: resolve-or-mint,
+    /// write the cell, refresh on mint.
     public func stampViewed(_ id: ContactID) async throws {
         try await stampTimestamp(.viewed, for: id)
     }
@@ -894,15 +867,13 @@ public final class ContactsRepository: NSObject {
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
         try sync.stampContactTimestamp(which, at: SidecarKey(kind: .contact, id: guessWhoID), now: Date())
-        // The written timestamp changed; refresh the bulk cache so a time-ordered
-        // list re-sorts/re-buckets this contact. `refreshCacheIfMinted` re-reads
-        // the Contacts record only when a mint stamped a new GuessWho URL (so the
-        // row's identity settles); the timestamp cache is refreshed regardless.
+        // Refresh the bulk timestamp cache regardless, so a time-ordered list
+        // re-sorts/re-buckets this contact. `refreshCacheIfMinted` re-reads the
+        // Contacts record only when a mint stamped a new GuessWho URL.
         refreshTimestampCache()
         await refreshCacheIfMinted(minted, localID: id.localID)
         // On mint, `refreshCacheIfMinted` posts its own reload; on the common
-        // non-mint path, post so a time-ordered list re-renders with the new
-        // timestamp.
+        // non-mint path, post so a time-ordered list re-renders.
         if !minted { postDidReload() }
     }
 
@@ -910,11 +881,11 @@ public final class ContactsRepository: NSObject {
     /// `ContactID`. Returns empty for an unreconciled id (no mint on read).
     ///
     /// `.blob` fields are EXCLUDED: they are internal infrastructure (e.g. the
-    /// `previousPhoto` snapshot), not user-editable custom fields. Surfacing one
-    /// would render a phantom row (e.g. literally "previousPhoto") in the
-    /// contact's custom-fields UI — a product-principle violation. The contact
-    /// custom-fields surface is text/date/checkbox only; blobs are read through
-    /// their own typed accessors (`GuessWhoSync.blobFieldData`).
+    /// `previousPhoto` snapshot), not user-editable fields. Surfacing one would
+    /// render a phantom row (literally "previousPhoto") in the custom-fields UI
+    /// — a product-principle violation. The surface is text/date/checkbox only;
+    /// blobs are read through their own typed accessors
+    /// (`GuessWhoSync.blobFieldData`).
     public func fields(for id: ContactID) -> [SidecarField] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let all = (try? sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))) ?? []
@@ -925,10 +896,9 @@ public final class ContactsRepository: NSObject {
     ///  - no existing field → create it with `type`;
     ///  - existing field, SAME type → update its value in place;
     ///  - existing field, DIFFERENT type → replace it (delete + recreate) so the
-    ///    type can change. The per-cell type is write-once, but replacing the
-    ///    whole field programmatically is allowed (the UI keeps the type fixed;
-    ///    this lets an import upgrade e.g. a single-line `.note` to a
-    ///    `.multilineNote`).
+    ///    type can change. The per-cell type is write-once in the UI, but a
+    ///    programmatic replace is allowed — e.g. an import upgrading a single-
+    ///    line `.note` to a `.multilineNote`.
     ///
     /// Gives stable, re-importable key/value storage (unlike notes, which
     /// append). Resolves-or-mints first, then refreshes the cache if minted.
@@ -991,12 +961,12 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Edit an existing note's body on the contact identified by `id`. The two
-    /// `id`s are disambiguated: `id` is the CONTACT, `noteID` is the note. (No
-    /// mint can happen via an edit in practice — you can only edit a note that
-    /// exists, which means the contact is already reconciled — but resolve-or-
-    /// mint is still routed for consistency with the other writes, and the cache
-    /// is refreshed in the impossible-mint case for safety.) Throws when the
-    /// engine is unavailable. Mirrors `SyncService.editNote(id:newBody:forContactUUID:)`.
+    /// `id`s are disambiguated: `id` is the CONTACT, `noteID` is the note. (An
+    /// edit can't mint — a note can only exist on an already-reconciled contact
+    /// — but resolve-or-mint is still routed for consistency with the other
+    /// writes, and the cache refreshed in that impossible case for safety.)
+    /// Throws when the engine is unavailable. Mirrors
+    /// `SyncService.editNote(id:newBody:forContactUUID:)`.
     public func editNote(for id: ContactID, id noteID: UUID, newBody: String) async throws {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
@@ -1098,15 +1068,14 @@ public final class ContactsRepository: NSObject {
 
     // MARK: - Decision B helper
     //
-    // Notes/links/favorite writes do NOT alter the cached `Contact` record —
-    // they live in the sidecar / favorites file, not on the `CNContact`. So the
-    // ONLY write that changes the cached Contact is the FIRST write to an
-    // unreconciled contact, where resolve-or-mint stamped a fresh `guesswho://`
-    // URL onto its `urlAddresses` (changing its `guessWhoID` and thus its
-    // effective identity). In that case — and ONLY that case — re-read the one
-    // record so the cache reflects the new identity and the app needs no
-    // post-write reload. `refreshContact(localID:)` re-fetches the single record
-    // and rebuilds the indexes, automatically re-keying it under the new
+    // Notes/links/favorite writes do NOT alter the cached `Contact` — they live
+    // in the sidecar / favorites file, not on the `CNContact`. The ONLY write
+    // that changes the cached Contact is the FIRST write to an unreconciled
+    // contact, where resolve-or-mint stamped a fresh `guesswho://` URL onto its
+    // `urlAddresses` (changing its `guessWhoID`, hence its effective identity).
+    // In that case only, re-read the one record so the cache reflects the new
+    // identity and the app needs no post-write reload: `refreshContact(localID:)`
+    // re-fetches it and rebuilds the indexes, re-keying it under the new
     // effective id. When nothing minted, the cached Contact is unchanged and we
     // skip the fetch.
 
@@ -1151,9 +1120,8 @@ public final class ContactsRepository: NSObject {
         let needle = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return [] }
         // O(1) index hit. `contactsByEmail` lists matches in cache-array order
-        // (the funnel appends per contact as it walks the array), so this
-        // preserves the previous `contacts.compactMap` ordering and returns
-        // ALL matches.
+        // (the funnel appends per contact as it walks the array), preserving the
+        // previous `contacts.compactMap` ordering.
         return (contactsByEmail[needle] ?? []).map { ContactID(contact: $0) }
     }
 
@@ -1298,22 +1266,21 @@ public final class ContactsRepository: NSObject {
 
     private func postDidReload() {
         // Routed through the injected center (defaults to `.default`, so the
-        // app's list controllers still observe it) — the outbound reload and the
-        // inbound change observer share one center so a test on a fresh center
-        // sees its own repository's reload and nothing else's. The `object: self`
-        // scope already keeps this signal per-repository; the injected center is
-        // what isolates the inbound `object: nil` change observer (see init).
+        // app's list controllers still observe it). Outbound reload and inbound
+        // change observer share one center, so a test on a fresh center sees only
+        // its own repository's reload. `object: self` already scopes this signal
+        // per-repository; the injected center is what isolates the inbound
+        // `object: nil` change observer (see init).
         notificationCenter.post(name: .contactsRepositoryDidReload, object: self)
     }
 
     /// The SINGLE funnel for every `contacts` mutation. Reassigns the array
-    /// (preserving `@Observable` tracking of the stored property) and rebuilds
-    /// all three point-lookup indexes from the new array so they can never
-    /// drift from it. Incremental sites (refresh / remove / delta-apply) mutate
-    /// a local copy and call this once; a wholesale index rebuild at v1
-    /// address-book scale is cheap and eliminates a whole class of patch-drift
-    /// bugs — including the reconciliation re-key, which is automatic here
-    /// because the new array yields the new effective-id key and never
+    /// (preserving `@Observable` tracking) and rebuilds all three point-lookup
+    /// indexes from the new array so they can never drift from it. Incremental
+    /// sites (refresh / remove / delta-apply) mutate a local copy and call this
+    /// once; a wholesale rebuild at v1 address-book scale is cheap and rules out
+    /// patch-drift bugs — including the reconciliation re-key, which is automatic
+    /// here because the new array yields the new effective-id key and never
     /// reproduces the stale one.
     private func setContacts(_ newValue: [Contact]) {
         contacts = newValue
@@ -1329,16 +1296,15 @@ public final class ContactsRepository: NSObject {
         for contact in newValue {
             byLocalID[contact.localID] = contact
             // Pointer entry for RECONCILED contacts only — guessWhoID → localID
-            // (canonical lowercase guessWhoID off `ContactID`). Last-writer-wins
-            // on a duplicate guessWhoID: if two cached contacts momentarily share
-            // one, the later one in the array overwrites the pointer. This occurs
-            // ONLY inside a transient, un-collapsed duplicate-guessWhoID window
-            // that reconciliation owns and resolves onto one canonical id.
-            // Consistent resolution there is what the list VCs' `effectiveID`
-            // dedup guard relies on to render one stable row.
-            // Rebuilding from scratch on every funnel call also drops a stale
-            // guessWhoID/localID pointer automatically (delete, Case-D retire,
-            // etc. are all handled by rebuild-from-scratch, no targeted eviction).
+            // (canonical lowercase off `ContactID`). Last-writer-wins on a
+            // duplicate guessWhoID: if two cached contacts momentarily share one,
+            // the later in the array overwrites the pointer. This happens ONLY
+            // inside the transient, un-collapsed duplicate-guessWhoID window that
+            // reconciliation owns and resolves onto one canonical id; consistent
+            // resolution there is what the list VCs' `effectiveID` dedup guard
+            // relies on to render one stable row. The rebuild-from-scratch also
+            // drops stale pointers automatically (delete, Case-D retire, etc. —
+            // no targeted eviction).
             if let gw = ContactID(contact: contact).guessWhoID {
                 byGuessWhoID[gw] = contact.localID
             }
@@ -1365,12 +1331,12 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Re-reads ONE Contacts record and applies the result to `working` WITHOUT
-    /// committing (no `setContacts`). Splitting the fetch from the commit lets
-    /// the batch `apply(_:)` path apply many changes to one local copy and
-    /// rebuild the indexes exactly once. A successful fetch replaces/inserts the
-    /// fresh record (or removes it when the store reports it gone); a thrown
-    /// re-read leaves the prior cached projection in place — error is isolated to
-    /// this one `localID`, never aborting a batch or leaving indexes half-built.
+    /// committing (no `setContacts`). Splitting fetch from commit lets the batch
+    /// `apply(_:)` path apply many changes to one local copy and rebuild the
+    /// indexes exactly once. A successful fetch replaces/inserts the fresh record
+    /// (or removes it when the store reports it gone); a thrown re-read leaves the
+    /// prior cached projection in place — the error is isolated to this one
+    /// `localID`, never aborting a batch or leaving indexes half-built.
     private func refetch(localID: String, into working: inout [Contact]) async {
         do {
             let fresh = try await contactsStore.fetch(localID: localID)
@@ -1408,10 +1374,9 @@ public final class ContactsRepository: NSObject {
     private func apply(_ changeSet: ContactChangeSet) async {
         guard !changeSet.changes.isEmpty else { return }
         // Coalesce the whole delta into ONE index rebuild: apply every change to
-        // a single local copy (re-fetching `.updated` records from the store as
-        // we go, in history order — a delete then re-add of the same localID must
-        // settle as present), then commit once. A delta of M changes costs one
-        // rebuild per BATCH, not M.
+        // a single local copy (re-fetching `.updated` records as we go, in
+        // history order — a delete then re-add of the same localID must settle as
+        // present), then commit once — one rebuild per BATCH, not per change.
         var updated = contacts
         for change in changeSet.changes {
             switch change {
@@ -1428,24 +1393,20 @@ public final class ContactsRepository: NSObject {
     // MARK: - Sort & section (parameterized by `sortOrder`)
 
     /// Filters by `predicate` + search query, then sorts by the CURRENT
-    /// `sortOrder`. Name orders sort alphabetically (with a stable
-    /// `lastNameSortKey` → `displayName` tie-break); time orders sort by the
-    /// relevant contact timestamp DESC (most recent first), with a nil timestamp
-    /// treated as `distantPast` so it lands at the END, and the same name
-    /// tie-break for a stable order among equal timestamps.
+    /// `sortOrder` (see `sorted(_:)` for the ordering rules).
     private func filtered(matching query: String, where predicate: (Contact) -> Bool) -> [Contact] {
         let matched = contacts.filter(predicate).filter { $0.matches(searchQuery: query) }
         return sorted(matched)
     }
 
     /// Sorts an arbitrary contact set by the CURRENT `sortOrder`. Name orders
-    /// sort alphabetically (with a stable `lastNameSortKey` → `displayName`
-    /// tie-break); time orders sort by the relevant contact timestamp DESC
-    /// (most recent first), with a nil timestamp treated as `distantPast` so it
-    /// lands at the END, and the same name tie-break for a stable order among
-    /// equal timestamps. Shared by `filtered(matching:where:)` (the People /
-    /// Organizations projections) and `sectionedIDs(forMembers:)` (the
-    /// group-members list) so every person list orders identically.
+    /// sort alphabetically (stable `lastNameSortKey` → `displayName` tie-break);
+    /// time orders sort by the relevant contact timestamp DESC (most recent
+    /// first), a nil timestamp treated as `distantPast` so it lands at the END,
+    /// with the same name tie-break among equal timestamps. Shared by
+    /// `filtered(matching:where:)` (People / Organizations) and
+    /// `sectionedIDs(forMembers:)` (group members) so every person list orders
+    /// identically.
     private func sorted(_ matched: [Contact]) -> [Contact] {
         switch sortOrder {
         case .lastFirst:
@@ -1566,25 +1527,24 @@ public final class ContactsRepository: NSObject {
     /// Sections the contacts exactly like `sectioned(_:)`, then maps each row to
     /// its `ContactID`. EVERY row is kept — `ContactID(contact:)` never fails, so
     /// a contact with no GuessWho URL still vends a `localID`-identified row and
-    /// no section can become empty by dropping. Section order and the
-    /// within-section sort are inherited from the `Contact` list passed in
-    /// (already sorted by `filtered(matching:where:)`). For time orders the
-    /// section titles are the relative-time bucket names, not A–Z letters — the
-    /// app hides the A–Z index when `sortOrder.isTimeOrder`.
+    /// no section drops to empty. Section order and within-section sort are
+    /// inherited from the passed `Contact` list (already sorted by
+    /// `filtered(matching:where:)`). For time orders the section titles are the
+    /// relative-time bucket names, not A–Z letters — the app hides the A–Z index
+    /// when `sortOrder.isTimeOrder`.
     private func sectionedIDs(_ contacts: [Contact]) -> [(String, [ContactID])] {
         sectioned(contacts).map { letter, rows in
             (letter, rows.map { ContactID(contact: $0) })
         }
     }
 
-    /// Sorts and sections an ARBITRARY contact set (e.g. one group's members)
-    /// by the current `sortOrder`, returning the same `[(title, [ContactID])]`
-    /// shape `peopleSectionIDs` does — A–Z letter sections for the name orders,
-    /// relative-time buckets for the time orders. The single entry point any
-    /// person list that ISN'T the People / Organizations projection should use,
-    /// so the global sort applies everywhere identically (no duplicated
-    /// comparator). Section titles follow the same contract: the app hides the
-    /// A–Z index when `sortOrder.isTimeOrder`.
+    /// Sorts and sections an ARBITRARY contact set (e.g. one group's members) by
+    /// the current `sortOrder`, returning the same `[(title, [ContactID])]` shape
+    /// `peopleSectionIDs` does — A–Z letter sections for name orders, relative-
+    /// time buckets for time orders. The single entry point any person list that
+    /// ISN'T the People / Organizations projection should use, so the global sort
+    /// applies everywhere identically. Same title contract: the app hides the A–Z
+    /// index when `sortOrder.isTimeOrder`.
     public func sectionedIDs(forMembers members: [Contact]) -> [(String, [ContactID])] {
         sectionedIDs(sorted(members))
     }
