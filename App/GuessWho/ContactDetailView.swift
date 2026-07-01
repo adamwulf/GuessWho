@@ -664,11 +664,12 @@ struct ContactDetailView: View {
     /// Handles raw image bytes from a source that hands back `Data` directly
     /// rather than a `PhotosPickerItem` — a drop onto the monogram, or the
     /// Catalyst file Open panel. `rawData`/`loadError` are already hopped
-    /// back to the main actor by the caller (the drop path's `NSItemProvider`
-    /// completion runs on an arbitrary queue; the Catalyst file-read
-    /// explicitly re-enters via `MainActor.run`), so this method never has to
-    /// reason about which thread produced them. Otherwise shares the same
-    /// downscale/write tail as the `PhotosPicker` path.
+    /// back to the main thread by the caller (the drop path's
+    /// `NSItemProvider` completion runs on an arbitrary queue; the Catalyst
+    /// file-read explicitly re-enters via `DispatchQueue.main.async`), so
+    /// this method never has to reason about which thread produced them.
+    /// Otherwise shares the same downscale/write tail as the `PhotosPicker`
+    /// path.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
             Self.photoLog.error("photo failed to load: \(loadError?.localizedDescription ?? "none")")
