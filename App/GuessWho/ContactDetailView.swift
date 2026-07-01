@@ -663,12 +663,12 @@ struct ContactDetailView: View {
 
     /// Handles raw image bytes from a source that hands back `Data` directly
     /// rather than a `PhotosPickerItem` — a drop onto the monogram, or the
-    /// Catalyst file Open panel. `rawData`/`loadError` come straight from the
-    /// originating completion handler (an `NSItemProvider` callback for a
-    /// drop, a `UIDocumentPickerDelegate` callback on Catalyst), both of
-    /// which are nonisolated/arbitrary-queue, so this MainActor-isolated
-    /// method is where the load-failure branch is handled too. Otherwise
-    /// shares the same downscale/write tail as the `PhotosPicker` path.
+    /// Catalyst file Open panel. `rawData`/`loadError` are already hopped
+    /// back to the main actor by the caller (the drop path's `NSItemProvider`
+    /// completion runs on an arbitrary queue; the Catalyst file-read
+    /// explicitly re-enters via `MainActor.run`), so this method never has to
+    /// reason about which thread produced them. Otherwise shares the same
+    /// downscale/write tail as the `PhotosPicker` path.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
             Self.photoLog.error("photo failed to load: \(loadError?.localizedDescription ?? "none")")
@@ -2046,12 +2046,21 @@ private struct ImageDocumentPicker: UIViewControllerRepresentable {
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else { return }
             let didStartAccessing = url.startAccessingSecurityScopedResource()
-            defer { if didStartAccessing { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let data = try Data(contentsOf: url)
-                onPick(data, nil)
-            } catch {
-                onPick(nil, error)
+            // Read on a background queue via a plain completion handler —
+            // mirrors the drop path's `NSItemProvider.loadDataRepresentation`
+            // shape — rather than `Task.detached`, which under Swift 6
+            // strict concurrency can't safely send this non-Sendable
+            // closure across the actor hop. The security scope stays valid
+            // for the app process, not just the calling thread, so it's
+            // safe to hold it open across the queue hop.
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { if didStartAccessing { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let data = try Data(contentsOf: url)
+                    DispatchQueue.main.async { self.onPick(data, nil) }
+                } catch {
+                    DispatchQueue.main.async { self.onPick(nil, error) }
+                }
             }
         }
 
