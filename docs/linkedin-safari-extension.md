@@ -28,11 +28,11 @@ The extension is bundled inside the GuessWho app as a single
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| Content script | `App/GuessWhoLinkedIn/Resources/content.js` | Runs in `linkedin.com/in/*` tabs. Reads the DOM (the real parser lands in a later step; today it returns a minimal probe). |
+| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" `<h2>`) — never LinkedIn's obfuscated class names — and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser, fetch the full-res photo bytes in-session as a `data:` URL, and reply to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
 | Background service worker | `App/GuessWhoLinkedIn/Resources/background.js` | The **only** place that can talk to native. Relays content/popup messages to the native handler via `sendNativeMessage`. Non-persistent (MV3 `service_worker`) — required on iOS, fine on macOS. |
 | Popup | `App/GuessWhoLinkedIn/Resources/popup.{html,js}` | User-facing toolbar UI. Orchestrates: probe the tab → hand off to native → open the wake URL. Sized for a phone sheet so it ports to iOS. |
 | Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
-| App receiver | `App/GuessWho/GuessWhoSceneDelegate.swift` | Runs in the **app process**. Receives the wake URL, drains the parked payload, and (eventually) does match / diff / save. |
+| App receiver | `App/GuessWho/GuessWhoSceneDelegate.swift` | Runs in the **app process**. Receives the wake URL, drains the parked payload, then **matches** the profile, builds a **per-field before/after diff**, and presents a **confirm sheet** that saves the checked fields (see [Match → diff → confirm → save](#match--diff--confirm--save-app-side)). |
 
 ## Two processes, two channels — do not conflate them
 
@@ -86,7 +86,7 @@ popup.js  ── window.location.href = wakeURL ──▶  GuessWhoSceneDelegate
                                                   │ scene(_:openURLContexts:) /
                                                   │ willConnectTo cold-launch drain
                                                   ▼ reads + DELETES pending-handoff.json
-                                                    → match / diff / save (later steps)
+                                                    → match → diff → confirm sheet → save
 ```
 
 Concrete contract:
@@ -104,7 +104,7 @@ Concrete contract:
   reached from both `scene(_:openURLContexts:)` (running app) and a
   `connectionOptions.urlContexts` drain in `willConnectTo` (cold launch). It
   **reads and immediately deletes** the file (replay-proof) and caps the read
-  size (`handoffMaxBytes`) so it never loads an unbounded/hostile file.
+  size (`handoffMaxBytes`, 8 MB) so it never loads an unbounded/hostile file.
 
 The App Group is used **only** for this ephemeral handoff. It is NOT synced
 storage — the synced GuessWho sidecar lives in the **iCloud ubiquity container**
@@ -271,6 +271,53 @@ extension's permission/review footprint minimal.
   Calendars, App Group, app-sandbox.
 - **Extension** entitlements: App Group + app-sandbox **only**.
 
+## Match → diff → confirm → save (app side)
+
+Once the app drains the parked payload, the whole match/diff/confirm/save flow
+runs in-process — this is **built and working end-to-end** for a matched
+contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
+
+1. **Decode** the `{ stampedBy, payload }` envelope into the package-vended
+   `LinkedInProfile` (`Sources/GuessWhoSync/LinkedInProfile.swift`).
+2. **Match** — `ContactsRepository.matchLinkedIn(profile:)` runs
+   **LinkedIn-URL → email → display-name** in priority order and returns the
+   first non-empty tier. *All* matching logic is package-side; the app owns no
+   rules. URL matching is scheme/`www.`/slug-insensitive via
+   `LinkedInURL` (`Sources/GuessWhoSync/LinkedInURL.swift`).
+3. **Diff** — `LinkedInDiff.rows(existing:incoming:existingSidecar:)`
+   (`App/GuessWho/LinkedInDiff.swift`) builds the per-field before/after rows
+   (presentation only). Emails/websites **merge, never replace** (the right
+   column shows the resulting set); URL dedup is scheme-insensitive; the
+   internal `guesswho://contact/<uuid>` identity URL is hidden from the
+   Websites column (display-only — the save still merges onto the *real*
+   `urlAddresses`, never reconstructs it from the filtered set). About/Location
+   read their existing value from the named sidecar fields so a re-import marks
+   unchanged rows.
+4. **Confirm** — `LinkedInConfirmView` (`App/GuessWho/LinkedInConfirmView.swift`),
+   hosted in a `UIHostingController` form sheet: existing-left / LinkedIn-right,
+   a checkbox per row (all on by default), unchanged rows de-emphasized.
+   Save applies only the checked fields; Cancel writes nothing.
+5. **Save** — `ContactsRepository.applyLinkedIn(profile:to:fields:)` owns the
+   merge + save rules. CNContact fields (name/jobTitle/organization/emails/
+   websites/LinkedIn social profile) merge-save; About/Location upsert as named
+   `"LinkedIn …"`-prefixed sidecar fields (not append-only notes, so a re-import
+   updates rather than duplicates). It then posts `.linkedInImportDidSave` so an
+   open `ContactDetailView` reloads.
+
+Two pieces of this flow are **still future work** (both logged, not silent):
+
+- **No match → new-contact screen.** When `matchLinkedIn` returns nothing the
+  handler logs and stops; there's no create-a-contact flow in the app yet.
+- **Photo write path.** The parser fetches the photo and the diff/confirm UI
+  shows the incoming thumbnail, but `.photo` is accepted-and-skipped by
+  `applyLinkedIn` — the contact-image bytes are not written. The package
+  primitive exists (`ContactsRepository.setContactPhoto`, which already
+  snapshots the replaced image; see the `.blob` note at the end), but
+  `applyLinkedIn` doesn't call it yet.
+
+See [`plans/linkedin-match-diff-confirm.md`](../plans/linkedin-match-diff-confirm.md)
+for the field-by-field storage split and the build order.
+
 ## Debugging / logging
 
 Both processes log their resolved App Group id and the file path, so a mismatch
@@ -335,12 +382,22 @@ profile fetch. For **Debug** device/Catalyst builds the `.debug` variants need
 the same portal setup — see
 [Debug vs. Release identifiers](#debug-vs-release-identifiers).
 
-## Out of scope here (later build steps)
+## Still future work
 
-Real LinkedIn DOM parsing (semantic-anchor selectors), in-session photo-byte
-fetch, the "Contact info" modal, contact matching, the before/after diff UI, and
-the iOS target. See
-[`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md).
+Real LinkedIn DOM parsing, in-session photo-byte fetch, the "Contact info"
+overlay, contact matching, and the before/after diff/confirm UI have all
+**shipped** (see [The three pieces](#the-three-pieces) and
+[Match → diff → confirm → save](#match--diff--confirm--save-app-side)). What
+remains:
+
+- **The iOS extension target.** Only the Mac Catalyst path is proven
+  end-to-end; the extension is authored to port (MV3 non-persistent worker,
+  phone-sized popup) but the iOS target + provisioning aren't wired yet.
+- **No-match → new-contact screen** and the **photo write path** — both
+  described under [Match → diff → confirm → save](#match--diff--confirm--save-app-side).
+
+See [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md)
+for the overall feature plan.
 
 **Built (2026-06-27):** the `.blob` sidecar field type + previous-photo
 snapshot. A `.blob` field stores a small pointer to an AES-GCM-encrypted `.dat`
