@@ -36,10 +36,12 @@ GuessWho ID.
 
 ### The opaque-token contract (app layer)
 
-The app obtains a `ContactID` ONLY from `repository.contactID(for: Contact)`
-(`ContactID.init` is `package`, so the app cannot mint one itself), holds it,
-compares it (e.g. as a diffable item identifier or a `Set` member), and hands it
-back to `repository.contact(id:)` to fetch the real `Contact`. It CANNOT read any
+The app obtains a `ContactID` from a held `Contact`'s `contactID` property (or an
+equivalent repository search helper that vends `[ContactID]`); `ContactID.init` is
+`package`, so the app cannot mint one itself — `Contact.contactID` is the `public`
+vending point that wraps it. The app holds the token, compares it (e.g. as a
+diffable item identifier or a `Set` member), and hands it back to
+`repository.contact(id:)` to fetch the real `Contact`. It CANNOT read any
 field off it, so the token can never be misused as a "contact-light." It is also
 deliberately NOT `Codable`: a `ContactID` carries the transient `localID`, so
 persisting one would dangle after the next unification. Durable references are
@@ -101,7 +103,7 @@ The app does exactly four things with a `ContactID`, and no more:
 
 | The app… | …via | Notes |
 | --- | --- | --- |
-| **obtains** a token from a held `Contact` | `repository.contactID(for:)` | The only way to mint one — `ContactID.init` is `package`. <!-- [^contactid-for] --> |
+| **obtains** a token from a held `Contact` | `contact.contactID` | `ContactID.init` is `package`; `Contact.contactID` is the `public` accessor that wraps it. (Repository search helpers like `contactIDs(named:)` vend tokens the same way.) <!-- [^contactid-for] --> |
 | **compares / hashes** it | `==`, `Set`, diffable identifier | Identity-only; stable across reloads. |
 | **resolves** it back to a `Contact` | `repository.contact(id:)` | O(1), reconcile-stable (see below). <!-- [^contact-id-accessor] --> |
 
@@ -359,8 +361,8 @@ repository translates; sidecar storage keys on the GuessWho UUID.
 
 **In the app:**
 
-- **To identify a contact:** hold a `ContactID` (from
-  `repository.contactID(for:)`). Compare/hash it, key list rows and navigation on
+- **To identify a contact:** hold a `ContactID` (from a held `Contact`'s
+  `contactID` property). Compare/hash it, key list rows and navigation on
   it, fetch the `Contact` back with `repository.contact(id:)`. You do NOT need to
   reconcile first — an unreconciled contact still has a `ContactID` and renders
   fine; reads just return empty until the contact is written to.
@@ -415,7 +417,7 @@ repository translates; sidecar storage keys on the GuessWho UUID.
 <!-- [^contactid]: [ContactID — opaque identity token; both stored props (guessWhoID?/localID) are `package`, conformances public](../Sources/GuessWhoSync/ContactID.swift:ContactID) -->
 <!-- [^contactid-eq]: [ContactID.== / hash(into:) BOTH key on effectiveID (= guessWhoID ?? localID); no display fields](../Sources/GuessWhoSync/ContactID.swift:ContactID) -->
 <!-- [^contactid-init]: [ContactID.init(contact:) — package; always materializes (localID always present); guessWhoID via SidecarKey.forContact, nil pre-reconcile](../Sources/GuessWhoSync/ContactID.swift:ContactID) -->
-<!-- [^contactid-for]: [ContactsRepository.contactID(for:) — the only sanctioned way for the app to mint a ContactID from a held Contact](../Sources/GuessWhoSync/ContactsRepository.swift:contactID) -->
+<!-- [^contactid-for]: [Contact.contactID — the `public` computed property that wraps the `package` `ContactID.init(contact:)`; the only sanctioned way for the app to get a ContactID from a held Contact](../Sources/GuessWhoSync/Contact.swift:contactID) -->
 <!-- [^contact-id-accessor]: [ContactsRepository.contact(id:) — O(1) resolve, guessWhoID-first via the guessWhoIDToLocalID pointer index else by localID; reconcile-stable for a captured token](../Sources/GuessWhoSync/ContactsRepository.swift:contact) -->
 <!-- [^repo-contact-id]: [ContactsRepository — translates a ContactID to GuessWho ID / localID at the package boundary; the app never does this](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository) -->
 <!-- [^resolve-or-mint]: [ContactsRepository.resolveOrMintGuessWhoID(for:) — internal; a WRITE with id.guessWhoID == nil reconciles on localID and mints; an already-reconciled id returns its UUID, minting nothing](../Sources/GuessWhoSync/ContactsRepository.swift:resolveOrMintGuessWhoID) -->
