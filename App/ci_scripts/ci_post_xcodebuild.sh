@@ -1,9 +1,9 @@
-printenv
+#!/bin/sh
 
 set -e
 
 # Define a function to push to the remote repo with input username and token
-function git_push_tags_with_token {
+git_push_tags_with_token() {
     # Get the original URL
     original_url=$(git remote get-url origin)
     # Extract the protocol and the rest of the URL
@@ -18,7 +18,7 @@ function git_push_tags_with_token {
 }
 
 # Fetch the current version number from the built app
-function get_app_version {
+get_app_version() {
     # Get the path to the .app bundle
     app_path="${1}/Products/Applications"
     # Find the .app file
@@ -48,6 +48,12 @@ if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     echo "Build succeeded"
     tag="build/$CI_BUILD_NUMBER"
     echo "Tagging $tag"
+    # Annotated tags need a committer identity, and Xcode Cloud's build
+    # environment doesn't configure one; set a repo-local identity if absent.
+    if ! git config user.email > /dev/null; then
+        git config user.name "Xcode Cloud"
+        git config user.email "ci@xcodecloud.apple.com"
+    fi
     git tag -a -m "Build $CI_BUILD_NUMBER" $tag
 
     # GITHUB_TOKEN can be configured in github -> account settings -> developer settings -> personal access tokens -> fine grained token -> read/write access to code
