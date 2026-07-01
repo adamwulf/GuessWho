@@ -303,7 +303,7 @@ struct EventLinkSheet: View {
 
     private func initialLoad() {
         if !canBrowseCalendar {
-            // No-permission fallback (E3.3): force manual-entry only.
+            // No-permission fallback: force manual-entry only.
             manualEntry = true
             return
         }
@@ -433,17 +433,15 @@ struct EventLinkSheet: View {
             // recordError, see SyncService.addContactEventLink path), the
             // sidecar minted by `linkEvent` exists but the contact↔event
             // link does not. The orphan sidecar is harmless and the user can
-            // retry the link from the contact view (per E3.2 partial-failure
-            // handling).
+            // retry the link from the contact view.
             onLinked(uuid, pickedRowNote.trimmingCharacters(in: .whitespacesAndNewlines))
             dismiss()
         }
     }
 
-    /// Mandatory dedup path (E3.2 / C-SHEET-DEDUP): first look up the sidecar
-    /// already pointing at this EventKit ID; only mint when there isn't one.
-    /// Returns the resulting event UUID string, or nil on failure (after
-    /// recording the error).
+    /// Mandatory dedup path: first look up the sidecar already pointing at this
+    /// EventKit ID; only mint when there isn't one. Returns the resulting event
+    /// UUID string, or nil on failure (after recording the error).
     private func dedupAndLink(event: Event) -> String? {
         guard let ekid = event.eventKitID else {
             // Already a sidecar-only event (no EventKit twin). Reuse its UUID
@@ -496,7 +494,7 @@ struct EventLinkSheet: View {
         case .link(let onLinked):
             // Manual-entry in link mode mints a sidecar-only event and hands
             // its UUID to the caller, along with the draft link note. The
-            // caller wires the contact↔event link (E3.2 / C-ADDOTHER-LINKMODE).
+            // caller wires the contact↔event link.
             let newUUID: UUID
             do {
                 newUUID = try service.createManualEvent(

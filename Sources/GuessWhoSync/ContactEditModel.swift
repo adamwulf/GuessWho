@@ -9,8 +9,7 @@ import Foundation
 ///
 /// No SwiftUI imports, no `CNContact` types: the model only sees
 /// `Contact` and standard-library types. The SwiftUI editor view
-/// holds this as `@State` (a value-type wrapping by `@Observable`
-/// would also work; struct keeps it tidy here).
+/// holds this as `@State`.
 public struct ContactEditModel: Equatable {
     /// The contact as initially loaded — used as the carry-through
     /// source for fields the editor never surfaces, and as the URL
@@ -45,11 +44,9 @@ public struct ContactEditModel: Equatable {
     }
 
     /// Seed-initializer for brand-new contacts. The editor's Save button is
-    /// gated on `isDirty`, so a pre-filled (but otherwise untouched) seed
-    /// would force the user to wiggle a field before the button enabled.
-    /// Marking the model dirty up front lets Save fire immediately on the
-    /// seed values — the saved CNContact ends up exactly what the caller
-    /// prefilled with no further interaction required.
+    /// gated on `isDirty`, so marking the model dirty up front lets Save fire
+    /// immediately on the seed values — otherwise the user would have to wiggle
+    /// a field to enable the button before saving the prefilled contact.
     public init(newContactSeed seed: Contact) {
         self.original = seed
         self.edited = seed
@@ -87,13 +84,11 @@ public struct ContactEditModel: Equatable {
     /// GuessWho URLs on save, preserving the user's manually-imposed
     /// URL ordering.
     ///
-    /// Algorithm: walk `original.urlAddresses` in order. For each slot
-    /// matching the GuessWho prefix → carry the original entry. For
-    /// each non-matching slot → consume the next entry from the
-    /// edited visible bucket (paired by visible-bucket position) and
-    /// write it to the result. Any visible entries beyond the
-    /// original visible count are *new user URLs* — append them at
-    /// the end.
+    /// Algorithm: walk `original.urlAddresses` in order. A GuessWho-prefix slot
+    /// carries its original entry; a non-matching slot consumes the next entry
+    /// from the edited visible bucket (paired by position). Visible entries
+    /// beyond the original visible count are *new user URLs* — appended at the
+    /// end.
     ///
     /// This guarantees that:
     /// - GuessWho URLs sit at their original index.
@@ -134,16 +129,13 @@ public struct ContactEditModel: Equatable {
     /// year so Feb 29 is representable.
     public static let birthdaySentinelYear: Int = 2000
 
-    /// Convert the edited birthday `DateComponents` to a `Date` suitable
-    /// for SwiftUI's `DatePicker`. Substitutes a sentinel year whenever
-    /// the underlying components lack one — regardless of
-    /// `birthdayHasYear` — so the picker always has a usable `Date` to
-    /// bind to. The save path (`setBirthday`) is what decides whether
-    /// the year ends up in the persisted `DateComponents`. This split
-    /// keeps the toggle's false→true transition safe: if the user flips
-    /// "Include year" on, `birthdayAsDate()` still resolves and
-    /// `setBirthday(from:)` then writes a real `year` value to
-    /// `edited.birthday`.
+    /// Convert the edited birthday `DateComponents` to a `Date` for SwiftUI's
+    /// `DatePicker`. Substitutes a sentinel year whenever the components lack
+    /// one — regardless of `birthdayHasYear` — so the picker always has a usable
+    /// `Date` to bind to; the save path (`setBirthday`) decides whether the year
+    /// is persisted. This split keeps the toggle's false→true transition safe:
+    /// flipping "Include year" on still resolves here, and `setBirthday(from:)`
+    /// then writes a real `year` to `edited.birthday`.
     public func birthdayAsDate(calendar: Calendar = .current) -> Date? {
         var components = edited.birthday ?? DateComponents()
         if components.year == nil {
@@ -191,22 +183,19 @@ public struct ContactEditModel: Equatable {
         case recordDoesNotExist
         /// The Contacts backing store rejected the write with a generic
         /// `NSCocoaErrorDomain` persistent-store save error (the one seen in
-        /// the field is 134092). These previously fell through the
-        /// `CNErrorDomain`-only guard to an opaque `.unknown("…Cocoa error
-        /// 134092.")` message.
+        /// the field is 134092).
         ///
-        /// We deliberately do NOT claim a cause here. An early theory was a
-        /// read-only account, but that's disproven for the reported contact:
-        /// the same `CNSaveRequest` path successfully stamped its `guesswho://`
-        /// identity URL, so the record is writable. The true trigger (a
-        /// field-level validation rejection, a save conflict on a stale
-        /// snapshot, etc.) is buried in `NSUnderlyingError`, which the adapter
-        /// now logs at the `execute()` site. Until that's pinned down, this
-        /// case carries the underlying `localizedDescription` and shows a
-        /// plain, honest "couldn't save this change" message — strictly better
-        /// than the raw "Cocoa error 134092" the user saw, without asserting a
-        /// cause we can't stand behind. Opening Settings can't fix it, so this
-        /// case must NOT offer the Contacts-settings button.
+        /// We deliberately do NOT claim a cause here. The early read-only-account
+        /// theory is disproven for the reported contact: the same `CNSaveRequest`
+        /// path successfully stamped its `guesswho://` identity URL, so the record
+        /// is writable. The true trigger (a field-level validation rejection, a
+        /// save conflict on a stale snapshot, etc.) is buried in
+        /// `NSUnderlyingError`, which the adapter now logs at the `execute()`
+        /// site. Until that's pinned down, this case carries the underlying
+        /// `localizedDescription` and shows a plain, honest "couldn't save this
+        /// change" message — better than the raw "Cocoa error 134092" the user
+        /// saw, without asserting a cause we can't stand behind. Opening Settings
+        /// can't fix it, so this case must NOT offer the Contacts-settings button.
         case storeRejected(String)
         /// Anything else; carries the underlying error's
         /// `localizedDescription`.
@@ -248,11 +237,10 @@ public struct ContactEditModel: Equatable {
     }
 
     /// Map an arbitrary `Error` (typically `CNError`, but also the
-    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws)
-    /// into a category. Works without importing `Contacts` by matching the
-    /// stable domain strings and the documented integer codes — so this
-    /// module stays buildable on platforms where `Contacts` might be
-    /// unavailable.
+    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws) into
+    /// a category. Matches stable domain strings and documented integer codes
+    /// instead of importing `Contacts`, so this module stays buildable where
+    /// `Contacts` is unavailable.
     public static func saveErrorCategory(_ error: Error) -> SaveErrorCategory {
         let ns = error as NSError
         switch ns.domain {
@@ -290,13 +278,12 @@ public struct ContactEditModel: Equatable {
     /// `NSCocoaErrorDomain` codes the Contacts (Core Data backed) store raises
     /// when `CNSaveRequest.execute()` is rejected. The persistent-store
     /// save-failure family (134060–134095, which includes the field-reported
-    /// 134092) all mean "the store rejected this write" — but the SPECIFIC
-    /// cause lives in `NSUnderlyingError`, not the code. So we route the whole
-    /// family to `.storeRejected` (carrying the description) WITHOUT asserting
-    /// a cause. This is a strict improvement over the old behavior, where these
-    /// fell through the `CNErrorDomain`-only guard to `.unknown` and surfaced
-    /// the bare "Cocoa error 134092" string; the adapter's `execute()`-site log
-    /// captures the underlying detail that will drive the real fix.
+    /// 134092) all mean "the store rejected this write," but the SPECIFIC cause
+    /// lives in `NSUnderlyingError`, not the code. So the whole family routes to
+    /// `.storeRejected` (carrying the description) WITHOUT asserting a cause,
+    /// rather than surfacing a bare "Cocoa error 134092." The adapter's
+    /// `execute()`-site log captures the underlying detail that will drive the
+    /// real fix.
     private static func cocoaErrorCategory(code: Int, description: String) -> SaveErrorCategory {
         switch code {
         case 134060...134095:

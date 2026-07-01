@@ -7,7 +7,7 @@ import FellerBuncher
 /// OSLog console echo) and vends labeled loggers.
 ///
 /// FellerBuncher owns the bootstrap and the destination fan-out; there is no
-/// custom handler or file writer here anymore. Every `Logger(label:)` in the
+/// custom handler or file writer in this package. Every `Logger(label:)` in the
 /// app and packages routes to the same per-process file under
 /// `<AppGroup>/Logs/`.
 ///
@@ -86,11 +86,11 @@ public enum GuessWhoLog {
         }
     }
 
-    /// A labeled swift-log `Logger`. Thin wrapper over `Logger(label:)` — kept so
-    /// call sites read against this package's facade. With FellerBuncher's
-    /// pre-config capture installed in `bootstrap`, a logger built before
-    /// bootstrap is no longer lost: its records are buffered and replayed once
-    /// the file destination comes up.
+    /// A labeled swift-log `Logger`. Thin wrapper over `Logger(label:)` so call
+    /// sites read against this package's facade. With FellerBuncher's pre-config
+    /// capture installed in `bootstrap`, a logger built before bootstrap isn't
+    /// lost: its records are buffered and replayed once the file destination
+    /// comes up.
     public static func logger(_ label: String) -> Logger {
         Logger(label: label)
     }

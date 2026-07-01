@@ -12,39 +12,35 @@ struct ContactDetailView: View {
     @Environment(ContactPhotoLoader.self) private var photoLoader
     @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
-    // Set by SceneDelegate when this view is pushed onto an iPhone
-    // UIKit nav stack. Defaults to a no-op closure (see
-    // `ReferenceNavigation.swift`), which is also what Catalyst gets
-    // today — that matches Catalyst's pre-bridge silent behaviour.
+    // Set by SceneDelegate when this view is pushed onto an iPhone UIKit nav
+    // stack. Defaults to a no-op closure (see `ReferenceNavigation.swift`),
+    // which is also what Catalyst gets today.
     @Environment(\.pushContactReference) private var pushContactReference
     @Environment(\.pushEventReference) private var pushEventReference
 
-    /// The view's identity is the opaque, package-vended `ContactID` — NEVER a
-    /// raw `localID`. It is the nav identity the scene delegate hands in; the
-    /// view resolves it to a `Contact` via `repository.contact(id:)`. Since 6b2
-    /// made `contact(id:)` reconcile-stable (it falls back to the `ContactID`'s
-    /// always-present `localID` when the captured token's `guessWhoID` is still
-    /// nil after a first-write reconcile), the view re-loads off this same captured
-    /// `id` and needs no separately-threaded `localID` token. The handful of
-    /// contact-LIFECYCLE boundary calls that genuinely need a
-    /// `CNContact.identifier` (edit/save/delete/fetch) read it from the loaded
-    /// `Contact` at the call site.
+    /// The view's identity is the opaque, package-vended `ContactID` the scene
+    /// delegate hands in — NEVER a raw `localID`. The view resolves it to a
+    /// `Contact` via `repository.contact(id:)`, which is reconcile-stable: it
+    /// falls back to the `ContactID`'s always-present `localID` when the captured
+    /// token's `guessWhoID` is still nil after a first-write reconcile, so the
+    /// view re-loads off this same captured `id` with no separately-threaded
+    /// `localID` token. The handful of contact-LIFECYCLE calls that genuinely
+    /// need a `CNContact.identifier` (edit/save/delete/fetch) read it from the
+    /// loaded `Contact` at the call site.
     let id: ContactID
 
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
     // Drives the fullscreen, zoomable photo viewer. Set when the user taps the
-    // header photo (only possible when a real photo is loaded); the cover binds
-    // to this so the same image the header shows is the one presented. Wrapped
-    // in an Identifiable box because `.fullScreenCover(item:)` requires it and
-    // UIImage isn't Identifiable.
+    // header photo (only possible when a real photo is loaded) so the cover
+    // shows the same image the header does. Boxed as Identifiable because
+    // `.fullScreenCover(item:)` requires it and UIImage isn't.
     @State private var fullscreenPhoto: FullscreenPhoto?
-    // Edit-mode photo change. Presents the system PhotosPicker on
-    // iOS/iPadOS, or a native macOS file Open panel on Catalyst — driven
-    // in-process by the AppKitBridge bundle, NOT a document-picker sheet
-    // (see `PhotoChangeModifier`) — with no intermediate Choose/Remove menu.
-    // `photoPickerItem` binds the PhotosPicker selection on iOS/iPadOS so the
-    // picked item can be loaded and written to the contact.
+    // Edit-mode photo change. Presents the system PhotosPicker on iOS/iPadOS, or
+    // a native macOS file Open panel on Catalyst — driven in-process by the
+    // AppKitBridge bundle, NOT a document-picker sheet (see `PhotoChangeModifier`)
+    // — with no intermediate Choose/Remove menu. `photoPickerItem` binds the
+    // iOS/iPadOS PhotosPicker selection so the picked item can be written.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
@@ -53,40 +49,37 @@ struct ContactDetailView: View {
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
-    // EventKit events where this contact appears as an attendee (matched by
-    // any email on the contact card). Loaded async via SyncService on first
-    // contact-load and on contact reload — separate from `eventLinks` which
-    // are user-curated contact↔event links.
+    // EventKit events where this contact appears as an attendee (matched by any
+    // email on the card). Loaded async via SyncService on each contact load —
+    // separate from `eventLinks`, which are user-curated contact↔event links.
     @State private var recentEvents: [Event] = []
-    // Monotonic token bumped at the start of every `reloadRecentEvents` call.
-    // The async load captures the token at the call site and bails on result
-    // assignment when it no longer matches — so a stale in-flight fetch (after
-    // a navigation, a contact-emails edit, or rapid reloads) can't overwrite
-    // the freshest result. Stronger than a localID-only check, which can't
-    // distinguish two same-localID reloads in quick succession.
+    // Token bumped at the start of every `reloadRecentEvents` call. The async
+    // load captures it and bails on assignment when it no longer matches, so a
+    // stale in-flight fetch (after navigation, a contact-emails edit, or rapid
+    // reloads) can't overwrite the freshest result. Stronger than a localID
+    // check, which can't tell two same-localID reloads apart.
     @State private var recentEventsLoadID: UUID = UUID()
     @State private var showingAddLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var editFetchErrorMessage: String?
 
-    // Inline contact-edit state. Non-nil `editModel` means the detail view
-    // has flipped into editing mode in-place (no sheet). The model is
-    // seeded from a fresh package-owned edit fetch when the user taps Edit;
-    // nilled out on Cancel/Save.
+    // Inline contact-edit state. Non-nil `editModel` means the view has flipped
+    // into in-place editing (no sheet). Seeded from a fresh package-owned edit
+    // fetch when the user taps Edit; nilled out on Cancel/Save.
     @State private var editModel: ContactEditModel?
     @State private var isSavingEdit = false
     @State private var editSaveError: ContactEditModel.SaveErrorCategory?
     @State private var editDeleteError: ContactEditModel.SaveErrorCategory?
-    // Owned ambient edit-mode for the editing list. Without an owned binding,
-    // EditButton drives an unscoped \.editMode that stays .active after the
-    // user exits contact-edit, leaking drag-handle/delete-circle affordances
-    // into the read-only activity list. Reset to .inactive on every exit.
+    // Owned edit-mode for the editing list. Without an owned binding, EditButton
+    // drives an unscoped \.editMode that stays .active after the user exits
+    // contact-edit, leaking drag-handle/delete-circle affordances into the
+    // read-only activity list. Reset to .inactive on every exit.
     @State private var editMode: EditMode = .inactive
     @State private var showDeleteConfirm = false
 
-    // Focus identity covers both the bottom new-note editor and any row
-    // currently being edited. Hoisted here so a single nav-bar checkmark
-    // can commit whichever edit is active and dismiss the keyboard.
+    // Focus identity covers the bottom new-note editor and any row being edited.
+    // Hoisted here so one nav-bar checkmark can commit whichever edit is active
+    // and dismiss the keyboard.
     enum NoteFocus: Hashable {
         case newNote
         case noteRow(UUID)
@@ -100,10 +93,9 @@ struct ContactDetailView: View {
     // and its working text.
     @State private var editingField: SidecarField?
     @State private var fieldDraft: String = ""
-    // Body captured at edit-start, used by §12.5's no-op-tap rule: commit
-    // is a no-op only when the draft is unchanged from this snapshot —
-    // never the current on-disk value. Matters when a reconcile lands
-    // mid-edit and rewrites the on-disk body.
+    // Body captured at edit-start: commit is a no-op only when the draft is
+    // unchanged from THIS snapshot — never the current on-disk value. Matters
+    // when a reconcile lands mid-edit and rewrites the on-disk body.
     @State private var editStartSnapshot: String = ""
 
     @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
@@ -112,7 +104,7 @@ struct ContactDetailView: View {
     // rows revealed via the per-group "more…" disclosure. Empty = all collapsed.
     @State private var expandedFieldGroups: Set<InfoRowData.FieldGroup> = []
 
-    // Contact-link edit state (lifted from the old ConnectionsSection).
+    // Contact-link edit state.
     @State private var editingLinkID: UUID?
     @State private var draftLinkNote: String = ""
     @State private var editLinkStartSnapshot: String = ""
@@ -124,10 +116,6 @@ struct ContactDetailView: View {
     private var isEditingContact: Bool {
         editModel != nil
     }
-
-    // The unified-timeline `activityItems` was split into per-kind sections
-    // (Notes / Linked Contacts / Linked Organizations / Linked Events), each
-    // sorted createdAt ASC, instead of intertwining them.
 
     private var noteItems: [ContactNote] {
         (notesStore?.notes ?? []).sorted { $0.createdAt < $1.createdAt }
@@ -149,7 +137,7 @@ struct ContactDetailView: View {
 
     /// Split the connection links by the linked contact's type. Links whose
     /// other endpoint can't be resolved (rare: unreconciled/malformed) fall into
-    /// the People bucket so they're not silently dropped.
+    /// the People bucket rather than being silently dropped.
     private func connectionLinks(where type: ContactType) -> [ContactLink] {
         let links = linksStore?.links ?? []
         return links
@@ -166,36 +154,34 @@ struct ContactDetailView: View {
             if let contact {
                 loadedContent(contact)
             } else {
-                // Centered loading state — hoisted out of the List so
-                // it sits in the middle of the detail pane instead of
-                // landing in the top-left as the first list row.
+                // Centered loading state — hoisted out of the List so it sits in
+                // the middle of the pane, not top-left as the first row.
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // Width clamping is NOT applied to this Group: doing so would inset
-        // the List (and therefore its scroll view) from the pane edges,
-        // leaving inert dead space on the sides that doesn't scroll. Instead
-        // the List stays full-bleed and each row clamps + centers its own
-        // content to `ContactDetailLayout.maxContentWidth` (see
-        // `centeredRowContent`), so the scrollable region reaches the pane
-        // edges while the visible content stays in the same centered column.
-        // macCatalyst only — see `loadedContent`.
-        // The inline header (shown on every platform now) already renders the
-        // name and subtitle, so an empty nav-bar title avoids showing the name
-        // twice while keeping the toolbar itself (back button + Edit/star).
+        // Width clamping is NOT applied to this Group: it would inset the List
+        // (and its scroll view) from the pane edges, leaving inert dead space
+        // that doesn't scroll. Instead the List stays full-bleed and each row
+        // clamps + centers its own content to `ContactDetailLayout.maxContentWidth`
+        // (see `centeredRowContent`), so the scrollable region reaches the pane
+        // edges while content stays in a centered column. macCatalyst only —
+        // see `loadedContent`.
+        // The inline header (every platform) already shows the name and subtitle,
+        // so an empty nav-bar title avoids showing the name twice while keeping
+        // the toolbar itself (back button + Edit/star).
         .navigationTitle("")
         #if !targetEnvironment(macCatalyst)
-        // Inline display mode so the empty title doesn't reserve large-title
-        // space above the header on the pushed iPhone/iPad detail.
+        // Inline mode so the empty title doesn't reserve large-title space
+        // above the header on the pushed iPhone/iPad detail.
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
         .fullScreenCover(item: $fullscreenPhoto) { photo in
             ContactPhotoViewer(image: photo.image)
         }
-        // Photo-change UI (picker + error) lives in one modifier so the
-        // body's modifier chain stays short enough for the type-checker.
+        // Photo-change UI (picker + error) lives in one modifier to keep the
+        // body's modifier chain within the type-checker's budget.
         .modifier(PhotoChangeModifier(
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
@@ -252,37 +238,35 @@ struct ContactDetailView: View {
             Text(editFetchErrorMessage ?? "")
         }
         .task {
-            // Just load the contact by its `ContactID` — no reconcile on open.
-            // Reconcile is WRITE-ONLY (6f reverses the 6c detail-open reconcile):
-            // displaying a contact needs no GuessWho URL, an unstamped contact
-            // has no sidecar data to show (correct), and the FIRST write mints
-            // via the package's resolve-or-mint primitive.
+            // Load by `ContactID` — no reconcile on open. Reconcile is
+            // WRITE-ONLY: displaying a contact needs no GuessWho URL, an
+            // unstamped contact has no sidecar data to show (correct), and the
+            // FIRST write mints via the package's resolve-or-mint primitive.
             await loadContact()
-            // Stamp lastViewed ONCE per open. This lives in `.task` (which runs
-            // a single time per view appearance) rather than inside
-            // `loadContact()`, which re-runs on every save/import/delete
-            // reload — so a card the user opens and edits is "viewed" once, not
-            // once per keystroke-driven reload. NOTE: `stampViewed` reconciles +
-            // mints by design (Adam: "always reconcile when stamping the viewed
-            // timestamp") — opening a never-touched contact will mint its
-            // GuessWho UUID. That is the intended behavior, not a leak of the
-            // sidecar boundary. Fire-and-forget; never surface a stamp error.
+            // Stamp lastViewed ONCE per open. Lives in `.task` (runs once per
+            // appearance) rather than in `loadContact()`, which re-runs on every
+            // save/import/delete reload — so a card the user opens and edits is
+            // "viewed" once, not once per keystroke-driven reload. NOTE:
+            // `stampViewed` reconciles + mints by design (Adam: "always reconcile
+            // when stamping the viewed timestamp"), so opening a never-touched
+            // contact mints its GuessWho UUID. That is intended, not a leak of
+            // the sidecar boundary. Fire-and-forget; never surface a stamp error.
             await stampViewed()
         }
         .task(id: contact?.contactID) {
             await loadHeaderPhoto()
         }
         .onDisappear {
-            // Backstop for the edge-swipe-back gesture: the system pop
-            // bypasses our custom back button, so commit here too. A no-op
-            // if commitActiveEdit() already ran from a button tap.
+            // Backstop for the edge-swipe-back gesture: the system pop bypasses
+            // our custom back button, so commit here too. A no-op if
+            // commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
         }
         .onReceive(NotificationCenter.default.publisher(for: .linkedInImportDidSave)) { _ in
-            // A LinkedIn import just saved changes to a contact. Re-read so the
-            // open card reflects the new fields/notes immediately instead of
-            // showing stale data until re-selected. preferFresh re-reads the
-            // record + sidecar fields through the fresh path.
+            // A LinkedIn import just saved changes. Re-read so the open card
+            // reflects the new fields/notes immediately instead of showing stale
+            // data until re-selected. preferFresh re-reads the record + sidecar
+            // fields through the fresh path.
             Task { await loadContact(preferFresh: true) }
         }
     }
@@ -292,16 +276,16 @@ struct ContactDetailView: View {
         // `.centeredRowContent()` is applied to each ROW's content view (inside
         // the section helpers below), NOT to the `Section`s here. A Section is a
         // structural list element, not a laid-out view, so `.frame(maxWidth:)`
-        // on it does not reliably clamp row width; applied to the row content it
-        // does. The List itself stays full-bleed so its scroll view reaches the
-        // pane edges. See `centeredRowContent`.
+        // on it doesn't reliably clamp row width — on the row content it does.
+        // The List stays full-bleed so its scroll view reaches the pane edges.
+        // See `centeredRowContent`.
         let list = List {
             Section {
                 // Inline header on every platform: monogram + name + subtitle
                 // read as a centered card, matching Apple's Contacts detail.
-                // `.frame(maxWidth: .infinity)` centers it within the row on all
-                // platforms; `.centeredRowContent(alignment: .center)` adds the
-                // 560 column clamp on Catalyst (a no-op elsewhere).
+                // `.frame(maxWidth: .infinity)` centers it within the row;
+                // `.centeredRowContent(alignment: .center)` adds the 560 column
+                // clamp on Catalyst (a no-op elsewhere).
                 headerView(contact)
                     .frame(maxWidth: .infinity)
                     .centeredRowContent(alignment: .center)
@@ -334,9 +318,9 @@ struct ContactDetailView: View {
                 Section { activityFooter }
             }
         }
-        // Inject the owned editMode binding so EditButton drives this view's
-        // own .editMode state instead of an ambient one we can't tear down.
-        // Reset to .inactive happens on every contact-edit exit path.
+        // Inject the owned editMode binding so EditButton drives this view's own
+        // .editMode state, not an ambient one we can't tear down. Reset to
+        // .inactive on every contact-edit exit path.
         #if targetEnvironment(macCatalyst)
         list
             .listStyle(.inset)
@@ -356,11 +340,10 @@ struct ContactDetailView: View {
         #endif
     }
 
-    /// Editor section stack used when `isEditingContact` is true. Reuses
-    /// the same row components as the sheet editor. The binding falls
-    /// back to a throwaway empty model — never hit in practice because
-    /// the call site is gated on `editModel != nil`, but a nil-coalesce
-    /// keeps the binding total without a runtime trap.
+    /// Editor section stack shown when `isEditingContact` is true, reusing the
+    /// sheet editor's row components. The binding falls back to a throwaway
+    /// empty model — never hit (the call site is gated on `editModel != nil`),
+    /// but the nil-coalesce keeps the binding total without a runtime trap.
     @ViewBuilder
     private var editingSections: some View {
         let binding = Binding<ContactEditModel>(
@@ -395,7 +378,7 @@ struct ContactDetailView: View {
         }
     }
 
-    /// Editable custom (sidecar) fields shown inside contact-edit mode. The KEY
+    /// Editable custom (sidecar) fields shown in contact-edit mode. The KEY
     /// (field name) is read-only; the VALUE is editable. Edits/deletes save
     /// immediately via `fieldsStore` (separate from the CNContact edit model).
     /// No add (out of scope). Hidden when the contact has no custom fields.
@@ -444,9 +427,9 @@ struct ContactDetailView: View {
 
     @ToolbarContentBuilder
     private var editingToolbarContent: some ToolbarContent {
-        // A single accent checkmark "Done" — there's no Cancel because some edits
-        // (custom/sidecar fields) commit immediately, so a Cancel that implied
-        // undo would be a lie. Done commits any pending CNContact-model edits and
+        // A single accent checkmark "Done" — no Cancel, because some edits
+        // (custom/sidecar fields) commit immediately, so a Cancel implying undo
+        // would be a lie. Done commits any pending CNContact-model edits and
         // dismisses; sidecar edits already saved live.
         ToolbarItem(placement: .confirmationAction) {
             Button {
@@ -487,10 +470,9 @@ struct ContactDetailView: View {
 
     @ToolbarContentBuilder
     private var readOnlyToolbarContent: some ToolbarContent {
-        // Star sits BEFORE Edit so the toolbar reads star, Edit. Always
-        // enabled — favoriting a never-touched contact now reconciles + mints
-        // the GuessWho UUID transparently (the write resolves-or-mints
-        // internally), so there is no gate on an existing UUID.
+        // Star sits BEFORE Edit so the toolbar reads star, Edit. Always enabled:
+        // the favorite write resolves-or-mints the GuessWho UUID internally, so
+        // favoriting a never-touched contact needs no existing-UUID gate.
         ToolbarItem(placement: .primaryAction) {
             Button {
                 Task { await toggleFavorite() }
@@ -514,9 +496,9 @@ struct ContactDetailView: View {
             }
             editModel = ContactEditModel(original: loaded)
             // Pin the list into edit mode for the duration of contact-edit so
-            // .onMove drag handles appear on multi-value rows without needing
-            // a separate EditButton in the toolbar — matches Apple Contacts.app
-            // where reordering is always-on while you're editing.
+            // .onMove drag handles appear on multi-value rows without a separate
+            // toolbar EditButton — matching Apple Contacts.app, where reordering
+            // is always-on while editing.
             editMode = .active
         } catch {
             editFetchErrorMessage = error.localizedDescription
@@ -536,26 +518,19 @@ struct ContactDetailView: View {
             try await repository.saveContact(model.edited, for: id)
             editModel = nil
             editMode = .inactive
-            // No reconcile here (6f): editing a contact's CONTACT fields is not a
-            // GuessWho-sidecar write, so it must not stamp a guesswho:// URL — an
-            // unstamped contact stays unstamped until the user adds notes/tags/
-            // links/favorites, each of which mints via resolve-or-mint. Just
-            // re-read the one record into the cache. loadContact(preferFresh:)
-            // then re-reads the detail fields through the same fresh path so the
-            // view shows post-save state immediately rather than waiting for a
-            // nav-away-and-back.
+            // No reconcile here: editing CONTACT fields is not a GuessWho-sidecar
+            // write, so it must not stamp a guesswho:// URL — an unstamped contact
+            // stays unstamped until the user adds notes/tags/links/favorites, each
+            // of which mints via resolve-or-mint. Just re-read the record; the
+            // fresh path shows post-save state immediately instead of waiting for
+            // a nav-away-and-back.
             await loadContact(preferFresh: true)
-            // Record the edit on the contact's lastModified timestamp so the
-            // "Last Modified" sort reflects this save. Runs AFTER the fresh
-            // reload so `loadedContactID` carries the resolved guessWhoID.
-            //
-            // This is NOT in tension with the "no reconcile here" note above:
-            // that note is about the CONTACT-field WRITE (saveContact), which
-            // stays mint-free. The lastModified stamp is a separate, deliberate
-            // sidecar write that resolves-or-mints by design — and in practice
-            // the record is already reconciled (the view-open `stampViewed()`
-            // minted it), so this mint is a no-op on all but a pathological
-            // never-viewed-yet-saved path.
+            // Stamp lastModified so the "Last Modified" sort reflects this save.
+            // Runs AFTER the fresh reload so `loadedContactID` carries the
+            // resolved guessWhoID. Unlike the CONTACT-field write above, this is
+            // a deliberate sidecar write that resolves-or-mints by design —
+            // though the view-open `stampViewed()` usually already minted, so
+            // it's a no-op except on a never-viewed-yet-saved path.
             await stampModified()
         } catch {
             editSaveError = ContactEditModel.saveErrorCategory(error)
@@ -575,8 +550,8 @@ struct ContactDetailView: View {
             }
         } catch {
             let category = ContactEditModel.saveErrorCategory(error)
-            // recordDoesNotExist means the contact is already gone —
-            // exactly what the user asked for. Treat as success.
+            // recordDoesNotExist means the contact is already gone — exactly
+            // what the user asked for. Treat as success.
             if category == .recordDoesNotExist {
                 editModel = nil
                 editMode = .inactive
@@ -617,18 +592,16 @@ struct ContactDetailView: View {
 
     // MARK: - Edit-mode photo change
 
-    /// Developer-facing breadcrumb for photo load/decode/save failures (the
-    /// user only ever sees the plain-language `photoSaveError` alert text).
-    /// The underlying CNContact save failure itself is logged in more detail
-    /// by `CNContactStoreAdapter.setImageData` — this logger covers the
-    /// UI-layer load/decode failures that never reach the store.
+    /// Developer-facing breadcrumb for photo load/decode/save failures (the user
+    /// only sees the plain-language `photoSaveError` alert). Covers the UI-layer
+    /// load/decode failures that never reach the store; the CNContact save
+    /// failure itself is logged by `CNContactStoreAdapter.setImageData`.
     private static let photoLog = GuessWhoLog.logger("contact.photo")
 
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
-    /// size, and writes them to the underlying Contacts record. The write goes
-    /// to the CNContact itself (not a sidecar), so the new photo shows in
-    /// Contacts.app too. Resets the picker selection so picking the same asset
-    /// again re-fires.
+    /// size, and writes them to the CNContact itself (not a sidecar), so the new
+    /// photo shows in Contacts.app too. Resets the picker selection so picking
+    /// the same asset again re-fires.
     private func applyPickedPhoto(_ item: PhotosPickerItem) async {
         defer { photoPickerItem = nil }
         do {
@@ -637,8 +610,8 @@ struct ContactDetailView: View {
                 photoSaveError = "That photo couldn't be loaded."
                 return
             }
-            // Downscale on a background task so a large asset doesn't hitch the
-            // main actor; contact photos don't need full camera resolution.
+            // Downscale off the main actor so a large asset doesn't hitch it;
+            // contact photos don't need full camera resolution.
             let jpegData = await Self.normalizedPhotoData(from: rawData)
             guard let jpegData else {
                 Self.photoLog.error("picked photo failed to decode (\(rawData.count) bytes)")
@@ -663,13 +636,10 @@ struct ContactDetailView: View {
 
     /// Handles raw image bytes from a source that hands back `Data` directly
     /// rather than a `PhotosPickerItem` — a drop onto the monogram, or the
-    /// Catalyst file Open panel. `rawData`/`loadError` are already hopped
-    /// back to the main thread by the caller (the drop path's
-    /// `NSItemProvider` completion runs on an arbitrary queue; the Catalyst
-    /// file-read explicitly re-enters via `DispatchQueue.main.async`), so
-    /// this method never has to reason about which thread produced them.
-    /// Otherwise shares the same downscale/write tail as the `PhotosPicker`
-    /// path.
+    /// Catalyst file Open panel. `rawData`/`loadError` are already hopped back to
+    /// the main thread by the caller, so this method needn't reason about which
+    /// thread produced them. Otherwise shares the `PhotosPicker` path's
+    /// downscale/write tail.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
             Self.photoLog.error("photo failed to load: \(loadError?.localizedDescription ?? "none")")
@@ -700,10 +670,9 @@ struct ContactDetailView: View {
         await loadHeaderPhoto()
     }
 
-    /// Decode, downscale (longest side ≤ 1024pt), and re-encode the picked
-    /// bytes as JPEG off the main actor. Returns nil if the bytes don't decode
-    /// to an image. 1024 is plenty for a contact photo and keeps the write the
-    /// OS thumbnails small.
+    /// Decode, downscale (longest side ≤ 1024pt), and re-encode the picked bytes
+    /// as JPEG off the main actor. Returns nil if the bytes don't decode. 1024 is
+    /// plenty for a contact photo and keeps the OS-thumbnailed write small.
     private static func normalizedPhotoData(from data: Data) async -> Data? {
         await Task.detached(priority: .userInitiated) {
             guard let image = UIImage(data: data) else { return nil }
@@ -725,9 +694,9 @@ struct ContactDetailView: View {
         }.value
     }
 
-    /// Inline detail header used on macOS: large monogram circle, name,
-    /// and a `job title · organization` subtitle. The nav-bar title is
-    /// hidden in this configuration so the name only appears once.
+    /// Inline detail header: large monogram circle, name, and a
+    /// `job title · organization` subtitle. The nav-bar title is hidden so the
+    /// name only appears once.
     @ViewBuilder
     private func headerView(_ contact: Contact) -> some View {
         VStack(spacing: 12) {
@@ -750,13 +719,12 @@ struct ContactDetailView: View {
         }
     }
 
-    /// The circular profile image (photo or monogram fallback). Tapping it does
-    /// one of three things depending on state: in edit mode it jumps straight
-    /// to the platform picker (with a translucent viewfinder overlay signalling
-    /// this — long-press/right-click offers Remove when a photo exists); in
-    /// view mode with a photo it opens the fullscreen zoom/pan viewer; in view
-    /// mode WITHOUT a photo it jumps straight to the picker so a first photo can
-    /// be added without entering the editor.
+    /// The circular profile image (photo or monogram fallback). Tap behavior
+    /// depends on state: in edit mode it jumps to the platform picker (a
+    /// translucent viewfinder overlay signals this; long-press/right-click offers
+    /// Remove when a photo exists); in view mode with a photo it opens the
+    /// fullscreen zoom/pan viewer; in view mode WITHOUT a photo it jumps to the
+    /// picker so a first photo can be added without entering the editor.
     @ViewBuilder
     private func photoCircle(_ contact: Contact) -> some View {
         let circle = ZStack {
@@ -779,8 +747,7 @@ struct ContactDetailView: View {
                 // Translucent viewfinder over the circle while editing: a
                 // glanceable "tap to change photo" affordance. The dark scrim
                 // keeps the symbol legible over a light photo or monogram; the
-                // initials are hidden above so the scrim isn't fighting for
-                // legibility against them too.
+                // initials are hidden above so the scrim isn't fighting them too.
                 Circle()
                     .fill(Color.black.opacity(0.35))
                 Image(.customPersonCropCircleViewfinder)
@@ -792,11 +759,9 @@ struct ContactDetailView: View {
         }
 
         if isEditingContact {
-            // In edit mode the circle is the "change photo" control: tapping
-            // it jumps straight to the platform picker (PhotosPicker on
-            // iOS/iPadOS, a file Open panel on Catalyst) rather than
-            // stopping at an intermediate Choose/Remove menu. Removing an
-            // existing photo is still available via long-press / right-click.
+            // In edit mode the circle is the "change photo" control: tap jumps
+            // straight to the platform picker (no intermediate Choose/Remove
+            // menu). Remove stays available via long-press / right-click.
             Button {
                 presentingPhotoPicker = true
             } label: {
@@ -822,12 +787,11 @@ struct ContactDetailView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("View photo")
         } else {
-            // No photo, not editing: tapping the monogram is a shortcut to add
-            // a first photo without opening the editor. There's nothing to
-            // remove, so go straight to the picker (no Choose/Remove dialog).
-            // The monogram also accepts a dropped image file/photo directly
+            // No photo, not editing: tapping the monogram adds a first photo
+            // without opening the editor. Nothing to remove, so go straight to
+            // the picker. The monogram also accepts a dropped image directly
             // (Catalyst drag from Finder/Photos, iPad split-view drag), so a
-            // first photo can be set without opening the picker at all.
+            // first photo can be set without the picker at all.
             Button {
                 presentingPhotoPicker = true
             } label: {
@@ -840,9 +804,9 @@ struct ContactDetailView: View {
                 // this branch is also reached transiently while an existing
                 // photo is still async-loading (see `loadHeaderPhoto`), and a
                 // drop during that window must not silently overwrite it.
-                // Restricting to `.image` (rather than the generic `Data`
-                // Transferable) rejects non-image drops — e.g. a PDF or zip —
-                // up front instead of accepting them and failing later.
+                // Restricting to `.image` (not the generic `Data` Transferable)
+                // rejects non-image drops (PDF, zip) up front rather than
+                // accepting them and failing later.
                 guard !contact.imageDataAvailable,
                       let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) })
                 else { return false }
@@ -866,11 +830,10 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func infoSection(_ contact: Contact) -> some View {
         // Label-above-value rows in roughly the order Contacts stores them, but
-        // split so each multi-value TYPE (phone, email, url, address) lives in
-        // its OWN section. (This intentionally departs from Apple's Contacts,
-        // which packs every field type into a single card — we want one section
-        // per type here.) The per-group "old"-row disclosure renders as a small
-        // blue-link section FOOTER instead of an inline row, so it sits outside
+        // split so each multi-value TYPE (phone, email, url, address) gets its
+        // OWN section — a deliberate departure from Apple's Contacts, which packs
+        // every type into one card. The per-group "old"-row disclosure renders as
+        // a small blue-link section FOOTER (not an inline row), so it sits outside
         // the section's grouped background. Ungrouped rows (department, dates,
         // social, IM, relations) keep their relative position by collapsing into
         // contiguous "other" sections.
@@ -893,8 +856,8 @@ struct ContactDetailView: View {
 
     /// One info section for a single multi-value field group (phone/email/url/
     /// address). No header. The group's "old"-labeled rows hide behind a "more…"
-    /// section FOOTER styled as a small blue link; tapping it reveals them (the
-    /// hidden rows then render in the section body and the footer disappears).
+    /// section FOOTER styled as a small blue link; tapping it reveals them in the
+    /// section body and the footer disappears.
     @ViewBuilder
     private func groupedInfoSection(group: InfoRowData.FieldGroup, visible: [InfoRowData], hidden: [InfoRowData]) -> some View {
         let isExpanded = expandedFieldGroups.contains(group)
@@ -904,10 +867,9 @@ struct ContactDetailView: View {
                     .centeredRowContent()
             }
             if isExpanded {
-                // Once revealed, the "old" rows render in the section body and
-                // the footer disappears — no "less…" / re-collapse affordance.
-                // The group re-collapses only when the view is rebuilt (navigate
-                // away and back), since expansion is per-view-instance @State.
+                // Reveal is one-way (no "less…"): expansion is per-view-instance
+                // @State, so the group re-collapses only on view rebuild
+                // (navigate away and back).
                 ForEach(hidden) { row in
                     infoRow(row)
                         .centeredRowContent()
@@ -923,8 +885,8 @@ struct ContactDetailView: View {
     /// Build an `InfoRow`, threading the lastInteracted stamp closure so a CALL,
     /// EMAIL, or COPY on a phone/email row registers as an interaction. The
     /// closure is fire-and-forget on the MainActor and a no-op for non-phone/
-    /// email rows (which never invoke it). One helper so every info-row call
-    /// site supplies the SAME closure — DRY.
+    /// email rows (which never invoke it). One helper so every call site supplies
+    /// the SAME closure.
     private func infoRow(_ row: InfoRowData) -> InfoRow {
         InfoRow(data: row, onInteract: { Task { await stampInteracted() } })
     }
@@ -993,11 +955,10 @@ struct ContactDetailView: View {
     }
 
     /// Partition the ordered `rows` into section runs, preserving overall order.
-    /// Each contiguous run of same-group rows becomes its own `.group` run (with
-    /// visible/hidden split so the view can footer-collapse the "old" rows);
-    /// contiguous ungrouped rows collapse into one `.other` run. So a contact
-    /// reads as: [other: dept] [group: phone] [group: email] … [other: dates,
-    /// relations] — one section per type, ungrouped rows sharing a section.
+    /// Each contiguous run of same-group rows becomes a `.group` run (visible/
+    /// hidden split so the view can footer-collapse the "old" rows); contiguous
+    /// ungrouped rows collapse into one `.other` run. A contact reads as:
+    /// [other: dept] [group: phone] [group: email] … [other: dates, relations].
     private func infoSectionRuns(for rows: [InfoRowData]) -> [InfoSectionRun] {
         var runs: [InfoSectionRun] = []
         var otherOrder = 0
@@ -1018,9 +979,9 @@ struct ContactDetailView: View {
             while runEnd < rows.endIndex, rows[runEnd].group == group { runEnd += 1 }
             let run = rows[index..<runEnd]
             // Deliberate: when EVERY value in a group is "old", `visible` is empty
-            // and the section renders as a lone "more…" footer with no row above
-            // it. That matches the rule the user asked for — "old" values always
-            // hide behind "more…" — rather than special-casing all-old groups.
+            // and the section renders as a lone "more…" footer with no row above.
+            // That upholds the rule — "old" values always hide behind "more…" —
+            // rather than special-casing all-old groups.
             runs.append(.group(
                 group: group,
                 visible: run.filter { !$0.isOld },
@@ -1032,11 +993,9 @@ struct ContactDetailView: View {
     }
 
     /// The "more…" section footer for a field group's hidden "old" rows. Shows
-    /// the hidden count ("more… (2)") in small, blue-link style (footnote +
-    /// tint), sitting outside the section's grouped background. Tapping it is
-    /// one-way: the hidden rows render in the section body and this footer
-    /// disappears — there is no "less…" / re-collapse affordance. The group
-    /// re-collapses only when the view is rebuilt (navigate away and back).
+    /// the hidden count ("more… (2)") in small blue-link style (footnote + tint),
+    /// outside the section's grouped background. Tap is one-way — see
+    /// `groupedInfoSection`.
     @ViewBuilder
     private func moreDisclosureFooter(for group: InfoRowData.FieldGroup, hiddenCount: Int) -> some View {
         Button {
@@ -1047,26 +1006,24 @@ struct ContactDetailView: View {
             Text("more… (\(hiddenCount))")
                 .font(.footnote)
                 .foregroundStyle(.tint)
-                // Pin the link to the leading edge so it reads as a normal
-                // left-aligned footer link on every platform — without this the
-                // Button collapses to its intrinsic width and could center.
+                // Pin to the leading edge so it reads as a normal left-aligned
+                // footer link — without this the Button collapses to its
+                // intrinsic width and could center.
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Footer styling: the Catalyst 560-column clamp so the link lines up
-        // with the section's rows, plus breathing room *below* (not above) so
-        // the link tucks up under the section it discloses instead of floating
-        // in the gap toward the next section.
+        // Footer styling: the Catalyst 560-column clamp so the link lines up with
+        // the section's rows, plus breathing room *below* (not above) so the link
+        // tucks under the section it discloses rather than floating toward the
+        // next one.
         .centeredSectionFooter()
     }
 
-    /// "Recent Events": up to 10 EventKit events where this contact appears
-    /// as an attendee, matched by any email on the card. Distinct from the
-    /// user-curated linked events that surface in the "Linked Events" section.
-    /// Tapping
-    /// a row pushes the event detail; the `eventKitID` hint lets the detail
-    /// view's adopt-on-load path mint a sidecar on first open.
+    /// "Recent Events": up to 10 EventKit events where this contact is an
+    /// attendee, matched by any email on the card. Distinct from the user-curated
+    /// "Linked Events" section. Tapping a row pushes the event detail; the
+    /// `eventKitID` hint lets its adopt-on-load path mint a sidecar on first open.
     @ViewBuilder
     private var recentEventsSection: some View {
         if !recentEvents.isEmpty {
@@ -1108,12 +1065,10 @@ struct ContactDetailView: View {
     private func referencedBySection(_ contact: Contact) -> some View {
         let backrefs = repository.contactsReferencing(contact: contact)
         if !backrefs.isEmpty {
-            // Inbound relations read INVERSE: "Alice's mother is Bob"
-            // becomes, on Bob's screen, a row showing Alice with the
-            // descriptor "their mother" — i.e. Bob is Alice's mother.
-            // Promoting the contact name to primary and demoting the
-            // label to a "their <label>" caption keeps the direction
-            // unambiguous.
+            // Inbound relations read INVERSE: "Alice's mother is Bob" becomes,
+            // on Bob's screen, a row showing Alice captioned "their mother" (Bob
+            // is Alice's mother). Promoting the name to primary and demoting the
+            // label to a "their <label>" caption keeps the direction unambiguous.
             let rows = backrefs.map { entry in
                 InfoRowData.backReference(
                     displayName: entry.contact.displayName,
@@ -1135,10 +1090,10 @@ struct ContactDetailView: View {
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
-        // Skip the name parts (shown in the inline header) and the two fields
-        // the header's subtitle already renders — job title and organization
-        // (see `headerSubtitle`) — so they aren't duplicated. Department and
-        // phonetic organization aren't in the header, so they stay.
+        // Skip the name parts (in the inline header) and the two fields the
+        // subtitle already renders — job title and organization (see
+        // `headerSubtitle`). Department and phonetic organization aren't in the
+        // header, so they stay.
         let workParts: [(String, String)] = [
             ("department", contact.departmentName),
             ("phonetic organization", contact.phoneticOrganizationName),
@@ -1148,12 +1103,11 @@ struct ContactDetailView: View {
         }
 
         // Phone/email/url/address groups partition into non-"old" rows first,
-        // then the "old"-labeled ones. The view collapses each group's trailing
-        // "old" rows behind a "more…" disclosure (see `infoSection`).
-        // Partitioning here guarantees the visible rows precede the hidden ones
-        // regardless of the order Contacts stored the values in.
-        // `groupOccurrence` is the row's index within its (partitioned) group so
-        // the id stays unique even when a contact has duplicate values.
+        // then the "old"-labeled ones, so visible rows always precede hidden ones
+        // regardless of how Contacts stored the values; the view collapses each
+        // group's trailing "old" rows behind a "more…" disclosure (see
+        // `infoSection`). `groupOccurrence` is the row's index within its
+        // partitioned group, keeping the id unique even for duplicate values.
         let phones = contact.phoneNumbers.stablePartitionedByOldLabel { $0.label }
         for (i, item) in phones.enumerated() {
             var row = InfoRowData.phone(label: localizedLabel(item.label), number: item.value, isOld: item.label.isOldFieldLabel)
@@ -1201,9 +1155,9 @@ struct ContactDetailView: View {
         for item in contact.contactRelations {
             let key = item.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             // Compare by ContactID (effective GuessWho identity), not raw
-            // localID, so a relation pointing at this very contact is excluded
-            // by stable identity rather than the transient identifier. Mint the
-            // match's ContactID once (it re-parses the GuessWho URL) and reuse it.
+            // localID, so a relation pointing at this very contact is excluded by
+            // stable identity, not the transient identifier. Mint the match's
+            // ContactID once (it re-parses the GuessWho URL) and reuse it.
             if !key.isEmpty, let match = lookup[key],
                case let matchID = match.contactID, matchID != selfID {
                 rows.append(.contactLink(
@@ -1252,20 +1206,18 @@ struct ContactDetailView: View {
             rows.append(.text(label: "guesswho url (\(localizedLabel(item.label)))", value: item.value, monospaced: true))
         }
 
-        // The reconcile-outcome and raw-sidecar-envelope debug readouts were
-        // dropped in Stage 6: reconcile is now a package-internal side effect
-        // the view no longer drives (so there's no app-side outcome to show),
-        // and surfacing it would mean retaining new per-contact package state
-        // purely for a debug row. The package-vended identity diagnostics above
-        // remain under the debug carve-out.
+        // No reconcile-outcome / raw-sidecar-envelope readouts: reconcile is a
+        // package-internal side effect the view doesn't drive, so there's no
+        // app-side outcome to show, and surfacing it would mean retaining new
+        // per-contact package state purely for a debug row. The package-vended
+        // identity diagnostics above stay under the debug carve-out.
 
         return rows
     }
 
     // MARK: - Notes / Linked Contacts / Organizations / Events
     //
-    // Formerly one intertwined "Activity" timeline; split into per-kind sections,
-    // each sorted createdAt ASC.
+    // One section per kind, each sorted createdAt ASC.
 
     @ViewBuilder
     private var notesSection: some View {
@@ -1311,7 +1263,7 @@ struct ContactDetailView: View {
     }
 
     /// Shared section shell for a list of `ContactLink`s with a row builder and
-    /// swipe-to-delete. The delete action differs by kind (contact/org links use
+    /// swipe-to-delete. Delete differs by kind (contact/org links use
     /// `deleteLink`, event links use `removeEventLink`). Hidden when empty.
     @ViewBuilder
     private func linkSection(
@@ -1351,7 +1303,7 @@ struct ContactDetailView: View {
                 systemImage: "person.line.dotted.person",
                 action: { showingAddLinkSheet = true }
             )
-            // No UUID gate: the link WRITE reconciles + mints the GuessWho UUID
+            // No UUID gate: the link write resolves-or-mints the GuessWho UUID
             // internally, so a never-touched contact can be linked. `linksStore`
             // is built for every loaded contact, so this only disables until the
             // first load finishes.
@@ -1360,9 +1312,8 @@ struct ContactDetailView: View {
                 if let linksStore {
                     // The picker hands back the far endpoint's ContactID; the
                     // store's async addLink resolves-or-mints BOTH endpoints.
-                    // The store is @Observable, so adding the link re-renders
-                    // the connection rows; each row asks the package to resolve
-                    // the other endpoint.
+                    // The store is @Observable, so adding the link re-renders the
+                    // connection rows, each resolving its other endpoint.
                     AddLinkSheet(currentContactID: id) { otherID, note in
                         Task { await linksStore.addLink(to: otherID, note: note) }
                     }
@@ -1537,8 +1488,8 @@ struct ContactDetailView: View {
     }
 
     /// The ContactID derived from the LOADED contact, carrying its current
-    /// `guessWhoID` (which the nav `id` lacks after a first-write mint).
-    /// The repository's sidecar reads (`eventLinks(for:)`) key on the passed
+    /// `guessWhoID` (which the nav `id` lacks after a first-write mint). The
+    /// repository's sidecar reads (`eventLinks(for:)`) key on the passed
     /// ContactID's `guessWhoID`, so reads must use THIS, not the stale nav `id`.
     /// nil only before the first load resolves a contact.
     private var loadedContactID: ContactID? {
@@ -1548,28 +1499,27 @@ struct ContactDetailView: View {
 
     private var isContactFavorited: Bool {
         // Read through the @Observable app-side favorites cache so the star
-        // reacts to a toggle. The cache asks package `Favorite.matches(_:)` to
-        // compare the opaque ContactID to the stored GuessWho UUID.
+        // reacts to a toggle. The cache uses package `Favorite.matches(_:)` to
+        // compare the opaque ContactID against the stored GuessWho UUID.
         guard let id = loadedContactID else { return false }
         return favoritesStore.isFavorite(id)
     }
 
     private func toggleFavorite() async {
-        // Route through the repository, which resolves-or-mints the GuessWho UUID
-        // first (favoriting a never-touched contact reconciles + mints,
-        // transparent here) then toggles the CONTACT favorite and pokes its
-        // cache. We then reload the contact so its `ContactID` carries the
-        // just-minted `guessWhoID`, and refresh the @Observable app-side
-        // favorites cache so the star + the favorites list update (the
-        // repository writes the same on-disk file the app-side store mirrors,
-        // but doesn't drive its observable state).
+        // Route through the repository: it resolves-or-mints the GuessWho UUID
+        // (favoriting a never-touched contact mints, transparently), toggles the
+        // favorite, and pokes its cache. Then reload the contact so its
+        // `ContactID` carries the just-minted `guessWhoID`, and refresh the
+        // @Observable favorites cache so the star + favorites list update — the
+        // repository writes the on-disk file the store mirrors but doesn't drive
+        // its observable state.
         do {
             _ = try await repository.toggleFavorite(id)
         } catch {
             // Sidecar storage unavailable or write failed. Record it to the
-            // service's error state (the same surface `addEventLink` uses) rather
-            // than swallowing it silently; the reload + refresh below still show
-            // what actually landed on disk.
+            // service's error state (the surface `addEventLink` uses) rather than
+            // swallowing it; the reload + refresh below still show what landed on
+            // disk.
             service.recordError("toggle favorite failed: \(error.localizedDescription)")
         }
         await loadContact()
@@ -1578,23 +1528,22 @@ struct ContactDetailView: View {
 
     private func reloadEventLinks() {
         // The contact↔event link READS go through the repository, keyed on the
-        // LOADED contact's ContactID (which carries the current guessWhoID; the
-        // nav `id` lacks it after a first-write mint). Empty for an unreconciled
+        // LOADED contact's ContactID (carries the current guessWhoID; the nav
+        // `id` lacks it after a first-write mint). Empty for an unreconciled
         // contact — it has no links yet.
         let linkID = loadedContactID ?? id
         eventLinks = repository.eventLinks(for: linkID)
         // The EventKit cache refresh stays on SyncService (an event-surface
-        // concern, out of Stage 6 scope). The repository resolves the linked
-        // event UUIDs (so the app builds no `.contact` SidecarKey to walk the
-        // links); SyncService then debounces-and-refreshes each. Option C
-        // cache-refresh trigger (b): fire on initial contact load only.
+        // concern). The repository resolves the linked event UUIDs (so the app
+        // builds no `.contact` SidecarKey to walk the links); SyncService
+        // debounces-and-refreshes each. Fired on initial contact load only.
         service.refreshLinkedEvents(eventUUIDs: repository.linkedEventUUIDs(for: linkID))
     }
 
     private func addEventLink(eventUUID: String, note: String) async {
         do {
-            // The write resolves-or-mints the CONTACT endpoint's GuessWho UUID
-            // internally, so a never-touched contact can link an event.
+            // The write resolves-or-mints the CONTACT endpoint's GuessWho UUID,
+            // so a never-touched contact can link an event.
             _ = try await repository.addEventLink(for: id, eventUUID: eventUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
@@ -1602,19 +1551,17 @@ struct ContactDetailView: View {
         // A first link may have minted the UUID, re-keying the cache. Re-resolve
         // the loaded contact off the reconcile-stable `contact(id:)` so
         // `loadedContactID` carries the new guessWhoID, then re-read event links
-        // off it and re-key the notes/links stores onto the minted identity. We
-        // do this targeted re-read (not a full loadContact) to avoid refiring
-        // refreshLinkedEvents — see E4 / C-REFRESH-FANOUT; the freshly-added
-        // event refreshes when the user opens its detail view.
+        // and re-key the notes/links stores onto the minted identity. Targeted
+        // re-read (not a full loadContact) to avoid refiring refreshLinkedEvents;
+        // the freshly-added event refreshes when the user opens its detail view.
         contact = repository.contact(id: id)
         if let contact { rebuildSidecarStores(for: contact) }
         eventLinks = repository.eventLinks(for: loadedContactID ?? id)
     }
 
     private func removeEventLink(_ id: UUID) {
-        // Clear edit state first: setLinkNote on a soft-deleted link
-        // undeletes it (§13 link API), so a pending edit must NOT be
-        // committed after the delete lands.
+        // Clear edit state first: setLinkNote on a soft-deleted link undeletes
+        // it, so a pending edit must NOT commit after the delete lands.
         if editingLinkID == id {
             editingLinkID = nil
             draftLinkNote = ""
@@ -1628,9 +1575,9 @@ struct ContactDetailView: View {
         } catch {
             service.recordError("remove link failed: \(error.localizedDescription)")
         }
-        // Do NOT refire refreshLinkedEvents — see E4 / C-REFRESH-FANOUT. The
-        // contact already has a UUID (it had event links to remove), so reading
-        // off `loadedContactID` resolves; `self.id` is the fallback.
+        // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
+        // had event links to remove), so reading off `loadedContactID` resolves;
+        // `self.id` is the fallback.
         eventLinks = repository.eventLinks(for: loadedContactID ?? self.id)
     }
 
@@ -1642,17 +1589,17 @@ struct ContactDetailView: View {
     }
 
     private func loadContact(preferFresh: Bool = false) async {
-        // Resolve the live contact off the view's captured `ContactID`. Since
-        // 6b2 made `contact(id:)` reconcile-stable (it chases the guessWhoID
-        // pointer when present, else falls back to the token's always-present
-        // `localID`), the captured `id` keeps resolving even after a first-write
-        // reconcile re-keys the contact's effective identity — no separately
-        // threaded `localID` needed.
+        // Resolve the live contact off the view's captured `ContactID`.
+        // `contact(id:)` is reconcile-stable (chases the guessWhoID pointer when
+        // present, else falls back to the token's always-present `localID`), so
+        // the captured `id` keeps resolving even after a first-write reconcile
+        // re-keys the contact's effective identity — no separately threaded
+        // `localID` needed.
         let loaded: Contact?
         if preferFresh, let fresh = try? await repository.editableContact(id: id) {
-            // Post-save read: route through unifiedContact(withIdentifier:)
-            // which is more consistent than the enumerate path the
-            // repository cache uses on Catalyst right after a write.
+            // Post-save read: unifiedContact(withIdentifier:) is more consistent
+            // than the enumerate path the repository cache uses on Catalyst right
+            // after a write.
             loaded = fresh
         } else {
             loaded = repository.contact(id: id)
@@ -1663,11 +1610,11 @@ struct ContactDetailView: View {
             reloadEventLinks()
             await reloadRecentEvents(for: loaded)
         } else {
-            // Contact disappeared from the store (e.g. deleted via the
-            // edit sheet). Tear down sidecar-bound state so nothing keeps
-            // reading/writing a dead identity while the view animates away.
-            // Safe to nil regardless of whether the caller is about to
-            // dismiss — a re-load would reconstruct them.
+            // Contact disappeared from the store (e.g. deleted via the edit
+            // sheet). Tear down sidecar-bound state so nothing keeps reading/
+            // writing a dead identity while the view animates away. Safe to nil
+            // even if the caller isn't about to dismiss — a re-load reconstructs
+            // them.
             notesStore = nil
             fieldsStore = nil
             linksStore = nil
@@ -1680,11 +1627,11 @@ struct ContactDetailView: View {
     //
     // Three fire-and-forget stamps record when the user last viewed, modified,
     // or interacted with a contact, feeding the global time-ordered sorts. Each
-    // routes through the repository (which resolves-or-mints the GuessWho UUID
-    // as part of the write), runs on the MainActor, and swallows errors with
-    // `try?` — a failed stamp must never block the UI or surface to the user.
-    // All three prefer `loadedContactID` (carries the resolved `guessWhoID`)
-    // and fall back to the nav `id` before the first load resolves a contact.
+    // routes through the repository (which resolves-or-mints the GuessWho UUID as
+    // part of the write), runs on the MainActor, and swallows errors with `try?`
+    // — a failed stamp must never block the UI or surface to the user. All three
+    // prefer `loadedContactID` (carries the resolved `guessWhoID`), falling back
+    // to the nav `id` before the first load resolves a contact.
 
     /// Stamp `lastViewed` for the open contact. Called once per open from the
     /// view's `.task`. See that call site for the once-per-open rationale and
@@ -1704,16 +1651,15 @@ struct ContactDetailView: View {
         try? await repository.stampInteracted(loadedContactID ?? id)
     }
 
-    /// (Re)build the notes/links stores keyed on the ContactID derived from the
-    /// LOADED contact — NOT the nav `id`, whose `guessWhoID` is still nil after
-    /// a first-write mint: `repository.notes(for:)` / `links(for:)` read
-    /// the `guessWhoID` directly off the passed ContactID. Rebuild a store when
-    /// that identity changes — a first-write/Case-A mint stamps a fresh UUID, and
-    /// a Case-D reconcile picks a winner UUID and deletes the loser's sidecar, so
-    /// a store bound to the old identity would read/write a dead file. Stores are
-    /// built for EVERY contact (even unreconciled): reads return empty until a
-    /// write reconciles + mints, so notes/links can be added to a never-touched
-    /// contact.
+    /// (Re)build the notes/links stores keyed on the LOADED contact's ContactID
+    /// — NOT the nav `id`, whose `guessWhoID` is still nil after a first-write
+    /// mint: `repository.notes(for:)` / `links(for:)` read the `guessWhoID`
+    /// directly off the passed ContactID. Rebuild when that identity changes — a
+    /// first-write/Case-A mint stamps a fresh UUID, and a Case-D reconcile picks
+    /// a winner UUID and deletes the loser's sidecar, so a store bound to the old
+    /// identity would read/write a dead file. Built for EVERY contact (even
+    /// unreconciled): reads return empty until a write reconciles + mints, so
+    /// notes/links can be added to a never-touched contact.
     private func rebuildSidecarStores(for loaded: Contact) {
         let loadedID = loaded.contactID
         if notesStore?.id != loadedID {
@@ -1733,10 +1679,10 @@ struct ContactDetailView: View {
         }
     }
 
-    /// Fetch up to 10 EventKit events where this contact appears as an
-    /// attendee (matched by any email on the card). Runs on a background
-    /// queue inside `SyncService.recentEvents`; the awaited result resumes
-    /// back on the main actor. No-op when the contact has no emails.
+    /// Fetch up to 10 EventKit events where this contact is an attendee (matched
+    /// by any email on the card). Runs on a background queue inside
+    /// `SyncService.recentEvents`; the awaited result resumes on the main actor.
+    /// No-op when the contact has no emails.
     private func reloadRecentEvents(for contact: Contact) async {
         let myLoadID = UUID()
         recentEventsLoadID = myLoadID
@@ -1747,10 +1693,8 @@ struct ContactDetailView: View {
             return
         }
         let fetched = await service.recentEvents(forEmails: emails, limit: 10)
-        // Bail if a newer reload started while this fetch was in flight —
-        // covers navigation away, contact-emails edit, and rapid reloads on
-        // the same localID. Stronger than a localID compare, which can't
-        // distinguish two same-localID reloads in quick succession.
+        // Bail if a newer reload started while this fetch was in flight (see
+        // `recentEventsLoadID`).
         guard recentEventsLoadID == myLoadID else { return }
         recentEvents = fetched
     }
@@ -1854,8 +1798,7 @@ struct ContactDetailView: View {
             do {
                 // A contact↔event link's note edit goes through the shared
                 // repository link-note write (keyed on the link's own UUID, no
-                // contact resolve needed), then re-reads the event links off the
-                // loaded contact's ContactID.
+                // contact resolve needed), then re-reads the event links.
                 try repository.setLinkNote(id: id, note: proposed)
                 eventLinks = repository.eventLinks(for: loadedContactID ?? self.id)
             } catch {
@@ -1874,9 +1817,8 @@ struct ContactDetailView: View {
     }
 
     private func deleteLink(_ id: UUID) {
-        // Clear edit state first: setLinkNote on a soft-deleted link
-        // undeletes it (§13 link API), so a pending edit must NOT be
-        // committed after the delete lands.
+        // Clear edit state first: setLinkNote on a soft-deleted link undeletes
+        // it, so a pending edit must NOT commit after the delete lands.
         if editingLinkID == id {
             editingLinkID = nil
             draftLinkNote = ""
@@ -1911,8 +1853,8 @@ struct ContactDetailView: View {
     }
 
     private func socialProfileLabel(_ labeled: LabeledSocialProfile) -> String {
-        // The CN-provided per-profile label is usually empty; the service
-        // (twitter, linkedin, …) is the meaningful identifier here.
+        // The CN per-profile label is usually empty; the service (twitter,
+        // linkedin, …) is the meaningful identifier here.
         let service = labeled.value.service
         if !labeled.label.isEmpty {
             return localizedLabel(labeled.label)
@@ -1945,7 +1887,7 @@ struct ContactDetailView: View {
 private extension String {
     /// True when this raw Contacts label is the user's custom "old" label.
     /// Standard CN labels arrive wrapped (e.g. `_$!<Home>!$_`), so they never
-    /// collide with this plain, case-insensitive "old" match.
+    /// collide with this plain, case-insensitive match.
     var isOldFieldLabel: Bool {
         trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "old"
     }
@@ -1954,25 +1896,22 @@ private extension String {
 private extension Array {
     /// Reorder so every non-"old"-labeled element precedes every "old"-labeled
     /// one, preserving each subgroup's original order. `label` extracts the raw
-    /// Contacts label from an element (the various labeled-value types don't
-    /// share a protocol). Lets the detail view collapse the trailing "old" rows
-    /// behind a "more…" disclosure without depending on how Contacts happened to
-    /// order the values.
+    /// Contacts label (the various labeled-value types don't share a protocol).
+    /// Lets the detail view collapse the trailing "old" rows behind a "more…"
+    /// disclosure regardless of how Contacts ordered the values.
     func stablePartitionedByOldLabel(_ label: (Element) -> String) -> [Element] {
         filter { !label($0).isOldFieldLabel } + filter { label($0).isOldFieldLabel }
     }
 }
 
 /// Bundles the edit-mode photo-change surfaces — the platform picker
-/// (`PhotosPicker` on iOS/iPadOS, a file Open panel on Catalyst) and the
-/// failure alert — into a single modifier. Extracted from
-/// `ContactDetailView.body` so that view's already-long modifier chain stays
-/// within the SwiftUI type-checker's budget.
+/// (`PhotosPicker` on iOS/iPadOS, a file Open panel on Catalyst) and the failure
+/// alert — into one modifier, extracted from `ContactDetailView.body` to keep
+/// that view's modifier chain within the type-checker's budget.
 ///
-/// Catalyst gets a real file-system Open panel rather than the Photos
-/// picker: Catalyst users expect to browse the filesystem (Finder,
-/// AirDropped files, external drives), and `PhotosPicker` only surfaces the
-/// Photos library grid there, not a file dialog.
+/// Catalyst gets a real file-system Open panel, not the Photos picker: Catalyst
+/// users expect to browse the filesystem (Finder, AirDropped files, external
+/// drives), and `PhotosPicker` only surfaces the Photos library grid there.
 private struct PhotoChangeModifier: ViewModifier {
     @Binding var presentingPhotoPicker: Bool
     @Binding var photoPickerItem: PhotosPickerItem?
@@ -1984,18 +1923,17 @@ private struct PhotoChangeModifier: ViewModifier {
         content
             #if targetEnvironment(macCatalyst)
             // Catalyst drives a native, in-process `NSOpenPanel` through the
-            // AppKitBridge bundle rather than presenting a
-            // `UIDocumentPickerViewController` — the latter's presenter
-            // detaches from the window mid-present on Catalyst, so the powerbox
-            // never shows and the whole window deadlocks (no dialog, frozen to
-            // mouse input). The bundle runs the panel modelessly on the main
-            // thread and calls back with the picked file URLs.
+            // AppKitBridge bundle rather than a `UIDocumentPickerViewController`:
+            // the latter's presenter detaches from the window mid-present on
+            // Catalyst, so the powerbox never shows and the whole window
+            // deadlocks (no dialog, frozen to mouse input). The bundle runs the
+            // panel modelessly on the main thread and calls back with the URLs.
             //
-            // We hang this off `onChange(of: presentingPhotoPicker)` rather
-            // than a `.sheet` so all the existing call sites that just set
-            // `presentingPhotoPicker = true` keep working unchanged. We reset
-            // the flag immediately (the panel is its own window, not a SwiftUI
-            // presentation) so the next tap re-triggers the change.
+            // Hung off `onChange(of: presentingPhotoPicker)` rather than a
+            // `.sheet` so existing call sites that just set
+            // `presentingPhotoPicker = true` keep working. Reset the flag
+            // immediately (the panel is its own window, not a SwiftUI
+            // presentation) so the next tap re-triggers.
             .onChange(of: presentingPhotoPicker) { _, isPresenting in
                 guard isPresenting else { return }
                 presentingPhotoPicker = false
@@ -2023,16 +1961,15 @@ private struct PhotoChangeModifier: ViewModifier {
 
     #if targetEnvironment(macCatalyst)
     /// Drives the native macOS file Open panel (via the in-process AppKitBridge
-    /// bundle) and feeds the picked image's bytes into the shared downscale/
-    /// write tail as raw `Data` — matching the `NSItemProvider` completion
-    /// shape the drag-and-drop path already uses. The panel's completion fires
-    /// on the main thread; we read the file off the main thread so a large
-    /// image can't stall the UI, then hop back for the callback.
+    /// bundle) and feeds the picked image's bytes into the shared downscale/write
+    /// tail as raw `Data`, matching the `NSItemProvider` shape the drag-and-drop
+    /// path uses. The panel's completion fires on the main thread; we read the
+    /// file off it so a large image can't stall the UI, then hop back.
     private func presentOpenPanelForPhoto() {
         guard let bridge = AppKitBridgeLoader.shared else {
-            // Bundle failed to load — surface a plain-language error rather
-            // than silently no-op'ing the tap. (Debug breadcrumbs are logged
-            // by AppKitBridgeLoader itself.)
+            // Bundle failed to load — surface a plain-language error rather than
+            // silently no-op'ing the tap. (AppKitBridgeLoader logs the debug
+            // breadcrumbs.)
             photoSaveError = "The photo picker couldn't be opened."
             return
         }
@@ -2043,8 +1980,8 @@ private struct PhotoChangeModifier: ViewModifier {
             // Main thread; an empty array means the user cancelled.
             guard let url = urls.first else { return }
             // The in-process panel selection is already blessed against the
-            // sandbox, so a same-launch read needs no security-scoped bracket.
-            // We keep the defensive start/stop anyway (harmless) and read off
+            // sandbox, so a same-launch read needs no security-scoped bracket;
+            // we keep the defensive start/stop anyway (harmless) and read off
             // the main thread so a large file doesn't stall the UI.
             let didStartAccessing = url.startAccessingSecurityScopedResource()
             DispatchQueue.global(qos: .userInitiated).async {
@@ -2092,17 +2029,17 @@ private struct InfoRowData: Identifiable {
     var isOld: Bool = false
     /// Position of this row within its field group, assigned in `infoRows(for:)`.
     /// Disambiguates the id of genuinely-duplicate values (e.g. two phones both
-    /// labeled "other" with the same number — degenerate but real address-book
-    /// data) so `ForEach` never sees colliding ids.
+    /// labeled "other" with the same number — degenerate but real) so `ForEach`
+    /// never sees colliding ids.
     var groupOccurrence: Int = 0
 
     /// Content-derived stable identity. A per-render `UUID()` would re-mint each
-    /// time `infoRows(for:)` runs in the view body, so the "old"-row reveal
-    /// `withAnimation` would see every row as new and re-lay-out the whole info
-    /// card instead of sliding in only the revealed rows. Keying on the row's
-    /// own content (plus group/isOld and the per-group occurrence index for
-    /// duplicate values) keeps identity stable across renders AND unique, so the
-    /// animation affects only the rows that actually appear/disappear.
+    /// time `infoRows(for:)` runs, so the "old"-row reveal `withAnimation` would
+    /// see every row as new and re-lay-out the whole info card instead of sliding
+    /// in only the revealed rows. Keying on the row's content (plus group/isOld
+    /// and the per-group occurrence index for duplicate values) keeps identity
+    /// stable across renders AND unique, so the animation touches only the rows
+    /// that actually appear/disappear.
     var id: String {
         let kindKey: String
         switch kind {
@@ -2141,25 +2078,24 @@ private struct InfoRowData: Identifiable {
         InfoRowData(label: label, kind: .contactLink(displayName: displayName, contactID: contactID))
     }
     static func backReference(displayName: String, descriptor: String, contactID: ContactID) -> InfoRowData {
-        // No top-line label here — the back-ref row's primary text is
-        // the contact name, with the descriptor as a small caption.
+        // No top-line label — the back-ref row's primary text is the contact
+        // name, with the descriptor as a small caption.
         InfoRowData(label: "", kind: .backReference(displayName: displayName, descriptor: descriptor, contactID: contactID))
     }
 }
 
 private struct InfoRow: View {
     let data: InfoRowData
-    /// Called when the user CALLS, EMAILS, or COPIES this row's value — i.e. a
-    /// genuine "interaction" with the contact. Supplied by `ContactDetailView`
-    /// as `{ Task { try? await repository.stampInteracted(id) } }`; defaults to
-    /// a no-op so rows that aren't phone/email (and call sites that don't care)
-    /// stay dumb. Only the `.phone` / `.email` cases ever invoke it — `.url`
-    /// and `.date` taps are not interactions (per product).
+    /// Called when the user CALLS, EMAILS, or COPIES this row's value — a genuine
+    /// "interaction" with the contact. Supplied by `ContactDetailView` as
+    /// `{ Task { try? await repository.stampInteracted(id) } }`; defaults to a
+    /// no-op so non-phone/email rows (and call sites that don't care) stay dumb.
+    /// Only the `.phone` / `.email` cases invoke it — `.url` and `.date` taps
+    /// aren't interactions (per product).
     var onInteract: () -> Void = {}
-    // Bridge to the outer UIKit nav controller (iPhone shell) for
-    // contact-link and back-reference rows — pushes a fresh
-    // ContactDetailView via SceneDelegate. Defaults to a no-op closure
-    // (see `ReferenceNavigation.swift`).
+    // Bridge to the outer UIKit nav controller (iPhone shell) for contact-link
+    // and back-reference rows — pushes a fresh ContactDetailView via
+    // SceneDelegate. Defaults to a no-op closure (see `ReferenceNavigation.swift`).
     @Environment(\.pushContactReference) private var pushContactReference
 
     var body: some View {
@@ -2192,9 +2128,9 @@ private struct InfoRow: View {
 
     @ViewBuilder
     private func backReferenceRow(displayName: String, descriptor: String, contactID: ContactID) -> some View {
-        // Inverse-relation row: contact name is primary tinted (the
-        // tappable target) and the descriptor reads "their <label>" in
-        // small caption so the relationship direction is unambiguous.
+        // Inverse-relation row: contact name is primary tinted (the tappable
+        // target); the descriptor reads "their <label>" in small caption so the
+        // direction is unambiguous.
         Button {
             pushContactReference(ContactReference(id: contactID))
         } label: {
@@ -2211,9 +2147,9 @@ private struct InfoRow: View {
 
     @ViewBuilder
     private func contactLinkRow(label: String, displayName: String, contactID: ContactID) -> some View {
-        // Match the tappable-row visual: label above, tinted value, whole
-        // row tappable. Push goes through the env-injected closure so
-        // SwiftUI rows pushed onto a UIKit nav stack still navigate.
+        // Match the tappable-row visual: label above, tinted value, whole row
+        // tappable. Push goes through the env-injected closure so SwiftUI rows on
+        // a UIKit nav stack still navigate.
         Button {
             pushContactReference(ContactReference(id: contactID))
         } label: {
@@ -2250,10 +2186,9 @@ private struct InfoRow: View {
     }
 
     private func calendarURL(for components: DateComponents) -> URL? {
-        // Calendar's calshow: scheme takes seconds since 2001-01-01.
-        // Birthdays often lack a year; in that case land Calendar on
-        // this year's occurrence so the user sees the next/most recent
-        // one rather than year 1.
+        // Calendar's calshow: scheme takes seconds since 2001-01-01. Birthdays
+        // often lack a year; land Calendar on this year's occurrence so the user
+        // sees the next/most recent one rather than year 1.
         var resolved = components
         if resolved.year == nil {
             resolved.year = Calendar(identifier: .gregorian).component(.year, from: Date())
@@ -2268,8 +2203,8 @@ private struct InfoRow: View {
 }
 
 /// A tappable info value (phone / email / url / date). The whole row is the hit
-/// target and the value reads in tint, matching Apple's Contacts. Two behaviors
-/// layer on top, gated by the caller:
+/// target and the value reads in tint, matching Apple's Contacts. Two
+/// caller-gated behaviors layer on top:
 ///
 /// - `stampsInteraction` (phone / email): tapping the row STAMPS lastInteracted
 ///   before opening the URL, so a call/email registers as an interaction. URL /
@@ -2277,14 +2212,13 @@ private struct InfoRow: View {
 ///   interaction with the person (per product).
 /// - `allowsCopy` (phone / email): adds a "Copy" affordance that copies the RAW
 ///   value (the number / address, never the label) and also stamps interacted.
-///   The affordance is platform-specific:
+///   Platform-specific:
 ///     • Mac Catalyst — a trailing Copy button revealed ON HOVER (Apple's Mac
 ///       Contacts shows row actions on hover).
-///     • iOS / iPadOS — a LEADING swipe action (right-swipe) labeled "Copy",
-///       which is the native list idiom. The rows live in the detail `List`, so
-///       `.swipeActions` is valid here.
+///     • iOS / iPadOS — a LEADING swipe action (right-swipe) labeled "Copy", the
+///       native list idiom (valid here since the rows live in the detail `List`).
 ///
-/// Stamp + copy both run on the MainActor via the injected `onInteract` closure
+/// Stamp + copy run on the MainActor via the injected `onInteract` closure
 /// (`ContactDetailView` supplies the fire-and-forget stamp); copying is a pure
 /// `UIPasteboard` write that never blocks.
 private struct TappableInfoRow: View {
@@ -2307,15 +2241,15 @@ private struct TappableInfoRow: View {
                 .copyAffordances(value: value, allowsCopy: allowsCopy, onCopy: copy)
         } else {
             // No URL to open: fall back to a plain, selectable label/value with
-            // no tap, stamp, or copy — exactly the old non-tappable behavior.
+            // no tap, stamp, or copy.
             labeledValue
         }
     }
 
-    /// The tinted, whole-row-tappable content. On phone/email it routes the tap
+    /// The tinted, whole-row-tappable content. On phone/email the tap routes
     /// through `onInteract` (stamp) then `openURL`; otherwise it just opens the
-    /// URL. A `Button` (not `Link`) is used so we can run the stamp before the
-    /// open while keeping the identical tinted-value look.
+    /// URL. A `Button` (not `Link`) so the stamp can run before the open while
+    /// keeping the identical tinted-value look.
     @ViewBuilder
     private var tappableContent: some View {
         Button {
@@ -2334,11 +2268,11 @@ private struct TappableInfoRow: View {
                 if allowsCopy {
                     Spacer(minLength: 8)
                     // Trailing Copy button, revealed on hover. `opacity` (not a
-                    // conditional insert) keeps the row height stable as it
-                    // fades in/out. It lives INSIDE the outer Button's label,
-                    // but as its own `.borderless` Button it claims a separate
-                    // hit region: a tap on the Copy glyph copies + stamps and
-                    // does NOT propagate to the outer row-open Button.
+                    // conditional insert) keeps the row height stable as it fades
+                    // in/out. It lives INSIDE the outer Button's label, but as its
+                    // own `.borderless` Button claims a separate hit region: a tap
+                    // on the Copy glyph copies + stamps and does NOT propagate to
+                    // the outer row-open Button.
                     Button(action: copy) {
                         Image(systemName: "doc.on.doc")
                             .foregroundStyle(.tint)
@@ -2377,14 +2311,13 @@ private struct TappableInfoRow: View {
 
 private extension View {
     /// Attach the iOS leading-swipe "Copy" action. A no-op on Catalyst (which
-    /// uses the hover button inside the row) and when the row doesn't allow
-    /// copy. Factored into a modifier so `TappableInfoRow.body` reads cleanly
-    /// and the `#if` platform fork lives in one place.
+    /// uses the in-row hover button) and when the row doesn't allow copy. A
+    /// modifier so `TappableInfoRow.body` reads cleanly and the `#if` fork lives
+    /// in one place.
     @ViewBuilder
     func copyAffordances(value: String, allowsCopy: Bool, onCopy: @escaping () -> Void) -> some View {
         #if targetEnvironment(macCatalyst)
-        // Catalyst copy is the in-row hover button (see TappableInfoRow); no
-        // swipe action here.
+        // Catalyst copy is the in-row hover button; no swipe action here.
         self
         #else
         if allowsCopy {
@@ -2506,8 +2439,8 @@ private struct AddressRow: View {
 }
 
 /// One editable custom-field row for contact-edit mode: read-only name label
-/// above an editable value field. Commits the value via `onCommit` when the
-/// field loses focus or the user submits — only if it actually changed.
+/// above an editable value field. Commits via `onCommit` when the field loses
+/// focus or the user submits — only if the value actually changed.
 private struct EditableSidecarFieldRow: View {
     let name: String
     let initialValue: String

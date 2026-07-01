@@ -22,18 +22,14 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     /// fine in the message body. Stable label so the lines are greppable.
     private static let saveLog = Logger(label: "sync.contact-save")
 
-    /// Dedicated serial queue that runs every blocking CNContactStore call.
-    /// Pinned to `.userInitiated` so the actor's executor — which can be
-    /// provisioned at Background QoS by the Swift concurrency runtime when
-    /// the cooperative pool decides so — does NOT end up blocking a higher-
-    /// QoS caller (e.g. the `@MainActor` SyncService) on a lower-QoS thread.
-    ///
-    /// Without this, calling `await contactsAdapter.fetchAll()` from
-    /// `@MainActor` (User-Initiated) triggers a "Hang Risk: priority
-    /// inversion" warning from the runtime because
-    /// `CNContactStore.enumerateContacts` synchronously XPCs to a daemon
-    /// at whatever QoS the actor's thread inherits, which is sometimes
-    /// Background.
+    /// Dedicated serial queue that runs every blocking CNContactStore call,
+    /// pinned to `.userInitiated`. The actor's executor can be provisioned at
+    /// Background QoS by the Swift concurrency runtime, and
+    /// `CNContactStore.enumerateContacts` synchronously XPCs to a daemon at
+    /// whatever QoS the actor's thread inherits. Without this queue, calling
+    /// `await contactsAdapter.fetchAll()` from a higher-QoS caller (e.g. the
+    /// `@MainActor` SyncService) blocks it on a lower-QoS thread — the runtime's
+    /// "Hang Risk: priority inversion" warning.
     private let workQueue = DispatchQueue(
         label: "guesswho.contacts-adapter",
         qos: .userInitiated
@@ -196,15 +192,15 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 try store.execute(saveRequest)
             } catch {
                 // DEBUG BREADCRUMB (developer surface, never user-facing): a
-                // CNSaveRequest.execute() rejection arrives as a terse
-                // "Cocoa error <code>" with the actionable detail buried in
-                // userInfo / NSUnderlyingError. We log the full chain so the
-                // failing account/property is visible in the device log, then
-                // re-throw the ORIGINAL error so categorization (and the alert
-                // the user sees) is unchanged. The most common cause is a
-                // contact unified across accounts where one backing card lives
-                // in a read-only source (Exchange/Google directory, social
-                // card); the write is fanned out to that card and rejected.
+                // CNSaveRequest.execute() rejection arrives as a terse "Cocoa
+                // error <code>" with the actionable detail buried in userInfo /
+                // NSUnderlyingError. Log the full chain so the failing
+                // account/property shows in the device log, then re-throw the
+                // ORIGINAL error so categorization (and the user's alert) is
+                // unchanged. Most common cause: a contact unified across
+                // accounts where one backing card lives in a read-only source
+                // (Exchange/Google directory, social card); the write fans out
+                // to that card and is rejected.
                 Self.logSaveFailure(error, contactLocalID: contact.localID)
                 throw error
             }
@@ -220,11 +216,10 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     /// Walks `NSUnderlyingError` so the buried `CNError` / per-property detail
     /// (which names the offending account or field — e.g. the keys behind a
     /// 134092 rejection) is captured alongside the top-level "Cocoa error
-    /// <code>". One log line per level (top, then `underlying[0]`, `[1]`, …) so
-    /// each level is independently greppable. The whole `userInfo` dict is
-    /// dumped (no key allowlist) since the actionable key is often undocumented;
-    /// file output is not subject to the OS `<private>` redaction, so it lands in
-    /// full.
+    /// <code>". One log line per level (top, then `underlying[0]`, `[1]`, …) for
+    /// independent grepping. The whole `userInfo` dict is dumped (no allowlist)
+    /// since the actionable key is often undocumented; file output escapes the
+    /// OS `<private>` redaction, so it lands in full.
     nonisolated static func logSaveFailure(_ error: Error, contactLocalID: String) {
         // Native swift-log metadata form (matches ContactChangeWatcher): this
         // package depends on swift-log directly, NOT GuessWhoLogging, so the
@@ -275,10 +270,10 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     public func changes(since token: Data?) async throws -> ContactChangeSet {
         try await runOnWorkQueue { store in
             // nil token ⇒ first run (or cursor loss). The delta from the dawn of
-            // history is not a meaningful "what changed for you" set — the caller
-            // baselines via a full reload regardless. So skip the history fetch
-            // entirely (which would otherwise materialize the ENTIRE recorded
-            // history just to discard it) and hand back the current token plus
+            // history isn't a meaningful "what changed for you" set, and the
+            // caller baselines via a full reload regardless — so skip the history
+            // fetch entirely (it would materialize the ENTIRE recorded history
+            // just to discard it) and hand back the current token plus
             // requiresFullReload. `currentHistoryToken` is a cheap property read,
             // not an enumeration.
             if token == nil {
@@ -301,12 +296,12 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             // Group / membership churn must never enter the contact delta.
             request.includeGroupChanges = false
 
-            // Per TN3149 the enumeration is driven by a visitor; token
-            // invalidation / first-run / truncation arrives as a
-            // DropEverything event in the stream, NOT a thrown error. Genuine
-            // I/O / auth failures still throw and propagate to the caller. The
-            // fetch itself goes through the ObjC shim because the underlying
-            // enumeratorForChangeHistoryFetchRequest call is Swift-unavailable.
+            // Per TN3149 the enumeration is visitor-driven; token invalidation /
+            // first-run / truncation arrives as a DropEverything event in the
+            // stream, NOT a thrown error. Genuine I/O / auth failures still throw
+            // and propagate. The fetch goes through the ObjC shim because the
+            // underlying enumeratorForChangeHistoryFetchRequest call is
+            // Swift-unavailable.
             let visitor = ChangeHistoryVisitor()
             var fetchedToken: NSData?
             let events = try Self.runChangeHistoryFetch(store: store, request: request, token: &fetchedToken)
@@ -321,10 +316,9 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             let newToken = (fetchedToken as Data?) ?? Data()
             // First-run (nil token) returned early above, so here a full reload
             // is required only when the history stream dropped everything (token
-            // invalidation / truncation).
+            // invalidation / truncation) — in which case the partial delta is
+            // meaningless and the caller rebuilds from a full reload.
             let requiresFullReload = visitor.droppedEverything
-            // On a drop-everything the partial delta is meaningless; the caller
-            // rebuilds from a full reload.
             let changes = requiresFullReload ? [] : visitor.changes
             return ContactChangeSet(
                 changes: changes,
@@ -360,10 +354,10 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         try await runOnWorkQueue { store in
             let cn: CNContact
             do {
-                // Fetch with only the image key: the mutableCopy then carries
-                // just that key, so the `update` writes ONLY the photo and
-                // leaves every other field untouched (the OS regenerates the
-                // thumbnail from the new full-size bytes).
+                // Fetch with only the image key so the mutableCopy carries just
+                // that key: the `update` writes ONLY the photo, leaving every
+                // other field untouched (the OS regenerates the thumbnail from
+                // the new full-size bytes).
                 cn = try store.unifiedContact(withIdentifier: localID, keysToFetch: Self.imageKeys)
             } catch let error as CNError where error.code == .recordDoesNotExist {
                 throw ContactStoreError.contactNotFound(localID: localID)
@@ -558,11 +552,10 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         return events ?? []
     }
 
-    /// Bridge the blocking `CNContactStore` call onto `workQueue` and
-    /// suspend the actor until it returns. The actor's thread is freed
-    /// for the duration of the synchronous CN/XPC work, so a `@MainActor`
-    /// caller no longer sees its high-QoS Task waiting on a lower-QoS
-    /// actor executor (the priority-inversion warning).
+    /// Bridge the blocking `CNContactStore` call onto `workQueue` and suspend
+    /// the actor until it returns. Freeing the actor's thread for the
+    /// synchronous CN/XPC work is what keeps a `@MainActor` caller's high-QoS
+    /// Task off a lower-QoS actor executor (the priority-inversion warning).
     private func runOnWorkQueue<T>(
         _ work: @escaping @Sendable (CNContactStore) throws -> sending T
     ) async throws -> sending T {
@@ -712,21 +705,20 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             CNLabeledValue(label: lv.label.isEmpty ? nil : lv.label, value: CNContactRelation(name: lv.value.name))
         }
 
-        // imageData / thumbnailImageData are not written here — they are owned
-        // by the caller via a separate path. We do not mutate image bytes
-        // here so a round-trip read/modify/write preserves whatever bytes
-        // already exist on the contact (mirrors the §10.5 partial-update
-        // guarantee for `note`).
+        // imageData / thumbnailImageData are not written here — the caller owns
+        // them via a separate path. Leaving them untouched means a round-trip
+        // read/modify/write preserves whatever bytes already exist on the
+        // contact (mirrors the §10.5 partial-update guarantee for `note`).
     }
 }
 
 /// Accumulates a contact change delta from the change-history enumeration.
 /// Each `CNChangeHistoryEvent.accept(_:)` dispatches to the matching `visit`
-/// method below, so events are recorded in history order. Add and update both
+/// method below, recording events in history order. Add and update both
 /// collapse to `.updated`; delete becomes `.deleted`; drop-everything sets the
 /// `droppedEverything` flag (the caller then forces a full reload). Group and
-/// membership visitor callbacks are intentionally not implemented — the fetch
-/// request sets `includeGroupChanges = false`, so they never fire.
+/// membership callbacks are intentionally unimplemented — the fetch request
+/// sets `includeGroupChanges = false`, so they never fire.
 private final class ChangeHistoryVisitor: NSObject, CNChangeHistoryEventVisitor {
     private(set) var changes: [ContactChange] = []
     private(set) var droppedEverything = false

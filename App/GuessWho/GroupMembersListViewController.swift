@@ -208,7 +208,7 @@ final class GroupMembersListViewController: UIViewController {
         // Sort + section this group's members by the CURRENT global sort order
         // via the package, so the member list honors the same picker as the
         // People / Organizations lists (name A–Z or a relative-time bucket
-        // order). Replaces this VC's old inline name-only `sectionedMembers()`.
+        // order).
         let sections = repository.sectionedIDs(forMembers: Array(membersByID.values))
         sectionLetters = sections.map { $0.0 }
         // Hide the A–Z scrubber for time orders (bucket-name sections) — see

@@ -52,7 +52,33 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
 - `App/GuessWho/` — the app target. SwiftUI + UIKit (Catalyst 3-column
   shell, iPhone tab-bar shell). Detail views, list view controllers,
   scene delegate.
-- `Tests/GuessWhoSyncTests/` — XCTest suite for the sync package.
+- `App/GuessWhoLinkedIn/` — the LinkedIn Safari Web Extension.
+- `App/GuessWhoAppKitBridge/` — in-process AppKit `.bundle` for the rare
+  AppKit-only needs on Catalyst (e.g. `NSOpenPanel`).
+- `Sources/GuessWhoLogging/` — `GuessWhoLog`, a thin facade over
+  FellerBuncher (swift-log) for file logging.
+- `Tests/` — XCTest + swift-testing suites for the package.
+
+## Documentation
+
+Current, code-accurate docs live in `docs/`. Read the relevant one before
+touching that subsystem:
+
+- [`docs/contact-identity.md`](docs/contact-identity.md) — **the** identity
+  contract: `ContactID` (the app's opaque token), GuessWho ID vs. `localID`,
+  unified-only fetch, the four reconciliation cases. Read before any
+  identity/reconcile/fetch work.
+- [`docs/linkedin-safari-extension.md`](docs/linkedin-safari-extension.md) —
+  the LinkedIn extension + extension↔app handoff: App Group / iCloud
+  wiring, Debug-vs-Release ids, the wake-URL flow, match→diff→confirm→save.
+- [`docs/contacts-notes-entitlement-application.md`](docs/contacts-notes-entitlement-application.md)
+  and [`docs/research/contact-note-134092-strategy.md`](docs/research/contact-note-134092-strategy.md)
+  — how to obtain the `com.apple.developer.contacts.notes` entitlement, and
+  the research behind the TestFlight-only 134092 note-save crash.
+
+`docs/` holds **only** current docs (so `grep docs/` is trustworthy). Big
+build plans live in `plans/`; superseded plans are moved to `archive/` with
+an `ARCHIVED` banner — don't treat those as guidance.
 
 ## Building & testing
 

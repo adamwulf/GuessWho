@@ -1,9 +1,7 @@
 import Foundation
 
-/// Sidebar entries for the 3-column NavigationSplitView used on
-/// macOS and on regular-width iPadOS. Scoped to People for the first
-/// pass so we can validate the architecture; the other tabs still
-/// ship via the iPhone TabView and will land here as follow-ups.
+/// The list surfaces shown as sidebar rows in the Catalyst/iPad 3-column
+/// shell and as tabs in the iPhone tab-bar shell.
 enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
     // `allCases` order drives both the Catalyst/iPad sidebar rows and the
     // iPhone tab-bar order, so the declaration order IS the display order:

@@ -7,29 +7,24 @@ import GuessWhoLogging
 /// and picks its root view controller based on the build target:
 ///
 /// * Mac Catalyst → a 3-column `UISplitViewController` (sidebar /
-///   content / detail) — the UIKit shell introduced in Phase 2 and
-///   completed in Phases 3 / 4A–C with real list controllers.
-/// * iPhone (and iPad until Phase 6) → a `PermissionGateViewController`
-///   that swaps between a SwiftUI-parity ContentUnavailable gate and a
-///   `UITabBarController` of 4 navigation stacks (People /
-///   Organizations / Events / Favorites). Each tab reuses the same
-///   UIKit list controller the Catalyst columns host — selection
-///   pushes a `UIHostingController(rootView: ContactDetailView…)` or
-///   `EventDetailView` onto the tab's nav stack (iPhone uses push
-///   semantics; Catalyst uses column REPLACE).
+///   content / detail); selecting a row REPLACES the secondary column.
+/// * iPhone and iPad regular-width → a `PermissionGateViewController`
+///   that swaps between a ContentUnavailable gate and a
+///   `UITabBarController` of navigation stacks (Favorites / People /
+///   Organizations / Events / Groups); selecting a row PUSHES a
+///   `UIHostingController(rootView: ContactDetailView…)` or
+///   `EventDetailView` onto the tab's nav stack.
 ///
-/// iPad regular-width loses the 3-column SwiftUI flow this phase —
-/// it falls back to the same UIKit tab shell as iPhone-compact until
-/// Phase 6 stands up the Catalyst-shaped `UISplitViewController` on
-/// iPad too. Documented in MIGRATION_STATUS.
+/// Both shells reuse the same UIKit list controllers. iPad regular-width
+/// lands in the tab shell, not a Catalyst-shaped split view.
 @objc(GuessWhoSceneDelegate)
 final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
     #if targetEnvironment(macCatalyst)
-    /// Strong references to the Catalyst columns so the sidebar
-    /// callback can swap supplementary/secondary view controllers on
-    /// each tab switch without us walking the split's child stack.
+    /// Strong references to the Catalyst columns so the sidebar callback can
+    /// swap supplementary/secondary view controllers on each tab switch without
+    /// walking the split's child stack.
     private var split: UISplitViewController?
     private var sidebar: SidebarViewController?
     #endif
@@ -39,10 +34,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         willConnectTo session: UISceneSession,
         options connectionOptions: UIScene.ConnectionOptions
     ) {
-        // First scene breadcrumb. `urlContextCount` records whether this is a
-        // cold-launch deep link (the handoff wake arrives here, not in
-        // `openURLContexts`, when the app was not already running) so the wake
-        // path is traceable from the scene's very first line.
+        // First scene breadcrumb. `urlContextCount` flags a cold-launch deep
+        // link (a handoff wake arrives here, not in `openURLContexts`, when the
+        // app wasn't already running), so the wake path is traceable from the
+        // scene's very first line.
         Self.lifecycleLog.notice("scene willConnect", [
             "scene": Self.sceneTag(scene),
             "role": scene.session.role.rawValue,
@@ -60,8 +55,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         window.makeKeyAndVisible()
 
-        // Cold-launch path: if the app was woken by the LinkedIn handoff URL
-        // (`guesswho-linkedin://handoff`) the URL arrives here rather than in
+        // Cold-launch path: a LinkedIn handoff URL
+        // (`guesswho-linkedin://handoff`) that woke the app arrives here, not in
         // `scene(_:openURLContexts:)`. Drain it once the window exists so the
         // spike alert has something to present on.
         if !connectionOptions.urlContexts.isEmpty {
@@ -69,25 +64,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Running-app path for the LinkedIn handoff spike. When the
-    /// `guesswho-linkedin://handoff` URL is opened while a scene is already
-    /// connected, UIKit delivers it here. Distinct from the
-    /// `guesswho://contact/<uuid>` identity scheme — only `guesswho-linkedin`
-    /// URLs are handled.
+    /// Running-app path for the LinkedIn handoff spike: UIKit delivers the
+    /// `guesswho-linkedin://handoff` URL here when a scene is already connected.
+    /// Only `guesswho-linkedin` URLs are handled, not the
+    /// `guesswho://contact/<uuid>` identity scheme.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         handleLinkedInHandoff(urlContexts: URLContexts, entry: "warm-open")
     }
 
     // MARK: - Scene lifecycle breadcrumbs
     //
-    // The full run-state timeline, one log line per UIKit transition. Pairing
-    // these with the handoff breadcrumbs makes the wake path legible: e.g. a
-    // `guesswho-linkedin://` deep link should show `willEnterForeground` →
-    // `openURLContexts`/handoff → `didBecomeActive` when the app was already
-    // running, or `willConnect (urlContextCount=1)` on a cold launch. A wake
-    // that only foregrounds the app WITHOUT delivering the URL shows the
-    // foreground/active transitions with no accompanying handoff line — exactly
-    // the "app just opened, nothing happened" symptom we're chasing.
+    // One log line per UIKit transition. Paired with the handoff breadcrumbs
+    // this makes the wake path legible: a `guesswho-linkedin://` deep link
+    // shows `willEnterForeground` → `openURLContexts`/handoff → `didBecomeActive`
+    // when already running, or `willConnect (urlContextCount=1)` on a cold
+    // launch. A wake that only foregrounds WITHOUT delivering the URL shows the
+    // foreground/active transitions with no handoff line — exactly the "app just
+    // opened, nothing happened" symptom we're chasing.
 
     func sceneWillEnterForeground(_ scene: UIScene) {
         Self.lifecycleLog.notice("scene willEnterForeground", ["scene": Self.sceneTag(scene)])
@@ -118,15 +111,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     #if targetEnvironment(macCatalyst)
-    /// Phase-3 Catalyst shell. The sidebar's selection now drives real
-    /// content/detail column swaps:
-    ///   * .people → ContactsListViewController + ContactDetailView on selection
-    ///   * .organizations → OrganizationsListViewController + ContactDetailView on selection
-    /// Settings has no sidebar row: the Debug Mode toggle is reached
-    /// through the system Settings app via the bundled `Settings.bundle`
-    /// (Catalyst auto-renders it into the ⌘, preferences window).
-    /// When the user picks a tab that doesn't have a selected detail
-    /// the secondary column resets to a "Nothing Selected" placeholder.
+    /// Catalyst shell. Sidebar selection drives content/detail column swaps
+    /// (e.g. .people → ContactsListViewController + ContactDetailView). Settings
+    /// has no sidebar row: the Debug Mode toggle is reached through the system
+    /// Settings app via the bundled `Settings.bundle`, which Catalyst
+    /// auto-renders into the ⌘, preferences window. Picking a tab with no
+    /// selected detail resets the secondary column to a "Nothing Selected"
+    /// placeholder.
     private func makeCatalystSplit(appDelegate: GuessWhoAppDelegate) -> UISplitViewController {
         let split = UISplitViewController(style: .tripleColumn)
         split.preferredDisplayMode = .twoBesideSecondary
@@ -145,10 +136,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.handleSidebarSelection(tab, appDelegate: appDelegate)
         }
 
-        // Seed both columns with placeholders; the sidebar's
-        // selectInitialTab() will immediately invoke didSelectTab and
-        // swap supplementary to the People list, so this is only ever
-        // visible if sidebar selection somehow fails.
+        // Seed both columns with placeholders. The sidebar's
+        // selectInitialTab() immediately invokes didSelectTab and swaps
+        // supplementary to the People list, so these show only if sidebar
+        // selection fails.
         let initialContent = PlaceholderViewController(
             title: "Content",
             message: "Pick a section from the sidebar."
@@ -223,10 +214,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         case .groups:
             let list = GroupsListViewController(repository: appDelegate.contactsRepository)
-            // The supplementary column hosts a UINavigationController; selecting a
-            // group PUSHES the members list onto it (back-button returns to the
-            // group list), and selecting a member REPLACES the secondary/detail
-            // column via `showContactDetail` — the established Catalyst pattern.
+            // Selecting a group PUSHES the members list onto the supplementary
+            // column's nav (back-button returns to the group list); selecting a
+            // member REPLACES the secondary/detail column via
+            // `showContactDetail` — the established Catalyst pattern.
             let nav = UINavigationController(rootViewController: list)
             list.didSelectGroup = { [weak self, weak nav] group in
                 self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
@@ -238,7 +229,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Push a `GroupMembersListViewController` for `group` onto the supplementary
     /// column's `nav`. Member selection REPLACES the secondary/detail column via
-    /// `showContactDetail`, matching how the People list drives detail on Catalyst.
+    /// `showContactDetail`, like the People list.
     private func showGroupMembers(
         group: ContactGroup,
         on nav: UINavigationController?,
@@ -258,14 +249,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func showContactDetail(contact: Contact, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
-        // No extra `.id(...)` modifier here: `setViewController(_:for:
-        // .secondary)` replaces the entire hosting controller per selection,
-        // so a fresh ContactDetailView + brand-new @State tree is built
-        // automatically.
+        // No `.id(...)` needed: `setViewController(_:for: .secondary)` replaces
+        // the whole hosting controller per selection, so a fresh
+        // ContactDetailView + @State tree is built automatically.
         let nav = UINavigationController()
-        // The list VCs vend a `Contact` on selection; re-key it to the opaque
-        // `ContactID` the detail view now roots on — the app never threads a
-        // raw `localID` through navigation.
+        // List VCs vend a `Contact`; re-key it to the opaque `ContactID` the
+        // detail roots on — the app never threads a raw `localID` through
+        // navigation.
         let detail = ContactDetailView(id: contact.contactID)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
@@ -275,20 +265,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
         nav.viewControllers = [hosting]
-        // setViewController REPLACES the secondary column wholesale on
-        // every sidebar/list selection — a brand-new nav stack is what
-        // we want at the entry point. Drill-down from inside the hosted
-        // detail (matched attendees, linked contacts, etc.) pushes onto
-        // this same `nav` via the injected env closures.
+        // setViewController REPLACES the secondary column wholesale on every
+        // sidebar/list selection — a fresh nav stack at the entry point.
+        // Drill-down from inside the hosted detail (matched attendees, linked
+        // contacts, etc.) pushes onto this same `nav` via the injected env
+        // closures.
         split.setViewController(nav, for: .secondary)
     }
 
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
-        // `eventKitID` is carried so EventDetailView can adopt
-        // ephemeral EventKit rows whose `eventUUID` is the synthetic
-        // `Event.stableID(forEventKitID:)` and have no sidecar yet —
-        // otherwise the detail view shows "(Unknown event)".
+        // `eventKitID` lets EventDetailView adopt ephemeral EventKit rows whose
+        // `eventUUID` is the synthetic `Event.stableID(forEventKitID:)` and have
+        // no sidecar yet — otherwise the detail shows "(Unknown event)".
         let nav = UINavigationController()
         let detail = EventDetailView(eventUUID: eventUUID, eventKitID: eventKitID)
             .environment(appDelegate.service)
@@ -302,13 +291,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(nav, for: .secondary)
     }
 
-    /// Catalyst-side analog of `injectIPhonePushHandlers`. Pushes a
-    /// fresh hosted detail onto the SAME secondary-column nav
-    /// controller so the user can back-swipe / tap the nav-bar back
-    /// button to return to the originating detail. The list/sidebar
-    /// entry points still REPLACE the secondary column via
-    /// `setViewController(_:for: .secondary)` — only in-detail
-    /// drill-downs push.
+    /// Catalyst-side analog of `injectIPhonePushHandlers`. Pushes a fresh hosted
+    /// detail onto the SAME secondary-column nav so back-swipe / the nav-bar back
+    /// button returns to the originating detail. List/sidebar entry points still
+    /// REPLACE the secondary column via `setViewController(_:for: .secondary)` —
+    /// only in-detail drill-downs push.
     private func pushCatalystContactDetail(
         ref: ContactReference,
         on nav: UINavigationController?,
@@ -343,10 +330,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(hosting, animated: true)
     }
 
-    /// Bind the SwiftUI env push closures to the supplied secondary-
-    /// column nav controller. Both closures capture `nav` and `self`
-    /// weakly so popping the stack or tearing down the scene doesn't
-    /// keep this delegate or its column alive.
+    /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
+    /// Both closures capture `nav` and `self` weakly so popping the stack or
+    /// tearing down the scene doesn't keep this delegate or its column alive.
     private func injectCatalystPushHandlers<V: View>(
         _ view: V,
         on nav: UINavigationController,
@@ -369,9 +355,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
     }
 
-    /// Neutral placeholder used only at scene-connection time before the
-    /// sidebar's `selectInitialTab()` invokes `didSelectTab` and a
-    /// tab-specific placeholder takes over.
+    /// Neutral placeholder shown only at scene-connection time, before the
+    /// sidebar's `selectInitialTab()` invokes `didSelectTab` and a tab-specific
+    /// placeholder takes over.
     private func installInitialDetailPlaceholder(in split: UISplitViewController) {
         let detail = PlaceholderViewController(
             title: "Nothing Selected",
@@ -383,24 +369,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     // MARK: - iPhone / iPad (non-Catalyst) shell
 
-    /// Phase-5 iPhone shell. Mirrors the Catalyst structure (the four
-    /// content sections are the same UIKit list VCs the sidebar mounts
-    /// on Mac), but the entry point is a tab bar instead of a split
-    /// view, selection PUSHES detail onto each tab's nav stack instead
-    /// of REPLACING a secondary column, and there is no Settings tab
-    /// (iOS surfaces the Debug toggle through the system Settings app
-    /// via Settings.bundle, matching the pre-Phase-5 SwiftUI behaviour
-    /// — see the `sidebarTabs` filter the SwiftUI RootView used).
+    /// iPhone shell. Same UIKit list VCs the Catalyst sidebar mounts, but the
+    /// entry point is a tab bar not a split view, selection PUSHES detail onto
+    /// each tab's nav stack instead of REPLACING a secondary column, and there's
+    /// no Settings tab (iOS surfaces the Debug toggle via Settings.bundle).
     ///
-    /// Wrapped in a `PermissionGateViewController` so the same three
-    /// Contacts-authorization ContentUnavailableView states the
-    /// SwiftUI RootView showed (notDetermined / denied / restricted)
-    /// surface here as `UIContentUnavailableConfiguration`s, swapping
-    /// to the tabs only once access flips to `.authorized`.
+    /// Wrapped in a `PermissionGateViewController` so the three
+    /// Contacts-authorization states (notDetermined / denied / restricted)
+    /// surface as `UIContentUnavailableConfiguration`s, swapping to the tabs
+    /// only once access flips to `.authorized`.
     ///
-    /// iPad regular-width currently also lands here — temporary
-    /// downgrade from the previous 3-column NavigationSplitView until
-    /// Phase 6 lifts iPad into the Catalyst-shaped `UISplitView` shell.
+    /// iPad regular-width also lands here, not in a Catalyst-shaped split shell.
     private func makeIPhoneRoot(appDelegate: GuessWhoAppDelegate) -> UIViewController {
         let tabs = makeIPhoneTabs(appDelegate: appDelegate)
         return PermissionGateViewController(service: appDelegate.service, tabs: tabs)
@@ -417,20 +396,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Order matches the sidebar's `SidebarTab.allCases`: Favorites first,
         // then People, Organizations, Events, and Groups last.
         tabs.viewControllers = [favoritesNav, peopleNav, orgsNav, eventsNav, groupsNav]
-        // Re-tapping the active tab scrolls its list to top — an iPhone /
-        // iPad tab-shell behavior. The `UITabBarControllerDelegate`
-        // conformance that drives it is `#if !targetEnvironment(macCatalyst)`
-        // (Catalyst uses the split-view shell, which has no tab bar), so the
-        // assignment must be guarded the same way to keep both sides in sync.
+        // Re-tapping the active tab scrolls its list to top (iPhone/iPad
+        // tab-shell behavior). Its `UITabBarControllerDelegate` conformance is
+        // `#if !targetEnvironment(macCatalyst)` — Catalyst's split-view shell has
+        // no tab bar — so this assignment must be guarded the same way.
         #if !targetEnvironment(macCatalyst)
         tabs.delegate = self
         #endif
 
-        // iOS 18 sidebar-adaptable tab bar surfaces as a bottom tab bar
-        // on iPhone (compact) and as a leading sidebar on iPad
-        // (regular). Matches the previous SwiftUI `.sidebarAdaptable`
-        // tabViewStyle. Gated on iOS 18 — on iOS 17 the API doesn't
-        // exist and the plain bottom tab bar is the right fallback.
+        // iOS 18 sidebar-adaptable tab bar: a bottom tab bar on iPhone (compact),
+        // a leading sidebar on iPad (regular). On iOS 17 the API doesn't exist
+        // and the plain bottom tab bar is the right fallback.
         if #available(iOS 18.0, *) {
             tabs.mode = .tabSidebar
         }
@@ -521,10 +497,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return nav
     }
 
-    /// Groups tab (LAST). A `GroupsListViewController` rooted in its own nav
-    /// stack; selecting a group PUSHES a `GroupMembersListViewController` onto
-    /// the same nav, and selecting a member PUSHES the contact detail — the same
-    /// push-to-drill-in flow the People tab uses.
+    /// Groups tab (LAST). A `GroupsListViewController` in its own nav stack;
+    /// selecting a group PUSHES a `GroupMembersListViewController`, and selecting
+    /// a member PUSHES the contact detail — the same push-to-drill-in flow as the
+    /// People tab.
     private func makeIPhoneGroupsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = GroupsListViewController(repository: appDelegate.contactsRepository)
         list.didSelectGroup = { [weak self] group in
@@ -539,9 +515,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return nav
     }
 
-    /// Push a `GroupMembersListViewController` for `group` onto `nav`, wiring its
+    /// Push a `GroupMembersListViewController` for `group` onto `nav`, wiring
     /// member selection to push the contact detail onto the same stack. Used by
-    /// the iPhone Groups tab (and shaped to match `pushContactDetail`).
+    /// the iPhone Groups tab.
     private func pushGroupMembers(
         group: ContactGroup,
         on nav: UINavigationController?,
@@ -559,20 +535,18 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
-    /// Push a fresh `UIHostingController<ContactDetailView>` onto the
-    /// owning tab's nav stack. Mirrors `showContactDetail` on Catalyst
-    /// but PUSHES (back-swipe pops) instead of REPLACING the secondary
-    /// column. Same three @Environment values
-    /// (`SyncService`, `ContactsRepository`, `FavoritesListStore`)
-    /// must be injected on the rootView because the hosted SwiftUI
-    /// view has no SwiftUI parent on iPhone now that RootView is gone.
+    /// Push a fresh `UIHostingController<ContactDetailView>` onto the owning
+    /// tab's nav stack. Mirrors `showContactDetail` on Catalyst but PUSHES
+    /// (back-swipe pops) instead of REPLACING the secondary column. The
+    /// @Environment values (`SyncService`, `ContactsRepository`,
+    /// `ContactPhotoLoader`, `FavoritesListStore`) must be injected on the
+    /// rootView because the hosted view has no SwiftUI parent.
     ///
-    /// Also injects the `pushContactReference` / `pushEventReference`
-    /// env closures so SwiftUI rows inside the pushed detail (linked
-    /// events on a contact, attendees on an event, etc.) can fan out
-    /// to more details onto the same UIKit nav stack. Without those,
-    /// the original `NavigationLink(value:)` callsites silently no-op
-    /// on iPhone after Phase 5 deleted `.contactAndEventDestinations`.
+    /// Also injects the `pushContactReference` / `pushEventReference` env
+    /// closures so SwiftUI rows inside the pushed detail (linked events on a
+    /// contact, attendees on an event, etc.) can fan out onto the same UIKit nav
+    /// stack. Without them the `NavigationLink(value:)` callsites silently no-op
+    /// on iPhone.
     private func pushContactDetail(
         contact: Contact,
         on nav: UINavigationController?,
@@ -638,11 +612,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(hosting, animated: true)
     }
 
-    /// Bind `pushContactReference` / `pushEventReference` to the SAME
-    /// nav controller this view is being pushed onto. Both closures
-    /// capture `nav` weakly so popping the stack tears down cleanly,
-    /// and `self` weakly so the closure can't keep the SceneDelegate
-    /// alive past scene teardown.
+    /// Bind `pushContactReference` / `pushEventReference` to the SAME nav this
+    /// view is pushed onto. Both closures capture `nav` weakly so popping the
+    /// stack tears down cleanly, and `self` weakly so they can't keep the
+    /// SceneDelegate alive past scene teardown.
     private func injectIPhonePushHandlers<V: View>(
         _ view: V,
         on nav: UINavigationController,
@@ -662,39 +635,36 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// App Group shared with the `GuessWhoLinkedIn` Safari Web Extension.
     /// Centralized in `AppGroup.id` (resolved from the `GuessWhoAppGroup`
     /// Info.plist key, fed by `GUESSWHO_APP_GROUP` in the xcconfig) so the
-    /// app-side derivation lives in exactly one place. Used ONLY for the
-    /// ephemeral handoff file the extension parks; synced GuessWho data lives in
-    /// the iCloud ubiquity container, never here.
+    /// derivation lives in one place. Holds ONLY the ephemeral handoff file the
+    /// extension parks; synced GuessWho data lives in the iCloud ubiquity
+    /// container, never here.
     private static let handoffAppGroupID: String = AppGroup.id
 
     /// Filename the extension's native handler writes into the App Group.
     private static let handoffFilename = "pending-handoff.json"
 
-    /// Upper bound on the handoff file we will read into memory. The payload now
-    /// carries the full-res profile photo as a base64 data URL inside the JSON,
-    /// so it's larger than the old text-only handoff but still bounded. An
-    /// 800x800 profile JPEG is ~tens–hundreds of KB; base64 inflates ~33% and the
-    /// JSON wraps it — 8 MB is generous headroom while still rejecting an
-    /// unexpectedly huge or hostile file. Never read unbounded.
+    /// Upper bound on the handoff file we read into memory. The payload carries
+    /// the full-res profile photo as a base64 data URL in the JSON: an 800x800
+    /// JPEG is ~tens–hundreds of KB, base64 inflates ~33%, and the JSON wraps it
+    /// — 8 MB is generous headroom while still rejecting a huge or hostile file.
+    /// Never read unbounded.
     private static let handoffMaxBytes = 8 * 1024 * 1024
 
-    /// LinkedIn-handoff breadcrumbs now route through swift-log so they land in
-    /// `<AppGroup>/Logs/app.log` (and still echo to Console via the stderr
-    /// handler). Label is developer-facing; see GuessWhoLogging notes.
+    /// LinkedIn-handoff breadcrumbs route through swift-log to
+    /// `<AppGroup>/Logs/app.log` (echoed to Console via the stderr handler).
+    /// Developer-facing label; see GuessWhoLogging notes.
     private static let handoffLog = GuessWhoLog.logger("app.linkedin-handoff")
 
-    /// Per-scene lifecycle breadcrumbs. Every scene transition UIKit delivers
-    /// to this delegate (connect → foreground → active → resign → background →
-    /// disconnect) is logged here so the app's run-state timeline is legible in
+    /// Per-scene lifecycle breadcrumbs. Every scene transition (connect →
+    /// foreground → active → resign → background → disconnect) is logged to
     /// `<AppGroup>/Logs/app.log` alongside the handoff breadcrumbs. The
-    /// `session.persistentIdentifier` tags each line so multiple scenes
-    /// (multi-window on Catalyst/iPad) stay distinguishable. Developer-facing
-    /// label; see GuessWhoLogging notes.
+    /// `session.persistentIdentifier` tags each line so multi-window scenes
+    /// (Catalyst/iPad) stay distinguishable. Developer-facing label; see
+    /// GuessWhoLogging notes.
     private static let lifecycleLog = GuessWhoLog.logger("app.lifecycle.scene")
 
-    /// A stable, short tag for the scene driving a log line, so concurrent
-    /// scenes (multi-window) are distinguishable without dumping the full
-    /// session identifier on every line.
+    /// Stable short tag for the scene driving a log line, so multi-window scenes
+    /// stay distinguishable without dumping the full session identifier.
     private static func sceneTag(_ scene: UIScene) -> String {
         scene.session.persistentIdentifier
     }
@@ -711,23 +681,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Drains a LinkedIn handoff wake. Only `guesswho-linkedin://handoff`
-    /// URLs are acted on; anything else (including the `guesswho://` identity
-    /// scheme, which never reaches this scene type) is ignored. Reads and
-    /// clears the App Group payload, logs it, and shows a spike alert.
+    /// Drains a LinkedIn handoff wake. Acts only on `guesswho-linkedin://handoff`
+    /// URLs; anything else (including the `guesswho://` identity scheme, which
+    /// never reaches this scene type) is ignored. Reads and clears the App Group
+    /// payload, logs it, and shows a spike alert.
     ///
     /// - Parameter entry: which UIKit delivery path called us — `"cold-launch"`
     ///   (`scene(_:willConnectTo:)`) or `"warm-open"`
-    ///   (`scene(_:openURLContexts:)`). Logged so the wake path is legible: a
-    ///   web-side `window.location.href = "guesswho-linkedin://handoff"` that
-    ///   reaches the app shows exactly one of these lines; if neither appears,
-    ///   the URL never made it across the boundary (the "app just opened,
-    ///   nothing happened" symptom).
+    ///   (`scene(_:openURLContexts:)`). A web-side wake that reaches the app logs
+    ///   exactly one of these; if neither appears, the URL never crossed the
+    ///   boundary (the "app just opened, nothing happened" symptom).
     private func handleLinkedInHandoff(urlContexts: Set<UIOpenURLContext>, entry: String) {
-        // Log EVERY scheme that arrived, not just the handoff one. A wake that
-        // foregrounds the app but drops the URL, or delivers an unexpected
-        // scheme, is otherwise invisible — this line is the app-side proof that
-        // the deep link did (or did not) cross from the web context.
+        // Log EVERY scheme that arrived, not just the handoff one — otherwise a
+        // wake that drops the URL or delivers an unexpected scheme is invisible.
+        // This line is the app-side proof the deep link did (or did not) cross
+        // from the web context.
         let schemes = urlContexts.compactMap { $0.url.scheme }.sorted()
         Self.handoffLog.notice("wake URL(s) received", [
             "entry": entry,
@@ -739,8 +707,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             context.url.scheme == "guesswho-linkedin"
         }
         guard isHandoff else {
-            // Not our scheme (e.g. the `guesswho://` identity URL). Record the
-            // ignore explicitly so this isn't a silent return in the log.
+            // Not our scheme (e.g. the `guesswho://` identity URL). Log the
+            // ignore so it isn't a silent return.
             Self.handoffLog.notice("not a LinkedIn handoff — ignoring", ["schemes": schemes.joined(separator: ",")])
             return
         }
@@ -775,9 +743,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         // About / Location live as named sidecar fields, not on the CNContact —
-        // read the contact's current values so the diff shows them on the
-        // existing side (and marks unchanged rows). `fields(for:)` returns [] for
-        // an unreconciled contact, so this is simply empty in that case.
+        // read them so the diff shows current values on the existing side (and
+        // marks unchanged rows). `fields(for:)` returns [] for an unreconciled
+        // contact, so this is empty in that case.
         let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
         let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
         let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
@@ -801,9 +769,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     do {
                         let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
                         Self.handoffLog.notice("confirm: saved \(updated.givenName) \(updated.familyName)")
-                        // Nudge an open ContactDetailView to reload — the package
-                        // cache is fresh after applyLinkedIn, but the SwiftUI view
-                        // doesn't know to re-read until told.
+                        // Nudge an open ContactDetailView to reload: applyLinkedIn
+                        // freshens the package cache, but the SwiftUI view won't
+                        // re-read until told.
                         await MainActor.run {
                             NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
                         }
@@ -819,12 +787,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         hosting.modalPresentationStyle = .formSheet
         // Wider sheet so the two columns (esp. About / multi-line values) have room.
         hosting.preferredContentSize = CGSize(width: 840, height: 660)
-        // Present from the topmost VC. If there's no presenter (window not yet
-        // key, or a teardown race) the sheet would silently never appear — log
-        // that case rather than let it look like the diff "just didn't show".
-        // Resolve the presenter BEFORE the "presenting" line so a failure reads
-        // as a clean "NO presenter available" rather than "presenting" followed
-        // by a contradiction.
+        // Present from the topmost VC. With no presenter (window not yet key, or
+        // a teardown race) the sheet would silently never appear — log that
+        // instead. Resolve the presenter BEFORE the "presenting" line so a
+        // failure reads as a clean "NO presenter available", not "presenting"
+        // followed by a contradiction.
         guard let presenter = topmostPresenter() else {
             Self.handoffLog.error("diff: NO presenter available — confirm sheet not shown")
             return
@@ -837,9 +804,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// The LinkedIn-sourced sidecar fields (About / Location) as a
-    /// `[name: value]` map for the diff's existing side. Only string-valued
-    /// fields whose name matches one the import writes are included; everything
-    /// else (other sidecar fields, non-string values) is ignored.
+    /// `[name: value]` map for the diff's existing side. Includes only
+    /// string-valued fields whose name the import writes; everything else is
+    /// ignored.
     private static func existingSidecarFields(_ fields: [SidecarField]) -> [String: String] {
         let names: Set<String> = [LinkedInDiff.aboutFieldName, LinkedInDiff.locationFieldName]
         var out: [String: String] = [:]
@@ -896,10 +863,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let payload: LinkedInProfile
     }
 
-    /// Reads `pending-handoff.json` from the App Group container, deletes it
-    /// (so the same payload is never replayed), and returns the RAW bytes for
-    /// decoding. Returns nil on any failure (this is a receiver, not production
-    /// error handling — failures are logged).
+    /// Reads `pending-handoff.json` from the App Group container, deletes it (so
+    /// the payload is never replayed), and returns the RAW bytes for decoding.
+    /// Returns nil on any failure (a receiver, not production error handling —
+    /// failures are logged).
     private func readAndClearHandoffPayload() -> Data? {
         Self.handoffLog.notice("read: resolving App Group id=\(Self.handoffAppGroupID)")
         guard let container = FileManager.default
@@ -917,8 +884,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         do {
-            // Cap the read: reject (and clear) an oversized file instead of
-            // loading it into memory unbounded.
+            // Cap the read: reject and clear an oversized file rather than
+            // load it unbounded.
             let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
             let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
             if size > Self.handoffMaxBytes {

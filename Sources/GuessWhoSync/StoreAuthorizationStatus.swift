@@ -26,11 +26,8 @@ public enum StoreAuthorizationStatus: Sendable, Equatable {
 /// optional failure description so a caller can distinguish "the user said no"
 /// (`status == .denied`, `failureDescription == nil`) from "the request itself
 /// threw" (`status == .denied`, `failureDescription` set to the error's
-/// `localizedDescription`).
-///
-/// The pre-adapter `SyncService` wrote `lastError` only on a thrown request, not
-/// on a plain user-denial; this type preserves that distinction so the same
-/// `lastError` write survives the move behind the adapters.
+/// `localizedDescription`) — e.g. to write `lastError` only on a thrown
+/// request, never on a plain user-denial.
 public struct StoreAccessResult: Sendable, Equatable {
     public let status: StoreAuthorizationStatus
     /// Non-nil ONLY when the underlying request threw. Holds the thrown error's

@@ -2,7 +2,7 @@ import Foundation
 import SafariServices
 import GuessWhoLogging
 
-/// Step-0 handoff spike — native handler. Runs in the EXTENSION process.
+/// LinkedIn handoff native handler. Runs in the EXTENSION process.
 ///
 /// It does NOT touch Contacts or the iCloud sidecar (the extension intentionally
 /// holds neither entitlement). It only:
@@ -109,9 +109,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         }
     }
 
-    // Why there is no `wakeApp()` here (spike finding, confirmed in review):
-    // a Safari Web Extension's native handler runs in an NSExtension process and
-    // cannot bring the container app forward.
+    // Why there is no `wakeApp()` here: a Safari Web Extension's native handler
+    // runs in an NSExtension process and cannot bring the container app forward.
     //   - `UIApplication.shared` is unavailable in an app-extension process, so
     //     there is no `open(_:)` to call.
     //   - `SFSafariApplication`'s open/messaging APIs are legacy macOS-AppKit

@@ -3,8 +3,8 @@ import Foundation
 public extension Notification.Name {
     /// Posted by `ContactChangeWatcher` after it reads an external
     /// contact-store delta. Subscribers (the app's repositories) consume the
-    /// payload from `userInfo` and refresh themselves — they no longer own the
-    /// observer, cursor, or coalescing.
+    /// payload from `userInfo` and refresh themselves; the watcher owns the
+    /// observer, cursor, and coalescing.
     ///
     /// Two payload shapes (see the `userInfo` keys below):
     /// - a `ContactChangeSet` of external mutations to apply incrementally, OR

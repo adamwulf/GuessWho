@@ -3,12 +3,11 @@ import Foundation
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
 
-    // Per-key locks for write/delete/reconcile. Direct users of this store
-    // (without going through GuessWhoSync) get correctness on writes/deletes
-    // to distinct keys running independently and concurrent operations on the
-    // SAME key serializing. GuessWhoSync layers its own per-key lock on top
-    // for read-modify-write atomicity; both layers locking per-key is
-    // redundant but correct.
+    // Per-key locks for write/delete/reconcile: distinct keys run
+    // independently, same-key operations serialize. This gives direct users of
+    // the store (not going through GuessWhoSync) correctness on writes/deletes.
+    // GuessWhoSync layers its own per-key lock on top for read-modify-write
+    // atomicity; both layers locking per-key is redundant but correct.
     private let fileLocks = PerKeyLockTable<SidecarKey>()
 
     // Closure consulted when a sidecar operation exceeds `perAttemptTimeout`.
@@ -29,7 +28,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     // Seam over `.blob` `.dat` payload encryption. Production uses a key from
     // the iCloud-synchronizable keychain (KeychainBlobCrypto); tests inject a
-    // deterministic in-memory key (InMemoryBlobCrypto) so unit tests exercise
+    // deterministic in-memory key (InMemoryBlobCrypto) to exercise
     // encrypt/decrypt end-to-end WITHOUT touching the real keychain.
     private let blobCrypto: SidecarBlobCrypto
 
@@ -37,13 +36,13 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // wait with a timeout. One serial queue per store instance — coordinator
     // calls are coarse-grained and don't need parallel dispatch.
     //
-    // NOTE: the queue is shared across keys, which means a single stuck
-    // operation (e.g. a key whose backing file is still syncing) can delay
-    // siblings dispatched after it. Per-attempt wait time accumulates from
-    // the moment the operation is queued, not when it begins executing, so
-    // siblings can see `.timedOut` while waiting in line behind a stuck
-    // operation. A per-key dispatch queue would compose with the per-key
-    // `fileLocks` if this becomes a problem in practice.
+    // NOTE: the queue is shared across keys, so a single stuck operation (e.g. a
+    // key whose backing file is still syncing) can delay siblings dispatched
+    // after it. Per-attempt wait time accumulates from when the operation is
+    // queued, not when it begins executing, so a sibling can see `.timedOut`
+    // while still waiting in line behind a stuck operation. A per-key dispatch
+    // queue would compose with the per-key `fileLocks` if this ever becomes a
+    // problem.
     private let coordinatorQueue = DispatchQueue(
         label: "GuessWhoSync.FileSystemSidecarStore.coordinator"
     )
@@ -61,8 +60,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 
     // SPI-gated constructor that lets tests inject a fake ubiquity provider.
-    // Shares the SPI with the conflict-reconcile plumbing so the public
-    // surface for plain `import GuessWhoSync` consumers remains unchanged.
+    // Shares the SPI with the conflict-reconcile plumbing, so the public surface
+    // for plain `import GuessWhoSync` consumers is unchanged.
     @_spi(ConflictReconcile)
     public init(
         root: URL,
@@ -93,12 +92,11 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         let url = fileURL(for: key)
         let fm = FileManager.default
 
-        // Coordinated existence + read in one pass: NSFileCoordinator
-        // serializes us against cloudd, which may otherwise be mid-rename
-        // between `.<name>.icloud` and the materialized `<name>` when we
-        // probe. Inside the coordinated block, the filesystem state is
-        // stable enough to decide between materialized / placeholder /
-        // truly-absent.
+        // Coordinated existence + read in one pass: NSFileCoordinator serializes
+        // us against cloudd, which may otherwise be mid-rename between
+        // `.<name>.icloud` and the materialized `<name>` when we probe. Inside
+        // the coordinated block, filesystem state is stable enough to decide
+        // between materialized / placeholder / truly-absent.
         enum Outcome {
             case bytes(Data)
             case placeholderPresent
@@ -158,10 +156,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     public func delete(_ key: SidecarKey) throws {
         try fileLocks.withLock(forKey: key) {
             // Cascade-delete this key's `.dat` payloads FIRST so deleting the
-            // record self-cleans its blobs (the global orphan sweep is the
+            // record self-cleans its blobs. (The global orphan sweep is the
             // backstop for the cross-device LWW race where the envelope still
-            // exists; envelope-delete cleans its own blobs here). Best-effort:
-            // a failure to remove a stray `.dat` must not block the envelope
+            // exists; here envelope-delete cleans its own blobs.) Best-effort: a
+            // failure to remove a stray `.dat` must not block the envelope
             // delete — the sweep reclaims it later.
             if let blobIds = try? blobIds(for: key) {
                 for blobId in blobIds {
@@ -276,13 +274,13 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
-    // Read + decrypt the blob for (key, blobId). Returns nil when the `.dat`
-    // is not materialized on this device yet — either truly absent, or present
-    // only as an iCloud `.<name>.dat.icloud` placeholder. In the placeholder
-    // case we kick off a download (best-effort) and still return nil, so a
+    // Read + decrypt the blob for (key, blobId). Returns nil when the `.dat` is
+    // not materialized on this device yet — either truly absent, or present only
+    // as an iCloud `.<name>.dat.icloud` placeholder. In the placeholder case we
+    // kick off a download (best-effort) and still return nil, so a
     // referenced-but-not-yet-downloaded blob reads as "pending," NOT an error.
-    // (This mirrors how `read()` treats a `.json` placeholder, but returns nil
-    // instead of throwing — a missing previous-photo is benign.)
+    // (Mirrors `read()`'s `.json` placeholder handling but returns nil rather
+    // than throwing — a missing previous-photo is benign.)
     public func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
         let url = blobURL(for: key, blobId: blobId)
         let fm = FileManager.default
@@ -532,13 +530,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
         case .contact, .link, .event:
-            // All sidecar kinds are now UUID-keyed and canonicalized to
-            // lowercase at every boundary so case-folding filesystems (iCloud
-            // Drive on APFS) can't desync the on-disk name from the in-memory
-            // key. (A UUID happens to percent-encode to itself, so legacy
-            // event filenames named with percent-encoded externalIDs that may
-            // briefly coexist with this lowercased path until migration
-            // deletes them are still writable. New writes go through this
+            // All sidecar kinds are UUID-keyed and canonicalized to lowercase at
+            // every boundary so case-folding filesystems (iCloud Drive on APFS)
+            // can't desync the on-disk name from the in-memory key. (A UUID
+            // percent-encodes to itself, so legacy event files named with
+            // percent-encoded externalIDs — which may briefly coexist here until
+            // migration deletes them — stay writable. New writes take this
             // branch.)
             return "\(key.id.lowercased()).json"
         }
@@ -604,18 +601,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     // MARK: - NSFileCoordinator wrappers
 
-    // On Apple platforms cloudd reads and writes ubiquity-container files in
-    // a separate process. Without coordination it can observe partial state
-    // mid-write or race deletes. NSFileCoordinator serializes our access
-    // against cloudd; the closure receives the URL it should actually use
-    // (the coordinator may substitute, e.g., a temporary).
+    // On Apple platforms cloudd reads and writes ubiquity-container files in a
+    // separate process; without coordination it can observe partial state
+    // mid-write or race deletes. NSFileCoordinator serializes our access against
+    // cloudd; the closure receives the URL it should actually use (the
+    // coordinator may substitute, e.g., a temporary).
     //
     // The coordinator call runs on `coordinatorQueue` so the caller can wait
-    // with a per-attempt timeout. If the wait expires, the busy handler
-    // decides whether to retry, sleep+retry, or fail with `.timedOut(key)`.
-    // A coordinator call that eventually finishes after we've moved on is
-    // left to run to completion in the background — see `runWithBusyHandling`
-    // for the leak discussion.
+    // with a per-attempt timeout; on expiry the busy handler decides retry,
+    // sleep+retry, or fail with `.timedOut(key)`. A coordinator call that
+    // finishes after we've moved on runs to completion in the background — see
+    // `runWithBusyHandling` for the leak discussion.
     private func coordinatedRead(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
         try runWithBusyHandling(key: key) {
             let coordinator = NSFileCoordinator(filePresenter: nil)
@@ -657,17 +653,15 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     //   .fail           → throw `.timedOut(key)` and abandon the operation.
     //
     // Re-issuing was rejected as a design: NSFileCoordinator has no
-    // cancellation, so a stuck coordinator call sits there forever, and
-    // launching parallel attempts just multiplies stuck calls without
-    // freeing the resource. "Block forever" still works (install a handler
-    // that returns `.retry` forever); "best effort, eventually fail" still
-    // works (default handler).
+    // cancellation, so a stuck coordinator call sits there forever, and parallel
+    // attempts just multiply stuck calls without freeing the resource. Both
+    // extremes still work: "block forever" (a handler returning `.retry`
+    // forever) and "best effort, eventually fail" (the default handler).
     //
-    // If the operation eventually completes after we threw `.timedOut`, its
-    // body still runs on the background queue — captures live in
-    // `ResultBox` (heap) so a late completion never writes to a dead
-    // stack frame. The captured box is then released by ARC; the
-    // coordinator queue is reused for the next call.
+    // An operation that completes after we threw `.timedOut` still runs its body
+    // on the background queue — captures live in `ResultBox` (heap) so a late
+    // completion never writes to a dead stack frame. ARC then releases the box;
+    // the coordinator queue is reused for the next call.
     // Internal so @testable tests can drive busy handling directly,
     // bypassing the coordinator wrappers.
     func runWithBusyHandling(
@@ -731,10 +725,10 @@ private enum SidecarMonotonicClock {
     }
 }
 
-// Conflict-reconciliation is wired up via this internal protocol so the
-// public surface area never exposes the conflict-resolver plumbing. The
-// orchestrator's reconcileSidecars() casts its store to this protocol and
-// drives the loop; the conformance witnesses are the keysWithUnresolvedConflicts
-// and reconcileConflict methods on the class above.
+// Conflict-reconciliation is wired up via this internal protocol so the public
+// surface never exposes the conflict-resolver plumbing. The orchestrator's
+// reconcileSidecars() casts its store to this protocol and drives the loop; the
+// conformance witnesses are the keysWithUnresolvedConflicts and
+// reconcileConflict methods on the class above.
 @_spi(ConflictReconcile)
 extension FileSystemSidecarStore: SidecarConflictReconciling {}

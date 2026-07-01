@@ -323,10 +323,9 @@ struct EventDetailView: View {
 
     /// First contact (in cache order) whose card lists `email`, addressed by
     /// `ContactID`. Resolved on demand through the repository's O(1) email
-    /// index — replaces the old per-reload `emailToContact` map. "First wins"
-    /// matches the previous behavior; the picker can still surface another
-    /// match later. Returns nil when no contact lists the address (the row
-    /// then offers the add-new-contact flow).
+    /// index. "First wins"; the picker can still surface another match later.
+    /// Returns nil when no contact lists the address (the row then offers the
+    /// add-new-contact flow).
     private func matchedContactID(forEmail email: String) -> ContactID? {
         repository.contactIDs(matchingEmail: email).first
     }
@@ -482,10 +481,9 @@ struct EventDetailView: View {
         links = service.contactLinks(forEventUUID: resolvedUUID)
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
-        // Attendee→contact and linked-contact→contact resolution now happen on
-        // demand in the rows via package repository helpers — the O(1) indexes
-        // mean we no longer build (or hold) an app-side uuid/email→Contact map
-        // here.
+        // Attendee→contact and linked-contact→contact resolution happen on
+        // demand in the rows via the package repository's O(1) indexes, so
+        // there's no app-side uuid/email→Contact map to build or hold here.
         hasLoadedOnce = true
     }
 

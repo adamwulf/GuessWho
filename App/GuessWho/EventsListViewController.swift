@@ -181,7 +181,7 @@ final class EventsListViewController: UIViewController {
         exportLogsButton.accessibilityLabel = "Export Logs"
 
         // Use the PLURAL `rightBarButtonItems` so adding Export Logs doesn't
-        // clobber the "+" button (S5). Observe `UserDefaults` so the button
+        // clobber the "+" button. Observe `UserDefaults` so the button
         // appears/disappears live when debug mode flips while the app is open;
         // `viewWillAppear` also re-evaluates.
         debugModeObserver = NotificationCenter.default.addObserver(

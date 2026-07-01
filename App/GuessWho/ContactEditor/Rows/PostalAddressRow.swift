@@ -77,8 +77,8 @@ struct PostalAddressEditor: View {
 
     /// Bind a writable keypath on PostalAddress while leaving the
     /// non-edited sub-fields (`subLocality`, `subAdministrativeArea`,
-    /// `isoCountryCode`) untouched — carry-through preservation per
-    /// docs/swiftui-contact-editor-plan.md §"Data preservation".
+    /// `isoCountryCode`) untouched, so an edit preserves data the editor
+    /// doesn't surface rather than clobbering it on save.
     private func binding(_ keyPath: WritableKeyPath<PostalAddress, String>) -> Binding<String> {
         Binding(
             get: { entry.value[keyPath: keyPath] },

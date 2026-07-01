@@ -124,10 +124,10 @@ extension GuessWhoSync {
     /// the cache from EventKit so live values overwrite the manual cache
     /// (Option C live-wins-when-linked).
     ///
-    /// `internal` (not `public`) — no UI is allowed to call this. Per the
-    /// product principle (see CLAUDE.md) the sidecar / EventKit boundary is
-    /// never user-visible; adoption happens automatically on first read.
-    /// Kept around so existing tests still exercise the write path.
+    /// `internal` (not `public`) — no UI may call this. Per the product
+    /// principle (see CLAUDE.md) the sidecar / EventKit boundary is never
+    /// user-visible; adoption happens automatically on first read. Kept so
+    /// existing tests still exercise the write path.
     func linkExistingSidecar(at key: SidecarKey, toEventKitID ekid: String) throws {
         guard try sidecars.read(key) != nil else {
             throw EventStoreError.eventNotFound(eventKitID: ekid)
@@ -148,8 +148,8 @@ extension GuessWhoSync {
     /// `value` string is retained. Cache cells are NOT touched.
     ///
     /// `internal` (not `public`) — same rationale as `linkExistingSidecar`:
-    /// the user never sees a "linked vs unlinked" concept. Kept around so
-    /// existing tests still exercise the write path.
+    /// the user never sees a "linked vs unlinked" concept. Kept so existing
+    /// tests still exercise the write path.
     func unlinkEvent(at key: SidecarKey) throws {
         guard let envelope = try sidecars.read(key) else { return }
         guard let cell = envelope.fields[Self.eventKitIDCellKey] else { return }
@@ -420,9 +420,9 @@ extension GuessWhoSync {
     /// Async wrapper around `events.eventsWithAttendee(...)` for the contact
     /// detail "Recent Events" section. Builds a window of `[asOf - 10y, asOf
     /// + 1y]` and hops the EventKit scan to a background queue via
-    /// `withCheckedThrowingContinuation` — EventKit's `events(matching:)` is
-    /// synchronous and proportional to the calendar size of the window, so it
-    /// must NOT block the caller's actor / main thread. Returns events sorted
+    /// `withCheckedThrowingContinuation`: EventKit's `events(matching:)` is
+    /// synchronous and scales with the window's calendar size, so it must NOT
+    /// block the caller's actor / main thread. Returns events sorted
     /// most-recent-first, capped at `limit`.
     public func recentEvents(
         matchingEmails emails: Set<String>,
@@ -456,10 +456,10 @@ extension GuessWhoSync {
 
     // MARK: - Private helpers
 
-    /// Write one §5.2 cell at a fixed cell key (vs. the minted-UUID keys
-    /// used by field-instance cells). Mirrors `addField`'s cell-construction
-    /// shape so `SidecarField.decode` still reads it; under the per-key
-    /// `sidecarLocks.withLock` discipline. When `softDelete == true`, stamps
+    /// Write one §5.2 cell at a fixed cell key (vs. the minted-UUID keys used
+    /// by field-instance cells). Mirrors `addField`'s cell-construction shape so
+    /// `SidecarField.decode` still reads it, under the per-key
+    /// `sidecarLocks.withLock` discipline. `softDelete == true` stamps
     /// `deletedAt = now` on the cell.
     internal func writeWellKnownCell(
         at key: SidecarKey,
@@ -646,14 +646,11 @@ extension GuessWhoSync {
         )
     }
 
-    /// Overlay the EventKit-live values onto a cached `Event`, preserving
-    /// the sidecar UUID as `id` and the EventKit pointer. Attendees are
-    /// always taken from the live EKEvent — the sidecar doesn't cache them
-    /// (they can mutate in EventKit any time and we'd rather show stale-
-    /// free truth than a cached snapshot). The calendar name + color are
-    /// likewise live-only (never persisted to the sidecar), so they must be
-    /// carried through here — otherwise an adopted/linked event would lose
-    /// its calendar swatch the moment it resolves through this overlay.
+    /// Overlay the EventKit-live values onto a cached `Event`, preserving the
+    /// sidecar UUID as `id` and the EventKit pointer. Attendees and the calendar
+    /// name + color are always taken from the live EKEvent — none are cached in
+    /// the sidecar, so they must be carried through here, else an adopted/linked
+    /// event loses them the moment it resolves through this overlay.
     private func overlay(live: Event, onto cached: Event, ekid: String) -> Event {
         Event(
             id: cached.id,
@@ -718,14 +715,14 @@ extension GuessWhoSync {
     /// the dead-pointer branch handles the unauthorized case the same as
     /// the gone-event case).
     ///
-    /// Step 1: for every `events/<legacyEventIdentifier>.json` sidecar that
-    /// is not yet UUID-keyed, mint a new event UUID, translate the legacy
-    /// identifier to a `calendarItemExternalIdentifier` via the adapter's
-    /// `fetch(legacyEventIdentifier:)`, write a new envelope at the UUID
-    /// key (with `eventKitID` cell + cache seeded from the resolved EKEvent
-    /// when present, or the original legacy id as a dead pointer when not),
-    /// preserve any pre-existing field-instance cells (notes, tags), and
-    /// delete the legacy file.
+    /// Step 1: for every not-yet-UUID-keyed `events/<legacyEventIdentifier>.json`
+    /// sidecar, mint a new event UUID, translate the legacy identifier to a
+    /// `calendarItemExternalIdentifier` via the adapter's
+    /// `fetch(legacyEventIdentifier:)`, write a new envelope at the UUID key
+    /// (with `eventKitID` cell + cache seeded from the resolved EKEvent, or the
+    /// original legacy id as a dead pointer when unresolved), preserving any
+    /// pre-existing field-instance cells (notes, tags), then delete the legacy
+    /// file.
     ///
     /// Step 2: rewrite every contact↔event `Link` whose `.event` endpoint
     /// still points at a legacy identifier to point at the freshly-minted
@@ -745,11 +742,10 @@ extension GuessWhoSync {
         var mapping: [String: UUID] = [:]
 
         for key in try sidecars.allKeys() where key.kind == .event {
-            // Any UUID-keyed event sidecar is post-pivot — legacy
-            // `eventIdentifier` strings are never UUID-shaped — so skip
-            // regardless of whether an `eventKitID` cell is present.
-            // Manual events (created via `createManualEvent`) have a UUID
-            // key but no `eventKitID` cell; they must NOT be re-migrated.
+            // Any UUID-keyed event sidecar is post-pivot (legacy
+            // `eventIdentifier` strings are never UUID-shaped), so skip it —
+            // whether or not it has an `eventKitID` cell. This also spares
+            // manual events (UUID key, no `eventKitID` cell) from re-migration.
             if UUID(uuidString: key.id) != nil {
                 skipped.append(key.id)
                 continue
@@ -764,11 +760,10 @@ extension GuessWhoSync {
         for legacy in legacyKeys {
             let newUUID = UUID()
             // SidecarKey for the legacy file. The .event branch lowercases
-            // unconditionally per E1.4, so a SidecarKey built from the
-            // original-case id and one built from the lowercased id are
-            // equal — but on the FS-store side the file is named with the
-            // original-case bytes via the percent-decode path, and the
-            // in-memory store hashes the lowercased id consistently.
+            // unconditionally per E1.4, so keys built from the original-case id
+            // and from the lowercased id are equal — but the FS store names the
+            // file with original-case bytes via the percent-decode path, while
+            // the in-memory store hashes the lowercased id consistently.
             let oldKey = SidecarKey(kind: .event, id: legacy.original)
             let newKey = SidecarKey(kind: .event, id: newUUID.uuidString)
 
@@ -801,10 +796,9 @@ extension GuessWhoSync {
 
             // Preserve any pre-existing field-instance cells (notes, tags).
             // Field-instance keys are UUIDs; well-known event cell keys are
-            // human-readable strings. Anything whose key parses as a UUID is
-            // a field instance and must be carried forward verbatim. The
-            // well-known cells (`eventKitID`, `titleCache`, …) are rewritten
-            // from scratch below.
+            // human-readable strings. Carry forward verbatim anything whose key
+            // parses as a UUID; the well-known cells (`eventKitID`, `titleCache`,
+            // …) are rewritten from scratch below.
             if let oldEnvelope {
                 for (cellKey, cell) in oldEnvelope.fields {
                     if UUID(uuidString: cellKey) != nil {
@@ -895,13 +889,13 @@ extension GuessWhoSync {
         )
     }
 
-    /// Migration-only helper. Mirrors the shape of
-    /// `rewriteLinkEndpoints` (`GuessWhoSync.swift:664`) but matches against
-    /// `.event` endpoints whose id appears in `mapping`. One envelope write
-    /// per affected link, under the per-key `sidecarLocks` discipline. The
-    /// mapping is keyed by the **lowercased** legacy `eventIdentifier` (so
-    /// it lines up with `Link.decodeEndpoint`'s lowercased output).
-    /// Returns the link UUIDs whose endpoint A and/or B was rewritten.
+    /// Migration-only helper. Like `rewriteLinkEndpoints` in
+    /// `GuessWhoSync.swift`, but matches `.event` endpoints whose id appears in
+    /// `mapping`. One envelope write per affected link, under the per-key
+    /// `sidecarLocks` discipline. The mapping is keyed by the **lowercased**
+    /// legacy `eventIdentifier` to line up with `Link.decodeEndpoint`'s
+    /// lowercased output. Returns the link UUIDs whose endpoint A and/or B was
+    /// rewritten.
     private func rewriteEventLinkEndpoints(mapping: [String: UUID]) throws -> [UUID] {
         guard !mapping.isEmpty else { return [] }
 

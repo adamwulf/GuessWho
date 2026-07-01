@@ -1,5 +1,13 @@
 # Logging plan: logfmt file logging shared by app + Safari extension
 
+> **ARCHIVED — superseded by the FellerBuncher pivot.** File logging shipped, but
+> the bespoke `LogfmtLogHandler` / `LogFileWriter` / rotation code this plan
+> specifies was NOT the final shape: [`adamwulf/FellerBuncher`](https://github.com/adamwulf/FellerBuncher)
+> now owns the swift-log bootstrap, destination fan-out, rotation, and the Logfmt
+> dependency. `GuessWhoLogging` is a thin facade (`GuessWhoLog`) over it — see the
+> comments in `Package.swift` and `Sources/GuessWhoLogging/` for the real design.
+> Read this only for the App-Group-vs-iCloud rationale and the export-UI decisions.
+
 ## Goal
 
 Use [`adamwulf/Logfmt`](https://github.com/adamwulf/Logfmt) together with Apple's

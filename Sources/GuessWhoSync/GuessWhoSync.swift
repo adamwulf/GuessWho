@@ -47,10 +47,9 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// `withKeyLocked(_:)` body — i.e. only while this `GuessWhoSync` holds the
     /// key's `sidecarLocks` lock — so every read-modify-write (read envelope →
     /// write envelope; read envelope → read `.dat`; repoint pointer → delete
-    /// superseded `.dat`) is atomic against any other op on the same key by
-    /// construction. Routing the mutating ops through here is what makes the two
-    /// blob races we hit unrepresentable: a compound op cannot reach
-    /// `read`/`write`/`*Blob` for a key without first being inside its lock.
+    /// superseded `.dat`) is atomic against any other op on the same key. Since a
+    /// compound op cannot reach `read`/`write`/`*Blob` for a key without first
+    /// being inside its lock, the two blob races we hit are unrepresentable.
     ///
     /// Deliberate carve-outs (NOT bugs):
     ///   - Single-call PURE READS (`field`/`fields`/`link`/`links`, the sweep's
@@ -61,9 +60,8 @@ public final class GuessWhoSync: @unchecked Sendable {
     ///     use a different store API and so can't use this single-key context.
     ///
     /// Non-`Sendable` and non-escaping: the context must not outlive the locked
-    /// block (it would reference the store outside the lock). Distinct keys lock
-    /// independently, so unrelated contacts/events still run fully in parallel —
-    /// the lock is per-key, held only for the compound op's duration.
+    /// block (it would reference the store outside the lock). The lock is
+    /// per-key, so unrelated contacts/events still run fully in parallel.
     struct KeyLockedContext {
         let key: SidecarKey
         fileprivate let sidecars: SidecarStoreProtocol
@@ -94,10 +92,9 @@ public final class GuessWhoSync: @unchecked Sendable {
 
     /// Start observing external contact-store changes and posting
     /// `.guessWhoContactsDidChange`. Opt-in: a no-op unless this instance was
-    /// constructed with a `contactCursorStore`. Idempotent — a second call while
-    /// already watching does nothing. Call once at launch, after the app has
-    /// kicked its initial reload, so the watcher begins observing for subsequent
-    /// edits made in Contacts.app / on another device.
+    /// constructed with a `contactCursorStore`. Idempotent. Call once at launch,
+    /// after the app's initial reload, so the watcher picks up subsequent edits
+    /// made in Contacts.app / on another device.
     @MainActor
     public func startContactChangeWatcher() {
         guard let contactCursorStore else { return }
@@ -286,13 +283,12 @@ public final class GuessWhoSync: @unchecked Sendable {
         try withKeyLocked(key) { ctx in
             // Write the bytes FIRST, but INSIDE the per-key lock (the only way to
             // reach `ctx.writeBlob`): the orphan sweep re-reads this key's
-            // envelope under the same lock, so writing the `.dat` and committing
-            // the pointer atomically (w.r.t. the lock) closes the window where a
+            // envelope under the same lock, so committing the `.dat` and the
+            // pointer atomically w.r.t. the lock closes the window where a
             // concurrent sweep would see the fresh `.dat` on disk, find it
             // unreferenced (the repoint hasn't landed), and delete it as a false
-            // orphan. Order within the lock still writes the `.dat` before the
-            // envelope so a mid-failure leaves an orphan (swept later), never a
-            // dangling pointer.
+            // orphan. Writing the `.dat` before the envelope means a mid-failure
+            // leaves an orphan (swept later), never a dangling pointer.
             try ctx.writeBlob(data, blobId: newBlobId)
 
             let existing = try ctx.read()
@@ -367,10 +363,10 @@ public final class GuessWhoSync: @unchecked Sendable {
 
             // Delete-on-overwrite fast path, INSIDE the lock: drop the superseded
             // `.dat` atomically with the repoint so a concurrent reader holding
-            // this same per-key lock never captures a pointer to a blobId that's
-            // about to be deleted out from under its `readBlob` (the read↔
-            // overwrite race). A failure is non-fatal — the orphan sweep reclaims
-            // it later — so it does not propagate.
+            // this same per-key lock never captures a pointer to a blobId about
+            // to be deleted out from under its `readBlob` (the read↔overwrite
+            // race). A failure is non-fatal and not propagated — the orphan sweep
+            // reclaims it later.
             if let supersededBlobId {
                 try? ctx.deleteBlob(blobId: supersededBlobId)
             }
@@ -385,10 +381,10 @@ public final class GuessWhoSync: @unchecked Sendable {
     ///
     /// The envelope-pointer read and the blob-bytes read run under the per-key
     /// lock TOGETHER: a concurrent `setBlobField` overwrite deletes the
-    /// superseded `.dat` under that same lock, so without holding it here a
-    /// reader could capture the old pointer and then have its `readBlob` miss
-    /// because the overwrite deleted that `.dat` in between (the read↔overwrite
-    /// race). Holding the lock makes capture+read atomic against the overwrite.
+    /// superseded `.dat` under that same lock, so holding it here makes
+    /// capture+read atomic against the overwrite. Without it, a reader could
+    /// capture the old pointer and then have `readBlob` miss the `.dat` the
+    /// overwrite deleted in between (the read↔overwrite race).
     public func blobFieldData(at key: SidecarKey, field: String) throws -> Data? {
         try withKeyLocked(key) { ctx in
             guard let envelope = try ctx.read() else { return nil }
@@ -408,25 +404,24 @@ public final class GuessWhoSync: @unchecked Sendable {
 
     // MARK: - Orphan blob sweep
     //
-    // The envelope merge is whole-cell LWW, so a routine cross-device race —
-    // two devices each snapshot a DIFFERENT previous photo into the same
-    // single-slot `.blob` field — keeps one cell and silently drops the
-    // loser's pointer, leaving the loser's `.dat` on disk unreferenced.
-    // Delete-on-overwrite (in setBlobField) is the same-device fast path but
-    // is NOT sufficient for that race; this reference-counting sweep is the
-    // backstop.
+    // The envelope merge is whole-cell LWW, so a cross-device race — two
+    // devices each snapshot a DIFFERENT previous photo into the same single-slot
+    // `.blob` field — keeps one cell and silently drops the loser's pointer,
+    // leaving the loser's `.dat` on disk unreferenced. Delete-on-overwrite (in
+    // setBlobField) is the same-device fast path; this reference-counting sweep
+    // is the cross-device backstop.
 
     /// Delete every `.dat` whose blobId is referenced by NO live (non-soft-
     /// deleted) `.blob` field across ALL keys.
     ///
     /// Conservative by construction: the referenced-blob set is built from
     /// every readable envelope. If ANY envelope read fails this pass (e.g. a
-    /// not-yet-downloaded `.json`), a referenced blob might be hiding in that
-    /// unreadable envelope, so NO deletions are performed — the report's
-    /// `deletionSkipped` is true and the next pass retries once envelopes are
-    /// readable. A blob whose envelope IS readable but whose `.dat` simply
-    /// hasn't downloaded is "pending," not orphan, and is never deleted
-    /// (it isn't on disk to list, and its pointer keeps it referenced).
+    /// not-yet-downloaded `.json`), a referenced blob might hide in that
+    /// unreadable envelope, so NO deletions happen — `deletionSkipped` is true
+    /// and the next pass retries once envelopes are readable. A blob whose
+    /// envelope IS readable but whose `.dat` simply hasn't downloaded is
+    /// "pending," not orphan, and is never deleted (it isn't on disk to list,
+    /// and its pointer keeps it referenced).
     @discardableResult
     public func sweepOrphanBlobs() throws -> BlobSweepReport {
         let keys = try sidecars.allKeys()
@@ -469,9 +464,8 @@ public final class GuessWhoSync: @unchecked Sendable {
         //
         //    The list + per-blob decision + delete run under the key's sidecar
         //    lock, and the key's envelope is RE-READ inside the lock, so a
-        //    concurrent setBlobField that landed since the snapshot (its fresh
-        //    `.dat`'s blobId wasn't in the snapshot `referenced` set) does not
-        //    get clobbered as a false orphan. A blob is deleted only when it is
+        //    concurrent setBlobField that landed since the snapshot isn't
+        //    clobbered as a false orphan: a blob is deleted only when
         //    unreferenced by BOTH the global snapshot set AND the key's fresh
         //    envelope. (A `.dat` is only ever written under the key whose
         //    envelope references it — blobIds are minted fresh per write — so
@@ -522,9 +516,9 @@ public final class GuessWhoSync: @unchecked Sendable {
         let id = UUID()
         let key = SidecarKey(kind: .link, id: id.uuidString)
         let now = Date()
-        // createdAt is stored as an ISO8601 string with millisecond
-        // precision. Round-trip `now` through that string so the returned
-        // Link's createdAt matches what link(id:) will read back.
+        // createdAt is stored as a millisecond-precision ISO8601 string.
+        // Round-trip `now` through that string so the returned Link's createdAt
+        // matches what link(id:) reads back.
         let createdAtStored = SidecarISO8601.date(from: SidecarISO8601.string(from: now)) ?? now
         let envelope = SidecarEnvelope(
             schemaVersion: 1,
@@ -634,13 +628,11 @@ public final class GuessWhoSync: @unchecked Sendable {
     // MARK: - Contact timestamp cells
 
     /// Upserts ONE named timestamp cell on the envelope at `key`, writing
-    /// `now` as an ISO8601 string. Follows the named-cell write style of
-    /// `addLink`/`setLinkNote`: read the existing envelope (so the other
-    /// cells are preserved), replace just the one targeted cell, and write
-    /// back under the same `entityID`. If no envelope exists yet, a fresh one
-    /// is minted with `entityID = key.id` — the same envelope-on-demand
-    /// behavior `addField` uses for a first write to a contact. ADDITIVE and
-    /// schema-stable: only the one timestamp cell changes.
+    /// `now` as an ISO8601 string: read the existing envelope, replace just the
+    /// targeted cell (other cells preserved), write back under the same
+    /// `entityID`. If no envelope exists yet, mint one with `entityID = key.id`
+    /// (the envelope-on-demand behavior `addField` uses for a first write).
+    /// ADDITIVE and schema-stable: only the one timestamp cell changes.
     public func stampContactTimestamp(_ which: ContactTimestampKind, at key: SidecarKey, now: Date) throws {
         try withKeyLocked(key) { ctx in
             let existing = try ctx.read()
@@ -668,11 +660,9 @@ public final class GuessWhoSync: @unchecked Sendable {
         return ContactTimestamps(from: envelope)
     }
 
-    /// Bulk-reads the timestamps for EVERY contact sidecar, keyed by the
-    /// envelope's `key.id` (the lowercased GuessWho UUID). Enumerates all
-    /// sidecar keys and reads only the `.contact` ones; an envelope that fails
-    /// to read is skipped (no entry), mirroring `links(at:)`'s skip-on-nil
-    /// harvest. O(N contacts).
+    /// Bulk-reads the timestamps for EVERY contact sidecar, keyed by `key.id`
+    /// (the lowercased GuessWho UUID). Reads only the `.contact` keys; an
+    /// envelope that fails to read is skipped (no entry). O(N contacts).
     public func allContactTimestamps() throws -> [String: ContactTimestamps] {
         var result: [String: ContactTimestamps] = [:]
         for key in try sidecars.allKeys() where key.kind == .contact {
@@ -691,12 +681,10 @@ public final class GuessWhoSync: @unchecked Sendable {
 
         var stamped: [SidecarReconcileReport.FileOutcome] = []
 
-        // Iterate keys ourselves and hold the per-key sidecarLock for the full
-        // resolver + write window. Without holding the lock for the WHOLE
-        // window (resolver invocation through the store's merged-write), a
-        // concurrent setField on the same key would slip a write between
-        // the store's read-versions and its merged-write and be silently
-        // clobbered.
+        // Hold the per-key sidecarLock for the WHOLE resolver + write window
+        // (resolver invocation through the store's merged-write). Otherwise a
+        // concurrent setField on the same key would slip a write between the
+        // store's read-versions and its merged-write and be silently clobbered.
         for key in try conflictStore.keysWithUnresolvedConflicts() {
             var reasons: [String] = []
             let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
@@ -821,21 +809,16 @@ public final class GuessWhoSync: @unchecked Sendable {
         return IdentityReconcileReport(contactOutcomes: outcomes, orphanSidecars: orphans)
     }
 
-    // Single-contact entry point used by host apps that want explicit,
-    // per-contact control. Orphan-sidecar detection is intentionally NOT
-    // performed here: it requires the complete set of carried UUIDs across
-    // every contact to be meaningful. Use reconcileContactIdentities() when
-    // that information is needed.
+    // Single-contact entry point for host apps wanting explicit per-contact
+    // control. Orphan-sidecar detection is intentionally NOT performed here: it
+    // needs the complete set of carried UUIDs across every contact to be
+    // meaningful — use reconcileContactIdentities() when that's needed.
     //
-    // VISIBILITY (Stage 6e): now `internal` — reconcile is an invisible side
-    // effect of a sidecar WRITE, not a public API. The package routes its
-    // internal resolve-or-mint primitive (`ContactsRepository.resolveOrMint…`)
-    // through it on the first note/link/favorite write; the last app caller
-    // (`SyncService.reconcile(localID:)`) was removed in sub-phase 6d, so 6e
-    // tightens the visibility. (The on-OPEN reconcile via
-    // `prepareContactForDetail` was reversed/deleted in 6f — reconcile is
-    // WRITE-ONLY.) The existing direct-call reconcile tests use
-    // `@testable import GuessWhoSync`, so `internal` keeps them compiling.
+    // Kept `internal`: reconcile is an invisible side effect of a sidecar
+    // WRITE, not a public API. The package routes its resolve-or-mint primitive
+    // (`ContactsRepository.resolveOrMint…`) through it on the first
+    // note/link/favorite write; there is no read/open-path reconcile.
+    // `@testable import GuessWhoSync` keeps the direct-call tests compiling.
     func reconcileContactIdentity(localID: String) async throws -> IdentityReconcileReport.ContactOutcome {
         guard let contact = try await contacts.fetch(localID: localID) else {
             throw ContactStoreError.contactNotFound(localID: localID)
@@ -1000,7 +983,7 @@ public final class GuessWhoSync: @unchecked Sendable {
         let winnerKey = SidecarKey(kind: .contact, id: winner)
 
         // Acquire per-key sidecar locks for the winner and every loser in
-        // deterministic sorted UUID order. Without this, a concurrent setField
+        // deterministic sorted UUID order — otherwise a concurrent setField
         // could land on a loser between our read and delete and be silently
         // lost. Sorted-order acquisition is the deadlock-avoidance contract
         // shared with setField/deleteField (which only ever take one lock) and
@@ -1067,11 +1050,11 @@ public final class GuessWhoSync: @unchecked Sendable {
     // rewritten in a single envelope write, not one per collapse.
     //
     // For each affected link envelope: acquire the per-link sidecar lock, re-
-    // read inside the lock (covers a concurrent setLinkNote / removeLink that
-    // landed since the all-keys scan started), apply all matching endpoint
-    // rewrites, and write once. Returns a map from loser UUID to the link
-    // UUIDs whose endpoints we rewrote because they pointed at that loser; the
-    // caller fans this back out to per-contact `rewrittenLinkIDs`.
+    // read inside it (covers a concurrent setLinkNote / removeLink that landed
+    // since the all-keys scan started), apply all matching endpoint rewrites,
+    // write once. Returns a map from loser UUID to the link UUIDs whose
+    // endpoints pointed at that loser; the caller fans this out to per-contact
+    // `rewrittenLinkIDs`.
     private func rewriteLinkEndpoints(mapping: [String: String]) throws -> [String: [UUID]] {
         guard !mapping.isEmpty else { return [:] }
 
@@ -1122,11 +1105,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                 )
 
                 guard let linkID = UUID(uuidString: key.id) else { return }
-                // Each link is recorded under EVERY loser whose collapse
-                // touched one of its endpoints — so it can surface in the
-                // ContactOutcome of every contact whose Case D affected it.
-                // The caller dedups per-contact (one link appears at most
-                // once in a given outcome's rewrittenLinkIDs).
+                // Record the link under EVERY loser whose collapse touched one
+                // of its endpoints, so it surfaces in the ContactOutcome of
+                // every contact whose Case D affected it. The caller dedups
+                // per-contact (a link appears at most once in a given outcome's
+                // rewrittenLinkIDs).
                 if aWinner != nil {
                     rewrittenByLoser[aEnd.id, default: []].append(linkID)
                 }

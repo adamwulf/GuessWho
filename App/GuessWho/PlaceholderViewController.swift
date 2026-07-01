@@ -1,8 +1,8 @@
 import UIKit
 
-/// Phase-2 column placeholder. Centers a single explanatory label so
-/// the supplementary / secondary columns show *something* until the
-/// real list views and detail view are ported over in Phase 3+.
+/// Column placeholder. Centers a single explanatory label so a
+/// supplementary / secondary column shows *something* when no real list
+/// or detail view is mounted in it.
 final class PlaceholderViewController: UIViewController {
     private let label = UILabel()
 

@@ -8,12 +8,10 @@ import GuessWhoSync
 /// access flips to `.authorized` it swaps its child to the iPhone tab
 /// bar VC handed in at init.
 ///
-/// Used as the scene root on iPhone (and on iPad-compact / iPad-
-/// regular until Phase 6 lifts iPad into the Catalyst-shaped
-/// `UISplitViewController.tripleColumn` UIKit shell). The Catalyst
-/// path constructs its split view directly and does not use this gate
-/// — Mac users keep the same eager-load behaviour the AppDelegate
-/// already drives there.
+/// Used as the scene root on iPhone and iPad (non-Catalyst). The
+/// Catalyst path constructs its split view directly and does not use
+/// this gate — Mac users keep the eager-load behaviour the AppDelegate
+/// drives there.
 final class PermissionGateViewController: UIViewController {
     private let service: SyncService
     private let tabs: UIViewController

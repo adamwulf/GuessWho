@@ -3,7 +3,7 @@ import GuessWhoSync
 
 /// Section template used by phone, email, and URL rows. Renders each
 /// entry as a label picker + a text field, plus an always-visible
-/// "Add" button at the bottom (per the plan's section-visibility rule).
+/// "Add" button at the bottom.
 struct LabeledTextSection: View {
     let title: String
     let placeholder: String

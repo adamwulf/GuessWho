@@ -1,18 +1,17 @@
 import UIKit
 import GuessWhoSync
 
-/// UIKit People list. Used by both the Catalyst 3-column shell (as
-/// the supplementary column for `.people`) and the iPhone tab shell
-/// (rooted in the People nav stack). Backed by a
-/// `UITableViewDiffableDataSource` keyed on (section-letter, ContactID)
-/// so a repository reload only re-applies a snapshot rather than
-/// invalidating the entire view. A–Z sectioning, search bound to
-/// `ContactsRepository.peopleSearch`, per-row layout of a leading
-/// avatar plus a name and caption subtitle.
+/// UIKit People list. Used by both the Catalyst 3-column shell (as the
+/// supplementary column for `.people`) and the iPhone tab shell (rooted in the
+/// People nav stack). Backed by a `UITableViewDiffableDataSource` keyed on
+/// (section-letter, ContactID) so a repository reload only re-applies a snapshot
+/// rather than invalidating the whole view. A–Z sectioning, search bound to
+/// `ContactsRepository.peopleSearch`, per-row layout of a leading avatar plus a
+/// name and caption subtitle.
 final class ContactsListViewController: UIViewController {
-    /// Closure-based selection callback so the SceneDelegate can mount
-    /// a fresh `UIHostingController<ContactDetailView>` in the secondary
-    /// column without us holding a strong reference to the split.
+    /// Closure-based selection callback so the SceneDelegate can mount a fresh
+    /// `UIHostingController<ContactDetailView>` in the secondary column without
+    /// this VC holding a strong reference to the split.
     var didSelectContact: (Contact) -> Void = { _ in }
 
     private let repository: ContactsRepository
@@ -28,26 +27,24 @@ final class ContactsListViewController: UIViewController {
 
     private var sectionLetters: [String] = []
 
-    /// The `Contact` each `ContactID` row last rendered. `ContactID` is an
-    /// identity-only token (its `==`/`hash` key on effective identity alone), so
-    /// the diffable apply keeps a same-identity row in place but does NOT repaint
-    /// its contents on an in-place edit — Apple's `apply(_:)` reconfigures items
-    /// by `Hashable` identity only, never by re-checking `==`. We detect content
-    /// changes ourselves by comparing this map's `Contact` against the freshly
-    /// fetched one and call `snapshot.reconfigureItems(_:)` explicitly. Keyed by
-    /// `ContactID` so it survives reloads; rebuilt to the current rows each apply.
+    /// The `Contact` each `ContactID` row last rendered. `ContactID` is
+    /// identity-only (`==`/`hash` key on effective identity alone), so the
+    /// diffable apply keeps a same-identity row in place but does NOT repaint its
+    /// contents on an in-place edit — Apple's `apply(_:)` reconfigures by
+    /// `Hashable` identity only, never by re-checking `==`. `applySnapshot`
+    /// compares this map's `Contact` against the freshly fetched one and calls
+    /// `snapshot.reconfigureItems(_:)` for the differences. Keyed by `ContactID`
+    /// so it survives reloads; rebuilt to the current rows each apply.
     private var renderedContacts: [ContactID: Contact] = [:]
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
-    /// Opaque token returned by the closure-based `addObserver` so
-    /// `deinit` can remove the specific observer (not "all observers
-    /// for self", which the selector-based form requires).
-    /// `nonisolated(unsafe)` because the property is only written once
-    /// (during setup on main) and only read from `deinit` (which is
-    /// nonisolated under Swift 6) — there is no concurrent access to
-    /// guard against.
+    /// Opaque token from the closure-based `addObserver` so `deinit` can remove
+    /// this specific observer (not "all observers for self", which the
+    /// selector-based form requires). `nonisolated(unsafe)` because it's written
+    /// once (setup on main) and read only from `deinit` (nonisolated under Swift
+    /// 6) — no concurrent access to guard against.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
@@ -81,12 +78,11 @@ final class ContactsListViewController: UIViewController {
         configureDataSource()
         observeRepositoryReloads()
 
-        // First paint from whatever the AppDelegate's initial reload
-        // already produced — Phase 3's AppDelegate kicks
-        // `repository.reload()` from didFinishLaunching, so by the time
-        // the user picks People in the sidebar the array is usually
-        // populated. Re-applying here also covers the "navigated away
-        // and back" case where the cached snapshot still matches.
+        // First paint from whatever the AppDelegate's initial reload produced —
+        // it kicks `repository.reload()` from didFinishLaunching, so by the time
+        // the user picks People the array is usually populated. Re-applying here
+        // also covers "navigated away and back" where the cached snapshot still
+        // matches.
         applySnapshot(animated: false)
     }
 
@@ -124,18 +120,18 @@ final class ContactsListViewController: UIViewController {
         navigationItem.hidesSearchBarWhenScrolling = false
     }
 
-    /// Install the global sort pull-down as the nav bar's right item. The menu
-    /// is rebuilt from `repository.sortOrder` on every call (see
-    /// `makeSortBarButtonItem` in `SortOrderSetting`), so installing here covers
-    /// the initial checkmark; `refreshSortMenu()` re-installs it in the reload
-    /// observer so a change made from another list moves the checkmark here too.
+    /// Install the global sort pull-down as the nav bar's right item. The menu is
+    /// rebuilt from `repository.sortOrder` on every call (see
+    /// `makeSortBarButtonItem` in `SortOrderSetting`), so this covers the initial
+    /// checkmark; `refreshSortMenu()` re-installs it from the reload observer so a
+    /// change made in another list moves the checkmark here too.
     private func configureSortMenu() {
         navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
     }
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
-    /// order. Called from the reload observer because the sort change posts
-    /// `.contactsRepositoryDidReload` and the menu is otherwise cached at the
+    /// order. Called from the reload observer because a sort change posts
+    /// `.contactsRepositoryDidReload`, and the menu is otherwise cached at the
     /// order it was built with.
     private func refreshSortMenu() {
         navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
@@ -166,8 +162,8 @@ final class ContactsListViewController: UIViewController {
     }
 
     private func configureDataSource() {
-        // Capture self weakly inside the cell provider so a deinit
-        // mid-reload can't leak a strong reference cycle.
+        // Capture self weakly in the cell provider so a deinit mid-reload can't
+        // leak a strong reference cycle.
         dataSource = SectionedDataSource(
             tableView: tableView
         ) { [weak self] tableView, indexPath, id in
@@ -183,31 +179,28 @@ final class ContactsListViewController: UIViewController {
 
     @MainActor
     private func observeRepositoryReloads() {
-        // Repository fires `.contactsRepositoryDidReload` after its
-        // async fetch lands. The notification path is intentionally
-        // simpler than `withObservationTracking` for this one-shot
-        // refresh — UIKit only needs to know "the array changed",
-        // not which specific property.
+        // Repository fires `.contactsRepositoryDidReload` after its async fetch
+        // lands. A notification is simpler than `withObservationTracking` for
+        // this one-shot refresh — UIKit only needs to know "the array changed",
+        // not which property.
         //
-        // Pinned to OperationQueue.main so a future post from an off-
-        // main context (Task.detached, a background queue, …) still
-        // applies the diffable snapshot from the main thread —
-        // UITableViewDiffableDataSource.apply is main-thread-only and
-        // would crash otherwise. Today the repository is @MainActor so
-        // posts always come from main; the queue pin is defensive.
+        // Pinned to OperationQueue.main so a future off-main post (Task.detached,
+        // a background queue, …) still applies the diffable snapshot from the
+        // main thread — `UITableViewDiffableDataSource.apply` is main-thread-only
+        // and would crash otherwise. Today the repository is @MainActor so posts
+        // come from main; the pin is defensive.
         reloadObserver = NotificationCenter.default.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            // OperationQueue.main delivers on the main thread but Swift
-            // can't statically prove the closure is @MainActor — hop
-            // explicitly so the diffable apply runs in the right
-            // isolation context.
+            // OperationQueue.main delivers on the main thread, but Swift can't
+            // statically prove the closure is @MainActor — assert it so the
+            // diffable apply runs in the right isolation context.
             MainActor.assumeIsolated {
                 // Move the sort button's checkmark first: a global sort change
                 // posts this same notification, so the menu must re-read the
-                // live order even though only the snapshot strictly "changed".
+                // live order too, not just the snapshot.
                 self?.refreshSortMenu()
                 self?.applySnapshot(animated: true)
             }
@@ -217,23 +210,22 @@ final class ContactsListViewController: UIViewController {
     private func applySnapshot(animated: Bool) {
         let sections = repository.peopleSectionIDs
         sectionLetters = sections.map { $0.0 }
-        // Time orders section into relative-time buckets ("Today", "This
-        // Week", …), where an A–Z scrubber is meaningless — hide it. Name
-        // orders keep the A–Z index. The data source reads this flag from
+        // Time orders section into relative-time buckets ("Today", "This Week",
+        // …) where an A–Z scrubber is meaningless, so hide it; name orders keep
+        // the index. The data source reads this flag from
         // `sectionIndexTitles(for:)`; set it before apply so the index appears/
         // disappears in the same pass as the new sections.
         dataSource.showsSectionIndex = !repository.sortOrder.isTimeOrder
 
         var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
         snapshot.appendSections(sectionLetters)
-        // De-dupe by effective identity across the WHOLE snapshot. Two ContactIDs
-        // sharing an effectiveID are now EQUAL (identity-only), and appendItems
-        // traps on a duplicate item. Duplicates only occur in the transient
-        // pre-reconcile window where two contacts momentarily carry the same
-        // guessWhoID; reconciliation collapses them. First occurrence wins for
-        // which token is KEPT, but the cell renders whatever
-        // `repository.contact(id:)` resolves (the index's last-writer for that
-        // effectiveID) — the VC doesn't pick which duplicate contact shows.
+        // De-dupe by effective identity across the WHOLE snapshot: two ContactIDs
+        // sharing an effectiveID are EQUAL (identity-only) and `appendItems` traps
+        // on a duplicate. Duplicates arise only in the transient pre-reconcile
+        // window where two contacts momentarily carry the same guessWhoID (until
+        // reconciliation collapses them). First occurrence wins which token is
+        // KEPT, but the cell renders whatever `repository.contact(id:)` resolves
+        // (the index's last-writer for that effectiveID) — the VC doesn't pick.
         var seen = Set<ContactID>()
         for (letter, contactIDs) in sections {
             let unique = contactIDs.filter { seen.insert($0).inserted }
@@ -243,12 +235,12 @@ final class ContactsListViewController: UIViewController {
         // ContactID is identity-only, so the diffable apply keeps a same-identity
         // row in place but will NOT repaint its contents on an in-place edit
         // (Apple's apply(_:) reconfigures by Hashable identity only, never by
-        // re-checking ==). Detect content changes explicitly: for each row
-        // present in BOTH the last render and the new snapshot, compare the
-        // Contact we last rendered against the freshly fetched one (Contact is
-        // Equatable) and reconfigure the ones that differ. Brand-new/removed rows
-        // are inserts/deletes handled by apply and must be excluded — only
-        // reconfigure IDs present in the new snapshot, else apply traps.
+        // re-checking ==). Detect content changes explicitly: for each row in
+        // BOTH the last render and the new snapshot, compare the last-rendered
+        // Contact against the fresh one (Contact is Equatable) and reconfigure
+        // the ones that differ. Only reconfigure IDs present in the new snapshot
+        // — brand-new/removed rows are apply's inserts/deletes, and including
+        // them here traps.
         let currentIDs = Set(snapshot.itemIdentifiers)
         let changed = currentIDs.filter { id in
             guard let previous = renderedContacts[id] else { return false }
@@ -258,9 +250,9 @@ final class ContactsListViewController: UIViewController {
             snapshot.reconfigureItems(Array(changed))
         }
 
-        // Rebuild the render map to exactly the rows in this snapshot so a
-        // removed row's stale Contact can't linger and a re-added row compares
-        // fresh next time.
+        // Rebuild the render map to exactly this snapshot's rows so a removed
+        // row's stale Contact can't linger and a re-added row compares fresh next
+        // time.
         var rendered: [ContactID: Contact] = [:]
         for id in currentIDs {
             rendered[id] = repository.contact(id: id)
@@ -334,45 +326,43 @@ extension ContactsListViewController: ScrollsToTop {
     }
 }
 
-/// Subclasses the diffable data source to expose the section title
-/// hook. The optional `titleForHeaderInSection` lives on
-/// `UITableViewDataSource`, but the diffable data source's default
-/// implementation doesn't forward to its closure — overriding here
-/// is the documented way to add A–Z section headers + the right-side
-/// index scrubber.
+/// Subclasses the diffable data source to expose the section-title hook.
+/// `titleForHeaderInSection` lives on `UITableViewDataSource`, but the diffable
+/// data source's default implementation doesn't forward it — overriding here is
+/// the documented way to add A–Z section headers + the right-side index
+/// scrubber.
 private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
     /// Whether the right-side A–Z scrubber is shown. The VC sets this to
-    /// `!repository.sortOrder.isTimeOrder` before each apply: for NAME orders
-    /// the section identifiers are A–Z letters and the index is a useful
-    /// scrubber; for TIME orders they are bucket names ("Today", "This Week",
-    /// …) where an alphabetical index is meaningless, so it is hidden.
+    /// `!repository.sortOrder.isTimeOrder` before each apply: NAME orders have
+    /// A–Z letter sections and a useful index; TIME orders have bucket-name
+    /// sections ("Today", "This Week", …) where an alphabetical index is
+    /// meaningless, so it's hidden.
     var showsSectionIndex = true
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        // The snapshot's section identifier IS the letter, so the
-        // header text is just the section identifier itself.
+        // The snapshot's section identifier IS the letter — use it directly.
         snapshot().sectionIdentifiers[safe: section]
     }
 
     override func sectionIndexTitles(for tableView: UITableView) -> [String]? {
-        // Suppress the scrubber entirely for time orders — the bucket-name
-        // section identifiers don't form an alphabetical index.
+        // Suppress the scrubber for time orders — bucket-name sections don't
+        // form an alphabetical index.
         guard showsSectionIndex else { return nil }
         let titles = snapshot().sectionIdentifiers
         return titles.isEmpty ? nil : titles
     }
 
     override func tableView(_ tableView: UITableView, sectionForSectionIndexTitle title: String, at index: Int) -> Int {
-        // sectionIndexTitles matches the snapshot's sectionIdentifiers
-        // order 1:1, so the index is the section number.
+        // sectionIndexTitles matches sectionIdentifiers 1:1, so the index IS the
+        // section number.
         index
     }
 }
 
 private extension Array {
-    /// Safe-indexed lookup so `tableView.numberOfSections` can briefly
-    /// disagree with the snapshot during an animated apply without
-    /// crashing the section-title call.
+    /// Safe-indexed lookup so `tableView.numberOfSections` briefly disagreeing
+    /// with the snapshot during an animated apply can't crash the section-title
+    /// call.
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
     }
@@ -385,18 +375,18 @@ extension ContactsListViewController: UISearchResultsUpdating {
         let text = searchController.searchBar.text ?? ""
         guard repository.peopleSearch != text else { return }
         repository.peopleSearch = text
-        // peopleSearch only re-filters the computed property; nothing
-        // re-publishes on its own, so apply a fresh snapshot here.
+        // peopleSearch only re-filters the computed property; nothing republishes
+        // on its own, so apply a fresh snapshot here.
         applySnapshot(animated: false)
     }
 }
 
 // MARK: - Row cell
 
-/// Two-line contact row: leading avatar thumbnail (initials-circle
-/// fallback from `ContactAvatarImage`), name with bold family name,
-/// caption-sized subtitle showing "jobTitle, organizationName"
-/// (non-breaking space when empty so every row stays the same height).
+/// Two-line contact row: leading avatar thumbnail (initials-circle fallback from
+/// `ContactAvatarImage`), name with bold family name, caption-sized subtitle
+/// showing "jobTitle, organizationName" (a non-breaking space when empty keeps
+/// every row the same height).
 private final class ContactCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
@@ -489,8 +479,7 @@ private final class ContactCell: UITableViewCell {
             }
         }
         nameLabel.attributedText = Self.nameAttributedString(for: contact)
-        // Non-breaking space keeps the row's two-line height stable
-        // when the contact has no jobTitle/organizationName — an empty
+        // Non-breaking space when there's no jobTitle/organizationName — an empty
         // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
     }

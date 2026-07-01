@@ -1,5 +1,13 @@
 # SwiftUI Contact Editor — Plan
 
+> **ARCHIVED — partially superseded.** The SwiftUI editor described here shipped
+> (`App/GuessWho/ContactEditor/`, `ContactEditModel` in the package). But the
+> **Catalyst-removal / native-macOS pivot this plan is built around did NOT
+> happen**: Mac Catalyst remains the macOS strategy (`SUPPORTS_MACCATALYST = YES`),
+> with an in-process AppKit `.bundle` plugin (`App/GuessWhoAppKitBridge`) for the
+> rare AppKit-only needs. Read this only for the editor's row/data-preservation
+> design history; ignore every "remove Catalyst / add native macOS" instruction.
+
 ## Goal
 
 Replace `CNContactViewController` with a pure-SwiftUI editor for the
