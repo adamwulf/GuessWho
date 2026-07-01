@@ -645,6 +645,21 @@ struct ContactDetailView: View {
         }
     }
 
+    /// Handles an image dropped directly onto the monogram (no existing
+    /// photo). Shares the same downscale/write tail as the picker path.
+    private func applyDroppedPhoto(_ rawData: Data) async {
+        do {
+            let jpegData = await Self.normalizedPhotoData(from: rawData)
+            guard let jpegData else {
+                photoSaveError = "That photo couldn't be processed."
+                return
+            }
+            try await writePhoto(jpegData)
+        } catch {
+            photoSaveError = error.localizedDescription
+        }
+    }
+
     /// Shared write tail for set/clear: persist to Contacts, drop the decoded
     /// image cache (coarse — see `ContactPhotoLoader.invalidate`), reload the
     /// contact so `imageDataAvailable` is current, then refresh the header.
@@ -780,6 +795,9 @@ struct ContactDetailView: View {
             // No photo, not editing: tapping the monogram is a shortcut to add
             // a first photo without opening the editor. There's nothing to
             // remove, so go straight to the picker (no Choose/Remove dialog).
+            // The monogram also accepts a dropped image file/photo directly
+            // (Catalyst drag from Finder/Photos, iPad split-view drag), so a
+            // first photo can be set without opening the picker at all.
             Button {
                 presentingPhotoPicker = true
             } label: {
@@ -787,6 +805,11 @@ struct ContactDetailView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add photo")
+            .dropDestination(for: Data.self) { items, _ in
+                guard let data = items.first else { return false }
+                Task { await applyDroppedPhoto(data) }
+                return true
+            }
         }
     }
 
