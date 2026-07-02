@@ -89,10 +89,6 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // `SortOrderSetting` — the picker owns the runtime half.
         SortOrderSetting.restore(into: contactsRepository)
 
-        // Sidecar-only migration runs BEFORE any permission prompt so it
-        // executes even when Contacts/Events access is denied.
-        service.migrateEventsIfNeeded()
-
         // Kick the repositories' initial fetch so the UIKit list
         // controllers have data ready when the user picks a tab. Runs
         // even when access has not been granted yet — fetches return
@@ -108,6 +104,12 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             await contactsRepository.reload()
         }
         Task { @MainActor in
+            // Sidecar-only migration first — permission-free (it runs even
+            // when access stays denied) and ordered BEFORE the events reload
+            // so the window read never sees pre-migration keys. Previously a
+            // synchronous call above; awaiting it here keeps that ordering
+            // while its sidecar walk runs off the main actor.
+            await service.migrateEventsIfNeeded()
             await service.requestEventsAccessIfNeeded()
             await eventsRepository.reload()
         }

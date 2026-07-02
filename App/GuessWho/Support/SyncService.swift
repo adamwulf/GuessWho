@@ -436,12 +436,16 @@ final class SyncService {
     // MARK: - Migration
 
     /// Best-effort one-shot migration of legacy event sidecars to the UUID-keyed
-    /// shape. Idempotent (safe every launch) and permission-free. Called from
-    /// `GuessWhoAppDelegate.didFinishLaunchingWithOptions` BEFORE any permission
-    /// gate, so it runs even when Contacts/Events access is denied.
-    func migrateEventsIfNeeded() {
+    /// shape. Idempotent (safe every launch) and permission-free. Awaited at
+    /// the head of the launch events Task in `GuessWhoAppDelegate` — BEFORE
+    /// the events reload reads sidecars, and regardless of permission state —
+    /// with the sidecar walk hopped off the main actor (GuessWhoSync is
+    /// `@unchecked Sendable`), so launch no longer blocks on it.
+    func migrateEventsIfNeeded() async {
         guard let sync else { return }
-        _ = try? sync.migrateEventsToSidecarFirst()
+        await Task.detached(priority: .userInitiated) {
+            _ = try? sync.migrateEventsToSidecarFirst()
+        }.value
     }
 
     func fetchAll() async -> [Contact] {

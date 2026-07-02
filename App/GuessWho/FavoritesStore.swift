@@ -33,7 +33,13 @@ final class FavoritesListStore {
 
     init(service: SyncService) {
         self.service = service
-        reload()
+        // Defer the first read off the synchronous construction path: this
+        // store is built inside GuessWhoAppDelegate.init, and
+        // `service.favorites()` is a coordinated file read (bounded, but up
+        // to ~1s against a busy cloudd) that would stall launch. The list
+        // briefly renders empty and fills when the Task lands — the same
+        // launch shape as every other list.
+        Task { reload() }
     }
 
     func reload() {
