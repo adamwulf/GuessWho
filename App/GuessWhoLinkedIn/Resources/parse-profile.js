@@ -130,8 +130,13 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     if (!m) return null;
     return { title: m[1].trim() || null, org: m[2].trim() || null };
   });
-  const title = (currentPosition && currentPosition.title) || (firstAt ? firstAt.title : null);
-  const org = (currentPosition && currentPosition.org) || (firstAt ? firstAt.org : null);
+  // Take BOTH title and org from ONE source — mixing sources could pair a
+  // title and an org neither asserts (a current self-employed role has
+  // org: null; borrowing the org from a stale "CTO at Acme" headline would
+  // fabricate "Advisor at Acme").
+  const roleSource = currentPosition || firstAt;
+  const title = (roleSource && roleSource.title) || null;
+  const org = (roleSource && roleSource.org) || null;
 
   // --- About ----------------------------------------------------------------
   // Anchor on the "About" <h2> landmark, then take the bio by its DOM POSITION:
@@ -277,8 +282,14 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
   if (!doc) return [];
   const text = (el) => (el && el.textContent ? el.textContent.trim() : null);
 
+  // Date-range lines read "Oct 2025 - Present · 10 mos" / "Aug 2018 - Aug
+  // 2021 · 3 yrs 1 mo" / "2020 - Present". Require the full
+  // year-dash-(year|Present) STRUCTURE — a short prose line containing a
+  // bare "present" or a stray "YYYY -" fragment must not classify as a date
+  // (it would also flip isCurrent and could hijack title/org sourcing).
   const isDateRange = (t) =>
-    t.length < 60 && (/\bpresent\b/i.test(t) || /\b(19|20)\d{2}\b\s*[-–]/.test(t));
+    t.length < 60 &&
+    /\b(19|20)\d{2}\s*[-–]\s*(present\b|([a-z]{3,9}\.?\s+)?(19|20)\d{2}\b)/i.test(t);
   const isBareDuration = (t) =>
     /^\d+\s+(yrs?|mos?)(\s+\d+\s+mos?)?$/i.test(t);
   const looksLikePlace = (t) =>
@@ -292,10 +303,16 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
   // Climb to the Experience card: the first ancestor with entry wrappers.
   let entries = [];
   for (let node = expHead, depth = 0; node && depth < 10; depth++, node = node.parentElement) {
-    // Climbed past the card into a container holding other sections? Abort
-    // rather than swallow Education/ad entries.
-    const anchors = node.querySelectorAll('[componentkey^="ProfileNullStateCardAnchor_"]');
-    if ([...anchors].some((a) => a !== expHead)) break;
+    // Climbed past the card into a container holding ANOTHER section's
+    // null-state anchor (Education, Interests, …)? Abort rather than swallow
+    // that section's (or an ad card's) entries — this check must run BEFORE
+    // the item check so a spanning container never wins. Match anchors by
+    // componentkey VALUE: the Experience anchor is usually the very heading
+    // we text-matched, but nothing guarantees the attribute sits on it, and
+    // identity comparison would false-abort on the card's own anchor (or a
+    // breakpoint duplicate) in that case.
+    const anchors = [...node.querySelectorAll('[componentkey^="ProfileNullStateCardAnchor_"]')];
+    if (anchors.some((a) => (a.getAttribute("componentkey") || "") !== "ProfileNullStateCardAnchor_Experience")) break;
     const items = node.querySelectorAll('[componentkey^="entity-collection-item"]');
     if (items.length) { entries = [...items]; break; }
   }
@@ -314,7 +331,9 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
       const after = lines[di + 1];
       const dates = lines[di];
       const location = after && looksLikePlace(after) ? after : null;
-      const isCurrent = /\bpresent\b/i.test(dates);
+      // "- Present" specifically (the open end of the range), not any word
+      // "present" that happens to appear in the line.
+      const isCurrent = /[-–]\s*present\b/i.test(dates);
       if (grouped) {
         // [company, total-duration, role, dates, …]: line before each date
         // line is that role's title; the employer is the entry's first line.
