@@ -325,6 +325,13 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
                 respond(status: "411 Length Required", origin: origin)
                 return
             }
+            // A negative length would sail through the cap below and trap in
+            // deliverIfBodyComplete's index arithmetic — a hostile local
+            // process could crash the app with one request. Reject it.
+            guard contentLength >= 0 else {
+                respond(status: "400 Bad Request", origin: origin)
+                return
+            }
             guard contentLength <= maxBodyBytes else {
                 LinkedInLocalhostReceiver.log.error("rejected POST: body \(contentLength)B > cap \(maxBodyBytes)B")
                 respond(status: "413 Content Too Large", origin: origin)
