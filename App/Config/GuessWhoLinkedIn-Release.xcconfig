@@ -7,6 +7,17 @@
 // Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.safari).
 PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari
 
+// Display name. Feeds CFBundleDisplayName in GuessWhoLinkedIn/Info.plist AND
+// the generated manifest.json name/default_title (see the "Generate
+// manifest.json" build phase). The Debug counterpart is "GuessWho LinkedIn
+// Debug".
+GUESSWHO_EXTENSION_DISPLAY_NAME = GuessWho LinkedIn
+
+// LinkedIn-handoff wake scheme — must match GUESSWHO_LINKEDIN_URL_SCHEME in
+// GuessWho-Release.xcconfig. Read at runtime via the GuessWhoLinkedInURLScheme
+// Info.plist key.
+GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin
+
 // App Group — shared with the app so the extension can hand off scraped data via
 // the shared container. Must match GUESSWHO_APP_GROUP in GuessWho-Release.xcconfig.
 // DIFFERENT per platform (group. on iOS, <TeamID>. on Catalyst).

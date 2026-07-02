@@ -3,7 +3,8 @@
 // Flow proved by this spike:
 //   popup -> (probe) active content script -> popup
 //   popup -> background -> sendNativeMessage -> native handler
-//     -> native parks payload in App Group + opens guesswho-linkedin://handoff
+//     -> native parks payload in App Group + acks the per-config wake URL
+//        (guesswho-linkedin[-debug]://handoff)
 //     -> the GuessWho app's scene delegate receives the URL, reads the payload
 //   native ack -> background -> popup (shown below)
 

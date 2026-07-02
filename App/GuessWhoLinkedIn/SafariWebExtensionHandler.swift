@@ -8,9 +8,9 @@ import GuessWhoLogging
 /// holds neither entitlement). It only:
 ///   1. receives the parsed payload from the background script,
 ///   2. parks it in the shared **App Group** container (ephemeral IPC handoff),
-///   3. acks back to JS with the `guesswho-linkedin://handoff` URL the popup
-///      should then open to wake the app (the handler itself cannot wake it —
-///      see below),
+///   3. acks back to JS with the per-configuration wake URL
+///      (`guesswho-linkedin[-debug]://handoff`) the popup should then open to
+///      wake the app (the handler itself cannot wake it — see below),
 ///   4. the app's scene delegate drains the parked payload on wake.
 /// The app process is where match/diff/save will live (it already holds the
 /// iCloud + Contacts entitlements).
@@ -30,9 +30,19 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             ?? "group.com.milestonemade.guesswho"
     }()
 
-    /// Custom scheme the app registers to receive the wake. Distinct from the
-    /// existing `guesswho://contact/<uuid>` identity scheme to avoid collision.
-    static let handoffURL = URL(string: "guesswho-linkedin://handoff")!
+    /// Custom scheme the app registers to receive the wake. Read from the
+    /// bundle's `GuessWhoLinkedInURLScheme` Info.plist key (fed by
+    /// `GUESSWHO_LINKEDIN_URL_SCHEME` in the xcconfig) so it is the RIGHT
+    /// scheme per configuration — `guesswho-linkedin-debug` in Debug,
+    /// `guesswho-linkedin` in Release — and the Debug extension can never wake
+    /// the Release app. Distinct from the `guesswho://contact/<uuid>` identity
+    /// scheme to avoid collision. Empty-string fallback mirrors `appGroupID`.
+    static let handoffURL: URL = {
+        let scheme = (Bundle.main.object(forInfoDictionaryKey: "GuessWhoLinkedInURLScheme") as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? "guesswho-linkedin"
+        return URL(string: "\(scheme)://handoff")!
+    }()
 
     /// Handoff breadcrumbs route through swift-log so they land in
     /// `<AppGroup>/Logs/extension.log` (and still echo to Console via the stderr
@@ -117,7 +127,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     //     only (absent from the Catalyst SDK), and `dispatchMessage` is the
     //     app→extension-JS direction anyway — not an app-wake on ANY platform.
     // The wake is therefore initiated from the WEB side: the popup opens the
-    // `wakeURL` (`guesswho-linkedin://handoff`) returned in the ack, which the
+    // `wakeURL` (`handoffURL` above) returned in the ack, which the
     // app's `GuessWhoSceneDelegate` receives and drains. The browser web context
     // CAN navigate to a registered custom scheme; the native side just parks the
     // payload and reports the URL.

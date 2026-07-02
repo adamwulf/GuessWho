@@ -56,7 +56,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
 
         // Cold-launch path: a LinkedIn handoff URL
-        // (`guesswho-linkedin://handoff`) that woke the app arrives here, not in
+        // (`guesswho-linkedin[-debug]://handoff`) that woke the app arrives here, not in
         // `scene(_:openURLContexts:)`. Drain it once the window exists so the
         // spike alert has something to present on.
         if !connectionOptions.urlContexts.isEmpty {
@@ -65,9 +65,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// Running-app path for the LinkedIn handoff spike: UIKit delivers the
-    /// `guesswho-linkedin://handoff` URL here when a scene is already connected.
-    /// Only `guesswho-linkedin` URLs are handled, not the
-    /// `guesswho://contact/<uuid>` identity scheme.
+    /// `guesswho-linkedin[-debug]://handoff` URL here when a scene is already
+    /// connected. Only handoff-scheme URLs (`LinkedInHandoffScheme.scheme`) are
+    /// handled, not the `guesswho://contact/<uuid>` identity scheme.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         handleLinkedInHandoff(urlContexts: URLContexts, entry: "warm-open")
     }
@@ -75,7 +75,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     // MARK: - Scene lifecycle breadcrumbs
     //
     // One log line per UIKit transition. Paired with the handoff breadcrumbs
-    // this makes the wake path legible: a `guesswho-linkedin://` deep link
+    // this makes the wake path legible: a `guesswho-linkedin[-debug]://` deep link
     // shows `willEnterForeground` → `openURLContexts`/handoff → `didBecomeActive`
     // when already running, or `willConnect (urlContextCount=1)` on a cold
     // launch. A wake that only foregrounds WITHOUT delivering the URL shows the
@@ -681,10 +681,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Drains a LinkedIn handoff wake. Acts only on `guesswho-linkedin://handoff`
-    /// URLs; anything else (including the `guesswho://` identity scheme, which
-    /// never reaches this scene type) is ignored. Reads and clears the App Group
-    /// payload, logs it, and shows a spike alert.
+    /// Drains a LinkedIn handoff wake. Acts only on URLs with the
+    /// per-configuration handoff scheme (`LinkedInHandoffScheme.scheme`,
+    /// `guesswho-linkedin[-debug]`); anything else (including the `guesswho://`
+    /// identity scheme, which never reaches this scene type) is ignored. Reads
+    /// and clears the App Group payload, logs it, and shows a spike alert.
     ///
     /// - Parameter entry: which UIKit delivery path called us — `"cold-launch"`
     ///   (`scene(_:willConnectTo:)`) or `"warm-open"`
@@ -704,7 +705,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         ])
 
         let isHandoff = urlContexts.contains { context in
-            context.url.scheme == "guesswho-linkedin"
+            context.url.scheme == LinkedInHandoffScheme.scheme
         }
         guard isHandoff else {
             // Not our scheme (e.g. the `guesswho://` identity URL). Log the

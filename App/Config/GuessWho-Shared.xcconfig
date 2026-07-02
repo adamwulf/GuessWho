@@ -24,11 +24,14 @@ CODE_SIGN_STYLE = Automatic
 REGISTER_APP_GROUPS = YES
 
 // NOTE: the App Group (GUESSWHO_APP_GROUP, per-platform), the iCloud container
-// (GUESSWHO_ICLOUD_CONTAINER), and CODE_SIGN_ENTITLEMENTS are all per-config and
-// live in GuessWho-Debug.xcconfig / GuessWho-Release.xcconfig. The Swift code
-// reads GUESSWHO_APP_GROUP via the GuessWhoAppGroup Info.plist key and
-// GUESSWHO_ICLOUD_CONTAINER via GuessWhoiCloudContainer, so the runtime
-// identifiers always match the signed entitlement for the active configuration.
+// (GUESSWHO_ICLOUD_CONTAINER), the display name (GUESSWHO_DISPLAY_NAME), the
+// LinkedIn-handoff wake scheme (GUESSWHO_LINKEDIN_URL_SCHEME), and
+// CODE_SIGN_ENTITLEMENTS are all per-config and live in GuessWho-Debug.xcconfig
+// / GuessWho-Release.xcconfig. The Swift code reads GUESSWHO_APP_GROUP via the
+// GuessWhoAppGroup Info.plist key, GUESSWHO_ICLOUD_CONTAINER via
+// GuessWhoiCloudContainer, and GUESSWHO_LINKEDIN_URL_SCHEME via
+// GuessWhoLinkedInURLScheme, so the runtime identifiers always match the signed
+// entitlement / registered URL type for the active configuration.
 
 // Swift
 SWIFT_VERSION = 6.0
