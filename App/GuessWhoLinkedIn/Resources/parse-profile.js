@@ -151,8 +151,9 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   // them), and it naturally excludes LinkedIn's visually-hidden screen-reader
   // duplicate of the bio (textContent would return it doubled).
   //
-  // NOTE: LinkedIn lazy-renders this section, so on a fresh non-scrolled page it
-  // may be absent and return null — accepted tradeoff (see content.js).
+  // NOTE: LinkedIn lazy-renders this section, so on a fresh non-scrolled page
+  // it may be absent and return null. content.js's probe mitigates that with a
+  // need-gated scroll pass (forceLazySections) and re-parses; still best-effort.
   const about = safe(() => {
     const heads = [...doc.querySelectorAll("h1, h2, h3")];
     const aboutHead = heads.find((h) => /^about$/i.test(text(h) || ""));

@@ -89,13 +89,63 @@ async function fetchPhotoBytes(photoSrcset) {
   }
 }
 
+// Scroll the page to force LinkedIn's lazy-rendered sections (About,
+// Experience, …) into the DOM — they mount only once they enter the viewport.
+// Step the viewport down the page, giving the renderer a beat per step, until
+// `isDone()` reports the wanted sections parsed (or the deadline / page bottom
+// is hit), then jump back to wherever the user was.
+//
+// HISTORY: an early spike scrolled unconditionally on every probe and was
+// removed — it yanked the page around on every click and failed flakily. This
+// pass differs on all three counts: it runs only when a wanted section is
+// actually MISSING (see probe), it's deadline-capped so a slow page can never
+// hang the handoff, and it always restores the user's scroll position.
+//
+// Uses the global `sleep` from the sibling parse-profile.js (both files share
+// the content-script world; redeclaring it here would be a SyntaxError
+// collision). Only reachable when the parser loaded — the call site is gated
+// on `typeof extractProfile === "function"` — so `sleep` is always defined.
+async function forceLazySections(isDone) {
+  const startX = window.scrollX;
+  const startY = window.scrollY;
+  // A generous hang-guard, not a target: the pass exits the moment the wanted
+  // sections parse, and early once the fully-mounted page provably lacks them
+  // (settle window below). We prefer a longer wait over an incomplete parse.
+  const deadline = Date.now() + 10000;
+  try {
+    const step = Math.max(400, Math.floor(window.innerHeight * 0.9));
+    let y = step;
+    let lastHeight = -1;
+    let settleUntil = 0;
+    while (Date.now() < deadline) {
+      window.scrollTo(0, y);
+      await sleep(150);
+      let done = false;
+      try { done = !!isDone(); } catch { done = false; }
+      if (done) break;
+      const height = document.documentElement.scrollHeight;
+      const maxY = height - window.innerHeight;
+      if (y < maxY) { y += step; continue; }
+      // At the bottom, but sections may still be MOUNTING (scrollHeight can
+      // keep growing as modules render). Linger while the page grows; once it
+      // stops, give it a short settle window before concluding the wanted
+      // sections genuinely aren't on this profile.
+      if (height !== lastHeight) {
+        lastHeight = height;
+        settleUntil = Date.now() + 1500;
+      } else if (Date.now() > settleUntil) {
+        break;
+      }
+    }
+  } finally {
+    window.scrollTo(startX, startY);
+  }
+}
+
 async function probe() {
-  // NOTE: LinkedIn lazy-renders sections (About, etc.) — only what's scrolled
-  // into view is in the DOM. We deliberately do NOT auto-scroll to force them:
-  // scrolling the page out from under the user caused flaky failures, and in a
-  // normal browser window (no devtools shrinking the viewport) the sections
-  // load on their own ~all the time. If About is below the fold and absent, it
-  // simply comes back null — that's an accepted tradeoff.
+  // NOTE: LinkedIn lazy-renders sections (About, Experience, …) — only what's
+  // been scrolled into view is in the DOM. Parse what's there first; when a
+  // wanted section is missing, scroll it in and re-parse (below).
   let result;
   try {
     if (typeof extractProfile === "function") {
@@ -106,6 +156,36 @@ async function probe() {
     console.log("[GuessWho] extractProfile threw:", e);
   }
   if (!result) result = minimalProbe();
+
+  // Lazy-section pass: if About or Experience didn't parse, they're probably
+  // below the fold and unrendered — scroll them in and re-parse. Best-effort:
+  // a profile that truly LACKS the section pays one capped scroll pass per
+  // probe and still comes back without it; a failed pass ships the first
+  // parse. Take the re-parse WHOLESALE, not per-field: sections stay mounted
+  // once rendered (the DOM only grows during the pass), and a per-field merge
+  // could pair a title and an org from different sources (the atomicity rule
+  // in parse-profile.js).
+  try {
+    const incomplete = (p) => !p.about || !(p.experience || []).length;
+    if (typeof extractProfile === "function" && !result._fallback && incomplete(result)) {
+      log("scroll pass: section(s) missing, scrolling", {
+        about: !!result.about,
+        positions: (result.experience || []).length,
+      });
+      await forceLazySections(() => {
+        const p = extractProfile();
+        return p && !incomplete(p);
+      });
+      const second = extractProfile();
+      if (second) result = second;
+      log("scroll pass: done", {
+        about: !!result.about,
+        positions: (result.experience || []).length,
+      });
+    }
+  } catch (e) {
+    console.log("[GuessWho] scroll pass threw:", e);
+  }
 
   // Contact info (emails/websites/profile URL) lives behind the "Contact info"
   // overlay — open it, parse it, restore the page. Async + best-effort; never
