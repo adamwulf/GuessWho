@@ -43,7 +43,16 @@ final class ContactPhotoLoader {
             forName: .contactsRepositoryDidReload,
             object: repository,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
+            // Presentation-only posts (sort flips, timestamp stamps) leave
+            // every contact record — and therefore every decoded photo —
+            // valid. Dropping the whole cache there forced every visible row
+            // to refetch + re-decode its thumbnail on each contact open.
+            // Absent key defaults to `true` (invalidate) for safety.
+            let dataChanged = (note.userInfo?[
+                ContactsRepositoryDidReloadKey.contactDataChanged
+            ] as? Bool) ?? true
+            guard dataChanged else { return }
             MainActor.assumeIsolated {
                 self?.removeAll()
             }

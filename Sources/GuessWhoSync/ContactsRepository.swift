@@ -8,6 +8,18 @@ public extension Notification.Name {
     static let contactsRepositoryDidReload = Notification.Name("ContactsRepositoryDidReload")
 }
 
+/// userInfo keys for `.contactsRepositoryDidReload`.
+public enum ContactsRepositoryDidReloadKey {
+    /// `Bool` — `true` when contact RECORDS (fields, photo bytes, membership
+    /// of the cache) may have changed; `false` for presentation-only posts
+    /// where every cached record is unchanged and only ordering/derived state
+    /// moved (a sort-order flip, a timestamp stamp, a groups refresh).
+    /// Consumers holding caches KEYED ON CONTACT DATA (e.g. decoded photos)
+    /// may skip invalidation when this is `false`; snapshot-applying list
+    /// consumers should re-render regardless. Absent means `true`.
+    public static let contactDataChanged = "contactDataChanged"
+}
+
 /// Package-owned in-memory read repository for Contacts.
 ///
 /// Deliberately a read-model cache, not a second source of truth: Contacts
@@ -112,7 +124,8 @@ public final class ContactsRepository: NSObject {
     public var sortOrder: ContactSortOrder = .lastFirst {
         didSet {
             guard sortOrder != oldValue else { return }
-            postDidReload()
+            // Ordering changed; every cached record is untouched.
+            postDidReload(contactDataChanged: false)
         }
     }
 
@@ -191,7 +204,8 @@ public final class ContactsRepository: NSObject {
             groups = []
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
-        postDidReload()
+        // Groups moved; the CONTACT records in the cache are untouched.
+        postDidReload(contactDataChanged: false)
     }
 
     /// The members of the group identified by `groupLocalID`, as `Contact`s.
@@ -916,8 +930,9 @@ public final class ContactsRepository: NSObject {
         updateTimestampCache(which, at: key, to: now)
         await refreshCacheIfMinted(minted, localID: id.localID)
         // On mint, `refreshCacheIfMinted` posts its own reload; on the common
-        // non-mint path, post so a time-ordered list re-renders.
-        if !minted { postDidReload() }
+        // non-mint path, post so a time-ordered list re-renders. A stamp only
+        // moves a timestamp — the contact records themselves are untouched.
+        if !minted { postDidReload(contactDataChanged: false) }
     }
 
     /// Upsert the single `which` timestamp on the cache entry for `key`,
@@ -1321,14 +1336,24 @@ public final class ContactsRepository: NSObject {
         postDidReload()
     }
 
-    private func postDidReload() {
+    private func postDidReload(contactDataChanged: Bool = true) {
         // Routed through the injected center (defaults to `.default`, so the
         // app's list controllers still observe it). Outbound reload and inbound
         // change observer share one center, so a test on a fresh center sees only
         // its own repository's reload. `object: self` already scopes this signal
         // per-repository; the injected center is what isolates the inbound
         // `object: nil` change observer (see init).
-        notificationCenter.post(name: .contactsRepositoryDidReload, object: self)
+        //
+        // `contactDataChanged: false` marks a presentation-only post (sort
+        // flip, timestamp stamp, groups refresh) so data-keyed caches — the
+        // app's decoded-photo cache in particular — can skip a wholesale
+        // invalidation. Defaults to `true`: any site that isn't POSITIVE the
+        // records are untouched must let consumers invalidate.
+        notificationCenter.post(
+            name: .contactsRepositoryDidReload,
+            object: self,
+            userInfo: [ContactsRepositoryDidReloadKey.contactDataChanged: contactDataChanged]
+        )
     }
 
     /// The SINGLE funnel for every `contacts` mutation. Reassigns the array

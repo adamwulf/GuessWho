@@ -130,6 +130,40 @@ struct ContactsRepositoryStampTests {
     }
 
     @Test
+    func stampPost_marksContactDataUnchanged_reloadPostMarksChanged() async throws {
+        // The reload notification carries `contactDataChanged` so data-keyed
+        // caches (the app's decoded-photo cache) can skip invalidation on
+        // presentation-only posts. A stamp on an already-reconciled contact
+        // must post `false`; a full reload must post `true`.
+        let target = Contact(
+            localID: "RECON",
+            givenName: "Grace",
+            urlAddresses: [LabeledValue(label: "g", value: "\(SidecarKey.guessWhoContactURLPrefix)30000000-0000-0000-0000-000000000001")]
+        )
+        let store = InMemoryContactStore(contacts: [target])
+        let sync = makeSync(store)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+
+        // nonisolated(unsafe): appended only from the notification handler on
+        // this test's main-actor flow; read after removeObserver.
+        nonisolated(unsafe) var flags: [Bool] = []
+        let token = center.addObserver(
+            forName: .contactsRepositoryDidReload, object: repo, queue: nil
+        ) { note in
+            flags.append(
+                (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
+            )
+        }
+        defer { center.removeObserver(token) }
+
+        await repo.reload()
+        try await repo.stampViewed(repo.contact(localID: "RECON")!.contactID)
+
+        #expect(flags == [true, false])
+    }
+
+    @Test
     func stamp_withNilEngine_throws() async {
         let target = Contact(localID: "T", givenName: "Z")
         let store = InMemoryContactStore(contacts: [target])
