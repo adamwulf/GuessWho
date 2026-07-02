@@ -643,12 +643,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Filename the extension's native handler writes into the App Group.
     private static let handoffFilename = "pending-handoff.json"
 
-    /// Upper bound on the handoff file we read into memory. The payload carries
-    /// the full-res profile photo as a base64 data URL in the JSON: an 800x800
-    /// JPEG is ~tens–hundreds of KB, base64 inflates ~33%, and the JSON wraps it
-    /// — 8 MB is generous headroom while still rejecting a huge or hostile file.
-    /// Never read unbounded.
-    private static let handoffMaxBytes = 8 * 1024 * 1024
+    /// Upper bound on the handoff payload we read into memory. The payload
+    /// carries the full-res profile photo as a base64 data URL in the JSON: an
+    /// 800x800 JPEG is ~tens–hundreds of KB, base64 inflates ~33%, and the JSON
+    /// wraps it — 8 MB is generous headroom while still rejecting a huge or
+    /// hostile payload. Never read unbounded. Internal (not private) because
+    /// the Chrome-handoff listener (`LinkedInLocalhostReceiver`, constructed in
+    /// `GuessWhoAppDelegate`) caps its POST bodies with the SAME bound.
+    static let handoffMaxBytes = 8 * 1024 * 1024
 
     /// LinkedIn-handoff breadcrumbs route through swift-log to
     /// `<AppGroup>/Logs/app.log` (echoed to Console via the stderr handler).
@@ -718,6 +720,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         Self.handoffLog.notice("LinkedIn handoff wake received", ["entry": entry])
 
         guard let data = readAndClearHandoffPayload() else { return }
+        processLinkedInHandoff(data: data, entry: entry)
+    }
+
+    /// Runs the match → diff → confirm → save pipeline on a raw handoff
+    /// payload (the `{ stampedBy, payload }` envelope JSON). This is the
+    /// transport-independent half of the handoff: the Safari path reaches it by
+    /// draining the App-Group parked file on a wake URL
+    /// (`handleLinkedInHandoff` above); the Chrome/Brave path reaches it from
+    /// `GuessWhoAppDelegate` when `LinkedInLocalhostReceiver` accepts a POST
+    /// from the extension. Internal (not private) for that app-delegate caller.
+    /// Main-thread only — it presents UIKit.
+    ///
+    /// - Parameter entry: which transport delivered the payload
+    ///   (`"cold-launch"` / `"warm-open"` for Safari wakes,
+    ///   `"chrome-localhost"` for the listener), for the log timeline.
+    func processLinkedInHandoff(data: Data, entry: String) {
+        Self.handoffLog.notice("processing handoff payload", [
+            "entry": entry,
+            "bytes": data.count
+        ])
 
         // Decode the envelope ({ stampedBy, payload: {...} }) into the
         // package-vended LinkedInProfile, then ask the package to match it.
@@ -905,7 +927,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         Self.handoffLog.notice("read: looking for \(fileURL.path)")
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            Self.handoffLog.error("read: No \(Self.handoffFilename) at \(fileURL.path)")
+            // Not an error: a Chrome/Brave-initiated wake parks nothing (its
+            // payload arrives over the localhost listener, before or after the
+            // wake), and a duplicate Safari wake finds the file already
+            // drained. A SAFARI handoff that logs this line IS a problem —
+            // check the extension's "park: wrote" line and the App Group ids.
+            Self.handoffLog.notice("read: no \(Self.handoffFilename) at \(fileURL.path) — nothing parked (Chrome-flow wake or already drained)")
             return nil
         }
 

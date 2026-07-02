@@ -20,6 +20,18 @@ GUESSWHO_DISPLAY_NAME = GuessWho
 // Debug app.
 GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin
 
+// Chrome/Brave-extension handoff (Catalyst only). The port the app's loopback
+// listener binds (LinkedInLocalhostReceiver) and the extension ids allowed to
+// POST to it. Read at runtime via the GuessWhoChromeHandoffPort /
+// GuessWhoChromeExtensionIDs Info.plist keys (ChromeHandoff). The extension's
+// build script (App/GuessWhoChrome/build.sh) PARSES this file for the port, so
+// there is no second copy to keep in sync. The id below is derived from
+// App/GuessWhoChrome/keys/release.pub (build.sh prints it); after the first
+// Chrome Web Store upload, APPEND the store-assigned id (comma-separated) so
+// the store-installed extension may talk to the app too.
+GUESSWHO_CHROME_HANDOFF_PORT = 57230
+GUESSWHO_CHROME_EXTENSION_IDS = hckkbhkjpmolhnihnjeglnlkdknbeaha
+
 // App Group identifier — DIFFERENT per platform (per Apple guidance):
 //   * iOS/iPadOS: must be `group.`-prefixed (the only form iOS supports), and
 //     requires provisioning (handled by REGISTER_APP_GROUPS in the shared file).

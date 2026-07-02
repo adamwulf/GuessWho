@@ -20,6 +20,10 @@
 	<string>$(GUESSWHO_ICLOUD_CONTAINER)</string>
 	<key>GuessWhoLinkedInURLScheme</key>
 	<string>$(GUESSWHO_LINKEDIN_URL_SCHEME)</string>
+	<key>GuessWhoChromeHandoffPort</key>
+	<string>$(GUESSWHO_CHROME_HANDOFF_PORT)</string>
+	<key>GuessWhoChromeExtensionIDs</key>
+	<string>$(GUESSWHO_CHROME_EXTENSION_IDS)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

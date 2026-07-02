@@ -25,6 +25,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     let eventsRepository: EventsRepository
     let contactPhotoLoader: ContactPhotoLoader
 
+    #if targetEnvironment(macCatalyst)
+    /// Loopback listener for the Chrome/Brave extension's LinkedIn handoff
+    /// (`POST 127.0.0.1:<port>/handoff` — see `LinkedInLocalhostReceiver`).
+    /// Catalyst-only: Chromium browsers don't exist on iOS, and the port +
+    /// network-server entitlement are only wired for the Catalyst build.
+    /// Owned here (not by a scene) so one listener serves the whole process.
+    private var chromeHandoffReceiver: LinkedInLocalhostReceiver?
+    #endif
+
     /// App-process lifecycle breadcrumbs. Routes through swift-log so it lands in
     /// `<AppGroup>/Logs/app.log` (and echoes to Console). The scene-level
     /// transitions (connect / active / background / disconnect) are logged from
@@ -118,8 +127,65 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // delta), so whichever finishes first, the cache converges.
         service.startContactChangeWatcher()
 
+        #if targetEnvironment(macCatalyst)
+        startChromeHandoffReceiver()
+        #endif
+
         return true
     }
+
+    #if targetEnvironment(macCatalyst)
+    /// Starts the Chrome/Brave handoff listener. Payloads hop to the main
+    /// thread and into the same scene-delegate pipeline the Safari wake uses
+    /// (`processLinkedInHandoff`), so the two transports stay behaviorally
+    /// identical past this point.
+    private func startChromeHandoffReceiver() {
+        guard let port = ChromeHandoff.port else {
+            Self.lifecycleLog.notice("Chrome handoff receiver disabled (no GuessWhoChromeHandoffPort)")
+            return
+        }
+        let receiver = LinkedInLocalhostReceiver(
+            port: port,
+            allowedExtensionIDs: ChromeHandoff.allowedExtensionIDs,
+            maxBodyBytes: GuessWhoSceneDelegate.handoffMaxBytes
+        ) { data in
+            // Called on the receiver's queue; the pipeline presents UIKit, so
+            // hop to the main actor.
+            Task { @MainActor in
+                GuessWhoAppDelegate.routeChromeHandoff(data)
+            }
+        }
+        receiver.start()
+        chromeHandoffReceiver = receiver
+    }
+
+    /// Hands a Chrome-delivered payload to a connected scene's delegate. The
+    /// extension wakes the app BEFORE posting, so normally a foreground scene
+    /// exists — but on a cold launch the POST can land in the gap between
+    /// `didFinishLaunching` (listener up) and the first scene connecting, so
+    /// retry briefly instead of dropping the payload.
+    private static let chromeHandoffLog = GuessWhoLog.logger("app.linkedin-handoff.chrome")
+
+    @MainActor
+    private static func routeChromeHandoff(_ data: Data, attempt: Int = 0) {
+        let scenes = UIApplication.shared.connectedScenes
+        let delegate = scenes
+            .filter { $0.activationState == .foregroundActive || $0.activationState == .foregroundInactive }
+            .compactMap { $0.delegate as? GuessWhoSceneDelegate }
+            .first
+            ?? scenes.compactMap { $0.delegate as? GuessWhoSceneDelegate }.first
+        if let delegate {
+            delegate.processLinkedInHandoff(data: data, entry: "chrome-localhost")
+        } else if attempt < 10 {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                routeChromeHandoff(data, attempt: attempt + 1)
+            }
+        } else {
+            chromeHandoffLog.error("no scene connected after \(attempt) attempts — payload dropped")
+        }
+    }
+    #endif
 
     /// Last app-process breadcrumb. UIKit calls this when the app is about to
     /// terminate (rare on iOS — the system usually suspends rather than
