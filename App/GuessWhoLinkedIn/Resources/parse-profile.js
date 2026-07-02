@@ -495,41 +495,57 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 // about came along, we drive the scroll until THESE required sections are all
 // present, then hand off.
 //
-// A section is `required: true` if a missing value should hold up the handoff
-// (Experience is the section the user explicitly waits on). Optional sections
-// are reported too — so the popup can show their progress — but their absence
-// never blocks: some profiles genuinely have no About text, and Contact info
-// lives behind an overlay the scroll can't mount, so gating on them would hang
-// forever on a legitimately-sparse profile.
+// ALL four sections are `required: true` — the handoff waits for every one of
+// them. There is intentionally no deadline: the pass keeps scrolling (looping
+// top→bottom, since scrolling a section out of view can cancel its in-flight
+// lazy load) until everything is present. The user's ONLY escape hatch is the
+// popup's "Save anyway" button, which interrupts the wait and ships whatever
+// parsed so far. So a legitimately-sparse profile (no About text, no exposed
+// contact info) will wait until the user chooses to save anyway — that's the
+// deliberate tradeoff: wait for everything by default, let the user override.
+//
+// Contact info is special: it lives behind an overlay the scroll can't mount,
+// so content.js opens that overlay (once the scroll-mounted sections are up)
+// and stamps `result.contactInfo` before this gate can be satisfied. Until then
+// the section reads as pending in the popup.
 //
 // Each check reads ONLY the already-parsed `result` (no DOM access), so the same
 // function serves the live probe and the unit tests against a fixture.
 function profileReadiness(result) {
   const r = result || {};
+  // Contact info is present once the overlay has been parsed AND yielded at
+  // least one real field (a canonical profile URL, an email, or a website).
+  // An opened-but-empty overlay (`{}`) does NOT count — otherwise a profile that
+  // simply hasn't reached the overlay step yet could look satisfied.
+  const ci = r.contactInfo;
+  const hasContact = !!(
+    ci &&
+    (ci.profileUrl ||
+      (Array.isArray(ci.emails) && ci.emails.length > 0) ||
+      (Array.isArray(ci.websites) && ci.websites.length > 0))
+  );
   const sections = [
     // The top-card identity is present as soon as the page paints — it gates
     // nothing in practice, but reporting it gives the popup a "1/N" the instant
     // the probe starts rather than a cold 0.
     { key: "identity", label: "Profile", required: true, present: !!r.fullName },
-    // THE section the user waits on: Experience mounts lazily near the middle of
-    // the page, so it's the last required thing the scroll pass has to reach.
+    // Experience mounts lazily near the middle of the page, so it's one of the
+    // sections the scroll pass has to reach.
     { key: "experience", label: "Experience", required: true,
       present: Array.isArray(r.experience) && r.experience.length > 0 },
-    // Optional: many profiles have no About text at all. Reported for progress,
-    // never gates (a bare profile would otherwise never satisfy the gate).
-    { key: "about", label: "About", required: false, present: !!r.about },
+    // About also lazy-mounts. Some profiles have no About text; with no
+    // deadline, such a profile waits for the user's "Save anyway" rather than
+    // shipping on a timer.
+    { key: "about", label: "About", required: true, present: !!r.about },
+    // Contact info comes from the overlay step in content.js, not the scroll.
+    { key: "contact", label: "Contact info", required: true, present: hasContact },
   ];
   const required = sections.filter((s) => s.required);
   return {
     sections,
-    // Ready = every REQUIRED section is present. Optional sections don't count.
+    // Ready = every REQUIRED section is present.
     ready: required.every((s) => s.present),
-    // The "X/Y" progress counts ONLY required sections — the ones we actually
-    // wait for — so "Y" means "will reach Y when ready". Counting optional
-    // sections in the denominator made a complete profile that simply has no
-    // About text read "2/3, About pending" even though it was correctly ready.
-    // The optional sections are still listed in `sections` (so the popup shows
-    // About loading with a ✓), they just don't drag the ready count down.
+    // The "X/Y" progress counts the required sections we're waiting for.
     loaded: required.filter((s) => s.present).length,
     total: required.length,
   };

@@ -27,12 +27,16 @@
 </head>
 <body>
   <h1>GuessWho — handoff spike</h1>
-  <button id="go">Send to GuessWho</button>
   <div id="progress">
     <div class="count" id="progress-count"></div>
     <ul id="progress-list"></ul>
   </div>
-  <pre id="out">Open a linkedin.com/in/… tab, then tap the button.</pre>
+  <!-- The load starts automatically when the popup opens; this button is the
+       user's escape hatch to stop waiting and send whatever parsed so far. It
+       sits BELOW the loading indicators so it reads as "interrupt this", not
+       "start". -->
+  <button id="go">Save anyway</button>
+  <pre id="out">Loading profile…</pre>
   <script src="popup.js"></script>
 </body>
 </html>
