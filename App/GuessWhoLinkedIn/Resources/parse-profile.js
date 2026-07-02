@@ -466,8 +466,12 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
     if (!d) return null;
     const hasField = [...d.querySelectorAll('a[href]')].some((a) => {
       const href = a.getAttribute("href") || "";
-      if (/^mailto:/i.test(href)) return true;
-      if (/^http/i.test(href) && !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(unwrapSafetyURL(a.href))) return true;
+      // Match the scheme tests CASE-SENSITIVELY to mirror the extraction's CSS
+      // selectors (a[href^="mailto:"], a[href^="http"]) — an attribute `^=`
+      // match is case-sensitive, so a case-insensitive predicate here could
+      // report "loaded" on a link (e.g. "MAILTO:") the parse would then skip.
+      if (/^mailto:/.test(href)) return true;
+      if (/^http/.test(href) && !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(unwrapSafetyURL(a.href))) return true;
       if (/\/in\/[^/]+\/?($|\?)/.test(a.href) && !/\/overlay\//.test(a.href)) return true;
       return false;
     });
