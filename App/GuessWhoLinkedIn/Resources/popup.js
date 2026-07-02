@@ -115,11 +115,30 @@ async function probeTab(tabId, probeId) {
   }
 }
 
-goBtn.addEventListener("click", async () => {
-  log("handoff start");
-  // Lock the button and reset any prior progress/result for this run.
-  goBtn.disabled = true;
+// "Save anyway": the user's escape hatch out of the (unbounded) wait. We DON'T
+// run the handoff here — the probe is already in flight and will resolve and
+// hand off on its own. We just tell the content script to stop waiting and ship
+// whatever parsed, keyed on the active probeId. The in-flight `runHandoff`
+// then continues to the handoff with the (possibly partial) result.
+goBtn.addEventListener("click", () => {
+  if (!activeProbeId) return; // nothing in flight to interrupt
+  log("save anyway: interrupting probe", { probeId: activeProbeId });
+  goBtn.disabled = true; // one interrupt is enough; block re-clicks
+  // Fire-and-forget one-way message; a rejection (no receiver) must not throw.
+  try {
+    const p = api.runtime.sendMessage({ type: "guesswho.interrupt", probeId: activeProbeId });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_e) { /* content script gone — the probe will resolve regardless */ }
+});
+
+// The whole flow, run automatically when the popup opens — no initial button
+// press. The "Save anyway" button only interrupts this once it's under way.
+async function runHandoff() {
+  log("handoff start (auto)");
   clearProgress();
+  // The button starts disabled (nothing to interrupt yet) and is enabled once
+  // the probe is in flight, then disabled again the moment we begin the handoff.
+  goBtn.disabled = true;
   try {
     const tab = await activeTab();
     if (!tab || !/linkedin\.com\/in\//.test(tab.url || "")) {
@@ -130,16 +149,21 @@ goBtn.addEventListener("click", async () => {
     log("active tab", { tabId: tab.id, url: tab.url });
 
     // 1) Probe the content script (inject-and-retry if not present). The probe
-    // does NOT resolve until the scroll pass has waited for every required
-    // section (Experience) to mount — so by the time we get `probe` back below,
-    // we've already "waited then sent", and the streamed progress the user saw
-    // reflects that wait. A probeId lets us correlate this run's progress
-    // messages and ignore stragglers from a previous click.
+    // does NOT resolve until EITHER every required section (Profile, Experience,
+    // About, Contact info) has mounted OR the user pressed "Save anyway" — so by
+    // the time we get `probe` back below, we've either waited for everything or
+    // the user chose to send what parsed. A probeId lets us correlate this run's
+    // progress messages and route the interrupt to the right probe.
     const probeId = newProbeId();
     activeProbeId = probeId;
     show("Loading profile…");
+    // There's now something to interrupt — let the user press "Save anyway".
+    goBtn.disabled = false;
     log("probe: requesting profile from content script", { probeId });
     const probe = await probeTab(tab.id, probeId);
+    // The wait is over — lock the button (we're committing to the handoff) and
+    // stop streaming progress into the checklist.
+    goBtn.disabled = true;
     if (!probe) {
       log("probe: failed (no data)");
       show({ step: "probe failed", detail: "content script returned no data" }, true);
@@ -153,19 +177,16 @@ goBtn.addEventListener("click", async () => {
       loaded: readiness ? readiness.loaded : null,
       total: readiness ? readiness.total : null,
     });
-    // The wait is over — stop streaming progress into the checklist.
     clearProgress();
-    // If the scroll pass exhausted its deadline WITHOUT every required section
-    // mounting (a profile with no Experience, a parse-selector drift, or a very
-    // slow load), say so plainly. We still proceed to the handoff with whatever
-    // parsed rather than permanently blocking the import — but the UI is honest
-    // that not everything loaded, so a systematic miss is visible rather than
-    // silently shipping partial data.
+    // If the probe resolved WITHOUT every required section — because the user
+    // pressed "Save anyway", or a section never mounted — say so plainly. We
+    // still proceed to the handoff with whatever parsed (that's what "Save
+    // anyway" means), but the UI is honest about what didn't load.
     if (readiness && !readiness.ready) {
       const missing = (readiness.sections || [])
         .filter((s) => s.required && !s.present)
         .map((s) => s.label);
-      log("probe: incomplete after wait", { missing });
+      log("probe: incomplete (interrupted or unmounted)", { missing });
       show(
         `Note: not everything finished loading (missing: ${missing.join(", ") || "unknown"}). Sending what loaded…`
       );
@@ -216,10 +237,17 @@ goBtn.addEventListener("click", async () => {
     log("handoff threw", { error: String(e) });
     show({ error: String(e) }, true);
   } finally {
-    // Always release the button and drop the progress checklist, whether we
-    // succeeded, aborted early, or threw — otherwise a failed run leaves the
-    // popup stuck "Loading…" with a dead button.
+    // Drop the progress checklist. Leave the button disabled — the run is over
+    // (success, abort, or throw) and this popup instance won't start another; a
+    // fresh probe only happens when the popup is reopened.
     clearProgress();
-    goBtn.disabled = false;
+    goBtn.disabled = true;
   }
-});
+}
+
+// Kick off automatically as soon as the popup's DOM is ready.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", runHandoff, { once: true });
+} else {
+  runHandoff();
+}

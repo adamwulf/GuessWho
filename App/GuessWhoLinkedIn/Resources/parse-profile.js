@@ -251,6 +251,15 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     about,
     experience,
     photoSrcset,
+    // Whether this profile even HAS a "Contact info" link. It lives in the top
+    // card, so it's in the DOM from first paint — its presence/absence is a
+    // definitive, immediate signal: a profile with no link has no contact info
+    // to fetch, so the readiness gate can mark the contact section done right
+    // away rather than opening an overlay that would never appear. When the
+    // link IS present, content.js opens it (extractContactInfo) to capture the
+    // fields. Computed on every parse so profileReadiness (which reads only the
+    // parsed result) can see it throughout the scroll pass.
+    hasContactInfoLink: safe(() => !!findContactInfoTrigger(doc)),
     // Debug aid for selector tuning — drop once the parser stabilizes.
     _topCardLines: topCardLines,
   };
@@ -429,11 +438,12 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
   // navigation; if the SPA ignores that, the modal still opens.
   trigger.click();
 
-  const dialog = await waitFor(() => {
-    // Most specific first: the SDUI contact-details overlay screen and the
-    // dialog-content testid (confirmed in a captured open panel). Fall back to a
-    // role="dialog" whose text actually mentions contact fields, so we never
-    // grab an ambient aria-live dialog (toasts use role="dialog" too).
+  // Locate the contact-details dialog element (frame). Most specific first: the
+  // SDUI contact-details overlay screen and the dialog-content testid (confirmed
+  // in a captured open panel). Fall back to a role="dialog" whose text actually
+  // mentions contact fields, so we never grab an ambient aria-live dialog
+  // (toasts use role="dialog" too).
+  const findDialog = () => {
     const sdui = doc.querySelector('[data-sdui-screen*="ProfileContactDetails" i]');
     if (sdui) return sdui.closest('[role="dialog"]') || sdui;
     const byTestId = doc.querySelector('[data-testid="dialog-content"]');
@@ -443,7 +453,36 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
     const d = [...doc.querySelectorAll('[role="dialog"]')]
       .find((x) => /\b(email|website|contact info)\b/i.test(x.textContent || ""));
     return d || null;
-  });
+  };
+
+  // A dialog whose CONTACT FIELDS have loaded — the frame can mount a beat
+  // before its links populate, so waiting only for the frame can parse an empty
+  // panel. Consider it loaded once it carries an actual field link: a mailto,
+  // an external website, or the canonical /in/<slug> profile URL (the last is
+  // always present in a contact-details panel, so it's the reliable floor even
+  // for a profile that lists neither email nor site).
+  const dialogLoaded = () => {
+    const d = findDialog();
+    if (!d) return null;
+    const hasField = [...d.querySelectorAll('a[href]')].some((a) => {
+      const href = a.getAttribute("href") || "";
+      // Match the scheme tests CASE-SENSITIVELY to mirror the extraction's CSS
+      // selectors (a[href^="mailto:"], a[href^="http"]) — an attribute `^=`
+      // match is case-sensitive, so a case-insensitive predicate here could
+      // report "loaded" on a link (e.g. "MAILTO:") the parse would then skip.
+      if (/^mailto:/.test(href)) return true;
+      if (/^http/.test(href) && !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(unwrapSafetyURL(a.href))) return true;
+      if (/\/in\/[^/]+\/?($|\?)/.test(a.href) && !/\/overlay\//.test(a.href)) return true;
+      return false;
+    });
+    return hasField ? d : null;
+  };
+
+  // Wait for the fields to load, not just the frame. If the frame opens but no
+  // field ever lands (a genuinely empty panel, or a shape we don't recognize),
+  // fall back to whatever frame we found so we still close it and return the
+  // (empty) shape rather than hang — waitFor is bounded and never hangs.
+  const dialog = (await waitFor(dialogLoaded)) || findDialog();
   if (!dialog) return null;
 
   const uniq = (arr) => [...new Set(arr.filter(Boolean))];
@@ -495,41 +534,73 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 // about came along, we drive the scroll until THESE required sections are all
 // present, then hand off.
 //
-// A section is `required: true` if a missing value should hold up the handoff
-// (Experience is the section the user explicitly waits on). Optional sections
-// are reported too — so the popup can show their progress — but their absence
-// never blocks: some profiles genuinely have no About text, and Contact info
-// lives behind an overlay the scroll can't mount, so gating on them would hang
-// forever on a legitimately-sparse profile.
+// ALL four sections are `required: true` — this readiness object is how the
+// popup shows "X/4 loaded" and gates the handoff. But the RUNTIME wait in
+// content.js is deliberately asymmetric, because the sections mount by
+// different means:
+//
+//   • identity, Experience, About — mount by SCROLLING. content.js's scroll
+//     pass is unbounded (no deadline): it loops top→bottom until all three are
+//     present. So if one of THESE is missing (a slow load, or a profile with no
+//     About text), the pass keeps scrolling and the only way to hand off is the
+//     user's "Save anyway" (which interrupts and ships what parsed).
+//   • Contact info — the "Contact info" link lives in the top card (in the DOM
+//     from first paint), so its presence/absence is a definitive, immediate
+//     signal via `hasContactInfoLink`. No link => nothing to fetch => the
+//     section is done at once (a contactless profile reaches 4/4 on its own,
+//     no overlay needed). Link present => content.js opens the overlay ONCE
+//     after the scroll sections are up, waits for the fields to load, and
+//     stamps `result.contactInfo`; the section is done when those fields land.
+//
+// Net: identity/Experience/About block until present-or-"Save anyway"; contact
+// info blocks only when a link exists but its fields haven't loaded yet.
 //
 // Each check reads ONLY the already-parsed `result` (no DOM access), so the same
 // function serves the live probe and the unit tests against a fixture.
 function profileReadiness(result) {
   const r = result || {};
+  // The contact section is DONE in either of two ways:
+  //   1. This profile has NO "Contact info" link (hasContactInfoLink === false)
+  //      — the link lives in the top card and is in the DOM from first paint,
+  //      so its absence definitively means there's nothing to fetch. Mark it
+  //      done immediately rather than waiting on an overlay that never appears.
+  //   2. We opened the overlay and captured at least one real field (a canonical
+  //      profile URL, an email, or a website). An opened-but-empty overlay (`{}`)
+  //      does NOT count on its own — but such a profile would also have had a
+  //      link, so case 1 doesn't rescue it; it stays pending until fields load.
+  // A profile whose link is present but not yet opened is pending (neither case).
+  const ci = r.contactInfo;
+  const capturedContact = !!(
+    ci &&
+    (ci.profileUrl ||
+      (Array.isArray(ci.emails) && ci.emails.length > 0) ||
+      (Array.isArray(ci.websites) && ci.websites.length > 0))
+  );
+  const noContactLink = r.hasContactInfoLink === false;
+  const hasContact = capturedContact || noContactLink;
   const sections = [
     // The top-card identity is present as soon as the page paints — it gates
     // nothing in practice, but reporting it gives the popup a "1/N" the instant
     // the probe starts rather than a cold 0.
     { key: "identity", label: "Profile", required: true, present: !!r.fullName },
-    // THE section the user waits on: Experience mounts lazily near the middle of
-    // the page, so it's the last required thing the scroll pass has to reach.
+    // Experience mounts lazily near the middle of the page, so it's one of the
+    // sections the scroll pass has to reach.
     { key: "experience", label: "Experience", required: true,
       present: Array.isArray(r.experience) && r.experience.length > 0 },
-    // Optional: many profiles have no About text at all. Reported for progress,
-    // never gates (a bare profile would otherwise never satisfy the gate).
-    { key: "about", label: "About", required: false, present: !!r.about },
+    // About also lazy-mounts. Some profiles have no About text; with no
+    // deadline, such a profile waits for the user's "Save anyway" rather than
+    // shipping on a timer.
+    { key: "about", label: "About", required: true, present: !!r.about },
+    // Contact info: done if the profile has no "Contact info" link at all (no
+    // fetch needed) or the overlay step captured fields. See hasContact above.
+    { key: "contact", label: "Contact info", required: true, present: hasContact },
   ];
   const required = sections.filter((s) => s.required);
   return {
     sections,
-    // Ready = every REQUIRED section is present. Optional sections don't count.
+    // Ready = every REQUIRED section is present.
     ready: required.every((s) => s.present),
-    // The "X/Y" progress counts ONLY required sections — the ones we actually
-    // wait for — so "Y" means "will reach Y when ready". Counting optional
-    // sections in the denominator made a complete profile that simply has no
-    // About text read "2/3, About pending" even though it was correctly ready.
-    // The optional sections are still listed in `sections` (so the popup shows
-    // About loading with a ✓), they just don't drag the ready count down.
+    // The "X/Y" progress counts the required sections we're waiting for.
     loaded: required.filter((s) => s.present).length,
     total: required.length,
   };

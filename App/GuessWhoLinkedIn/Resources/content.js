@@ -120,31 +120,69 @@ function resolveScroller() {
   return document.scrollingElement || document.documentElement;
 }
 
+// Which required sections the SCROLL pass can actually mount. Identity, About,
+// and Experience render lazily as they enter the viewport, so scrolling brings
+// them in. Contact info does NOT — it lives behind an overlay the scroll can't
+// reach — so the scroll loop gates on this subset, and the overlay step (in
+// probe()) satisfies the contact section afterward. Keep in sync with the
+// section keys in parse-profile.js's profileReadiness.
+const SCROLL_SECTION_KEYS = ["identity", "experience", "about"];
+
+// Are all the scroll-mountable required sections present in this readiness?
+function scrollSectionsReady(readiness) {
+  const byKey = {};
+  for (const s of (readiness && readiness.sections) || []) byKey[s.key] = s;
+  return SCROLL_SECTION_KEYS.every((k) => !byKey[k] || byKey[k].present);
+}
+
+// --- Interrupt ("Save anyway") ----------------------------------------------
+//
+// There is no deadline anymore: the scroll pass waits until every scroll-
+// mountable section is present. The user's escape hatch is the popup's "Save
+// anyway" button, which sends a `guesswho.interrupt` message keyed on the
+// probeId. That listener (registered at the bottom of this file) records the id
+// in `interruptedProbes`; the scroll loop checks it each iteration and bails,
+// shipping whatever parsed so far.
+//
+// `liveProbes` holds the probeIds still in flight. The interrupt listener adds
+// to `interruptedProbes` ONLY for a live probe, and both Sets drop the id when
+// the probe resolves. Two things fall out of that: (1) a stale interrupt from a
+// previous click can't affect a fresh probe (different id), and (2) an
+// interrupt that races in AFTER its probe already resolved is ignored rather
+// than re-inserting an id nothing would ever clean up — so neither Set grows
+// without bound.
+const interruptedProbes = new Set();
+const liveProbes = new Set();
+function isInterrupted(probeId) {
+  return !!probeId && interruptedProbes.has(probeId);
+}
+
 // Scroll the profile to force LinkedIn's lazy-rendered sections (About,
 // Experience, Education, …) into the DOM — they mount only once they enter the
 // viewport. Step the scroller down (see resolveScroller — it's a nested
-// element, not the window), giving the renderer a beat per step.
+// element, not the window) in SMALL increments, giving the renderer a beat per
+// step so a section that begins loading isn't scrolled past before it finishes
+// mounting.
 //
 // The loop is driven by READINESS, not by a blind "stopped growing" heuristic:
-// after each scroll step we re-parse and ask `profileReadiness` whether every
-// REQUIRED section (notably Experience) is now present. As soon as they are, we
-// stop — we've captured everything we gate on, so there's no reason to keep the
-// user waiting. If the page bottoms out and stops growing before readiness (a
-// genuinely sparse profile, or a section that never mounts), we stop then too,
-// rather than hang; the caller ships whatever parsed. The deadline caps a
-// pathological page so the handoff can never hang, and the user's scroll
-// position is always restored.
+// after each scroll step we re-parse and ask whether every scroll-mountable
+// required section (identity, Experience, About) is now present. As soon as
+// they are, we stop. There is NO deadline — if the page bottoms out before
+// everything mounted (a slow load, or a section whose lazy load got cancelled
+// when an earlier fast scroll pushed it back out of view), we loop back to the
+// TOP and scroll down again rather than give up. The only ways out are: every
+// scroll section mounted, or the user pressed "Save anyway" (isInterrupted).
+// The user's scroll position is always restored.
 //
 // `onProgress(readiness, parsed)` is invoked after each re-parse (and once at
 // the start) so the caller can stream "X/Y sections loaded" to the popup while
-// this runs. Returns the last readiness so the caller knows whether it bailed
-// on readiness or on the deadline.
+// this runs. Returns the last readiness.
 //
 // Uses the global `sleep`/`profileReadiness` from the sibling parse-profile.js
 // (both files share the content-script world; redeclaring `sleep` here would be
 // a SyntaxError collision). Only reachable when the parser loaded — the call
 // site is gated on `typeof extractProfile === "function"` — so both are defined.
-async function forceLazySections(onProgress) {
+async function forceLazySections(onProgress, probeId) {
   const scroller = resolveScroller();
   const startTop = scroller.scrollTop;
   const startX = window.scrollX;
@@ -164,49 +202,32 @@ async function forceLazySections(onProgress) {
   // (usually identity present, experience not) the instant the pass starts.
   let last = measure();
 
-  // A generous hang-guard, not a target: the pass ends on readiness (all
-  // required sections present) or when the fully-mounted page stops growing.
-  // We prefer a longer wait over an incomplete parse. Profiles with an
-  // endlessly-growing tail (activity feed, "People also viewed") never settle
-  // and pay the full deadline only when readiness is never reached.
-  const deadline = Date.now() + 30000;
   try {
-    if (last.readiness.ready) return last.readiness; // already complete — no scroll needed
-    // Step by ~90% of the scroller's own viewport, not the window's — the two
-    // differ when the scroller is a nested element.
-    const step = Math.max(400, Math.floor(scroller.clientHeight * 0.9));
-    let y = step;
-    let lastHeight = -1;
-    let settleUntil = 0;
-    while (Date.now() < deadline) {
-      scroller.scrollTop = y;
-      await sleep(150);
-      last = measure();
-      // Primary exit: every required section is now in the DOM. Stop here — the
-      // handoff has everything it gates on.
-      if (last.readiness.ready) break;
-
+    if (scrollSectionsReady(last.readiness)) return last.readiness; // already up — no scroll needed
+    // Step in SMALL increments (a fraction of the scroller's viewport), keeping
+    // the same per-step delay. Small steps mean a section that starts loading
+    // stays in view across several steps instead of being scrolled past in one
+    // jump — which is what can cancel its lazy load (the user's concern).
+    const step = Math.max(150, Math.floor(scroller.clientHeight * 0.25));
+    let y = 0;
+    // No deadline. Bail only on readiness (scroll sections up) or interrupt.
+    while (!isInterrupted(probeId)) {
+      y += step;
       const height = scroller.scrollHeight;
-      const maxY = height - scroller.clientHeight;
-      // Keep climbing while there is meaningfully more to scroll OR while the
-      // scroller is still growing (new sections mounting can push the bottom
-      // down faster than we step). Anchoring the climb on growth — not on a
-      // single maxY read — is what keeps a briefly-small measurement from
-      // stranding the pass at the top (the original window-based bug).
-      if (y < maxY || height > lastHeight) {
-        if (height > lastHeight) {
-          lastHeight = height;
-          settleUntil = Date.now() + 1500;
-        }
-        if (y < maxY) { y += step; continue; }
-      }
-      // Fallback exit: at the bottom and the page has stopped growing, yet
-      // we're still not "ready" (a sparse profile, or a section that never
-      // mounts). Give mounting a short settle window, then stop rather than
-      // hang — the caller ships whatever parsed.
-      if (height <= lastHeight && Date.now() > settleUntil) {
-        break;
-      }
+      const maxY = Math.max(0, height - scroller.clientHeight);
+      // Past the bottom? Loop back to the top and sweep down again. Scrolling a
+      // section out of view can cancel its in-flight lazy load, so a fresh
+      // top→bottom sweep gives every section another chance to mount. (No
+      // deadline — the user's "Save anyway" is the way out of a page that never
+      // fully mounts.)
+      if (y > maxY) y = 0;
+      scroller.scrollTop = y;
+      await sleep(200);
+      if (isInterrupted(probeId)) break;
+      last = measure();
+      // Exit: every scroll-mountable required section is now in the DOM. The
+      // caller then opens the contact-info overlay for the last section.
+      if (scrollSectionsReady(last.readiness)) break;
     }
   } finally {
     scroller.scrollTop = startTop;
@@ -276,47 +297,75 @@ async function probe(probeId) {
         about: !!result.about,
         positions: (result.experience || []).length,
       });
-      // Scroll until every REQUIRED section (Experience) is in the DOM, streaming
-      // "X/Y sections loaded" to the popup as it goes. The pass re-parses each
-      // step; take the final re-parse WHOLESALE (below) — sections stay mounted
-      // once rendered, and a per-field merge could pair a title and an org from
-      // different sources (the atomicity rule in parse-profile.js).
-      const finalReadiness = await forceLazySections(
-        (readiness) => emitProgress(probeId, readiness)
+      // Scroll (small steps, looping top→bottom, no deadline) until every
+      // scroll-mountable required section — identity, Experience, About — is in
+      // the DOM, streaming "X/Y sections loaded" to the popup as it goes. The
+      // ONLY early exit is the user's "Save anyway" (probeId interrupt). The
+      // pass re-parses each step; take the final re-parse WHOLESALE (below) —
+      // sections stay mounted once rendered, and a per-field merge could pair a
+      // title and an org from different sources (the atomicity rule in
+      // parse-profile.js).
+      await forceLazySections(
+        (readiness) => emitProgress(probeId, readiness),
+        probeId
       );
       const second = extractProfile();
       if (second) result = second;
-      // Stamp the readiness onto the result so the popup's final gate (and the
-      // app-side log) can see whether every required section actually loaded.
-      result.readiness = finalReadiness || profileReadiness(result);
       console.log("[GuessWho] scroll pass: done", {
         about: !!result.about,
         positions: (result.experience || []).length,
-        ready: result.readiness.ready,
-        loaded: result.readiness.loaded,
-        total: result.readiness.total,
+        interrupted: isInterrupted(probeId),
       });
     }
   } catch (e) {
     console.log("[GuessWho] scroll pass threw:", e);
   }
-  // Ensure a readiness is always present (e.g. parser missing, or the pass
-  // threw before stamping) so downstream consumers never see `undefined`.
-  if (!result.readiness) {
-    result.readiness =
-      typeof profileReadiness === "function" ? profileReadiness(result) : null;
-  }
 
   // Contact info (emails/websites/profile URL) lives behind the "Contact info"
-  // overlay — open it, parse it, restore the page. Async + best-effort; never
-  // let it break the rest of the result.
+  // overlay — the scroll pass can't mount it, so open it, wait for its fields to
+  // load, parse it, and restore the page. This is the LAST required section; do
+  // it after the scroll pass so we only pay the overlay round-trip once the rest
+  // is up. Skip it entirely when the profile has NO "Contact info" link
+  // (result.hasContactInfoLink === false) — there's nothing to fetch, and
+  // profileReadiness already counts that section as done. Skip it if the user
+  // already pressed "Save anyway" — they want whatever's parsed, now. Async +
+  // best-effort; never let it break the rest of the result.
+  //
+  // NOTE: the interrupt is only checked at ENTRY here. Once extractContactInfo
+  // is under way it is NOT abortable — a "Save anyway" pressed mid-overlay waits
+  // for it to finish. That's fine: extractContactInfo is bounded (its waitFor
+  // caps at ~3s and always resolves), so this can't hang the probe; it's just a
+  // brief unresponsive window on the very last step.
   try {
-    if (typeof extractContactInfo === "function") {
+    if (
+      typeof extractContactInfo === "function" &&
+      result.hasContactInfoLink !== false &&
+      !isInterrupted(probeId)
+    ) {
       const ci = await extractContactInfo();
       if (ci) result.contactInfo = ci;
+      // Stream the updated readiness so the popup's Contact-info checkmark lights
+      // up once the fields have loaded.
+      emitProgress(probeId, profileReadiness(result));
     }
   } catch (e) {
     console.log("[GuessWho] extractContactInfo threw:", e);
+  }
+
+  // Stamp the FINAL readiness (all four required sections, including contact)
+  // onto the result so the popup's gate and the app-side log see exactly what
+  // loaded. Recompute here rather than reuse the scroll pass's return: the scroll
+  // pass gates only on the scroll-mountable subset and knows nothing about the
+  // contact overlay we just ran.
+  result.readiness =
+    typeof profileReadiness === "function" ? profileReadiness(result) : null;
+  if (result.readiness) {
+    console.log("[GuessWho] readiness after contact step", {
+      ready: result.readiness.ready,
+      loaded: result.readiness.loaded,
+      total: result.readiness.total,
+      interrupted: isInterrupted(probeId),
+    });
   }
 
   // Photo bytes: fetch the full-res variant in-session and attach as a data URL.
@@ -361,11 +410,31 @@ async function probe(probeId) {
 // are the content half of the pipe — they prove the probe ran in the tab and
 // what it returned to the popup.
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // "Save anyway": the popup asks us to stop waiting and ship whatever parsed.
+  // Fire-and-forget — record the interrupt for this probeId; the running scroll
+  // loop / contact step check `isInterrupted(probeId)` and bail. No response.
+  if (message?.type === "guesswho.interrupt") {
+    // Only honor an interrupt for a probe that's still live. Ignoring it once
+    // the probe has resolved avoids re-inserting an id into `interruptedProbes`
+    // after the resolve-time cleanup already removed it (a tight race when the
+    // user clicks "Save anyway" just as the probe finishes) — which would
+    // otherwise leak an entry nothing cleans up.
+    if (message.probeId && liveProbes.has(message.probeId)) {
+      interruptedProbes.add(message.probeId);
+      log("interrupt requested (save anyway)", { probeId: message.probeId });
+    } else if (message.probeId) {
+      log("interrupt ignored (probe not live)", { probeId: message.probeId });
+    }
+    return false;
+  }
+
   if (message?.type !== "guesswho.probe") return false;
   // The popup passes a probeId so it can correlate the streamed
   // `guesswho.progress` updates with this probe (and ignore stragglers from a
-  // previous click). It's optional — an absent id just disables streaming.
+  // previous click). It's optional — an absent id just disables streaming AND
+  // the interrupt (there's nothing to key the "save anyway" on).
   const probeId = message.probeId || null;
+  if (probeId) liveProbes.add(probeId);
   log("probe requested by popup", { probeId });
   probe(probeId)
     .then((result) => {
@@ -373,12 +442,24 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         fallback: !!result._fallback,
         hasPhoto: !!result.photo,
         ready: !!(result.readiness && result.readiness.ready),
+        interrupted: isInterrupted(probeId),
       });
       sendResponse(result);
     })
     .catch((e) => {
       log("probe failed, sending minimal probe", { error: String(e) });
       sendResponse(minimalProbe());
+    })
+    // Drop this probe from both Sets once it has resolved. Removing it from
+    // `liveProbes` first means an interrupt that races in after this point is
+    // ignored (see the interrupt branch above), so neither Set grows without
+    // bound; ids are unique per click, so nothing later can inherit a stale
+    // flag either.
+    .finally(() => {
+      if (probeId) {
+        liveProbes.delete(probeId);
+        interruptedProbes.delete(probeId);
+      }
     });
   return true;
 });
