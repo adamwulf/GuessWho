@@ -10,12 +10,24 @@
     button { font-size: 15px; padding: 10px 14px; width: 100%; border-radius: 10px; border: 0; background: #0a66c2; color: #fff; }
     button:disabled { opacity: 0.5; }
     pre { background: #f4f4f5; padding: 10px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin-top: 12px; }
+    /* Empty until popup.js writes a status/result into it. */
+    pre:empty { display: none; }
     .err { color: #b00020; }
 
-    /* Loading progress: shown only while a probe is scrolling the page in. */
-    #progress { margin-top: 12px; display: none; }
+    /* Activity row: VISIBLE FROM FIRST PAINT (static HTML + CSS animation, no
+       JS needed) so the popup reads as busy the instant it opens — the probe
+       can take a second or more before the first progress update streams in,
+       and a silent popup invites clicking away. popup.js updates the label as
+       the run advances and adds .done when the run ends (either outcome). */
+    #loading { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+    #loading.done { display: none; }
+    .spinner { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 2px solid rgba(10, 102, 194, 0.25); border-top-color: #0a66c2; animation: gw-spin 0.8s linear infinite; }
+    @keyframes gw-spin { to { transform: rotate(360deg); } }
+
+    /* Loading progress: shown only while a probe is scrolling the page in.
+       The count lives in the #loading label; this is just the checklist. */
+    #progress { margin-top: 4px; display: none; }
     #progress.active { display: block; }
-    #progress .count { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
     #progress ul { list-style: none; margin: 0; padding: 0; }
     #progress li { font-size: 13px; padding: 3px 0; display: flex; align-items: center; }
     #progress li .mark { width: 18px; display: inline-block; }
@@ -26,9 +38,12 @@
   </style>
 </head>
 <body>
-  <h1>GuessWho — handoff spike</h1>
+  <h1>Save to GuessWho</h1>
+  <div id="loading">
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="loading-label">Loading profile…</span>
+  </div>
   <div id="progress">
-    <div class="count" id="progress-count"></div>
     <ul id="progress-list"></ul>
   </div>
   <!-- The load starts automatically when the popup opens; this button is the
@@ -36,7 +51,7 @@
        sits BELOW the loading indicators so it reads as "interrupt this", not
        "start". -->
   <button id="go">Save anyway</button>
-  <pre id="out">Loading profile…</pre>
+  <pre id="out"></pre>
   <script src="popup.js"></script>
 </body>
 </html>

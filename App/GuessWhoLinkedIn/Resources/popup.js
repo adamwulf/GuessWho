@@ -11,8 +11,13 @@
 const api = globalThis.browser ?? globalThis.chrome;
 const out = document.getElementById("out");
 const goBtn = document.getElementById("go");
+// The activity row (spinner + label) is visible from the popup's FIRST PAINT —
+// static HTML/CSS, deliberately not created here — so the user sees motion
+// before any JS (or the probe's first progress update) has run. This script
+// only updates its label as the run advances and hides it when the run ends.
+const loadingEl = document.getElementById("loading");
+const loadingLabelEl = document.getElementById("loading-label");
 const progressEl = document.getElementById("progress");
-const progressCountEl = document.getElementById("progress-count");
 const progressListEl = document.getElementById("progress-list");
 
 // A per-click id so the streamed progress updates from THIS probe can be told
@@ -61,7 +66,9 @@ function show(obj, isError) {
 let activeProbeId = null;
 
 function renderProgress(update) {
-  progressCountEl.textContent =
+  // The section count rides the always-spinning activity row's label; the
+  // checklist below details which sections are still pending.
+  loadingLabelEl.textContent =
     `Loading profile… ${update.loaded}/${update.total} sections`;
   progressListEl.textContent = "";
   for (const s of update.sections || []) {
@@ -79,7 +86,6 @@ function renderProgress(update) {
 function clearProgress() {
   activeProbeId = null;
   progressEl.classList.remove("active");
-  progressCountEl.textContent = "";
   progressListEl.textContent = "";
 }
 
@@ -156,14 +162,17 @@ async function runHandoff() {
     // progress messages and route the interrupt to the right probe.
     const probeId = newProbeId();
     activeProbeId = probeId;
-    show("Loading profile…");
+    // No show() here — the always-on spinner row already says "Loading
+    // profile…"; the result pane stays hidden until there's a real outcome.
     // There's now something to interrupt — let the user press "Save anyway".
     goBtn.disabled = false;
     log("probe: requesting profile from content script", { probeId });
     const probe = await probeTab(tab.id, probeId);
     // The wait is over — lock the button (we're committing to the handoff) and
-    // stop streaming progress into the checklist.
+    // stop streaming progress into the checklist. The spinner keeps going with
+    // an honest label: the native handoff + wake are still ahead.
     goBtn.disabled = true;
+    loadingLabelEl.textContent = "Sending to GuessWho…";
     if (!probe) {
       log("probe: failed (no data)");
       show({ step: "probe failed", detail: "content script returned no data" }, true);
@@ -240,10 +249,12 @@ async function runHandoff() {
     log("handoff threw", { error: String(e) });
     show({ error: String(e) }, true);
   } finally {
-    // Drop the progress checklist. Leave the button disabled — the run is over
-    // (success, abort, or throw) and this popup instance won't start another; a
-    // fresh probe only happens when the popup is reopened.
+    // Drop the progress checklist and stop the spinner. Leave the button
+    // disabled — the run is over (success, abort, or throw) and this popup
+    // instance won't start another; a fresh probe only happens when the popup
+    // is reopened.
     clearProgress();
+    loadingEl.classList.add("done");
     goBtn.disabled = true;
   }
 }
