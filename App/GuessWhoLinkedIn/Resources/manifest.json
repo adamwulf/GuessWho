@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "GuessWho LinkedIn",
   "version": "0.1",
-  "description": "Step-0 handoff spike: prove content -> background -> native -> app wake.",
+  "description": "Save the LinkedIn profile you're viewing into GuessWho. Review a before/after diff in the app, then apply only the fields you choose.",
 
   "icons": {
     "16": "icon-16.png",
