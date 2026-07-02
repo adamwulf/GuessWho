@@ -12,6 +12,13 @@ public protocol ContactStoreProtocol: Actor {
     func save(_ contact: Contact) async throws
     func delete(localID: String) async throws
 
+    /// Create a brand-new record from `contact` (whose `localID` is ignored)
+    /// and return the created record re-read from the store, carrying the
+    /// store-issued `localID`. `save(_:)` also inserts when the `localID`
+    /// doesn't resolve, but it can't tell the caller the new identity — use
+    /// this when follow-up work needs to address the created record.
+    func create(_ contact: Contact) async throws -> Contact
+
     // MARK: - Authorization
     //
     // The store owns the one true backing object (`CNContactStore`), so the

@@ -299,6 +299,20 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: edited.localID)
     }
 
+    /// Creates a brand-new Contacts record from `seed` (its `localID` is
+    /// ignored — the store issues one) and pulls it into the repository cache.
+    /// Returns the cached contact, whose `contactID` addresses the new record
+    /// for follow-up work: opening the detail view, applying LinkedIn extras.
+    /// The single package entry point behind both the app's "+" (blank seed)
+    /// and the LinkedIn no-match import (profile-filled seed). No reconcile —
+    /// creating a card is a CONTACT write, not a sidecar write; the GuessWho
+    /// ID mints on the first sidecar write as usual.
+    public func createContact(_ seed: Contact) async throws -> Contact {
+        let created = try await contactsStore.create(seed)
+        await refreshContact(localID: created.localID)
+        return contact(localID: created.localID) ?? created
+    }
+
     /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
     /// record, addressed by the app-facing `ContactID`. Image bytes go through
     /// the store's dedicated photo-write path (not `save`), then the one record

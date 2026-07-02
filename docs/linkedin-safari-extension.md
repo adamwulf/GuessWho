@@ -347,16 +347,17 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
 
 Both formerly-future pieces of this flow shipped 2026-07-02:
 
-- **No match → new-contact editor.** When `matchLinkedIn` returns nothing, the
-  scene delegate presents the app's standard new-contact editor
-  (`ContactEditView`) pre-filled from the profile by the package's
+- **No match → create-then-edit.** When `matchLinkedIn` returns nothing, the
+  scene delegate CREATES the contact immediately via
+  `ContactsRepository.createContact` seeded by the package's
   `LinkedInContactSeed` (PersonNameComponents name split, job title/org,
   deduped emails/websites, and the LinkedIn username slug as a social
-  profile). Cancel creates nothing. After Save, `finishLinkedInNewContact`
-  reloads the repository, re-finds the contact via `matchLinkedIn` (the seeded
-  username makes the URL tier hit), and attaches the extras the form has no
-  rows for — headline/about/location and the photo — through the same
-  `applyLinkedIn` entry point.
+  profile), attaches the extras a CN card can't hold — headline/about/
+  location and the photo — through `applyLinkedIn`, then opens the standard
+  `ContactDetailView` in the detail column already in edit mode
+  (`startsInEditMode`). Same create-then-edit shape as the People list's "+"
+  button; there is no separate new-contact form, and deleting the card is the
+  undo.
 - **Photo write path.** `.photo` routes through
   `ContactsRepository.setContactPhoto` inside `applyLinkedIn`: replacing an
   existing photo first snapshots the replaced bytes into the single-slot

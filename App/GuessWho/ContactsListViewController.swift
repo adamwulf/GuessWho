@@ -14,6 +14,11 @@ final class ContactsListViewController: UIViewController {
     /// this VC holding a strong reference to the split.
     var didSelectContact: (Contact) -> Void = { _ in }
 
+    /// Nav-bar "+" callback. The SceneDelegate owns what "add" means (create a
+    /// blank record, then open its detail already editing) — this VC only
+    /// vends the tap, same pattern as `didSelectContact`.
+    var didRequestAddContact: () -> Void = {}
+
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
 
@@ -73,7 +78,7 @@ final class ContactsListViewController: UIViewController {
 
         configureTableView()
         configureSearch()
-        configureSortMenu()
+        configureNavigationItems()
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
@@ -120,21 +125,33 @@ final class ContactsListViewController: UIViewController {
         navigationItem.hidesSearchBarWhenScrolling = false
     }
 
-    /// Install the global sort pull-down as the nav bar's right item. The menu is
-    /// rebuilt from `repository.sortOrder` on every call (see
-    /// `makeSortBarButtonItem` in `SortOrderSetting`), so this covers the initial
-    /// checkmark; `refreshSortMenu()` re-installs it from the reload observer so a
-    /// change made in another list moves the checkmark here too.
-    private func configureSortMenu() {
-        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+    /// Install the nav bar's right items: "+" (add contact, rightmost) and the
+    /// global sort pull-down. The sort menu is rebuilt from
+    /// `repository.sortOrder` on every call (see `makeSortBarButtonItem` in
+    /// `SortOrderSetting`), so this covers the initial checkmark;
+    /// `refreshSortMenu()` refreshes it from the reload observer so a change
+    /// made in another list moves the checkmark here too. The sort item is
+    /// held in `sortBarButtonItem` because `navigationItem.rightBarButtonItem`
+    /// now resolves to the "+".
+    private func configureNavigationItems() {
+        let addItem = UIBarButtonItem(
+            image: UIImage(systemName: "plus"),
+            primaryAction: UIAction { [weak self] _ in self?.didRequestAddContact() }
+        )
+        addItem.accessibilityLabel = "Add Contact"
+        let sortItem = makeSortBarButtonItem(repository: repository)
+        sortBarButtonItem = sortItem
+        navigationItem.rightBarButtonItems = [addItem, sortItem]
     }
+
+    private var sortBarButtonItem: UIBarButtonItem?
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
     /// order. Called from the reload observer because a sort change posts
     /// `.contactsRepositoryDidReload`, and the menu is otherwise cached at the
     /// order it was built with.
     private func refreshSortMenu() {
-        navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
+        sortBarButtonItem?.menu = makeSortMenu(repository: repository)
     }
 
     private func configureEmptyState() {

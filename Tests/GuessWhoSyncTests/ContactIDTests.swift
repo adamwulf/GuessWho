@@ -32,6 +32,7 @@ private actor FailAfterSeedContactStore: ContactStoreProtocol {
 
     func fetch(localID: String) async throws -> Contact? { throw StoreUnavailable() }
     func save(_ contact: Contact) async throws { throw StoreUnavailable() }
+    func create(_ contact: Contact) async throws -> Contact { throw StoreUnavailable() }
     func delete(localID: String) async throws { throw StoreUnavailable() }
     func changes(since token: Data?) async throws -> ContactChangeSet { throw StoreUnavailable() }
     func loadImageData(localID: String) async throws -> Data? { throw StoreUnavailable() }
