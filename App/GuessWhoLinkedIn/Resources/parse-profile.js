@@ -271,7 +271,8 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
 //            "6 yrs 1 mo" (bare total duration), role1, dates1, …, role2,
 //            dates2, …]
 //
-// Classification hangs on the DATE-RANGE lines (a year or "Present", short):
+// Classification hangs on the DATE-RANGE lines (year-dash-(year|"Present"),
+// short — see isDateRange):
 // the line immediately BEFORE a date line is the role title (grouped) or the
 // "Org · Type" line (simple); a short comma/remote line immediately AFTER is
 // the location. Returns a FLAT array of positions, rendered order (most recent

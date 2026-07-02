@@ -91,9 +91,10 @@ enum LinkedInDiff {
         // Read the contact's current value from the named sidecar fields so a
         // re-import shows the existing value and marks the row unchanged when it
         // matches. The headline is the RAW title/bio line; job title and
-        // organization above are only populated when it parses as "<Title> at
-        // <Org>", so for free-form headlines this row is the only one carrying
-        // that text.
+        // organization above prefer the Experience section's current position
+        // and fall back to splitting the headline as "<Title> at <Org>" — so
+        // this row is the only carrier of that text when Experience wasn't
+        // rendered AND the headline is free-form.
         add(.headline, "Headline", existingSidecar[headlineFieldName], profile.headline)
         add(.location, "Location", existingSidecar[locationFieldName], profile.location)
         add(.about, "About", existingSidecar[aboutFieldName], profile.about)

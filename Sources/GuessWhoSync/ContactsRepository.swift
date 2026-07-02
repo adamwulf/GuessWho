@@ -473,9 +473,11 @@ public final class ContactsRepository: NSObject {
         // same profile updates the value instead of duplicating it. Names are
         // prefixed "LinkedIn " so the source is obvious.
         if fields.contains(.headline), let head = profile.headline?.trimmed, !head.isEmpty {
-            // The raw headline is a single free-text line. It's the only place
-            // the title/bio survives when it doesn't parse as "<Title> at <Org>"
-            // (e.g. "Principal AI Consultant | Driving Sustainable Value…").
+            // The raw headline is a single free-text line (e.g. "Principal AI
+            // Consultant | Driving Sustainable Value…"). When the parser had no
+            // Experience-derived current position AND the headline didn't parse
+            // as "<Title> at <Org>", this field is the only place the title/bio
+            // survives.
             _ = try await upsertField(for: id, field: "LinkedIn Headline", value: head, type: .note)
         }
         if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
