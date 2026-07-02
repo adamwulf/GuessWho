@@ -165,7 +165,7 @@ public final class ContactsRepository: NSObject {
             setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
-        refreshTimestampCache()
+        await refreshTimestampCache()
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
@@ -174,11 +174,24 @@ public final class ContactsRepository: NSObject {
 
     /// Reload the bulk timestamp cache from the engine, wholesale. ROBUST: a
     /// nil engine or a failed read leaves the cache EMPTY (every contact then
-    /// sorts/buckets as "no timestamp") rather than throwing. Called after a
-    /// full `reload()` and after each stamp write so the time-ordered lists
-    /// reflect the latest timestamps.
-    private func refreshTimestampCache() {
-        contactTimestampsByID = (try? sync?.allContactTimestamps()) ?? [:]
+    /// sorts/buckets as "no timestamp") rather than throwing. Called only from
+    /// a full `reload()`; the stamp path upserts its one entry in place
+    /// (`updateTimestampCache`) instead.
+    ///
+    /// The scan reads every contact sidecar (a coordinated read + decode per
+    /// file), so it hops off the main actor — `GuessWhoSync` is `@unchecked
+    /// Sendable` with per-key locking, safe to drive from a detached task. A
+    /// stamp that lands DURING the scan can be briefly shadowed by the
+    /// wholesale replace below (its cell is on disk, so the next reload sees
+    /// it) — a stale-by-one-frame sort, never data loss.
+    private func refreshTimestampCache() async {
+        guard let sync else {
+            contactTimestampsByID = [:]
+            return
+        }
+        contactTimestampsByID = await Task.detached(priority: .userInitiated) {
+            (try? sync.allContactTimestamps()) ?? [:]
+        }.value
     }
 
     // MARK: - Groups (read-only)
