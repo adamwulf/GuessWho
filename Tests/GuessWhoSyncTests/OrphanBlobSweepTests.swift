@@ -135,19 +135,27 @@ struct OrphanBlobSweepTests {
         // sweeper could delete a just-written `.dat` in the write→repoint window.
         let (sync, _) = makeOrchestrator()
         let iterations = 200
+        // Forces the SYNCHRONOUS setBlobField overload from this async test:
+        // the writer must hammer the slot on its OWN thread to provoke the
+        // write→sweep race — resolving to the async overload would hop every
+        // iteration through a background queue and change the test's shape.
+        // (A non-async closure picks the sync overload by resolution.)
+        let writeBlobSync: (Data) throws -> Void = { bytes in
+            _ = try sync.setBlobField(
+                at: self.contactKey,
+                field: "previousPhoto",
+                data: bytes,
+                contentType: "image/jpeg"
+            )
+        }
         // Seed one so the first sweeps have a real reference to protect.
-        _ = try sync.setBlobField(at: contactKey, field: "previousPhoto", data: Data([0x00]), contentType: "image/jpeg")
+        try writeBlobSync(Data([0x00]))
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             // Writer: overwrite the single slot repeatedly with distinct bytes.
             group.addTask {
                 for i in 0..<iterations {
-                    _ = try sync.setBlobField(
-                        at: self.contactKey,
-                        field: "previousPhoto",
-                        data: Data([UInt8(i % 251), 0xAB]),
-                        contentType: "image/jpeg"
-                    )
+                    try writeBlobSync(Data([UInt8(i % 251), 0xAB]))
                 }
             }
             // Sweeper: hammer the orphan sweep in parallel.
