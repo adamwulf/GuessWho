@@ -1,0 +1,3 @@
+# Assembled extension flavors and store zips — regenerate with ./build.sh.
+dist/
+build/
