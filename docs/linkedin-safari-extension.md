@@ -345,16 +345,24 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    delegate posts the app-layer `.linkedInImportDidSave` notification so an open
    `ContactDetailView` reloads (the package never posts app notifications).
 
-Two pieces of this flow are **still future work** (both logged, not silent):
+Both formerly-future pieces of this flow shipped 2026-07-02:
 
-- **No match → new-contact screen.** When `matchLinkedIn` returns nothing the
-  handler logs and stops; there's no create-a-contact flow in the app yet.
-- **Photo write path.** The parser fetches the photo and the diff/confirm UI
-  shows the incoming thumbnail, but `.photo` is accepted-and-skipped by
-  `applyLinkedIn` — the contact-image bytes are not written. The package
-  primitive exists (`ContactsRepository.setContactPhoto`, which already
-  snapshots the replaced image; see the `.blob` note at the end), but
-  `applyLinkedIn` doesn't call it yet.
+- **No match → new-contact editor.** When `matchLinkedIn` returns nothing, the
+  scene delegate presents the app's standard new-contact editor
+  (`ContactEditView`) pre-filled from the profile by the package's
+  `LinkedInContactSeed` (PersonNameComponents name split, job title/org,
+  deduped emails/websites, and the LinkedIn username slug as a social
+  profile). Cancel creates nothing. After Save, `finishLinkedInNewContact`
+  reloads the repository, re-finds the contact via `matchLinkedIn` (the seeded
+  username makes the URL tier hit), and attaches the extras the form has no
+  rows for — headline/about/location and the photo — through the same
+  `applyLinkedIn` entry point.
+- **Photo write path.** `.photo` routes through
+  `ContactsRepository.setContactPhoto` inside `applyLinkedIn`: replacing an
+  existing photo first snapshots the replaced bytes into the single-slot
+  `previousPhoto` `.blob` (see the note at the end), and the write is skipped
+  entirely — no save, no snapshot — when the incoming bytes equal the current
+  photo (a re-import) or the payload's data URL doesn't decode.
 
 See [`plans/linkedin-match-diff-confirm.md`](../plans/linkedin-match-diff-confirm.md)
 for the field-by-field storage split and the build order.
@@ -444,16 +452,15 @@ the same portal setup — see
 ## Still future work
 
 Real LinkedIn DOM parsing, in-session photo-byte fetch, the "Contact info"
-overlay, contact matching, and the before/after diff/confirm UI have all
-**shipped** (see [The three pieces](#the-three-pieces) and
+overlay, contact matching, the before/after diff/confirm UI, the no-match →
+new-contact editor, and the photo write path have all **shipped** (see
+[The three pieces](#the-three-pieces) and
 [Match → diff → confirm → save](#match--diff--confirm--save-app-side)). What
 remains:
 
 - **The iOS extension target.** Only the Mac Catalyst path is proven
   end-to-end; the extension is authored to port (MV3 non-persistent worker,
   phone-sized popup) but the iOS target + provisioning aren't wired yet.
-- **No-match → new-contact screen** and the **photo write path** — both
-  described under [Match → diff → confirm → save](#match--diff--confirm--save-app-side).
 
 See [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md)
 for the overall feature plan.

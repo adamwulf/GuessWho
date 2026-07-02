@@ -780,7 +780,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // for an unreconciled contact, so this is empty in that case.
         let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
         let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
-        let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
+        let incomingPhoto = profile.photo?.decodedData().flatMap { UIImage(data: $0) }
 
         let confirm = LinkedInConfirmView(
             contactID: matchID,
@@ -879,27 +879,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 return
             }
             do {
-                // `applyLinkedIn` skips empty per-field values itself; the
-                // any-content check just avoids a pointless CNContact re-save
-                // when the profile carries none of the three.
-                var photoID = id
+                // One applyLinkedIn call attaches everything the editor had no
+                // rows for — it skips empty per-field values and an
+                // unchanged/undecodable photo itself; the any-content check
+                // just avoids a pointless CNContact re-save when the profile
+                // carries none of the extras.
+                var extras: Set<LinkedInField> = []
                 let hasSidecarContent = [profile.headline, profile.about, profile.location]
                     .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
-                if hasSidecarContent {
-                    let updated = try await repo.applyLinkedIn(
-                        profile: profile, to: id, fields: [.headline, .about, .location]
+                if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
+                if profile.photo?.decodedData()?.isEmpty == false { extras.insert(.photo) }
+                if !extras.isEmpty {
+                    try await repo.applyLinkedIn(profile: profile, to: id, fields: extras)
+                    Self.handoffLog.notice(
+                        "new-contact: attached \(extras.map(\.rawValue).sorted().joined(separator: ","))"
                     )
-                    // The sidecar write can MINT the GuessWho ID; per the
-                    // applyLinkedIn contract, follow-up calls use the RETURNED
-                    // contact's id, not the possibly pre-mint one.
-                    photoID = updated.contactID
-                    Self.handoffLog.notice("new-contact: headline/about/location attached")
-                }
-                if let dataURL = profile.photo?.dataURL,
-                   let data = Self.imageData(fromDataURL: dataURL),
-                   UIImage(data: data) != nil {
-                    try await repo.setContactPhoto(for: photoID, imageData: data)
-                    Self.handoffLog.notice("new-contact: photo attached (\(data.count)B)")
                 }
             } catch {
                 Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
@@ -961,20 +955,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let photo = profile.photo
             .map { "photo=\($0.contentType ?? "?") \($0.byteLength ?? 0)B" } ?? "photo=none"
         return "\(json) \(photo)"
-    }
-
-    /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a
-    /// recognizable base64 data URL or the bytes aren't an image.
-    private static func image(fromDataURL dataURL: String) -> UIImage? {
-        imageData(fromDataURL: dataURL).flatMap { UIImage(data: $0) }
-    }
-
-    /// The raw bytes of a base64 `data:` URL (for the contact-photo write
-    /// path, which takes `Data`, not `UIImage`). Returns nil if it isn't a
-    /// recognizable base64 data URL.
-    private static func imageData(fromDataURL dataURL: String) -> Data? {
-        guard let comma = dataURL.range(of: ",") else { return nil }
-        return Data(base64Encoded: String(dataURL[comma.upperBound...]))
     }
 
     /// The topmost presented view controller to present from (works for the

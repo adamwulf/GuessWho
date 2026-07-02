@@ -386,8 +386,11 @@ public final class ContactsRepository: NSObject {
     ///   are preserved. Name/title/org overwrite only when that field is chosen.
     /// - Sidecar fields (headline/about/location) are stored as notes prefixed
     ///   with "LinkedIn …: " so the source is obvious to the user.
-    /// - `photo` is accepted in `fields` but not yet applied (the contact-image
-    ///   write path is a separate step); it's a no-op here for now.
+    /// - `photo` routes through `setContactPhoto`, so replacing an existing
+    ///   photo snapshots the replaced bytes into the single-slot previous-photo
+    ///   sidecar blob first. Skipped entirely — no write, no snapshot — when
+    ///   the incoming bytes equal the contact's current photo (re-import) or
+    ///   the payload's data URL doesn't decode.
     ///
     /// Throws if the contact can't be fetched/saved. Returns the refreshed
     /// `Contact` (CNContact fields; sidecar notes are read separately).
@@ -487,6 +490,19 @@ public final class ContactsRepository: NSObject {
         if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
             // Location is a single line.
             _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
+        }
+
+        // Photo: route through the contact-image write path so replacing an
+        // existing photo snapshots the replaced bytes into the previous-photo
+        // slot for free. Compare against the CURRENT bytes first — a re-import
+        // of the same profile must be a no-op, not a snapshot that repoints
+        // the previous-photo slot at a copy of the live photo.
+        if fields.contains(.photo),
+           let incoming = profile.photo?.decodedData(), !incoming.isEmpty {
+            let current = try await contactsStore.loadImageData(localID: edited.localID)
+            if current != incoming {
+                try await setContactPhoto(for: id, imageData: incoming)
+            }
         }
 
         return contact(id: id) ?? edited
