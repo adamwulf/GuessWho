@@ -32,6 +32,15 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
             self.contentType = contentType
             self.byteLength = byteLength
         }
+
+        /// The photo bytes decoded out of the base64 `data:` URL, or nil when
+        /// the string isn't a recognizable base64 data URL. The single decode
+        /// implementation for both the package's photo apply and the app's
+        /// preview thumbnail.
+        public func decodedData() -> Data? {
+            guard let comma = dataURL.range(of: ",") else { return nil }
+            return Data(base64Encoded: String(dataURL[comma.upperBound...]))
+        }
     }
 
     public var sourceUrl: String?
@@ -85,8 +94,9 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
 /// `ContactsRepository.applyLinkedIn(profile:to:fields:)`, which is the single
 /// package-side entry point that owns the merge + save rules.
 ///
-/// `photo` is included for completeness but the contact-image write path is a
-/// separate (net-new) step; applying it is wired in later.
+/// `photo` routes through the contact-image write path (`setContactPhoto`), so
+/// replacing an existing photo automatically snapshots the replaced bytes into
+/// the single-slot previous-photo sidecar blob.
 public enum LinkedInField: String, Sendable, CaseIterable {
     case name, jobTitle, organization
     case emails, websites, linkedInURL

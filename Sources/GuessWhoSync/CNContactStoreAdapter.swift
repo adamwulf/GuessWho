@@ -207,6 +207,27 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
+    public func create(_ contact: Contact) async throws -> Contact {
+        try await runOnWorkQueue { store in
+            let saveRequest = Self.makeSaveRequest()
+            let mutable = CNMutableContact()
+            Self.apply(contact, to: mutable)
+            saveRequest.add(mutable, toContainerWithIdentifier: nil)
+            do {
+                try store.execute(saveRequest)
+            } catch {
+                Self.logSaveFailure(error, contactLocalID: mutable.identifier)
+                throw error
+            }
+            // A CNMutableContact's identifier is assigned at init and survives
+            // the save, so it addresses the record just created. Re-read the
+            // UNIFIED card (the package's fetch model) so the returned Contact
+            // matches what every later fetch sees.
+            let created = try store.unifiedContact(withIdentifier: mutable.identifier, keysToFetch: Self.keys)
+            return Self.toContact(created)
+        }
+    }
+
     /// Emits the full error chain for a failed contact save through swift-log
     /// (so it lands in `<AppGroup>/Logs/app.log` via FellerBuncher, NOT just the
     /// OS unified log where the detail is `<private>`-redacted). This is a

@@ -29,6 +29,12 @@ struct ContactDetailView: View {
     /// loaded `Contact` at the call site.
     let id: ContactID
 
+    /// When true, the view flips straight into inline edit after the first
+    /// successful load — the "+" add-contact and LinkedIn-import flows create
+    /// the record first, then open it here already editing, so brand-new and
+    /// existing contacts share one form (no separate new-contact sheet).
+    var startsInEditMode: Bool = false
+
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
     // Drives the fullscreen, zoomable photo viewer. Set when the user taps the
@@ -237,22 +243,9 @@ struct ContactDetailView: View {
         } message: {
             Text(editFetchErrorMessage ?? "")
         }
-        .task {
-            // Load by `ContactID` — no reconcile on open. Reconcile is
-            // WRITE-ONLY: displaying a contact needs no GuessWho URL, an
-            // unstamped contact has no sidecar data to show (correct), and the
-            // FIRST write mints via the package's resolve-or-mint primitive.
-            await loadContact()
-            // Stamp lastViewed ONCE per open. Lives in `.task` (runs once per
-            // appearance) rather than in `loadContact()`, which re-runs on every
-            // save/import/delete reload — so a card the user opens and edits is
-            // "viewed" once, not once per keystroke-driven reload. NOTE:
-            // `stampViewed` reconciles + mints by design (Adam: "always reconcile
-            // when stamping the viewed timestamp"), so opening a never-touched
-            // contact mints its GuessWho UUID. That is intended, not a leak of
-            // the sidecar boundary. Fire-and-forget; never surface a stamp error.
-            await stampViewed()
-        }
+        // Hoisted into a method — an inline multi-statement closure here blows
+        // the body's type-checker budget (see PhotoChangeModifier's note).
+        .task { await performInitialLoad() }
         .task(id: contact?.contactID) {
             await loadHeaderPhoto()
         }
@@ -486,6 +479,31 @@ struct ContactDetailView: View {
                 Task { await beginInlineEdit() }
             }
         }
+    }
+
+    /// First-appearance load (the body's `.task`). Load by `ContactID` — no
+    /// reconcile on open. Reconcile is WRITE-ONLY: displaying a contact needs
+    /// no GuessWho URL, an unstamped contact has no sidecar data to show
+    /// (correct), and the FIRST write mints via the package's resolve-or-mint
+    /// primitive.
+    private func performInitialLoad() async {
+        await loadContact()
+        // Add-contact / LinkedIn-import entry: the record was just created;
+        // open it already editing so the user lands in the form directly.
+        // Gated on a successful load — starting edit on a nil contact would
+        // surface a spurious "could not be found" alert.
+        if startsInEditMode, contact != nil, editModel == nil {
+            await beginInlineEdit()
+        }
+        // Stamp lastViewed ONCE per open. Lives here (runs once per
+        // appearance) rather than in `loadContact()`, which re-runs on every
+        // save/import/delete reload — so a card the user opens and edits is
+        // "viewed" once, not once per keystroke-driven reload. NOTE:
+        // `stampViewed` reconciles + mints by design (Adam: "always reconcile
+        // when stamping the viewed timestamp"), so opening a never-touched
+        // contact mints its GuessWho UUID. That is intended, not a leak of
+        // the sidecar boundary. Fire-and-forget; never surface a stamp error.
+        await stampViewed()
     }
 
     private func beginInlineEdit() async {

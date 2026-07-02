@@ -126,6 +126,15 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         recordOp(.updated(localID: contact.localID), author: author)
     }
 
+    public func create(_ contact: Contact) throws -> Contact {
+        // Mint a fresh identity like Contacts does; the seed's localID is
+        // ignored. Reuse `save` so the op log records the write identically.
+        var created = contact
+        created.localID = UUID().uuidString
+        try save(created)
+        return created
+    }
+
     public func delete(localID: String) throws {
         try delete(localID: localID, author: transactionAuthor)
     }

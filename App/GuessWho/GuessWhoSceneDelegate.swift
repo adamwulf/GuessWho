@@ -162,6 +162,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
+            list.didRequestAddContact = { [weak self] in
+                self?.createNewContact(appDelegate: appDelegate) { [weak self] created in
+                    self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+                }
+            }
             let nav = UINavigationController(rootViewController: list)
             split.setViewController(nav, for: .supplementary)
             installDetailPlaceholder(in: split, for: .people)
@@ -247,7 +252,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
-    private func showContactDetail(contact: Contact, appDelegate: GuessWhoAppDelegate) {
+    private func showContactDetail(
+        contact: Contact,
+        appDelegate: GuessWhoAppDelegate,
+        startsInEditMode: Bool = false
+    ) {
         guard let split else { return }
         // No `.id(...)` needed: `setViewController(_:for: .secondary)` replaces
         // the whole hosting controller per selection, so a fresh
@@ -256,7 +265,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // List VCs vend a `Contact`; re-key it to the opaque `ContactID` the
         // detail roots on — the app never threads a raw `localID` through
         // navigation.
-        let detail = ContactDetailView(id: contact.contactID)
+        let detail = ContactDetailView(id: contact.contactID, startsInEditMode: startsInEditMode)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.contactPhotoLoader)
@@ -271,6 +280,27 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // contacts, etc.) pushes onto this same `nav` via the injected env
         // closures.
         split.setViewController(nav, for: .secondary)
+    }
+
+    /// The "+" add-contact flow, shared by both shells: create a BLANK record
+    /// immediately (same brand-new-record semantics as Contacts.app), then hand
+    /// it to `show`, which opens the standard detail view already in edit mode —
+    /// the new-contact form IS the edit form. `show` runs on the main actor
+    /// only after the create succeeded; a failure is logged and shows nothing
+    /// (the list is still consistent — nothing was created).
+    private func createNewContact(
+        appDelegate: GuessWhoAppDelegate,
+        show: @escaping @MainActor (Contact) -> Void
+    ) {
+        Task { @MainActor in
+            do {
+                let created = try await appDelegate.contactsRepository.createContact(Contact())
+                Self.contactsLog.notice("add-contact: created blank record")
+                show(created)
+            } catch {
+                Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
@@ -422,6 +452,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
         }
+        list.didRequestAddContact = { [weak self, weak list] in
+            self?.createNewContact(appDelegate: appDelegate) { [weak self, weak list] created in
+                self?.pushContactDetail(
+                    id: created.contactID,
+                    on: list?.navigationController,
+                    appDelegate: appDelegate,
+                    startsInEditMode: true
+                )
+            }
+        }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.people.title,
@@ -568,11 +608,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func pushContactDetail(
         id: ContactID,
         on nav: UINavigationController?,
-        appDelegate: GuessWhoAppDelegate
+        appDelegate: GuessWhoAppDelegate,
+        startsInEditMode: Bool = false
     ) {
         guard let nav else { return }
         let detail = injectIPhonePushHandlers(
-            ContactDetailView(id: id)
+            ContactDetailView(id: id, startsInEditMode: startsInEditMode)
                 .environment(appDelegate.service)
                 .environment(appDelegate.contactsRepository)
                 .environment(appDelegate.contactPhotoLoader)
@@ -664,6 +705,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// (Catalyst/iPad) stay distinguishable. Developer-facing label; see
     /// GuessWhoLogging notes.
     private static let lifecycleLog = GuessWhoLog.logger("app.lifecycle.scene")
+
+    /// Contact-creation breadcrumbs for the "+" add-contact flow (the LinkedIn
+    /// import logs on `handoffLog` instead, keeping its whole timeline in one
+    /// label).
+    private static let contactsLog = GuessWhoLog.logger("app.contacts")
 
     /// Stable short tag for the scene driving a log line, so multi-window scenes
     /// stay distinguishable without dumping the full session identifier.
@@ -764,9 +810,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             "match: \(matches.count) contact(s) for \(profile.fullName ?? "?") (url=\(profile.contactInfo?.profileUrl ?? "-"))"
         )
 
-        // No match: a new-contact screen is a later step. For now, log and stop.
+        // No match: CREATE the contact from the profile and open it in the
+        // detail column already editing — same create-then-edit shape as the
+        // "+" add-contact flow (no sheet, no separate new-contact form).
         guard let matchID = matches.first, let contact = repo.contact(id: matchID) else {
-            Self.handoffLog.notice("match: none — new-contact flow not built yet")
+            Self.handoffLog.notice("match: none — creating contact from profile")
+            createLinkedInContact(profile: profile, appDelegate: appDelegate)
             return
         }
 
@@ -776,7 +825,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // for an unreconciled contact, so this is empty in that case.
         let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
         let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
-        let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
+        let incomingPhoto = profile.photo?.decodedData().flatMap { UIImage(data: $0) }
 
         let confirm = LinkedInConfirmView(
             contactID: matchID,
@@ -831,6 +880,61 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         presenter.present(hosting, animated: true)
     }
 
+    /// No-match half of the LinkedIn import: CREATE the contact immediately
+    /// from the parsed profile (the `LinkedInContactSeed` card fields), attach
+    /// the extras a CN card can't hold (headline/about/location sidecar
+    /// fields, photo), then open the standard detail view in the detail column
+    /// already in edit mode — the same create-then-edit shape as the "+"
+    /// add-contact flow, not a sheet. The user reviews/fixes the imported
+    /// values in place; deleting the card is the undo.
+    private func createLinkedInContact(profile: LinkedInProfile, appDelegate: GuessWhoAppDelegate) {
+        let repo = appDelegate.contactsRepository
+        Task { @MainActor in
+            var created: Contact
+            do {
+                created = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
+                Self.handoffLog.notice("new-contact: created", ["name": created.displayName])
+            } catch {
+                Self.handoffLog.error("new-contact: create failed: \(error.localizedDescription)")
+                return
+            }
+
+            // One applyLinkedIn call attaches everything the card fields can't
+            // carry — it skips empty per-field values and an
+            // unchanged/undecodable photo itself; the any-content check just
+            // avoids a pointless CNContact re-save when the profile carries no
+            // extras. Best-effort: a failure here still shows the created card.
+            do {
+                var extras: Set<LinkedInField> = []
+                let hasSidecarContent = [profile.headline, profile.about, profile.location]
+                    .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+                if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
+                if profile.photo?.decodedData()?.isEmpty == false { extras.insert(.photo) }
+                if !extras.isEmpty {
+                    // Reassign: applyLinkedIn's sidecar writes mint the GuessWho
+                    // ID, and the returned contact carries the post-mint identity
+                    // the detail view should root on.
+                    created = try await repo.applyLinkedIn(profile: profile, to: created.contactID, fields: extras)
+                    Self.handoffLog.notice(
+                        "new-contact: attached \(extras.map(\.rawValue).sorted().joined(separator: ","))"
+                    )
+                }
+            } catch {
+                Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
+            }
+
+            NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+            // FIXME(iOS-extension): showContactDetail is Catalyst-shell only
+            // (`guard let split`) — on the iPhone tab shell this silently shows
+            // nothing (the card IS created; it just doesn't open). Fine today,
+            // the LinkedIn extension ships on Catalyst only. When the iOS
+            // extension target lands, push onto the active tab's nav stack here
+            // the way the matched path's confirm sheet presents via
+            // topmostPresenter().
+            self.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+        }
+    }
+
     /// The LinkedIn-sourced sidecar fields (Headline / About / Location) as a
     /// `[name: value]` map for the diff's existing side. Includes only
     /// string-valued fields whose name the import writes; everything else is
@@ -882,15 +986,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let photo = profile.photo
             .map { "photo=\($0.contentType ?? "?") \($0.byteLength ?? 0)B" } ?? "photo=none"
         return "\(json) \(photo)"
-    }
-
-    /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a
-    /// recognizable base64 data URL or the bytes aren't an image.
-    private static func image(fromDataURL dataURL: String) -> UIImage? {
-        guard let comma = dataURL.range(of: ",") else { return nil }
-        let b64 = String(dataURL[comma.upperBound...])
-        guard let data = Data(base64Encoded: b64) else { return nil }
-        return UIImage(data: data)
     }
 
     /// The topmost presented view controller to present from (works for the

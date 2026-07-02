@@ -284,3 +284,136 @@ struct LinkedInApplyTests {
         #expect(repo.fields(for: rid).contains { $0.field == "LinkedIn Location" } == false)
     }
 }
+
+/// The `.photo` field of `applyLinkedIn`: routed through `setContactPhoto`
+/// (so an existing photo is snapshotted into the single-slot previous-photo
+/// blob before being replaced), and skipped entirely — no write, no
+/// snapshot — when the incoming bytes equal the current photo or the data
+/// URL doesn't decode.
+@Suite("ContactsRepository.applyLinkedIn photo")
+@MainActor
+struct LinkedInApplyPhotoTests {
+    private func makeRepo(
+        _ person: Contact, seedPhoto: Data? = nil
+    ) async -> (ContactsRepository, ContactID, GuessWhoSync) {
+        let store = InMemoryContactStore(contacts: [person])
+        if let seedPhoto {
+            await store.setImageData(seedPhoto, thumbnail: seedPhoto, for: person.localID)
+        }
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-test"
+        )
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+        let id = repo.contact(localID: person.localID)!.contactID
+        return (repo, id, sync)
+    }
+
+    private func profile(photoBytes: Data) -> LinkedInProfile {
+        LinkedInProfile(photo: .init(
+            dataURL: "data:image/jpeg;base64," + photoBytes.base64EncodedString(),
+            contentType: "image/jpeg",
+            byteLength: photoBytes.count
+        ))
+    }
+
+    /// The minted GuessWho key, for reading the snapshot blob off the engine.
+    private func contactKey(_ repo: ContactsRepository, localID: String) throws -> SidecarKey {
+        let contact = try #require(repo.contact(localID: localID))
+        let guessWhoID = try #require(ContactID(contact: contact).guessWhoID)
+        return SidecarKey(kind: .contact, id: guessWhoID)
+    }
+
+    @Test func firstPhoto_applied_noSnapshotNeeded() async throws {
+        let (repo, id, sync) = await makeRepo(Contact(localID: "T", givenName: "Ada"))
+        let incoming = Data([0xFF, 0xD8, 0xFF, 0x01])
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: incoming), to: id, fields: [.photo]
+        )
+        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
+        #expect(live?.data == incoming)
+        // No prior photo → no previous-photo snapshot (and no mint at all
+        // unless something else wrote sidecar data).
+        if let guessWhoID = ContactID(contact: try #require(repo.contact(localID: "T"))).guessWhoID {
+            let key = SidecarKey(kind: .contact, id: guessWhoID)
+            #expect(try sync.fields(at: key).filter { $0.field == ContactsRepository.previousPhotoFieldName }.isEmpty)
+        }
+    }
+
+    @Test func replacingExistingPhoto_snapshotsOldBytes() async throws {
+        let oldBytes = Data([0xFF, 0xD8, 0xFF, 0xAA])
+        let (repo, id, sync) = await makeRepo(
+            Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
+            seedPhoto: oldBytes
+        )
+        let newBytes = Data([0xFF, 0xD8, 0xFF, 0xBB])
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: newBytes), to: id, fields: [.photo]
+        )
+        // New photo is live; the replaced bytes are the previous-photo blob.
+        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
+        #expect(live?.data == newBytes)
+        let key = try contactKey(repo, localID: "T")
+        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == oldBytes)
+    }
+
+    @Test func unchangedPhoto_reimportIsNoOp_noSnapshot() async throws {
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xCC])
+        let (repo, id, sync) = await makeRepo(
+            Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
+            seedPhoto: bytes
+        )
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: bytes), to: id, fields: [.photo]
+        )
+        // Photo untouched, and — the point — NO previous-photo snapshot was
+        // taken: re-importing the same profile must not repoint the slot at a
+        // copy of the live photo.
+        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
+        #expect(live?.data == bytes)
+        if let guessWhoID = ContactID(contact: try #require(repo.contact(localID: "T"))).guessWhoID {
+            let key = SidecarKey(kind: .contact, id: guessWhoID)
+            #expect(try sync.fields(at: key).filter { $0.field == ContactsRepository.previousPhotoFieldName }.isEmpty)
+        }
+    }
+
+    @Test func photoNotChosen_notApplied() async throws {
+        let (repo, id, _) = await makeRepo(Contact(localID: "T", givenName: "Ada", jobTitle: "Keep"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: Data([0xFF, 0xD8, 0xFF, 0x01])),
+            to: id, fields: [.jobTitle] // photo NOT chosen
+        )
+        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
+        #expect(live == nil)
+    }
+
+    @Test func undecodableDataURL_isSkippedWithoutError() async throws {
+        let (repo, id, _) = await makeRepo(Contact(localID: "T", givenName: "Ada"))
+        let broken = LinkedInProfile(photo: .init(dataURL: "not a data url"))
+        _ = try await repo.applyLinkedIn(profile: broken, to: id, fields: [.photo])
+        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
+        #expect(live == nil)
+    }
+}
+
+@Suite("LinkedInProfile.Photo.decodedData")
+struct LinkedInProfilePhotoDecodeTests {
+    @Test func decodesBase64DataURL() {
+        let bytes = Data([0x01, 0x02, 0x03, 0xFF])
+        let photo = LinkedInProfile.Photo(
+            dataURL: "data:image/jpeg;base64," + bytes.base64EncodedString()
+        )
+        #expect(photo.decodedData() == bytes)
+    }
+
+    @Test func missingComma_returnsNil() {
+        #expect(LinkedInProfile.Photo(dataURL: "data:image/jpeg;base64").decodedData() == nil)
+    }
+
+    @Test func invalidBase64_returnsNil() {
+        #expect(LinkedInProfile.Photo(dataURL: "data:image/jpeg;base64,!!!not-base64!!!").decodedData() == nil)
+    }
+}

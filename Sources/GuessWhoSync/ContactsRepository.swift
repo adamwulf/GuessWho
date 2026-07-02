@@ -299,6 +299,20 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: edited.localID)
     }
 
+    /// Creates a brand-new Contacts record from `seed` (its `localID` is
+    /// ignored — the store issues one) and pulls it into the repository cache.
+    /// Returns the cached contact, whose `contactID` addresses the new record
+    /// for follow-up work: opening the detail view, applying LinkedIn extras.
+    /// The single package entry point behind both the app's "+" (blank seed)
+    /// and the LinkedIn no-match import (profile-filled seed). No reconcile —
+    /// creating a card is a CONTACT write, not a sidecar write; the GuessWho
+    /// ID mints on the first sidecar write as usual.
+    public func createContact(_ seed: Contact) async throws -> Contact {
+        let created = try await contactsStore.create(seed)
+        await refreshContact(localID: created.localID)
+        return contact(localID: created.localID) ?? created
+    }
+
     /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
     /// record, addressed by the app-facing `ContactID`. Image bytes go through
     /// the store's dedicated photo-write path (not `save`), then the one record
@@ -386,8 +400,11 @@ public final class ContactsRepository: NSObject {
     ///   are preserved. Name/title/org overwrite only when that field is chosen.
     /// - Sidecar fields (headline/about/location) are stored as notes prefixed
     ///   with "LinkedIn …: " so the source is obvious to the user.
-    /// - `photo` is accepted in `fields` but not yet applied (the contact-image
-    ///   write path is a separate step); it's a no-op here for now.
+    /// - `photo` routes through `setContactPhoto`, so replacing an existing
+    ///   photo snapshots the replaced bytes into the single-slot previous-photo
+    ///   sidecar blob first. Skipped entirely — no write, no snapshot — when
+    ///   the incoming bytes equal the contact's current photo (re-import) or
+    ///   the payload's data URL doesn't decode.
     ///
     /// Throws if the contact can't be fetched/saved. Returns the refreshed
     /// `Contact` (CNContact fields; sidecar notes are read separately).
@@ -487,6 +504,19 @@ public final class ContactsRepository: NSObject {
         if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
             // Location is a single line.
             _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
+        }
+
+        // Photo: route through the contact-image write path so replacing an
+        // existing photo snapshots the replaced bytes into the previous-photo
+        // slot for free. Compare against the CURRENT bytes first — a re-import
+        // of the same profile must be a no-op, not a snapshot that repoints
+        // the previous-photo slot at a copy of the live photo.
+        if fields.contains(.photo),
+           let incoming = profile.photo?.decodedData(), !incoming.isEmpty {
+            let current = try await contactsStore.loadImageData(localID: edited.localID)
+            if current != incoming {
+                try await setContactPhoto(for: id, imageData: incoming)
+            }
         }
 
         return contact(id: id) ?? edited
