@@ -57,6 +57,14 @@ struct EventLinkSheet: View {
     /// picker so users can type before tapping a row).
     @State private var pickedRowNote: String = ""
 
+    /// Guards `pick` against a double-fire: the dedup/link path awaits now,
+    /// so a fast second tap on a row (or another row) could otherwise run
+    /// `onCreated`/`onLinked` twice before the first `dismiss()` lands.
+    /// Mirrors `EventDetailView.adoptionInFlight`. Never reset on the happy
+    /// path — the sheet dismisses; reset only on the nil-UUID failure path
+    /// so the user can retry.
+    @State private var pickInFlight = false
+
     var body: some View {
         NavigationStack {
             content
@@ -418,14 +426,6 @@ struct EventLinkSheet: View {
     }
 
     // MARK: - Row tap / save
-
-    /// Guards `pick` against a double-fire: the dedup/link path awaits now,
-    /// so a fast second tap on a row (or another row) could otherwise run
-    /// `onCreated`/`onLinked` twice before the first `dismiss()` lands.
-    /// Mirrors `EventDetailView.adoptionInFlight`. Never reset on the happy
-    /// path — the sheet dismisses; reset only on the nil-UUID failure path
-    /// so the user can retry.
-    @State private var pickInFlight = false
 
     private func pick(_ event: Event) async {
         guard !pickInFlight else { return }
