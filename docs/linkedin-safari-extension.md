@@ -296,9 +296,11 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    **raw** title/bio line; Job title/Organization come from the parser's
    `title`/`org`, which prefer the Experience section's current position
    (structured, works for any headline) and fall back to splitting the
-   headline as `"<Title> at <Org>"`. If the Experience section wasn't
-   rendered (lazy-load) *and* the headline is free-form ("Principal AI
-   Consultant | Driving…"), the Headline row is the only carrier of that text.
+   headline as `"<Title> at <Org>"`. The probe scrolls a missing
+   About/Experience into the DOM and re-parses (see the content-script row
+   above), so an unrendered Experience is rare; if it *still* isn't there
+   *and* the headline is free-form ("Principal AI Consultant | Driving…"),
+   the Headline row is the only carrier of that text.
 4. **Confirm** — `LinkedInConfirmView` (`App/GuessWho/LinkedInConfirmView.swift`),
    hosted in a `UIHostingController` form sheet: existing-left / LinkedIn-right,
    a checkbox per row (all on by default), unchanged rows de-emphasized.

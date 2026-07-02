@@ -375,6 +375,8 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
 // (more stable than the visible "Contact info" text, which can be localized).
 // Clicking it lets LinkedIn's SPA open the modal in place.
 
+// Also used by content.js (forceLazySections) — the two files share the
+// content-script world. Don't rename or remove without updating it.
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

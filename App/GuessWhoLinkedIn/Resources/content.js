@@ -168,7 +168,10 @@ async function probe() {
   try {
     const incomplete = (p) => !p.about || !(p.experience || []).length;
     if (typeof extractProfile === "function" && !result._fallback && incomplete(result)) {
-      log("scroll pass: section(s) missing, scrolling", {
+      // Inner-probe log ([GuessWho] prefix, like the photo-fetch lines) — the
+      // log() helper is scoped to the listener breadcrumbs that bracket the
+      // probe.
+      console.log("[GuessWho] scroll pass: section(s) missing, scrolling", {
         about: !!result.about,
         positions: (result.experience || []).length,
       });
@@ -178,7 +181,7 @@ async function probe() {
       });
       const second = extractProfile();
       if (second) result = second;
-      log("scroll pass: done", {
+      console.log("[GuessWho] scroll pass: done", {
         about: !!result.about,
         positions: (result.experience || []).length,
       });
