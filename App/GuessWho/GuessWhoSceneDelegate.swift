@@ -764,9 +764,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             "match: \(matches.count) contact(s) for \(profile.fullName ?? "?") (url=\(profile.contactInfo?.profileUrl ?? "-"))"
         )
 
-        // No match: a new-contact screen is a later step. For now, log and stop.
+        // No match: offer to CREATE the contact. Present the standard
+        // new-contact editor pre-filled from the parsed profile — same form as
+        // "Add Contact" everywhere else in the app; Save runs the adapter's
+        // brand-new-contact branch, Cancel creates nothing.
         guard let matchID = matches.first, let contact = repo.contact(id: matchID) else {
-            Self.handoffLog.notice("match: none — new-contact flow not built yet")
+            Self.handoffLog.notice("match: none — presenting pre-filled new-contact editor")
+            presentLinkedInNewContact(profile: profile, appDelegate: appDelegate)
             return
         }
 
@@ -831,6 +835,81 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         presenter.present(hosting, animated: true)
     }
 
+    /// No-match half of the LinkedIn import: present the app's standard
+    /// new-contact editor (`ContactEditView`) pre-filled from the parsed
+    /// profile. Save runs the editor's normal brand-new-contact path (empty
+    /// `localID` → the adapter's `add` branch); Cancel creates nothing. The
+    /// LinkedIn-only extras the form has no rows for (headline / about /
+    /// location, photo) are attached after the save by
+    /// `finishLinkedInNewContact`.
+    private func presentLinkedInNewContact(profile: LinkedInProfile, appDelegate: GuessWhoAppDelegate) {
+        let seed = LinkedInContactSeed.contact(from: profile)
+        let editor = ContactEditView(newContactSeed: seed) { [weak self] in
+            self?.finishLinkedInNewContact(profile: profile, appDelegate: appDelegate)
+        }
+        .environment(appDelegate.service)
+        let hosting = UIHostingController(rootView: editor)
+        hosting.modalPresentationStyle = .formSheet
+        // Match the editor's Catalyst ideal frame (560×720) so the sheet opens
+        // at a usable size instead of the formSheet default.
+        hosting.preferredContentSize = CGSize(width: 560, height: 720)
+        guard let presenter = topmostPresenter() else {
+            Self.handoffLog.error("new-contact: NO presenter available — editor not shown")
+            return
+        }
+        Self.handoffLog.notice("new-contact: presenting pre-filled editor", [
+            "name": seed.displayName
+        ])
+        presenter.present(hosting, animated: true)
+    }
+
+    /// Post-save step for a LinkedIn-created contact. The editor saved only the
+    /// CNContact fields, so: reload the repository (the new record isn't cached
+    /// yet), re-find it with the same match tiers used on arrival (the seeded
+    /// LinkedIn username makes the URL tier hit), then attach what the form
+    /// couldn't show — the headline/about/location sidecar fields and the
+    /// profile photo. Best-effort: if the user edited away every match signal
+    /// before saving, the contact still exists; only these extras are skipped.
+    private func finishLinkedInNewContact(profile: LinkedInProfile, appDelegate: GuessWhoAppDelegate) {
+        let repo = appDelegate.contactsRepository
+        Task {
+            await repo.reload()
+            guard let id = repo.matchLinkedIn(profile: profile).first else {
+                Self.handoffLog.error("new-contact: saved contact not re-found — headline/about/location and photo not attached")
+                return
+            }
+            do {
+                // `applyLinkedIn` skips empty per-field values itself; the
+                // any-content check just avoids a pointless CNContact re-save
+                // when the profile carries none of the three.
+                var photoID = id
+                let hasSidecarContent = [profile.headline, profile.about, profile.location]
+                    .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+                if hasSidecarContent {
+                    let updated = try await repo.applyLinkedIn(
+                        profile: profile, to: id, fields: [.headline, .about, .location]
+                    )
+                    // The sidecar write can MINT the GuessWho ID; per the
+                    // applyLinkedIn contract, follow-up calls use the RETURNED
+                    // contact's id, not the possibly pre-mint one.
+                    photoID = updated.contactID
+                    Self.handoffLog.notice("new-contact: headline/about/location attached")
+                }
+                if let dataURL = profile.photo?.dataURL,
+                   let data = Self.imageData(fromDataURL: dataURL),
+                   UIImage(data: data) != nil {
+                    try await repo.setContactPhoto(for: photoID, imageData: data)
+                    Self.handoffLog.notice("new-contact: photo attached (\(data.count)B)")
+                }
+            } catch {
+                Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
+            }
+            await MainActor.run {
+                NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+            }
+        }
+    }
+
     /// The LinkedIn-sourced sidecar fields (Headline / About / Location) as a
     /// `[name: value]` map for the diff's existing side. Includes only
     /// string-valued fields whose name the import writes; everything else is
@@ -887,10 +966,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a
     /// recognizable base64 data URL or the bytes aren't an image.
     private static func image(fromDataURL dataURL: String) -> UIImage? {
+        imageData(fromDataURL: dataURL).flatMap { UIImage(data: $0) }
+    }
+
+    /// The raw bytes of a base64 `data:` URL (for the contact-photo write
+    /// path, which takes `Data`, not `UIImage`). Returns nil if it isn't a
+    /// recognizable base64 data URL.
+    private static func imageData(fromDataURL dataURL: String) -> Data? {
         guard let comma = dataURL.range(of: ",") else { return nil }
-        let b64 = String(dataURL[comma.upperBound...])
-        guard let data = Data(base64Encoded: b64) else { return nil }
-        return UIImage(data: data)
+        return Data(base64Encoded: String(dataURL[comma.upperBound...]))
     }
 
     /// The topmost presented view controller to present from (works for the

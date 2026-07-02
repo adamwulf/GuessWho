@@ -1,0 +1,91 @@
+import Foundation
+import GuessWhoSync
+
+/// Builds the pre-filled `Contact` seed handed to `ContactEditView` when a
+/// LinkedIn import matches no existing contact. The seed's `localID` is empty,
+/// so the editor's normal Save path takes the adapter's brand-new-contact
+/// branch — the import reuses the standard new-contact editor rather than
+/// growing its own form.
+///
+/// Only CNContact-representable fields go in the seed. The LinkedIn-only
+/// extras (headline / about / location sidecar fields, and the photo) have no
+/// editor row; the scene delegate applies them AFTER the user saves, keyed on
+/// re-matching the saved contact (see `finishLinkedInNewContact`).
+enum LinkedInContactSeed {
+    static func contact(from profile: LinkedInProfile) -> Contact {
+        // Run the display name through Foundation's PersonNameComponents parse
+        // strategy so given/middle/family land in the right fields (e.g.
+        // "Lydia E. Kavraki" splits as given/middle/family). If the parser
+        // throws on an unusual name, fall back to dropping the whole trimmed
+        // string into `givenName` — same policy as the event-attendee seed.
+        let trimmedName = (profile.fullName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed: PersonNameComponents?
+        let givenFallback: String
+        if trimmedName.isEmpty {
+            parsed = nil
+            givenFallback = ""
+        } else {
+            parsed = try? PersonNameComponents(trimmedName, strategy: .name)
+            givenFallback = parsed == nil ? trimmedName : ""
+        }
+
+        let emails = uniqueTrimmed(profile.contactInfo?.emails ?? [], key: { $0.lowercased() })
+        let websites = uniqueTrimmed(profile.contactInfo?.websites ?? [], key: urlKey)
+
+        // Contacts' LinkedIn social-profile field expects the USERNAME, not a
+        // URL — it derives the URL from the username, and a stored URL shows
+        // blank in the normal card view. Store just the slug (same convention
+        // as `ContactsRepository.applyLinkedIn`). Seeding this also makes the
+        // saved contact re-matchable by the post-save step and by any future
+        // import of the same profile (URL tier).
+        var socialProfiles: [LabeledSocialProfile] = []
+        let profileURL = profile.contactInfo?.profileUrl ?? profile.sourceUrl
+        let slug = profileURL.flatMap { LinkedInURL.slug(from: $0) } ?? profile.slug ?? ""
+        if !slug.isEmpty {
+            socialProfiles.append(LabeledSocialProfile(
+                label: "LinkedIn",
+                value: SocialProfile(urlString: "", username: slug, service: "LinkedIn")
+            ))
+        }
+
+        return Contact(
+            namePrefix: parsed?.namePrefix ?? "",
+            givenName: parsed?.givenName ?? givenFallback,
+            middleName: parsed?.middleName ?? "",
+            familyName: parsed?.familyName ?? "",
+            nameSuffix: parsed?.nameSuffix ?? "",
+            jobTitle: (profile.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            organizationName: (profile.org ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            // CNContact multi-values — default label (empty -> the adapter
+            // passes nil, so Contacts assigns its own default). NOT "LinkedIn".
+            emailAddresses: emails.map { LabeledValue(label: "", value: $0) },
+            urlAddresses: websites.map { LabeledValue(label: "", value: $0) },
+            socialProfiles: socialProfiles
+        )
+    }
+
+    /// Trimmed, non-empty members of `values`, de-duped by `key` (first
+    /// occurrence wins), preserving order and the original surface form.
+    private static func uniqueTrimmed(_ values: [String], key: (String) -> String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in values {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let k = key(value)
+            guard !k.isEmpty, !seen.contains(k) else { continue }
+            seen.insert(k)
+            out.append(value)
+        }
+        return out
+    }
+
+    /// Scheme- and case-insensitive URL dedup key, ignoring a leading `www.`
+    /// and trailing slashes — same normalization as `LinkedInDiff.urlKey`.
+    private static func urlKey(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let range = t.range(of: "://") { t = String(t[range.upperBound...]) }
+        if t.hasPrefix("www.") { t = String(t.dropFirst(4)) }
+        while t.hasSuffix("/") { t = String(t.dropLast()) }
+        return t
+    }
+}
