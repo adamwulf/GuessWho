@@ -28,7 +28,7 @@ The extension is bundled inside the GuessWho app as a single
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" `<h2>`) — never LinkedIn's obfuscated class names — and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser, fetch the full-res photo bytes in-session as a `data:` URL, and reply to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
+| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" and "Experience" `<h2>`s) — never LinkedIn's obfuscated class names — `extractExperience` walks the Experience card's entry wrappers into structured positions (title/org/dates, current position feeds `title`/`org`), and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser; if About/Experience are missing (lazy-rendered, below the fold) scroll them into the DOM and re-parse (`forceLazySections` — need-gated, generously deadline-capped, always restores the user's scroll position); fetch the full-res photo bytes in-session as a `data:` URL; and reply to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
 | Background service worker | `App/GuessWhoLinkedIn/Resources/background.js` | The **only** place that can talk to native. Relays content/popup messages to the native handler via `sendNativeMessage`. Non-persistent (MV3 `service_worker`) — required on iOS, fine on macOS. |
 | Popup | `App/GuessWhoLinkedIn/Resources/popup.{html,js}` | User-facing toolbar UI. Orchestrates: probe the tab → hand off to native → open the wake URL. Sized for a phone sheet so it ports to iOS. |
 | Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
@@ -290,18 +290,26 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    column shows the resulting set); URL dedup is scheme-insensitive; the
    internal `guesswho://contact/<uuid>` identity URL is hidden from the
    Websites column (display-only — the save still merges onto the *real*
-   `urlAddresses`, never reconstructs it from the filtered set). About/Location
-   read their existing value from the named sidecar fields so a re-import marks
-   unchanged rows.
+   `urlAddresses`, never reconstructs it from the filtered set).
+   Headline/About/Location read their existing value from the named sidecar
+   fields so a re-import marks unchanged rows. The Headline row carries the
+   **raw** title/bio line; Job title/Organization come from the parser's
+   `title`/`org`, which prefer the Experience section's current position
+   (structured, works for any headline) and fall back to splitting the
+   headline as `"<Title> at <Org>"`. The probe scrolls a missing
+   About/Experience into the DOM and re-parses (see the content-script row
+   above), so an unrendered Experience is rare; if it *still* isn't there
+   *and* the headline is free-form ("Principal AI Consultant | Driving…"),
+   the Headline row is the only carrier of that text.
 4. **Confirm** — `LinkedInConfirmView` (`App/GuessWho/LinkedInConfirmView.swift`),
    hosted in a `UIHostingController` form sheet: existing-left / LinkedIn-right,
    a checkbox per row (all on by default), unchanged rows de-emphasized.
    Save applies only the checked fields; Cancel writes nothing.
 5. **Save** — `ContactsRepository.applyLinkedIn(profile:to:fields:)` owns the
    merge + save rules. CNContact fields (name/jobTitle/organization/emails/
-   websites/LinkedIn social profile) merge-save; About/Location upsert as named
-   `"LinkedIn …"`-prefixed sidecar fields (not append-only notes, so a re-import
-   updates rather than duplicates). After `applyLinkedIn` returns, the scene
+   websites/LinkedIn social profile) merge-save; Headline/About/Location upsert
+   as named `"LinkedIn …"`-prefixed sidecar fields (not append-only notes, so a
+   re-import updates rather than duplicates). After `applyLinkedIn` returns, the scene
    delegate posts the app-layer `.linkedInImportDidSave` notification so an open
    `ContactDetailView` reloads (the package never posts app notifications).
 
@@ -332,6 +340,18 @@ is visible in Console:
 
 The `EXTENSION resolved … id=` and `APP resolved … id=` lines must be
 **identical**, and the `park: writing to …` path must match `read: looking for …`.
+
+To see **what the parser captured** for a given profile (e.g. "why is the
+headline missing?"), there are two payload dumps, one per side of the boundary:
+
+- **Page console** — `content.js` logs `[GuessWho] parse result:` (full parsed
+  JSON, photo bytes elided) in the LinkedIn tab's Web Inspector console. It
+  includes the `_topCardLines` debug field: the raw top-card `<p>` lines
+  *before* headline/location classification, which pinpoints whether a miss is
+  a DOM-walking problem or a classification problem.
+- **App log** — after decoding the parked payload, the scene delegate logs
+  `decoded payload: {…}` (photo elided) under `app.linkedin-handoff`, so "did
+  field X arrive in the app?" is answerable from `app.log` alone.
 
 ## Runtime validation (needs a human)
 

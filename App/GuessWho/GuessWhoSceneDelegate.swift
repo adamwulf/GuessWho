@@ -729,6 +729,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
+        // Log the decoded payload (photo elided — its size says enough) so
+        // "did field X arrive?" is answerable from app.log alone, without
+        // opening the LinkedIn tab's Web Inspector.
+        Self.handoffLog.notice("decoded payload: \(Self.payloadDescription(profile))")
+
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
         let repo = appDelegate.contactsRepository
         let matches = repo.matchLinkedIn(profile: profile)
@@ -742,10 +747,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        // About / Location live as named sidecar fields, not on the CNContact —
-        // read them so the diff shows current values on the existing side (and
-        // marks unchanged rows). `fields(for:)` returns [] for an unreconciled
-        // contact, so this is empty in that case.
+        // Headline / About / Location live as named sidecar fields, not on the
+        // CNContact — read them so the diff shows current values on the
+        // existing side (and marks unchanged rows). `fields(for:)` returns []
+        // for an unreconciled contact, so this is empty in that case.
         let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
         let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
         let incomingPhoto = profile.photo.flatMap { Self.image(fromDataURL: $0.dataURL) }
@@ -803,12 +808,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         presenter.present(hosting, animated: true)
     }
 
-    /// The LinkedIn-sourced sidecar fields (About / Location) as a
+    /// The LinkedIn-sourced sidecar fields (Headline / About / Location) as a
     /// `[name: value]` map for the diff's existing side. Includes only
     /// string-valued fields whose name the import writes; everything else is
     /// ignored.
     private static func existingSidecarFields(_ fields: [SidecarField]) -> [String: String] {
-        let names: Set<String> = [LinkedInDiff.aboutFieldName, LinkedInDiff.locationFieldName]
+        let names: Set<String> = [
+            LinkedInDiff.headlineFieldName,
+            LinkedInDiff.aboutFieldName,
+            LinkedInDiff.locationFieldName,
+        ]
         var out: [String: String] = [:]
         for field in fields where names.contains(field.field) {
             if case .string(let value) = field.value { out[field.field] = value }
@@ -825,6 +834,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             case .name: out.insert(.name)
             case .jobTitle: out.insert(.jobTitle)
             case .organization: out.insert(.organization)
+            case .headline: out.insert(.headline)
             case .location: out.insert(.location)
             case .about: out.insert(.about)
             case .emails: out.insert(.emails)
@@ -834,6 +844,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         }
         return out
+    }
+
+    /// The decoded handoff payload as a single loggable line: the profile's
+    /// JSON with the photo elided (an 800x800 base64 data URL would swamp the
+    /// log), plus the photo's type/size so its presence is still on record.
+    private static func payloadDescription(_ profile: LinkedInProfile) -> String {
+        var elided = profile
+        elided.photo = nil
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let json = (try? encoder.encode(elided))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "<encode failed>"
+        let photo = profile.photo
+            .map { "photo=\($0.contentType ?? "?") \($0.byteLength ?? 0)B" } ?? "photo=none"
+        return "\(json) \(photo)"
     }
 
     /// Decode a base64 `data:` URL into a UIImage. Returns nil if it isn't a

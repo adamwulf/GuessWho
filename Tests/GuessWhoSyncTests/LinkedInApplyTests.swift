@@ -25,12 +25,13 @@ struct LinkedInApplyTests {
     }
 
     private func profile(
-        fullName: String? = nil, title: String? = nil, org: String? = nil,
+        fullName: String? = nil, headline: String? = nil,
+        title: String? = nil, org: String? = nil,
         location: String? = nil, about: String? = nil,
         emails: [String] = [], websites: [String] = [], profileUrl: String? = nil
     ) -> LinkedInProfile {
         LinkedInProfile(
-            fullName: fullName, title: title, org: org,
+            fullName: fullName, headline: headline, title: title, org: org,
             location: location, about: about,
             contactInfo: LinkedInProfile.ContactInfo(
                 profileUrl: profileUrl, emails: emails, websites: websites
@@ -132,6 +133,44 @@ struct LinkedInApplyTests {
         // Added CNContact values must NOT carry a "LinkedIn" label.
         #expect(result.emailAddresses.allSatisfy { $0.label != "LinkedIn" })
         #expect(result.urlAddresses.allSatisfy { $0.label != "LinkedIn" })
+    }
+
+    @Test func headline_storedAsNamedSidecarField_singleLineNote() async throws {
+        // A free-form headline (no "<Title> at <Org>" shape) — the raw line is
+        // the only carrier of the title/bio, so it must land as its own field.
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(headline: "Principal AI Consultant | Driving Sustainable Value Creation for SMEs"),
+            to: id, fields: [.headline]
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        let stored = repo.fields(for: rid).first { $0.field == "LinkedIn Headline" }
+        #expect(stored?.type == .note)
+        #expect(stored?.value == .string("Principal AI Consultant | Driving Sustainable Value Creation for SMEs"))
+    }
+
+    @Test func headline_reimport_updatesInPlace() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(headline: "First headline"), to: id, fields: [.headline]
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        _ = try await repo.applyLinkedIn(
+            profile: profile(headline: "Second headline"), to: rid, fields: [.headline]
+        )
+        let stored = repo.fields(for: rid).filter { $0.field == "LinkedIn Headline" }
+        #expect(stored.count == 1)
+        #expect(stored.first?.value == .string("Second headline"))
+    }
+
+    @Test func headline_notChosen_notWritten() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada"))
+        _ = try await repo.applyLinkedIn(
+            profile: profile(headline: "CTO at Acme", about: "Bio"),
+            to: id, fields: [.about] // headline NOT chosen
+        )
+        let rid = repo.contact(localID: "T")!.contactID
+        #expect(repo.fields(for: rid).contains { $0.field == "LinkedIn Headline" } == false)
     }
 
     @Test func aboutAndLocation_storedAsNamedSidecarFields() async throws {

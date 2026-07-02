@@ -70,7 +70,10 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     }
 
     // Only decode the keys we use; the payload also carries debug fields
-    // (_topCardLines, photoSrcset, photoError) that we ignore.
+    // (_topCardLines, photoSrcset, photoError) that we ignore, and an
+    // `experience` array (structured positions from the Experience section)
+    // that the app doesn't consume yet — the parser already folds the current
+    // position into `title`/`org`, so nothing app-side needs the raw array.
     private enum CodingKeys: String, CodingKey {
         case sourceUrl, slug, fullName, headline, title, org, location, about
         case contactInfo, photo
@@ -87,6 +90,6 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
 public enum LinkedInField: String, Sendable, CaseIterable {
     case name, jobTitle, organization
     case emails, websites, linkedInURL
-    case location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
+    case headline, location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
     case photo
 }
