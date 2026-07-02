@@ -89,11 +89,43 @@ async function fetchPhotoBytes(photoSrcset) {
   }
 }
 
-// Scroll the page to force ALL of LinkedIn's lazy-rendered sections (About,
-// Experience, Education, …) into the DOM — they mount only once they enter
-// the viewport. Step the viewport down the page, giving the renderer a beat
-// per step, until the page bottom stops growing (or the hang-guard deadline
-// is hit), then jump back to wherever the user was.
+// Find the element that ACTUALLY scrolls the profile. On LinkedIn the window /
+// document does NOT scroll — `document.documentElement.scrollHeight` reports
+// exactly one viewport (confirmed live 2026-07: window/document/body all read
+// == innerHeight while the real content lives in a nested `<main>` whose
+// scrollHeight is 3×+ taller). The lazy sections mount as THAT element scrolls,
+// not the window, so driving/measuring the window is a no-op and nothing ever
+// crosses the real viewport. Walk up from a content anchor to the nearest
+// ancestor that is genuinely scrollable (content taller than its box, with an
+// overflow that scrolls), and fall back to the document scroller for layouts
+// where the window really is the scroller.
+function resolveScroller() {
+  const anchor =
+    [...document.querySelectorAll("h2")].find((h) =>
+      /about|experience|education/i.test(h.textContent || "")
+    ) ||
+    document.querySelector("main") ||
+    document.body;
+  let el = anchor;
+  while (el && el !== document.documentElement) {
+    const cs = getComputedStyle(el);
+    if (
+      el.scrollHeight > el.clientHeight + 20 &&
+      /(auto|scroll)/.test(cs.overflowY)
+    ) {
+      return el;
+    }
+    el = el.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+// Scroll the profile to force ALL of LinkedIn's lazy-rendered sections (About,
+// Experience, Education, …) into the DOM — they mount only once they enter the
+// viewport. Step the scroller down (see resolveScroller — it's a nested
+// element, not the window), giving the renderer a beat per step, until the
+// content stops growing (or the hang-guard deadline is hit), then jump back to
+// wherever the user was.
 //
 // Runs unconditionally on every probe, all the way to the bottom — no
 // early-exit once particular sections parse. That's a deliberate product
@@ -107,6 +139,8 @@ async function fetchPhotoBytes(photoSrcset) {
 // collision). Only reachable when the parser loaded — the call site is gated
 // on `typeof extractProfile === "function"` — so `sleep` is always defined.
 async function forceLazySections() {
+  const scroller = resolveScroller();
+  const startTop = scroller.scrollTop;
   const startX = window.scrollX;
   const startY = window.scrollY;
   // A generous hang-guard, not a target: the pass ends once the fully-mounted
@@ -117,28 +151,38 @@ async function forceLazySections() {
   // on a slow connection.
   const deadline = Date.now() + 30000;
   try {
-    const step = Math.max(400, Math.floor(window.innerHeight * 0.9));
+    // Step by ~90% of the scroller's own viewport, not the window's — the two
+    // differ when the scroller is a nested element.
+    const step = Math.max(400, Math.floor(scroller.clientHeight * 0.9));
     let y = step;
     let lastHeight = -1;
     let settleUntil = 0;
     while (Date.now() < deadline) {
-      window.scrollTo(0, y);
+      scroller.scrollTop = y;
       await sleep(150);
-      const height = document.documentElement.scrollHeight;
-      const maxY = height - window.innerHeight;
-      if (y < maxY) { y += step; continue; }
-      // At the bottom, but sections may still be MOUNTING (scrollHeight can
-      // keep growing as modules render). Linger while the page grows; once it
-      // stops, give it a short settle window before concluding everything on
-      // this profile has rendered.
-      if (height !== lastHeight) {
-        lastHeight = height;
-        settleUntil = Date.now() + 1500;
-      } else if (Date.now() > settleUntil) {
+      const height = scroller.scrollHeight;
+      const maxY = height - scroller.clientHeight;
+      // Keep climbing while there is meaningfully more to scroll OR while the
+      // scroller is still growing (new sections mounting can push the bottom
+      // down faster than we step). Anchoring the climb on growth — not on a
+      // single maxY read — is what keeps a briefly-small measurement from
+      // stranding the pass at the top (the original window-based bug).
+      if (y < maxY || height > lastHeight) {
+        if (height > lastHeight) {
+          lastHeight = height;
+          settleUntil = Date.now() + 1500;
+        }
+        if (y < maxY) { y += step; continue; }
+      }
+      // At the bottom and the page has stopped growing — but sections may still
+      // be MOUNTING for a beat. Give it a short settle window before concluding
+      // everything on this profile has rendered.
+      if (height <= lastHeight && Date.now() > settleUntil) {
         break;
       }
     }
   } finally {
+    scroller.scrollTop = startTop;
     window.scrollTo(startX, startY);
   }
 }
