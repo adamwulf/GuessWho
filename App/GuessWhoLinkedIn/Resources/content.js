@@ -141,10 +141,18 @@ function scrollSectionsReady(readiness) {
 // mountable section is present. The user's escape hatch is the popup's "Save
 // anyway" button, which sends a `guesswho.interrupt` message keyed on the
 // probeId. That listener (registered at the bottom of this file) records the id
-// here; the scroll loop checks it each iteration and bails, shipping whatever
-// parsed so far. A Set keyed on probeId keeps a stale interrupt from a previous
-// click from ever affecting a fresh probe.
+// in `interruptedProbes`; the scroll loop checks it each iteration and bails,
+// shipping whatever parsed so far.
+//
+// `liveProbes` holds the probeIds still in flight. The interrupt listener adds
+// to `interruptedProbes` ONLY for a live probe, and both Sets drop the id when
+// the probe resolves. Two things fall out of that: (1) a stale interrupt from a
+// previous click can't affect a fresh probe (different id), and (2) an
+// interrupt that races in AFTER its probe already resolved is ignored rather
+// than re-inserting an id nothing would ever clean up — so neither Set grows
+// without bound.
 const interruptedProbes = new Set();
+const liveProbes = new Set();
 function isInterrupted(probeId) {
   return !!probeId && interruptedProbes.has(probeId);
 }
@@ -319,6 +327,12 @@ async function probe(probeId) {
   // only pay the overlay round-trip once the rest is up. Skip it if the user
   // already pressed "Save anyway" — they want whatever's parsed, now. Async +
   // best-effort; never let it break the rest of the result.
+  //
+  // NOTE: the interrupt is only checked at ENTRY here. Once extractContactInfo
+  // is under way it is NOT abortable — a "Save anyway" pressed mid-overlay waits
+  // for it to finish. That's fine: extractContactInfo is bounded (its waitFor
+  // caps at ~3s and always resolves), so this can't hang the probe; it's just a
+  // brief unresponsive window on the very last step.
   try {
     if (typeof extractContactInfo === "function" && !isInterrupted(probeId)) {
       const ci = await extractContactInfo();
@@ -393,9 +407,16 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // Fire-and-forget — record the interrupt for this probeId; the running scroll
   // loop / contact step check `isInterrupted(probeId)` and bail. No response.
   if (message?.type === "guesswho.interrupt") {
-    if (message.probeId) {
+    // Only honor an interrupt for a probe that's still live. Ignoring it once
+    // the probe has resolved avoids re-inserting an id into `interruptedProbes`
+    // after the resolve-time cleanup already removed it (a tight race when the
+    // user clicks "Save anyway" just as the probe finishes) — which would
+    // otherwise leak an entry nothing cleans up.
+    if (message.probeId && liveProbes.has(message.probeId)) {
       interruptedProbes.add(message.probeId);
       log("interrupt requested (save anyway)", { probeId: message.probeId });
+    } else if (message.probeId) {
+      log("interrupt ignored (probe not live)", { probeId: message.probeId });
     }
     return false;
   }
@@ -406,6 +427,7 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // previous click). It's optional — an absent id just disables streaming AND
   // the interrupt (there's nothing to key the "save anyway" on).
   const probeId = message.probeId || null;
+  if (probeId) liveProbes.add(probeId);
   log("probe requested by popup", { probeId });
   probe(probeId)
     .then((result) => {
@@ -421,9 +443,16 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       log("probe failed, sending minimal probe", { error: String(e) });
       sendResponse(minimalProbe());
     })
-    // Drop this probe's interrupt flag once it has resolved, so the Set never
-    // grows without bound and a later probe reusing an id (it won't — ids are
-    // unique per click) can't inherit a stale interrupt.
-    .finally(() => { if (probeId) interruptedProbes.delete(probeId); });
+    // Drop this probe from both Sets once it has resolved. Removing it from
+    // `liveProbes` first means an interrupt that races in after this point is
+    // ignored (see the interrupt branch above), so neither Set grows without
+    // bound; ids are unique per click, so nothing later can inherit a stale
+    // flag either.
+    .finally(() => {
+      if (probeId) {
+        liveProbes.delete(probeId);
+        interruptedProbes.delete(probeId);
+      }
+    });
   return true;
 });

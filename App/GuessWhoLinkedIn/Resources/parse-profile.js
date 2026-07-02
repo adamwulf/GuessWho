@@ -495,19 +495,24 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 // about came along, we drive the scroll until THESE required sections are all
 // present, then hand off.
 //
-// ALL four sections are `required: true` — the handoff waits for every one of
-// them. There is intentionally no deadline: the pass keeps scrolling (looping
-// top→bottom, since scrolling a section out of view can cancel its in-flight
-// lazy load) until everything is present. The user's ONLY escape hatch is the
-// popup's "Save anyway" button, which interrupts the wait and ships whatever
-// parsed so far. So a legitimately-sparse profile (no About text, no exposed
-// contact info) will wait until the user chooses to save anyway — that's the
-// deliberate tradeoff: wait for everything by default, let the user override.
+// ALL four sections are `required: true` — this readiness object is how the
+// popup shows "X/4 loaded" and gates the handoff. But the RUNTIME wait in
+// content.js is deliberately asymmetric, because the sections mount by
+// different means:
 //
-// Contact info is special: it lives behind an overlay the scroll can't mount,
-// so content.js opens that overlay (once the scroll-mounted sections are up)
-// and stamps `result.contactInfo` before this gate can be satisfied. Until then
-// the section reads as pending in the popup.
+//   • identity, Experience, About — mount by SCROLLING. content.js's scroll
+//     pass is unbounded (no deadline): it loops top→bottom until all three are
+//     present. So if one of THESE is missing (a slow load, or a profile with no
+//     About text), the pass keeps scrolling and the only way to hand off is the
+//     user's "Save anyway" (which interrupts and ships what parsed).
+//   • Contact info — lives behind an overlay the scroll can't reach. content.js
+//     opens it ONCE, after the scroll sections are up, and stamps
+//     `result.contactInfo`. There's no retry: a profile that exposes no contact
+//     info simply ships at 3/4 after that single attempt (the popup notes it as
+//     missing). We can't wait forever for a field that will never appear.
+//
+// Net: a missing SCROLL section blocks until "Save anyway"; missing contact
+// info does not. Both show as pending in the popup until satisfied.
 //
 // Each check reads ONLY the already-parsed `result` (no DOM access), so the same
 // function serves the live probe and the unit tests against a fixture.
@@ -537,7 +542,9 @@ function profileReadiness(result) {
     // deadline, such a profile waits for the user's "Save anyway" rather than
     // shipping on a timer.
     { key: "about", label: "About", required: true, present: !!r.about },
-    // Contact info comes from the overlay step in content.js, not the scroll.
+    // Contact info comes from the overlay step in content.js (a single attempt
+    // after the scroll pass), not the scroll — so unlike the others it never
+    // blocks the wait; a profile that exposes none ships at 3/4.
     { key: "contact", label: "Contact info", required: true, present: hasContact },
   ];
   const required = sections.filter((s) => s.required);
