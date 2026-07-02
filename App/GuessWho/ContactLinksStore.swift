@@ -19,9 +19,10 @@ private func linkSortKey(_ link: ContactLink) -> (Date, String) {
 ///
 /// Writes are `async`: the repository resolves-or-mints BOTH endpoints'
 /// GuessWho UUIDs first (linking a never-touched contact reconciles + mints,
-/// transparent to us), then writes the durable `Link`. Reads stay synchronous —
-/// an unreconciled contact has no links yet, so `repository.links(for:)`
-/// returns empty until a write mints the UUID.
+/// transparent to us), then writes the durable `Link`. Reads are `async` too —
+/// `repository.links(for:)` walks every link sidecar on disk, so it hops off
+/// the main actor. An unreconciled contact has no links yet, so reads return
+/// empty until a write mints the UUID.
 @MainActor
 @Observable
 final class ContactLinksStore {
@@ -36,14 +37,17 @@ final class ContactLinksStore {
 
     private(set) var links: [Link] = []
 
+    /// Starts EMPTY — the link read walks every link sidecar on disk, so it
+    /// is `async` and cannot run in `init`. The builder
+    /// (`ContactDetailView.rebuildSidecarStores`) awaits `reload()` right
+    /// after construction.
     init(repository: ContactsRepository, id: ContactID) {
         self.repository = repository
         self.id = id
-        reload()
     }
 
-    func reload() {
-        let raw = repository.links(for: id)
+    func reload() async {
+        let raw = await repository.links(for: id)
         links = raw.sorted { linkSortKey($0) < linkSortKey($1) }
     }
 
@@ -66,9 +70,15 @@ final class ContactLinksStore {
             result = nil
         }
         reresolve()
-        reload()
+        await reload()
         return result
     }
+
+    // setNote/remove write SYNCHRONOUSLY (single-envelope repository writes)
+    // and defer only the re-read scan to a Task. Keeping the writes inline
+    // preserves UI-event ordering structurally — a committed note edit can
+    // never land after a subsequently-tapped delete — instead of leaning on
+    // Task enqueue order.
 
     func setNote(id linkID: UUID, note: String) {
         do {
@@ -76,7 +86,7 @@ final class ContactLinksStore {
         } catch {
             // ignore — reload reflects the truth
         }
-        reload()
+        Task { await reload() }
     }
 
     func remove(id linkID: UUID) {
@@ -85,6 +95,6 @@ final class ContactLinksStore {
         } catch {
             // ignore — reload reflects the truth
         }
-        reload()
+        Task { await reload() }
     }
 }

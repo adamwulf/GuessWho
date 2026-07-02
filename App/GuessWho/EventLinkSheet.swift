@@ -57,6 +57,14 @@ struct EventLinkSheet: View {
     /// picker so users can type before tapping a row).
     @State private var pickedRowNote: String = ""
 
+    /// Guards `pick` against a double-fire: the dedup/link path awaits now,
+    /// so a fast second tap on a row (or another row) could otherwise run
+    /// `onCreated`/`onLinked` twice before the first `dismiss()` lands.
+    /// Mirrors `EventDetailView.adoptionInFlight`. Never reset on the happy
+    /// path — the sheet dismisses; reset only on the nil-UUID failure path
+    /// so the user can retry.
+    @State private var pickInFlight = false
+
     var body: some View {
         NavigationStack {
             content
@@ -125,7 +133,7 @@ struct EventLinkSheet: View {
                 ForEach(groups, id: \.day) { group in
                     Section(header: Text(sectionTitle(for: group.day))) {
                         ForEach(group.events, id: \.id) { event in
-                            Button { pick(event) } label: { eventRow(event) }
+                            Button { Task { await pick(event) } } label: { eventRow(event) }
                                 .buttonStyle(.plain)
                         }
                     }
@@ -135,7 +143,7 @@ struct EventLinkSheet: View {
             if canBrowseCalendar && !expandedBeyondToday {
                 Section {
                     Button {
-                        loadShowMore()
+                        Task { await loadShowMore() }
                     } label: {
                         Label("Show more", systemImage: "chevron.down")
                     }
@@ -316,12 +324,12 @@ struct EventLinkSheet: View {
         loadedDays = bucket
     }
 
-    private func loadShowMore() {
+    private func loadShowMore() async {
         let today = Calendar.current.startOfDay(for: Date())
         let end = Calendar.current.date(byAdding: .day, value: 365, to: today) ?? today
         // Use the window read for the range; the orchestrator handles EventKit
         // gating internally and falls back gracefully when access is denied.
-        let events = service.fetchEventsRange(from: today, to: end)
+        let events = await service.fetchEventsRange(from: today, to: end)
         mergeIntoLoadedDays(events)
         expandedBeyondToday = true
         loadedForwardThrough = end
@@ -331,11 +339,9 @@ struct EventLinkSheet: View {
         guard canBrowseCalendar else { return }
         let to = loadedBackwardThrough
         guard let from = Calendar.current.date(byAdding: .year, value: -1, to: to) else { return }
-        let events = service.fetchEventsRange(from: from, to: to)
-        await MainActor.run {
-            mergeIntoLoadedDays(events)
-            loadedBackwardThrough = from
-        }
+        let events = await service.fetchEventsRange(from: from, to: to)
+        mergeIntoLoadedDays(events)
+        loadedBackwardThrough = from
     }
 
     private func searchOlderEvents() {
@@ -421,14 +427,22 @@ struct EventLinkSheet: View {
 
     // MARK: - Row tap / save
 
-    private func pick(_ event: Event) {
+    private func pick(_ event: Event) async {
+        guard !pickInFlight else { return }
+        pickInFlight = true
         switch mode {
         case .create(let onCreated):
-            guard let uuid = dedupAndLink(event: event) else { return }
+            guard let uuid = await dedupAndLink(event: event) else {
+                pickInFlight = false
+                return
+            }
             onCreated(uuid)
             dismiss()
         case .link(let onLinked):
-            guard let uuid = dedupAndLink(event: event) else { return }
+            guard let uuid = await dedupAndLink(event: event) else {
+                pickInFlight = false
+                return
+            }
             // Partial-failure note: if `onLinked` throws (caller wraps it via
             // recordError, see SyncService.addContactEventLink path), the
             // sidecar minted by `linkEvent` exists but the contact↔event
@@ -441,18 +455,19 @@ struct EventLinkSheet: View {
 
     /// Mandatory dedup path: first look up the sidecar already pointing at this
     /// EventKit ID; only mint when there isn't one. Returns the resulting event
-    /// UUID string, or nil on failure (after recording the error).
-    private func dedupAndLink(event: Event) -> String? {
+    /// UUID string, or nil on failure (after recording the error). `async` —
+    /// the dedup lookup walks every event sidecar via the service.
+    private func dedupAndLink(event: Event) async -> String? {
         guard let ekid = event.eventKitID else {
             // Already a sidecar-only event (no EventKit twin). Reuse its UUID
             // directly.
             return event.id.uuidString
         }
-        if let existing = service.eventUUID(forEventKitID: ekid) {
+        if let existing = await service.eventUUID(forEventKitID: ekid) {
             return existing.uuidString
         }
         do {
-            let minted = try service.linkEvent(toEventKitID: ekid)
+            let minted = try await service.linkEvent(toEventKitID: ekid)
             return minted.uuidString
         } catch {
             service.recordError("link event failed: \(error.localizedDescription)")

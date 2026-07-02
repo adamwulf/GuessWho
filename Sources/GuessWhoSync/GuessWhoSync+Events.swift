@@ -226,6 +226,23 @@ extension GuessWhoSync {
         return matches.min { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
     }
 
+    /// Async overload of `eventUUID(forEventKitID:)` — the reverse lookup
+    /// walks EVERY event sidecar (a coordinated read + decode per file), so
+    /// it hops to a background queue rather than blocking the caller's actor.
+    /// Same continuation pattern as `eventsWindow` / `recentEvents`.
+    public func eventUUID(forEventKitID ekid: String) async throws -> UUID? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: UUID? = try self.eventUUID(forEventKitID: ekid)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Edit (Option C write routing)
 
     /// Edit title/start/end/isAllDay/location. Decision tree per E1.7:
@@ -297,6 +314,25 @@ extension GuessWhoSync {
             existingEnvelope: envelope
         )
         return overlay(live: live, onto: cached, ekid: ekid)
+    }
+
+    /// Async overload of `refreshEventCache(at:)` — a coordinated sidecar
+    /// read, a synchronous EventKit lookup, and a possible coordinated
+    /// write-back, so it hops to a background queue rather than blocking the
+    /// caller's actor. Same continuation pattern as `eventsWindow` /
+    /// `recentEvents`.
+    @discardableResult
+    public func refreshEventCache(at key: SidecarKey) async throws -> Event? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: Event? = try self.refreshEventCache(at: key)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Tags
@@ -413,6 +449,32 @@ extension GuessWhoSync {
         }
 
         return result.sorted { $0.startDate < $1.startDate }
+    }
+
+    /// Async overload of `eventsWindow(from:to:includeEventKit:)` that hops
+    /// the read to a background queue. The window read is EventKit's
+    /// synchronous `events(matching:)` PLUS a coordinated read of every event
+    /// sidecar — both scale with data size and must not block the caller's
+    /// actor / main thread. Same continuation-hop pattern (and `self` capture
+    /// rationale) as `recentEvents(matchingEmails:)` below. Sync callers (and
+    /// the tests) keep the synchronous overload.
+    public func eventsWindow(
+        from: Date,
+        to: Date,
+        includeEventKit: Bool = true
+    ) async throws -> [Event] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [Event] = try self.eventsWindow(
+                        from: from, to: to, includeEventKit: includeEventKit
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Attendee lookup (contact detail "Recent Events")

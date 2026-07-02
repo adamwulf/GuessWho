@@ -257,6 +257,33 @@ public final class GuessWhoSync: @unchecked Sendable {
     // the same-device fast path). A FRESH blobId is minted per write so a new
     // snapshot never collides with an in-flight older `.dat` mid-sync.
 
+    /// Async overload of `setBlobField(at:field:data:contentType:)` that hops
+    /// the write to a background queue: it AES-GCM-encrypts the full payload
+    /// (photos run to megabytes), writes the sealed `.dat` under coordination,
+    /// and read-modify-writes the envelope — none of which belongs on the
+    /// caller's actor / main thread. Same continuation pattern as the async
+    /// read overloads.
+    @discardableResult
+    public func setBlobField(
+        at key: SidecarKey,
+        field: String,
+        data: Data,
+        contentType: String
+    ) async throws -> String {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: String = try self.setBlobField(
+                        at: key, field: field, data: data, contentType: contentType
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Upsert a single-slot `.blob` field named `field` on `key`, storing
     /// `data` as a fresh `.dat` and pointing the field at it. If a live `.blob`
     /// field with the same name already exists, its pointer is repointed to the
@@ -623,6 +650,25 @@ public final class GuessWhoSync: @unchecked Sendable {
             }
         }
         return result
+    }
+
+    /// Async overload of `links(at:)` that hops the scan to a background
+    /// queue: the read walks EVERY link sidecar (a coordinated read + decode
+    /// per file), so it scales with total link count and must not block the
+    /// caller's actor / main thread. Same continuation-hop pattern (and
+    /// `self` capture rationale) as `recentEvents(matchingEmails:)` in the
+    /// Events extension. Sync callers keep the synchronous overload.
+    public func links(at endpoint: SidecarKey) async throws -> [Link] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [Link] = try self.links(at: endpoint)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Contact timestamp cells

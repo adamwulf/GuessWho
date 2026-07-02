@@ -8,6 +8,18 @@ public extension Notification.Name {
     static let contactsRepositoryDidReload = Notification.Name("ContactsRepositoryDidReload")
 }
 
+/// userInfo keys for `.contactsRepositoryDidReload`.
+public enum ContactsRepositoryDidReloadKey {
+    /// `Bool` — `true` when contact RECORDS (fields, photo bytes, membership
+    /// of the cache) may have changed; `false` for presentation-only posts
+    /// where every cached record is unchanged and only ordering/derived state
+    /// moved (a sort-order flip, a timestamp stamp, a groups refresh).
+    /// Consumers holding caches KEYED ON CONTACT DATA (e.g. decoded photos)
+    /// may skip invalidation when this is `false`; snapshot-applying list
+    /// consumers should re-render regardless. Absent means `true`.
+    public static let contactDataChanged = "contactDataChanged"
+}
+
 /// Package-owned in-memory read repository for Contacts.
 ///
 /// Deliberately a read-model cache, not a second source of truth: Contacts
@@ -112,7 +124,8 @@ public final class ContactsRepository: NSObject {
     public var sortOrder: ContactSortOrder = .lastFirst {
         didSet {
             guard sortOrder != oldValue else { return }
-            postDidReload()
+            // Ordering changed; every cached record is untouched.
+            postDidReload(contactDataChanged: false)
         }
     }
 
@@ -152,7 +165,7 @@ public final class ContactsRepository: NSObject {
             setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
-        refreshTimestampCache()
+        await refreshTimestampCache()
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
@@ -161,11 +174,24 @@ public final class ContactsRepository: NSObject {
 
     /// Reload the bulk timestamp cache from the engine, wholesale. ROBUST: a
     /// nil engine or a failed read leaves the cache EMPTY (every contact then
-    /// sorts/buckets as "no timestamp") rather than throwing. Called after a
-    /// full `reload()` and after each stamp write so the time-ordered lists
-    /// reflect the latest timestamps.
-    private func refreshTimestampCache() {
-        contactTimestampsByID = (try? sync?.allContactTimestamps()) ?? [:]
+    /// sorts/buckets as "no timestamp") rather than throwing. Called only from
+    /// a full `reload()`; the stamp path upserts its one entry in place
+    /// (`updateTimestampCache`) instead.
+    ///
+    /// The scan reads every contact sidecar (a coordinated read + decode per
+    /// file), so it hops off the main actor — `GuessWhoSync` is `@unchecked
+    /// Sendable` with per-key locking, safe to drive from a detached task. A
+    /// stamp that lands DURING the scan can be briefly shadowed by the
+    /// wholesale replace below (its cell is on disk, so the next reload sees
+    /// it) — a stale-by-one-frame sort, never data loss.
+    private func refreshTimestampCache() async {
+        guard let sync else {
+            contactTimestampsByID = [:]
+            return
+        }
+        contactTimestampsByID = await Task.detached(priority: .userInitiated) {
+            (try? sync.allContactTimestamps()) ?? [:]
+        }.value
     }
 
     // MARK: - Groups (read-only)
@@ -191,7 +217,8 @@ public final class ContactsRepository: NSObject {
             groups = []
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
-        postDidReload()
+        // Groups moved; the CONTACT records in the cache are untouched.
+        postDidReload(contactDataChanged: false)
     }
 
     /// The members of the group identified by `groupLocalID`, as `Contact`s.
@@ -354,8 +381,10 @@ public final class ContactsRepository: NSObject {
             let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
             let key = SidecarKey(kind: .contact, id: guessWhoID)
             // Single-slot upsert: repoints the slot and reclaims the prior
-            // `.dat` (orphan sweep is the cross-device backstop).
-            _ = try sync.setBlobField(
+            // `.dat` (orphan sweep is the cross-device backstop). Awaits the
+            // engine's background-hop overload — encrypting and writing a
+            // full-size photo must not stall the main actor mid-import.
+            _ = try await sync.setBlobField(
                 at: key,
                 field: Self.previousPhotoFieldName,
                 data: currentBytes,
@@ -692,9 +721,11 @@ public final class ContactsRepository: NSObject {
     // `SidecarKey(kind: .contact, id: guessWhoID)` internally and calls the
     // engine.
     //
-    // READS are SYNCHRONOUS: `id.guessWhoID` is already on the value, so no
-    // reconcile and no `await`. An UNRECONCILED contact (`id.guessWhoID == nil`)
-    // has no sidecar yet, so reads return empty/false and MINT NOTHING.
+    // READS never reconcile: `id.guessWhoID` is already on the value. An
+    // UNRECONCILED contact (`id.guessWhoID == nil`) has no sidecar yet, so
+    // reads return empty/false and MINT NOTHING. Single-envelope reads
+    // (notes/fields) are synchronous; the LINK reads are `async` because they
+    // walk every link sidecar on disk and must not block the main actor.
     //
     // WRITES are `async`: they resolve-or-mint the GuessWho UUID first (via
     // `resolveOrMintGuessWhoID`, which `await`s reconcile), call the engine,
@@ -722,11 +753,16 @@ public final class ContactsRepository: NSObject {
     /// are event links — see `eventLinks(for:)`). Returns `[]` when the contact
     /// is unreconciled or the engine is unavailable. Mirrors
     /// `SyncService.contactLinks(forContactUUID:)`.
-    public func links(for id: ContactID) -> [Link] {
+    ///
+    /// `async` — unlike the single-envelope reads above, the link read walks
+    /// EVERY link sidecar on disk, so it rides the engine's background-hop
+    /// overload rather than blocking the main actor. Same for
+    /// `eventLinks(for:)` / `linkedEventUUIDs(for:)` below.
+    public func links(for id: ContactID) async -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
-            return try sync.links(at: endpoint).filter { link in
+            return try await sync.links(at: endpoint).filter { link in
                 link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
             }
         } catch {
@@ -741,11 +777,11 @@ public final class ContactsRepository: NSObject {
     /// Mirrors `SyncService.eventLinks(forContactUUID:)`. (The CONTACT endpoint
     /// is keyed on `ContactID`; the EVENT endpoint stays a bare UUID until the
     /// deferred event-identity migration.)
-    public func eventLinks(for id: ContactID) -> [Link] {
+    public func eventLinks(for id: ContactID) async -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
-            return try sync.links(at: endpoint).filter { link in
+            return try await sync.links(at: endpoint).filter { link in
                 link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
             }
         } catch {
@@ -761,11 +797,11 @@ public final class ContactsRepository: NSObject {
     /// event surface's refresh (still on `SyncService`). Returns `[]` when the
     /// contact is unreconciled or the engine is unavailable. (The EVENT endpoint
     /// stays a bare UUID until the deferred event-identity migration.)
-    public func linkedEventUUIDs(for id: ContactID) -> [String] {
+    public func linkedEventUUIDs(for id: ContactID) async -> [String] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
-            return try sync.links(at: endpoint).compactMap { link in
+            return try await sync.links(at: endpoint).compactMap { link in
                 guard link.deletedAt == nil else { return nil }
                 let other = Self.otherEndpoint(of: link, from: endpoint)
                 return other.kind == .event ? other.id : nil
@@ -904,15 +940,35 @@ public final class ContactsRepository: NSObject {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
-        try sync.stampContactTimestamp(which, at: SidecarKey(kind: .contact, id: guessWhoID), now: Date())
-        // Refresh the bulk timestamp cache regardless, so a time-ordered list
-        // re-sorts/re-buckets this contact. `refreshCacheIfMinted` re-reads the
-        // Contacts record only when a mint stamped a new GuessWho URL.
-        refreshTimestampCache()
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let now = Date()
+        try sync.stampContactTimestamp(which, at: key, now: now)
+        // The write touched exactly ONE cell and `now` IS its new value, so
+        // update that one cache entry in place. A wholesale
+        // `refreshTimestampCache()` here would re-read every contact sidecar
+        // off disk on the main actor — on every contact open (stampViewed) —
+        // which is the I/O stall this in-place update exists to avoid.
+        // External edits still land via the change-notification reload path.
+        updateTimestampCache(which, at: key, to: now)
         await refreshCacheIfMinted(minted, localID: id.localID)
         // On mint, `refreshCacheIfMinted` posts its own reload; on the common
-        // non-mint path, post so a time-ordered list re-renders.
-        if !minted { postDidReload() }
+        // non-mint path, post so a time-ordered list re-renders. A stamp only
+        // moves a timestamp — the contact records themselves are untouched.
+        if !minted { postDidReload(contactDataChanged: false) }
+    }
+
+    /// Upsert the single `which` timestamp on the cache entry for `key`,
+    /// leaving the other two timestamps untouched — the in-memory mirror of
+    /// what `stampContactTimestamp` just wrote to disk. Keyed on `key.id`, the
+    /// same canonical-lowercase UUID `allContactTimestamps()` keys on.
+    private func updateTimestampCache(_ which: ContactTimestampKind, at key: SidecarKey, to now: Date) {
+        var stamps = contactTimestampsByID[key.id] ?? ContactTimestamps()
+        switch which {
+        case .modified: stamps.lastModified = now
+        case .interacted: stamps.lastInteracted = now
+        case .viewed: stamps.lastViewed = now
+        }
+        contactTimestampsByID[key.id] = stamps
     }
 
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
@@ -1302,14 +1358,24 @@ public final class ContactsRepository: NSObject {
         postDidReload()
     }
 
-    private func postDidReload() {
+    private func postDidReload(contactDataChanged: Bool = true) {
         // Routed through the injected center (defaults to `.default`, so the
         // app's list controllers still observe it). Outbound reload and inbound
         // change observer share one center, so a test on a fresh center sees only
         // its own repository's reload. `object: self` already scopes this signal
         // per-repository; the injected center is what isolates the inbound
         // `object: nil` change observer (see init).
-        notificationCenter.post(name: .contactsRepositoryDidReload, object: self)
+        //
+        // `contactDataChanged: false` marks a presentation-only post (sort
+        // flip, timestamp stamp, groups refresh) so data-keyed caches — the
+        // app's decoded-photo cache in particular — can skip a wholesale
+        // invalidation. Defaults to `true`: any site that isn't POSITIVE the
+        // records are untouched must let consumers invalidate.
+        notificationCenter.post(
+            name: .contactsRepositoryDidReload,
+            object: self,
+            userInfo: [ContactsRepositoryDidReloadKey.contactDataChanged: contactDataChanged]
+        )
     }
 
     /// The SINGLE funnel for every `contacts` mutation. Reassigns the array

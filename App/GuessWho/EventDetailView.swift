@@ -460,25 +460,29 @@ struct EventDetailView: View {
         // so every read/write below targets it. Guarded by
         // `adoptionInFlight` so concurrent reloads can't double-mint.
         if service.event(uuid: resolvedUUID) == nil,
-           let ekid = eventKitID,
-           !adoptionInFlight
+           let ekid = eventKitID
         {
+            // Adoption spans awaits now. A reload arriving while another is
+            // mid-adoption must BAIL, not fall through: reading against the
+            // still-synthetic `resolvedUUID` below would render empty state.
+            // The in-flight reload finishes and renders the adopted event.
+            guard !adoptionInFlight else { return }
             adoptionInFlight = true
             defer { adoptionInFlight = false }
-            if let existing = service.eventUUID(forEventKitID: ekid) {
+            if let existing = await service.eventUUID(forEventKitID: ekid) {
                 resolvedUUID = existing.uuidString.lowercased()
             } else {
                 do {
-                    let minted = try service.linkEvent(toEventKitID: ekid)
+                    let minted = try await service.linkEvent(toEventKitID: ekid)
                     resolvedUUID = minted.uuidString.lowercased()
                 } catch {
                     service.recordError("adopt event failed: \(error.localizedDescription)")
                 }
             }
         }
-        service.refreshEvent(uuid: resolvedUUID)
+        await service.refreshEvent(uuid: resolvedUUID)
         event = service.event(uuid: resolvedUUID)
-        links = service.contactLinks(forEventUUID: resolvedUUID)
+        links = await service.contactLinks(forEventUUID: resolvedUUID)
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
         // Attendee→contact and linked-contact→contact resolution happen on

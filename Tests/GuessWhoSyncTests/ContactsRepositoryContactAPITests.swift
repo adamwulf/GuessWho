@@ -132,8 +132,8 @@ struct ContactsRepositoryContactAPITests {
         #expect(id.guessWhoID == nil)
 
         #expect(repository.notes(for: id).isEmpty)
-        #expect(repository.links(for: id).isEmpty)
-        #expect(repository.eventLinks(for: id).isEmpty)
+        #expect(await repository.links(for: id).isEmpty)
+        #expect(await repository.eventLinks(for: id).isEmpty)
         #expect(repository.isFavorite(id) == false)
 
         // The on-disk contact STILL has no GuessWho URL: no read reconciled it.
@@ -179,8 +179,8 @@ struct ContactsRepositoryContactAPITests {
         ]))
 
         // Each endpoint can read the link back (excludes nothing, not deleted).
-        #expect(repository.links(for: savedA.contactID).contains { $0.id == link.id })
-        #expect(repository.links(for: savedB.contactID).contains { $0.id == link.id })
+        #expect(await repository.links(for: savedA.contactID).contains { $0.id == link.id })
+        #expect(await repository.links(for: savedB.contactID).contains { $0.id == link.id })
     }
 
     // MARK: - Favorite write mints then favorites
@@ -268,8 +268,8 @@ struct ContactsRepositoryContactAPITests {
 
         // Reads degrade silently.
         #expect(repository.notes(for: id).isEmpty)
-        #expect(repository.links(for: id).isEmpty)
-        #expect(repository.eventLinks(for: id).isEmpty)
+        #expect(await repository.links(for: id).isEmpty)
+        #expect(await repository.eventLinks(for: id).isEmpty)
         #expect(repository.isFavorite(id) == false)
 
         // Writes throw.
@@ -330,7 +330,7 @@ struct ContactsRepositoryContactAPITests {
         let link2 = try await repository.addEventLink(for: reconciledID, eventUUID: "evt-2", note: "b")
 
         // The bulk accessor returns both event endpoints (order-independent).
-        #expect(Set(repository.linkedEventUUIDs(for: reconciledID)) == Set(["evt-1", "evt-2"]))
+        #expect(Set(await repository.linkedEventUUIDs(for: reconciledID)) == Set(["evt-1", "evt-2"]))
 
         // The single-link accessor resolves each link to its event endpoint.
         #expect(repository.eventEndpointUUID(of: link1, for: reconciledID) == "evt-1")
@@ -359,7 +359,7 @@ struct ContactsRepositoryContactAPITests {
         let eventLink = try await repository.addEventLink(for: reconciledA, eventUUID: "evt-x", note: "x")
 
         // Only the event endpoint surfaces in the bulk accessor.
-        #expect(repository.linkedEventUUIDs(for: reconciledA) == ["evt-x"])
+        #expect(await repository.linkedEventUUIDs(for: reconciledA) == ["evt-x"])
 
         // Per-link: the event link resolves; the contact↔contact link is nil.
         #expect(repository.eventEndpointUUID(of: eventLink, for: reconciledA) == "evt-x")
@@ -379,7 +379,7 @@ struct ContactsRepositoryContactAPITests {
         let id = (try #require(repository.contact(localID: "TARGET"))).contactID
         #expect(id.guessWhoID == nil)
 
-        #expect(repository.linkedEventUUIDs(for: id).isEmpty)
+        #expect(await repository.linkedEventUUIDs(for: id).isEmpty)
         // A synthesized link object: `eventEndpointUUID` returns nil because the
         // passed `id` is unreconciled (no guessWhoID), so it can hold no link.
         let stray = Link(
@@ -409,6 +409,6 @@ struct ContactsRepositoryContactAPITests {
         await repository.reload()
 
         let id = (try #require(repository.contact(localID: "TARGET"))).contactID
-        #expect(repository.linkedEventUUIDs(for: id).isEmpty)
+        #expect(await repository.linkedEventUUIDs(for: id).isEmpty)
     }
 }
