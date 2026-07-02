@@ -21,8 +21,13 @@ import GuessWhoLogging
 ///   and forbid page JS from forging it, so requiring
 ///   `chrome-extension://<allowed id>` shuts out drive-by web pages (a plain
 ///   `fetch` from a website would carry an `https://` Origin). A malicious
-///   *local process* can forge any header — that's out of scope: the payload
-///   only ever feeds the user-reviewed confirm sheet, never a silent write.
+///   *local process* can forge any header — that's out of scope: a forged
+///   payload can at worst ADD a new card, which the app immediately opens
+///   on-screen in edit mode (loud, reviewable, deletable); changes to an
+///   EXISTING contact still go through the user-reviewed confirm sheet. The
+///   platform-sanctioned fix (Chrome native messaging, where Chrome itself
+///   authenticates the extension) is unavailable to a sandboxed MAS app —
+///   the host manifest can't be installed from inside the sandbox.
 /// - **Bounded.** Head capped at 16 KB, body at `maxBodyBytes` (mirrors the
 ///   Safari path's parked-file cap), 30 s per-connection deadline. `Connection:
 ///   close` semantics — one request per connection, which is exactly how the

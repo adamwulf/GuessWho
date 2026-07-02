@@ -924,6 +924,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
 
             NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+            // FIXME(iOS-extension): showContactDetail is Catalyst-shell only
+            // (`guard let split`) — on the iPhone tab shell this silently shows
+            // nothing (the card IS created; it just doesn't open). Fine today,
+            // the LinkedIn extension ships on Catalyst only. When the iOS
+            // extension target lands, push onto the active tab's nav stack here
+            // the way the matched path's confirm sheet presents via
+            // topmostPresenter().
             self.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
         }
     }
