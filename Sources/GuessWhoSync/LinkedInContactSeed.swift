@@ -46,7 +46,12 @@ public enum LinkedInContactSeed {
         // import of the same profile (URL tier).
         var socialProfiles: [LabeledSocialProfile] = []
         let profileURL = profile.contactInfo?.profileUrl ?? profile.sourceUrl
-        let slug = profileURL.flatMap { LinkedInURL.slug(from: $0) } ?? profile.slug ?? ""
+        // The `profile.slug` fallback gets the same trim + lowercase
+        // normalization `LinkedInURL.slug(from:)` applies, so the seeded
+        // username's canonical casing doesn't depend on which source won.
+        let slug = profileURL.flatMap { LinkedInURL.slug(from: $0) }
+            ?? profile.slug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            ?? ""
         if !slug.isEmpty {
             socialProfiles.append(LabeledSocialProfile(
                 label: "LinkedIn",

@@ -28,7 +28,10 @@ struct LinkedInContactSeedTests {
         let seed = LinkedInContactSeed.contact(from: profile)
 
         // Name splits via PersonNameComponents: middle initial lands in
-        // middleName, not familyName.
+        // middleName, not familyName. The exact split is Foundation's name
+        // parser, so an OS update could legitimately move the "E." — if this
+        // ever fails on a new OS, re-verify the parse by hand before touching
+        // the seed builder.
         #expect(seed.givenName == "Lydia")
         #expect(seed.middleName == "E.")
         #expect(seed.familyName == "Kavraki")
@@ -127,8 +130,10 @@ struct LinkedInContactSeedTests {
                 == "from-profile-url"
         )
 
-        // No URLs at all → the parser's slug field.
-        let slugOnly = LinkedInProfile(slug: "from-slug")
+        // No URLs at all → the parser's slug field, normalized the same way
+        // LinkedInURL.slug(from:) normalizes (trimmed + lowercased), so the
+        // seeded username's casing doesn't depend on which source won.
+        let slugOnly = LinkedInProfile(slug: "  From-Slug ")
         #expect(
             LinkedInContactSeed.contact(from: slugOnly).socialProfiles.first?.value.username
                 == "from-slug"
