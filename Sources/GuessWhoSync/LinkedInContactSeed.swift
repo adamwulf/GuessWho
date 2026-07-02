@@ -1,23 +1,29 @@
 import Foundation
-import GuessWhoSync
 
-/// Builds the pre-filled `Contact` seed handed to `ContactEditView` when a
-/// LinkedIn import matches no existing contact. The seed's `localID` is empty,
-/// so the editor's normal Save path takes the adapter's brand-new-contact
-/// branch — the import reuses the standard new-contact editor rather than
-/// growing its own form.
+/// Builds the pre-filled `Contact` seed the app hands to its new-contact
+/// editor when a LinkedIn import matches no existing contact. The seed's
+/// `localID` is empty, so the editor's normal Save path takes the adapter's
+/// brand-new-contact branch — the import reuses the standard new-contact
+/// editor rather than growing its own form.
+///
+/// Lives in `GuessWhoSync` (not the app target) for the same reason as
+/// `ContactEditModel`: the profile→Contact mapping is pure data logic, so it
+/// is exercisable from `GuessWhoSyncTests` without an app-target test bundle.
 ///
 /// Only CNContact-representable fields go in the seed. The LinkedIn-only
 /// extras (headline / about / location sidecar fields, and the photo) have no
-/// editor row; the scene delegate applies them AFTER the user saves, keyed on
-/// re-matching the saved contact (see `finishLinkedInNewContact`).
-enum LinkedInContactSeed {
-    static func contact(from profile: LinkedInProfile) -> Contact {
+/// editor row; the app attaches them AFTER the user saves, keyed on
+/// re-matching the saved contact (see the scene delegate's
+/// `finishLinkedInNewContact`).
+public enum LinkedInContactSeed {
+    public static func contact(from profile: LinkedInProfile) -> Contact {
         // Run the display name through Foundation's PersonNameComponents parse
         // strategy so given/middle/family land in the right fields (e.g.
         // "Lydia E. Kavraki" splits as given/middle/family). If the parser
         // throws on an unusual name, fall back to dropping the whole trimmed
         // string into `givenName` — same policy as the event-attendee seed.
+        // A missing/empty name yields empty name fields: the editor still
+        // opens (titled "New Contact") and the user types the name.
         let trimmedName = (profile.fullName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed: PersonNameComponents?
         let givenFallback: String
@@ -80,7 +86,9 @@ enum LinkedInContactSeed {
     }
 
     /// Scheme- and case-insensitive URL dedup key, ignoring a leading `www.`
-    /// and trailing slashes — same normalization as `LinkedInDiff.urlKey`.
+    /// and trailing slashes — same normalization as the app's
+    /// `LinkedInDiff.urlKey`, so the seed and the diff agree on which
+    /// websites count as duplicates.
     private static func urlKey(_ s: String) -> String {
         var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if let range = t.range(of: "://") { t = String(t[range.upperBound...]) }
