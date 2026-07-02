@@ -322,9 +322,12 @@ async function probe(probeId) {
   }
 
   // Contact info (emails/websites/profile URL) lives behind the "Contact info"
-  // overlay — the scroll pass can't mount it, so open it, parse it, restore the
-  // page. This is the LAST required section; do it after the scroll pass so we
-  // only pay the overlay round-trip once the rest is up. Skip it if the user
+  // overlay — the scroll pass can't mount it, so open it, wait for its fields to
+  // load, parse it, and restore the page. This is the LAST required section; do
+  // it after the scroll pass so we only pay the overlay round-trip once the rest
+  // is up. Skip it entirely when the profile has NO "Contact info" link
+  // (result.hasContactInfoLink === false) — there's nothing to fetch, and
+  // profileReadiness already counts that section as done. Skip it if the user
   // already pressed "Save anyway" — they want whatever's parsed, now. Async +
   // best-effort; never let it break the rest of the result.
   //
@@ -334,11 +337,15 @@ async function probe(probeId) {
   // caps at ~3s and always resolves), so this can't hang the probe; it's just a
   // brief unresponsive window on the very last step.
   try {
-    if (typeof extractContactInfo === "function" && !isInterrupted(probeId)) {
+    if (
+      typeof extractContactInfo === "function" &&
+      result.hasContactInfoLink !== false &&
+      !isInterrupted(probeId)
+    ) {
       const ci = await extractContactInfo();
       if (ci) result.contactInfo = ci;
       // Stream the updated readiness so the popup's Contact-info checkmark lights
-      // up (or stays pending, on a profile that exposes no contact fields).
+      // up once the fields have loaded.
       emitProgress(probeId, profileReadiness(result));
     }
   } catch (e) {
