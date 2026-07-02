@@ -90,6 +90,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Resources/manifest.json,
 			);
 			target = B200000000000000000000B1 /* GuessWhoLinkedIn */;
 		};
@@ -243,6 +244,7 @@
 				B200000000000000000000B2 /* Sources */,
 				B200000000000000000000B4 /* Frameworks */,
 				B200000000000000000000B3 /* Resources */,
+				B200000000000000000000B5 /* Generate manifest.json */,
 			);
 			buildRules = (
 			);
@@ -373,6 +375,29 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B200000000000000000000B5 /* Generate manifest.json */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/GuessWhoLinkedIn/Resources/manifest.json",
+			);
+			name = "Generate manifest.json";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/manifest.json",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copies Resources/manifest.json into the appex, rewriting `name` and\n# `action.default_title` from GUESSWHO_EXTENSION_DISPLAY_NAME (per-config\n# xcconfig) so Safari lists the Debug and Release extensions under different\n# names. The source manifest is excluded from Copy Bundle Resources (a\n# membership exception on the synchronized folder); this phase is the built\n# manifest's only producer.\nset -eu\n/usr/bin/python3 - \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\" \"${GUESSWHO_EXTENSION_DISPLAY_NAME:-}\" <<'PY'\nimport json, sys\nsrc, dst, name = sys.argv[1:4]\nwith open(src) as f:\n    manifest = json.load(f)\nif name:\n    manifest[\"name\"] = name\n    manifest[\"action\"][\"default_title\"] = name\nwith open(dst, \"w\") as f:\n    json.dump(manifest, f, indent=2)\n    f.write(\"\\n\")\nPY\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A100000000000000000000B2 /* Sources */ = {

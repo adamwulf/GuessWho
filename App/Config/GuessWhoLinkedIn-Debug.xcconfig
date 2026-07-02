@@ -11,6 +11,18 @@
 // (…guesswho.debug ⊃ …guesswho.debug.safari).
 PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.debug.safari
 
+// Display name — "Debug"-suffixed so Safari's extension list, permission
+// prompts, and toolbar tooltip are tellable apart from the Release install.
+// Feeds CFBundleDisplayName in GuessWhoLinkedIn/Info.plist AND the generated
+// manifest.json name/default_title (see the "Generate manifest.json" build
+// phase).
+GUESSWHO_EXTENSION_DISPLAY_NAME = GuessWho LinkedIn Debug
+
+// LinkedIn-handoff wake scheme — must match GUESSWHO_LINKEDIN_URL_SCHEME in
+// GuessWho-Debug.xcconfig so the Debug extension wakes the Debug app. Read at
+// runtime via the GuessWhoLinkedInURLScheme Info.plist key.
+GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin-debug
+
 // App Group — shared with the Debug app. Must match GUESSWHO_APP_GROUP in
 // GuessWho-Debug.xcconfig. DIFFERENT per platform.
 GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho.debug

@@ -15,6 +15,18 @@
 // Bundle id
 PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.debug
 
+// Display name — "Debug"-suffixed so the two installs are tellable apart on the
+// Home Screen and in Safari's extension list. Read via CFBundleDisplayName in
+// GuessWho/Info.plist.
+GUESSWHO_DISPLAY_NAME = GuessWho Debug
+
+// LinkedIn-handoff wake scheme — Debug-distinct so the Debug extension's wake
+// URL opens the Debug app, never the Release install. Hyphenated (not ".debug")
+// per URL-scheme convention. Must match GUESSWHO_LINKEDIN_URL_SCHEME in
+// GuessWhoLinkedIn-Debug.xcconfig. Registered via CFBundleURLTypes and read at
+// runtime via the GuessWhoLinkedInURLScheme Info.plist key.
+GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin-debug
+
 // App Group identifier — DIFFERENT per platform (see GuessWho-Release.xcconfig
 // for the per-platform rationale). Read at runtime via the GuessWhoAppGroup
 // Info.plist key (AppGroup.id).

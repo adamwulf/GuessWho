@@ -80,7 +80,7 @@ LinkedIn tab ──DOM──▶ content.js
 background.js ──browser.runtime.sendNativeMessage──▶ SafariWebExtensionHandler   (EXTENSION process)
    │                                                   │ parkPayload() writes
    │                                                   ▼ <AppGroup>/pending-handoff.json
-   │  ack {received, wakeURL:"guesswho-linkedin://handoff"}
+   │  ack {received, wakeURL:"guesswho-linkedin[-debug]://handoff"}
    ▼
 popup.js  ── window.location.href = wakeURL ──▶  GuessWhoSceneDelegate           (APP process)
                                                   │ scene(_:openURLContexts:) /
@@ -94,12 +94,20 @@ Concrete contract:
 - **Parked file:** `pending-handoff.json` (`handoffFilename`) in the App Group
   container. Written by `SafariWebExtensionHandler.parkPayload(_:)` with
   `{ "payload": …, "stampedBy": "extension" }`.
-- **Wake URL:** `guesswho-linkedin://handoff`. Registered in
-  `App/GuessWho/Info.plist` under `CFBundleURLTypes` (scheme `guesswho-linkedin`).
+- **Wake URL:** `guesswho-linkedin://handoff` (Release) /
+  `guesswho-linkedin-debug://handoff` (Debug). The scheme is per-configuration
+  (`GUESSWHO_LINKEDIN_URL_SCHEME` in each target's per-config xcconfig) so the
+  Debug extension wakes the Debug app, never the Release install. Registered in
+  `App/GuessWho/Info.plist` under `CFBundleURLTypes` as
+  `$(GUESSWHO_LINKEDIN_URL_SCHEME)`, and read at runtime from the
+  `GuessWhoLinkedInURLScheme` Info.plist key on both sides
+  (`LinkedInHandoffScheme.scheme` in the app,
+  `SafariWebExtensionHandler.handoffURL` in the extension) — mirroring how
+  `GuessWhoAppGroup` flows.
   - **Do not collide** with the unrelated `guesswho://contact/<uuid>` identity
     URL — that is a CNContact data-storage value (a `SidecarKey` payload), not a
     launch scheme. The handoff receiver filters strictly on
-    `scheme == "guesswho-linkedin"`.
+    `scheme == LinkedInHandoffScheme.scheme`.
 - **Receiver:** `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:)`,
   reached from both `scene(_:openURLContexts:)` (running app) and a
   `connectionOptions.urlContexts` drain in `willConnectTo` (cold launch). It
@@ -209,8 +217,10 @@ A mismatch between any of these silently breaks container resolution:
 ## Debug vs. Release identifiers
 
 A Debug install must be able to coexist with a Release/TestFlight install on the
-same device without sharing data. All three identity-bearing ids therefore carry
-a `.debug` suffix in Debug builds and are bare in Release:
+same device without sharing data — and be **tellable apart in Safari**. All
+three identity-bearing ids therefore carry a `.debug` suffix in Debug builds and
+are bare in Release, the user-visible names carry a "Debug" suffix, and the wake
+scheme carries a `-debug` suffix (hyphenated, per URL-scheme convention):
 
 | Identifier | Release | Debug |
 | --- | --- | --- |
@@ -219,6 +229,16 @@ a `.debug` suffix in Debug builds and are bare in Release:
 | App Group (iOS) | `group.com.milestonemade.guesswho` | `group.com.milestonemade.guesswho.debug` |
 | App Group (Catalyst) | `T68Z94627S.com.milestonemade.guesswho` | `T68Z94627S.com.milestonemade.guesswho.debug` |
 | iCloud container | `iCloud.com.milestonemade.guesswho` | `iCloud.com.milestonemade.guesswho.debug` |
+| App display name | `GuessWho` | `GuessWho Debug` |
+| Extension display name¹ | `GuessWho LinkedIn` | `GuessWho LinkedIn Debug` |
+| Wake scheme | `guesswho-linkedin` | `guesswho-linkedin-debug` |
+
+¹ Covers both the appex `CFBundleDisplayName` **and** the web-extension
+`manifest.json` `name`/`action.default_title` — Safari surfaces the manifest
+name in its Extensions list / permission prompts and `default_title` as the
+toolbar-button tooltip. The manifest is generated at build time (see
+[Target wiring](#target-wiring--provisioning-notes)) because Xcode copies
+resources verbatim and JSON can't interpolate build settings.
 
 **How the ids are wired (per-target, per-configuration xcconfigs):**
 
@@ -229,11 +249,15 @@ target+configuration's `baseConfigurationReference` in the project:
 
 - App — `GuessWho-Shared.xcconfig` (config-invariant) + `GuessWho-Debug.xcconfig`
   / `GuessWho-Release.xcconfig` (literal `PRODUCT_BUNDLE_IDENTIFIER`,
-  `GUESSWHO_APP_GROUP` both platform forms, `GUESSWHO_ICLOUD_CONTAINER`, and
+  `GUESSWHO_APP_GROUP` both platform forms, `GUESSWHO_ICLOUD_CONTAINER`,
+  `GUESSWHO_DISPLAY_NAME`, `GUESSWHO_LINKEDIN_URL_SCHEME`, and
   `CODE_SIGN_ENTITLEMENTS`).
 - Extension — `GuessWhoLinkedIn-Shared.xcconfig` + `GuessWhoLinkedIn-Debug.xcconfig`
   / `GuessWhoLinkedIn-Release.xcconfig` (literal extension `PRODUCT_BUNDLE_IDENTIFIER`,
-  `GUESSWHO_APP_GROUP`, `CODE_SIGN_ENTITLEMENTS` — App Group only). The extension
+  `GUESSWHO_APP_GROUP`, `GUESSWHO_EXTENSION_DISPLAY_NAME`,
+  `GUESSWHO_LINKEDIN_URL_SCHEME`, `CODE_SIGN_ENTITLEMENTS` — App Group only). The
+  wake scheme must stay **byte-identical** to the app's for the same
+  configuration, exactly like the App Group id. The extension
   bundle id keeps the `.debug` before the `.safari` leaf
   (`…guesswho.debug.safari`) so it stays prefixed by the app id (an Apple
   requirement for app extensions).
@@ -360,9 +384,11 @@ The build/embed/entitlement/identifier wiring is verifiable headlessly
 round-trip is **not** — it needs Safari + a real tab:
 
 1. Run the Catalyst app once so LaunchServices registers the appex and the
-   `guesswho-linkedin` scheme.
-2. Safari → Settings → Extensions → enable **GuessWho LinkedIn** (a local dev
-   build may need "Allow unsigned extensions").
+   wake scheme (`guesswho-linkedin`, or `guesswho-linkedin-debug` for a Debug
+   build).
+2. Safari → Settings → Extensions → enable **GuessWho LinkedIn** — a Debug
+   build shows up as **GuessWho LinkedIn Debug** (a local dev build may need
+   "Allow unsigned extensions").
 3. Open a real `https://www.linkedin.com/in/<slug>` tab, click the popup →
    **Send to GuessWho**.
 4. Confirm the app surfaces the payload, with matching ids in Console.
@@ -377,7 +403,11 @@ file-system synchronized groups, matching the app target):
 
 - The `GuessWhoLinkedIn` folder is a **synchronized root group**; an exception
   set keeps `Info.plist`, the entitlements files, and `SPIKE.md`-era docs out of
-  the bundled web resources.
+  the bundled web resources. `Resources/manifest.json` is also excluded: a
+  **Generate manifest.json** script phase (after Copy Bundle Resources, its only
+  producer) copies it into the appex, rewriting `name` and
+  `action.default_title` from `GUESSWHO_EXTENSION_DISPLAY_NAME` so Debug and
+  Release read differently everywhere Safari shows the extension.
 - The app target has an **Embed Foundation Extensions** copy-files phase
   (`dstSubfolderSpec = 13`) plus a target dependency on the extension, so the
   `GuessWho` scheme builds and embeds the appex automatically
