@@ -282,27 +282,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(nav, for: .secondary)
     }
 
-    /// The "+" add-contact flow, shared by both shells: create a BLANK record
-    /// immediately (same brand-new-record semantics as Contacts.app), then hand
-    /// it to `show`, which opens the standard detail view already in edit mode —
-    /// the new-contact form IS the edit form. `show` runs on the main actor
-    /// only after the create succeeded; a failure is logged and shows nothing
-    /// (the list is still consistent — nothing was created).
-    private func createNewContact(
-        appDelegate: GuessWhoAppDelegate,
-        show: @escaping @MainActor (Contact) -> Void
-    ) {
-        Task { @MainActor in
-            do {
-                let created = try await appDelegate.contactsRepository.createContact(Contact())
-                Self.contactsLog.notice("add-contact: created blank record")
-                show(created)
-            } catch {
-                Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
         // `eventKitID` lets EventDetailView adopt ephemeral EventKit rows whose
@@ -396,6 +375,34 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
     }
     #endif
+
+    // MARK: - Shared add-contact flow (both shells)
+
+    /// The "+" add-contact flow, shared by both shells: create a BLANK record
+    /// immediately (same brand-new-record semantics as Contacts.app), then hand
+    /// it to `show`, which opens the standard detail view already in edit mode —
+    /// the new-contact form IS the edit form. `show` runs on the main actor
+    /// only after the create succeeded; a failure is logged and shows nothing
+    /// (the list is still consistent — nothing was created).
+    ///
+    /// Shell-agnostic: the caller's `show` closure decides how to present —
+    /// Catalyst's People list REPLACES the secondary column via
+    /// `showContactDetail`, the iPhone tab shell PUSHES via `pushContactDetail`.
+    /// That's why this lives outside the Catalyst `#if`.
+    private func createNewContact(
+        appDelegate: GuessWhoAppDelegate,
+        show: @escaping @MainActor (Contact) -> Void
+    ) {
+        Task { @MainActor in
+            do {
+                let created = try await appDelegate.contactsRepository.createContact(Contact())
+                Self.contactsLog.notice("add-contact: created blank record")
+                show(created)
+            } catch {
+                Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
+            }
+        }
+    }
 
     // MARK: - iPhone / iPad (non-Catalyst) shell
 
@@ -949,14 +956,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
 
             NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
-            // FIXME(iOS-extension): showContactDetail is Catalyst-shell only
-            // (`guard let split`) — on the iPhone tab shell this silently shows
-            // nothing (the card IS created; it just doesn't open). Fine today,
-            // the LinkedIn extension ships on Catalyst only. When the iOS
-            // extension target lands, push onto the active tab's nav stack here
-            // the way the matched path's confirm sheet presents via
-            // topmostPresenter().
+            // Open the freshly-created card in edit mode, using each shell's
+            // own detail-presentation path. Catalyst REPLACES the secondary
+            // column; the iPhone/iPad tab shell PUSHES onto the active tab's
+            // nav stack. `showContactDetail` only exists under the Catalyst
+            // `#if`, so the branch is required to keep the iOS target building.
+            #if targetEnvironment(macCatalyst)
             self.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+            #else
+            self.pushContactDetail(
+                id: created.contactID,
+                on: self.activeTabNavigationController(),
+                appDelegate: appDelegate,
+                startsInEditMode: true
+            )
+            #endif
         }
     }
 
@@ -1081,6 +1095,35 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 #if !targetEnvironment(macCatalyst)
 extension GuessWhoSceneDelegate: UITabBarControllerDelegate {
+    /// The active tab's navigation stack in the iPhone/iPad tab shell, so a
+    /// programmatic open (e.g. the LinkedIn new-contact flow) can PUSH detail
+    /// the same way list selection does. The scene root is a
+    /// `PermissionGateViewController` that hosts the `UITabBarController` as a
+    /// CHILD once Contacts access is authorized, so we walk the VC tree to find
+    /// it rather than assuming a fixed root type. Returns nil before the gate
+    /// installs the tabs (access not yet granted) — `pushContactDetail`
+    /// tolerates a nil nav and no-ops, matching the pre-fix behavior of showing
+    /// nothing when there's nowhere to push.
+    private func activeTabNavigationController() -> UINavigationController? {
+        guard let root = window?.rootViewController else { return nil }
+        guard let tabs = Self.firstTabBarController(in: root) else { return nil }
+        return tabs.selectedViewController as? UINavigationController
+    }
+
+    /// Depth-first search for the first `UITabBarController` reachable from
+    /// `viewController`, following both presented and child view controllers.
+    private static func firstTabBarController(in viewController: UIViewController) -> UITabBarController? {
+        if let tabs = viewController as? UITabBarController { return tabs }
+        if let presented = viewController.presentedViewController,
+           let tabs = firstTabBarController(in: presented) {
+            return tabs
+        }
+        for child in viewController.children {
+            if let tabs = firstTabBarController(in: child) { return tabs }
+        }
+        return nil
+    }
+
     func tabBarController(
         _ tabBarController: UITabBarController,
         shouldSelect viewController: UIViewController
