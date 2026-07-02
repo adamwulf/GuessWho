@@ -10,6 +10,25 @@
 
 const api = globalThis.browser ?? globalThis.chrome;
 const out = document.getElementById("out");
+const goBtn = document.getElementById("go");
+const progressEl = document.getElementById("progress");
+const progressCountEl = document.getElementById("progress-count");
+const progressListEl = document.getElementById("progress-list");
+
+// A per-click id so the streamed progress updates from THIS probe can be told
+// apart from a straggler left over from a previous click. crypto.randomUUID is
+// available in the extension's popup context; fall back to a timestamp+counter
+// for any runtime that lacks it.
+let probeCounter = 0;
+function newProbeId() {
+  try {
+    if (globalThis.crypto && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch (_e) { /* fall through */ }
+  probeCounter += 1;
+  return "probe-" + Date.now() + "-" + probeCounter;
+}
 
 // Step breadcrumbs. The JS side of the handoff lives in the browser/extension
 // context and can ONLY reach the JS console (it cannot write app.log), so these
@@ -31,6 +50,47 @@ function show(obj, isError) {
   out.classList.toggle("err", !!isError);
 }
 
+// --- Loading progress --------------------------------------------------------
+//
+// The content script streams `guesswho.progress` messages as it scrolls the
+// lazy sections into the DOM. Render "X/Y sections loaded" plus a per-section
+// checklist so the user sees exactly which pieces we're still waiting on. The
+// listener stays registered for the popup's whole lifetime and filters on the
+// active probeId, so a stale straggler from a previous click can't overwrite the
+// current run's display.
+let activeProbeId = null;
+
+function renderProgress(update) {
+  progressCountEl.textContent =
+    `Loading profile… ${update.loaded}/${update.total} sections`;
+  progressListEl.textContent = "";
+  for (const s of update.sections || []) {
+    const li = document.createElement("li");
+    li.className = s.present ? "done" : "pending";
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    li.appendChild(mark);
+    li.appendChild(document.createTextNode(s.label));
+    progressListEl.appendChild(li);
+  }
+  progressEl.classList.add("active");
+}
+
+function clearProgress() {
+  activeProbeId = null;
+  progressEl.classList.remove("active");
+  progressCountEl.textContent = "";
+  progressListEl.textContent = "";
+}
+
+api.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "guesswho.progress") return false;
+  // Ignore progress from a probe other than the one in flight.
+  if (!activeProbeId || message.probeId !== activeProbeId) return false;
+  renderProgress(message);
+  return false; // one-way notification, no response
+});
+
 async function activeTab() {
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   return tab;
@@ -41,9 +101,9 @@ async function activeTab() {
 // run on navigation after enable), so `tabs.sendMessage` throws "no receiver".
 // In that case inject content.js on demand and retry — this is the fix for the
 // `received: false` symptom (probe was undefined → native got no payload).
-async function probeTab(tabId) {
+async function probeTab(tabId, probeId) {
   try {
-    return await api.tabs.sendMessage(tabId, { type: "guesswho.probe" });
+    return await api.tabs.sendMessage(tabId, { type: "guesswho.probe", probeId });
   } catch (_e) {
     // Inject the parser first, then the content script (same order as the
     // manifest), so `extractProfile` is defined when content.js runs.
@@ -51,12 +111,15 @@ async function probeTab(tabId) {
       target: { tabId },
       files: ["parse-profile.js", "content.js"],
     });
-    return await api.tabs.sendMessage(tabId, { type: "guesswho.probe" });
+    return await api.tabs.sendMessage(tabId, { type: "guesswho.probe", probeId });
   }
 }
 
-document.getElementById("go").addEventListener("click", async () => {
+goBtn.addEventListener("click", async () => {
   log("handoff start");
+  // Lock the button and reset any prior progress/result for this run.
+  goBtn.disabled = true;
+  clearProgress();
   try {
     const tab = await activeTab();
     if (!tab || !/linkedin\.com\/in\//.test(tab.url || "")) {
@@ -66,15 +129,47 @@ document.getElementById("go").addEventListener("click", async () => {
     }
     log("active tab", { tabId: tab.id, url: tab.url });
 
-    // 1) Probe the content script (inject-and-retry if not present).
-    log("probe: requesting profile from content script");
-    const probe = await probeTab(tab.id);
+    // 1) Probe the content script (inject-and-retry if not present). The probe
+    // does NOT resolve until the scroll pass has waited for every required
+    // section (Experience) to mount — so by the time we get `probe` back below,
+    // we've already "waited then sent", and the streamed progress the user saw
+    // reflects that wait. A probeId lets us correlate this run's progress
+    // messages and ignore stragglers from a previous click.
+    const probeId = newProbeId();
+    activeProbeId = probeId;
+    show("Loading profile…");
+    log("probe: requesting profile from content script", { probeId });
+    const probe = await probeTab(tab.id, probeId);
     if (!probe) {
       log("probe: failed (no data)");
       show({ step: "probe failed", detail: "content script returned no data" }, true);
       return;
     }
-    log("probe: got profile", { fallback: !!probe._fallback, hasPhoto: !!probe.photo });
+    const readiness = probe.readiness || null;
+    log("probe: got profile", {
+      fallback: !!probe._fallback,
+      hasPhoto: !!probe.photo,
+      ready: !!(readiness && readiness.ready),
+      loaded: readiness ? readiness.loaded : null,
+      total: readiness ? readiness.total : null,
+    });
+    // The wait is over — stop streaming progress into the checklist.
+    clearProgress();
+    // If the scroll pass exhausted its deadline WITHOUT every required section
+    // mounting (a profile with no Experience, a parse-selector drift, or a very
+    // slow load), say so plainly. We still proceed to the handoff with whatever
+    // parsed rather than permanently blocking the import — but the UI is honest
+    // that not everything loaded, so a systematic miss is visible rather than
+    // silently shipping partial data.
+    if (readiness && !readiness.ready) {
+      const missing = (readiness.sections || [])
+        .filter((s) => s.required && !s.present)
+        .map((s) => s.label);
+      log("probe: incomplete after wait", { missing });
+      show(
+        `Note: not everything finished loading (missing: ${missing.join(", ") || "unknown"}). Sending what loaded…`
+      );
+    }
 
     // 2) Hand off to native (background relays to SafariWebExtensionHandler).
     log("native: sending handoff to background → native handler");
@@ -120,5 +215,11 @@ document.getElementById("go").addEventListener("click", async () => {
   } catch (e) {
     log("handoff threw", { error: String(e) });
     show({ error: String(e) }, true);
+  } finally {
+    // Always release the button and drop the progress checklist, whether we
+    // succeeded, aborted early, or threw — otherwise a failed run leaves the
+    // popup stuck "Loading…" with a dead button.
+    clearProgress();
+    goBtn.disabled = false;
   }
 });

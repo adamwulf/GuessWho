@@ -120,37 +120,58 @@ function resolveScroller() {
   return document.scrollingElement || document.documentElement;
 }
 
-// Scroll the profile to force ALL of LinkedIn's lazy-rendered sections (About,
+// Scroll the profile to force LinkedIn's lazy-rendered sections (About,
 // Experience, Education, …) into the DOM — they mount only once they enter the
 // viewport. Step the scroller down (see resolveScroller — it's a nested
-// element, not the window), giving the renderer a beat per step, until the
-// content stops growing (or the hang-guard deadline is hit), then jump back to
-// wherever the user was.
+// element, not the window), giving the renderer a beat per step.
 //
-// Runs unconditionally on every probe, all the way to the bottom — no
-// early-exit once particular sections parse. That's a deliberate product
-// choice: the probe optimizes for capturing everything on the profile, not
-// for the user's wait time, and a section we don't parse today may matter
-// tomorrow. The deadline caps a pathological page so the handoff can never
-// hang, and the user's scroll position is always restored.
+// The loop is driven by READINESS, not by a blind "stopped growing" heuristic:
+// after each scroll step we re-parse and ask `profileReadiness` whether every
+// REQUIRED section (notably Experience) is now present. As soon as they are, we
+// stop — we've captured everything we gate on, so there's no reason to keep the
+// user waiting. If the page bottoms out and stops growing before readiness (a
+// genuinely sparse profile, or a section that never mounts), we stop then too,
+// rather than hang; the caller ships whatever parsed. The deadline caps a
+// pathological page so the handoff can never hang, and the user's scroll
+// position is always restored.
 //
-// Uses the global `sleep` from the sibling parse-profile.js (both files share
-// the content-script world; redeclaring it here would be a SyntaxError
-// collision). Only reachable when the parser loaded — the call site is gated
-// on `typeof extractProfile === "function"` — so `sleep` is always defined.
-async function forceLazySections() {
+// `onProgress(readiness, parsed)` is invoked after each re-parse (and once at
+// the start) so the caller can stream "X/Y sections loaded" to the popup while
+// this runs. Returns the last readiness so the caller knows whether it bailed
+// on readiness or on the deadline.
+//
+// Uses the global `sleep`/`profileReadiness` from the sibling parse-profile.js
+// (both files share the content-script world; redeclaring `sleep` here would be
+// a SyntaxError collision). Only reachable when the parser loaded — the call
+// site is gated on `typeof extractProfile === "function"` — so both are defined.
+async function forceLazySections(onProgress) {
   const scroller = resolveScroller();
   const startTop = scroller.scrollTop;
   const startX = window.scrollX;
   const startY = window.scrollY;
-  // A generous hang-guard, not a target: the pass ends once the fully-mounted
-  // page stops growing (settle window below). We prefer a longer wait over an
-  // incomplete parse. Profiles with an endlessly-growing tail (activity feed,
-  // "People also viewed") never settle and pay the full deadline — accepted
-  // by design; an early-out on diminishing growth could cut off real sections
-  // on a slow connection.
+
+  // Re-parse and report progress; tolerate a parser throw mid-scroll (a
+  // half-mounted DOM) by treating it as "nothing new this step".
+  const measure = () => {
+    let parsed = null;
+    try { parsed = extractProfile(); } catch (_e) { parsed = null; }
+    const readiness = profileReadiness(parsed || {});
+    try { if (onProgress) onProgress(readiness, parsed); } catch (_e) { /* never let the UI hook break the scroll */ }
+    return { parsed, readiness };
+  };
+
+  // Report the pre-scroll baseline immediately so the popup shows real progress
+  // (usually identity present, experience not) the instant the pass starts.
+  let last = measure();
+
+  // A generous hang-guard, not a target: the pass ends on readiness (all
+  // required sections present) or when the fully-mounted page stops growing.
+  // We prefer a longer wait over an incomplete parse. Profiles with an
+  // endlessly-growing tail (activity feed, "People also viewed") never settle
+  // and pay the full deadline only when readiness is never reached.
   const deadline = Date.now() + 30000;
   try {
+    if (last.readiness.ready) return last.readiness; // already complete — no scroll needed
     // Step by ~90% of the scroller's own viewport, not the window's — the two
     // differ when the scroller is a nested element.
     const step = Math.max(400, Math.floor(scroller.clientHeight * 0.9));
@@ -160,6 +181,11 @@ async function forceLazySections() {
     while (Date.now() < deadline) {
       scroller.scrollTop = y;
       await sleep(150);
+      last = measure();
+      // Primary exit: every required section is now in the DOM. Stop here — the
+      // handoff has everything it gates on.
+      if (last.readiness.ready) break;
+
       const height = scroller.scrollHeight;
       const maxY = height - scroller.clientHeight;
       // Keep climbing while there is meaningfully more to scroll OR while the
@@ -174,9 +200,10 @@ async function forceLazySections() {
         }
         if (y < maxY) { y += step; continue; }
       }
-      // At the bottom and the page has stopped growing — but sections may still
-      // be MOUNTING for a beat. Give it a short settle window before concluding
-      // everything on this profile has rendered.
+      // Fallback exit: at the bottom and the page has stopped growing, yet
+      // we're still not "ready" (a sparse profile, or a section that never
+      // mounts). Give mounting a short settle window, then stop rather than
+      // hang — the caller ships whatever parsed.
       if (height <= lastHeight && Date.now() > settleUntil) {
         break;
       }
@@ -185,9 +212,37 @@ async function forceLazySections() {
     scroller.scrollTop = startTop;
     window.scrollTo(startX, startY);
   }
+  return last.readiness;
 }
 
-async function probe() {
+// Stream a progress update back to the popup while the scroll pass runs. The
+// popup opened a `browser.runtime.onMessage` listener keyed on `probeId`; this
+// is a fire-and-forget one-way message (no response expected). Best-effort: a
+// closed popup makes this reject, which must never break the probe.
+function emitProgress(probeId, readiness) {
+  if (!probeId) return;
+  try {
+    const p = api.runtime.sendMessage({
+      type: "guesswho.progress",
+      probeId,
+      loaded: readiness.loaded,
+      total: readiness.total,
+      ready: readiness.ready,
+      sections: readiness.sections,
+    });
+    // sendMessage returns a promise in MV3; swallow "no receiver" rejections
+    // (popup closed) so an unhandled rejection never surfaces.
+    //
+    // NOTE for the eventual Chrome / iOS port: this relies on the promise-style
+    // `browser.*` API this extension targets (Safari). Under chrome.*'s
+    // callback-style sendMessage there's no returned thenable, so a closed popup
+    // surfaces as "Unchecked runtime.lastError" instead — a porter should route
+    // through a shim that reads `chrome.runtime.lastError` in the callback.
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_e) { /* popup gone — ignore */ }
+}
+
+async function probe(probeId) {
   // NOTE: LinkedIn lazy-renders sections (About, Experience, …) — only what's
   // been scrolled into view is in the DOM. Parse what's there first as a
   // fallback, then scroll everything in and re-parse (below).
@@ -221,16 +276,35 @@ async function probe() {
         about: !!result.about,
         positions: (result.experience || []).length,
       });
-      await forceLazySections();
+      // Scroll until every REQUIRED section (Experience) is in the DOM, streaming
+      // "X/Y sections loaded" to the popup as it goes. The pass re-parses each
+      // step; take the final re-parse WHOLESALE (below) — sections stay mounted
+      // once rendered, and a per-field merge could pair a title and an org from
+      // different sources (the atomicity rule in parse-profile.js).
+      const finalReadiness = await forceLazySections(
+        (readiness) => emitProgress(probeId, readiness)
+      );
       const second = extractProfile();
       if (second) result = second;
+      // Stamp the readiness onto the result so the popup's final gate (and the
+      // app-side log) can see whether every required section actually loaded.
+      result.readiness = finalReadiness || profileReadiness(result);
       console.log("[GuessWho] scroll pass: done", {
         about: !!result.about,
         positions: (result.experience || []).length,
+        ready: result.readiness.ready,
+        loaded: result.readiness.loaded,
+        total: result.readiness.total,
       });
     }
   } catch (e) {
     console.log("[GuessWho] scroll pass threw:", e);
+  }
+  // Ensure a readiness is always present (e.g. parser missing, or the pass
+  // threw before stamping) so downstream consumers never see `undefined`.
+  if (!result.readiness) {
+    result.readiness =
+      typeof profileReadiness === "function" ? profileReadiness(result) : null;
   }
 
   // Contact info (emails/websites/profile URL) lives behind the "Contact info"
@@ -288,12 +362,17 @@ async function probe() {
 // what it returned to the popup.
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "guesswho.probe") return false;
-  log("probe requested by popup");
-  probe()
+  // The popup passes a probeId so it can correlate the streamed
+  // `guesswho.progress` updates with this probe (and ignore stragglers from a
+  // previous click). It's optional — an absent id just disables streaming.
+  const probeId = message.probeId || null;
+  log("probe requested by popup", { probeId });
+  probe(probeId)
     .then((result) => {
       log("probe responding", {
         fallback: !!result._fallback,
         hasPhoto: !!result.photo,
+        ready: !!(result.readiness && result.readiness.ready),
       });
       sendResponse(result);
     })

@@ -8,13 +8,30 @@
     body { font: -apple-system-body, system-ui; margin: 0; padding: 16px; min-width: 280px; }
     h1 { font-size: 15px; margin: 0 0 12px; }
     button { font-size: 15px; padding: 10px 14px; width: 100%; border-radius: 10px; border: 0; background: #0a66c2; color: #fff; }
+    button:disabled { opacity: 0.5; }
     pre { background: #f4f4f5; padding: 10px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin-top: 12px; }
     .err { color: #b00020; }
+
+    /* Loading progress: shown only while a probe is scrolling the page in. */
+    #progress { margin-top: 12px; display: none; }
+    #progress.active { display: block; }
+    #progress .count { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    #progress ul { list-style: none; margin: 0; padding: 0; }
+    #progress li { font-size: 13px; padding: 3px 0; display: flex; align-items: center; }
+    #progress li .mark { width: 18px; display: inline-block; }
+    #progress li.done { color: #1a7f37; }
+    #progress li.pending { color: #6b6b70; }
+    #progress li.done .mark::before { content: "✓"; }
+    #progress li.pending .mark::before { content: "…"; }
   </style>
 </head>
 <body>
   <h1>GuessWho — handoff spike</h1>
   <button id="go">Send to GuessWho</button>
+  <div id="progress">
+    <div class="count" id="progress-count"></div>
+    <ul id="progress-list"></ul>
+  </div>
   <pre id="out">Open a linkedin.com/in/… tab, then tap the button.</pre>
   <script src="popup.js"></script>
 </body>
