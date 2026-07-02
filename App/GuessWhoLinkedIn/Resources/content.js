@@ -111,7 +111,10 @@ async function forceLazySections() {
   const startY = window.scrollY;
   // A generous hang-guard, not a target: the pass ends once the fully-mounted
   // page stops growing (settle window below). We prefer a longer wait over an
-  // incomplete parse.
+  // incomplete parse. Profiles with an endlessly-growing tail (activity feed,
+  // "People also viewed") never settle and pay the full deadline — accepted
+  // by design; an early-out on diminishing growth could cut off real sections
+  // on a slow connection.
   const deadline = Date.now() + 30000;
   try {
     const step = Math.max(400, Math.floor(window.innerHeight * 0.9));
@@ -157,13 +160,16 @@ async function probe() {
 
   // Lazy-section pass: everything below the fold is unrendered until it's
   // been scrolled into view, so always walk the whole page to the bottom to
-  // mount every section, then re-parse. Best-effort: a failed pass ships the
-  // first parse. Take the re-parse WHOLESALE, not per-field: sections stay
-  // mounted once rendered (the DOM only grows during the pass), and a
-  // per-field merge could pair a title and an org from different sources (the
-  // atomicity rule in parse-profile.js).
+  // mount every section, then re-parse. Runs whenever the parser is loaded —
+  // even when the first parse fell back to the minimal probe (a mid-load page
+  // is exactly when scrolling helps most; a successful re-parse supersedes
+  // the fallback, which carries no field the full parse lacks). Best-effort:
+  // a failed pass ships the first parse. Take the re-parse WHOLESALE, not
+  // per-field: sections stay mounted once rendered (the DOM only grows during
+  // the pass), and a per-field merge could pair a title and an org from
+  // different sources (the atomicity rule in parse-profile.js).
   try {
-    if (typeof extractProfile === "function" && !result._fallback) {
+    if (typeof extractProfile === "function") {
       // Inner-probe log ([GuessWho] prefix, like the photo-fetch lines) — the
       // log() helper is scoped to the listener breadcrumbs that bracket the
       // probe.
