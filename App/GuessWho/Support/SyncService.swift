@@ -146,12 +146,15 @@ final class SyncService {
 
     // Routes the windowed read through the orchestrator's Option-C projection
     // (`sync.eventsWindow`). EventKit inclusion is gated here so the orchestrator
-    // stays permission-agnostic.
-    func fetchEventsRange(from start: Date, to end: Date) -> [Event] {
+    // stays permission-agnostic. `async` — the window read is a synchronous
+    // EventKit query plus a coordinated read of every event sidecar, so it
+    // rides the orchestrator's background-hop overload rather than blocking
+    // the main actor.
+    func fetchEventsRange(from start: Date, to end: Date) async -> [Event] {
         guard let sync else { return [] }
         let includeEventKit = (eventsAuthorization == .authorized)
         do {
-            return try sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
+            return try await sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
         } catch {
             lastError = "fetchEvents failed: \(error.localizedDescription)"
             return []

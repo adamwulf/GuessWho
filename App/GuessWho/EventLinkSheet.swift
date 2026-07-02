@@ -135,7 +135,7 @@ struct EventLinkSheet: View {
             if canBrowseCalendar && !expandedBeyondToday {
                 Section {
                     Button {
-                        loadShowMore()
+                        Task { await loadShowMore() }
                     } label: {
                         Label("Show more", systemImage: "chevron.down")
                     }
@@ -316,12 +316,12 @@ struct EventLinkSheet: View {
         loadedDays = bucket
     }
 
-    private func loadShowMore() {
+    private func loadShowMore() async {
         let today = Calendar.current.startOfDay(for: Date())
         let end = Calendar.current.date(byAdding: .day, value: 365, to: today) ?? today
         // Use the window read for the range; the orchestrator handles EventKit
         // gating internally and falls back gracefully when access is denied.
-        let events = service.fetchEventsRange(from: today, to: end)
+        let events = await service.fetchEventsRange(from: today, to: end)
         mergeIntoLoadedDays(events)
         expandedBeyondToday = true
         loadedForwardThrough = end
@@ -331,11 +331,9 @@ struct EventLinkSheet: View {
         guard canBrowseCalendar else { return }
         let to = loadedBackwardThrough
         guard let from = Calendar.current.date(byAdding: .year, value: -1, to: to) else { return }
-        let events = service.fetchEventsRange(from: from, to: to)
-        await MainActor.run {
-            mergeIntoLoadedDays(events)
-            loadedBackwardThrough = from
-        }
+        let events = await service.fetchEventsRange(from: from, to: to)
+        mergeIntoLoadedDays(events)
+        loadedBackwardThrough = from
     }
 
     private func searchOlderEvents() {

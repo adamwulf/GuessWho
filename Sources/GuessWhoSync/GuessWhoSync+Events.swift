@@ -415,6 +415,32 @@ extension GuessWhoSync {
         return result.sorted { $0.startDate < $1.startDate }
     }
 
+    /// Async overload of `eventsWindow(from:to:includeEventKit:)` that hops
+    /// the read to a background queue. The window read is EventKit's
+    /// synchronous `events(matching:)` PLUS a coordinated read of every event
+    /// sidecar — both scale with data size and must not block the caller's
+    /// actor / main thread. Same continuation-hop pattern (and `self` capture
+    /// rationale) as `recentEvents(matchingEmails:)` below. Sync callers (and
+    /// the tests) keep the synchronous overload.
+    public func eventsWindow(
+        from: Date,
+        to: Date,
+        includeEventKit: Bool = true
+    ) async throws -> [Event] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [Event] = try self.eventsWindow(
+                        from: from, to: to, includeEventKit: includeEventKit
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Attendee lookup (contact detail "Recent Events")
 
     /// Async wrapper around `events.eventsWithAttendee(...)` for the contact

@@ -36,9 +36,32 @@ final class EventsRepository: NSObject {
 
     /// Reloads the events list. `nonisolated` because the selector API delivers
     /// on the posting thread; hops to the main actor to do the work.
+    ///
+    /// Debounced: `.EKEventStoreChanged` fires in bursts during background
+    /// calendar sync (and `.guessWhoContactsDidChange` during contact sync),
+    /// and each reload walks every event sidecar plus an EventKit window
+    /// query. The trailing debounce collapses a burst into one reload after
+    /// the last notification. Direct `reload()` calls stay immediate.
     @objc
     private nonisolated func storeDidChange(_ note: Notification) {
         Task { @MainActor [weak self] in
+            self?.scheduleDebouncedReload()
+        }
+    }
+
+    /// The pending debounced reload, if any. Replaced (and the prior one
+    /// cancelled) on every notification, so only the trailing edge fires.
+    private var pendingReload: Task<Void, Never>?
+    private static let reloadDebounce: Duration = .milliseconds(300)
+
+    private func scheduleDebouncedReload() {
+        pendingReload?.cancel()
+        pendingReload = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.reloadDebounce)
+            } catch {
+                return   // superseded by a newer notification
+            }
             await self?.reload()
         }
     }
@@ -48,7 +71,7 @@ final class EventsRepository: NSObject {
         let now = Date()
         let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
         let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
-        let fetched = service.fetchEventsRange(from: start, to: end)
+        let fetched = await service.fetchEventsRange(from: start, to: end)
         events = fetched.sorted { $0.startDate < $1.startDate }
         // Flip BEFORE posting so synchronous observers see the
         // post-load state. See ContactsRepository.reload() for the full
