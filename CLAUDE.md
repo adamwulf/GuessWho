@@ -53,6 +53,10 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   shell, iPhone tab-bar shell). Detail views, list view controllers,
   scene delegate.
 - `App/GuessWhoLinkedIn/` — the LinkedIn Safari Web Extension.
+- `App/GuessWhoChrome/` — the LinkedIn Chrome/Brave extension. NOT a second
+  code copy: `build.sh` assembles it from the Safari extension's `Resources/`
+  plus a Chrome-specific manifest/background (localhost handoff). See its
+  `README.md` for build/test/Web-Store instructions.
 - `App/GuessWhoAppKitBridge/` — in-process AppKit `.bundle` for the rare
   AppKit-only needs on Catalyst (e.g. `NSOpenPanel`).
 - `Sources/GuessWhoLogging/` — `GuessWhoLog`, a thin facade over

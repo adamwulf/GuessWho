@@ -13,6 +13,11 @@
 	     powerbox grant that lets us read a user-chosen file requires this. -->
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!-- Lets LinkedInLocalhostReceiver accept the Chrome/Brave extension's
+	     handoff POST. The listener binds 127.0.0.1 only — nothing is ever
+	     reachable off-machine. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 	<key>com.apple.security.personal-information.addressbook</key>
 	<true/>
 	<key>com.apple.security.personal-information.calendars</key>

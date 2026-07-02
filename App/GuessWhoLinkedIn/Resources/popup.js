@@ -230,7 +230,10 @@ async function runHandoff() {
         log("wake: navigation threw", { error: String(e) });
       }
     } else {
-      log("wake: no wakeURL in native ack — cannot wake app");
+      // Safari's native handler always acks a wakeURL; the Chrome background
+      // worker (which shares this popup verbatim — see App/GuessWhoChrome)
+      // performs the wake itself and deliberately omits it.
+      log("wake: no wakeURL in ack — wake was handled (or isn't needed) upstream");
     }
     show({ sentToGuessWho: probe, nativeAck: ack.native, openedWakeURL: wakeURL ?? null });
   } catch (e) {

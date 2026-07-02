@@ -6,6 +6,14 @@ Group rules that differ between iOS and Mac Catalyst. Read it before touching
 the extension target, the App Group identifiers, the entitlements, or the
 handoff code.
 
+> **Chrome/Brave sibling:** `App/GuessWhoChrome/` ships the same extension for
+> Chromium browsers, assembled from this target's `Resources/` by its
+> `build.sh` (the parser, content script, and popup are shared **verbatim** —
+> editing them here changes both extensions). Its transport differs (no App
+> Group, no native handler): the wake URL plus a `POST` to the app's
+> loopback-only listener (`LinkedInLocalhostReceiver`), converging on the same
+> `processLinkedInHandoff` pipeline. See `App/GuessWhoChrome/README.md`.
+
 For the product rationale and the broader build plan, see
 [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md).
 
