@@ -1101,9 +1101,9 @@ extension GuessWhoSceneDelegate: UITabBarControllerDelegate {
     /// `PermissionGateViewController` that hosts the `UITabBarController` as a
     /// CHILD once Contacts access is authorized, so we walk the VC tree to find
     /// it rather than assuming a fixed root type. Returns nil before the gate
-    /// installs the tabs (access not yet granted) — `pushContactDetail`
-    /// tolerates a nil nav and no-ops, matching the pre-fix behavior of showing
-    /// nothing when there's nowhere to push.
+    /// installs the tabs (access not yet granted); `pushContactDetail`
+    /// tolerates a nil nav and no-ops, so the open is simply skipped when
+    /// there's nowhere to push.
     private func activeTabNavigationController() -> UINavigationController? {
         guard let root = window?.rootViewController else { return nil }
         guard let tabs = Self.firstTabBarController(in: root) else { return nil }
