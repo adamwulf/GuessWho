@@ -541,9 +541,13 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 //
 //   • identity, Experience, About — mount by SCROLLING. content.js's scroll
 //     pass is unbounded (no deadline): it loops top→bottom until all three are
-//     present. So if one of THESE is missing (a slow load, or a profile with no
-//     About text), the pass keeps scrolling and the only way to hand off is the
-//     user's "Save anyway" (which interrupts and ships what parsed).
+//     present. So if one of THESE is missing (a slow load), the pass keeps
+//     scrolling and the only way to hand off is the user's "Save anyway"
+//     (which interrupts and ships what parsed). The one carve-out is About on
+//     a profile that has none: About renders ABOVE Experience, so once
+//     Experience has mounted, an absent About can't still be coming — the
+//     About section counts as done then (see below) instead of scrolling
+//     forever.
 //   • Contact info — the "Contact info" link lives in the top card (in the DOM
 //     from first paint), so its presence/absence is a definitive, immediate
 //     signal via `hasContactInfoLink`. No link => nothing to fetch => the
@@ -552,8 +556,10 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 //     after the scroll sections are up, waits for the fields to load, and
 //     stamps `result.contactInfo`; the section is done when those fields land.
 //
-// Net: identity/Experience/About block until present-or-"Save anyway"; contact
-// info blocks only when a link exists but its fields haven't loaded yet.
+// Net: identity/Experience block until present-or-"Save anyway"; About blocks
+// until present, implied-absent (Experience mounted without it), or "Save
+// anyway"; contact info blocks only when a link exists but its fields haven't
+// loaded yet.
 //
 // Each check reads ONLY the already-parsed `result` (no DOM access), so the same
 // function serves the live probe and the unit tests against a fixture.
@@ -578,6 +584,7 @@ function profileReadiness(result) {
   );
   const noContactLink = r.hasContactInfoLink === false;
   const hasContact = capturedContact || noContactLink;
+  const hasExperience = Array.isArray(r.experience) && r.experience.length > 0;
   const sections = [
     // The top-card identity is present as soon as the page paints — it gates
     // nothing in practice, but reporting it gives the popup a "1/N" the instant
@@ -586,11 +593,14 @@ function profileReadiness(result) {
     // Experience mounts lazily near the middle of the page, so it's one of the
     // sections the scroll pass has to reach.
     { key: "experience", label: "Experience", required: true,
-      present: Array.isArray(r.experience) && r.experience.length > 0 },
-    // About also lazy-mounts. Some profiles have no About text; with no
-    // deadline, such a profile waits for the user's "Save anyway" rather than
-    // shipping on a timer.
-    { key: "about", label: "About", required: true, present: !!r.about },
+      present: hasExperience },
+    // About also lazy-mounts, ABOVE Experience, so a top→bottom sweep crosses
+    // it first: once Experience is in the DOM, an absent About means this
+    // profile simply has none — it can't still be coming. Count it done then
+    // (mirroring the no-contact-link case) so a profile with no About text
+    // doesn't scroll forever waiting on "Save anyway".
+    { key: "about", label: "About", required: true,
+      present: !!r.about || hasExperience },
     // Contact info: done if the profile has no "Contact info" link at all (no
     // fetch needed) or the overlay step captured fields. See hasContact above.
     { key: "contact", label: "Contact info", required: true, present: hasContact },
