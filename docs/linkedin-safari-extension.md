@@ -28,7 +28,7 @@ The extension is bundled inside the GuessWho app as a single
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" `<h2>`) — never LinkedIn's obfuscated class names — and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser, fetch the full-res photo bytes in-session as a `data:` URL, and reply to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
+| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" and "Experience" `<h2>`s) — never LinkedIn's obfuscated class names — `extractExperience` walks the Experience card's entry wrappers into structured positions (title/org/dates, current position feeds `title`/`org`), and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser, fetch the full-res photo bytes in-session as a `data:` URL, and reply to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
 | Background service worker | `App/GuessWhoLinkedIn/Resources/background.js` | The **only** place that can talk to native. Relays content/popup messages to the native handler via `sendNativeMessage`. Non-persistent (MV3 `service_worker`) — required on iOS, fine on macOS. |
 | Popup | `App/GuessWhoLinkedIn/Resources/popup.{html,js}` | User-facing toolbar UI. Orchestrates: probe the tab → hand off to native → open the wake URL. Sized for a phone sheet so it ports to iOS. |
 | Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
@@ -293,9 +293,12 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    `urlAddresses`, never reconstructs it from the filtered set).
    Headline/About/Location read their existing value from the named sidecar
    fields so a re-import marks unchanged rows. The Headline row carries the
-   **raw** title/bio line — Job title/Organization only populate when it parses
-   as `"<Title> at <Org>"`, so for free-form headlines ("Principal AI
-   Consultant | Driving…") the Headline row is the only carrier of that text.
+   **raw** title/bio line; Job title/Organization come from the parser's
+   `title`/`org`, which prefer the Experience section's current position
+   (structured, works for any headline) and fall back to splitting the
+   headline as `"<Title> at <Org>"`. If the Experience section wasn't
+   rendered (lazy-load) *and* the headline is free-form ("Principal AI
+   Consultant | Driving…"), the Headline row is the only carrier of that text.
 4. **Confirm** — `LinkedInConfirmView` (`App/GuessWho/LinkedInConfirmView.swift`),
    hosted in a `UIHostingController` form sheet: existing-left / LinkedIn-right,
    a checkbox per row (all on by default), unchanged rows de-emphasized.

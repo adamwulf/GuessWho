@@ -110,9 +110,19 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     topCardLines.find((t) => looksLikeLocation(t)) || null
   );
 
-  // Title / organization: LinkedIn's headline is free text, frequently
-  // "<Title> at <Org>[, <Title2> at <Org2>...]". Parse the FIRST "at" pair as
-  // the primary current role; keep the raw headline regardless.
+  // Title / organization, best source first:
+  //
+  // 1. The Experience section's CURRENT position (date line contains
+  //    "Present") — structured, per-role data, so it works for any headline.
+  //    Lazy-rendered like About, so it may be absent on a fresh page.
+  // 2. Fallback: the headline, which is free text but frequently
+  //    "<Title> at <Org>[, <Title2> at <Org2>...]" — parse the FIRST "at"
+  //    pair. Keep the raw headline as its own field regardless.
+  const experience = safe(() => extractExperience(doc)) || [];
+  const currentPosition = safe(() =>
+    experience.find((p) => p.isCurrent) || null
+  );
+
   const firstAt = safe(() => {
     if (!headline) return null;
     const seg = headline.split(/[,|·]/)[0].trim(); // first clause
@@ -120,8 +130,8 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     if (!m) return null;
     return { title: m[1].trim() || null, org: m[2].trim() || null };
   });
-  const title = firstAt ? firstAt.title : null;
-  const org = firstAt ? firstAt.org : null;
+  const title = (currentPosition && currentPosition.title) || (firstAt ? firstAt.title : null);
+  const org = (currentPosition && currentPosition.org) || (firstAt ? firstAt.org : null);
 
   // --- About ----------------------------------------------------------------
   // Anchor on the "About" <h2> landmark, then take the bio by its DOM POSITION:
@@ -232,10 +242,105 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     org,
     location,
     about,
+    experience,
     photoSrcset,
     // Debug aid for selector tuning — drop once the parser stabilizes.
     _topCardLines: topCardLines,
   };
+}
+
+// --- Experience --------------------------------------------------------------
+//
+// Anchor on the "Experience" <h2> landmark, then climb (bounded) to the first
+// ancestor holding `componentkey^="entity-collection-item"` entry wrappers —
+// that ancestor is the Experience card. Ad/suggestion cards further up the page
+// ("People you may know") use similar wrappers, so the climb aborts if it ever
+// reaches a node containing ANOTHER section's `ProfileNullStateCardAnchor_*`
+// heading (it has climbed past the card).
+//
+// Entries come in two shapes (confirmed against a full-scroll capture, 2026-07):
+//
+//   simple   <p> lines: [title, "Org · Type", "Oct 2025 - Present · 10 mos",
+//            location?, description…, skills?]
+//   grouped  (several roles at ONE employer) <p> lines: [company,
+//            "6 yrs 1 mo" (bare total duration), role1, dates1, …, role2,
+//            dates2, …]
+//
+// Classification hangs on the DATE-RANGE lines (a year or "Present", short):
+// the line immediately BEFORE a date line is the role title (grouped) or the
+// "Org · Type" line (simple); a short comma/remote line immediately AFTER is
+// the location. Returns a FLAT array of positions, rendered order (most recent
+// first): {title, org, employmentType, dates, isCurrent, location}. Best-effort
+// like everything else: [] when the section isn't rendered (lazy-load — see the
+// About note) or the shape changed.
+function extractExperience(doc = (typeof document !== "undefined" ? document : null)) {
+  if (!doc) return [];
+  const text = (el) => (el && el.textContent ? el.textContent.trim() : null);
+
+  const isDateRange = (t) =>
+    t.length < 60 && (/\bpresent\b/i.test(t) || /\b(19|20)\d{2}\b\s*[-–]/.test(t));
+  const isBareDuration = (t) =>
+    /^\d+\s+(yrs?|mos?)(\s+\d+\s+mos?)?$/i.test(t);
+  const looksLikePlace = (t) =>
+    t.length < 60 && !/[●•]/.test(t) && !/\bskills?$/i.test(t) &&
+    (/,/.test(t) || /\b(remote|hybrid|on-site)\b/i.test(t));
+
+  const heads = [...doc.querySelectorAll("h1, h2, h3")];
+  const expHead = heads.find((h) => /^experience$/i.test(text(h) || ""));
+  if (!expHead) return [];
+
+  // Climb to the Experience card: the first ancestor with entry wrappers.
+  let entries = [];
+  for (let node = expHead, depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+    // Climbed past the card into a container holding other sections? Abort
+    // rather than swallow Education/ad entries.
+    const anchors = node.querySelectorAll('[componentkey^="ProfileNullStateCardAnchor_"]');
+    if ([...anchors].some((a) => a !== expHead)) break;
+    const items = node.querySelectorAll('[componentkey^="entity-collection-item"]');
+    if (items.length) { entries = [...items]; break; }
+  }
+
+  const positions = [];
+  for (const entry of entries) {
+    const lines = [...entry.querySelectorAll("p")].map(text).filter(Boolean);
+    const dateIdxs = lines
+      .map((t, i) => (isDateRange(t) ? i : -1))
+      .filter((i) => i > 0); // a date line needs a title/org line before it
+    if (!dateIdxs.length) continue; // undated entry — can't classify, skip
+
+    const grouped = lines.length > 1 && isBareDuration(lines[1]);
+    for (const di of dateIdxs) {
+      const before = lines[di - 1];
+      const after = lines[di + 1];
+      const dates = lines[di];
+      const location = after && looksLikePlace(after) ? after : null;
+      const isCurrent = /\bpresent\b/i.test(dates);
+      if (grouped) {
+        // [company, total-duration, role, dates, …]: line before each date
+        // line is that role's title; the employer is the entry's first line.
+        if (before === lines[0] || isBareDuration(before)) continue;
+        positions.push({
+          title: before, org: lines[0], employmentType: null,
+          dates, isCurrent, location,
+        });
+      } else {
+        // [title, "Org · Type", dates, …]: only the FIRST date line belongs
+        // to the entry itself (later ones are inside the description). When
+        // the date line directly follows the title (di == 1) there is no org
+        // line at all (e.g. self-employed) — don't mistake the title for it.
+        if (di !== dateIdxs[0]) continue;
+        const orgParts = di >= 2
+          ? before.split("·").map((s) => s.trim()).filter(Boolean)
+          : [];
+        positions.push({
+          title: lines[0], org: orgParts[0] || null,
+          employmentType: orgParts[1] || null,
+          dates, isCurrent, location,
+        });
+      }
+    }
+  }
+  return positions;
 }
 
 // --- Contact info (click-then-parse) ----------------------------------------
@@ -359,5 +464,5 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 // Export for the unit-test harness (Node) without breaking the browser, where
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { extractProfile, extractContactInfo };
+  module.exports = { extractProfile, extractExperience, extractContactInfo };
 }
