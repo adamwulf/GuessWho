@@ -125,7 +125,7 @@ struct EventLinkSheet: View {
                 ForEach(groups, id: \.day) { group in
                     Section(header: Text(sectionTitle(for: group.day))) {
                         ForEach(group.events, id: \.id) { event in
-                            Button { pick(event) } label: { eventRow(event) }
+                            Button { Task { await pick(event) } } label: { eventRow(event) }
                                 .buttonStyle(.plain)
                         }
                     }
@@ -419,14 +419,14 @@ struct EventLinkSheet: View {
 
     // MARK: - Row tap / save
 
-    private func pick(_ event: Event) {
+    private func pick(_ event: Event) async {
         switch mode {
         case .create(let onCreated):
-            guard let uuid = dedupAndLink(event: event) else { return }
+            guard let uuid = await dedupAndLink(event: event) else { return }
             onCreated(uuid)
             dismiss()
         case .link(let onLinked):
-            guard let uuid = dedupAndLink(event: event) else { return }
+            guard let uuid = await dedupAndLink(event: event) else { return }
             // Partial-failure note: if `onLinked` throws (caller wraps it via
             // recordError, see SyncService.addContactEventLink path), the
             // sidecar minted by `linkEvent` exists but the contact↔event
@@ -439,18 +439,19 @@ struct EventLinkSheet: View {
 
     /// Mandatory dedup path: first look up the sidecar already pointing at this
     /// EventKit ID; only mint when there isn't one. Returns the resulting event
-    /// UUID string, or nil on failure (after recording the error).
-    private func dedupAndLink(event: Event) -> String? {
+    /// UUID string, or nil on failure (after recording the error). `async` —
+    /// the dedup lookup walks every event sidecar via the service.
+    private func dedupAndLink(event: Event) async -> String? {
         guard let ekid = event.eventKitID else {
             // Already a sidecar-only event (no EventKit twin). Reuse its UUID
             // directly.
             return event.id.uuidString
         }
-        if let existing = service.eventUUID(forEventKitID: ekid) {
+        if let existing = await service.eventUUID(forEventKitID: ekid) {
             return existing.uuidString
         }
         do {
-            let minted = try service.linkEvent(toEventKitID: ekid)
+            let minted = try await service.linkEvent(toEventKitID: ekid)
             return minted.uuidString
         } catch {
             service.recordError("link event failed: \(error.localizedDescription)")

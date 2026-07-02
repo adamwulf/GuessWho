@@ -174,11 +174,13 @@ final class SyncService {
         }
     }
 
-    // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or nil.
-    func eventUUID(forEventKitID ekid: String) -> UUID? {
+    // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or
+    // nil. `async`: the lookup walks every event sidecar, so it rides the
+    // engine's background-hop overload.
+    func eventUUID(forEventKitID ekid: String) async -> UUID? {
         guard let sync else { return nil }
         do {
-            return try sync.eventUUID(forEventKitID: ekid)
+            return try await sync.eventUUID(forEventKitID: ekid)
         } catch {
             lastError = "eventUUID lookup failed: \(error.localizedDescription)"
             return nil
@@ -230,13 +232,15 @@ final class SyncService {
 
     /// Link-existing: from an EventKit identifier, reuses the existing sidecar
     /// (if one already points at this ekid) or mints a fresh UUID-keyed sidecar
-    /// seeded from the live snapshot.
+    /// seeded from the live snapshot. `async` for the pre-dedup lookup (an
+    /// every-event-sidecar walk); the single EventKit fetch and one-envelope
+    /// mint write stay synchronous, bounded work.
     @discardableResult
-    func linkEvent(toEventKitID ekid: String) throws -> UUID {
+    func linkEvent(toEventKitID ekid: String) async throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
         guard eventsAuthorization == .authorized else { throw SidecarUnavailableError() }
         // Pre-dedup: if a sidecar already points at this ekid, return it, no mint.
-        if let existing = try sync.eventUUID(forEventKitID: ekid) {
+        if let existing = try await sync.eventUUID(forEventKitID: ekid) {
             return existing
         }
         guard let snapshot = try eventsAdapter.fetch(eventKitID: ekid) else {
@@ -293,8 +297,13 @@ final class SyncService {
 
     /// Silent best-effort refresh of an event sidecar's cache cells. Skipped
     /// when the entry was refreshed within `refreshDebounceInterval` seconds.
-    /// Errors surface via `lastError` rather than throwing.
-    func refreshEvent(uuid: String) {
+    /// Errors surface via `lastError` rather than throwing. `async` — the
+    /// refresh is a coordinated sidecar read + EventKit lookup + possible
+    /// write-back, hopped off the main actor by the engine's async overload.
+    /// The debounce stamp is written BEFORE the await (marking the attempt,
+    /// not the completion) so overlapping callers can't double-refresh the
+    /// same key mid-flight.
+    func refreshEvent(uuid: String) async {
         guard let sync else { return }
         let key = SidecarKey(kind: .event, id: uuid)
         let now = Date()
@@ -303,9 +312,9 @@ final class SyncService {
         {
             return
         }
+        recentlyRefreshed[key] = now
         do {
-            _ = try sync.refreshEventCache(at: key)
-            recentlyRefreshed[key] = now
+            _ = try await sync.refreshEventCache(at: key)
         } catch {
             lastError = "refresh event failed: \(error.localizedDescription)"
         }
@@ -315,15 +324,14 @@ final class SyncService {
     /// `refreshEvent`'s per-event debounce. Initial-load-only — callers invoke
     /// it once when a contact loads, not on every redraw.
     ///
-    /// The repository resolves the contact endpoint
-    /// (`ContactsRepository.linkedEventUUIDs(for:)`), so the event UUIDs arrive
-    /// pre-resolved and SyncService builds no `.contact` `SidecarKey` to walk the
-    /// links. An event-cache concern that stays here until the deferred
-    /// event-identity migration.
-    func refreshLinkedEvents(eventUUIDs: [String]) {
+    /// The event UUIDs arrive pre-resolved from the contact's own links (the
+    /// repository/detail view resolves them), so SyncService builds no
+    /// `.contact` `SidecarKey` to walk the links. An event-cache concern that
+    /// stays here until the deferred event-identity migration.
+    func refreshLinkedEvents(eventUUIDs: [String]) async {
         guard sync != nil else { return }
         for uuid in eventUUIDs {
-            refreshEvent(uuid: uuid)
+            await refreshEvent(uuid: uuid)
         }
     }
 
@@ -495,11 +503,13 @@ final class SyncService {
     // `ContactsRepository` (keyed on `ContactID`). The EVENT-side reads below
     // stay here until the deferred event-identity migration.
 
-    func contactLinks(forEventUUID uuid: String) -> [Link] {
+    /// `async`: the link read walks every link sidecar, so it rides the
+    /// engine's background-hop overload rather than blocking the main actor.
+    func contactLinks(forEventUUID uuid: String) async -> [Link] {
         guard let sync else { return [] }
         let endpoint = SidecarKey(kind: .event, id: uuid)
         do {
-            let all = try sync.links(at: endpoint)
+            let all = try await sync.links(at: endpoint)
             return all.filter { link in
                 link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
             }

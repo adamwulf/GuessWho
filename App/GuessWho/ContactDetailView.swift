@@ -1557,7 +1557,7 @@ struct ContactDetailView: View {
         // pure per-link resolver, so the app still builds no `.contact`
         // SidecarKey. Fired on initial contact load only.
         let eventUUIDs = eventLinks.compactMap { repository.eventEndpointUUID(of: $0, for: linkID) }
-        service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
+        await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
     }
 
     private func addEventLink(eventUUID: String, note: String) async {

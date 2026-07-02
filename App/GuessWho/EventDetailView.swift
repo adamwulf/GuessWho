@@ -465,20 +465,20 @@ struct EventDetailView: View {
         {
             adoptionInFlight = true
             defer { adoptionInFlight = false }
-            if let existing = service.eventUUID(forEventKitID: ekid) {
+            if let existing = await service.eventUUID(forEventKitID: ekid) {
                 resolvedUUID = existing.uuidString.lowercased()
             } else {
                 do {
-                    let minted = try service.linkEvent(toEventKitID: ekid)
+                    let minted = try await service.linkEvent(toEventKitID: ekid)
                     resolvedUUID = minted.uuidString.lowercased()
                 } catch {
                     service.recordError("adopt event failed: \(error.localizedDescription)")
                 }
             }
         }
-        service.refreshEvent(uuid: resolvedUUID)
+        await service.refreshEvent(uuid: resolvedUUID)
         event = service.event(uuid: resolvedUUID)
-        links = service.contactLinks(forEventUUID: resolvedUUID)
+        links = await service.contactLinks(forEventUUID: resolvedUUID)
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
         // Attendee→contact and linked-contact→contact resolution happen on
