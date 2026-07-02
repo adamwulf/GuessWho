@@ -719,9 +719,11 @@ public final class ContactsRepository: NSObject {
     // `SidecarKey(kind: .contact, id: guessWhoID)` internally and calls the
     // engine.
     //
-    // READS are SYNCHRONOUS: `id.guessWhoID` is already on the value, so no
-    // reconcile and no `await`. An UNRECONCILED contact (`id.guessWhoID == nil`)
-    // has no sidecar yet, so reads return empty/false and MINT NOTHING.
+    // READS never reconcile: `id.guessWhoID` is already on the value. An
+    // UNRECONCILED contact (`id.guessWhoID == nil`) has no sidecar yet, so
+    // reads return empty/false and MINT NOTHING. Single-envelope reads
+    // (notes/fields) are synchronous; the LINK reads are `async` because they
+    // walk every link sidecar on disk and must not block the main actor.
     //
     // WRITES are `async`: they resolve-or-mint the GuessWho UUID first (via
     // `resolveOrMintGuessWhoID`, which `await`s reconcile), call the engine,
@@ -749,11 +751,16 @@ public final class ContactsRepository: NSObject {
     /// are event links — see `eventLinks(for:)`). Returns `[]` when the contact
     /// is unreconciled or the engine is unavailable. Mirrors
     /// `SyncService.contactLinks(forContactUUID:)`.
-    public func links(for id: ContactID) -> [Link] {
+    ///
+    /// `async` — unlike the single-envelope reads above, the link read walks
+    /// EVERY link sidecar on disk, so it rides the engine's background-hop
+    /// overload rather than blocking the main actor. Same for
+    /// `eventLinks(for:)` / `linkedEventUUIDs(for:)` below.
+    public func links(for id: ContactID) async -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
-            return try sync.links(at: endpoint).filter { link in
+            return try await sync.links(at: endpoint).filter { link in
                 link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
             }
         } catch {
@@ -768,11 +775,11 @@ public final class ContactsRepository: NSObject {
     /// Mirrors `SyncService.eventLinks(forContactUUID:)`. (The CONTACT endpoint
     /// is keyed on `ContactID`; the EVENT endpoint stays a bare UUID until the
     /// deferred event-identity migration.)
-    public func eventLinks(for id: ContactID) -> [Link] {
+    public func eventLinks(for id: ContactID) async -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
-            return try sync.links(at: endpoint).filter { link in
+            return try await sync.links(at: endpoint).filter { link in
                 link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
             }
         } catch {
@@ -788,11 +795,11 @@ public final class ContactsRepository: NSObject {
     /// event surface's refresh (still on `SyncService`). Returns `[]` when the
     /// contact is unreconciled or the engine is unavailable. (The EVENT endpoint
     /// stays a bare UUID until the deferred event-identity migration.)
-    public func linkedEventUUIDs(for id: ContactID) -> [String] {
+    public func linkedEventUUIDs(for id: ContactID) async -> [String] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
-            return try sync.links(at: endpoint).compactMap { link in
+            return try await sync.links(at: endpoint).compactMap { link in
                 guard link.deletedAt == nil else { return nil }
                 let other = Self.otherEndpoint(of: link, from: endpoint)
                 return other.kind == .event ? other.id : nil

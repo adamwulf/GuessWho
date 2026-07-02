@@ -625,6 +625,25 @@ public final class GuessWhoSync: @unchecked Sendable {
         return result
     }
 
+    /// Async overload of `links(at:)` that hops the scan to a background
+    /// queue: the read walks EVERY link sidecar (a coordinated read + decode
+    /// per file), so it scales with total link count and must not block the
+    /// caller's actor / main thread. Same continuation-hop pattern (and
+    /// `self` capture rationale) as `recentEvents(matchingEmails:)` in the
+    /// Events extension. Sync callers keep the synchronous overload.
+    public func links(at endpoint: SidecarKey) async throws -> [Link] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [Link] = try self.links(at: endpoint)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Contact timestamp cells
 
     /// Upserts ONE named timestamp cell on the envelope at `key`, writing

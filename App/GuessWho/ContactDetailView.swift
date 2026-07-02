@@ -1277,7 +1277,7 @@ struct ContactDetailView: View {
     private var linkedEventsSection: some View {
         // Event links delete via removeEventLink (NOT deleteLink).
         linkSection(title: "Linked Events", links: linkedEventItems,
-                    delete: { removeEventLink($0) }) { linkedEventRow($0) }
+                    delete: { id in Task { await removeEventLink(id) } }) { linkedEventRow($0) }
     }
 
     /// Shared section shell for a list of `ContactLink`s with a row builder and
@@ -1494,7 +1494,7 @@ struct ContactDetailView: View {
                 Label("Edit Note", systemImage: "pencil")
             }
             Button("Delete", role: .destructive) {
-                removeEventLink(link.id)
+                Task { await removeEventLink(link.id) }
             }
         }
     }
@@ -1544,18 +1544,20 @@ struct ContactDetailView: View {
         favoritesStore.reload()
     }
 
-    private func reloadEventLinks() {
+    private func reloadEventLinks() async {
         // The contact↔event link READS go through the repository, keyed on the
         // LOADED contact's ContactID (carries the current guessWhoID; the nav
         // `id` lacks it after a first-write mint). Empty for an unreconciled
         // contact — it has no links yet.
         let linkID = loadedContactID ?? id
-        eventLinks = repository.eventLinks(for: linkID)
+        eventLinks = await repository.eventLinks(for: linkID)
         // The EventKit cache refresh stays on SyncService (an event-surface
-        // concern). The repository resolves the linked event UUIDs (so the app
-        // builds no `.contact` SidecarKey to walk the links); SyncService
-        // debounces-and-refreshes each. Fired on initial contact load only.
-        service.refreshLinkedEvents(eventUUIDs: repository.linkedEventUUIDs(for: linkID))
+        // concern). The event UUIDs derive from the links just read (one disk
+        // scan, not a second `linkedEventUUIDs` walk) via the repository's
+        // pure per-link resolver, so the app still builds no `.contact`
+        // SidecarKey. Fired on initial contact load only.
+        let eventUUIDs = eventLinks.compactMap { repository.eventEndpointUUID(of: $0, for: linkID) }
+        service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
     }
 
     private func addEventLink(eventUUID: String, note: String) async {
@@ -1573,11 +1575,11 @@ struct ContactDetailView: View {
         // re-read (not a full loadContact) to avoid refiring refreshLinkedEvents;
         // the freshly-added event refreshes when the user opens its detail view.
         contact = repository.contact(id: id)
-        if let contact { rebuildSidecarStores(for: contact) }
-        eventLinks = repository.eventLinks(for: loadedContactID ?? id)
+        if let contact { await rebuildSidecarStores(for: contact) }
+        eventLinks = await repository.eventLinks(for: loadedContactID ?? id)
     }
 
-    private func removeEventLink(_ id: UUID) {
+    private func removeEventLink(_ id: UUID) async {
         // Clear edit state first: setLinkNote on a soft-deleted link undeletes
         // it, so a pending edit must NOT commit after the delete lands.
         if editingLinkID == id {
@@ -1596,7 +1598,7 @@ struct ContactDetailView: View {
         // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
         // had event links to remove), so reading off `loadedContactID` resolves;
         // `self.id` is the fallback.
-        eventLinks = repository.eventLinks(for: loadedContactID ?? self.id)
+        eventLinks = await repository.eventLinks(for: loadedContactID ?? self.id)
     }
 
     // MARK: - Loading & reconcile
@@ -1624,8 +1626,8 @@ struct ContactDetailView: View {
         }
         contact = loaded
         if let loaded {
-            rebuildSidecarStores(for: loaded)
-            reloadEventLinks()
+            await rebuildSidecarStores(for: loaded)
+            await reloadEventLinks()
             await reloadRecentEvents(for: loaded)
         } else {
             // Contact disappeared from the store (e.g. deleted via the edit
@@ -1678,7 +1680,7 @@ struct ContactDetailView: View {
     /// identity would read/write a dead file. Built for EVERY contact (even
     /// unreconciled): reads return empty until a write reconciles + mints, so
     /// notes/links can be added to a never-touched contact.
-    private func rebuildSidecarStores(for loaded: Contact) {
+    private func rebuildSidecarStores(for loaded: Contact) async {
         let loadedID = loaded.contactID
         if notesStore?.id != loadedID {
             notesStore = NotesStore(repository: repository, id: loadedID)
@@ -1690,11 +1692,12 @@ struct ContactDetailView: View {
         } else {
             fieldsStore?.reload()
         }
+        // The links store constructs EMPTY (its read walks every link sidecar,
+        // so it can't run in init) — always await a reload, fresh or reused.
         if linksStore?.id != loadedID {
             linksStore = ContactLinksStore(repository: repository, id: loadedID)
-        } else {
-            linksStore?.reload()
         }
+        await linksStore?.reload()
     }
 
     /// Fetch up to 10 EventKit events where this contact is an attendee (matched
@@ -1811,14 +1814,17 @@ struct ContactDetailView: View {
         }
         if proposed == snapshot { return }
         if linksStore?.links.contains(where: { $0.id == id }) == true {
-            linksStore?.setNote(id: id, note: proposed)
+            // Main-actor Task: the write runs a beat later, still ahead of any
+            // subsequently-tapped delete (same-actor Tasks run in enqueue
+            // order), and the post-write re-read scan stays off the caller.
+            Task { await linksStore?.setNote(id: id, note: proposed) }
         } else if eventLinks.contains(where: { $0.id == id }) {
             do {
                 // A contact↔event link's note edit goes through the shared
                 // repository link-note write (keyed on the link's own UUID, no
                 // contact resolve needed), then re-reads the event links.
                 try repository.setLinkNote(id: id, note: proposed)
-                eventLinks = repository.eventLinks(for: loadedContactID ?? self.id)
+                Task { eventLinks = await repository.eventLinks(for: loadedContactID ?? self.id) }
             } catch {
                 service.recordError("set event-link note failed: \(error.localizedDescription)")
             }
@@ -1845,7 +1851,7 @@ struct ContactDetailView: View {
                 noteFocus = nil
             }
         }
-        linksStore?.remove(id: id)
+        Task { await linksStore?.remove(id: id) }
     }
 
     // MARK: - Formatting
