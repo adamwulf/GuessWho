@@ -904,15 +904,34 @@ public final class ContactsRepository: NSObject {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
-        try sync.stampContactTimestamp(which, at: SidecarKey(kind: .contact, id: guessWhoID), now: Date())
-        // Refresh the bulk timestamp cache regardless, so a time-ordered list
-        // re-sorts/re-buckets this contact. `refreshCacheIfMinted` re-reads the
-        // Contacts record only when a mint stamped a new GuessWho URL.
-        refreshTimestampCache()
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let now = Date()
+        try sync.stampContactTimestamp(which, at: key, now: now)
+        // The write touched exactly ONE cell and `now` IS its new value, so
+        // update that one cache entry in place. A wholesale
+        // `refreshTimestampCache()` here would re-read every contact sidecar
+        // off disk on the main actor — on every contact open (stampViewed) —
+        // which is the I/O stall this in-place update exists to avoid.
+        // External edits still land via the change-notification reload path.
+        updateTimestampCache(which, at: key, to: now)
         await refreshCacheIfMinted(minted, localID: id.localID)
         // On mint, `refreshCacheIfMinted` posts its own reload; on the common
         // non-mint path, post so a time-ordered list re-renders.
         if !minted { postDidReload() }
+    }
+
+    /// Upsert the single `which` timestamp on the cache entry for `key`,
+    /// leaving the other two timestamps untouched — the in-memory mirror of
+    /// what `stampContactTimestamp` just wrote to disk. Keyed on `key.id`, the
+    /// same canonical-lowercase UUID `allContactTimestamps()` keys on.
+    private func updateTimestampCache(_ which: ContactTimestampKind, at key: SidecarKey, to now: Date) {
+        var stamps = contactTimestampsByID[key.id] ?? ContactTimestamps()
+        switch which {
+        case .modified: stamps.lastModified = now
+        case .interacted: stamps.lastInteracted = now
+        case .viewed: stamps.lastViewed = now
+        }
+        contactTimestampsByID[key.id] = stamps
     }
 
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by

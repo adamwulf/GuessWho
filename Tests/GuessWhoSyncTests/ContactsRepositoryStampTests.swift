@@ -98,6 +98,38 @@ struct ContactsRepositoryStampTests {
     }
 
     @Test
+    func secondStampKind_preservesFirstKindInCache() async throws {
+        // The stamp path upserts ONE cell into the in-memory timestamp cache
+        // (no wholesale disk rescan). Stamping a second KIND on the same
+        // contact must preserve the first kind's cached value: after viewed
+        // then modified, BOTH time sorts still put the stamped contact first,
+        // without any reload between stamps.
+        let stamped = Contact(
+            localID: "stamped",
+            givenName: "Zoe",
+            urlAddresses: [LabeledValue(label: "g", value: "\(SidecarKey.guessWhoContactURLPrefix)20000000-0000-0000-0000-000000000001")]
+        )
+        let other = Contact(
+            localID: "other",
+            givenName: "Amy",
+            urlAddresses: [LabeledValue(label: "g", value: "\(SidecarKey.guessWhoContactURLPrefix)20000000-0000-0000-0000-000000000002")]
+        )
+        let store = InMemoryContactStore(contacts: [stamped, other])
+        let sync = makeSync(store)
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+
+        let id = try #require(repo.contact(localID: "stamped")).contactID
+        try await repo.stampViewed(id)
+        try await repo.stampModified(id)
+
+        repo.sortOrder = .lastViewed
+        #expect(repo.people.map(\.localID) == ["stamped", "other"])
+        repo.sortOrder = .lastModified
+        #expect(repo.people.map(\.localID) == ["stamped", "other"])
+    }
+
+    @Test
     func stamp_withNilEngine_throws() async {
         let target = Contact(localID: "T", givenName: "Z")
         let store = InMemoryContactStore(contacts: [target])
