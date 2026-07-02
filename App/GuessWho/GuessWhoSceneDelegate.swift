@@ -825,7 +825,29 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // for an unreconciled contact, so this is empty in that case.
         let existingSidecar = Self.existingSidecarFields(repo.fields(for: matchID))
         let rows = LinkedInDiff.rows(existing: contact, incoming: profile, existingSidecar: existingSidecar)
-        let incomingPhoto = profile.photo?.decodedData().flatMap { UIImage(data: $0) }
+        Task {
+            await presentLinkedInConfirmSheet(
+                profile: profile, matchID: matchID, contact: contact, rows: rows
+            )
+        }
+    }
+
+    /// Decode the incoming photo OFF the main thread (full-res LinkedIn
+    /// photos run to megabytes of base64), then build and present the
+    /// confirm sheet. Split from `processLinkedInHandoff` solely so the
+    /// decode can be awaited; presentation stays on the main actor.
+    private func presentLinkedInConfirmSheet(
+        profile: LinkedInProfile,
+        matchID: ContactID,
+        contact: Contact,
+        rows: [LinkedInDiffRow]
+    ) async {
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        let repo = appDelegate.contactsRepository
+        let photoPayload = profile.photo
+        let incomingPhoto = await Task.detached(priority: .userInitiated) {
+            photoPayload?.decodedData().flatMap { UIImage(data: $0) }
+        }.value
 
         let confirm = LinkedInConfirmView(
             contactID: matchID,
@@ -909,7 +931,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 let hasSidecarContent = [profile.headline, profile.about, profile.location]
                     .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
                 if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
-                if profile.photo?.decodedData()?.isEmpty == false { extras.insert(.photo) }
+                // Presence check only — applyLinkedIn itself skips an
+                // undecodable/unchanged photo, so don't base64-decode the
+                // full payload here just to test emptiness.
+                if profile.photo != nil { extras.insert(.photo) }
                 if !extras.isEmpty {
                     // Reassign: applyLinkedIn's sidecar writes mint the GuessWho
                     // ID, and the returned contact carries the post-mint identity

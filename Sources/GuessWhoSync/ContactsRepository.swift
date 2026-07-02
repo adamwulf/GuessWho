@@ -381,8 +381,10 @@ public final class ContactsRepository: NSObject {
             let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
             let key = SidecarKey(kind: .contact, id: guessWhoID)
             // Single-slot upsert: repoints the slot and reclaims the prior
-            // `.dat` (orphan sweep is the cross-device backstop).
-            _ = try sync.setBlobField(
+            // `.dat` (orphan sweep is the cross-device backstop). Awaits the
+            // engine's background-hop overload — encrypting and writing a
+            // full-size photo must not stall the main actor mid-import.
+            _ = try await sync.setBlobField(
                 at: key,
                 field: Self.previousPhotoFieldName,
                 data: currentBytes,
