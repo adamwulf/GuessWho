@@ -524,10 +524,14 @@ function profileReadiness(result) {
     sections,
     // Ready = every REQUIRED section is present. Optional sections don't count.
     ready: required.every((s) => s.present),
-    // Progress counts across ALL sections (required + optional) so the popup's
-    // "X/Y" reflects everything we're trying to capture, not just the blockers.
-    loaded: sections.filter((s) => s.present).length,
-    total: sections.length,
+    // The "X/Y" progress counts ONLY required sections — the ones we actually
+    // wait for — so "Y" means "will reach Y when ready". Counting optional
+    // sections in the denominator made a complete profile that simply has no
+    // About text read "2/3, About pending" even though it was correctly ready.
+    // The optional sections are still listed in `sections` (so the popup shows
+    // About loading with a ✓), they just don't drag the ready count down.
+    loaded: required.filter((s) => s.present).length,
+    total: required.length,
   };
 }
 

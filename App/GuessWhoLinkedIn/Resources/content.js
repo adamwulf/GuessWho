@@ -232,6 +232,12 @@ function emitProgress(probeId, readiness) {
     });
     // sendMessage returns a promise in MV3; swallow "no receiver" rejections
     // (popup closed) so an unhandled rejection never surfaces.
+    //
+    // NOTE for the eventual Chrome / iOS port: this relies on the promise-style
+    // `browser.*` API this extension targets (Safari). Under chrome.*'s
+    // callback-style sendMessage there's no returned thenable, so a closed popup
+    // surfaces as "Unchecked runtime.lastError" instead — a porter should route
+    // through a shim that reads `chrome.runtime.lastError` in the callback.
     if (p && typeof p.catch === "function") p.catch(() => {});
   } catch (_e) { /* popup gone — ignore */ }
 }
