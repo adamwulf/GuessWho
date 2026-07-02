@@ -105,10 +105,12 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         }
         Task { @MainActor in
             // Sidecar-only migration first — permission-free (it runs even
-            // when access stays denied) and ordered BEFORE the events reload
-            // so the window read never sees pre-migration keys. Previously a
-            // synchronous call above; awaiting it here keeps that ordering
-            // while its sidecar walk runs off the main actor.
+            // when access stays denied), with its sidecar walk off the main
+            // actor. This explicit await starts it at launch; the HARD
+            // migration-before-window-read ordering lives inside
+            // `fetchEventsRange`, which awaits the same memoized run — so
+            // even a notification-driven events reload racing this Task
+            // cannot read pre-migration keys.
             await service.migrateEventsIfNeeded()
             await service.requestEventsAccessIfNeeded()
             await eventsRepository.reload()

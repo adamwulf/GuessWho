@@ -1277,7 +1277,7 @@ struct ContactDetailView: View {
     private var linkedEventsSection: some View {
         // Event links delete via removeEventLink (NOT deleteLink).
         linkSection(title: "Linked Events", links: linkedEventItems,
-                    delete: { id in Task { await removeEventLink(id) } }) { linkedEventRow($0) }
+                    delete: { removeEventLink($0) }) { linkedEventRow($0) }
     }
 
     /// Shared section shell for a list of `ContactLink`s with a row builder and
@@ -1494,7 +1494,7 @@ struct ContactDetailView: View {
                 Label("Edit Note", systemImage: "pencil")
             }
             Button("Delete", role: .destructive) {
-                Task { await removeEventLink(link.id) }
+                removeEventLink(link.id)
             }
         }
     }
@@ -1544,22 +1544,6 @@ struct ContactDetailView: View {
         favoritesStore.reload()
     }
 
-    private func reloadEventLinks() async {
-        // The contact↔event link READS go through the repository, keyed on the
-        // LOADED contact's ContactID (carries the current guessWhoID; the nav
-        // `id` lacks it after a first-write mint). Empty for an unreconciled
-        // contact — it has no links yet.
-        let linkID = loadedContactID ?? id
-        eventLinks = await repository.eventLinks(for: linkID)
-        // The EventKit cache refresh stays on SyncService (an event-surface
-        // concern). The event UUIDs derive from the links just read (one disk
-        // scan, not a second `linkedEventUUIDs` walk) via the repository's
-        // pure per-link resolver, so the app still builds no `.contact`
-        // SidecarKey. Fired on initial contact load only.
-        let eventUUIDs = eventLinks.compactMap { repository.eventEndpointUUID(of: $0, for: linkID) }
-        await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
-    }
-
     private func addEventLink(eventUUID: String, note: String) async {
         do {
             // The write resolves-or-mints the CONTACT endpoint's GuessWho UUID,
@@ -1579,9 +1563,12 @@ struct ContactDetailView: View {
         eventLinks = await repository.eventLinks(for: loadedContactID ?? id)
     }
 
-    private func removeEventLink(_ id: UUID) async {
-        // Clear edit state first: setLinkNote on a soft-deleted link undeletes
-        // it, so a pending edit must NOT commit after the delete lands.
+    private func removeEventLink(_ id: UUID) {
+        // Clear edit state first (synchronously, at tap time): setLinkNote on
+        // a soft-deleted link undeletes it, so a pending edit must NOT commit
+        // after the delete lands. The delete WRITE is synchronous too — only
+        // the re-read scan below rides a Task — so UI-event ordering against
+        // a committed edit is structural, not enqueue-order-dependent.
         if editingLinkID == id {
             editingLinkID = nil
             draftLinkNote = ""
@@ -1598,7 +1585,7 @@ struct ContactDetailView: View {
         // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
         // had event links to remove), so reading off `loadedContactID` resolves;
         // `self.id` is the fallback.
-        eventLinks = await repository.eventLinks(for: loadedContactID ?? self.id)
+        Task { eventLinks = await repository.eventLinks(for: loadedContactID ?? self.id) }
     }
 
     // MARK: - Loading & reconcile
@@ -1624,12 +1611,33 @@ struct ContactDetailView: View {
         } else {
             loaded = repository.contact(id: id)
         }
-        contact = loaded
         if let loaded {
+            // Gather the sidecar-backed state BEFORE publishing `contact`:
+            // the store and link reads are async scans now, and publishing
+            // the card first would paint it with the link sections missing,
+            // then pop them in a beat later. Collecting into locals and
+            // assigning together restores the old single-paint appearance —
+            // only the I/O moved off the main actor.
             await rebuildSidecarStores(for: loaded)
-            await reloadEventLinks()
+            // Event links keyed on the LOADED contact's ContactID (carries
+            // the current guessWhoID; the nav `id` lacks it after a
+            // first-write mint). Empty for an unreconciled contact.
+            let linkID = loaded.contactID
+            let fetchedEventLinks = await repository.eventLinks(for: linkID)
+            contact = loaded
+            eventLinks = fetchedEventLinks
+            // The EventKit cache refresh stays on SyncService (an
+            // event-surface concern). The event UUIDs derive from the links
+            // just read (one disk scan, not a second `linkedEventUUIDs`
+            // walk) via the repository's pure per-link resolver, so the app
+            // still builds no `.contact` SidecarKey. Initial load only.
+            let eventUUIDs = fetchedEventLinks.compactMap {
+                repository.eventEndpointUUID(of: $0, for: linkID)
+            }
+            await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
             await reloadRecentEvents(for: loaded)
         } else {
+            contact = nil
             // Contact disappeared from the store (e.g. deleted via the edit
             // sheet). Tear down sidecar-bound state so nothing keeps reading/
             // writing a dead identity while the view animates away. Safe to nil
@@ -1814,10 +1822,10 @@ struct ContactDetailView: View {
         }
         if proposed == snapshot { return }
         if linksStore?.links.contains(where: { $0.id == id }) == true {
-            // Main-actor Task: the write runs a beat later, still ahead of any
-            // subsequently-tapped delete (same-actor Tasks run in enqueue
-            // order), and the post-write re-read scan stays off the caller.
-            Task { await linksStore?.setNote(id: id, note: proposed) }
+            // Synchronous write; only the store's re-read scan rides a Task.
+            // Inline writes keep UI-event ordering structural — a committed
+            // edit can never land after a subsequently-tapped delete.
+            linksStore?.setNote(id: id, note: proposed)
         } else if eventLinks.contains(where: { $0.id == id }) {
             do {
                 // A contact↔event link's note edit goes through the shared
@@ -1851,7 +1859,8 @@ struct ContactDetailView: View {
                 noteFocus = nil
             }
         }
-        Task { await linksStore?.remove(id: id) }
+        // Synchronous write inside; the store defers only its re-read scan.
+        linksStore?.remove(id: id)
     }
 
     // MARK: - Formatting

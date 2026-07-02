@@ -74,21 +74,27 @@ final class ContactLinksStore {
         return result
     }
 
-    func setNote(id linkID: UUID, note: String) async {
+    // setNote/remove write SYNCHRONOUSLY (single-envelope repository writes)
+    // and defer only the re-read scan to a Task. Keeping the writes inline
+    // preserves UI-event ordering structurally — a committed note edit can
+    // never land after a subsequently-tapped delete — instead of leaning on
+    // Task enqueue order.
+
+    func setNote(id linkID: UUID, note: String) {
         do {
             try repository.setLinkNote(id: linkID, note: note)
         } catch {
             // ignore — reload reflects the truth
         }
-        await reload()
+        Task { await reload() }
     }
 
-    func remove(id linkID: UUID) async {
+    func remove(id linkID: UUID) {
         do {
             try repository.removeLink(id: linkID)
         } catch {
             // ignore — reload reflects the truth
         }
-        await reload()
+        Task { await reload() }
     }
 }

@@ -419,14 +419,30 @@ struct EventLinkSheet: View {
 
     // MARK: - Row tap / save
 
+    /// Guards `pick` against a double-fire: the dedup/link path awaits now,
+    /// so a fast second tap on a row (or another row) could otherwise run
+    /// `onCreated`/`onLinked` twice before the first `dismiss()` lands.
+    /// Mirrors `EventDetailView.adoptionInFlight`. Never reset on the happy
+    /// path — the sheet dismisses; reset only on the nil-UUID failure path
+    /// so the user can retry.
+    @State private var pickInFlight = false
+
     private func pick(_ event: Event) async {
+        guard !pickInFlight else { return }
+        pickInFlight = true
         switch mode {
         case .create(let onCreated):
-            guard let uuid = await dedupAndLink(event: event) else { return }
+            guard let uuid = await dedupAndLink(event: event) else {
+                pickInFlight = false
+                return
+            }
             onCreated(uuid)
             dismiss()
         case .link(let onLinked):
-            guard let uuid = await dedupAndLink(event: event) else { return }
+            guard let uuid = await dedupAndLink(event: event) else {
+                pickInFlight = false
+                return
+            }
             // Partial-failure note: if `onLinked` throws (caller wraps it via
             // recordError, see SyncService.addContactEventLink path), the
             // sidecar minted by `linkEvent` exists but the contact↔event

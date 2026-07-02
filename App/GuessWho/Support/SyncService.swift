@@ -152,6 +152,9 @@ final class SyncService {
     // the main actor.
     func fetchEventsRange(from start: Date, to end: Date) async -> [Event] {
         guard let sync else { return [] }
+        // Hard ordering: the window read must never see pre-migration keys.
+        // Memoized — free after the first completion.
+        await migrateEventsIfNeeded()
         let includeEventKit = (eventsAuthorization == .authorized)
         do {
             return try await sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
@@ -435,17 +438,27 @@ final class SyncService {
 
     // MARK: - Migration
 
+    /// The one-shot migration run, memoized so every await after the first
+    /// completion returns immediately. @MainActor makes the check-and-set
+    /// atomic (no double-start).
+    private var eventMigration: Task<Void, Never>?
+
     /// Best-effort one-shot migration of legacy event sidecars to the UUID-keyed
     /// shape. Idempotent (safe every launch) and permission-free. Awaited at
-    /// the head of the launch events Task in `GuessWhoAppDelegate` — BEFORE
-    /// the events reload reads sidecars, and regardless of permission state —
-    /// with the sidecar walk hopped off the main actor (GuessWhoSync is
-    /// `@unchecked Sendable`), so launch no longer blocks on it.
+    /// the head of the launch events Task in `GuessWhoAppDelegate` — regardless
+    /// of permission state — with the sidecar walk hopped off the main actor
+    /// (GuessWhoSync is `@unchecked Sendable`), so launch no longer blocks on
+    /// it. `fetchEventsRange` ALSO awaits this, making migration-before-
+    /// window-read a hard guarantee even for a notification-driven events
+    /// reload that fires before the launch Task's explicit await.
     func migrateEventsIfNeeded() async {
         guard let sync else { return }
-        await Task.detached(priority: .userInitiated) {
-            _ = try? sync.migrateEventsToSidecarFirst()
-        }.value
+        if eventMigration == nil {
+            eventMigration = Task.detached(priority: .userInitiated) {
+                _ = try? sync.migrateEventsToSidecarFirst()
+            }
+        }
+        await eventMigration?.value
     }
 
     func fetchAll() async -> [Contact] {
