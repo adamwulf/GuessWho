@@ -485,8 +485,54 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
   return info;
 }
 
+// --- Readiness ---------------------------------------------------------------
+//
+// "Have we parsed everything we need yet?" — the single source of truth for the
+// scroll-until-loaded gate in content.js and the "X/Y sections loaded" progress
+// UI in the popup. LinkedIn lazy-renders sections as they scroll into view, so a
+// fresh page has only the top card; the scroll pass mounts the rest. Rather than
+// scroll on a blind "stopped growing" heuristic and hope the sections we care
+// about came along, we drive the scroll until THESE required sections are all
+// present, then hand off.
+//
+// A section is `required: true` if a missing value should hold up the handoff
+// (Experience is the section the user explicitly waits on). Optional sections
+// are reported too — so the popup can show their progress — but their absence
+// never blocks: some profiles genuinely have no About text, and Contact info
+// lives behind an overlay the scroll can't mount, so gating on them would hang
+// forever on a legitimately-sparse profile.
+//
+// Each check reads ONLY the already-parsed `result` (no DOM access), so the same
+// function serves the live probe and the unit tests against a fixture.
+function profileReadiness(result) {
+  const r = result || {};
+  const sections = [
+    // The top-card identity is present as soon as the page paints — it gates
+    // nothing in practice, but reporting it gives the popup a "1/N" the instant
+    // the probe starts rather than a cold 0.
+    { key: "identity", label: "Profile", required: true, present: !!r.fullName },
+    // THE section the user waits on: Experience mounts lazily near the middle of
+    // the page, so it's the last required thing the scroll pass has to reach.
+    { key: "experience", label: "Experience", required: true,
+      present: Array.isArray(r.experience) && r.experience.length > 0 },
+    // Optional: many profiles have no About text at all. Reported for progress,
+    // never gates (a bare profile would otherwise never satisfy the gate).
+    { key: "about", label: "About", required: false, present: !!r.about },
+  ];
+  const required = sections.filter((s) => s.required);
+  return {
+    sections,
+    // Ready = every REQUIRED section is present. Optional sections don't count.
+    ready: required.every((s) => s.present),
+    // Progress counts across ALL sections (required + optional) so the popup's
+    // "X/Y" reflects everything we're trying to capture, not just the blockers.
+    loaded: sections.filter((s) => s.present).length,
+    total: sections.length,
+  };
+}
+
 // Export for the unit-test harness (Node) without breaking the browser, where
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { extractProfile, extractExperience, extractContactInfo };
+  module.exports = { extractProfile, extractExperience, extractContactInfo, profileReadiness };
 }
