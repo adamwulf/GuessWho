@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__DISPLAY_NAME__",
   "version": "__VERSION__",
-  "description": "Save the LinkedIn profile you're viewing into GuessWho. Review a before/after diff in the app, then apply only the fields you choose.",
+  "description": "Save a LinkedIn profile to GuessWho, review a before/after diff, and apply the fields you choose.",
   "key": "__KEY__",
 
   "icons": {
