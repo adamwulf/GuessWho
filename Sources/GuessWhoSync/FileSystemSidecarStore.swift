@@ -40,8 +40,11 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // operations still run FIFO, and per-attempt wait time accumulates from
     // when the operation is queued, so a same-key sibling behind a stuck
     // operation can see `.timedOut` — the intended blast radius: one record,
-    // never the store. Thread growth is bounded by the number of concurrently
-    // BLOCKED callers (scans issue one operation at a time), not by key count.
+    // never the store. Thread growth is bounded by concurrently BLOCKED
+    // callers (scans issue one operation at a time) PLUS abandoned stuck
+    // operations (a caller that timed out and moved on leaves its op's body
+    // holding that key's queue thread until the claim releases) — still
+    // bounded by callers-so-far on distinct stuck keys, never by key count.
     private let coordinatorQueues = PerKeyQueueTable<SidecarKey>(
         label: { key in
             "GuessWhoSync.FileSystemSidecarStore.coordinator.\(key.kind.rawValue).\(key.id)"
