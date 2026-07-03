@@ -951,6 +951,26 @@ extension GuessWhoSync {
         )
     }
 
+    /// Async overload of `migrateEventsToSidecarFirst()` that hops the migration
+    /// scan to a background queue: it walks EVERY event sidecar (a coordinated
+    /// read + decode per file, plus per-key writes), so it scales with total
+    /// event count and must not block the caller's actor / cooperative pool.
+    /// Same continuation-hop pattern (and `self` capture rationale) as
+    /// `recentEvents(matchingEmails:)`.
+    @discardableResult
+    public func migrateEventsToSidecarFirst() async throws -> EventMigrationReport {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: EventMigrationReport = try self.migrateEventsToSidecarFirst()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Migration-only helper. Like `rewriteLinkEndpoints` in
     /// `GuessWhoSync.swift`, but matches `.event` endpoints whose id appears in
     /// `mapping`. One envelope write per affected link, under the per-key

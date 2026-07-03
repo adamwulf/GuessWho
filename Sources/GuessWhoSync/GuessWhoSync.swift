@@ -718,6 +718,24 @@ public final class GuessWhoSync: @unchecked Sendable {
         return result
     }
 
+    /// Async overload of `allContactTimestamps()` that hops the scan to a
+    /// background queue: the read walks EVERY contact sidecar (a coordinated
+    /// read + decode per file), so it scales with total contact count and must
+    /// not block the caller's actor / cooperative pool. Same continuation-hop
+    /// pattern (and `self` capture rationale) as `links(at:)`.
+    public func allContactTimestamps() async throws -> [String: ContactTimestamps] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [String: ContactTimestamps] = try self.allContactTimestamps()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     public func reconcileSidecars() throws -> SidecarReconcileReport {
         // A third-party SidecarStoreProtocol conformer with no concept of
         // multi-version conflicts has nothing to reconcile.

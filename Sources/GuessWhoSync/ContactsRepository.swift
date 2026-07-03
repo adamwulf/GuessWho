@@ -179,19 +179,17 @@ public final class ContactsRepository: NSObject {
     /// (`updateTimestampCache`) instead.
     ///
     /// The scan reads every contact sidecar (a coordinated read + decode per
-    /// file), so it hops off the main actor — `GuessWhoSync` is `@unchecked
-    /// Sendable` with per-key locking, safe to drive from a detached task. A
-    /// stamp that lands DURING the scan can be briefly shadowed by the
-    /// wholesale replace below (its cell is on disk, so the next reload sees
-    /// it) — a stale-by-one-frame sort, never data loss.
+    /// file), so it hops off the caller's actor via the engine's async
+    /// `allContactTimestamps()` overload (a `DispatchQueue.global` continuation
+    /// hop, not the cooperative pool). A stamp that lands DURING the scan can be
+    /// briefly shadowed by the wholesale replace below (its cell is on disk, so
+    /// the next reload sees it) — a stale-by-one-frame sort, never data loss.
     private func refreshTimestampCache() async {
         guard let sync else {
             contactTimestampsByID = [:]
             return
         }
-        contactTimestampsByID = await Task.detached(priority: .userInitiated) {
-            (try? sync.allContactTimestamps()) ?? [:]
-        }.value
+        contactTimestampsByID = (try? await sync.allContactTimestamps()) ?? [:]
     }
 
     // MARK: - Groups (read-only)
