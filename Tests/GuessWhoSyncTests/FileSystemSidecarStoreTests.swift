@@ -383,6 +383,56 @@ struct FileSystemSidecarStoreTests {
     }
 
     @Test
+    func stuckOperationOnOneKeyDoesNotStallAnotherKey() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let stuckKey = SidecarKey(kind: .contact, id: "stuck-key")
+        let liveKey = SidecarKey(kind: .contact, id: "live-key")
+        // Only the stuck key's caller keeps waiting; any other key that
+        // stalls fails fast, so a regression to a shared coordinator queue
+        // surfaces as `.timedOut(liveKey)` instead of a test hang.
+        let store = FileSystemSidecarStore(
+            root: root,
+            busyHandler: { key, _, _ in key == stuckKey ? .retry : .fail },
+            perAttemptTimeout: 0.05
+        )
+
+        // Simulate a coordination claim that never releases (cloudd wedged on
+        // one file): the operation blocks its key's coordinator queue until
+        // the test releases it. `stuckStarted` confirms the body is actually
+        // occupying the stuck key's queue before we probe the live key.
+        let stuckStarted = DispatchSemaphore(value: 0)
+        let stuckRelease = DispatchSemaphore(value: 0)
+        let stuckDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            try? store.runWithBusyHandling(key: stuckKey) {
+                stuckStarted.signal()
+                stuckRelease.wait()
+            }
+            stuckDone.signal()
+        }
+        stuckStarted.wait()
+
+        // An operation on a DIFFERENT key must complete promptly even though
+        // the stuck key's queue is fully wedged.
+        var liveRan = false
+        try store.runWithBusyHandling(key: liveKey) {
+            liveRan = true
+        }
+        #expect(liveRan)
+
+        // End-to-end on the same store: a real write+read on the live key
+        // also proceeds while the stuck key stays wedged.
+        try store.write(envelope(id: "live-key"), at: liveKey)
+        let fetched = try #require(try store.read(liveKey))
+        #expect(fetched.entityID == "live-key")
+
+        // Unwedge and let the detached threads drain before teardown.
+        stuckRelease.signal()
+        stuckDone.wait()
+    }
+
+    @Test
     func downloadStatusReportsDownloadedForMaterializedFile() throws {
         let root = makeRoot()
         defer { cleanup(root) }

@@ -32,19 +32,20 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // encrypt/decrypt end-to-end WITHOUT touching the real keychain.
     private let blobCrypto: SidecarBlobCrypto
 
-    // Background queue the coordinator runs on so the calling thread can
-    // wait with a timeout. One serial queue per store instance — coordinator
-    // calls are coarse-grained and don't need parallel dispatch.
-    //
-    // NOTE: the queue is shared across keys, so a single stuck operation (e.g. a
-    // key whose backing file is still syncing) can delay siblings dispatched
-    // after it. Per-attempt wait time accumulates from when the operation is
-    // queued, not when it begins executing, so a sibling can see `.timedOut`
-    // while still waiting in line behind a stuck operation. A per-key dispatch
-    // queue would compose with the per-key `fileLocks` if this ever becomes a
-    // problem.
-    private let coordinatorQueue = DispatchQueue(
-        label: "GuessWhoSync.FileSystemSidecarStore.coordinator"
+    // Background queues the coordinator runs on so the calling thread can
+    // wait with a timeout. One serial queue PER KEY (same granularity as
+    // `fileLocks`), so a single stuck operation — e.g. cloudd holding a
+    // coordination claim on one syncing file, with no way to cancel it — only
+    // stalls that key's operations; every other key proceeds. Same-key
+    // operations still run FIFO, and per-attempt wait time accumulates from
+    // when the operation is queued, so a same-key sibling behind a stuck
+    // operation can see `.timedOut` — the intended blast radius: one record,
+    // never the store. Thread growth is bounded by the number of concurrently
+    // BLOCKED callers (scans issue one operation at a time), not by key count.
+    private let coordinatorQueues = PerKeyQueueTable<SidecarKey>(
+        label: { key in
+            "GuessWhoSync.FileSystemSidecarStore.coordinator.\(key.kind.rawValue).\(key.id)"
+        }
     )
 
     public init(
@@ -607,11 +608,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // cloudd; the closure receives the URL it should actually use (the
     // coordinator may substitute, e.g., a temporary).
     //
-    // The coordinator call runs on `coordinatorQueue` so the caller can wait
-    // with a per-attempt timeout; on expiry the busy handler decides retry,
-    // sleep+retry, or fail with `.timedOut(key)`. A coordinator call that
-    // finishes after we've moved on runs to completion in the background — see
-    // `runWithBusyHandling` for the leak discussion.
+    // The coordinator call runs on the key's own serial queue
+    // (`coordinatorQueues`) so the caller can wait with a per-attempt timeout;
+    // on expiry the busy handler decides retry, sleep+retry, or fail with
+    // `.timedOut(key)`. A coordinator call that finishes after we've moved on
+    // runs to completion in the background — see `runWithBusyHandling` for the
+    // leak discussion.
     private func coordinatedRead(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
         try runWithBusyHandling(key: key) {
             let coordinator = NSFileCoordinator(filePresenter: nil)
@@ -645,7 +647,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
-    // Run `operation` on `coordinatorQueue` with a per-attempt wait of
+    // Run `operation` on `key`'s coordinator queue with a per-attempt wait of
     // `perAttemptTimeout`. The operation is dispatched ONCE; we never
     // re-issue. On wait-timeout we consult the busy handler:
     //   .retry          → keep waiting (next per-attempt slice).
@@ -661,7 +663,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // An operation that completes after we threw `.timedOut` still runs its body
     // on the background queue — captures live in `ResultBox` (heap) so a late
     // completion never writes to a dead stack frame. ARC then releases the box;
-    // the coordinator queue is reused for the next call.
+    // the key's coordinator queue is reused for its next call. An op abandoned
+    // STUCK (a coordination claim that never releases) wedges only that key's
+    // queue; other keys' queues are unaffected.
     // Internal so @testable tests can drive busy handling directly,
     // bypassing the coordinator wrappers.
     func runWithBusyHandling(
@@ -671,7 +675,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         let started = SidecarMonotonicClock.now()
         let semaphore = DispatchSemaphore(value: 0)
         let resultBox = ResultBox()
-        coordinatorQueue.async {
+        coordinatorQueues.queue(forKey: key).async {
             do {
                 try operation()
                 resultBox.error = nil
