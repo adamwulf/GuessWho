@@ -446,16 +446,18 @@ final class SyncService {
     /// Best-effort one-shot migration of legacy event sidecars to the UUID-keyed
     /// shape. Idempotent (safe every launch) and permission-free. Awaited at
     /// the head of the launch events Task in `GuessWhoAppDelegate` — regardless
-    /// of permission state — with the sidecar walk hopped off the main actor
-    /// (GuessWhoSync is `@unchecked Sendable`), so launch no longer blocks on
-    /// it. `fetchEventsRange` ALSO awaits this, making migration-before-
-    /// window-read a hard guarantee even for a notification-driven events
-    /// reload that fires before the launch Task's explicit await.
+    /// of permission state — with the sidecar walk hopped off the main actor by
+    /// the engine's async `migrateEventsToSidecarFirst()` overload (a
+    /// `DispatchQueue.global` continuation hop, not the cooperative pool), so
+    /// launch no longer blocks on it. `fetchEventsRange` ALSO awaits this,
+    /// making migration-before-window-read a hard guarantee even for a
+    /// notification-driven events reload that fires before the launch Task's
+    /// explicit await.
     func migrateEventsIfNeeded() async {
         guard let sync else { return }
         if eventMigration == nil {
-            eventMigration = Task.detached(priority: .userInitiated) {
-                _ = try? sync.migrateEventsToSidecarFirst()
+            eventMigration = Task {
+                _ = try? await sync.migrateEventsToSidecarFirst()
             }
         }
         await eventMigration?.value
