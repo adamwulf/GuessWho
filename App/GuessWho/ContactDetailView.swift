@@ -425,7 +425,7 @@ struct ContactDetailView: View {
         // sidecar/custom-field edits, which commit live as they're made. Escape
         // triggers Cancel via .cancelAction.
         ToolbarItem(placement: .cancellationAction) {
-            Button {
+            Button(role: .cancel) {
                 cancelEdit()
             } label: {
                 Image(systemName: "xmark")
