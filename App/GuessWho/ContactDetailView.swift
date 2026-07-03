@@ -259,8 +259,15 @@ struct ContactDetailView: View {
             // A LinkedIn import just saved changes. Re-read so the open card
             // reflects the new fields/notes immediately instead of showing stale
             // data until re-selected. preferFresh re-reads the record + sidecar
-            // fields through the fresh path.
-            Task { await loadContact(preferFresh: true) }
+            // fields through the fresh path. The header photo must be re-loaded
+            // explicitly: the `.task(id: contact?.contactID)` trigger only
+            // refires when the ID changes, and an import onto an
+            // already-reconciled contact keeps the same ID — without this, an
+            // imported photo stayed blank until the card was reopened.
+            Task {
+                await loadContact(preferFresh: true)
+                await loadHeaderPhoto()
+            }
         }
     }
 

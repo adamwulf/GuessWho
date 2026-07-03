@@ -31,7 +31,12 @@ final class ContactPhotoLoader {
 
     private let repository: ContactsRepository
     private let notificationCenter: NotificationCenter
-    private let cache = NSCache<CacheKeyBox, UIImage>()
+    /// Holds `UIImage` for a loaded photo or `NSNull` for a confirmed
+    /// no-photo result. Negative entries matter since the repository stopped
+    /// pre-filtering on the unreliable `imageDataAvailable` flag: every
+    /// nil now costs a store round-trip, so without caching it, each list
+    /// scroll would re-query the store for every photo-less contact.
+    private let cache = NSCache<CacheKeyBox, AnyObject>()
     private var inFlight: [CacheKey: Task<UIImage?, Never>] = [:]
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
     private var cacheGeneration = 0
@@ -66,14 +71,15 @@ final class ContactPhotoLoader {
     }
 
     func cachedImage(for id: ContactID, kind: ContactPhotoKind) -> UIImage? {
-        cache.object(forKey: CacheKeyBox(CacheKey(id: id, kind: kind)))
+        cache.object(forKey: CacheKeyBox(CacheKey(id: id, kind: kind))) as? UIImage
     }
 
     func image(for id: ContactID, kind: ContactPhotoKind) async -> UIImage? {
         let key = CacheKey(id: id, kind: kind)
         let boxed = CacheKeyBox(key)
         if let cached = cache.object(forKey: boxed) {
-            return cached
+            // NSNull is a cached "no photo" — don't hit the store again.
+            return cached as? UIImage
         }
         if let task = inFlight[key] {
             return await task.value
@@ -92,10 +98,11 @@ final class ContactPhotoLoader {
         inFlight[key] = task
         let image = await task.value
         inFlight[key] = nil
+        // A cancelled task also returns nil, but cancellation only happens via
+        // removeAll(), which bumps the generation — so this guard keeps a
+        // cancelled load from being cached as "no photo".
         guard cacheGeneration == generation else { return nil }
-        if let image {
-            cache.setObject(image, forKey: boxed)
-        }
+        cache.setObject(image ?? NSNull(), forKey: boxed)
         return image
     }
 

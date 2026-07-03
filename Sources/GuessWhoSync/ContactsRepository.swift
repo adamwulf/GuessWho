@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 import Observation
 
 public extension Notification.Name {
@@ -290,30 +291,96 @@ public final class ContactsRepository: NSObject {
         return contactsByLocalID[id.localID]
     }
 
+    /// Developer breadcrumbs for the photo read path (which branch produced a
+    /// nil, flag/bytes disagreements, thrown store errors). File-log only —
+    /// never user-facing.
+    private static let photoLog = Logger(label: "sync.contact-photo")
+
+    /// Same label as the adapter's save-failure breadcrumbs so one grep shows
+    /// every CNContact write REQUEST alongside any failure — a 2026-07-03
+    /// mystery save failure was unattributable because nothing recorded which
+    /// operation initiated it.
+    private static let saveLog = Logger(label: "sync.contact-save")
+
     /// Lazily loads contact photo bytes for the app-facing `ContactID`.
     ///
     /// Bulk contact reloads only fetch `imageDataAvailable`; the expensive image
     /// bytes stay behind this visible-row/detail-driven path. The app passes an
     /// opaque `ContactID`; the repository resolves the package-scoped Contacts
     /// lookup token internally and chooses thumbnail vs. full-size store access.
+    ///
+    /// `imageDataAvailable` is a HINT, never a veto: macOS/Catalyst can leave a
+    /// card thumbnail-only with the flag stuck `false` (observed 2026-07-03
+    /// after a LinkedIn photo import — Contacts.app rendered the thumbnail
+    /// while the flag read `false` and full-size `imageData` was nil), so this
+    /// always asks the store. A `.fullSize` request on such a card falls back
+    /// to the thumbnail bytes — the returned `ContactPhoto.kind` reports what
+    /// the bytes actually are. The app-side loader caches empty results, so
+    /// photo-less books don't re-query the store on every scroll.
     public func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
-        guard let contact = contact(id: id), contact.imageDataAvailable else {
-            return nil
-        }
+        guard let contact = contact(id: id) else { return nil }
 
         do {
-            let data: Data?
             switch kind {
             case .thumbnail:
-                data = try await contactsStore.loadThumbnailImageData(localID: contact.localID)
+                guard let data = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
+                    if contact.imageDataAvailable {
+                        Self.photoLog.notice("thumbnail missing despite imageDataAvailable=true", metadata: [
+                            "localID": .string(contact.localID),
+                        ])
+                    }
+                    return nil
+                }
+                Self.logFlagMismatchIfNeeded(contact: contact, loaded: "thumbnail", bytes: data.count)
+                return ContactPhoto(data: data, kind: .thumbnail)
             case .fullSize:
-                data = try await contactsStore.loadImageData(localID: contact.localID)
+                if let data = try await contactsStore.loadImageData(localID: contact.localID) {
+                    Self.logFlagMismatchIfNeeded(contact: contact, loaded: "fullSize", bytes: data.count)
+                    return ContactPhoto(data: data, kind: .fullSize)
+                }
+                // Thumbnail-only card: full-size bytes unavailable at the API
+                // even though a photo exists. Contacts.app shows the thumbnail
+                // in that state, so we do too.
+                guard let thumbnail = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
+                    if contact.imageDataAvailable {
+                        Self.photoLog.notice("no photo bytes despite imageDataAvailable=true", metadata: [
+                            "localID": .string(contact.localID),
+                        ])
+                    }
+                    return nil
+                }
+                Self.photoLog.notice("full-size photo unavailable; serving thumbnail", metadata: [
+                    "localID": .string(contact.localID),
+                    "imageDataAvailable": .stringConvertible(contact.imageDataAvailable),
+                    "thumbnailBytes": .stringConvertible(thumbnail.count),
+                ])
+                return ContactPhoto(data: thumbnail, kind: .thumbnail)
             }
-            guard let data else { return nil }
-            return ContactPhoto(data: data, kind: kind)
         } catch ContactStoreError.contactNotFound(_) {
             return nil
+        } catch {
+            let ns = error as NSError
+            Self.photoLog.error("contact photo load failed", metadata: [
+                "localID": .string(contact.localID),
+                "kind": .string(kind == .thumbnail ? "thumbnail" : "fullSize"),
+                "domain": .string(ns.domain),
+                "code": .stringConvertible(ns.code),
+                "localizedDescription": .string(ns.localizedDescription),
+            ])
+            throw error
         }
+    }
+
+    /// One breadcrumb when bytes load fine but the record's availability flag
+    /// said there were none — the flag-stuck-false state that used to blank
+    /// every photo surface.
+    private static func logFlagMismatchIfNeeded(contact: Contact, loaded: String, bytes: Int) {
+        guard !contact.imageDataAvailable else { return }
+        photoLog.notice("photo loaded despite imageDataAvailable=false", metadata: [
+            "localID": .string(contact.localID),
+            "loaded": .string(loaded),
+            "bytes": .stringConvertible(bytes),
+        ])
     }
 
     /// Fetches the current Contacts record for editing, addressed by the
@@ -331,6 +398,9 @@ public final class ContactsRepository: NSObject {
     /// from `editableContact(id:)`; keeping that read inside the package avoids
     /// re-resolving a possibly stale navigation token after a reconcile.
     public func saveContact(_ edited: Contact, for _: ContactID) async throws {
+        Self.saveLog.notice("contact save requested", metadata: [
+            "op": "saveContact", "localID": .string(edited.localID),
+        ])
         try await contactsStore.save(edited)
         await refreshContact(localID: edited.localID)
     }
@@ -344,6 +414,7 @@ public final class ContactsRepository: NSObject {
     /// creating a card is a CONTACT write, not a sidecar write; the GuessWho
     /// ID mints on the first sidecar write as usual.
     public func createContact(_ seed: Contact) async throws -> Contact {
+        Self.saveLog.notice("contact save requested", metadata: ["op": "createContact"])
         let created = try await contactsStore.create(seed)
         await refreshContact(localID: created.localID)
         return contact(localID: created.localID) ?? created
@@ -365,6 +436,10 @@ public final class ContactsRepository: NSObject {
     public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
         guard let localID = contact(id: id)?.localID else { return false }
         await snapshotCurrentPhotoIfPresent(for: id, localID: localID)
+        Self.saveLog.notice("contact save requested", metadata: [
+            "op": "setContactPhoto", "localID": .string(localID),
+            "bytes": .stringConvertible(imageData?.count ?? 0),
+        ])
         try await contactsStore.setImageData(localID: localID, imageData: imageData)
         await refreshContact(localID: localID)
         return true
