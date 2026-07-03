@@ -24,6 +24,14 @@ extension Notification.Name {
 /// collision by giving the app type a distinct suffix; mutations still
 /// route through `SyncService` exactly like `NotesStore` /
 /// `ContactLinksStore` do.
+///
+/// DELIBERATELY does not subscribe to `.guessWhoSidecarsDidChange` (the
+/// contacts/events repositories do): `Favorites.json` lives under the same
+/// watched root, but this store reloads after every app-side mutation and
+/// its list is only visible on demand, so a remote toggle syncing down
+/// waits for the next mutation or launch. Accepted v1 scope cut — wiring it
+/// up is a one-observer change here if cross-device favorite freshness ever
+/// matters.
 @MainActor
 @Observable
 final class FavoritesListStore {

@@ -86,8 +86,13 @@ struct SidecarFileWatcherTests {
         let recorder = Recorder(center: center, name: .contactsRepositoryDidReload)
         defer { recorder.stop(center: center) }
 
-        // A burst of watcher posts (one metadata batch = one post each) must
-        // collapse into a SINGLE debounced refresh.
+        // Three posts fired synchronously (the realistic shape: one metadata
+        // batch = one post, delivered back-to-back) must collapse into a
+        // SINGLE refresh. Precisely: this proves trailing-edge collapse of a
+        // SYNCHRONOUS burst — each post cancels the prior pending Task before
+        // any debounce timer fires. Debouncing across temporally-SPREAD posts
+        // (a second post landing mid-window) rides the same cancel-and-
+        // replace path but is not separately exercised here.
         for _ in 0..<3 {
             center.post(name: .guessWhoSidecarsDidChange, object: nil)
         }
