@@ -420,10 +420,27 @@ struct ContactDetailView: View {
 
     @ToolbarContentBuilder
     private var editingToolbarContent: some ToolbarContent {
-        // A single accent checkmark "Done" — no Cancel, because some edits
-        // (custom/sidecar fields) commit immediately, so a Cancel implying undo
-        // would be a lie. Done commits any pending CNContact-model edits and
-        // dismisses; sidecar edits already saved live.
+        // A red X "Cancel" mirrors the accent checkmark "Done". Cancel discards
+        // any pending CNContact-model edits and dismisses — it does NOT undo
+        // sidecar/custom-field edits, which commit live as they're made. Escape
+        // triggers Cancel via .cancelAction.
+        ToolbarItem(placement: .cancellationAction) {
+            Button {
+                cancelEdit()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.subheadline.weight(.bold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            .disabled(isSavingEdit)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityLabel("Cancel")
+        }
+        // A single accent checkmark "Done" commits any pending CNContact-model
+        // edits and dismisses; sidecar edits already saved live.
         ToolbarItem(placement: .confirmationAction) {
             Button {
                 Task {
