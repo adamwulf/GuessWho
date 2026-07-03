@@ -356,6 +356,7 @@ struct ContactDetailView: View {
         IMRow(model: binding)
         PhoneticNameRow(model: binding)
         editableSidecarFieldsSection
+        editableNotesSection
         Section {
             Button(role: .destructive) {
                 showDeleteConfirm = true
@@ -368,6 +369,45 @@ struct ContactDetailView: View {
             }
             .disabled(isSavingEdit)
             .centeredRowContent()
+        }
+    }
+
+    /// Notes shown while editing the contact. Mirrors the read-mode
+    /// `notesSection` (same `noteRow`: inline-editable, swipe-delete, context
+    /// menu) plus the same inline new-note `TextField`, and adds an "Add Note"
+    /// button so the note affordance is present in edit mode the way the
+    /// read-mode activity footer offers it. Unlike the read section this always
+    /// renders (even with zero notes) so the Add Note button is always
+    /// reachable. Note writes go straight through `notesStore` — immediate,
+    /// independent of the CNContact `editModel`, exactly like the editable
+    /// custom fields above.
+    @ViewBuilder
+    private var editableNotesSection: some View {
+        let notes = noteItems
+        Section {
+            ForEach(notes, id: \.id) { note in
+                noteRow(note)
+                    .centeredRowContent()
+            }
+            .onDelete { offsets in
+                for i in offsets { deleteNote(notes[i].id) }
+            }
+
+            if showingNewNoteEditor {
+                TextField("Add a note", text: $newNoteText, axis: .vertical)
+                    .focused($noteFocus, equals: .newNote)
+                    .centeredRowContent()
+            }
+
+            Button {
+                showNewNoteEditor()
+            } label: {
+                Label("Add Note", systemImage: "note.text")
+            }
+            .disabled(notesStore == nil || showingNewNoteEditor)
+            .centeredRowContent()
+        } header: {
+            Text("Notes").centeredSectionHeader()
         }
     }
 
@@ -422,8 +462,8 @@ struct ContactDetailView: View {
     private var editingToolbarContent: some ToolbarContent {
         // A red X "Cancel" mirrors the accent checkmark "Done". Cancel discards
         // any pending CNContact-model edits and dismisses — it does NOT undo
-        // sidecar/custom-field edits, which commit live as they're made. Escape
-        // triggers Cancel via .cancelAction.
+        // sidecar edits (custom fields, notes), which commit live as they're
+        // made. Escape triggers Cancel via .cancelAction.
         ToolbarItem(placement: .cancellationAction) {
             Button(role: .cancel) {
                 cancelEdit()
@@ -443,6 +483,11 @@ struct ContactDetailView: View {
         // edits and dismisses; sidecar edits already saved live.
         ToolbarItem(placement: .confirmationAction) {
             Button {
+                // Commit any in-progress note first (a half-typed new note or an
+                // open note-row edit), so tapping Done from a focused note field
+                // persists it via notesStore instead of dropping it — matching
+                // the read-mode Done checkmark. A no-op when no note is focused.
+                commitActiveEdit()
                 Task {
                     if editModel?.isDirty == true {
                         await performInlineSave()   // saves + dismisses
