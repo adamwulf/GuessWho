@@ -1,7 +1,11 @@
 import Foundation
 import GuessWhoSync
 
-public final class InMemoryEventStore: EventStoreProtocol {
+// `@unchecked Sendable`: every access to the mutable dictionaries below is
+// bracketed by the per-instance `lock` (see each method body), satisfying the
+// `EventStoreProtocol: Sendable` contract the engine's background-hop
+// overloads rely on.
+public final class InMemoryEventStore: EventStoreProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var eventsByEventKitID: [String: Event]
     private var createCounter: Int = 0

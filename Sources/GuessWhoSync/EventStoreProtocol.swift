@@ -1,6 +1,13 @@
 import Foundation
 
-public protocol EventStoreProtocol {
+/// `Sendable` is part of the port contract, not a convenience: the engine's
+/// continuation-hop overloads (`eventsWindow`, `recentEvents`, the migration
+/// scan) capture the conformer and drive it from `DispatchQueue.global`, and
+/// `@MainActor` callers (SyncService) hold it across actor boundaries — every
+/// conformer is ALREADY crossing threads. `EKEventStoreAdapter` is
+/// `@unchecked Sendable` over an immutable, thread-safe `EKEventStore`; the
+/// test fakes guard their mutable state with a per-instance `NSLock`.
+public protocol EventStoreProtocol: Sendable {
     // MARK: - Authorization
     //
     // The adapter owns the one true `EKEventStore`, so the permission request

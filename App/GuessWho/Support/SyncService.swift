@@ -35,8 +35,12 @@ final class SyncService {
     // no drifting writer-ID schemes.
     let deviceID: String
 
-    private let contactsAdapter: CNContactStoreAdapter
-    private let eventsAdapter: EKEventStoreAdapter
+    // Protocol-typed (not the concrete CN/EK adapters) so the designated
+    // initializer below can inject the package's in-memory fakes for tests.
+    // Every member this service calls is part of the port protocols; the
+    // production convenience `init()` still constructs the real adapters.
+    private let contactsAdapter: ContactStoreProtocol
+    private let eventsAdapter: EventStoreProtocol
     private let sync: GuessWhoSync?
     // nil only when `sidecarLocation == .unavailable` — favorites need a
     // writable root, like `sync`. The unqualified `FavoritesStore` is the
@@ -50,38 +54,52 @@ final class SyncService {
     // until relaunch. A future refreshSidecarLocation() could rebuild `sync` on
     // ScenePhase.active, but rebuilding the root mid-session (in-flight ops,
     // cache state) is out of scope for the v1 sample.
-    init() {
-        // The Contacts adapter (its own actor) owns the one true CNContactStore
-        // for fetch/save AND the permission request; SyncService constructs no
-        // Apple store of its own. It vends a neutral `StoreAuthorizationStatus`,
-        // so this target never imports `Contacts` to reason about permission.
-        let adapter = CNContactStoreAdapter()
-        self.contactsAdapter = adapter
-        // Device-local persistence for the contact change-history cursor, handed
-        // to GuessWhoSync so its watcher can advance it. Lives in the container's
-        // Application Support, NOT the (possibly iCloud-backed) sidecar root: a
-        // CNContactStore history token is per-device, so syncing it would make
-        // another device think it was caught up and skip real edits.
-        let cursorStore = ContactSyncCursorStore(url: Self.contactCursorURL())
+    /// Production wiring: the Contacts adapter (its own actor) owns the one
+    /// true CNContactStore for fetch/save AND the permission request, and the
+    /// EventKit adapter constructs and owns its own EKEventStore — SyncService
+    /// constructs no Apple store of its own and never imports Contacts/EventKit
+    /// to reason about permission. The cursor URL lives in the container's
+    /// Application Support, NOT the (possibly iCloud-backed) sidecar root: a
+    /// CNContactStore history token is per-device, so syncing it would make
+    /// another device think it was caught up and skip real edits.
+    convenience init() {
+        self.init(
+            contactsAdapter: CNContactStoreAdapter(),
+            eventsAdapter: EKEventStoreAdapter(),
+            sidecarLocation: Self.resolveSidecarLocation(),
+            deviceID: Self.stableDeviceID(),
+            contactCursorURL: Self.contactCursorURL()
+        )
+    }
 
-        // The EventKit adapter constructs and owns its own EKEventStore (its
-        // `init()` defaults `store:` to a fresh one) and runs the events
-        // permission request itself. SyncService holds no EKEventStore.
-        let ekAdapter = EKEventStoreAdapter()
-        self.eventsAdapter = ekAdapter
+    /// Designated initializer with every port injectable. Internal so
+    /// @testable tests can construct the service over the package's in-memory
+    /// fakes (`InMemoryContactStore` / `InMemoryEventStore`) and a temp-dir
+    /// `sidecarLocation` — the location's URL is just a root directory; the
+    /// store construction below is identical for a real iCloud Documents URL
+    /// and a test temp dir. Production code uses the convenience `init()`.
+    init(
+        contactsAdapter: ContactStoreProtocol,
+        eventsAdapter: EventStoreProtocol,
+        sidecarLocation location: SidecarLocation,
+        deviceID id: String,
+        contactCursorURL: URL
+    ) {
+        self.contactsAdapter = contactsAdapter
+        self.eventsAdapter = eventsAdapter
+        // Device-local persistence for the contact change-history cursor,
+        // handed to GuessWhoSync so its watcher can advance it.
+        let cursorStore = ContactSyncCursorStore(url: contactCursorURL)
 
-        let location = Self.resolveSidecarLocation()
         self.sidecarLocation = location
-
-        let id = Self.stableDeviceID()
         self.deviceID = id
 
         switch location {
         case .iCloud(let url):
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
-                contacts: adapter,
-                events: ekAdapter,
+                contacts: contactsAdapter,
+                events: eventsAdapter,
                 sidecars: sidecarStore,
                 deviceID: id,
                 contactCursorStore: cursorStore
@@ -96,8 +114,8 @@ final class SyncService {
             Self.log.notice("storage fallback to local", ["reason": reason])
             let sidecarStore = FileSystemSidecarStore(root: url)
             self.sync = GuessWhoSync(
-                contacts: adapter,
-                events: ekAdapter,
+                contacts: contactsAdapter,
+                events: eventsAdapter,
                 sidecars: sidecarStore,
                 deviceID: id,
                 contactCursorStore: cursorStore
@@ -616,8 +634,25 @@ final class SyncService {
     // MARK: - Private
 
     private static func resolveSidecarLocation() -> SidecarLocation {
+        resolveSidecarLocation(
+            ubiquityContainerURL: FileManager.default.url(
+                forUbiquityContainerIdentifier: ICloudContainer.id
+            ),
+            localFallback: localFallbackURL
+        )
+    }
+
+    /// The storage-resolution ladder with its two environment probes injected:
+    /// iCloud container Documents → local Application Support → unavailable.
+    /// Internal so @testable tests can drive every rung with plain temp-dir
+    /// URLs and a throwing fallback — `url(forUbiquityContainerIdentifier:)`
+    /// and the real Application Support are unreachable from a unit test.
+    static func resolveSidecarLocation(
+        ubiquityContainerURL: URL?,
+        localFallback: () throws -> URL
+    ) -> SidecarLocation {
         let fm = FileManager.default
-        if let ubiquity = fm.url(forUbiquityContainerIdentifier: ICloudContainer.id) {
+        if let ubiquity = ubiquityContainerURL {
             let documents = ubiquity.appendingPathComponent("Documents", isDirectory: true)
             do {
                 try fm.createDirectory(at: documents, withIntermediateDirectories: true)
@@ -625,7 +660,7 @@ final class SyncService {
             } catch {
                 // iCloud container exists but is unwritable — try local fallback
                 // before giving up.
-                if let local = try? localFallbackURL() {
+                if let local = try? localFallback() {
                     return .localFallback(
                         local,
                         reason: "iCloud container found but its Documents folder is unwritable: \(error.localizedDescription)"
@@ -637,7 +672,7 @@ final class SyncService {
             }
         }
 
-        if let local = try? localFallbackURL() {
+        if let local = try? localFallback() {
             return .localFallback(
                 local,
                 reason: "iCloud Drive is unavailable. Sign in to iCloud and enable iCloud Drive to sync across devices."
@@ -690,8 +725,11 @@ final class SyncService {
     }
 }
 
-struct SidecarUnavailableError: Error, LocalizedError {
-    var errorDescription: String? {
-        "Sidecar storage is unavailable. Cannot read or write GuessWho data."
-    }
-}
+// The app's local `SidecarUnavailableError` copy was removed in favor of the
+// package's public type (its doc comment always planned this): two same-named
+// types meant an app-side `catch is SidecarUnavailableError` bound the local
+// one and silently missed package-thrown errors. Every `throw
+// SidecarUnavailableError()` above now resolves to `GuessWhoSync`'s type, so
+// service-thrown and repository-thrown storage-unavailable errors are one
+// catchable type. (Caught by the SyncService unit tests, which type-check the
+// thrown error.)
