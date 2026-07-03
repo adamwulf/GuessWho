@@ -131,6 +131,29 @@ struct SyncServiceTests {
         #expect(!reason.isEmpty)
     }
 
+    @Test
+    func resolveUnwritableContainerAndFailingFallbackIsUnavailable() throws {
+        // The last rung reachable FROM the iCloud branch: container present
+        // but unwritable AND no local fallback either. Distinct from the
+        // nil-container case above — this exercises the inner catch's
+        // .unavailable exit, whose reason names the unwritable container.
+        struct NoStorage: Error {}
+        let parent = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let fileAsContainer = parent.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: fileAsContainer)
+
+        let location = SyncService.resolveSidecarLocation(
+            ubiquityContainerURL: fileAsContainer,
+            localFallback: { throw NoStorage() }
+        )
+        guard case .unavailable(let reason) = location else {
+            Issue.record("expected .unavailable, got \(location)")
+            return
+        }
+        #expect(reason.contains("unwritable"))
+    }
+
     // MARK: - Event migration (memoized single run)
 
     /// Plants a legacy (non-UUID-keyed) event sidecar on disk via a second
@@ -270,7 +293,13 @@ struct SyncServiceTests {
                 try body()
                 Issue.record("expected a storage-unavailable throw")
             } catch {
-                #expect(error.localizedDescription.contains("unavailable"))
+                // Exact match on SidecarUnavailableError's errorDescription —
+                // a substring check could pass on some other "unavailable"
+                // error and mask a regression in WHICH error is thrown.
+                #expect(
+                    error.localizedDescription
+                        == "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+                )
             }
         }
         expectStorageUnavailable {
@@ -294,6 +323,29 @@ struct SyncServiceTests {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
+
+        // The vended property matches the injected ID…
         #expect(service.deviceID == "test-device")
+
+        // …and, the part that matters, it IS the writer ID the engine stamps
+        // on disk: a write through the service must produce cells whose
+        // `modifiedBy` carries it. This is the "same source, same value"
+        // contract the property doc promises (NotesStore-minted writer IDs
+        // must equal the package's cell stamps).
+        let uuid = try service.createManualEvent(
+            title: "Stamped",
+            startDate: Date(timeIntervalSince1970: 1_800_000_000),
+            endDate: Date(timeIntervalSince1970: 1_800_003_600),
+            isAllDay: false,
+            location: nil
+        )
+        let envelope = try #require(
+            try FileSystemSidecarStore(root: root)
+                .read(SidecarKey(kind: .event, id: uuid.uuidString))
+        )
+        #expect(!envelope.fields.isEmpty)
+        for (_, cell) in envelope.fields {
+            #expect(cell.modifiedBy == "test-device")
+        }
     }
 }
