@@ -387,7 +387,13 @@ struct ContactDetailView: View {
         Section {
             ForEach(notes, id: \.id) { note in
                 noteRow(note)
-                    .centeredRowContent()
+                    // Delete-only rows in the active edit-mode list: apply the
+                    // same offset the sibling editableSidecarFieldsSection uses
+                    // so the note rows line up with the custom-field rows on
+                    // Catalyst (no-op on iPhone/iPad).
+                    .centeredRowContent(
+                        horizontalOffset: ContactDetailLayout.deleteOnlyEditRowOffset
+                    )
             }
             .onDelete { offsets in
                 for i in offsets { deleteNote(notes[i].id) }
@@ -1799,6 +1805,13 @@ struct ContactDetailView: View {
         }
         if editingLinkID != nil {
             commitLinkEditIfChanged()
+        }
+        // Switching focus to an existing note commits the pending new-note
+        // editor too (persists it if non-empty, clears the editor if empty) —
+        // otherwise the empty "Add a note" field would linger after the focus
+        // moves away.
+        if showingNewNoteEditor {
+            commitNewNote()
         }
         editingNoteID = note.id
         draftBody = note.body
