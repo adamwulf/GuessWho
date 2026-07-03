@@ -1057,9 +1057,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     @MainActor
     private func presentLinkedInApplyFailureAlert(error: Error) {
         let category = ContactEditModel.saveErrorCategory(error)
+        // `.recordDoesNotExist`'s stock wording ("Tap Cancel to refresh")
+        // assumes the contact editor's two-button alert; this one only has OK.
+        let message = category == .recordDoesNotExist
+            ? "This contact has been deleted on another device."
+            : category.saveFailureMessage
         let alert = UIAlertController(
             title: "Couldn’t Save LinkedIn Info",
-            message: category.saveFailureMessage,
+            message: message,
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))

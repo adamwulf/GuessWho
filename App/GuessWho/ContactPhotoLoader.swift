@@ -37,7 +37,7 @@ final class ContactPhotoLoader {
     /// nil now costs a store round-trip, so without caching it, each list
     /// scroll would re-query the store for every photo-less contact.
     private let cache = NSCache<CacheKeyBox, AnyObject>()
-    private var inFlight: [CacheKey: Task<UIImage?, Never>] = [:]
+    private var inFlight: [CacheKey: Task<LoadOutcome, Never>] = [:]
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
     private var cacheGeneration = 0
 
@@ -74,6 +74,19 @@ final class ContactPhotoLoader {
         cache.object(forKey: CacheKeyBox(CacheKey(id: id, kind: kind))) as? UIImage
     }
 
+    /// The three ways a load can come back, kept distinct so only DEFINITIVE
+    /// results are cached: a thrown store error must stay retryable — a
+    /// transient Contacts hiccup negative-cached as "no photo" would blank the
+    /// photo until the next data-changed reload, even after the store recovers.
+    private enum LoadOutcome {
+        case loaded(UIImage)
+        /// The store answered and there are no displayable bytes (or the bytes
+        /// don't decode, which is deterministic until the record changes).
+        case noPhoto
+        /// The load threw or was cancelled — report nil, cache nothing.
+        case failed
+    }
+
     func image(for id: ContactID, kind: ContactPhotoKind) async -> UIImage? {
         let key = CacheKey(id: id, kind: kind)
         let boxed = CacheKeyBox(key)
@@ -82,28 +95,43 @@ final class ContactPhotoLoader {
             return cached as? UIImage
         }
         if let task = inFlight[key] {
-            return await task.value
+            if case .loaded(let image) = await task.value { return image }
+            return nil
         }
 
         let generation = cacheGeneration
-        let task = Task<UIImage?, Never> {
-            guard let photo = try? await repository.contactPhotoData(for: id, kind: kind) else {
-                return nil
+        let task = Task<LoadOutcome, Never> {
+            let photo: ContactPhoto?
+            do {
+                photo = try await repository.contactPhotoData(for: id, kind: kind)
+            } catch {
+                return .failed
             }
-            guard !Task.isCancelled else { return nil }
-            let image = await Self.decodeImage(from: photo.data)
-            guard !Task.isCancelled else { return nil }
-            return image
+            guard let photo else { return .noPhoto }
+            guard !Task.isCancelled else { return .failed }
+            guard let image = await Self.decodeImage(from: photo.data) else {
+                return .noPhoto
+            }
+            guard !Task.isCancelled else { return .failed }
+            return .loaded(image)
         }
         inFlight[key] = task
-        let image = await task.value
+        let outcome = await task.value
         inFlight[key] = nil
-        // A cancelled task also returns nil, but cancellation only happens via
-        // removeAll(), which bumps the generation — so this guard keeps a
-        // cancelled load from being cached as "no photo".
+        // A cancelled task reports .failed, and cancellation only happens via
+        // removeAll(), which bumps the generation — so this guard is a second
+        // line of defense against caching a torn-down load.
         guard cacheGeneration == generation else { return nil }
-        cache.setObject(image ?? NSNull(), forKey: boxed)
-        return image
+        switch outcome {
+        case .loaded(let image):
+            cache.setObject(image, forKey: boxed)
+            return image
+        case .noPhoto:
+            cache.setObject(NSNull(), forKey: boxed)
+            return nil
+        case .failed:
+            return nil
+        }
     }
 
     func invalidate(_ id: ContactID?) {

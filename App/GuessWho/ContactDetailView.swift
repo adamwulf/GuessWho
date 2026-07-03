@@ -265,6 +265,12 @@ struct ContactDetailView: View {
             // already-reconciled contact keeps the same ID — without this, an
             // imported photo stayed blank until the card was reopened.
             Task {
+                // Drop the decoded-photo cache FIRST (mirrors writePhoto):
+                // the loader's own didReload observer runs as a separately
+                // enqueued main-queue block, so relying on it races this Task —
+                // if loadHeaderPhoto wins the race, it re-serves the stale
+                // pre-import image from cache and returns early.
+                photoLoader.invalidate(loadedContactID ?? id)
                 await loadContact(preferFresh: true)
                 await loadHeaderPhoto()
             }
