@@ -15,8 +15,8 @@
 		C700000000000000000000A2 /* AppKitPlugin.swift in Sources (bundle) */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F1 /* AppKitPlugin.swift */; };
 		C700000000000000000000A3 /* GuessWhoAppKitBridge.swift in Sources (bundle) */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F2 /* GuessWhoAppKitBridge.swift */; };
 		C700000000000000000000A4 /* GuessWhoAppKitBridge.bundle in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, CodeSignOnCopy, ); }; };
+		A100000000000000000000D6 /* GuessWhoSync in Embed Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D2 /* GuessWhoSync */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = D100000000000000000000D2 /* GuessWhoSync */; };
-		D100000000000000000000D7 /* GuessWhoSyncTesting in Frameworks */ = {isa = PBXBuildFile; productRef = D100000000000000000000D6 /* GuessWhoSyncTesting */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -51,6 +51,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		A100000000000000000000F7 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A100000000000000000000D6 /* GuessWhoSync in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B200000000000000000000F0 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -172,7 +183,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				D100000000000000000000D3 /* GuessWhoSync in Frameworks */,
-				D100000000000000000000D7 /* GuessWhoSyncTesting in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -243,6 +253,7 @@
 				A100000000000000000000B2 /* Sources */,
 				A100000000000000000000B4 /* Frameworks */,
 				A100000000000000000000B3 /* Resources */,
+				A100000000000000000000F7 /* Embed Frameworks */,
 				B200000000000000000000F0 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -324,7 +335,6 @@
 			name = GuessWhoTests;
 			packageProductDependencies = (
 				D100000000000000000000D2 /* GuessWhoSync */,
-				D100000000000000000000D6 /* GuessWhoSyncTesting */,
 			);
 			productName = GuessWhoTests;
 			productReference = D100000000000000000000C0 /* GuessWhoTests.xctest */;
@@ -1003,10 +1013,6 @@
 		D100000000000000000000D2 /* GuessWhoSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GuessWhoSync;
-		};
-		D100000000000000000000D6 /* GuessWhoSyncTesting */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = GuessWhoSyncTesting;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

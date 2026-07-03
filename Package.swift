@@ -8,7 +8,22 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
-        .library(name: "GuessWhoSync", targets: ["GuessWhoSync"]),
+        // `.dynamic` so the app and its hosted test bundle (GuessWhoTests)
+        // share ONE GuessWhoSync image at runtime. With the default automatic
+        // (static) type the test bundle linked its own copy, and the two
+        // images' separate type metadata made cross-image dynamic casts fail —
+        // e.g. `#expect(throws: SidecarUnavailableError.self)` on an error
+        // thrown by host-app code.
+        //
+        // GuessWhoSyncTesting stays `automatic` — and, load-bearing, the app
+        // test bundle must NOT link it: its dependency on the GuessWhoSync
+        // TARGET is intra-package (always folded in statically), which both
+        // re-embeds a second GuessWhoSync copy AND trips Xcode's "linked as a
+        // static library … cannot be built dynamically because there is a
+        // package product with the same name" error. App-hosted tests carry
+        // their own minimal protocol stubs instead (see GuessWhoTests);
+        // package tests keep using these fakes via the target dependency.
+        .library(name: "GuessWhoSync", type: .dynamic, targets: ["GuessWhoSync"]),
         .library(name: "GuessWhoSyncTesting", targets: ["GuessWhoSyncTesting"]),
         // logfmt file logging shared by the GuessWho app + its Safari Web
         // Extension. A thin facade (GuessWhoLog) over FellerBuncher's swift-log

@@ -1,21 +1,32 @@
 import Foundation
 import Testing
 import GuessWhoSync
-import GuessWhoSyncTesting
 @testable import GuessWho
 
 /// Unit tests for `SyncService` — the app target's service layer, previously
 /// exercised only by launching the app. Hosted in GuessWho.app (TEST_HOST),
 /// but every test constructs its OWN service through the designated
-/// initializer over the package's in-memory adapter fakes and a temp-dir
-/// sidecar root, so nothing here touches Contacts, EventKit, iCloud, or the
-/// host app's live stores.
+/// initializer over local protocol stubs (see the bottom of this file) and a
+/// temp-dir sidecar root, so nothing here touches Contacts, EventKit, iCloud,
+/// or the host app's live stores.
 ///
 /// `@MainActor` because `SyncService` is main-actor isolated. Each test mints
 /// a fresh temp root; the same root is also opened via a second
 /// `FileSystemSidecarStore` / `GuessWhoSync` where a test needs to plant or
 /// inspect on-disk state the service API deliberately doesn't expose — files
 /// are the shared source of truth, so this is observation, not a back door.
+///
+/// LINKING: GuessWhoSync is a `.dynamic` package product (see Package.swift)
+/// precisely so this bundle and the host app bind to ONE GuessWhoSync image —
+/// with a static product the bundle carried its own copy and cross-image
+/// dynamic casts on package types failed. The typed `#expect(throws:
+/// SidecarUnavailableError.self)` assertions below are the canary for that
+/// property. This bundle deliberately does NOT link GuessWhoSyncTesting: an
+/// intra-package sibling always folds the GuessWhoSync TARGET in statically,
+/// which would both re-embed a second copy and trip Xcode's same-name
+/// static/dynamic conflict — so the two protocol stubs at the bottom of this
+/// file stand in for the package fakes (this suite drives sidecar paths, not
+/// store behavior; only `fetch(legacyEventIdentifier:)` is ever reached).
 @MainActor
 @Suite("SyncService")
 struct SyncServiceTests {
@@ -33,10 +44,10 @@ struct SyncServiceTests {
     /// test temp dir and a real ubiquity Documents URL identically.
     private func makeService(
         root: URL,
-        events: InMemoryEventStore = InMemoryEventStore()
+        events: StubEventStore = StubEventStore()
     ) -> SyncService {
         SyncService(
-            contactsAdapter: InMemoryContactStore(),
+            contactsAdapter: StubContactStore(),
             eventsAdapter: events,
             sidecarLocation: .iCloud(root),
             deviceID: "test-device",
@@ -47,8 +58,8 @@ struct SyncServiceTests {
     /// A service whose storage resolved to `.unavailable` (no writable root).
     private func makeUnavailableService() -> SyncService {
         SyncService(
-            contactsAdapter: InMemoryContactStore(),
-            eventsAdapter: InMemoryEventStore(),
+            contactsAdapter: StubContactStore(),
+            eventsAdapter: StubEventStore(),
             sidecarLocation: .unavailable(reason: "test: no writable storage"),
             deviceID: "test-device",
             contactCursorURL: FileManager.default.temporaryDirectory
@@ -160,8 +171,8 @@ struct SyncServiceTests {
     /// engine over the same root, using the public envelope-on-demand write.
     private func plantLegacyEventSidecar(root: URL, legacyID: String) throws {
         let engine = GuessWhoSync(
-            contacts: InMemoryContactStore(),
-            events: InMemoryEventStore(),
+            contacts: StubContactStore(),
+            events: StubEventStore(),
             sidecars: FileSystemSidecarStore(root: root),
             deviceID: "planter"
         )
@@ -280,32 +291,24 @@ struct SyncServiceTests {
         #expect(service.event(uuid: UUID().uuidString) == nil)
         #expect(service.favorites().isEmpty)
 
-        // Writes must throw the storage-unavailable error, asserted by its
-        // stable description rather than `#expect(throws: SidecarUnavailable-
-        // Error.self)`: this bundle links its own static copy of GuessWhoSync
-        // (via GuessWhoSyncTesting, which the host app does not embed), so the
-        // host image and test image carry separate metadata for the SAME
-        // source type and a cross-image dynamic cast fails. The contract —
-        // "a write surfaces storage-unavailable, never a silent no-op" — is
-        // image-agnostic.
-        func expectStorageUnavailable(_ body: () throws -> Void) {
-            do {
-                try body()
-                Issue.record("expected a storage-unavailable throw")
-            } catch {
-                // Exact match on SidecarUnavailableError's errorDescription —
-                // a substring check could pass on some other "unavailable"
-                // error and mask a regression in WHICH error is thrown.
-                #expect(
-                    error.localizedDescription
-                        == "Sidecar storage is unavailable. Cannot read or write GuessWho data."
-                )
-            }
-        }
-        expectStorageUnavailable {
+        // Typed matches on the PACKAGE error type. These are also the
+        // regression canary for the `.dynamic` GuessWhoSync/GuessWhoSyncTesting
+        // product types: with static (automatic) products this bundle carried
+        // its own GuessWhoSync copy, the host image and test image held
+        // separate metadata for the same source type, and exactly these
+        // cross-image casts failed. If they fail again, the single-image
+        // linking regressed — do NOT weaken them back to description matching.
+        let toggleError = #expect(throws: SidecarUnavailableError.self) {
             _ = try service.toggleFavorite(kind: .contact, id: "aaaa")
         }
-        expectStorageUnavailable {
+        // Exact description pin on top of the type: the string is the
+        // user-facing storage-unavailable copy, so a reword should be a
+        // conscious choice.
+        #expect(
+            toggleError?.localizedDescription
+                == "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+        )
+        #expect(throws: SidecarUnavailableError.self) {
             _ = try service.createManualEvent(
                 title: "x", startDate: .now, endDate: .now,
                 isAllDay: false, location: nil
@@ -348,4 +351,75 @@ struct SyncServiceTests {
             #expect(cell.modifiedBy == "test-device")
         }
     }
+}
+
+// MARK: - Local protocol stubs
+//
+// Deliberately NOT the GuessWhoSyncTesting fakes — linking that product here
+// would fold a second static GuessWhoSync copy into this bundle (see the
+// LINKING note in the suite header). This suite drives sidecar paths, never
+// store behavior, so every member traps loudly via `unused()` EXCEPT
+// `fetch(legacyEventIdentifier:)`, which the event-migration scan reaches and
+// answers nil (the dead-pointer branch — exactly the permission-free case
+// migration must handle). If a future test needs real fake behavior, don't
+// grow these: move the test to the package suite, or lift the fakes into a
+// standalone package that depends on the GuessWhoSync PRODUCT.
+
+private func unused(_ function: StaticString = #function) -> Never {
+    fatalError("\(function) is unused by SyncServiceTests; see the stub note")
+}
+
+private actor StubContactStore: ContactStoreProtocol {
+    func fetchAll() async throws -> [Contact] { unused() }
+    func fetch(localID: String) async throws -> Contact? { unused() }
+    func save(_ contact: Contact) async throws { unused() }
+    func delete(localID: String) async throws { unused() }
+    func create(_ contact: Contact) async throws -> Contact { unused() }
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus { unused() }
+    func requestContactsAccess() async -> StoreAccessResult { unused() }
+    func changes(since token: Data?) async throws -> ContactChangeSet { unused() }
+    func loadImageData(localID: String) async throws -> Data? { unused() }
+    func loadThumbnailImageData(localID: String) async throws -> Data? { unused() }
+    func setImageData(localID: String, imageData: Data?) async throws { unused() }
+    func fetchAllGroups() async throws -> [ContactGroup] { unused() }
+    func fetchGroup(localID: String) async throws -> ContactGroup? { unused() }
+    func createGroup(name: String) async throws -> ContactGroup { unused() }
+    func renameGroup(localID: String, to name: String) async throws { unused() }
+    func deleteGroup(localID: String) async throws { unused() }
+    func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] { unused() }
+    func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] { unused() }
+    func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws { unused() }
+    func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws { unused() }
+}
+
+private final class StubEventStore: EventStoreProtocol, Sendable {
+    func eventsAuthorizationStatus() -> StoreAuthorizationStatus { unused() }
+    func requestEventsAccess() async -> StoreAccessResult { unused() }
+    func fetchEvents(in interval: DateInterval) throws -> [Event] { unused() }
+    func fetch(eventKitID: String) throws -> Event? { unused() }
+    func fetchEvents(on day: Date) throws -> [Event] { unused() }
+    func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] { unused() }
+    func eventsWithAttendee(
+        matchingEmails emails: Set<String>,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [Event] { unused() }
+    // The one reachable member: the migration scan resolves each legacy key
+    // best-effort; nil = "EKEvent gone / no permission" → dead-pointer write.
+    func fetch(legacyEventIdentifier: String) throws -> Event? { nil }
+    func createEvent(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws -> Event { unused() }
+    func updateEvent(
+        eventKitID: String,
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws { unused() }
 }
