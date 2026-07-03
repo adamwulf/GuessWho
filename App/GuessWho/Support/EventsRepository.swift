@@ -23,8 +23,13 @@ final class EventsRepository: NSObject {
         self.service = service
         super.init()
         // Refresh on any external store change that can affect the events list:
-        // a Calendar.app edit (`.EKEventStoreChanged`) or a contact change
-        // (`.guessWhoContactsDidChange`, which can alter attendee rendering).
+        // a Calendar.app edit (`.EKEventStoreChanged`), a contact change
+        // (`.guessWhoContactsDidChange`, which can alter attendee rendering),
+        // or sidecar files changing on disk (`.guessWhoSidecarsDidChange` —
+        // an event sidecar arriving from another device, or a
+        // `notYetDownloaded` one materializing). All three funnel through the
+        // same debounced reload, which is READ-ONLY over sidecars — so a
+        // sidecar post can never re-trigger itself.
         // The repo owns its own refresh path; the AppDelegate registers no
         // observers. Selector-based registrations are held weakly and auto-
         // cleaned on release (this repo lives for the whole process), so there
@@ -32,6 +37,7 @@ final class EventsRepository: NSObject {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(storeDidChange(_:)), name: .EKEventStoreChanged, object: nil)
         center.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoContactsDidChange, object: nil)
+        center.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoSidecarsDidChange, object: nil)
     }
 
     /// Reloads the events list. `nonisolated` because the selector API delivers

@@ -5,7 +5,9 @@ import Foundation
 /// invocations. Used by `EventWindowTests` to assert the windowed-read path
 /// makes exactly one `fetchEvents(in:)` call and zero `fetch(eventKitID:)`
 /// calls (the EVENT_STRATEGY_PLAN.md C-WINDOW-FETCH invariant).
-final class CountingEventStore: EventStoreProtocol {
+// `@unchecked Sendable`: the counters are only ever mutated under `lock`, and
+// `inner` is itself Sendable per the protocol refinement.
+final class CountingEventStore: EventStoreProtocol, @unchecked Sendable {
     private let inner: EventStoreProtocol
     private let lock = NSLock()
 

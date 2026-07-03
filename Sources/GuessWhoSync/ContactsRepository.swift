@@ -151,6 +151,17 @@ public final class ContactsRepository: NSObject {
             name: .guessWhoContactsDidChange,
             object: nil
         )
+        // Sidecar files changed on disk (an iCloud arrival from another
+        // device, a `notYetDownloaded` file materializing, or a same-device
+        // write echo). Contacts.app records are untouched by definition, so
+        // the handler refreshes only the sidecar-derived projection — see
+        // `refreshFromSidecarChange()`.
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(sidecarsDidChange(_:)),
+            name: .guessWhoSidecarsDidChange,
+            object: nil
+        )
     }
 
     /// Rebuild the cache from Contacts. A failed fetch leaves an empty cache
@@ -1471,6 +1482,46 @@ public final class ContactsRepository: NSObject {
                 await self.apply(changeSet)
             }
         }
+    }
+
+    /// `@objc` trampoline for `.guessWhoSidecarsDidChange` (posted by
+    /// `SidecarFileWatcher`). `nonisolated` per the selector-delivery
+    /// convention; hops to the main actor and debounces there.
+    @objc
+    private nonisolated func sidecarsDidChange(_ note: Notification) {
+        Task { @MainActor [weak self] in
+            self?.scheduleSidecarRefresh()
+        }
+    }
+
+    /// The pending debounced sidecar refresh, if any. Replaced (and the prior
+    /// one cancelled) on every notification so only the trailing edge fires —
+    /// the same shape as the app's `EventsRepository` reload debounce.
+    private var pendingSidecarRefresh: Task<Void, Never>?
+    private static let sidecarRefreshDebounce: Duration = .milliseconds(300)
+
+    private func scheduleSidecarRefresh() {
+        pendingSidecarRefresh?.cancel()
+        pendingSidecarRefresh = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.sidecarRefreshDebounce)
+            } catch {
+                return   // superseded by a newer notification
+            }
+            await self?.refreshFromSidecarChange()
+        }
+    }
+
+    /// Sidecar files changed on disk; Contacts.app records are untouched by
+    /// definition. So: NO `fetchAll` — refresh only the sidecar-derived
+    /// projection (the bulk timestamp cache that drives time-ordered sorts
+    /// and bucket sections) and post a presentation-only reload
+    /// (`contactDataChanged: false`, so the app's decoded-photo cache
+    /// survives). READ-ONLY over sidecars — this path must never write, or a
+    /// watcher post would re-trigger itself in a loop.
+    private func refreshFromSidecarChange() async {
+        await refreshTimestampCache()
+        postDidReload(contactDataChanged: false)
     }
 
     private func apply(_ changeSet: ContactChangeSet) async {

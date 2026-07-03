@@ -48,14 +48,20 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     /// Single chokepoint for constructing a write request: every save/delete/
     /// group/membership mutation goes through here so none can forget to tag
     /// the author. An untagged write would surface as a phantom self-edit in
-    /// the delta.
-    private static func makeSaveRequest() -> CNSaveRequest {
+    /// the delta. Internal (not private) so @testable tests can assert the
+    /// author tag without executing a request against a real store.
+    static func makeSaveRequest() -> CNSaveRequest {
         let request = CNSaveRequest()
         request.transactionAuthor = transactionAuthor
         return request
     }
 
-    private static let keys: [CNKeyDescriptor] = [
+    // Internal (not private) so @testable tests can assert the fetch-key
+    // contract — in particular that `CNContactNoteKey` stays OUT (reading it
+    // needs the com.apple.developer.contacts.notes entitlement, and carrying
+    // a fetched note into a save is the 134092 crash; see PLAN §10.5 and
+    // docs/research/contact-note-134092-strategy.md).
+    static let keys: [CNKeyDescriptor] = [
         // Identifier
         CNContactIdentifierKey as CNKeyDescriptor,
         CNContactTypeKey as CNKeyDescriptor,
@@ -144,7 +150,9 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
-    private static func mapAuthorization(_ status: CNAuthorizationStatus) -> StoreAuthorizationStatus {
+    // Internal (not private) so @testable tests can cover the collapse table
+    // (notably `.limited` → `.authorized`) without touching system state.
+    static func mapAuthorization(_ status: CNAuthorizationStatus) -> StoreAuthorizationStatus {
         switch status {
         case .authorized, .limited: return .authorized
         case .denied: return .denied
@@ -593,7 +601,11 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
-    private static func toContact(_ c: CNContact) -> Contact {
+    // The CN→Contact and Contact→CN mapping pair. Internal (not private) so
+    // @testable tests can drive both directions against in-memory
+    // CNMutableContact fixtures — constructing CN objects needs no Contacts
+    // permission; only store fetches/saves do.
+    static func toContact(_ c: CNContact) -> Contact {
         Contact(
             localID: c.identifier,
             contactType: c.contactType == .organization ? .organization : .person,
@@ -662,7 +674,8 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         )
     }
 
-    private static func apply(_ contact: Contact, to mutable: CNMutableContact) {
+    // See `toContact` above for the internal-for-@testable rationale.
+    static func apply(_ contact: Contact, to mutable: CNMutableContact) {
         mutable.contactType = contact.contactType == .organization ? .organization : .person
 
         mutable.namePrefix = contact.namePrefix

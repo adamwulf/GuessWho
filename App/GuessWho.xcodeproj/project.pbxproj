@@ -15,6 +15,8 @@
 		C700000000000000000000A2 /* AppKitPlugin.swift in Sources (bundle) */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F1 /* AppKitPlugin.swift */; };
 		C700000000000000000000A3 /* GuessWhoAppKitBridge.swift in Sources (bundle) */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F2 /* GuessWhoAppKitBridge.swift */; };
 		C700000000000000000000A4 /* GuessWhoAppKitBridge.bundle in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, CodeSignOnCopy, ); }; };
+		A100000000000000000000D6 /* GuessWhoSync in Embed Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D2 /* GuessWhoSync */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = D100000000000000000000D2 /* GuessWhoSync */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -39,9 +41,27 @@
 			remoteGlobalIDString = C700000000000000000000B1;
 			remoteInfo = GuessWhoAppKitBridge;
 		};
+		D100000000000000000000F5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A100000000000000000000A0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A100000000000000000000B1;
+			remoteInfo = GuessWho;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		A100000000000000000000F7 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A100000000000000000000D6 /* GuessWhoSync in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B200000000000000000000F0 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -76,6 +96,7 @@
 		C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoAppKitBridge.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		B200000000000000000000C0 /* GuessWhoLinkedIn.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoLinkedIn.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D100000000000000000000C0 /* GuessWhoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -118,6 +139,11 @@
 			path = GuessWhoUITests;
 			sourceTree = "<group>";
 		};
+		D100000000000000000000A3 /* GuessWhoTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GuessWhoTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -152,6 +178,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D100000000000000000000B4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D100000000000000000000D3 /* GuessWhoSync in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -162,6 +196,7 @@
 				A100000000000000000000A3 /* GuessWho */,
 				C700000000000000000000D0 /* GuessWhoAppKitBridge */,
 				B200000000000000000000A3 /* GuessWhoLinkedIn */,
+				D100000000000000000000A3 /* GuessWhoTests */,
 				C55586FA2FE7A7DE002F1969 /* GuessWhoUITests */,
 				A100000000000000000000A5 /* Products */,
 			);
@@ -182,6 +217,7 @@
 				A100000000000000000000C0 /* GuessWho.app */,
 				B200000000000000000000C0 /* GuessWhoLinkedIn.appex */,
 				C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */,
+				D100000000000000000000C0 /* GuessWhoTests.xctest */,
 				C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */,
 			);
 			name = Products;
@@ -217,6 +253,7 @@
 				A100000000000000000000B2 /* Sources */,
 				A100000000000000000000B4 /* Frameworks */,
 				A100000000000000000000B3 /* Resources */,
+				A100000000000000000000F7 /* Embed Frameworks */,
 				B200000000000000000000F0 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -279,6 +316,30 @@
 			productReference = C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */;
 			productType = "com.apple.product-type.bundle";
 		};
+		D100000000000000000000B1 /* GuessWhoTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D100000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoTests" */;
+			buildPhases = (
+				D100000000000000000000B2 /* Sources */,
+				D100000000000000000000B4 /* Frameworks */,
+				D100000000000000000000B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D100000000000000000000F6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D100000000000000000000A3 /* GuessWhoTests */,
+			);
+			name = GuessWhoTests;
+			packageProductDependencies = (
+				D100000000000000000000D2 /* GuessWhoSync */,
+			);
+			productName = GuessWhoTests;
+			productReference = D100000000000000000000C0 /* GuessWhoTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		C55586F82FE7A7DE002F1969 /* GuessWhoUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = C55587032FE7A7DE002F1969 /* Build configuration list for PBXNativeTarget "GuessWhoUITests" */;
@@ -325,6 +386,10 @@
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = A100000000000000000000B1;
 					};
+					D100000000000000000000B1 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = A100000000000000000000B1;
+					};
 				};
 			};
 			buildConfigurationList = A100000000000000000000C1 /* Build configuration list for PBXProject "GuessWho" */;
@@ -347,6 +412,7 @@
 				A100000000000000000000B1 /* GuessWho */,
 				B200000000000000000000B1 /* GuessWhoLinkedIn */,
 				C700000000000000000000B1 /* GuessWhoAppKitBridge */,
+				D100000000000000000000B1 /* GuessWhoTests */,
 				C55586F82FE7A7DE002F1969 /* GuessWhoUITests */,
 			);
 		};
@@ -368,6 +434,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		C55586F72FE7A7DE002F1969 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D100000000000000000000B3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -424,6 +497,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D100000000000000000000B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C700000000000000000000B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -450,6 +530,11 @@
 			isa = PBXTargetDependency;
 			target = A100000000000000000000B1 /* GuessWho */;
 			targetProxy = C55586FF2FE7A7DE002F1969 /* PBXContainerItemProxy */;
+		};
+		D100000000000000000000F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A100000000000000000000B1 /* GuessWho */;
+			targetProxy = D100000000000000000000F5 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -543,6 +628,159 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = C700000000000000000000EA /* GuessWhoAppKitBridge-Release.xcconfig */;
 			buildSettings = {
+			};
+			name = Release;
+		};
+		D100000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = T68Z94627S;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.GuessWhoTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/GuessWho.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/GuessWho";
+			};
+			name = Debug;
+		};
+		D100000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = T68Z94627S;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.GuessWhoTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/GuessWho.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/GuessWho";
+				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
@@ -741,6 +979,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		D100000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D100000000000000000000C21 /* Debug */,
+				D100000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -762,6 +1009,10 @@
 		B200000000000000000000D4 /* GuessWhoLogging */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GuessWhoLogging;
+		};
+		D100000000000000000000D2 /* GuessWhoSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoSync;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

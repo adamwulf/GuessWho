@@ -16,7 +16,9 @@ public final class FavoritesStore {
     /// Background queue the coordinator runs on so the caller (often the
     /// main thread under @MainActor SyncService) can wait with a bounded
     /// timeout instead of being held by a stuck cloudd coordination.
-    /// Mirrors the sidecar store's `coordinatorQueue` discipline.
+    /// Mirrors the sidecar store's `coordinatorQueues` discipline; a single
+    /// queue suffices here because this store coordinates exactly one file
+    /// (`Favorites.json`), so per-key isolation has nothing to isolate.
     private let coordinatorQueue = DispatchQueue(label: "GuessWhoSync.FavoritesStore.coordinator")
     private let perAttemptTimeout: TimeInterval
 
