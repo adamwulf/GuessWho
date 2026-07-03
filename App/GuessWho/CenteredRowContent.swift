@@ -16,6 +16,14 @@ enum ContactDetailLayout {
     /// Max width the detail content is clamped to on macCatalyst.
     static let maxContentWidth: CGFloat = 560
 
+    /// A delete-only row in an active Catalyst `List` gets a leading edit
+    /// accessory without a matching trailing reorder accessory. SwiftUI then
+    /// centers the row in that asymmetrically reduced space, moving the
+    /// centered content column about half an accessory width to the right.
+    /// Pull delete-only rows back by that half-width so they stay aligned with
+    /// ordinary rows and rows that have both delete and reorder accessories.
+    static let deleteOnlyEditRowOffset: CGFloat = -12.5
+
     /// Extra space above a styled section header, on top of the list style's
     /// default — gives "Recent Events", "Debug", etc. room to breathe.
     static let sectionHeaderTopPadding: CGFloat = 12
@@ -38,7 +46,10 @@ extension View {
     /// view (not to a `Section`). No-op off macCatalyst, where no width clamp
     /// ever applied.
     @ViewBuilder
-    func centeredRowContent(alignment: Alignment = .leading) -> some View {
+    func centeredRowContent(
+        alignment: Alignment = .leading,
+        horizontalOffset: CGFloat = 0
+    ) -> some View {
         #if targetEnvironment(macCatalyst)
         let maxWidth = ContactDetailLayout.maxContentWidth
         self
@@ -50,6 +61,7 @@ extension View {
             .frame(maxWidth: .infinity, alignment: alignment)
             .frame(maxWidth: maxWidth)
             .frame(maxWidth: .infinity)
+            .offset(x: horizontalOffset)
             // Pull the separators in to the centered column so they don't run
             // the full pane width — keeping them aligned to the clamped card.
             .alignmentGuide(.listRowSeparatorLeading) { dimensions in

@@ -379,7 +379,7 @@ struct ContactDetailView: View {
     private var editableSidecarFieldsSection: some View {
         let fields = fieldsStore?.fields ?? []
         if !fields.isEmpty {
-            Section {
+            Section("Custom Fields") {
                 ForEach(fields, id: \.id) { field in
                     EditableSidecarFieldRow(
                         name: field.field,
@@ -389,7 +389,9 @@ struct ContactDetailView: View {
                             Task { await fieldsStore?.editField(field.id, value: value) }
                         }
                     )
-                    .centeredRowContent()
+                    .centeredRowContent(
+                        horizontalOffset: ContactDetailLayout.deleteOnlyEditRowOffset
+                    )
                 }
                 .onDelete { offsets in
                     for i in offsets {
@@ -397,8 +399,6 @@ struct ContactDetailView: View {
                         Task { await fieldsStore?.deleteField(fieldID) }
                     }
                 }
-            } header: {
-                Text("Custom Fields").centeredSectionHeader()
             }
         }
     }
