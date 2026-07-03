@@ -131,6 +131,16 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // delta), so whichever finishes first, the cache converges.
         service.startContactChangeWatcher()
 
+        // Start the sidecar-file watcher (iCloud storage only; a no-op
+        // otherwise). It posts `.guessWhoSidecarsDidChange` when sidecar files
+        // arrive or change under the iCloud root — a remote device's edit
+        // syncing down, or a `notYetDownloaded` file materializing after
+        // `read()` requested it — and both repositories subscribe with
+        // debounced, read-only refreshes. Same ordering argument as the
+        // contact watcher above: reload-vs-first-post races converge because
+        // the refresh paths are idempotent reads.
+        service.startSidecarFileWatcher()
+
         #if targetEnvironment(macCatalyst)
         startChromeHandoffReceiver()
         #endif

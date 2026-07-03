@@ -495,6 +495,28 @@ final class SyncService {
         sync?.startContactChangeWatcher()
     }
 
+    /// The package-owned sidecar-file watcher: an `NSMetadataQuery` over the
+    /// iCloud sidecar root that posts `.guessWhoSidecarsDidChange` when files
+    /// arrive/change (remote edits, `notYetDownloaded` files materializing).
+    /// Owned here — not by `GuessWhoSync` — because the engine deliberately
+    /// hides the store behind `SidecarStoreProtocol` and doesn't know the
+    /// root URL; this service resolved it. Retained for the process lifetime
+    /// once started.
+    private var sidecarFileWatcher: SidecarFileWatcher?
+
+    /// Start watching the iCloud sidecar root for file changes. Idempotent.
+    /// A no-op unless storage resolved to `.iCloud`: a local-fallback root
+    /// has no cloudd arrivals to observe (only our own writes, which the
+    /// repositories already handle synchronously), and the ubiquitous query
+    /// scope wouldn't match it anyway.
+    func startSidecarFileWatcher() {
+        guard case .iCloud(let root) = sidecarLocation else { return }
+        if sidecarFileWatcher == nil {
+            sidecarFileWatcher = SidecarFileWatcher(root: root)
+        }
+        sidecarFileWatcher?.start()
+    }
+
     // SyncService performs no contact-identity translation: the app keys every
     // contact-sidecar operation on a `ContactID` through `ContactsRepository`,
     // and reconcile is a package-INTERNAL, WRITE-ONLY side effect of a
