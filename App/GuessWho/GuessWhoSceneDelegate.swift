@@ -1042,7 +1042,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Catalyst split shell and the iPhone tab/gate shell).
     private func topmostPresenter() -> UIViewController? {
         guard var presenter = window?.rootViewController else { return nil }
-        while let presented = presenter.presentedViewController { presenter = presented }
+        // Descend to the frontmost presented controller — but stop at one that
+        // is mid-dismissal. A being-dismissed VC is still wired as the
+        // `presentedViewController` for the length of its dismiss animation, yet
+        // presenting *on* it is silently dropped by UIKit. Returning the
+        // controller it's dismissing back to (its `presentingViewController`)
+        // lets a caller present against a base that can actually accept it once
+        // the transition settles (see `presentAfterAnyDismissal(on:_:)`).
+        while let presented = presenter.presentedViewController, !presented.isBeingDismissed {
+            presenter = presented
+        }
         return presenter
     }
 
@@ -1072,7 +1081,24 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             Self.handoffLog.error("apply-failed alert: NO presenter available")
             return
         }
-        presenter.present(alert, animated: true)
+        presentAfterAnyDismissal(on: presenter) { presenter.present(alert, animated: true) }
+    }
+
+    /// Present `body` on `presenter`, but only once any dismissal transition
+    /// already running on it has finished. The matched-contact confirm flow
+    /// calls `dismissPresented()` and *then*, ~half a second later, tries to
+    /// surface an apply-failure alert. During that window the confirm sheet is
+    /// still animating out, so a bare `present(_:animated:)` races the dismissal
+    /// and UIKit silently drops it — the user saw neither the saved data nor an
+    /// error. If a transition is in flight, chain off its completion; otherwise
+    /// present immediately.
+    @MainActor
+    private func presentAfterAnyDismissal(on presenter: UIViewController, _ body: @escaping () -> Void) {
+        if let coordinator = presenter.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { _ in body() }
+        } else {
+            body()
+        }
     }
 
     /// The handoff JSON envelope the extension writes: a `payload` object plus a
