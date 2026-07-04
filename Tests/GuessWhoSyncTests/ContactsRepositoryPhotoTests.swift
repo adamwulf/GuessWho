@@ -38,18 +38,56 @@ struct ContactsRepositoryPhotoTests {
     }
 
     @Test @MainActor
-    func contactPhotoData_shortCircuitsWhenImageDataUnavailable() async throws {
+    func contactPhotoData_returnsNilWhenNoBytesExist() async throws {
         let contact = Contact(localID: "ada", givenName: "Ada", imageDataAvailable: false)
         let store = InMemoryContactStore(contacts: [contact])
         let repository = ContactsRepository(contacts: store)
         await repository.reload()
 
-        let baselineCount = await store.imageSidebandAccessCount
         let id = (try #require(repository.contact(localID: "ada"))).contactID
         let photo = try await repository.contactPhotoData(for: id, kind: .thumbnail)
 
         #expect(photo == nil)
-        #expect(await store.imageSidebandAccessCount == baselineCount)
+    }
+
+    @Test @MainActor
+    func contactPhotoData_loadsThumbnailDespiteStuckFalseAvailabilityFlag() async throws {
+        // macOS/Catalyst can leave a card thumbnail-only with
+        // `imageDataAvailable` stuck false while Contacts.app renders the
+        // thumbnail (observed 2026-07-03 after a LinkedIn photo import). The
+        // flag is a hint, never a veto: the bytes must still load.
+        let contact = Contact(localID: "ada", givenName: "Ada", imageDataAvailable: false)
+        let store = InMemoryContactStore(contacts: [contact])
+        let thumbnail = Data([0xaa, 0xbb])
+        await store.setImageData(nil, thumbnail: thumbnail, for: "ada")
+        let repository = ContactsRepository(contacts: store)
+        await repository.reload()
+
+        let id = (try #require(repository.contact(localID: "ada"))).contactID
+        #expect(repository.contact(localID: "ada")?.imageDataAvailable == false)
+        let photo = try await repository.contactPhotoData(for: id, kind: .thumbnail)
+
+        #expect(photo?.kind == .thumbnail)
+        #expect(photo?.data == thumbnail)
+    }
+
+    @Test @MainActor
+    func contactPhotoData_fullSizeFallsBackToThumbnailOnThumbnailOnlyCard() async throws {
+        // Same thumbnail-only card state: a `.fullSize` request serves the
+        // thumbnail bytes (what Contacts.app shows) and reports their true
+        // kind, rather than returning nil.
+        let contact = Contact(localID: "ada", givenName: "Ada", imageDataAvailable: false)
+        let store = InMemoryContactStore(contacts: [contact])
+        let thumbnail = Data([0xaa, 0xbb])
+        await store.setImageData(nil, thumbnail: thumbnail, for: "ada")
+        let repository = ContactsRepository(contacts: store)
+        await repository.reload()
+
+        let id = (try #require(repository.contact(localID: "ada"))).contactID
+        let photo = try await repository.contactPhotoData(for: id, kind: .fullSize)
+
+        #expect(photo?.kind == .thumbnail)
+        #expect(photo?.data == thumbnail)
     }
 
     @Test @MainActor

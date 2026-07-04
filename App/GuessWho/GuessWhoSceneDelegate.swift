@@ -875,14 +875,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     do {
                         let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
                         Self.handoffLog.notice("confirm: saved \(updated.givenName) \(updated.familyName)")
-                        // Nudge an open ContactDetailView to reload: applyLinkedIn
-                        // freshens the package cache, but the SwiftUI view won't
-                        // re-read until told.
-                        await MainActor.run {
-                            NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
-                        }
                     } catch {
+                        // Tell the user, not just the log — a silent failure
+                        // here reads as "saved" (the sheet is already gone).
                         Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription)")
+                        await MainActor.run {
+                            self?.presentLinkedInApplyFailureAlert(error: error)
+                        }
+                    }
+                    // Nudge an open ContactDetailView to reload: applyLinkedIn
+                    // freshens the package cache, but the SwiftUI view won't
+                    // re-read until told. Posted on failure too — applyLinkedIn
+                    // can partially apply (the card save lands before a later
+                    // sidecar/photo step throws), so the open card should
+                    // re-read either way.
+                    await MainActor.run {
+                        NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
                     }
                 }
             },
@@ -953,6 +961,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 }
             } catch {
                 Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
+                // The card itself was created; tell the user the extras
+                // (photo/headline/about/location) didn't make it on.
+                self.presentLinkedInApplyFailureAlert(error: error)
             }
 
             NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
@@ -1037,6 +1048,31 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func dismissPresented() {
         topmostPresenter()?.dismiss(animated: true)
+    }
+
+    /// User-facing alert for a failed LinkedIn apply (matched-contact confirm
+    /// or new-contact extras). Plain language only — the developer detail is
+    /// already in the log; `saveErrorCategory` owns the message wording, same
+    /// as the contact editor's save-failure alert.
+    @MainActor
+    private func presentLinkedInApplyFailureAlert(error: Error) {
+        let category = ContactEditModel.saveErrorCategory(error)
+        // `.recordDoesNotExist`'s stock wording ("Tap Cancel to refresh")
+        // assumes the contact editor's two-button alert; this one only has OK.
+        let message = category == .recordDoesNotExist
+            ? "This contact has been deleted on another device."
+            : category.saveFailureMessage
+        let alert = UIAlertController(
+            title: "Couldn’t Save LinkedIn Info",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        guard let presenter = topmostPresenter() else {
+            Self.handoffLog.error("apply-failed alert: NO presenter available")
+            return
+        }
+        presenter.present(alert, animated: true)
     }
 
     /// The handoff JSON envelope the extension writes: a `payload` object plus a

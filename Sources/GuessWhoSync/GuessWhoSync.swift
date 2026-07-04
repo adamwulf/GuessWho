@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 // Thread-safety is provided by `sidecarLocks` (per-sidecar serialization
 // for read-modify-write) and by the fact that `contacts` is now an actor.
@@ -7,6 +8,11 @@ import Foundation
 // InMemorySidecarStore both do). Marked @unchecked so the type can be
 // shared across actors without requiring those protocols to be Sendable.
 public final class GuessWhoSync: @unchecked Sendable {
+    /// Same label as the adapter/repository save breadcrumbs: every CNContact
+    /// write REQUEST logs its initiating operation so a failed save in the log
+    /// is attributable (the reconcile writes here were previously silent).
+    private static let saveLog = Logger(label: "sync.contact-save")
+
     private let contacts: ContactStoreProtocol
     internal let events: EventStoreProtocol
     internal let sidecars: SidecarStoreProtocol
@@ -962,6 +968,9 @@ public final class GuessWhoSync: @unchecked Sendable {
             )
         case 1 where malformedURLs.isEmpty:
             // Duplicate URL entries collapsed; persist the trimmed contact, no other changes.
+            Self.saveLog.notice("contact save requested", metadata: [
+                "op": "reconcile-dedupe", "localID": .string(contact.localID),
+            ])
             try await contacts.save(contact)
             return ContactReconcileResult(
                 report: IdentityReconcileReport.ContactOutcome(
@@ -994,6 +1003,9 @@ public final class GuessWhoSync: @unchecked Sendable {
         contact.urlAddresses.append(
             LabeledValue(label: "GuessWho", value: SidecarKey.guessWhoContactURLPrefix + newUUID)
         )
+        Self.saveLog.notice("contact save requested", metadata: [
+            "op": "reconcile-caseA-mint", "localID": .string(contact.localID),
+        ])
         try await contacts.save(contact)
 
         return ContactReconcileResult(
@@ -1019,6 +1031,9 @@ public final class GuessWhoSync: @unchecked Sendable {
             url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
                 && SidecarKey.parseGuessWhoContactURL(url.value) == nil
         }
+        Self.saveLog.notice("contact save requested", metadata: [
+            "op": "reconcile-caseC", "localID": .string(contact.localID),
+        ])
         try await contacts.save(contact)
 
         return ContactReconcileResult(
@@ -1092,6 +1107,9 @@ public final class GuessWhoSync: @unchecked Sendable {
             guard let parsed = SidecarKey.parseGuessWhoContactURL(url.value) else { return true }
             return loserUUIDs.contains(parsed)
         }
+        Self.saveLog.notice("contact save requested", metadata: [
+            "op": "reconcile-caseD-merge", "localID": .string(contact.localID),
+        ])
         try await contacts.save(contact)
 
         return ContactReconcileResult(
