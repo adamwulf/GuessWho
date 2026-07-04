@@ -50,7 +50,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>GuessWho shows your upcoming events so you can link them to contacts.</string>
 	<key>NSContactsUsageDescription</key>
-	<string>GuessWho reads your contacts so you can see and annotate them with GuessWho fields. It writes a single hidden URL to a contact only when you tap Reconcile on its detail page.</string>
+	<string>GuessWho lets you read and edit the Notes on your contacts, just like the Contacts app. Your notes stay on your device, in your own iCloud, and are never sent to any server.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
