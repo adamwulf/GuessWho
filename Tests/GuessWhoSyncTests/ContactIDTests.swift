@@ -426,4 +426,28 @@ struct ContactRestorationTokenTests {
         let ghost = ContactID(contact: contact(localID: "999", uuid: uuidC, givenName: "Nobody"))
         #expect(repository.contact(restorationToken: ghost.restorationToken) == nil)
     }
+
+    /// The dangerous edge: a token carries a RETIRED `guessWhoID` (`uuidC`, not
+    /// in the book) whose `localID` slot has since been re-pointed by unification
+    /// to a DIFFERENT person (`uuidA`). Raw `contact(id:)` would fall through to
+    /// the `localID` slot and hand back the wrong contact; `contact(restoration
+    /// Token:)` must reject the mismatch and return nil — reopening a stranger's
+    /// card is worse than reopening nothing.
+    @Test @MainActor
+    func retiredGuessWhoIDWithReusedLocalIDResolvesToNil() async {
+        // "carrier-1" now belongs to Ada (uuidA).
+        let ada = contact(localID: "carrier-1", uuid: uuidA, givenName: "Ada", familyName: "Lovelace")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [ada]))
+        await repository.reload()
+
+        // A stale token: guessWhoID uuidC (retired/unknown), but the SAME localID
+        // "carrier-1" that now resolves to Ada. Fabricate it via the package init
+        // (mirrors a token minted before the localID was re-pointed).
+        let staleID = ContactID(guessWhoID: uuidC, localID: "carrier-1")
+        let staleToken = staleID.restorationToken
+        // Sanity: raw contact(id:) DOES fall through and return the wrong contact…
+        #expect(repository.contact(id: staleID)?.givenName == "Ada")
+        // …but the restoration resolver rejects the guessWhoID mismatch.
+        #expect(repository.contact(restorationToken: staleToken) == nil)
+    }
 }

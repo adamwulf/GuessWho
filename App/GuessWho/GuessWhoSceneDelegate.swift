@@ -138,6 +138,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidDisconnect(_ scene: UIScene) {
         Self.lifecycleLog.notice("scene didDisconnect", ["scene": Self.sceneTag(scene)])
+        // Tear down the one-shot restoration reload observer if it never fired
+        // (scene discarded before the first contacts reload) so it can't leak per
+        // discarded scene in a multi-window session. UIKit guarantees
+        // `sceneDidDisconnect` runs before this delegate is released, so this is
+        // the complete teardown — no `deinit` fallback needed (and a nonisolated
+        // `deinit` can't touch this main-actor-isolated token anyway).
+        clearRestorationReloadObserver()
     }
 
     // MARK: - State restoration
@@ -167,9 +174,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Record which record is now open in the detail area, keeping the current
     /// section. No-op if no section has been recorded yet (shouldn't happen — a
     /// detail is always reached through a section).
-    private func noteSelectionShown(_ selection: RestorationState.Selection) {
+    ///
+    /// `stampedOn`, when supplied, is the view controller now showing this
+    /// detail. The selection is stamped onto it so that when the user later
+    /// navigates AWAY (pops back to a shallower detail or the list root),
+    /// `navigationController(_:didShow:)` can recompute the selection from
+    /// whatever is on top — keeping "restore what I'm looking at" accurate after
+    /// Back, not just after a forward push.
+    private func noteSelectionShown(
+        _ selection: RestorationState.Selection,
+        stampedOn viewController: UIViewController? = nil
+    ) {
+        viewController?.gwRestorationSelection = selection
         guard var state = restorationState else { return }
         state.selection = selection
+        restorationState = state
+    }
+
+    /// Set the current section's selection to whatever detail (if any) the given
+    /// top view controller represents. A list root / placeholder carries no
+    /// stamped selection, so this CLEARS it — the fix for a detail the user
+    /// backed out of being wrongly restored. Keeps the current section.
+    private func syncSelectionToTop(_ topViewController: UIViewController?) {
+        guard var state = restorationState else { return }
+        state.selection = topViewController?.gwRestorationSelection
         restorationState = state
     }
 
@@ -370,13 +398,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
         nav.viewControllers = [hosting]
+        // Observe pops so backing out of an in-detail drill-down re-syncs the
+        // restore selection to whatever detail is left on top.
+        nav.delegate = self
         // setViewController REPLACES the secondary column wholesale on every
         // sidebar/list selection — a fresh nav stack at the entry point.
         // Drill-down from inside the hosted detail (matched attendees, linked
         // contacts, etc.) pushes onto this same `nav` via the injected env
         // closures.
         split.setViewController(nav, for: .secondary)
-        noteSelectionShown(.contact(contact.contactID.restorationToken))
+        noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
     }
 
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
@@ -394,8 +425,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
         nav.viewControllers = [hosting]
+        nav.delegate = self
         split.setViewController(nav, for: .secondary)
-        noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID))
+        noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID), stampedOn: hosting)
     }
 
     /// Catalyst-side analog of `injectIPhonePushHandlers`. Pushes a fresh hosted
@@ -419,8 +451,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         nav.pushViewController(hosting, animated: true)
         // Restore-to the DEEPEST detail the user drilled into (B scope: reopen
-        // what they were looking at, re-rooted — not the full breadcrumb).
-        noteSelectionShown(.contact(ref.id.restorationToken))
+        // what they were looking at, re-rooted — not the full breadcrumb). Stamp
+        // the pushed VC so a later Back re-syncs to the shallower detail.
+        noteSelectionShown(.contact(ref.id.restorationToken), stampedOn: hosting)
     }
 
     private func pushCatalystEventDetail(
@@ -438,7 +471,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
         nav.pushViewController(hosting, animated: true)
-        noteSelectionShown(.event(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID))
+        noteSelectionShown(.event(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID), stampedOn: hosting)
     }
 
     /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
@@ -565,10 +598,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// `localID`).
     ///
     /// A nil from `contact(restorationToken:)` at cold launch is ambiguous —
-    /// "cache not loaded yet" vs. "deleted." Waiting for exactly one
-    /// `contactsRepositoryDidReload` disambiguates: after the first reload, nil
-    /// means gone. If the cache is already populated (warm scene connect), it
-    /// resolves synchronously without waiting.
+    /// "cache not loaded yet" vs. "deleted." Waiting for the first CONTACTS
+    /// reload disambiguates: after it, nil means gone. If the cache is already
+    /// populated (warm scene connect), it resolves synchronously without waiting.
+    ///
+    /// It waits specifically for a `contactDataChanged: true` post — the actual
+    /// `reload()` completing. `.contactsRepositoryDidReload` is ALSO posted with
+    /// `contactDataChanged: false` for presentation-only refreshes (a Groups
+    /// fetch from the Groups tab's `viewDidLoad`, a sort flip, a photo write); if
+    /// one of those won the race we would re-check a still-empty cache and give
+    /// up, losing the restore. Filtering to `true` ignores those lighter posts.
     @MainActor
     private func resolveRestoredContact(
         token: ContactRestorationToken,
@@ -581,23 +620,36 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        // Cache empty so far. Wait for the first reload, then resolve once more.
-        // The observer token is held on `self` (MainActor-isolated) rather than
-        // captured into the @Sendable closure, so nothing non-Sendable crosses an
-        // actor boundary. Delivered on `.main`; cleared on first fire (one-shot).
+        // Cache empty so far. Wait for the first real contacts reload, then
+        // resolve once more. The observer token is held on `self`
+        // (MainActor-isolated) rather than captured into the @Sendable closure,
+        // so nothing non-Sendable crosses an actor boundary. Delivered on
+        // `.main`; torn down here (`sceneDidDisconnect`/`deinit` also clear it if
+        // it never fires).
         restorationReloadObserver = NotificationCenter.default.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
+            // Ignore presentation-only posts (groups/sort/photo) — wait for the
+            // contacts fetch itself.
+            let dataChanged = (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
+            guard dataChanged else { return }
             MainActor.assumeIsolated {
-                guard let self else { return }
-                if let observer = self.restorationReloadObserver {
-                    NotificationCenter.default.removeObserver(observer)
-                    self.restorationReloadObserver = nil
-                }
+                self?.clearRestorationReloadObserver()
                 completion(repository.contact(restorationToken: token))
             }
+        }
+    }
+
+    /// Remove the one-shot restoration reload observer if it is still registered.
+    /// Safe to call when it was never set. Called on first fire and on scene
+    /// teardown so a scene discarded before the first reload doesn't leak it.
+    @MainActor
+    private func clearRestorationReloadObserver() {
+        if let observer = restorationReloadObserver {
+            NotificationCenter.default.removeObserver(observer)
+            restorationReloadObserver = nil
         }
     }
 
@@ -635,7 +687,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let tabs = UITabBarController()
         // Order matches the sidebar's `SidebarTab.allCases`: Favorites first,
         // then People, Organizations, Events, and Groups last.
-        tabs.viewControllers = [favoritesNav, peopleNav, orgsNav, eventsNav, groupsNav]
+        let tabNavs = [favoritesNav, peopleNav, orgsNav, eventsNav, groupsNav]
+        tabs.viewControllers = tabNavs
+        // Observe each tab nav's push/pop so backing out of a detail re-syncs the
+        // restore selection to the top VC (`navigationController(_:didShow:)`).
+        for nav in tabNavs { nav.delegate = self }
         // Re-tapping the active tab scrolls its list to top (iPhone/iPad
         // tab-shell behavior). Its `UITabBarControllerDelegate` conformance is
         // `#if !targetEnvironment(macCatalyst)` — Catalyst's split-view shell has
@@ -857,8 +913,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(hosting, animated: true)
         // Restore-to this contact (deepest detail = what the user is looking at).
         // Edit mode is intentionally NOT restored — reopen shows the card, not an
-        // editing session.
-        noteSelectionShown(.contact(id.restorationToken))
+        // editing session. Stamped so a later Back re-syncs the selection.
+        noteSelectionShown(.contact(id.restorationToken), stampedOn: hosting)
     }
 
     private func pushEventDetail(
@@ -887,7 +943,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         let hosting = UIHostingController(rootView: detail)
         nav.pushViewController(hosting, animated: true)
-        noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID))
+        noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID), stampedOn: hosting)
     }
 
     /// Bind `pushContactReference` / `pushEventReference` to the SAME nav this
@@ -1462,3 +1518,51 @@ extension GuessWhoSceneDelegate: UITabBarControllerDelegate {
     }
 }
 #endif
+
+// MARK: - Nav-stack selection tracking (both shells)
+
+extension GuessWhoSceneDelegate: UINavigationControllerDelegate {
+    /// After every push/pop on a detail nav, set the restore selection to
+    /// whatever is now on top: a hosted detail carries its stamped
+    /// `RestorationState.Selection`; a list root / placeholder carries none, so
+    /// the selection is CLEARED. This keeps "restore what I'm looking at"
+    /// accurate when the user backs out of a detail — without it, a contact the
+    /// user popped away from would still be restored next launch.
+    func navigationController(
+        _ navigationController: UINavigationController,
+        didShow viewController: UIViewController,
+        animated: Bool
+    ) {
+        syncSelectionToTop(viewController)
+    }
+}
+
+/// Reference box so a value-type `RestorationState.Selection` can ride along as
+/// an Objective-C associated object (which requires a class instance).
+private final class RestorationSelectionBox {
+    let selection: RestorationState.Selection
+    init(_ selection: RestorationState.Selection) { self.selection = selection }
+}
+
+private extension UIViewController {
+    private static var gwRestorationSelectionKey: UInt8 = 0
+
+    /// The restoration selection this view controller represents, if it hosts a
+    /// contact/event detail. Stamped when the detail is pushed/replaced so the
+    /// nav delegate can recompute the scene's selection from the top VC after a
+    /// pop. Nil on list roots and placeholders (→ clears the selection).
+    var gwRestorationSelection: RestorationState.Selection? {
+        get {
+            (objc_getAssociatedObject(self, &Self.gwRestorationSelectionKey)
+                as? RestorationSelectionBox)?.selection
+        }
+        set {
+            objc_setAssociatedObject(
+                self,
+                &Self.gwRestorationSelectionKey,
+                newValue.map(RestorationSelectionBox.init),
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+        }
+    }
+}

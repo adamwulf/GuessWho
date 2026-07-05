@@ -292,17 +292,31 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Resolve a persisted `ContactRestorationToken` (from UI state restoration)
-    /// back to the current `Contact`, or nil if it can no longer be found.
+    /// back to the current `Contact`, or nil if it can no longer be safely found.
     ///
-    /// Reconstructs the opaque `ContactID` the token snapshotted and resolves it
-    /// through `contact(id:)`, so the same reconcile-stable rules apply:
-    /// `guessWhoID` wins when present (canonical, survives sync and a new
-    /// device); otherwise the `localID` fallback reopens a contact the user only
-    /// *viewed* and never wrote to (stable on the same device). A token whose
-    /// contact was deleted — or whose device-local `localID` moved — resolves to
-    /// nil, and the caller restores the section without a selected record.
+    /// Resolves the opaque `ContactID` the token snapshotted through
+    /// `contact(id:)` (`guessWhoID`-first, `localID` fallback), so a reconciled
+    /// contact reopens by its canonical identity and a viewed-but-never-written
+    /// contact reopens by its device-local `localID`.
+    ///
+    /// It adds ONE guard that raw `contact(id:)` does not, specific to
+    /// restoration: if the token carried a `guessWhoID` but resolution had to
+    /// fall through to the `localID` slot (the `guessWhoID` is retired/unknown —
+    /// a Case-D loser or a deleted record), the found contact is only accepted if
+    /// it STILL carries that same `guessWhoID`. Otherwise Contacts unification may
+    /// have re-pointed that `localID` at a DIFFERENT person, and reopening a
+    /// stranger's card is worse than reopening nothing — so we return nil and the
+    /// caller restores the section only. A token with no `guessWhoID` (an
+    /// unwritten contact) has nothing to verify and uses the plain `localID`
+    /// resolution.
     public func contact(restorationToken: ContactRestorationToken) -> Contact? {
-        contact(id: restorationToken.contactID)
+        guard let resolved = contact(id: restorationToken.contactID) else { return nil }
+        // Only the retired-guessWhoID + localID-fallback case needs the extra
+        // check. If the token had no guessWhoID, or the resolved contact matches
+        // it, `contact(id:)`'s result stands.
+        guard let tokenGuessWhoID = restorationToken.guessWhoID else { return resolved }
+        let resolvedGuessWhoID = SidecarKey.forContact(resolved)?.id
+        return resolvedGuessWhoID == tokenGuessWhoID ? resolved : nil
     }
 
     /// Developer breadcrumbs for the photo read path (which branch produced a
