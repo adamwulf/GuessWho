@@ -84,6 +84,22 @@ public struct ContactID: Hashable, Sendable {
         self.localID = contact.localID
     }
 
+    /// Rebuild a token from its two sealed identifiers. Used only to restore a
+    /// `ContactID` from a persisted `ContactRestorationToken` (the identifiers
+    /// were already validated/canonicalized when the source token was minted, so
+    /// this does no re-parsing). `package` — the app cannot mint a `ContactID`;
+    /// it round-trips the opaque `ContactRestorationToken` instead.
+    package init(guessWhoID: String?, localID: String) {
+        self.guessWhoID = guessWhoID
+        self.localID = localID
+    }
+
+    /// A persistable snapshot of this identity for UI state restoration. Persist
+    /// THIS (`Codable`), never a `ContactID` — see `ContactRestorationToken`.
+    public var restorationToken: ContactRestorationToken {
+        ContactRestorationToken(self)
+    }
+
     public static func == (lhs: ContactID, rhs: ContactID) -> Bool {
         // Identity ONLY. Two values for the same contact are equal regardless of
         // display content; a content change is repainted by the VC's explicit

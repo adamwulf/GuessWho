@@ -291,6 +291,20 @@ public final class ContactsRepository: NSObject {
         return contactsByLocalID[id.localID]
     }
 
+    /// Resolve a persisted `ContactRestorationToken` (from UI state restoration)
+    /// back to the current `Contact`, or nil if it can no longer be found.
+    ///
+    /// Reconstructs the opaque `ContactID` the token snapshotted and resolves it
+    /// through `contact(id:)`, so the same reconcile-stable rules apply:
+    /// `guessWhoID` wins when present (canonical, survives sync and a new
+    /// device); otherwise the `localID` fallback reopens a contact the user only
+    /// *viewed* and never wrote to (stable on the same device). A token whose
+    /// contact was deleted — or whose device-local `localID` moved — resolves to
+    /// nil, and the caller restores the section without a selected record.
+    public func contact(restorationToken: ContactRestorationToken) -> Contact? {
+        contact(id: restorationToken.contactID)
+    }
+
     /// Developer breadcrumbs for the photo read path (which branch produced a
     /// nil, flag/bytes disagreements, thrown store errors). File-log only —
     /// never user-facing.

@@ -2,7 +2,7 @@ import Foundation
 
 /// The list surfaces shown as sidebar rows in the Catalyst/iPad 3-column
 /// shell and as tabs in the iPhone tab-bar shell.
-enum SidebarTab: String, Identifiable, Hashable, CaseIterable {
+enum SidebarTab: String, Identifiable, Hashable, CaseIterable, Codable {
     // `allCases` order drives both the Catalyst/iPad sidebar rows and the
     // iPhone tab-bar order, so the declaration order IS the display order:
     // Favorites first, then People, Organizations, Events, and Groups last.

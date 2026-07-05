@@ -11,6 +11,11 @@ final class SidebarViewController: UIViewController {
     /// the split or the content VC.
     var didSelectTab: (SidebarTab) -> Void = { _ in }
 
+    /// The tab to select on first load. Defaults to the first sidebar row; state
+    /// restoration sets it to the section that was showing when the app quit so
+    /// the sidebar comes up already pointed there (no default → restored flash).
+    var initialTab: SidebarTab?
+
     private enum Section: Int, CaseIterable {
         case tabs
     }
@@ -75,12 +80,14 @@ final class SidebarViewController: UIViewController {
     }
 
     private func selectInitialTab() {
+        // Restored section if set (and still a valid row), else the first tab.
+        let target = initialTab.flatMap { sidebarTabs.contains($0) ? $0 : nil } ?? sidebarTabs.first
         guard
-            let initialTab = sidebarTabs.first,
-            let indexPath = dataSource.indexPath(for: initialTab)
+            let tab = target,
+            let indexPath = dataSource.indexPath(for: tab)
         else { return }
         collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
-        didSelectTab(initialTab)
+        didSelectTab(tab)
     }
 }
 

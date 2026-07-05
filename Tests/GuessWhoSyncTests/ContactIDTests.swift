@@ -346,3 +346,84 @@ struct ContactsRepositoryContactIDTests {
         #expect(repository.contactsReferencing(id: adaID!).compactMap(\.id.guessWhoID) == [uuidB])
     }
 }
+
+@Suite("ContactRestorationToken persistence")
+struct ContactRestorationTokenTests {
+    private let uuidA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    private let uuidC = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+    /// Round-trip a token through JSON — the whole reason the type exists is to
+    /// be persisted (e.g. inside a scene's `NSUserActivity`). Both sealed
+    /// identifiers must survive encode → decode, and the decoded token must
+    /// still rebuild the SAME `ContactID` (equal identity).
+    @Test
+    func codableRoundTripPreservesIdentity() throws {
+        let id = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada"))
+        let token = id.restorationToken
+        #expect(token.guessWhoID == uuidA)
+        #expect(token.localID == "1")
+
+        let data = try JSONEncoder().encode(token)
+        let decoded = try JSONDecoder().decode(ContactRestorationToken.self, from: data)
+        #expect(decoded == token)
+        // Rebuilt ContactID matches the original identity, so it resolves the
+        // same row.
+        #expect(decoded.contactID == id)
+    }
+
+    /// A token minted from an un-reconciled contact carries nil `guessWhoID` but
+    /// still round-trips on its `localID` — this is what lets restoration reopen
+    /// a contact the user only VIEWED and never wrote to.
+    @Test
+    func bareContactTokenCarriesLocalIDOnly() throws {
+        let id = ContactID(contact: bareContact(localID: "carrier-1", givenName: "Ada"))
+        let token = id.restorationToken
+        #expect(token.guessWhoID == nil)
+        #expect(token.localID == "carrier-1")
+
+        let data = try JSONEncoder().encode(token)
+        let decoded = try JSONDecoder().decode(ContactRestorationToken.self, from: data)
+        #expect(decoded.contactID == id)
+    }
+
+    /// Resolution goes through the same reconcile-stable path as `contact(id:)`:
+    /// a reconciled token resolves by its canonical `guessWhoID`.
+    @Test @MainActor
+    func resolvesReconciledContactByGuessWhoID() async {
+        let ada = contact(localID: "1", uuid: uuidA, givenName: "Ada", familyName: "Lovelace")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [ada]))
+        await repository.reload()
+
+        let token = repository.peopleSectionIDs.flatMap(\.1).first!.restorationToken
+        let resolved = repository.contact(restorationToken: token)
+        #expect(resolved?.localID == "1")
+        #expect(resolved?.givenName == "Ada")
+    }
+
+    /// The viewed-but-never-written case: an un-reconciled contact (nil
+    /// `guessWhoID`) resolves via the token's `localID` fallback.
+    @Test @MainActor
+    func resolvesUnwrittenContactByLocalIDFallback() async {
+        let bare = bareContact(localID: "carrier-1", givenName: "Ada", familyName: "Lovelace")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [bare]))
+        await repository.reload()
+
+        let token = repository.peopleSectionIDs.flatMap(\.1).first!.restorationToken
+        #expect(token.guessWhoID == nil)
+        let resolved = repository.contact(restorationToken: token)
+        #expect(resolved?.localID == "carrier-1")
+    }
+
+    /// A token for a contact that no longer exists (deleted since quit, or a
+    /// device-local `localID` that moved) resolves to nil — the caller then
+    /// restores the section without a selected record, never a wrong contact.
+    @Test @MainActor
+    func deletedContactTokenResolvesToNil() async {
+        let ada = contact(localID: "1", uuid: uuidA, givenName: "Ada", familyName: "Lovelace")
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [ada]))
+        await repository.reload()
+
+        let ghost = ContactID(contact: contact(localID: "999", uuid: uuidC, givenName: "Nobody"))
+        #expect(repository.contact(restorationToken: ghost.restorationToken) == nil)
+    }
+}
