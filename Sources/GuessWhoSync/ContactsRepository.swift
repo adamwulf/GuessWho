@@ -291,6 +291,34 @@ public final class ContactsRepository: NSObject {
         return contactsByLocalID[id.localID]
     }
 
+    /// Resolve a persisted `ContactRestorationToken` (from UI state restoration)
+    /// back to the current `Contact`, or nil if it can no longer be safely found.
+    ///
+    /// Resolves the opaque `ContactID` the token snapshotted through
+    /// `contact(id:)` (`guessWhoID`-first, `localID` fallback), so a reconciled
+    /// contact reopens by its canonical identity and a viewed-but-never-written
+    /// contact reopens by its device-local `localID`.
+    ///
+    /// It adds ONE guard that raw `contact(id:)` does not, specific to
+    /// restoration: if the token carried a `guessWhoID` but resolution had to
+    /// fall through to the `localID` slot (the `guessWhoID` is retired/unknown —
+    /// a Case-D loser or a deleted record), the found contact is only accepted if
+    /// it STILL carries that same `guessWhoID`. Otherwise Contacts unification may
+    /// have re-pointed that `localID` at a DIFFERENT person, and reopening a
+    /// stranger's card is worse than reopening nothing — so we return nil and the
+    /// caller restores the section only. A token with no `guessWhoID` (an
+    /// unwritten contact) has nothing to verify and uses the plain `localID`
+    /// resolution.
+    public func contact(restorationToken: ContactRestorationToken) -> Contact? {
+        guard let resolved = contact(id: restorationToken.contactID) else { return nil }
+        // Only the retired-guessWhoID + localID-fallback case needs the extra
+        // check. If the token had no guessWhoID, or the resolved contact matches
+        // it, `contact(id:)`'s result stands.
+        guard let tokenGuessWhoID = restorationToken.guessWhoID else { return resolved }
+        let resolvedGuessWhoID = SidecarKey.forContact(resolved)?.id
+        return resolvedGuessWhoID == tokenGuessWhoID ? resolved : nil
+    }
+
     /// Developer breadcrumbs for the photo read path (which branch produced a
     /// nil, flag/bytes disagreements, thrown store errors). File-log only —
     /// never user-facing.
