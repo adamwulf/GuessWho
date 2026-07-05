@@ -620,19 +620,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        // Cache empty so far. Wait for the first real contacts reload, then
-        // resolve once more. The observer token is held on `self`
-        // (MainActor-isolated) rather than captured into the @Sendable closure,
-        // so nothing non-Sendable crosses an actor boundary. Delivered on
-        // `.main`; torn down here (`sceneDidDisconnect`/`deinit` also clear it if
-        // it never fires).
+        // Cache empty so far. Wait for the first post that could actually
+        // populate the cache, then resolve once more. The observer token is held
+        // on `self` (MainActor-isolated) rather than captured into the @Sendable
+        // closure, so nothing non-Sendable crosses an actor boundary. Delivered
+        // on `.main`; torn down here and in `sceneDidDisconnect` if it never
+        // fires.
         restorationReloadObserver = NotificationCenter.default.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            // Ignore presentation-only posts (groups/sort/photo) — wait for the
-            // contacts fetch itself.
+            // Skip presentation-only posts (contactDataChanged:false — a Groups
+            // fetch from the Groups tab's viewDidLoad, a sort flip, a photo
+            // write): those don't populate the contacts cache, so re-resolving
+            // against it would still miss and wrongly give up. Any data-changing
+            // post (true — the reload() fetch and other record mutations) is a
+            // valid moment to retry. A missing key defaults to true (retry).
             let dataChanged = (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
             guard dataChanged else { return }
             MainActor.assumeIsolated {
