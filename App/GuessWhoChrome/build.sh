@@ -69,7 +69,6 @@ build_flavor() { # <flavor>
   }
 
   local out="dist/$flavor"
-  rm -rf "$out"
   mkdir -p "$out"
 
   local f
