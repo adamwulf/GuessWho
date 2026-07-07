@@ -212,12 +212,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
 
     // MARK: - Help menu (developer-facing debug actions)
 
-    /// Append two developer-facing items to the **Help** menu:
+    /// Append developer-facing items to the **Help** menu:
     /// "Export Debug Logs" (zip + save panel / share sheet) and
     /// "Open Container Folder" (reveal the App Group container — in Finder on
-    /// Mac Catalyst). Both are sanctioned debug-mode surfaces per the project's
-    /// product principle: they exist to diagnose silent failures, so they are
-    /// intentionally always visible rather than gated on app state.
+    /// Mac Catalyst). Mac Catalyst also gets "Open Resources Folder" to reveal
+    /// the app bundle's resources directory in Finder. These are sanctioned
+    /// debug-mode surfaces per the project's product principle: they exist to
+    /// diagnose silent failures, so they are intentionally always visible rather
+    /// than gated on app state.
     ///
     /// The commands target this AppDelegate (always live in the responder
     /// chain), and each `@objc` action just forwards into the self-presenting
@@ -239,11 +241,20 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             title: "Open Container Folder",
             action: #selector(openContainerFolderMenuAction)
         )
+        #if targetEnvironment(macCatalyst)
+        let openResources = UICommand(
+            title: "Open Resources Folder",
+            action: #selector(openResourcesFolderMenuAction)
+        )
+        let children = [exportLogs, openContainer, openResources]
+        #else
+        let children = [exportLogs, openContainer]
+        #endif
 
         let menu = UIMenu(
             title: "",
             options: .displayInline,
-            children: [exportLogs, openContainer]
+            children: children
         )
         builder.insertChild(menu, atEndOfMenu: .help)
     }
@@ -258,4 +269,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     @objc private func openContainerFolderMenuAction() {
         DebugMenuActions.openContainerFolder()
     }
+
+    #if targetEnvironment(macCatalyst)
+    @objc private func openResourcesFolderMenuAction() {
+        DebugMenuActions.openResourcesFolder()
+    }
+    #endif
 }

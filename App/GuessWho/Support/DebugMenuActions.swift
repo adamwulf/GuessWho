@@ -1,9 +1,10 @@
 import UIKit
 import GuessWhoLogging
 
-/// Self-presenting actions for the two developer-facing **Help** menu items
-/// ("Export Debug Logs" and "Open Container Folder"). These run from
-/// `UICommand` actions installed by `GuessWhoAppDelegate.buildMenu(with:)`.
+/// Self-presenting actions for developer-facing **Help** menu items
+/// ("Export Debug Logs", "Open Container Folder", and Catalyst-only
+/// "Open Resources Folder"). These run from `UICommand` actions installed by
+/// `GuessWhoAppDelegate.buildMenu(with:)`.
 ///
 /// Why a self-presenting `@MainActor` enum rather than responder-chain
 /// routing: a `UICommand`'s `action:` selector has to be implemented somewhere
@@ -108,6 +109,38 @@ enum DebugMenuActions {
             }
         }
     }
+
+    #if targetEnvironment(macCatalyst)
+    // MARK: - Open Resources Folder
+
+    /// Reveal the app bundle's resources directory in Finder. Catalyst packages
+    /// resources in the macOS bundle's `Contents/Resources` directory, exposed
+    /// by `Bundle.main.resourceURL`; opening that directory URL routes through
+    /// LaunchServices to Finder just like the container-folder action above.
+    static func openResourcesFolder() {
+        guard let resourcesURL = Bundle.main.resourceURL else {
+            presentFailure(
+                title: "Couldn't Open Resources Folder",
+                message: "The app bundle's resources folder isn't available."
+            )
+            return
+        }
+
+        UIApplication.shared.open(resourcesURL, options: [:]) { success in
+            if !success {
+                // The completion handler is not guaranteed to run on the main
+                // thread — hop back to the main actor before resolving the top
+                // VC and presenting.
+                Task { @MainActor in
+                    presentFailure(
+                        title: "Couldn't Open Resources Folder",
+                        message: "Couldn't open the app bundle's resources folder in Finder."
+                    )
+                }
+            }
+        }
+    }
+    #endif
 
     // MARK: - Shared presentation helpers
 
