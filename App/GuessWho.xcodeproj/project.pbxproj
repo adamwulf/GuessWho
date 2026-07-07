@@ -512,6 +512,7 @@
 				"$(SRCROOT)/GuessWhoLinkedIn/Resources/icon-512.png",
 				"$(SRCROOT)/GuessWhoChrome/Sources/background.js",
 				"$(SRCROOT)/GuessWhoChrome/keys/debug.pub",
+				"$(SRCROOT)/GuessWhoChrome/keys/release.pub",
 				"$(SRCROOT)/GuessWhoChrome/Sources/manifest.template.json",
 			);
 			name = "Build Chrome Extension";
@@ -534,12 +535,26 @@
 				"$(SRCROOT)/GuessWhoChrome/dist/debug/background.js",
 				"$(SRCROOT)/GuessWhoChrome/dist/debug/manifest.json",
 				"$(SRCROOT)/GuessWhoChrome/dist/debug/config.js",
-				"$(SRCROOT)/GuessWhoChrome/dist/debug/**",
-				"$(SRCROOT)/GuessWhoChrome/dist/release/**",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/parse-profile.js",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/content.js",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/popup.html",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/popup.js",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-16.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-32.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-48.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-64.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-96.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-128.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-256.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/icon-512.png",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/background.js",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/manifest.json",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/config.js",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\n\nif [$CONFIGURATION = \"Debug\"]\nsh GuessWhoChrome/build.sh debug\nelse\nsh GuessWhoChrome/build.sh release\nfi\n";
+			shellScript = "# Build the GuessWho LinkedIn Chrome/Brave extension for the active configuration.\n# Debug builds the debug flavor (debug key, Debug port + wake scheme); every\n# other configuration builds the release flavor.\n\nif [ \"${CONFIGURATION}\" = \"Debug\" ]; then\n    sh GuessWhoChrome/build.sh debug\nelse\n    sh GuessWhoChrome/build.sh release\nfi\n";
+			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
 
