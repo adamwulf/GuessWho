@@ -13,6 +13,7 @@
 		B200000000000000000000D5 /* GuessWhoLogging in Frameworks */ = {isa = PBXBuildFile; productRef = B200000000000000000000D4 /* GuessWhoLogging */; };
 		B200000000000000000000F1 /* GuessWhoLinkedIn.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C50058FB2FFDA9A000F88A42 /* debug in Resources */ = {isa = PBXBuildFile; fileRef = C50058FA2FFDA9A000F88A42 /* debug */; platformFilter = maccatalyst; };
+		C5005A8C2FFDAEBE00F88A42 /* release in Resources */ = {isa = PBXBuildFile; fileRef = C5005A8B2FFDAEBE00F88A42 /* release */; platformFilter = maccatalyst; };
 		C700000000000000000000A1 /* AppKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F1 /* AppKitPlugin.swift */; };
 		C700000000000000000000A2 /* AppKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F1 /* AppKitPlugin.swift */; };
 		C700000000000000000000A3 /* GuessWhoAppKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F2 /* GuessWhoAppKitBridge.swift */; };
@@ -91,6 +92,7 @@
 		A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoLinkedIn-Release.xcconfig"; sourceTree = "<group>"; };
 		B200000000000000000000C0 /* GuessWhoLinkedIn.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoLinkedIn.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C50058FA2FFDA9A000F88A42 /* debug */ = {isa = PBXFileReference; lastKnownFileType = folder; name = debug; path = GuessWhoChrome/dist/debug; sourceTree = "<group>"; };
+		C5005A8B2FFDAEBE00F88A42 /* release */ = {isa = PBXFileReference; lastKnownFileType = folder; name = release; path = GuessWhoChrome/dist/release; sourceTree = "<group>"; };
 		C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoAppKitBridge.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		C700000000000000000000E5 /* GuessWhoAppKitBridge-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoAppKitBridge-Shared.xcconfig"; sourceTree = "<group>"; };
@@ -194,6 +196,7 @@
 		A100000000000000000000A1 = {
 			isa = PBXGroup;
 			children = (
+				C5005A8B2FFDAEBE00F88A42 /* release */,
 				C50058FA2FFDA9A000F88A42 /* debug */,
 				A100000000000000000000A7 /* Config */,
 				A100000000000000000000A3 /* GuessWho */,
@@ -427,6 +430,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C5005A8C2FFDAEBE00F88A42 /* release in Resources */,
 				C50058FB2FFDA9A000F88A42 /* debug in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -530,10 +534,12 @@
 				"$(SRCROOT)/GuessWhoChrome/dist/debug/background.js",
 				"$(SRCROOT)/GuessWhoChrome/dist/debug/manifest.json",
 				"$(SRCROOT)/GuessWhoChrome/dist/debug/config.js",
+				"$(SRCROOT)/GuessWhoChrome/dist/debug/**",
+				"$(SRCROOT)/GuessWhoChrome/dist/release/**",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\n\nsh GuessWhoChrome/build.sh debug\n";
+			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\n\nif [$CONFIGURATION = \"Debug\"]\nsh GuessWhoChrome/build.sh debug\nelse\nsh GuessWhoChrome/build.sh release\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
