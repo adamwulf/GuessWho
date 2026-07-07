@@ -539,7 +539,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\n\nif [$CONFIGURATION = \"Debug\"]\nsh GuessWhoChrome/build.sh debug\nelse\nsh GuessWhoChrome/build.sh release\nfi\n";
+			shellScript = "# Build the GuessWho LinkedIn Chrome/Brave extension for the active configuration.\n# Debug builds the debug flavor (debug key, Debug port + wake scheme); every\n# other configuration builds the release flavor.\n\nif [ \"${CONFIGURATION}\" = \"Debug\" ]; then\n    sh GuessWhoChrome/build.sh debug\nelse\n    sh GuessWhoChrome/build.sh release\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
