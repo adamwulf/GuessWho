@@ -22,6 +22,9 @@ public struct Contact: Hashable, Sendable, Codable {
     public var organizationName: String
     public var phoneticOrganizationName: String
 
+    // Notes
+    public var note: String
+
     // Addresses & contact channels
     public var phoneNumbers: [LabeledValue]
     public var emailAddresses: [LabeledValue]
@@ -57,6 +60,7 @@ public struct Contact: Hashable, Sendable, Codable {
         departmentName: String = "",
         organizationName: String = "",
         phoneticOrganizationName: String = "",
+        note: String = "",
         phoneNumbers: [LabeledValue] = [],
         emailAddresses: [LabeledValue] = [],
         postalAddresses: [LabeledPostalAddress] = [],
@@ -86,6 +90,7 @@ public struct Contact: Hashable, Sendable, Codable {
             departmentName: departmentName,
             organizationName: organizationName,
             phoneticOrganizationName: phoneticOrganizationName,
+            note: note,
             phoneNumbers: phoneNumbers,
             emailAddresses: emailAddresses,
             postalAddresses: postalAddresses,
@@ -117,6 +122,7 @@ public struct Contact: Hashable, Sendable, Codable {
         departmentName: String = "",
         organizationName: String = "",
         phoneticOrganizationName: String = "",
+        note: String = "",
         phoneNumbers: [LabeledValue] = [],
         emailAddresses: [LabeledValue] = [],
         postalAddresses: [LabeledPostalAddress] = [],
@@ -145,6 +151,7 @@ public struct Contact: Hashable, Sendable, Codable {
         self.departmentName = departmentName
         self.organizationName = organizationName
         self.phoneticOrganizationName = phoneticOrganizationName
+        self.note = note
         self.phoneNumbers = phoneNumbers
         self.emailAddresses = emailAddresses
         self.postalAddresses = postalAddresses

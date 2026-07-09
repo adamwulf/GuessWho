@@ -54,6 +54,7 @@ struct CNContactStoreAdapterTests {
             departmentName: "Engines",
             organizationName: "Analytical Engine Co",
             phoneticOrganizationName: "an-uh-LIT-ik-ul",
+            note: "Met at the Royal Society.\nPrefers written follow-up.",
             phoneNumbers: [
                 LabeledValue(label: CNLabelPhoneNumberMobile, value: "+1 (555) 010-4477"),
                 LabeledValue(label: "", value: "555-0100")
@@ -128,6 +129,7 @@ struct CNContactStoreAdapterTests {
         #expect(mutable.departmentName == "Engines")
         #expect(mutable.organizationName == "Analytical Engine Co")
         #expect(mutable.phoneticOrganizationName == "an-uh-LIT-ik-ul")
+        #expect(mutable.note == "Met at the Royal Society.\nPrefers written follow-up.")
 
         #expect(mutable.phoneNumbers.count == 2)
         #expect(mutable.phoneNumbers[0].label == CNLabelPhoneNumberMobile)
@@ -203,6 +205,7 @@ struct CNContactStoreAdapterTests {
         let mutable = CNMutableContact()
         mutable.contactType = .organization
         mutable.organizationName = "Acme Corp"
+        mutable.note = "Vendor relationship owner."
         // A CN label of nil maps to "" (Contact's labels are non-optional).
         mutable.phoneNumbers = [CNLabeledValue(label: nil, value: CNPhoneNumber(stringValue: "555-0100"))]
 
@@ -210,6 +213,7 @@ struct CNContactStoreAdapterTests {
         #expect(contact.localID == mutable.identifier)
         #expect(contact.contactType == .organization)
         #expect(contact.organizationName == "Acme Corp")
+        #expect(contact.note == "Vendor relationship owner.")
         #expect(contact.phoneNumbers == [LabeledValue(label: "", value: "555-0100")])
     }
 
@@ -241,14 +245,12 @@ struct CNContactStoreAdapterTests {
     // MARK: - Fetch-key contract
 
     @Test
-    func fetchKeysOmitNoteKeyAndCoverMappedFields() {
+    func fetchKeysIncludeNoteKeyAndCoverMappedFields() {
         let keys = Set(CNContactStoreAdapter.keys.compactMap { $0 as? String })
 
-        // THE load-bearing exclusion: fetching CNContactNoteKey requires the
-        // com.apple.developer.contacts.notes entitlement, and carrying a
-        // fetched note into a CNSaveRequest without it is the TestFlight-only
-        // 134092 save crash (docs/research/contact-note-134092-strategy.md).
-        #expect(!keys.contains(CNContactNoteKey))
+        // The app carries com.apple.developer.contacts.notes, so Contacts notes
+        // are part of the main fetch/edit contract.
+        #expect(keys.contains(CNContactNoteKey))
 
         // Image BYTES load on demand via separate key sets; the bulk fetch
         // carries only the presence flag.
