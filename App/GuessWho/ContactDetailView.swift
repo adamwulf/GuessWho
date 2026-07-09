@@ -430,7 +430,7 @@ struct ContactDetailView: View {
             .disabled(notesStore == nil || showingNewNoteEditor)
             .centeredRowContent()
         } header: {
-            Text("Dated Notes").centeredSectionHeader()
+            Text("Dated Notes")
         }
     }
 
@@ -1362,7 +1362,7 @@ struct ContactDetailView: View {
                         .centeredRowContent()
                 }
             } header: {
-                Text("Dated Notes").centeredSectionHeader()
+                Text("Dated Notes")
             }
         }
     }
