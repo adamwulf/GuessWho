@@ -57,54 +57,58 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     }
 
     // Internal (not private) so @testable tests can assert the fetch-key
-    // contract. The app now carries the contacts-notes entitlement, so the
-    // adapter fetches `CNContactNoteKey` and maps it into `Contact.note`.
-    static let keys: [CNKeyDescriptor] = [
-        // Identifier
-        CNContactIdentifierKey as CNKeyDescriptor,
-        CNContactTypeKey as CNKeyDescriptor,
+    // contract. Release builds carry the contacts-notes entitlement, so they
+    // fetch `CNContactNoteKey` and map it into `Contact.note`. Debug builds do
+    // not carry that entitlement, so they must not fetch or write the note.
+    static let keys: [CNKeyDescriptor] = {
+        var keys: [CNKeyDescriptor] = [
+            // Identifier
+            CNContactIdentifierKey as CNKeyDescriptor,
+            CNContactTypeKey as CNKeyDescriptor,
 
-        // Names
-        CNContactNamePrefixKey as CNKeyDescriptor,
-        CNContactGivenNameKey as CNKeyDescriptor,
-        CNContactMiddleNameKey as CNKeyDescriptor,
-        CNContactFamilyNameKey as CNKeyDescriptor,
-        CNContactPreviousFamilyNameKey as CNKeyDescriptor,
-        CNContactNameSuffixKey as CNKeyDescriptor,
-        CNContactNicknameKey as CNKeyDescriptor,
-        CNContactPhoneticGivenNameKey as CNKeyDescriptor,
-        CNContactPhoneticMiddleNameKey as CNKeyDescriptor,
-        CNContactPhoneticFamilyNameKey as CNKeyDescriptor,
+            // Names
+            CNContactNamePrefixKey as CNKeyDescriptor,
+            CNContactGivenNameKey as CNKeyDescriptor,
+            CNContactMiddleNameKey as CNKeyDescriptor,
+            CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactPreviousFamilyNameKey as CNKeyDescriptor,
+            CNContactNameSuffixKey as CNKeyDescriptor,
+            CNContactNicknameKey as CNKeyDescriptor,
+            CNContactPhoneticGivenNameKey as CNKeyDescriptor,
+            CNContactPhoneticMiddleNameKey as CNKeyDescriptor,
+            CNContactPhoneticFamilyNameKey as CNKeyDescriptor,
 
-        // Work
-        CNContactJobTitleKey as CNKeyDescriptor,
-        CNContactDepartmentNameKey as CNKeyDescriptor,
-        CNContactOrganizationNameKey as CNKeyDescriptor,
-        CNContactPhoneticOrganizationNameKey as CNKeyDescriptor,
+            // Work
+            CNContactJobTitleKey as CNKeyDescriptor,
+            CNContactDepartmentNameKey as CNKeyDescriptor,
+            CNContactOrganizationNameKey as CNKeyDescriptor,
+            CNContactPhoneticOrganizationNameKey as CNKeyDescriptor,
 
-        // Notes
-        CNContactNoteKey as CNKeyDescriptor,
+            // Addresses & channels
+            CNContactPhoneNumbersKey as CNKeyDescriptor,
+            CNContactEmailAddressesKey as CNKeyDescriptor,
+            CNContactPostalAddressesKey as CNKeyDescriptor,
+            CNContactUrlAddressesKey as CNKeyDescriptor,
 
-        // Addresses & channels
-        CNContactPhoneNumbersKey as CNKeyDescriptor,
-        CNContactEmailAddressesKey as CNKeyDescriptor,
-        CNContactPostalAddressesKey as CNKeyDescriptor,
-        CNContactUrlAddressesKey as CNKeyDescriptor,
+            // Dates
+            CNContactBirthdayKey as CNKeyDescriptor,
+            CNContactNonGregorianBirthdayKey as CNKeyDescriptor,
+            CNContactDatesKey as CNKeyDescriptor,
 
-        // Dates
-        CNContactBirthdayKey as CNKeyDescriptor,
-        CNContactNonGregorianBirthdayKey as CNKeyDescriptor,
-        CNContactDatesKey as CNKeyDescriptor,
+            // Social / IM / relations
+            CNContactSocialProfilesKey as CNKeyDescriptor,
+            CNContactInstantMessageAddressesKey as CNKeyDescriptor,
+            CNContactRelationsKey as CNKeyDescriptor,
 
-        // Social / IM / relations
-        CNContactSocialProfilesKey as CNKeyDescriptor,
-        CNContactInstantMessageAddressesKey as CNKeyDescriptor,
-        CNContactRelationsKey as CNKeyDescriptor,
+            // Image presence flag (bytes loaded on demand)
+            CNContactImageDataAvailableKey as CNKeyDescriptor,
 
-        // Image presence flag (bytes loaded on demand)
-        CNContactImageDataAvailableKey as CNKeyDescriptor,
-
-    ]
+        ]
+        #if !DEBUG
+        keys.append(CNContactNoteKey as CNKeyDescriptor)
+        #endif
+        return keys
+    }()
 
     private static let imageKeys: [CNKeyDescriptor] = [
         CNContactImageDataKey as CNKeyDescriptor,
@@ -623,7 +627,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             departmentName: c.departmentName,
             organizationName: c.organizationName,
             phoneticOrganizationName: c.phoneticOrganizationName,
-            note: c.note ?? "",
+            note: Self.contactNote(from: c),
             phoneNumbers: c.phoneNumbers.map { LabeledValue(label: $0.label ?? "", value: $0.value.stringValue) },
             emailAddresses: c.emailAddresses.map { LabeledValue(label: $0.label ?? "", value: $0.value as String) },
             postalAddresses: c.postalAddresses.map {
@@ -694,7 +698,9 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         mutable.departmentName = contact.departmentName
         mutable.organizationName = contact.organizationName
         mutable.phoneticOrganizationName = contact.phoneticOrganizationName
+        #if !DEBUG
         mutable.note = contact.note
+        #endif
 
         mutable.phoneNumbers = contact.phoneNumbers.map {
             CNLabeledValue(label: $0.label.isEmpty ? nil : $0.label, value: CNPhoneNumber(stringValue: $0.value))
@@ -745,6 +751,14 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         // them via a separate path. Leaving them untouched means a round-trip
         // read/modify/write preserves whatever bytes already exist on the
         // contact.
+    }
+
+    private static func contactNote(from contact: CNContact) -> String {
+        #if DEBUG
+        return ""
+        #else
+        return contact.note ?? ""
+        #endif
     }
 }
 
