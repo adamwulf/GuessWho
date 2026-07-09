@@ -1,18 +1,16 @@
 // GuessWhoLinkedIn-Debug.xcconfig
 // Debug-configuration identifiers for the GuessWhoLinkedIn Safari Web Extension
-// target. Wired as the extension's Debug baseConfigurationReference. The ".debug"
-// ids match the Debug app so the app ↔ extension App Group handoff stays
-// consistent, and never collide with a Release install.
+// target. Wired as the extension's Debug baseConfigurationReference. Debug uses
+// the production bundle id, App Group, and entitlements so Xcode builds exercise
+// the same Apple-approved capabilities as Release.
 
 #include "GuessWhoLinkedIn-Shared.xcconfig"
 
-// Bundle id — the ".debug" suffix goes BEFORE the ".safari" leaf so the
-// extension id stays prefixed by the Debug app id
-// (…guesswho.debug ⊃ …guesswho.debug.safari).
-PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.debug.safari
+// Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.safari).
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.safari
 
 // Display name — "Debug"-suffixed so Safari's extension list, permission
-// prompts, and toolbar tooltip are tellable apart from the Release install.
+// prompts, and toolbar tooltip make an Xcode-installed extension obvious.
 // Feeds CFBundleDisplayName in GuessWhoLinkedIn/Info.plist AND the generated
 // manifest.json name/default_title (see the "Generate manifest.json" build
 // phase).
@@ -25,10 +23,10 @@ GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin-debug
 
 // App Group — shared with the Debug app. Must match GUESSWHO_APP_GROUP in
 // GuessWho-Debug.xcconfig. DIFFERENT per platform.
-GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho.debug
-GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho.debug
+GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
 
-// Entitlements — App Group only (no iCloud, no Contacts). The ".debug" id is
-// baked into these files' content.
-CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn-Debug.entitlements
-CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst-Debug.entitlements
+// Entitlements — App Group only (no iCloud, no Contacts). Match Release so the
+// extension and containing app share the same approved App Group.
+CODE_SIGN_ENTITLEMENTS = GuessWhoLinkedIn/GuessWhoLinkedIn.entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWhoLinkedIn/GuessWhoLinkedIn-MacCatalyst.entitlements

@@ -58,7 +58,7 @@ swift-log bootstrap and file-destination fan-out.
 
 1. Open `App/GuessWho.xcodeproj` in Xcode.
 2. Sign in to your Apple Developer account. Bundle id is
-   `com.milestonemade.guesswho` (Debug appends `.debug`); the entitlements
+   `com.milestonemade.guesswho` for both Debug and Release; the entitlements
    declare the iCloud container `iCloud.com.milestonemade.guesswho`. The
    first device build prompts you to register that container in the portal.
 3. Select **My Mac (Mac Catalyst)** for the fastest iteration; the iOS

@@ -305,6 +305,8 @@ struct ContactDetailView: View {
             } else {
                 infoSection(contact)
 
+                contactNotesSection(contact)
+
                 sidecarFieldsSection
 
                 referencedBySection(contact)
@@ -368,6 +370,7 @@ struct ContactDetailView: View {
         SocialProfileRow(model: binding)
         IMRow(model: binding)
         PhoneticNameRow(model: binding)
+        ContactNotesRow(model: binding)
         editableSidecarFieldsSection
         editableNotesSection
         Section {
@@ -387,10 +390,10 @@ struct ContactDetailView: View {
 
     /// Notes shown while editing the contact. Mirrors the read-mode
     /// `notesSection` (same `noteRow`: inline-editable, swipe-delete, context
-    /// menu) plus the same inline new-note `TextField`, and adds an "Add Note"
+    /// menu) plus the same inline new-note `TextField`, and adds an "Add Dated Note"
     /// button so the note affordance is present in edit mode the way the
     /// read-mode activity footer offers it. Unlike the read section this always
-    /// renders (even with zero notes) so the Add Note button is always
+    /// renders (even with zero notes) so the Add Dated Note button is always
     /// reachable. Note writes go straight through `notesStore` — immediate,
     /// independent of the CNContact `editModel`, exactly like the editable
     /// custom fields above.
@@ -413,7 +416,8 @@ struct ContactDetailView: View {
             }
 
             if showingNewNoteEditor {
-                TextField("Add a note", text: $newNoteText, axis: .vertical)
+                TextField("Add a dated note", text: $newNoteText, axis: .vertical)
+                    .lineLimit(3...)
                     .focused($noteFocus, equals: .newNote)
                     .centeredRowContent()
             }
@@ -421,12 +425,12 @@ struct ContactDetailView: View {
             Button {
                 showNewNoteEditor()
             } label: {
-                Label("Add Note", systemImage: "note.text")
+                Label("Add Dated Note", systemImage: "note.text")
             }
             .disabled(notesStore == nil || showingNewNoteEditor)
             .centeredRowContent()
         } header: {
-            Text("Notes").centeredSectionHeader()
+            Text("Dated Notes")
         }
     }
 
@@ -990,6 +994,26 @@ struct ContactDetailView: View {
         InfoRow(data: row, onInteract: { Task { await stampInteracted() } })
     }
 
+    @ViewBuilder
+    private func contactNotesSection(_ contact: Contact) -> some View {
+        let note = contact.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !note.isEmpty {
+            Section {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("note")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(note)
+                        .font(.body)
+                        .textSelection(.enabled)
+                }
+                .centeredRowContent()
+            } header: {
+                Text("Contact Notes").centeredSectionHeader()
+            }
+        }
+    }
+
     /// Named key/value sidecar fields (e.g. "LinkedIn About", "LinkedIn
     /// Location"). Read-only, label-above-value, one row per field. Hidden when
     /// the contact has none.
@@ -1332,12 +1356,13 @@ struct ContactDetailView: View {
                 }
 
                 if showingNewNoteEditor {
-                    TextField("Add a note", text: $newNoteText, axis: .vertical)
+                    TextField("Add a dated note", text: $newNoteText, axis: .vertical)
+                        .lineLimit(3...)
                         .focused($noteFocus, equals: .newNote)
                         .centeredRowContent()
                 }
             } header: {
-                Text("Notes").centeredSectionHeader()
+                Text("Dated Notes")
             }
         }
     }
@@ -1389,7 +1414,7 @@ struct ContactDetailView: View {
     private var activityFooter: some View {
         HStack(spacing: 0) {
             activityFooterButton(
-                title: "Add Note",
+                title: "Add Dated Note",
                 systemImage: "note.text",
                 action: { showNewNoteEditor() }
             )
@@ -1460,6 +1485,7 @@ struct ContactDetailView: View {
         if editingNoteID == note.id {
             ActivityRowLayout(systemImage: "text.rectangle") {
                 TextField("", text: $draftBody, axis: .vertical)
+                    .lineLimit(3...)
                     .focused($noteFocus, equals: .noteRow(note.id))
             }
         } else {
@@ -1821,7 +1847,7 @@ struct ContactDetailView: View {
         }
         // Switching focus to an existing note commits the pending new-note
         // editor too (persists it if non-empty, clears the editor if empty) —
-        // otherwise the empty "Add a note" field would linger after the focus
+        // otherwise the empty "Add a dated note" field would linger after the focus
         // moves away.
         if showingNewNoteEditor {
             commitNewNote()

@@ -25,9 +25,8 @@
 // the time the payload lands.
 //
 // Flavor wiring (port, wake scheme) lives in config.js, GENERATED per flavor
-// by build.sh — the Debug extension must talk to the Debug app's port/scheme
-// and never the Release install, mirroring the repo-wide Debug/Release
-// identifier convention.
+// by build.sh — the Debug extension talks to the Xcode-installed app's
+// debug port/scheme, while Release uses the production port/scheme.
 
 import { CONFIG } from "./config.js";
 

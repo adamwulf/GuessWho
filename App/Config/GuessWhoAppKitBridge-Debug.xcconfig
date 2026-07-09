@@ -1,10 +1,8 @@
 // GuessWhoAppKitBridge-Debug.xcconfig
 // Debug-configuration bundle id for the GuessWhoAppKitBridge target. Wired as
-// the bundle target's Debug baseConfigurationReference. The ".debug" suffix
-// keeps the module/bundle id parallel to the app's Debug ids; because the
-// bundle inherits the host's sandbox and is re-signed on copy, this id only
-// needs to be internally consistent with NSPrincipalClass.
+// the bundle target's Debug baseConfigurationReference. Match Release now that
+// the app's Debug configuration uses the production bundle id and entitlements.
 
 #include "GuessWhoAppKitBridge-Shared.xcconfig"
 
-PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.GuessWhoAppKitBridge.debug
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.GuessWhoAppKitBridge

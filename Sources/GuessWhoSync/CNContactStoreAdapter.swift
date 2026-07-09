@@ -57,10 +57,8 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     }
 
     // Internal (not private) so @testable tests can assert the fetch-key
-    // contract — in particular that `CNContactNoteKey` stays OUT (reading it
-    // needs the com.apple.developer.contacts.notes entitlement, and carrying
-    // a fetched note into a save is the 134092 crash; see PLAN §10.5 and
-    // docs/research/contact-note-134092-strategy.md).
+    // contract. Debug and Release use the same app id and entitlements, so both
+    // fetch `CNContactNoteKey` and map it into `Contact.note`.
     static let keys: [CNKeyDescriptor] = [
         // Identifier
         CNContactIdentifierKey as CNKeyDescriptor,
@@ -84,6 +82,9 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         CNContactOrganizationNameKey as CNKeyDescriptor,
         CNContactPhoneticOrganizationNameKey as CNKeyDescriptor,
 
+        // Notes
+        CNContactNoteKey as CNKeyDescriptor,
+
         // Addresses & channels
         CNContactPhoneNumbersKey as CNKeyDescriptor,
         CNContactEmailAddressesKey as CNKeyDescriptor,
@@ -102,8 +103,6 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
 
         // Image presence flag (bytes loaded on demand)
         CNContactImageDataAvailableKey as CNKeyDescriptor,
-
-        // NOTE: CNContactNoteKey deliberately omitted (PLAN §10.5).
     ]
 
     private static let imageKeys: [CNKeyDescriptor] = [
@@ -623,6 +622,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             departmentName: c.departmentName,
             organizationName: c.organizationName,
             phoneticOrganizationName: c.phoneticOrganizationName,
+            note: c.note ?? "",
             phoneNumbers: c.phoneNumbers.map { LabeledValue(label: $0.label ?? "", value: $0.value.stringValue) },
             emailAddresses: c.emailAddresses.map { LabeledValue(label: $0.label ?? "", value: $0.value as String) },
             postalAddresses: c.postalAddresses.map {
@@ -693,6 +693,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         mutable.departmentName = contact.departmentName
         mutable.organizationName = contact.organizationName
         mutable.phoneticOrganizationName = contact.phoneticOrganizationName
+        mutable.note = contact.note
 
         mutable.phoneNumbers = contact.phoneNumbers.map {
             CNLabeledValue(label: $0.label.isEmpty ? nil : $0.label, value: CNPhoneNumber(stringValue: $0.value))
@@ -742,7 +743,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         // imageData / thumbnailImageData are not written here — the caller owns
         // them via a separate path. Leaving them untouched means a round-trip
         // read/modify/write preserves whatever bytes already exist on the
-        // contact (mirrors the §10.5 partial-update guarantee for `note`).
+        // contact.
     }
 }
 

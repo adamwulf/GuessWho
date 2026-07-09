@@ -1,28 +1,21 @@
 // GuessWho-Debug.xcconfig
 // Debug-configuration identifiers for the GuessWho app target. Wired as the
-// app target's Debug baseConfigurationReference. Every id carries a ".debug"
-// suffix so a debug install never collides with a release install (separate
-// sandbox data, App Group, and iCloud document store).
-//
-// NOTE: the debug App Group (group.com.milestonemade.guesswho.debug) and the
-// debug iCloud container (iCloud.com.milestonemade.guesswho.debug) must be
-// registered in the Apple Developer portal before Debug device/Catalyst
-// signing will succeed. Debug simulator builds and all Release builds are
-// unaffected.
+// app target's Debug baseConfigurationReference. The app uses the production
+// bundle id and entitlements in Debug so local Xcode builds exercise the same
+// Apple-approved capabilities as Release.
 
 #include "GuessWho-Shared.xcconfig"
 
 // Bundle id
-PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.debug
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
 
-// Display name — "Debug"-suffixed so the two installs are tellable apart on the
-// Home Screen and in Safari's extension list. Read via CFBundleDisplayName in
-// GuessWho/Info.plist.
+// Display name — "Debug"-suffixed so an Xcode-installed debug build is obvious
+// on the Home Screen. Read via CFBundleDisplayName in GuessWho/Info.plist.
 GUESSWHO_DISPLAY_NAME = GuessWho Debug
 
 // LinkedIn-handoff wake scheme — Debug-distinct so the Debug extension's wake
-// URL opens the Debug app, never the Release install. Hyphenated (not ".debug")
-// per URL-scheme convention. Must match GUESSWHO_LINKEDIN_URL_SCHEME in
+// URL opens the Xcode-installed app build. Hyphenated (not ".debug") per
+// URL-scheme convention. Must match GUESSWHO_LINKEDIN_URL_SCHEME in
 // GuessWhoLinkedIn-Debug.xcconfig. Registered via CFBundleURLTypes and read at
 // runtime via the GuessWhoLinkedInURLScheme Info.plist key.
 GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin-debug
@@ -38,17 +31,16 @@ GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin-debug
 GUESSWHO_CHROME_HANDOFF_PORT = 57231
 GUESSWHO_CHROME_EXTENSION_IDS = alnaedlcjmeghdgbejppfmjgmhhoaami
 
-// App Group identifier — DIFFERENT per platform (see GuessWho-Release.xcconfig
-// for the per-platform rationale). Read at runtime via the GuessWhoAppGroup
-// Info.plist key (AppGroup.id).
-GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho.debug
-GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho.debug
+// App Group identifier — matches Release so Debug uses the same approved
+// capabilities and runtime storage path.
+GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
+GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
 
 // iCloud ubiquity container id. Read at runtime via the GuessWhoiCloudContainer
 // Info.plist key (ICloudContainer.id).
-GUESSWHO_ICLOUD_CONTAINER = iCloud.com.milestonemade.guesswho.debug
+GUESSWHO_ICLOUD_CONTAINER = iCloud.com.milestonemade.guesswho
 
-// Entitlements — per-target, per-SDK. The ".debug" ids are baked into these
-// files' content (entitlement plists can't interpolate build settings).
-CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho-Debug.entitlements
-CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWho/GuessWho-MacCatalyst-Debug.entitlements
+// Entitlements — per-target, per-SDK. Match Release so Debug can exercise
+// production-only capabilities such as Contacts notes access.
+CODE_SIGN_ENTITLEMENTS = GuessWho/GuessWho.entitlements
+CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = GuessWho/GuessWho-MacCatalyst.entitlements

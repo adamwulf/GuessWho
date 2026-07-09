@@ -12,8 +12,7 @@
 
 // Identity (config-invariant part). PRODUCT_BUNDLE_IDENTIFIER is per-config and
 // lives in GuessWhoLinkedIn-Debug/Release.xcconfig — the extension bundle id
-// must stay prefixed by the app bundle id (…guesswho.safari /
-// …guesswho.debug.safari).
+// must stay prefixed by the app bundle id (…guesswho.safari).
 PRODUCT_NAME = $(TARGET_NAME)
 
 // Signing

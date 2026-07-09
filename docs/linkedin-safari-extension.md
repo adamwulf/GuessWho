@@ -105,7 +105,7 @@ Concrete contract:
 - **Wake URL:** `guesswho-linkedin://handoff` (Release) /
   `guesswho-linkedin-debug://handoff` (Debug). The scheme is per-configuration
   (`GUESSWHO_LINKEDIN_URL_SCHEME` in each target's per-config xcconfig) so the
-  Debug extension wakes the Debug app, never the Release install. Registered in
+  extension wakes the app built for the same configuration. Registered in
   `App/GuessWho/Info.plist` under `CFBundleURLTypes` as
   `$(GUESSWHO_LINKEDIN_URL_SCHEME)`, and read at runtime from the
   `GuessWhoLinkedInURLScheme` Info.plist key on both sides
@@ -124,9 +124,8 @@ Concrete contract:
 
 The App Group is used **only** for this ephemeral handoff. It is NOT synced
 storage — the synced GuessWho sidecar lives in the **iCloud ubiquity container**
-(`iCloud.com.milestonemade.guesswho` for Release,
-`iCloud.com.milestonemade.guesswho.debug` for Debug), a different container
-entirely. The container id is build-driven the same way the App Group is — see
+(`iCloud.com.milestonemade.guesswho`), a different container entirely. The
+container id is build-driven the same way the App Group is — see
 [Debug vs. Release identifiers](#debug-vs-release-identifiers) below — and is
 resolved at runtime via the `GuessWhoiCloudContainer` Info.plist key
 (`ICloudContainer.id`, mirroring `AppGroup.id`). See
@@ -147,10 +146,9 @@ and
 | iOS / iPadOS | `group.com.milestonemade.guesswho` | The `group.`-prefixed form is the only one iOS supports. It must be **provisioned** — set `REGISTER_APP_GROUPS = YES` so automatic signing fetches a profile that authorizes it. |
 | Mac Catalyst | `T68Z94627S.com.milestonemade.guesswho` (`<TeamID>.<name>`) | Self-authorizing by code signature — **no provisioning, no portal registration**, and it **avoids the macOS 15+ "GuessWho would like to access data from other applications" prompt**. This form is *not supported on iOS*, which is why the identifier must differ per platform. |
 
-Debug builds append a `.debug` suffix to the name (`group.com.milestonemade.guesswho.debug`
-/ `T68Z94627S.com.milestonemade.guesswho.debug`) so a debug install never shares
-a container with a release install — see
-[Debug vs. Release identifiers](#debug-vs-release-identifiers).
+Debug and Release now use the same App Group identifiers so Xcode Debug builds
+exercise the same provisioned capabilities and shared-container behavior as
+production — see [Debug vs. Release identifiers](#debug-vs-release-identifiers).
 
 Two installs on two platforms never share a container anyway (cross-device data
 syncs via iCloud, not the App Group), so different identifiers are harmless.
@@ -175,9 +173,9 @@ A mismatch between any of these silently breaks container resolution:
 
 1. **xcconfig var** — `GUESSWHO_APP_GROUP`, a literal value with a `[sdk=macosx*]`
    override, written out in the per-configuration target xcconfig (no composing
-   variable). For Release it lives in `App/Config/GuessWho-Release.xcconfig`
-   (app) / `App/Config/GuessWhoLinkedIn-Release.xcconfig` (extension); the
-   `-Debug` counterparts carry the `.debug` id:
+   variable). It lives in `App/Config/GuessWho-Release.xcconfig` and
+   `App/Config/GuessWho-Debug.xcconfig` for the app, and the matching
+   `GuessWhoLinkedIn-*` xcconfigs for the extension:
    ```
    GUESSWHO_APP_GROUP = group.com.milestonemade.guesswho
    GUESSWHO_APP_GROUP[sdk=macosx*] = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
@@ -188,17 +186,14 @@ A mismatch between any of these silently breaks container resolution:
    `GuessWhoSceneDelegate.handoffAppGroupID` read that Info.plist key
    (`Bundle.main.object(forInfoDictionaryKey: "GuessWhoAppGroup")`), never a
    hardcoded literal. So the runtime container always matches the entitlement.
-4. **Entitlements files** — per-target, per-SDK, **and per-configuration** (the
-   id is baked into the plist content, so Debug and Release need separate files,
-   pointed at by each target's per-config xcconfig):
-   - App: `GuessWho.entitlements` / `GuessWho-Debug.entitlements` (iOS, `group.`
-     form) + `GuessWho-MacCatalyst.entitlements` /
-     `GuessWho-MacCatalyst-Debug.entitlements` (`<TeamID>.` form), selected by
+4. **Entitlements files** — per-target and per-SDK. Debug and Release both point
+   at the same production entitlement files so Debug builds can exercise the
+   same Apple-approved capabilities:
+   - App: `GuessWho.entitlements` (iOS, `group.` form) +
+     `GuessWho-MacCatalyst.entitlements` (`<TeamID>.` form), selected by
      `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]`.
-   - Extension: `GuessWhoLinkedIn.entitlements` /
-     `GuessWhoLinkedIn-Debug.entitlements` (iOS) +
-     `GuessWhoLinkedIn-MacCatalyst.entitlements` /
-     `GuessWhoLinkedIn-MacCatalyst-Debug.entitlements` (`<TeamID>.`), same per-SDK
+   - Extension: `GuessWhoLinkedIn.entitlements` (iOS) +
+     `GuessWhoLinkedIn-MacCatalyst.entitlements` (`<TeamID>.`), same per-SDK
      override. **App Group only** — no iCloud, no Contacts.
 
 > **Gotcha (cost real debugging time):** the **extension target has its own
@@ -224,19 +219,20 @@ A mismatch between any of these silently breaks container resolution:
 
 ## Debug vs. Release identifiers
 
-A Debug install must be able to coexist with a Release/TestFlight install on the
-same device without sharing data — and be **tellable apart in Safari**. All
-three identity-bearing ids therefore carry a `.debug` suffix in Debug builds and
-are bare in Release, the user-visible names carry a "Debug" suffix, and the wake
-scheme carries a `-debug` suffix (hyphenated, per URL-scheme convention):
+Debug intentionally uses the same production bundle id, App Group, iCloud
+container, and entitlement files as Release so local Xcode builds exercise the
+same Apple-approved capabilities (including Contacts notes access). Installing a
+Debug build replaces the Release/TestFlight app for that bundle id. The
+user-visible names still carry a "Debug" suffix, and the wake scheme carries a
+`-debug` suffix (hyphenated, per URL-scheme convention):
 
 | Identifier | Release | Debug |
 | --- | --- | --- |
-| App bundle id | `com.milestonemade.guesswho` | `com.milestonemade.guesswho.debug` |
-| Extension bundle id | `com.milestonemade.guesswho.safari` | `com.milestonemade.guesswho.debug.safari` |
-| App Group (iOS) | `group.com.milestonemade.guesswho` | `group.com.milestonemade.guesswho.debug` |
-| App Group (Catalyst) | `T68Z94627S.com.milestonemade.guesswho` | `T68Z94627S.com.milestonemade.guesswho.debug` |
-| iCloud container | `iCloud.com.milestonemade.guesswho` | `iCloud.com.milestonemade.guesswho.debug` |
+| App bundle id | `com.milestonemade.guesswho` | `com.milestonemade.guesswho` |
+| Extension bundle id | `com.milestonemade.guesswho.safari` | `com.milestonemade.guesswho.safari` |
+| App Group (iOS) | `group.com.milestonemade.guesswho` | `group.com.milestonemade.guesswho` |
+| App Group (Catalyst) | `T68Z94627S.com.milestonemade.guesswho` | `T68Z94627S.com.milestonemade.guesswho` |
+| iCloud container | `iCloud.com.milestonemade.guesswho` | `iCloud.com.milestonemade.guesswho` |
 | App display name | `GuessWho` | `GuessWho Debug` |
 | Extension display name¹ | `GuessWho LinkedIn` | `GuessWho LinkedIn Debug` |
 | Wake scheme | `guesswho-linkedin` | `guesswho-linkedin-debug` |
@@ -266,17 +262,16 @@ target+configuration's `baseConfigurationReference` in the project:
   `GUESSWHO_LINKEDIN_URL_SCHEME`, `CODE_SIGN_ENTITLEMENTS` — App Group only). The
   wake scheme must stay **byte-identical** to the app's for the same
   configuration, exactly like the App Group id. The extension
-  bundle id keeps the `.debug` before the `.safari` leaf
-  (`…guesswho.debug.safari`) so it stays prefixed by the app id (an Apple
-  requirement for app extensions).
+  bundle id stays prefixed by the app id (`…guesswho.safari`), an Apple
+  requirement for app extensions.
 - No identifier settings live at the **project** level (`Project-Debug/Release.xcconfig`)
   or inline in the project file's target `buildSettings` — the per-config xcconfigs
   are the single source of truth. When changing an id, update both the app's and
   the extension's matching per-config file (and the corresponding entitlement
   file) together so the three ids and the App Group stay in lockstep.
 - Entitlement `.plist` files can't interpolate build settings, so the ids are
-  baked into the file content; Debug and Release have separate files, each
-  pointed at by its config's `CODE_SIGN_ENTITLEMENTS`.
+  baked into the file content. Debug and Release point at the same entitlement
+  files to keep capability behavior identical.
 - The iCloud container is read at runtime from the `GuessWhoiCloudContainer`
   Info.plist key via `ICloudContainer.id` (mirroring how `AppGroup.id` reads
   `GuessWhoAppGroup`), so the runtime lookup in `SyncService` always matches the
@@ -284,13 +279,10 @@ target+configuration's `baseConfigurationReference` in the project:
 
 > **Portal prerequisite:** the `group.`-prefixed App Group and the iCloud
 > container must be **registered in the Apple Developer portal** to be
-> provisioned (the `<TeamID>.` Catalyst App Group form is self-authorizing —
-> even with the `.debug` suffix — and needs no registration). So before Debug
-> signing succeeds on a real machine, register the `group.…guesswho.debug` App
-> Group (gates **device** builds) and the `iCloud.…guesswho.debug` container
-> (gates **device + Catalyst** builds). Debug **simulator** builds and all
-> Release builds are unaffected (the simulator does not enforce these
-> entitlements).
+> provisioned (the `<TeamID>.` Catalyst App Group form is self-authorizing and
+> needs no registration). Debug and Release both use the production App Group,
+> iCloud container, and entitlement files, so there are no separate Debug portal
+> identifiers to register.
 
 ## The entitlement split (app does the heavy work)
 
@@ -446,8 +438,7 @@ file-system synchronized groups, matching the app target):
 `group.`-prefixed App Group exists on the Apple Developer portal and is enabled
 on both App IDs (`com.milestonemade.guesswho` and
 `com.milestonemade.guesswho.safari`); `REGISTER_APP_GROUPS = YES` drives the
-profile fetch. For **Debug** device/Catalyst builds the `.debug` variants need
-the same portal setup — see
+profile fetch. Debug uses those same production identifiers — see
 [Debug vs. Release identifiers](#debug-vs-release-identifiers).
 
 ## Still future work
