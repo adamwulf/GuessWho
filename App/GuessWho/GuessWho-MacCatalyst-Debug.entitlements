@@ -31,6 +31,8 @@
 		     with GUESSWHO_APP_GROUP[sdk=macosx*] in GuessWho-Debug.xcconfig. -->
 		<string>T68Z94627S.com.milestonemade.guesswho.debug</string>
 	</array>
+	<key>com.apple.developer.contacts.notes</key>
+	<true/>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
 		<string>iCloud.com.milestonemade.guesswho.debug</string>
