@@ -48,9 +48,7 @@ struct ContactEditView: View {
                 SocialProfileRow(model: $model)
                 IMRow(model: $model)
                 PhoneticNameRow(model: $model)
-                #if !DEBUG
                 ContactNotesRow(model: $model)
-                #endif
             }
             .formStyle(.grouped)
             .navigationTitle(navigationTitle)

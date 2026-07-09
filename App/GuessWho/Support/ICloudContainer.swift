@@ -4,10 +4,8 @@ import Foundation
 ///
 /// Resolved from the `GuessWhoiCloudContainer` Info.plist key (fed by
 /// `GUESSWHO_ICLOUD_CONTAINER` in the xcconfig) so it matches the container
-/// declared in the entitlement — `iCloud.com.milestonemade.guesswho` for
-/// Release, `iCloud.com.milestonemade.guesswho.debug` for Debug — and the
-/// runtime lookup can never drift from the signed entitlement. Mirrors how
-/// `AppGroup.id` reads `GuessWhoAppGroup`.
+/// declared in the entitlement, and the runtime lookup can never drift from the
+/// signed entitlement. Mirrors how `AppGroup.id` reads `GuessWhoAppGroup`.
 ///
 /// The Release id is the fallback so a build that somehow lacks the Info.plist
 /// key still resolves the production container rather than failing outright.

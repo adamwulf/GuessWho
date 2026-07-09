@@ -1,8 +1,7 @@
 // GuessWho-Release.xcconfig
 // Release-configuration identifiers for the GuessWho app target. Wired as the
-// app target's Release baseConfigurationReference. The Debug counterpart
-// (GuessWho-Debug.xcconfig) carries the ".debug"-suffixed ids so a debug
-// install never collides with a release install.
+// app target's Release baseConfigurationReference. Debug intentionally uses the
+// same production identifiers so local builds exercise production capabilities.
 
 #include "GuessWho-Shared.xcconfig"
 

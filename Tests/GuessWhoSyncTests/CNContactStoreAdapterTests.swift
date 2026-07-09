@@ -129,11 +129,7 @@ struct CNContactStoreAdapterTests {
         #expect(mutable.departmentName == "Engines")
         #expect(mutable.organizationName == "Analytical Engine Co")
         #expect(mutable.phoneticOrganizationName == "an-uh-LIT-ik-ul")
-        #if !DEBUG
         #expect(mutable.note == "Met at the Royal Society.\nPrefers written follow-up.")
-        #else
-        #expect(mutable.note == nil)
-        #endif
 
         #expect(mutable.phoneNumbers.count == 2)
         #expect(mutable.phoneNumbers[0].label == CNLabelPhoneNumberMobile)
@@ -217,11 +213,7 @@ struct CNContactStoreAdapterTests {
         #expect(contact.localID == mutable.identifier)
         #expect(contact.contactType == .organization)
         #expect(contact.organizationName == "Acme Corp")
-        #if !DEBUG
         #expect(contact.note == "Vendor relationship owner.")
-        #else
-        #expect(contact.note.isEmpty)
-        #endif
         #expect(contact.phoneNumbers == [LabeledValue(label: "", value: "555-0100")])
     }
 
@@ -246,9 +238,6 @@ struct CNContactStoreAdapterTests {
         var expected = original
         expected.localID = mutable.identifier
         expected.imageDataAvailable = roundTripped.imageDataAvailable
-        #if DEBUG
-        expected.note = ""
-        #endif
 
         #expect(roundTripped == expected)
     }
@@ -259,14 +248,9 @@ struct CNContactStoreAdapterTests {
     func fetchKeysIncludeNoteKeyAndCoverMappedFields() {
         let keys = Set(CNContactStoreAdapter.keys.compactMap { $0 as? String })
 
-        // Release builds carry com.apple.developer.contacts.notes, so Contacts
-        // notes are part of the main fetch/edit contract there. Debug builds do
-        // not carry the entitlement, so they must not request the key.
-        #if !DEBUG
+        // Debug and Release use the same app id and entitlements, so Contacts
+        // notes are part of the main fetch/edit contract in both configurations.
         #expect(keys.contains(CNContactNoteKey))
-        #else
-        #expect(!keys.contains(CNContactNoteKey))
-        #endif
 
         // Image BYTES load on demand via separate key sets; the bulk fetch
         // carries only the presence flag.

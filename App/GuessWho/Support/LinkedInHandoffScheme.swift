@@ -7,7 +7,7 @@ import Foundation
 /// `GUESSWHO_LINKEDIN_URL_SCHEME` in the xcconfig) so it matches the scheme
 /// registered under `CFBundleURLTypes` for the active configuration —
 /// `guesswho-linkedin-debug` in Debug, `guesswho-linkedin` in Release — and the
-/// Debug extension always wakes the Debug app, never the Release install.
+/// matching extension wakes the app built for that configuration.
 ///
 /// The extension target is a separate process/target and keeps its own copy
 /// (`SafariWebExtensionHandler.handoffURL`); both must stay fed by the same

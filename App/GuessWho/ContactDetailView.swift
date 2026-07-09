@@ -305,9 +305,7 @@ struct ContactDetailView: View {
             } else {
                 infoSection(contact)
 
-                #if !DEBUG
                 contactNotesSection(contact)
-                #endif
 
                 sidecarFieldsSection
 
@@ -372,9 +370,7 @@ struct ContactDetailView: View {
         SocialProfileRow(model: binding)
         IMRow(model: binding)
         PhoneticNameRow(model: binding)
-        #if !DEBUG
         ContactNotesRow(model: binding)
-        #endif
         editableSidecarFieldsSection
         editableNotesSection
         Section {

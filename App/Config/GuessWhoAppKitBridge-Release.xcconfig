@@ -1,7 +1,7 @@
 // GuessWhoAppKitBridge-Release.xcconfig
 // Release-configuration bundle id for the GuessWhoAppKitBridge target. Wired
-// as the bundle target's Release baseConfigurationReference. The Debug
-// counterpart carries the ".debug"-suffixed id.
+// as the bundle target's Release baseConfigurationReference. Debug intentionally
+// uses the same bundle id.
 
 #include "GuessWhoAppKitBridge-Shared.xcconfig"
 
