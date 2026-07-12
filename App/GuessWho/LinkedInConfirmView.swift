@@ -9,6 +9,7 @@ import GuessWhoSync
 struct LinkedInConfirmView: View {
     let contactID: ContactID
     let contactDisplayName: String
+    let sourceDisplayName: String
     let rows: [LinkedInDiffRow]
     /// Incoming photo bytes (decoded from the parsed `data:` URL), if any.
     let incomingPhoto: UIImage?
@@ -24,6 +25,7 @@ struct LinkedInConfirmView: View {
     init(
         contactID: ContactID,
         contactDisplayName: String,
+        sourceDisplayName: String = "LinkedIn",
         rows: [LinkedInDiffRow],
         incomingPhoto: UIImage?,
         loadExistingPhoto: @escaping () async -> UIImage?,
@@ -32,6 +34,7 @@ struct LinkedInConfirmView: View {
     ) {
         self.contactID = contactID
         self.contactDisplayName = contactDisplayName
+        self.sourceDisplayName = sourceDisplayName
         self.rows = rows
         self.incomingPhoto = incomingPhoto
         self.loadExistingPhoto = loadExistingPhoto
@@ -45,7 +48,7 @@ struct LinkedInConfirmView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Turn off any field you don’t want to change. Existing values are on the left, LinkedIn values on the right.")
+                    Text("Turn off any field you don’t want to change. Existing values are on the left, \(sourceDisplayName) values on the right.")
                         .font(.callout).foregroundStyle(.secondary)
                         .padding(.horizontal).padding(.top, 8).padding(.bottom, 12)
 
@@ -56,7 +59,7 @@ struct LinkedInConfirmView: View {
                         GridRow {
                             Color.clear.frame(width: 22, height: 1) // checkbox column spacer
                             columnHeader("Existing")
-                            columnHeader("LinkedIn")
+                            columnHeader(sourceDisplayName)
                         }
                         Divider().gridCellColumns(3)
                         ForEach(rows) { row in

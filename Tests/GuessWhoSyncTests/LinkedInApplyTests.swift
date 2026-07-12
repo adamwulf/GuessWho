@@ -135,6 +135,43 @@ struct LinkedInApplyTests {
         #expect(result.urlAddresses.allSatisfy { $0.label != "LinkedIn" })
     }
 
+    @Test func riceProfile_appliesNormalFieldsAndPrefixedSidecarFields() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Brad"))
+        let rice = LinkedInProfile(
+            source: "rice",
+            sourceUrl: "https://profiles.rice.edu/staff/brad-burke",
+            fullName: "Brad Burke",
+            title: "Associate Vice President for Industry and New Ventures",
+            about: "Brad supports new technologies created by Rice faculty.",
+            department: "Jones Graduate School of Business\nOffice of Innovation",
+            contactInfo: .init(
+                emails: ["bburke@rice.edu"],
+                phones: ["713-348-6136"],
+                websites: ["https://innovation.rice.edu/"]
+            )
+        )
+
+        let result = try await repo.applyLinkedIn(
+            profile: rice,
+            to: id,
+            fields: [.jobTitle, .emails, .phones, .websites, .about, .department]
+        )
+
+        #expect(result.jobTitle == "Associate Vice President for Industry and New Ventures")
+        #expect(result.emailAddresses.contains { $0.value == "bburke@rice.edu" })
+        #expect(result.phoneNumbers.contains { $0.value == "713-348-6136" })
+        #expect(result.urlAddresses.contains { $0.value == "https://innovation.rice.edu/" })
+        #expect(result.urlAddresses.contains {
+            $0.label == "Rice" && $0.value == "https://profiles.rice.edu/staff/brad-burke"
+        })
+
+        let reconciledID = repo.contact(localID: "T")!.contactID
+        let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: reconciledID).map { ($0.field, $0) })
+        #expect(byName["Rice Department"]?.value == .string("Jones Graduate School of Business\nOffice of Innovation"))
+        #expect(byName["Rice Bio"]?.value == .string("Brad supports new technologies created by Rice faculty."))
+        #expect(byName["LinkedIn About"] == nil)
+    }
+
     @Test func headline_storedAsNamedSidecarField_singleLineNote() async throws {
         // A free-form headline (no "<Title> at <Org>" shape) — the raw line is
         // the only carrier of the title/bio, so it must land as its own field.

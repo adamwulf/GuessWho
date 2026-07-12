@@ -12,12 +12,24 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     public struct ContactInfo: Codable, Sendable, Equatable {
         public var profileUrl: String?
         public var emails: [String]
+        public var phones: [String]
         public var websites: [String]
 
-        public init(profileUrl: String? = nil, emails: [String] = [], websites: [String] = []) {
+        public init(profileUrl: String? = nil, emails: [String] = [], phones: [String] = [], websites: [String] = []) {
             self.profileUrl = profileUrl
             self.emails = emails
+            self.phones = phones
             self.websites = websites
+        }
+
+        private enum CodingKeys: String, CodingKey { case profileUrl, emails, phones, websites }
+
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            profileUrl = try values.decodeIfPresent(String.self, forKey: .profileUrl)
+            emails = try values.decodeIfPresent([String].self, forKey: .emails) ?? []
+            phones = try values.decodeIfPresent([String].self, forKey: .phones) ?? []
+            websites = try values.decodeIfPresent([String].self, forKey: .websites) ?? []
         }
     }
 
@@ -43,6 +55,9 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         }
     }
 
+    /// Source parser. Missing means LinkedIn for backward compatibility with
+    /// already-parked payloads and existing tests.
+    public var source: String?
     public var sourceUrl: String?
     public var slug: String?
     public var fullName: String?
@@ -51,10 +66,12 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     public var org: String?
     public var location: String?
     public var about: String?
+    public var department: String?
     public var contactInfo: ContactInfo?
     public var photo: Photo?
 
     public init(
+        source: String? = nil,
         sourceUrl: String? = nil,
         slug: String? = nil,
         fullName: String? = nil,
@@ -63,9 +80,11 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         org: String? = nil,
         location: String? = nil,
         about: String? = nil,
+        department: String? = nil,
         contactInfo: ContactInfo? = nil,
         photo: Photo? = nil
     ) {
+        self.source = source
         self.sourceUrl = sourceUrl
         self.slug = slug
         self.fullName = fullName
@@ -74,6 +93,7 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         self.org = org
         self.location = location
         self.about = about
+        self.department = department
         self.contactInfo = contactInfo
         self.photo = photo
     }
@@ -84,9 +104,13 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     // that the app doesn't consume yet — the parser already folds the current
     // position into `title`/`org`, so nothing app-side needs the raw array.
     private enum CodingKeys: String, CodingKey {
-        case sourceUrl, slug, fullName, headline, title, org, location, about
+        case source, sourceUrl, slug, fullName, headline, title, org, location, about, department
         case contactInfo, photo
     }
+
+    public var isRiceProfile: Bool { source?.caseInsensitiveCompare("rice") == .orderedSame }
+
+    public var sourceDisplayName: String { isRiceProfile ? "Rice" : "LinkedIn" }
 }
 
 /// The fields a LinkedIn import can apply to a contact. The app maps the user's
@@ -99,7 +123,8 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
 /// the single-slot previous-photo sidecar blob.
 public enum LinkedInField: String, Sendable, CaseIterable {
     case name, jobTitle, organization
-    case emails, websites, linkedInURL
+    case emails, phones, websites, linkedInURL
     case headline, location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
+    case department
     case photo
 }

@@ -36,6 +36,7 @@ public enum LinkedInContactSeed {
         }
 
         let emails = uniqueTrimmed(profile.contactInfo?.emails ?? [], key: { $0.lowercased() })
+        let phones = uniqueTrimmed(profile.contactInfo?.phones ?? [], key: phoneKey)
         let websites = uniqueTrimmed(profile.contactInfo?.websites ?? [], key: urlKey)
 
         // Contacts' LinkedIn social-profile field expects the USERNAME, not a
@@ -49,9 +50,11 @@ public enum LinkedInContactSeed {
         // The `profile.slug` fallback gets the same trim + lowercase
         // normalization `LinkedInURL.slug(from:)` applies, so the seeded
         // username's canonical casing doesn't depend on which source won.
-        let slug = profileURL.flatMap { LinkedInURL.slug(from: $0) }
-            ?? profile.slug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            ?? ""
+        let slug = profile.isRiceProfile ? "" : (
+            profileURL.flatMap { LinkedInURL.slug(from: $0) }
+                ?? profile.slug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                ?? ""
+        )
         if !slug.isEmpty {
             socialProfiles.append(LabeledSocialProfile(
                 label: "LinkedIn",
@@ -59,20 +62,27 @@ public enum LinkedInContactSeed {
             ))
         }
 
-        return Contact(
-            namePrefix: parsed?.namePrefix ?? "",
-            givenName: parsed?.givenName ?? givenFallback,
-            middleName: parsed?.middleName ?? "",
-            familyName: parsed?.familyName ?? "",
-            nameSuffix: parsed?.nameSuffix ?? "",
-            jobTitle: (profile.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-            organizationName: (profile.org ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-            // CNContact multi-values — default label (empty -> the adapter
-            // passes nil, so Contacts assigns its own default). NOT "LinkedIn".
-            emailAddresses: emails.map { LabeledValue(label: "", value: $0) },
-            urlAddresses: websites.map { LabeledValue(label: "", value: $0) },
-            socialProfiles: socialProfiles
-        )
+        let emailAddresses = emails.map { LabeledValue(label: "", value: $0) }
+        let phoneNumbers = phones.map { LabeledValue(label: "", value: $0) }
+        var urlAddresses = websites.map { LabeledValue(label: "", value: $0) }
+        urlAddresses += riceProfileWebsite(profile, excluding: websites)
+
+        var contact = Contact()
+        contact.namePrefix = parsed?.namePrefix ?? ""
+        contact.givenName = parsed?.givenName ?? givenFallback
+        contact.middleName = parsed?.middleName ?? ""
+        contact.familyName = parsed?.familyName ?? ""
+        contact.nameSuffix = parsed?.nameSuffix ?? ""
+        contact.jobTitle = (profile.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        contact.organizationName = (profile.org ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // CNContact multi-values — default label (empty -> the adapter passes
+        // nil, so Contacts assigns its own default). The Rice source URL is
+        // the sole exception and carries its explicit "Rice" label.
+        contact.emailAddresses = emailAddresses
+        contact.phoneNumbers = phoneNumbers
+        contact.urlAddresses = urlAddresses
+        contact.socialProfiles = socialProfiles
+        return contact
     }
 
     /// Trimmed, non-empty members of `values`, de-duped by `key` (first
@@ -100,5 +110,19 @@ public enum LinkedInContactSeed {
         if t.hasPrefix("www.") { t = String(t.dropFirst(4)) }
         while t.hasSuffix("/") { t = String(t.dropLast()) }
         return t
+    }
+
+    private static func phoneKey(_ s: String) -> String {
+        s.filter(\.isNumber)
+    }
+
+    /// The source page itself is useful contact data, separate from the
+    /// external websites listed on it. Rice explicitly owns this label.
+    private static func riceProfileWebsite(_ profile: LinkedInProfile, excluding websites: [String]) -> [LabeledValue] {
+        guard profile.isRiceProfile,
+              let raw = profile.sourceUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              !websites.contains(where: { urlKey($0) == urlKey(raw) }) else { return [] }
+        return [LabeledValue(label: "Rice", value: raw)]
     }
 }

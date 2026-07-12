@@ -75,6 +75,30 @@ struct LinkedInContactSeedTests {
         #expect(seed.organizationName == "Acme")
     }
 
+    @Test("Rice profile seeds phone and labeled source website without a LinkedIn profile")
+    func testRiceProfileMapping() {
+        let profile = LinkedInProfile(
+            source: "rice",
+            sourceUrl: "https://profiles.rice.edu/faculty/lydia-e-kavraki",
+            slug: "lydia-e-kavraki",
+            fullName: "Lydia E. Kavraki",
+            title: "Noah Harding Professor of Computer Science",
+            contactInfo: .init(
+                emails: ["kavraki@rice.edu"],
+                phones: ["713-348-5737"],
+                websites: ["https://www.kavrakilab.org/"]
+            )
+        )
+
+        let seed = LinkedInContactSeed.contact(from: profile)
+        #expect(seed.phoneNumbers == [LabeledValue(label: "", value: "713-348-5737")])
+        #expect(seed.urlAddresses.contains {
+            $0.label == "Rice" && $0.value == "https://profiles.rice.edu/faculty/lydia-e-kavraki"
+        })
+        #expect(seed.urlAddresses.contains { $0.value == "https://www.kavrakilab.org/" })
+        #expect(seed.socialProfiles.isEmpty)
+    }
+
     @Test("Whitespace-only full name is treated as missing")
     func testWhitespaceNameLeavesNameFieldsEmpty() {
         let profile = LinkedInProfile(fullName: "   ")
