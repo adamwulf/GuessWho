@@ -150,8 +150,8 @@ struct FileSystemSidecarStoreUbiquityTests {
         #expect(report.versionsConsidered == 2)
         #expect(report.skippedReasons.isEmpty)
         #expect(resolverInvocations == 1)
-        // seenCurrent decodes back to the current envelope (byte-equality
-        // is too strict — JSONEncoder dict-key ordering is unstable).
+        // The provider owns these current bytes, so decode rather than
+        // assuming the fake used the store's canonical encoder.
         let seenCurrentEnv = try #require(seenCurrent.flatMap {
             try? JSONDecoder().decode(SidecarEnvelope.self, from: $0)
         })

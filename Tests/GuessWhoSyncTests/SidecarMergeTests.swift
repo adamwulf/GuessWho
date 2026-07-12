@@ -99,6 +99,30 @@ struct SidecarMergeTests {
     }
 
     @Test
+    func equivalentConflictFoldsProduceCanonicalIdenticalBytes() throws {
+        let current = SidecarEnvelope(entityID: "e", fields: [
+            "zulu": live(.string("current-z"), at: t1, by: "device-A"),
+            "alpha": live(.string("current-a"), at: t1, by: "device-A"),
+        ])
+        let conflict = SidecarEnvelope(entityID: "e", fields: [
+            "yankee": live(.string("conflict-y"), at: t2, by: "device-B"),
+            "alpha": live(.string("conflict-a"), at: t2, by: "device-B"),
+        ])
+
+        // Devices can receive the same NSFileVersion set in a different fold
+        // order. Per-cell LWW already makes the logical result commutative;
+        // canonical encoding must also make the bytes identical or iCloud can
+        // immediately create another conflict from the two merged writes.
+        let currentFirst = try merge(current, conflict).get()
+        let conflictFirst = try merge(conflict, current).get()
+        let currentFirstBytes = try SidecarEnvelopeCodec.encode(currentFirst)
+        let conflictFirstBytes = try SidecarEnvelopeCodec.encode(conflictFirst)
+
+        #expect(currentFirstBytes == conflictFirstBytes)
+        #expect(try JSONDecoder().decode(SidecarEnvelope.self, from: currentFirstBytes).fields.count == 3)
+    }
+
+    @Test
     func entityIDMismatchFails() {
         let a = SidecarEnvelope(entityID: "alpha", fields: [:])
         let b = SidecarEnvelope(entityID: "beta", fields: [:])

@@ -143,7 +143,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let data = try JSONEncoder().encode(envelope)
+            let data = try SidecarEnvelopeCodec.encode(envelope)
 
             var writeError: Error?
             try coordinatedWrite(key: key, at: url) { safeURL in
@@ -464,7 +464,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 )
             }
 
-            let mergedData = try JSONEncoder().encode(merged)
+            let mergedData = try SidecarEnvelopeCodec.encode(merged)
             var mergedWriteError: Error?
             try coordinatedWrite(key: key, at: url) { safeURL in
                 do {
