@@ -3,9 +3,10 @@ import Contacts
 
 /// Cross-platform Menu-based label picker. Displays the localized form
 /// of each option in the picker UI (via `CNLabeledValue.localizedString(forLabel:)`)
-/// and stores the raw CN constant in the binding. A "Custom…" option
-/// lets the user type their own label, stored verbatim. Matches
-/// Contacts.app label-picking behavior.
+/// and stores the raw CN constant in the binding. For field types that offer
+/// `CNLabelOther`, choosing Other turns the label into an inline text field,
+/// matching Contacts.app. The field initially displays "other" and stores a
+/// replacement custom label verbatim as soon as the user edits it.
 ///
 /// The binding's target depends on the row type — most rows bind
 /// LabeledValue.label, but Social and IM rows bind the underlying
@@ -18,19 +19,59 @@ struct LabelPicker: View {
     @State private var customDraft: String = ""
 
     var body: some View {
+        if usesInlineCustomLabel {
+            inlineCustomLabel
+        } else {
+            labelMenu(includeCustomOption: true)
+        }
+    }
+
+    private var usesInlineCustomLabel: Bool {
+        options.contains(CNLabelOther)
+            && (label == CNLabelOther || !options.contains(label))
+    }
+
+    private var inlineCustomLabel: some View {
+        HStack(spacing: 4) {
+            TextField("other", text: Binding(
+                get: { label == CNLabelOther ? displayName(for: CNLabelOther) : label },
+                set: { label = $0 }
+            ))
+            .textFieldStyle(.plain)
+            .foregroundStyle(.secondary)
+            .font(.subheadline)
+            .frame(minWidth: 72, idealWidth: 90, maxWidth: 130)
+
+            labelMenu(includeCustomOption: false, iconOnly: true)
+        }
+    }
+
+    private func labelMenu(
+        includeCustomOption: Bool,
+        iconOnly: Bool = false
+    ) -> some View {
         Menu {
             ForEach(options, id: \.self) { opt in
                 Button(displayName(for: opt)) { label = opt }
             }
-            Divider()
-            Button("Custom…") {
-                customDraft = label
-                showCustomSheet = true
+            if includeCustomOption {
+                Divider()
+                Button("Custom…") {
+                    customDraft = label
+                    showCustomSheet = true
+                }
             }
         } label: {
-            Text(displayName(for: label))
-                .foregroundStyle(.secondary)
-                .font(.subheadline)
+            if iconOnly {
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Choose label")
+            } else {
+                Text(displayName(for: label))
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+            }
         }
         .menuStyle(.borderlessButton)
         .sheet(isPresented: $showCustomSheet) {
