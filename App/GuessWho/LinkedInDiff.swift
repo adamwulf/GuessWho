@@ -134,17 +134,26 @@ enum LinkedInDiff {
         // guesswho:// identity URL) and never reconstruct urlAddresses from this
         // filtered set — dropping the identity URL would orphan the contact's
         // sidecar data. The filter affects pixels, not stored data.
-        let existingSites = contact.urlAddresses.map(\.value)
-            .filter { !$0.hasPrefix(SidecarKey.guessWhoContactURLPrefix) }
+        let existingWebsiteFields = contact.urlAddresses
+            .filter { !$0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) }
+        let existingSites = existingWebsiteFields.map(\.value)
         // URL dedup is scheme-insensitive: "adamwulf.me" already on the contact
         // matches LinkedIn's "https://adamwulf.me", so it isn't added again.
         var incomingSites = profile.contactInfo?.websites ?? []
         if profile.isRiceProfile, let sourceURL = profile.sourceUrl { incomingSites.append(sourceURL) }
         let newSites = additions(incomingSites, notIn: existingSites, key: urlKey)
         if !newSites.isEmpty {
+            let existingDisplay = existingWebsiteFields.map {
+                websiteDisplay(value: $0.value, label: $0.label)
+            }
+            let incomingDisplay = newSites.map { value in
+                let isRiceSource = profile.isRiceProfile
+                    && profile.sourceUrl.map { urlKey($0) == urlKey(value) } == true
+                return websiteDisplay(value: value, label: isRiceSource ? "Rice" : "")
+            }
             add(.websites, "Websites",
-                existingSites.joined(separator: "\n"),
-                (existingSites + newSites).joined(separator: "\n"))
+                existingDisplay.joined(separator: "\n"),
+                (existingDisplay + incomingDisplay).joined(separator: "\n"))
         }
 
         // LinkedIn URL: add only if the contact has no LinkedIn social profile yet.
@@ -188,6 +197,13 @@ enum LinkedInDiff {
 
     private static func phoneKey(_ s: String) -> String {
         s.filter(\.isNumber)
+    }
+
+    /// The normal diff is value-oriented, but the Rice profile URL has a
+    /// meaningful explicit Contacts label that the user should see before
+    /// saving. Other website labels retain the existing value-only display.
+    private static func websiteDisplay(value: String, label: String) -> String {
+        label.caseInsensitiveCompare("Rice") == .orderedSame ? "Rice: \(value)" : value
     }
 
     /// URL dedup key: scheme- and case-insensitive, ignoring a leading `www.`
