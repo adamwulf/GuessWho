@@ -147,9 +147,11 @@ async function runHandoff() {
   goBtn.disabled = true;
   try {
     const tab = await activeTab();
-    if (!tab || !/linkedin\.com\/in\//.test(tab.url || "")) {
-      log("abort: not a LinkedIn profile tab", { url: tab?.url ?? null });
-      show("Not a LinkedIn profile tab (need linkedin.com/in/…).", true);
+    const supportedProfile = /linkedin\.com\/in\//.test(tab?.url || "") ||
+      /profiles\.rice\.edu\/(faculty|staff)\//.test(tab?.url || "");
+    if (!tab || !supportedProfile) {
+      log("abort: not a supported profile tab", { url: tab?.url ?? null });
+      show("Open a LinkedIn profile or a Rice faculty/staff profile first.", true);
       return;
     }
     log("active tab", { tabId: tab.id, url: tab.url });

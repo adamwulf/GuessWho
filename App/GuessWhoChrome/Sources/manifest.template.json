@@ -24,6 +24,7 @@
   "host_permissions": [
     "*://*.linkedin.com/*",
     "*://*.licdn.com/*",
+    "https://profiles.rice.edu/*",
     "http://127.0.0.1/*"
   ],
 
@@ -34,7 +35,7 @@
 
   "content_scripts": [
     {
-      "matches": ["*://*.linkedin.com/in/*"],
+      "matches": ["*://*.linkedin.com/in/*", "https://profiles.rice.edu/faculty/*", "https://profiles.rice.edu/staff/*"],
       "js": ["parse-profile.js", "content.js"]
     }
   ],

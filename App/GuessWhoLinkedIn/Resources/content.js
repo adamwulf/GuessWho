@@ -22,8 +22,9 @@ function log(step, detail) {
 }
 
 function minimalProbe() {
-  const slug = (location.pathname.match(/\/in\/([^/]+)/) || [])[1] || null;
+  const slug = (location.pathname.match(/\/(?:in|faculty|staff)\/([^/]+)/) || [])[1] || null;
   return {
+    source: location.hostname === "profiles.rice.edu" ? "rice" : "linkedin",
     sourceUrl: location.href,
     slug,
     title: document.title || null,
@@ -264,6 +265,32 @@ function emitProgress(probeId, readiness) {
 }
 
 async function probe(probeId) {
+  // Rice profiles are fully server-rendered: no lazy-section scroll and no
+  // contact overlay are needed. Parse once, then use the exact same in-page
+  // photo-byte fetch and native handoff as LinkedIn.
+  if (location.hostname === "profiles.rice.edu" && typeof extractRiceProfile === "function") {
+    let rice;
+    try { rice = extractRiceProfile() || minimalProbe(); }
+    catch (e) {
+      console.log("[GuessWho] extractRiceProfile threw:", e);
+      rice = minimalProbe();
+    }
+    try {
+      const photo = await fetchPhotoBytes(rice.photoSrcset);
+      if (photo && photo.dataURL) rice.photo = photo;
+      else rice.photoError = (photo && photo.error) || "unknown";
+    } catch (e) {
+      rice.photoError = "caller-threw: " + (e && e.message ? e.message : String(e));
+    }
+    const forLog = Object.assign({}, rice, {
+      photo: rice.photo
+        ? { contentType: rice.photo.contentType, byteLength: rice.photo.byteLength, dataURL: "<" + rice.photo.byteLength + " bytes>" }
+        : null,
+    });
+    console.log("[GuessWho] Rice parse result:", JSON.stringify(forLog, null, 2));
+    return rice;
+  }
+
   // NOTE: LinkedIn lazy-renders sections (About, Experience, …) — only what's
   // been scrolled into view is in the DOM. Parse what's there first as a
   // fallback, then scroll everything in and re-parse (below).

@@ -18,7 +18,7 @@ enum LinkedInImport {
 struct LinkedInDiffRow: Identifiable {
     enum Field: String {
         case name, jobTitle, organization, headline, location, about
-        case emails, websites, linkedInURL, photo
+        case emails, phones, websites, linkedInURL, department, photo
     }
 
     let id: Field
@@ -44,6 +44,8 @@ enum LinkedInDiff {
     static let headlineFieldName = "LinkedIn Headline"
     static let aboutFieldName = "LinkedIn About"
     static let locationFieldName = "LinkedIn Location"
+    static let riceDepartmentFieldName = "Rice Department"
+    static let riceBioFieldName = "Rice Bio"
 
     /// - Parameter existingSidecar: the contact's current sidecar field values
     ///   keyed by field name (e.g. `["LinkedIn Headline": "…", "LinkedIn
@@ -97,7 +99,9 @@ enum LinkedInDiff {
         // rendered AND the headline is free-form.
         add(.headline, "Headline", existingSidecar[headlineFieldName], profile.headline)
         add(.location, "Location", existingSidecar[locationFieldName], profile.location)
-        add(.about, "About", existingSidecar[aboutFieldName], profile.about)
+        add(.department, "Department", existingSidecar[riceDepartmentFieldName], profile.department)
+        let bioFieldName = profile.isRiceProfile ? riceBioFieldName : aboutFieldName
+        add(.about, profile.isRiceProfile ? "Bio" : "About", existingSidecar[bioFieldName], profile.about)
 
         // Emails / websites are MERGED, never replaced: we only ever ADD values
         // the contact is missing, and never delete existing ones. The LEFT shows
@@ -112,6 +116,14 @@ enum LinkedInDiff {
                 (existingEmails + newEmails).joined(separator: "\n"))
         }
 
+        let existingPhones = contact.phoneNumbers.map(\.value)
+        let newPhones = additions(profile.contactInfo?.phones ?? [], notIn: existingPhones, key: phoneKey)
+        if !newPhones.isEmpty {
+            add(.phones, "Phone",
+                existingPhones.joined(separator: "\n"),
+                (existingPhones + newPhones).joined(separator: "\n"))
+        }
+
         // Hide GuessWho's internal identity URL (guesswho://contact/<uuid>) from
         // the diff — it lives in urlAddresses but is sidecar plumbing the user
         // should never see.
@@ -122,19 +134,30 @@ enum LinkedInDiff {
         // guesswho:// identity URL) and never reconstruct urlAddresses from this
         // filtered set — dropping the identity URL would orphan the contact's
         // sidecar data. The filter affects pixels, not stored data.
-        let existingSites = contact.urlAddresses.map(\.value)
-            .filter { !$0.hasPrefix(SidecarKey.guessWhoContactURLPrefix) }
+        let existingWebsiteFields = contact.urlAddresses
+            .filter { !$0.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix) }
+        let existingSites = existingWebsiteFields.map(\.value)
         // URL dedup is scheme-insensitive: "adamwulf.me" already on the contact
         // matches LinkedIn's "https://adamwulf.me", so it isn't added again.
-        let newSites = additions(profile.contactInfo?.websites ?? [], notIn: existingSites, key: urlKey)
+        var incomingSites = profile.contactInfo?.websites ?? []
+        if profile.isRiceProfile, let sourceURL = profile.sourceUrl { incomingSites.append(sourceURL) }
+        let newSites = additions(incomingSites, notIn: existingSites, key: urlKey)
         if !newSites.isEmpty {
+            let existingDisplay = existingWebsiteFields.map {
+                websiteDisplay(value: $0.value, label: $0.label)
+            }
+            let incomingDisplay = newSites.map { value in
+                let isRiceSource = profile.isRiceProfile
+                    && profile.sourceUrl.map { urlKey($0) == urlKey(value) } == true
+                return websiteDisplay(value: value, label: isRiceSource ? "Rice" : "")
+            }
             add(.websites, "Websites",
-                existingSites.joined(separator: "\n"),
-                (existingSites + newSites).joined(separator: "\n"))
+                existingDisplay.joined(separator: "\n"),
+                (existingDisplay + incomingDisplay).joined(separator: "\n"))
         }
 
         // LinkedIn URL: add only if the contact has no LinkedIn social profile yet.
-        if let url = profile.contactInfo?.profileUrl ?? profile.sourceUrl {
+        if !profile.isRiceProfile, let url = profile.contactInfo?.profileUrl ?? profile.sourceUrl {
             let existingLinkedIn = contact.socialProfiles
                 .first { LinkedInURL.isLinkedIn($0.value.urlString) }?.value.urlString
             let alreadyHas = existingLinkedIn.map { LinkedInURL.sameProfile($0, url) } ?? false
@@ -170,6 +193,17 @@ enum LinkedInDiff {
     /// Plain case-insensitive key (emails).
     private static func plainKey(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func phoneKey(_ s: String) -> String {
+        s.filter(\.isNumber)
+    }
+
+    /// The normal diff is value-oriented, but the Rice profile URL has a
+    /// meaningful explicit Contacts label that the user should see before
+    /// saving. Other website labels retain the existing value-only display.
+    private static func websiteDisplay(value: String, label: String) -> String {
+        label.caseInsensitiveCompare("Rice") == .orderedSame ? "Rice: \(value)" : value
     }
 
     /// URL dedup key: scheme- and case-insensitive, ignoring a leading `www.`

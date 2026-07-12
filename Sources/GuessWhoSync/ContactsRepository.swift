@@ -585,6 +585,14 @@ public final class ContactsRepository: NSObject {
             // so Contacts assigns its own default). NOT "LinkedIn".
             edited.emailAddresses += additions.map { LabeledValue(label: "", value: $0) }
         }
+        if fields.contains(.phones) {
+            let additions = Self.newValues(
+                profile.contactInfo?.phones ?? [],
+                notIn: edited.phoneNumbers.map(\.value),
+                key: Self.phoneDedupKey
+            )
+            edited.phoneNumbers += additions.map { LabeledValue(label: "", value: $0) }
+        }
         if fields.contains(.websites) {
             let additions = Self.newValues(
                 profile.contactInfo?.websites ?? [],
@@ -593,6 +601,11 @@ public final class ContactsRepository: NSObject {
             )
             // CNContact field — default label (empty -> adapter passes nil).
             edited.urlAddresses += additions.map { LabeledValue(label: "", value: $0) }
+            if profile.isRiceProfile,
+               let riceURL = profile.sourceUrl?.trimmed, !riceURL.isEmpty,
+               !edited.urlAddresses.contains(where: { Self.urlDedupKey($0.value) == Self.urlDedupKey(riceURL) }) {
+                edited.urlAddresses.append(LabeledValue(label: "Rice", value: riceURL))
+            }
         }
         if fields.contains(.linkedInURL),
            let url = (profile.contactInfo?.profileUrl ?? profile.sourceUrl)?.trimmed, !url.isEmpty {
@@ -640,11 +653,17 @@ public final class ContactsRepository: NSObject {
         }
         if fields.contains(.about), let about = profile.about?.trimmed, !about.isEmpty {
             // About is multi-line prose.
-            _ = try await upsertField(for: id, field: "LinkedIn About", value: about, type: .multilineNote)
+            let fieldName = profile.isRiceProfile ? "Rice Bio" : "LinkedIn About"
+            _ = try await upsertField(for: id, field: fieldName, value: about, type: .multilineNote)
         }
         if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
             // Location is a single line.
             _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
+        }
+        if fields.contains(.department), let department = profile.department?.trimmed, !department.isEmpty {
+            // A person can belong to several Rice units; the parser preserves
+            // those units one per line, so keep the custom field multiline too.
+            _ = try await upsertField(for: id, field: "Rice Department", value: department, type: .multilineNote)
         }
 
         // Photo: route through the contact-image write path so replacing an
@@ -691,6 +710,10 @@ public final class ContactsRepository: NSObject {
         if t.hasPrefix("www.") { t = String(t.dropFirst(4)) }
         while t.hasSuffix("/") { t = String(t.dropLast()) }
         return t
+    }
+
+    private static func phoneDedupKey(_ s: String) -> String {
+        s.filter(\.isNumber)
     }
 
     /// Deletes the cached contact addressed by `ContactID`. Returns `false`

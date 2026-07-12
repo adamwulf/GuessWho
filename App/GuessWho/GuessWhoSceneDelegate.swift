@@ -1149,6 +1149,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let confirm = LinkedInConfirmView(
             contactID: matchID,
             contactDisplayName: contact.displayName,
+            sourceDisplayName: profile.sourceDisplayName,
             rows: rows,
             incomingPhoto: incomingPhoto,
             loadExistingPhoto: { [weak repo] in
@@ -1236,6 +1237,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 let hasSidecarContent = [profile.headline, profile.about, profile.location]
                     .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
                 if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
+                if profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    extras.insert(.department)
+                }
                 // Presence check only — applyLinkedIn itself skips an
                 // undecodable/unchanged photo, so don't base64-decode the
                 // full payload here just to test emptiness.
@@ -1284,6 +1288,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             LinkedInDiff.headlineFieldName,
             LinkedInDiff.aboutFieldName,
             LinkedInDiff.locationFieldName,
+            LinkedInDiff.riceDepartmentFieldName,
+            LinkedInDiff.riceBioFieldName,
         ]
         var out: [String: String] = [:]
         for field in fields where names.contains(field.field) {
@@ -1305,8 +1311,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             case .location: out.insert(.location)
             case .about: out.insert(.about)
             case .emails: out.insert(.emails)
+            case .phones: out.insert(.phones)
             case .websites: out.insert(.websites)
             case .linkedInURL: out.insert(.linkedInURL)
+            case .department: out.insert(.department)
             case .photo: out.insert(.photo)
             }
         }

@@ -265,6 +265,107 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   };
 }
 
+// --- Rice University profiles ----------------------------------------------
+//
+// profiles.rice.edu is server-rendered Drupal and exposes stable, descriptive
+// class names. Unlike LinkedIn, none of these fields are lazy or hidden behind
+// an overlay, so one synchronous DOM pass captures the complete profile.
+function extractRiceProfile(doc = (typeof document !== "undefined" ? document : null)) {
+  if (!doc) return null;
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+  const text = (el) => {
+    if (!el) return null;
+    const raw = typeof el.innerText === "string" ? el.innerText : el.textContent;
+    return raw ? raw.replace(/\u00a0/g, " ").trim() : null;
+  };
+  const unique = (values, key = (v) => v.toLowerCase()) => {
+    const seen = new Set();
+    return values.map((v) => (v || "").trim()).filter((v) => {
+      const k = key(v);
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+  const absoluteURL = (raw) => safe(() => new URL(raw, doc.location.href).href);
+
+  const root = doc.querySelector("article.article--bio") || doc.querySelector("article");
+  if (!root) return null;
+
+  const fullName = text(root.querySelector(".article__author-name.profile"));
+  const roleText = text(root.querySelector(".article__author-role.profile:not(.top-border)"));
+  const roles = roleText
+    ? roleText.split(/\n+/).map((v) => v.trim()).filter(Boolean)
+    : [];
+
+  // Department/office links live in the author-contact block. Keep every
+  // distinct displayed unit, in page order; multi-unit appointments are
+  // represented as newline-separated text in the single Rice sidecar field.
+  const department = safe(() => {
+    const values = unique([...root.querySelectorAll(
+      ".article__author-contact .article__author-role.profile.top-border, " +
+      ".article__author-contact .article__author-cv .article__author-role.profile"
+    )].map(text).filter(Boolean));
+    return values.length ? values.join("\n") : null;
+  });
+
+  const contact = root.querySelector(".article__author-address");
+  const emails = safe(() => unique(
+    [...root.querySelectorAll('.article__author-address a[href^="mailto:"]')]
+      .map((a) => (a.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0])
+  )) || [];
+  const phones = safe(() => {
+    const raw = text(contact) || "";
+    // Rice currently renders North-American numbers as 713-348-6136. Also
+    // accept parentheses, dots, spaces, and an optional +country prefix.
+    const matches = raw.match(/(?:\+?\d{1,3}[ .-]?)?(?:\(\d{3}\)|\d{3})[ .-]\d{3}[ .-]\d{4}\b/g) || [];
+    return unique(matches, (v) => v.replace(/\D/g, ""));
+  }) || [];
+  const websites = safe(() => unique(
+    [...root.querySelectorAll('.article__website a[href]')]
+      .map((a) => absoluteURL(a.getAttribute("href")))
+      .filter(Boolean),
+    (v) => v.toLowerCase().replace(/\/$/, "")
+  )) || [];
+
+  const bio = text(root.querySelector(".article__body.profileBody"));
+  const photoImg = root.querySelector(".article__image img");
+  const photoSrcset = safe(() => {
+    if (!photoImg) return null;
+    const srcset = photoImg.getAttribute("srcset");
+    if (srcset) {
+      return srcset.split(",").map((entry) => {
+        const parts = entry.trim().split(/\s+/);
+        const url = absoluteURL(parts.shift());
+        return [url, ...parts].filter(Boolean).join(" ");
+      }).join(", ");
+    }
+    return absoluteURL(photoImg.getAttribute("src") || photoImg.currentSrc || photoImg.src);
+  });
+
+  const result = {
+    source: "rice",
+    sourceUrl: safe(() => doc.location.href),
+    slug: safe(() => {
+      const match = doc.location.pathname.match(/^\/(?:faculty|staff)\/([^/]+)/i);
+      return match ? match[1] : null;
+    }),
+    fullName,
+    title: roles[0] || null,
+    department,
+    about: bio,
+    contactInfo: { emails, phones, websites },
+    photoSrcset,
+  };
+  result.readiness = {
+    sections: [{ key: "profile", label: "Rice profile", required: true, present: !!fullName }],
+    ready: !!fullName,
+    loaded: fullName ? 1 : 0,
+    total: 1,
+  };
+  return result;
+}
+
 // --- Experience --------------------------------------------------------------
 //
 // Anchor on the "Experience" <h2> landmark, then climb (bounded) to the first
@@ -619,5 +720,5 @@ function profileReadiness(result) {
 // Export for the unit-test harness (Node) without breaking the browser, where
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { extractProfile, extractExperience, extractContactInfo, profileReadiness };
+  module.exports = { extractProfile, extractRiceProfile, extractExperience, extractContactInfo, profileReadiness };
 }

@@ -42,6 +42,16 @@ The extension is bundled inside the GuessWho app as a single
 | Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
 | App receiver | `App/GuessWho/GuessWhoSceneDelegate.swift` | Runs in the **app process**. Receives the wake URL, drains the parked payload, then **matches** the profile, builds a **per-field before/after diff**, and presents a **confirm sheet** that saves the checked fields (see [Match → diff → confirm → save](#match--diff--confirm--save-app-side)). |
 
+Rice profile support uses the same transport and confirmation pipeline. The
+manifests match `profiles.rice.edu/faculty/*` and `/staff/*`;
+`extractRiceProfile` reads the server-rendered profile name, first title,
+department/office units, bio, email, phone, listed websites, and profile image.
+Rice pages do not need the LinkedIn lazy-scroll or contact-overlay steps. The
+content script still fetches the image bytes in-page and attaches the same
+`photo` payload. On save, title/email/phone/websites/photo use normal Contacts
+fields, the Rice profile URL is added as a website labeled `Rice`, and
+department/bio upsert the named `Rice Department` and `Rice Bio` fields.
+
 ## Two processes, two channels — do not conflate them
 
 The native handler does **not** run in the app. A Safari Web Extension's native
