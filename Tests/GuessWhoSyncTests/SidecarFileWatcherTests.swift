@@ -1,7 +1,9 @@
 import Foundation
 import Testing
 @testable import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 import GuessWhoSyncTesting
+@_spi(ConflictReconcile) import GuessWhoSyncTesting
 
 /// Covers the `SidecarFileWatcher` post path and its wiring into
 /// `ContactsRepository`. The live `NSMetadataQuery` half is untestable off a
@@ -15,8 +17,17 @@ import GuessWhoSyncTesting
 @MainActor
 @Suite("SidecarFileWatcher")
 struct SidecarFileWatcherTests {
+    private func makeSync(sidecars: InMemorySidecarStore = InMemorySidecarStore()) -> GuessWhoSync {
+        GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
+            deviceID: "watcher-test-device"
+        )
+    }
+
     /// Collects posts of one notification name on an isolated center.
-    private final class Recorder {
+    private final class Recorder: @unchecked Sendable {
         private(set) var posts: [Notification] = []
         private var token: NSObjectProtocol?
 
@@ -27,6 +38,37 @@ struct SidecarFileWatcherTests {
                 queue: nil
             ) { [weak self] note in
                 self?.posts.append(note)
+            }
+        }
+
+        func stop(center: NotificationCenter) {
+            if let token { center.removeObserver(token) }
+            token = nil
+        }
+    }
+
+    /// Captures the envelope synchronously at notification delivery time. This
+    /// makes the ordering assertion meaningful: it cannot accidentally pass
+    /// because the test reads the store only after `processSidecarChanges`
+    /// returns. Notification delivery and access happen on the main actor in
+    /// these tests; unchecked Sendable is solely for NotificationCenter's
+    /// conservatively `@Sendable` observer closure.
+    private final class EnvelopeRecorder: @unchecked Sendable {
+        private let store: InMemorySidecarStore
+        private let key: SidecarKey
+        private var token: NSObjectProtocol?
+        private(set) var fields: [String: SidecarCell]?
+
+        init(center: NotificationCenter, store: InMemorySidecarStore, key: SidecarKey) {
+            self.store = store
+            self.key = key
+            token = center.addObserver(
+                forName: .guessWhoSidecarsDidChange,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.fields = try? self.store.read(self.key)?.fields
             }
         }
 
@@ -53,20 +95,56 @@ struct SidecarFileWatcherTests {
     // MARK: - Watcher post path
 
     @Test
-    func postPathPostsOnInjectedCenter() throws {
+    func postPathPostsOnInjectedCenter() async throws {
         let center = NotificationCenter()
         let recorder = Recorder(center: center, name: .guessWhoSidecarsDidChange)
         defer { recorder.stop(center: center) }
 
         let watcher = SidecarFileWatcher(
             root: FileManager.default.temporaryDirectory,
+            sync: makeSync(),
             notificationCenter: center
         )
-        watcher.postSidecarsDidChange(added: 2, changed: 1, removed: 0)
+        await watcher.processSidecarChanges(added: 2, changed: 1, removed: 0)
 
         #expect(recorder.posts.count == 1)
         let post = try #require(recorder.posts.first)
         #expect(post.object as? SidecarFileWatcher === watcher)
+    }
+
+    @Test
+    func productionChangePathReconcilesBeforePosting() async throws {
+        let center = NotificationCenter()
+        let store = InMemorySidecarStore()
+        let sync = makeSync(sidecars: store)
+        let key = SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440000")
+        let earlier = Date(timeIntervalSince1970: 1_700_000_000)
+        let later = Date(timeIntervalSince1970: 1_700_000_500)
+        let current = SidecarEnvelope(entityID: key.id, fields: [
+            "current-only": SidecarCell(value: .string("current"), modifiedAt: earlier, modifiedBy: "device-A"),
+            "same-cell": SidecarCell(value: .string("old"), modifiedAt: earlier, modifiedBy: "device-A"),
+        ])
+        let conflict = SidecarEnvelope(entityID: key.id, fields: [
+            "conflict-only": SidecarCell(value: .string("conflict"), modifiedAt: earlier, modifiedBy: "device-B"),
+            "same-cell": SidecarCell(value: .string("new"), modifiedAt: later, modifiedBy: "device-B"),
+        ])
+        try store.write(current, at: key)
+        store.scriptConflict(at: key, versions: [try JSONEncoder().encode(conflict)])
+
+        let recorder = EnvelopeRecorder(center: center, store: store, key: key)
+        defer { recorder.stop(center: center) }
+
+        let watcher = SidecarFileWatcher(
+            root: FileManager.default.temporaryDirectory,
+            sync: sync,
+            notificationCenter: center
+        )
+        await watcher.processSidecarChanges(added: 0, changed: 1, removed: 0)
+
+        let fields = try #require(recorder.fields)
+        #expect(fields.keys.sorted() == ["conflict-only", "current-only", "same-cell"])
+        #expect(fields["same-cell"]?.value == .string("new"))
+        #expect(try store.keysWithUnresolvedConflicts().isEmpty)
     }
 
     // MARK: - Repository wiring

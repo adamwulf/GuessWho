@@ -21,10 +21,10 @@ public extension Notification.Name {
 }
 
 /// Watches the sidecar root in the iCloud ubiquity container with an
-/// `NSMetadataQuery` and posts `.guessWhoSidecarsDidChange` when files under
-/// it change: sync arrivals from other devices, `notYetDownloaded` files
-/// materializing, deletes propagating, and (unavoidably, see below) echoes of
-/// this device's own writes.
+/// `NSMetadataQuery`. On initial gather and whenever files under it change, it
+/// first reconciles unresolved iCloud file versions and then posts
+/// `.guessWhoSidecarsDidChange`: repositories never refresh from a known
+/// conflicted snapshot.
 ///
 /// Mirrors `ContactChangeWatcher`'s shape: `@MainActor`, opt-in `start()`
 /// (nothing observes until then, so tests and non-UI contexts stay quiet),
@@ -54,6 +54,7 @@ public final class SidecarFileWatcher: NSObject {
     private static let log = Logger(label: "sync.sidecar-file-watcher")
 
     private let root: URL
+    private let sync: GuessWhoSync
     private let notificationCenter: NotificationCenter
     private let query = NSMetadataQuery()
 
@@ -61,16 +62,32 @@ public final class SidecarFileWatcher: NSObject {
     /// `start()` is idempotent.
     private var isObserving = false
 
+    /// Metadata notifications can arrive while a reconciliation pass is still
+    /// waiting on cloudd. Coalesce them into at most one follow-up pass rather
+    /// than running overlapping whole-tree scans. The reconciler's own writes
+    /// echo through the metadata query; that echo produces one cheap no-conflict
+    /// follow-up and then settles.
+    private var isProcessingChanges = false
+    private var needsAnotherPass = false
+
     /// - Parameters:
     ///   - root: the sidecar root INSIDE the ubiquity container (the
     ///     `Documents/` directory `SyncService` resolves). The query scopes to
     ///     ubiquitous Documents and predicates on this path prefix, so only
     ///     sidecar-tree items (envelopes, blobs, `Favorites.json`, and their
     ///     `.icloud` placeholders) match.
+    ///   - sync: the same engine production repositories use for sidecar reads
+    ///     and writes. Its async reconciler hops coordinated disk work off the
+    ///     main actor.
     ///   - notificationCenter: where `.guessWhoSidecarsDidChange` is posted.
     ///     Injectable so tests can observe in isolation; defaults to `.default`.
-    public init(root: URL, notificationCenter: NotificationCenter = .default) {
+    public init(
+        root: URL,
+        sync: GuessWhoSync,
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.root = root
+        self.sync = sync
         self.notificationCenter = notificationCenter
         super.init()
     }
@@ -125,9 +142,9 @@ public final class SidecarFileWatcher: NSObject {
         query.start()
     }
 
-    /// Initial gather completed. No post: launch already runs full reloads,
-    /// so the initial result set carries no news — only subsequent updates
-    /// do. Logged so "watcher never gathered" is diagnosable in the field.
+    /// Initial gather completed. This is the launch-time conflict-recovery
+    /// trigger: unresolved versions may predate this process and therefore
+    /// produce no live update notification after the watcher starts.
     @objc
     private nonisolated func queryDidFinishGathering(_ note: Notification) {
         Task { @MainActor [weak self] in
@@ -136,6 +153,7 @@ public final class SidecarFileWatcher: NSObject {
                 "sidecar metadata query gathered",
                 metadata: ["results": .stringConvertible(self.query.resultCount)]
             )
+            self.scheduleChangeProcessing(added: self.query.resultCount, changed: 0, removed: 0)
         }
     }
 
@@ -149,15 +167,42 @@ public final class SidecarFileWatcher: NSObject {
         let changed = (note.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [Any])?.count ?? 0
         let removed = (note.userInfo?[NSMetadataQueryUpdateRemovedItemsKey] as? [Any])?.count ?? 0
         Task { @MainActor [weak self] in
-            self?.postSidecarsDidChange(added: added, changed: changed, removed: removed)
+            self?.scheduleChangeProcessing(added: added, changed: changed, removed: removed)
         }
     }
 
-    /// Post the coarse change signal. Internal so @testable tests can drive
-    /// the post path directly (simulating a query update) without a live
-    /// ubiquity container, mirroring how `ContactChangeWatcher.processChanges`
-    /// is test-drivable.
-    func postSidecarsDidChange(added: Int, changed: Int, removed: Int) {
+    private func scheduleChangeProcessing(added: Int, changed: Int, removed: Int) {
+        if isProcessingChanges {
+            needsAnotherPass = true
+            return
+        }
+
+        isProcessingChanges = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var counts = (added: added, changed: changed, removed: removed)
+            repeat {
+                self.needsAnotherPass = false
+                await self.processSidecarChanges(
+                    added: counts.added,
+                    changed: counts.changed,
+                    removed: counts.removed
+                )
+                // A coalesced pass represents an unspecified metadata burst;
+                // counts are diagnostics only, so don't repeat stale values.
+                counts = (0, 0, 0)
+            } while self.needsAnotherPass
+            self.isProcessingChanges = false
+        }
+    }
+
+    /// The single production change-processing path. Internal so @testable
+    /// tests can drive the exact method used by `NSMetadataQuery`, with a real
+    /// `GuessWhoSync` over a scripted conflict store. Reconciliation completes
+    /// before notification delivery, guaranteeing subscribers read the merged
+    /// envelope. A failed pass is logged but still posts: the current version
+    /// remains readable, and a later metadata update can retry the conflict.
+    func processSidecarChanges(added: Int, changed: Int, removed: Int) async {
         Self.log.info(
             "sidecar files changed",
             metadata: [
@@ -166,6 +211,26 @@ public final class SidecarFileWatcher: NSObject {
                 "removed": .stringConvertible(removed)
             ]
         )
+
+        do {
+            let report = try await sync.reconcileSidecars()
+            if !report.fileOutcomes.isEmpty {
+                let skipped = report.fileOutcomes.reduce(0) { $0 + $1.skippedReasons.count }
+                Self.log.notice(
+                    "sidecar conflicts reconciled",
+                    metadata: [
+                        "files": .stringConvertible(report.fileOutcomes.count),
+                        "skippedReasons": .stringConvertible(skipped)
+                    ]
+                )
+            }
+        } catch {
+            Self.log.error(
+                "sidecar conflict reconciliation failed",
+                metadata: ["error": .string(String(describing: error))]
+            )
+        }
+
         notificationCenter.post(name: .guessWhoSidecarsDidChange, object: self)
     }
 }
