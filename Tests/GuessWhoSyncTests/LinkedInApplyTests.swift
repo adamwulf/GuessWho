@@ -168,6 +168,7 @@ struct LinkedInApplyTests {
         let reconciledID = repo.contact(localID: "T")!.contactID
         let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: reconciledID).map { ($0.field, $0) })
         #expect(byName["Rice Department"]?.value == .string("Jones Graduate School of Business\nOffice of Innovation"))
+        #expect(byName["Rice Department"]?.type == .multilineNote)
         #expect(byName["Rice Bio"]?.value == .string("Brad supports new technologies created by Rice faculty."))
         #expect(byName["LinkedIn About"] == nil)
     }

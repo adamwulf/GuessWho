@@ -1234,7 +1234,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             // extras. Best-effort: a failure here still shows the created card.
             do {
                 var extras: Set<LinkedInField> = []
-                let hasSidecarContent = [profile.headline, profile.about, profile.location, profile.department]
+                let hasSidecarContent = [profile.headline, profile.about, profile.location]
                     .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
                 if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
                 if profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {

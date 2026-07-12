@@ -661,7 +661,9 @@ public final class ContactsRepository: NSObject {
             _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
         }
         if fields.contains(.department), let department = profile.department?.trimmed, !department.isEmpty {
-            _ = try await upsertField(for: id, field: "Rice Department", value: department, type: .note)
+            // A person can belong to several Rice units; the parser preserves
+            // those units one per line, so keep the custom field multiline too.
+            _ = try await upsertField(for: id, field: "Rice Department", value: department, type: .multilineNote)
         }
 
         // Photo: route through the contact-image write path so replacing an
