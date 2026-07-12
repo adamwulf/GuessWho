@@ -89,3 +89,19 @@ private struct DynamicKey: CodingKey {
     init?(stringValue: String) { self.stringValue = stringValue }
     init?(intValue: Int) { return nil }
 }
+
+/// Canonical wire encoding for sidecar envelopes. iCloud conflict resolution
+/// is a distributed convergence boundary: two devices that fold the same
+/// versions must write byte-identical output, or iCloud can surface their
+/// logically identical writes as a fresh conflict forever. `sortedKeys`
+/// removes Swift Dictionary's per-process iteration order from the wire bytes.
+///
+/// Keep every production envelope write on this codec. Decoding remains plain
+/// `JSONDecoder` because key order is intentionally irrelevant on input.
+enum SidecarEnvelopeCodec {
+    static func encode(_ envelope: SidecarEnvelope) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(envelope)
+    }
+}

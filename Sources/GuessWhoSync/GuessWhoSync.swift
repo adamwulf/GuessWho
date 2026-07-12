@@ -828,6 +828,28 @@ public final class GuessWhoSync: @unchecked Sendable {
         return SidecarReconcileReport(fileOutcomes: stamped)
     }
 
+    /// Async overload of `reconcileSidecars()` that runs the coordinated
+    /// iCloud file-version scan off the caller's actor. Production invokes
+    /// this from `SidecarFileWatcher` on the main actor, so doing the blocking
+    /// `NSFileCoordinator` work there would freeze UI while cloudd is busy.
+    ///
+    /// Keep this as a thin hop into the synchronous implementation: tests that
+    /// script conflicts in `InMemorySidecarStore` and production's
+    /// `NSFileVersion` path therefore exercise exactly the same merge code.
+    @discardableResult
+    public func reconcileSidecars() async throws -> SidecarReconcileReport {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: SidecarReconcileReport = try self.reconcileSidecars()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     public func reconcileContactIdentities() async throws -> IdentityReconcileReport {
         var results: [ContactReconcileResult] = []
         var carriedUUIDs: Set<String> = []

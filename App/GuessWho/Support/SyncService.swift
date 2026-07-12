@@ -529,8 +529,9 @@ final class SyncService {
     /// scope wouldn't match it anyway.
     func startSidecarFileWatcher() {
         guard case .iCloud(let root) = sidecarLocation else { return }
+        guard let sync else { return }
         if sidecarFileWatcher == nil {
-            sidecarFileWatcher = SidecarFileWatcher(root: root)
+            sidecarFileWatcher = SidecarFileWatcher(root: root, sync: sync)
         }
         sidecarFileWatcher?.start()
     }
