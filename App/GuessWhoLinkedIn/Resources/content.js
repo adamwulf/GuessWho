@@ -31,12 +31,74 @@ const GW_LAZY_SCROLL_TIMEOUT_MS = 30_000;
 // Page-JS console output is not available in an exported TestFlight log bundle.
 // Stream a deliberately small DOM/readiness fingerprint through the background
 // worker to the native extension logger while the probe is still in flight.
-// No HTML, photo bytes, query string, or cookies are included.
+// It records shapes/counts only: no HTML, verbatim profile text, name, slug,
+// raw attribute values, photo bytes, query string, cookies, or error text.
 const gwProbeStartedAt = new Map();
 function gwClip(value, max = 160) {
   if (value == null) return null;
   const string = String(value).replace(/\s+/g, " ").trim();
   return string.length > max ? string.slice(0, max) + "…" : string;
+}
+
+const GW_SEMANTIC_HEADINGS = new Set([
+  "about", "experience", "education", "licenses & certifications",
+  "projects", "skills", "recommendations", "publications", "interests",
+]);
+function gwSemanticHeading(value) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  return GW_SEMANTIC_HEADINGS.has(normalized) ? normalized : null;
+}
+
+function gwComponentKind(value) {
+  const string = String(value || "");
+  if (string.startsWith("entity-collection-item")) return "entity-collection-item";
+  const nullState = string.match(/^ProfileNullStateCardAnchor_([A-Za-z]+)$/);
+  if (nullState) {
+    const semantic = gwSemanticHeading(nullState[1]);
+    return semantic ? "null-state-" + semantic : "null-state-other";
+  }
+  return null;
+}
+
+function gwAttributeShape(el, name) {
+  const value = el && el.getAttribute ? el.getAttribute(name) : null;
+  return {
+    present: value != null && value !== "",
+    length: value == null ? 0 : String(value).length,
+    kind: name === "componentkey" ? gwComponentKind(value) : null,
+  };
+}
+
+function gwParagraphShape(el) {
+  const value = String((el && el.textContent) || "");
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return {
+    characterCount: normalized.length,
+    lineCount: value ? value.split(/\r?\n/).length : 0,
+    separatorCount: (value.match(/[·●•]/g) || []).length,
+    hasStructuredDateRange: /\b(19|20)\d{2}\s*[-–]\s*(present\b|([a-z]{3,9}\.?\s+)?(19|20)\d{2}\b)/i.test(normalized),
+    looksLikeBareDuration: /^\d+\s+(yrs?|mos?)(\s+\d+\s+mos?)?$/i.test(normalized),
+  };
+}
+
+function gwErrorFingerprint(error) {
+  const message = error && error.message ? String(error.message) : String(error || "");
+  const rawName = String((error && error.name) || "Error");
+  const knownNames = new Set([
+    "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError",
+    "URIError", "EvalError", "DOMException", "AbortError",
+  ]);
+  return {
+    name: knownNames.has(rawName) ? rawName : "Error",
+    messageLength: message.length,
+  };
+}
+
+function gwRouteShape(pathname) {
+  if (/^\/in\/[^/]+\/?$/.test(pathname || "")) return "/in/<redacted>";
+  if (/^\/faculty\/[^/]+\/?$/.test(pathname || "")) return "/faculty/<redacted>";
+  if (/^\/staff\/[^/]+\/?$/.test(pathname || "")) return "/staff/<redacted>";
+  return "<other>";
 }
 
 function gwElementFingerprint(el) {
@@ -45,11 +107,11 @@ function gwElementFingerprint(el) {
   try { overflowY = getComputedStyle(el).overflowY || null; } catch (_e) { /* detached element */ }
   return {
     tag: (el.tagName || "").toLowerCase() || null,
-    id: gwClip(el.id, 80),
-    role: gwClip(el.getAttribute && el.getAttribute("role"), 80),
-    componentKey: gwClip(el.getAttribute && el.getAttribute("componentkey"), 160),
-    testId: gwClip(el.getAttribute && el.getAttribute("data-testid"), 160),
-    viewName: gwClip(el.getAttribute && el.getAttribute("data-view-name"), 160),
+    id: gwAttributeShape(el, "id"),
+    role: gwAttributeShape(el, "role"),
+    componentKey: gwAttributeShape(el, "componentkey"),
+    testId: gwAttributeShape(el, "data-testid"),
+    viewName: gwAttributeShape(el, "data-view-name"),
     overflowY,
     clientHeight: Number(el.clientHeight) || 0,
     scrollHeight: Number(el.scrollHeight) || 0,
@@ -70,7 +132,7 @@ function gwExperienceDOMFingerprint() {
     const nullStateAnchors = node.querySelectorAll
       ? [...node.querySelectorAll('[componentkey^="ProfileNullStateCardAnchor_"]')]
           .slice(0, 8)
-          .map((el) => gwClip(el.getAttribute("componentkey"), 160))
+          .map((el) => gwComponentKind(el.getAttribute("componentkey")))
       : [];
     if (!paragraphSampleRoot && itemCount > 0) paragraphSampleRoot = node;
     ancestors.push({
@@ -93,14 +155,15 @@ function gwExperienceDOMFingerprint() {
   return {
     headings: headings.slice(0, 40).map((h) => ({
       tag: (h.tagName || "").toLowerCase() || null,
-      text: gwClip(h.textContent, 100),
+      characterCount: String(h.textContent || "").trim().length,
+      semanticKey: gwSemanticHeading(h.textContent),
     })),
     experienceHeadingFound: !!experienceHead,
     experienceAncestors: ancestors,
-    experienceParagraphSamples: paragraphSampleRoot
+    experienceParagraphShapes: paragraphSampleRoot
       ? [...paragraphSampleRoot.querySelectorAll("p")]
           .slice(0, 30)
-          .map((p) => gwClip(p.textContent, 180))
+          .map(gwParagraphShape)
       : [],
   };
 }
@@ -115,7 +178,7 @@ function gwSendDiagnostic(probeId, event, detail) {
     elapsedMs: Math.max(0, Date.now() - startedAt),
     page: {
       host: location.hostname || null,
-      path: location.pathname || null,
+      route: gwRouteShape(location.pathname),
       userAgent: gwClip(globalThis.navigator && navigator.userAgent, 300),
       viewport: {
         width: Number(window.innerWidth) || 0,
@@ -324,7 +387,7 @@ async function forceLazySections(onProgress, probeId) {
       if (!reportedMeasureError) {
         reportedMeasureError = true;
         gwSendDiagnostic(probeId, "scroll-reparse-error", {
-          error: gwClip(e && e.stack ? e.stack : e, 1000),
+          error: gwErrorFingerprint(e),
         });
       }
     }
@@ -500,7 +563,7 @@ async function probe(probeId) {
     }
   } catch (e) {
     console.log("[GuessWho] extractProfile threw:", e);
-    gwSendDiagnostic(probeId, "initial-parse-error", { error: gwClip(e && e.stack ? e.stack : e, 1000) });
+    gwSendDiagnostic(probeId, "initial-parse-error", { error: gwErrorFingerprint(e) });
   }
   if (!result) result = minimalProbe();
 
@@ -551,7 +614,7 @@ async function probe(probeId) {
     }
   } catch (e) {
     console.log("[GuessWho] scroll pass threw:", e);
-    gwSendDiagnostic(probeId, "scroll-pass-error", { error: gwClip(e && e.stack ? e.stack : e, 1000) });
+    gwSendDiagnostic(probeId, "scroll-pass-error", { error: gwErrorFingerprint(e) });
   }
 
   // Contact info (emails/websites/profile URL) lives behind the "Contact info"
@@ -583,7 +646,7 @@ async function probe(probeId) {
     }
   } catch (e) {
     console.log("[GuessWho] extractContactInfo threw:", e);
-    gwSendDiagnostic(probeId, "contact-parse-error", { error: gwClip(e && e.stack ? e.stack : e, 1000) });
+    gwSendDiagnostic(probeId, "contact-parse-error", { error: gwErrorFingerprint(e) });
   }
 
   // Stamp the FINAL readiness (all four required sections, including contact)

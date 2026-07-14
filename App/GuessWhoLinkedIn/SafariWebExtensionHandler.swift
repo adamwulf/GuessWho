@@ -73,78 +73,25 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         // decoded profile after handoff; web diagnostics are separately bounded.
         Self.log.notice("EXTENSION resolved App Group id=\(Self.appGroupID)")
         Self.log.notice("EXTENSION \(Self.buildDescription)")
-        Self.log.notice("native message received: \(Self.messageShape(rawMessage))")
+        Self.log.notice("native message received: \(WebExtensionMessageCodec.messageShape(rawMessage))")
 
         var ack: [String: Any] = ["received": false]
 
-        if let diagnostic = Self.extractDiagnostic(from: rawMessage) {
-            Self.log.notice("web diagnostic: \(Self.diagnosticDescription(diagnostic))")
+        if let diagnostic = WebExtensionMessageCodec.extractDiagnostic(from: rawMessage) {
+            Self.log.notice("web diagnostic: \(WebExtensionMessageCodec.diagnosticDescription(diagnostic))")
             ack = ["received": true, "logged": true]
-        } else if let payload = Self.extractPayload(from: rawMessage) {
+        } else if let payload = WebExtensionMessageCodec.extractPayload(from: rawMessage) {
             let parked = parkPayload(payload)
             // The handler does NOT (and cannot) wake the app here — see `wakeURL`
             // note below. It returns the URL for the popup to open.
             ack = ["received": true, "parked": parked, "wakeURL": Self.handoffURL.absoluteString]
         } else {
-            Self.log.error("native message missing diagnostic/payload: \(Self.messageShape(rawMessage))")
+            Self.log.error("native message missing diagnostic/payload: \(WebExtensionMessageCodec.messageShape(rawMessage))")
         }
 
         let response = NSExtensionItem()
         response.userInfo = [SFExtensionMessageKey: ack]
         context.completeRequest(returningItems: [response], completionHandler: nil)
-    }
-
-    /// Pull the `payload` out of whatever shape Safari delivered. Native
-    /// messaging payloads can arrive as the object directly
-    /// (`{ payload: ... }`) or wrapped under a `"message"` key
-    /// (`{ message: { payload: ... } }`) depending on the Safari version, so we
-    /// check both. Returns nil if no payload is present (e.g. the JS side sent
-    /// `undefined` because the content-script probe didn't respond).
-    private static func extractPayload(from raw: Any?) -> Any? {
-        messageDictionary(from: raw)?["payload"]
-    }
-
-    /// Pull a page-parser diagnostic out of the same Safari-version-dependent
-    /// direct/wrapped native-message shape as the handoff payload.
-    private static func extractDiagnostic(from raw: Any?) -> Any? {
-        messageDictionary(from: raw)?["diagnostic"]
-    }
-
-    private static func messageDictionary(from raw: Any?) -> [String: Any]? {
-        guard let dict = raw as? [String: Any] else { return nil }
-        // Preserve the established direct-shape precedence if Safari ever
-        // supplies both a top-level payload and an unrelated `message` field.
-        if dict["payload"] != nil || dict["diagnostic"] != nil { return dict }
-        return (dict["message"] as? [String: Any]) ?? dict
-    }
-
-    /// A privacy-conscious transport breadcrumb. Keys are enough to diagnose a
-    /// Safari wrapper-shape change without dumping the contained profile/photo.
-    private static func messageShape(_ raw: Any?) -> String {
-        guard let dict = raw as? [String: Any] else {
-            return "type=\(String(describing: type(of: raw)))"
-        }
-        let outerKeys = dict.keys.sorted().joined(separator: ",")
-        let innerKeys = (dict["message"] as? [String: Any])?
-            .keys.sorted().joined(separator: ",") ?? "-"
-        return "outerKeys=\(outerKeys) innerKeys=\(innerKeys)"
-    }
-
-    /// Serialize one diagnostic as compact sorted JSON and cap the line. The JS
-    /// producer already bounds every collection/string, but the native boundary
-    /// enforces a second limit so a malformed sender cannot flood retained logs.
-    private static func diagnosticDescription(_ diagnostic: Any) -> String {
-        guard JSONSerialization.isValidJSONObject(diagnostic),
-              let data = try? JSONSerialization.data(
-                withJSONObject: diagnostic,
-                options: [.sortedKeys]
-              ),
-              let string = String(data: data, encoding: .utf8) else {
-            return "<invalid diagnostic>"
-        }
-        let maximumCharacters = 32_768
-        guard string.count > maximumCharacters else { return string }
-        return String(string.prefix(maximumCharacters)) + "…<truncated>"
     }
 
     /// Writes the handoff payload as a small JSON file in the App Group container.
