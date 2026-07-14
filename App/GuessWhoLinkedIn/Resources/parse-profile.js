@@ -19,6 +19,24 @@
 // Exposed as a pure function so it can be unit-tested against an HTML fixture
 // (inject a `doc` to parse a fixture; defaults to the live `document`).
 
+// Section-landmark headings across both the desktop and mobile layouts. Used
+// to keep heading-anchored walks (name, top card, Experience fallback) from
+// mistaking one section's container for another's. Named with a GW_ prefix so
+// it can never collide with content.js globals (both files share the
+// content-script world; a bare redeclaration there is a fatal SyntaxError).
+const GW_SECTION_HEADING_RE =
+  /^(about|experience|education|licenses & certifications|projects|skills|recommendations|publications|courses|honors & awards|languages|organizations|patents|test scores|causes|interests|activity|highlights|featured|services|volunteer experience|contact|contact info(rmation)?|people also viewed|other similar profiles|more profiles for you)$/i;
+
+// The stable per-photo asset id in a media.licdn.com image URL:
+// …/dms/image/v2/<ASSET>/profile-displayphoto-…  Every size variant of one
+// photo shares this segment (even the 800px variant, whose filename differs),
+// while a DIFFERENT person's photo never does — which makes it the safe key
+// for upgrading an anchored low-res src to a full-res srcset.
+function gwPhotoAssetID(url) {
+  const m = String(url || "").match(/\/image\/(?:v2\/)?([A-Za-z0-9_-]{8,})\//);
+  return m ? m[1] : null;
+}
+
 function extractProfile(doc = (typeof document !== "undefined" ? document : null)) {
   if (!doc) return null;
 
@@ -37,21 +55,63 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   const safe = (fn) => { try { return fn(); } catch { return null; } };
 
   // --- Name -----------------------------------------------------------------
-  // Most stable: the page <title> "<Name> | LinkedIn". Cross-check against the
-  // profile photo's alt ("View <Name>’s profile") so a stale tab title can't
-  // silently win.
+  // Most stable on desktop: the page <title> "<Name> | LinkedIn". The MOBILE
+  // layout titles every profile just "Profile | LinkedIn" (confirmed against a
+  // mobile-mode capture, 2026-07), so a title that matches page chrome must be
+  // REJECTED, not shipped as a person's name — a generic "Profile" here used to
+  // win the || chain and cascade into a null top card. Fallbacks: the desktop
+  // photo alt ("View <Name>’s profile"), the mobile photo alt ("Profile picture
+  // of <Name>"), then the top-card <h1> (the mobile name element).
   const photoImg = doc.querySelector('img[alt^="View "][alt*="profile"]');
-  const nameFromTitle = safe(() =>
-    (doc.title || "").replace(/\s*[|·]\s*LinkedIn\s*$/i, "").trim() || null
-  );
-  const nameFromAlt = safe(() => {
+  // Mobile top-card photo. The prefix REQUIRES "of " so the viewer's own nav
+  // avatar ("<Me> Profile picture") and anonymous "Profile picture" alts on
+  // suggested-profile cards can never match.
+  const mobilePhotoImgs = [...doc.querySelectorAll('img[alt^="Profile picture of "]')]
+    .filter((im) => !im.closest("header, nav, aside"));
+  const isChromeTitle = (t) =>
+    /^(profile|linkedin|feed|my network|jobs|messaging|notifications|search|settings|home|people|sign (in|up)|join linkedin)$/i.test(t);
+  const nameFromTitle = safe(() => {
+    const t = (doc.title || "")
+      .replace(/^\(\d+\)\s*/, "") // unread-count prefix "(3) "
+      .replace(/\s*[|·]\s*LinkedIn\s*$/i, "")
+      .trim();
+    return t && !isChromeTitle(t) ? t : null;
+  });
+  // Mobile renders the name as the page's only <h1>; desktop has no <h1> at
+  // all (its name is an <h2>, found via the title). h2/h3 are NOT safe name
+  // sources — the mobile page's first h2s are dialog chrome ("Clear
+  // history?") and h3s repeat the name inside hidden share sheets and list
+  // other people entirely.
+  const nameFromHeading = safe(() => {
+    const h1s = [...doc.querySelectorAll("h1")]
+      .filter((h) => !h.closest("header, nav, aside"));
+    const hit = h1s.find((h) => {
+      const t = text(h);
+      return t && t.length < 80 && !isChromeTitle(t) && !GW_SECTION_HEADING_RE.test(t);
+    });
+    return hit ? text(hit) : null;
+  });
+  // Photo-alt name sources are LAST resorts, deliberately below the <h1>:
+  // BOTH alt patterns exist for OTHER people too (the mobile "Other similar
+  // profiles" module reuses the desktop "View <Name>’s profile" alt verbatim —
+  // observed shipping "☕ David" for an unrelated suggestion — and
+  // activity/comment modules can put a "Profile picture of <Name>" ahead of
+  // the top card). First-in-document is only trusted when nothing structural
+  // named the profile.
+  const nameFromViewAlt = safe(() => {
     if (!photoImg) return null;
     return photoImg.getAttribute("alt")
       .replace(/^View\s+/i, "")
       .replace(/[’']s\s+profile.*$/i, "")
       .trim() || null;
   });
-  const fullName = nameFromTitle || nameFromAlt;
+  const nameFromMobileAlt = safe(() => {
+    if (!mobilePhotoImgs.length) return null;
+    return mobilePhotoImgs[0].getAttribute("alt")
+      .replace(/^Profile picture of\s+/i, "")
+      .trim() || null;
+  });
+  const fullName = nameFromTitle || nameFromHeading || nameFromViewAlt || nameFromMobileAlt;
 
   // --- Top card: name heading, then headline, then location -----------------
   // The name renders as an <h1>/<h2> in the top card. After it (skipping the
@@ -61,7 +121,11 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   const nameHeading = safe(() => {
     if (!fullName) return null;
     const heads = [...doc.querySelectorAll("h1, h2")];
-    return heads.find((h) => text(h) === fullName) || null;
+    // Exact match first; then tolerate a heading that merely STARTS with the
+    // name (an inline badge/pronoun suffix inside the heading element).
+    return heads.find((h) => text(h) === fullName)
+      || heads.find((h) => (text(h) || "").startsWith(fullName))
+      || null;
   });
 
   // Collect the candidate text lines in the top card after the name.
@@ -87,6 +151,12 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     if (!nameHeading) return [];
     let node = nameHeading;
     for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      // Never collect from <main>/<body>: the desktop top card resolves well
+      // below <main> (confirmed at depth ≤ 7 against a captured profile), while
+      // the MOBILE page's first <p>s live directly under <main> inside hidden
+      // share/report dialogs — collecting there returns dialog chrome as the
+      // headline.
+      if (/^(MAIN|BODY|HTML)$/.test(node.tagName)) break;
       const lines = [...node.querySelectorAll("p")]
         .map((p) => text(p))
         .filter((t) => t && t !== "·" && !isPronoun(t) && !isDegree(t) && !isChrome(t));
@@ -97,6 +167,49 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     return [];
   }) || [];
 
+  // Mobile fallback: the mobile top card renders headline/location as bare
+  // <span>/<div> text — there are NO <p> elements in it at all — so the climb
+  // above finds nothing. Re-walk the same bounded ancestor chain reading each
+  // node's RENDERED lines (innerText keeps one visual row per line), with the
+  // same filters plus the mobile-only noise: the name row itself, "3rd Premium
+  // member"-style badge rows, and the "500+ connections" count that shares the
+  // location's line. Only consulted when the <p> climb yielded nothing, so the
+  // desktop path is unchanged.
+  const stripTrailingCounts = (t) =>
+    t.replace(/\s*\d[\d,.]*\+?\s+(connections?|followers?)\s*$/i, "").trim();
+  const isBadgeRow = (t) =>
+    /^[·\s]*\d+(st|nd|rd|th)\+?\b/i.test(t) || /^(premium member|verified|influencer)$/i.test(t);
+  const isActionRow = (t) =>
+    t.length < 40 &&
+    /^(connect|message|follow|following|more|pending|open to|view |report|share|save|block|mutual connection)/i.test(t);
+  const topCardLinesFromText = safe(() => {
+    if (!nameHeading || topCardLines.length) return [];
+    let node = nameHeading;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      if (/^(MAIN|BODY|HTML)$/.test(node.tagName)) break;
+      const raw = blockText(node);
+      if (!raw) continue;
+      const seen = new Set();
+      const lines = raw.split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((t) => !(fullName && (t === fullName ||
+          (t.startsWith(fullName) && t.length < fullName.length + 24))))
+        .map(stripTrailingCounts)
+        .filter((t) => t && t !== "·" && t.length < 240 &&
+          !isPronoun(t) && !isDegree(t) && !isChrome(t) &&
+          !isBadgeRow(t) && !isActionRow(t))
+        .filter((t) => (seen.has(t) ? false : (seen.add(t), true)));
+      // A container that suddenly yields a pile of lines is page chrome, not
+      // the top card — stop rather than misclassify a feed as a headline.
+      if (lines.length > 12) break;
+      if (lines.length) return lines;
+    }
+    return [];
+  }) || [];
+
+  const cardLines = topCardLines.length ? topCardLines : topCardLinesFromText;
+
   // Headline = first non-location line that looks like a role/headline. The
   // location line characteristically reads "City, Region, Country" (comma-
   // separated place words, no "at"/"·"); the headline often contains " at ".
@@ -104,10 +217,10 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     /,/.test(t) && !/\bat\b/i.test(t) && t.split(",").length >= 2 && t.length < 80;
 
   const headline = safe(() =>
-    topCardLines.find((t) => t && !looksLikeLocation(t)) || null
+    cardLines.find((t) => t && !looksLikeLocation(t)) || null
   );
   const location = safe(() =>
-    topCardLines.find((t) => looksLikeLocation(t)) || null
+    cardLines.find((t) => looksLikeLocation(t)) || null
   );
 
   // Title / organization, best source first:
@@ -202,38 +315,86 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   });
 
   // --- Photo URL ------------------------------------------------------------
-  // We want FULL-RES. LinkedIn signs each size variant separately (the ?t= token
-  // differs per size; the 800 variant can even have a different filename), so we
-  // can't rewrite the size token — we must use a srcset the page actually
-  // provides. The alt-anchored top-card <img> often carries ONLY the 100x100
-  // `src` (no srcset). But another <img> for the SAME profile-photo asset (e.g.
-  // alt="") carries the full multi-variant srcset including 800w. So: scan ALL
-  // profile-displayphoto images and return the richest source — prefer a real
-  // multi-variant `srcset`, else the largest single `src`. The caller picks the
-  // largest entry and fetches its bytes in-session.
+  // We want FULL-RES, and we must NEVER ship a photo of the wrong person. Both
+  // constraints shape this:
+  //
+  // Full-res: LinkedIn signs each size variant separately (the ?t= token
+  // differs per size; the 800 variant can even have a different filename), so
+  // we can't rewrite the size token — we must use a srcset the page actually
+  // provides. The anchored top-card <img> often carries ONLY the 100x100 `src`
+  // (no srcset), while another <img> for the SAME photo asset carries the full
+  // multi-variant srcset including 800w.
+  //
+  // Right person: a profile page is COVERED in other people's
+  // profile-displayphoto images (the viewer's own nav avatar — first in DOM
+  // order — plus every suggested-profile card), so "richest srcset anywhere"
+  // is not safe: on the mobile layout it shipped a stranger's avatar. Instead:
+  // anchor on the top-card image of the VIEWED profile (desktop "View
+  // <Name>'s profile" alt, mobile "Profile picture of <Name>" alt, alt equal
+  // to the name, or the first displayphoto image outside the nav chrome), then
+  // only adopt a srcset whose URL carries the SAME asset id
+  // (…/image/v2/<ASSET>/… is stable across size variants). No anchor → no
+  // photo: a missing photo beats a wrong one.
   const photoSrcset = safe(() => {
-    const imgs = [...doc.querySelectorAll('img[src*="profile-displayphoto"], img[srcset*="profile-displayphoto"]')];
-    if (!imgs.length) {
-      // Last resort: the alt-anchored top-card image, whatever it has.
-      return photoImg
-        ? (photoImg.getAttribute("srcset") || photoImg.currentSrc || photoImg.src || null)
-        : null;
-    }
-    // Prefer an <img> that actually has a multi-variant srcset (contains "w,"),
-    // which carries the larger 400/800 sizes with valid signatures.
-    const withSrcset = imgs
-      .map((im) => im.getAttribute("srcset"))
-      .filter((s) => s && /\d+w/.test(s));
-    if (withSrcset.length) {
-      // Pick the srcset whose largest descriptor is biggest.
+    const notNav = (im) => !im.closest("header, nav, aside");
+    const sourceOf = (im) =>
+      im.getAttribute("srcset") || im.currentSrc || im.getAttribute("src") || null;
+    const viewAltName = (im) => (im.getAttribute("alt") || "")
+      .replace(/^View\s+/i, "").replace(/[’']s\s+profile.*$/i, "").trim();
+    const picAltName = (im) => (im.getAttribute("alt") || "")
+      .replace(/^Profile picture of\s+/i, "").trim();
+    const viewImgs = [...doc.querySelectorAll('img[alt^="View "][alt*="profile"]')]
+      .filter(notNav);
+    // When we know the name, REQUIRE the anchor's alt to assert that name —
+    // both alt patterns also appear on suggested-profile/comment avatars of
+    // OTHER people, and a first-in-document pick shipped a stranger's photo on
+    // the mobile layout. Bare first-match anchors are trusted only when no
+    // name was parsed at all (and then the name itself came from that alt).
+    const anchor =
+      (fullName && (
+        viewImgs.find((im) => viewAltName(im) === fullName) ||
+        mobilePhotoImgs.find((im) => picAltName(im) === fullName) ||
+        [...doc.images].filter(notNav).find((im) =>
+          (im.getAttribute("alt") || "").trim() === fullName)
+      )) ||
+      (!fullName && (viewImgs[0] || mobilePhotoImgs[0])) ||
+      [...doc.querySelectorAll('img[src*="profile-displayphoto"], img[srcset*="profile-displayphoto"]')]
+        .find(notNav) ||
+      null;
+    if (!anchor) return null;
+
+    const anchorSource = sourceOf(anchor);
+    const assetID = gwPhotoAssetID(anchorSource);
+    const richest = (srcsets) => {
       const maxW = (s) =>
         Math.max(...[...s.matchAll(/(\d+)w/g)].map((m) => parseInt(m[1], 10)), 0);
-      return withSrcset.sort((a, b) => maxW(b) - maxW(a))[0];
+      return srcsets.sort((a, b) => maxW(b) - maxW(a))[0];
+    };
+    if (assetID) {
+      // Among ALL images, adopt the richest multi-variant srcset for the SAME
+      // asset — that's where the valid 400/800 signatures live.
+      const candidates = [...doc.images]
+        .map((im) => im.getAttribute("srcset"))
+        .filter((s) => s && /\d+w/.test(s) && gwPhotoAssetID(s) === assetID);
+      if (candidates.length) return richest(candidates);
+    } else {
+      // The anchor's own source carries no asset id (a lazy-load placeholder
+      // src, for instance), so same-asset matching can't run. Fall back to the
+      // page-wide displayphoto srcsets only when they are UNAMBIGUOUS: exactly
+      // one asset id outside the nav chrome. The nav exclusion is load-bearing
+      // — the viewer's own "Me" avatar carries a displayphoto srcset, and
+      // adopting it here is precisely how someone ends up saving their own
+      // face onto a contact. Several assets in scope → keep the anchor's src
+      // (right person, possibly low-res) rather than guess.
+      const srcsets = [...doc.images]
+        .filter(notNav)
+        .map((im) => im.getAttribute("srcset"))
+        .filter((s) => s && /\d+w/.test(s) && /profile-displayphoto/.test(s));
+      const assets = new Set(srcsets.map(gwPhotoAssetID));
+      if (srcsets.length && assets.size === 1) return richest(srcsets);
     }
-    // No srcset anywhere — fall back to the single src on the alt-anchored image.
-    return photoImg
-      ? (photoImg.getAttribute("srcset") || photoImg.currentSrc || photoImg.src || null)
-      : (imgs[0].currentSrc || imgs[0].src || null);
+    // No same-asset srcset found — ship whatever the anchor itself carries.
+    return anchorSource;
   });
 
   return {
@@ -251,17 +412,20 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     about,
     experience,
     photoSrcset,
-    // Whether this profile even HAS a "Contact info" link. It lives in the top
-    // card, so it's in the DOM from first paint — its presence/absence is a
-    // definitive, immediate signal: a profile with no link has no contact info
+    // Whether this profile HAS a contact-info source at all: the desktop
+    // "Contact info" overlay link (in the top card, in the DOM from first
+    // paint) or the mobile layout's in-page "Contact" section. Its
+    // presence/absence is a definitive signal: no source means no contact info
     // to fetch, so the readiness gate can mark the contact section done right
-    // away rather than opening an overlay that would never appear. When the
-    // link IS present, content.js opens it (extractContactInfo) to capture the
-    // fields. Computed on every parse so profileReadiness (which reads only the
-    // parsed result) can see it throughout the scroll pass.
-    hasContactInfoLink: safe(() => !!findContactInfoTrigger(doc)),
+    // away rather than waiting on fields that will never appear. When a source
+    // IS present, content.js calls extractContactInfo to capture the fields
+    // (parsing the in-page section directly, or opening the overlay). Computed
+    // on every parse so profileReadiness (which reads only the parsed result)
+    // can see it throughout the scroll pass.
+    hasContactInfoLink: safe(() =>
+      !!(findContactInfoTrigger(doc) || findInPageContactSection(doc))),
     // Debug aid for selector tuning — drop once the parser stabilizes.
-    _topCardLines: topCardLines,
+    _topCardLines: cardLines,
   };
 }
 
@@ -409,6 +573,19 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
     t.length < 60 && !/[●•]/.test(t) && !/\bskills?$/i.test(t) &&
     (/,/.test(t) || /\b(remote|hybrid|on-site)\b/i.test(t));
 
+  // One visual row per line. Desktop entries wrap each row in a <p>; the
+  // MOBILE layout has no <p>s at all, so fall back to the entry's rendered
+  // lines (innerText keeps row boundaries and skips hidden a11y duplicates).
+  const blockLines = (el) => {
+    if (!el) return [];
+    const raw = typeof el.innerText === "string" ? el.innerText : el.textContent;
+    return String(raw || "").split("\n").map((s) => s.trim()).filter(Boolean);
+  };
+  const linesFor = (entry) => {
+    const p = [...entry.querySelectorAll("p")].map(text).filter(Boolean);
+    return p.length ? p : blockLines(entry);
+  };
+
   const heads = [...doc.querySelectorAll("h1, h2, h3")];
   const expHead = heads.find((h) => /^experience$/i.test(text(h) || ""));
   if (!expHead) return [];
@@ -430,9 +607,46 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
     if (items.length) { entries = [...items]; break; }
   }
 
+  // MOBILE fallback: the mobile layout has NO componentkey wrappers anywhere
+  // (confirmed against a mobile-mode capture, 2026-07). Its entries are the
+  // LEAF <li>s of the Experience card — simple positions are one <li> each
+  // (wrapped in an outer <li>), and a multi-role employer nests the role
+  // <li>s inside its own <li>. Only dated leaves count as entries: chrome
+  // rows ("Show all N experiences") carry no date range. When a leaf's own
+  // lines carry no employer (grouped roles start straight at the title), the
+  // employer is the parent <li>'s first line — recognizable by the grouped
+  // signature (its second line is a BARE total duration like "15 yrs 6 mos").
+  let groupOrgFor = null;
+  if (!entries.length) {
+    let node = expHead.closest("section") || expHead;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      if (/^(MAIN|BODY|HTML)$/.test(node.tagName)) break;
+      // A container that also holds ANOTHER landmark section's heading spans
+      // more than the Experience card — stop rather than swallow that
+      // section's (or a suggestion module's) list items.
+      const foreign = [...node.querySelectorAll("h1, h2, h3")].some((h) => {
+        const t = text(h) || "";
+        return GW_SECTION_HEADING_RE.test(t) && !/^experience$/i.test(t);
+      });
+      if (foreign) break;
+      const leaves = [...node.querySelectorAll("li")].filter((li) => !li.querySelector("li"));
+      const dated = leaves.filter((li) => linesFor(li).some(isDateRange));
+      if (dated.length) {
+        entries = dated;
+        groupOrgFor = (li) => {
+          const parent = li.parentElement && li.parentElement.closest("li");
+          if (!parent) return null;
+          const plines = blockLines(parent);
+          return plines.length > 1 && isBareDuration(plines[1]) ? plines[0] : null;
+        };
+        break;
+      }
+    }
+  }
+
   const positions = [];
   for (const entry of entries) {
-    const lines = [...entry.querySelectorAll("p")].map(text).filter(Boolean);
+    const lines = linesFor(entry);
     const dateIdxs = lines
       .map((t, i) => (isDateRange(t) ? i : -1))
       .filter((i) => i > 0); // a date line needs a title/org line before it
@@ -459,13 +673,15 @@ function extractExperience(doc = (typeof document !== "undefined" ? document : n
         // [title, "Org · Type", dates, …]: only the FIRST date line belongs
         // to the entry itself (later ones are inside the description). When
         // the date line directly follows the title (di == 1) there is no org
-        // line at all (e.g. self-employed) — don't mistake the title for it.
+        // line at all — a self-employed simple entry, or a MOBILE grouped
+        // role whose employer lives on the parent <li> (groupOrgFor).
         if (di !== dateIdxs[0]) continue;
         const orgParts = di >= 2
           ? before.split("·").map((s) => s.trim()).filter(Boolean)
           : [];
         positions.push({
-          title: lines[0], org: orgParts[0] || null,
+          title: lines[0],
+          org: orgParts[0] || (groupOrgFor ? groupOrgFor(entry) : null),
           employmentType: orgParts[1] || null,
           dates, isCurrent, location,
         });
@@ -513,6 +729,58 @@ function findContactInfoTrigger(doc) {
   }) || null;
 }
 
+// The MOBILE layout renders contact info as an IN-PAGE "Contact" section — no
+// overlay, nothing to click (its only link with "contact-info" in it is a
+// plain href to the profile itself, which a click would NAVIGATE to). Anchor
+// on the "Contact" heading landmark, take its <section>, and require at least
+// one plausible field link so a stray "Contact" heading elsewhere can't turn
+// a random block into the contact source.
+function findInPageContactSection(doc) {
+  if (!doc) return null;
+  const heads = [...doc.querySelectorAll("h1, h2, h3")];
+  const head = heads.find((h) =>
+    /^contact( info(rmation)?)?$/i.test((h.textContent || "").trim()));
+  if (!head) return null;
+  const section = head.closest("section") || head.parentElement;
+  if (!section) return null;
+  const hasField = [...section.querySelectorAll("a[href]")].some((a) => {
+    const href = a.getAttribute("href") || "";
+    return /^mailto:/i.test(href) || /^https?:/i.test(href) || /\/in\/[^/]+/.test(href);
+  });
+  return hasField ? section : null;
+}
+
+// The contact FIELDS from a container (the desktop overlay dialog or the
+// mobile in-page "Contact" section) — one implementation for both shapes.
+function gwContactFieldsFrom(container) {
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))];
+  return {
+    profileUrl: safe(() => {
+      // The CANONICAL public profile URL — "linkedin.com/in/<slug>" with nothing
+      // trailing. The container also holds /in/<slug>/edit/…, /details/…,
+      // /overlay/… links and tracking-tagged variants (?trk=contact-info);
+      // exclude the deep paths, prefer the shortest, and strip query/fragment.
+      const links = [...container.querySelectorAll('a[href*="/in/"]')]
+        .map((x) => x.href)
+        .filter((h) => /\/in\/[^/]+\/?($|\?)/.test(h) && !/\/overlay\//.test(h));
+      const best = links.sort((a, b) => a.length - b.length)[0];
+      return best ? best.replace(/[?#].*$/, "").replace(/\/$/, "") : null;
+    }),
+    emails: safe(() =>
+      uniq([...container.querySelectorAll('a[href^="mailto:"]')]
+        .map((a) => a.getAttribute("href").replace(/^mailto:/, "").trim()))
+    ) || [],
+    websites: safe(() =>
+      uniq([...container.querySelectorAll('a[href^="http"]')]
+        .map((a) => unwrapSafetyURL(a.href))
+        // After unwrapping, drop anything still on linkedin.com (the profile
+        // link, the safety host itself, internal nav).
+        .filter((h) => h && !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(h)))
+    ) || [],
+  };
+}
+
 // LinkedIn wraps external website links in a safety redirect:
 //   https://www.linkedin.com/safety/go/?url=<encoded real url>&urlhash=...
 // Unwrap to the real destination so we store "https://adamwulf.me", not the
@@ -531,6 +799,12 @@ function unwrapSafetyURL(href) {
 async function extractContactInfo(doc = (typeof document !== "undefined" ? document : null)) {
   if (!doc) return null;
   const safe = (fn) => { try { return fn(); } catch { return null; } };
+
+  // Mobile layout: the fields render right in the page — parse them without
+  // touching page state. Checked FIRST because the mobile page has no overlay
+  // trigger, and any click would risk a navigation instead of a modal.
+  const inPage = findInPageContactSection(doc);
+  if (inPage) return gwContactFieldsFrom(inPage);
 
   const trigger = findContactInfoTrigger(doc);
   if (!trigger) return null;
@@ -586,32 +860,7 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
   const dialog = (await waitFor(dialogLoaded)) || findDialog();
   if (!dialog) return null;
 
-  const uniq = (arr) => [...new Set(arr.filter(Boolean))];
-
-  const info = {
-    profileUrl: safe(() => {
-      // The CANONICAL public profile URL — "linkedin.com/in/<slug>" with nothing
-      // trailing. The dialog also contains many /in/<slug>/edit/…, /details/…,
-      // /overlay/… links; exclude those and prefer the bare canonical form.
-      const links = [...dialog.querySelectorAll('a[href*="/in/"]')]
-        .map((x) => x.href)
-        .filter((h) => /\/in\/[^/]+\/?($|\?)/.test(h) && !/\/overlay\//.test(h));
-      // Prefer the shortest (the clean canonical one), strip a trailing slash.
-      const best = links.sort((a, b) => a.length - b.length)[0];
-      return best ? best.replace(/\/$/, "") : null;
-    }),
-    emails: safe(() =>
-      uniq([...dialog.querySelectorAll('a[href^="mailto:"]')]
-        .map((a) => a.getAttribute("href").replace(/^mailto:/, "").trim()))
-    ) || [],
-    websites: safe(() =>
-      uniq([...dialog.querySelectorAll('a[href^="http"]')]
-        .map((a) => unwrapSafetyURL(a.href))
-        // After unwrapping, drop anything still on linkedin.com (the profile
-        // link, the safety host itself, internal nav).
-        .filter((h) => h && !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(h)))
-    ) || [],
-  };
+  const info = gwContactFieldsFrom(dialog);
 
   // Restore page state: close the dialog (Esc, or a close/dismiss button).
   safe(() => {
@@ -719,5 +968,8 @@ function profileReadiness(result) {
 // Export for the unit-test harness (Node) without breaking the browser, where
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { extractProfile, extractRiceProfile, extractExperience, extractContactInfo, profileReadiness };
+  module.exports = {
+    extractProfile, extractRiceProfile, extractExperience, extractContactInfo,
+    profileReadiness, findInPageContactSection, gwPhotoAssetID,
+  };
 }

@@ -36,7 +36,7 @@ The extension is bundled inside the GuessWho app as a single
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" and "Experience" `<h2>`s) — never LinkedIn's obfuscated class names — `extractExperience` walks the Experience card's entry wrappers into structured positions (title/org/dates, current position feeds `title`/`org`), and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser as a fallback; scroll the profile to mount every lazy-rendered section and re-parse (`forceLazySections` — unconditional on every probe, optimizing for complete data over wait time). The pass is **readiness-driven and bounded to 30 seconds**: it steps the scroller in small increments, looping top→bottom repeatedly (scrolling a section back out of view can cancel its in-flight lazy load), until every *scroll-mountable* required section — identity, Experience, About (see `profileReadiness`) — is in the DOM. About renders **above** Experience, so once Experience has mounted, an absent About can't still be coming — `profileReadiness` counts About done then. Contact info can't be scrolled in, but the "Contact info" LINK lives in the top card (in the DOM from first paint), so `extractProfile` records `hasContactInfoLink` and `profileReadiness` uses it as a definitive signal. The popup's **"Save anyway"** button sends a tab-targeted `guesswho.interrupt` keyed on `probeId` for an immediate partial result; otherwise the 30-second bound returns the partial result automatically. While the pass runs, it streams bounded, shape-only readiness/scroller/Experience-DOM fingerprints to the native extension log so a TestFlight export can diagnose a mobile DOM mismatch without retaining the person's name, slug, headings, or profile prose. The pass always restores the user's scroll position. **The window does NOT scroll on a LinkedIn profile** — `document.documentElement.scrollHeight` reads exactly one viewport; the real content lives in a nested `<main>` scroll container, so `resolveScroller()` walks up from a content anchor to the genuinely-scrollable ancestor and the pass drives *that* element's `scrollTop`. Then it fetches the full-res photo bytes in-session as a `data:` URL and replies to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
+| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, the top-card `<h1>`, top-card order, the "About" and "Experience" heading landmarks) — never LinkedIn's obfuscated class names — and handles **both** the desktop and mobile layouts (see [The two LinkedIn layouts](#the-two-linkedin-layouts-desktop-vs-mobile)) — `extractExperience` walks the Experience card's entry wrappers into structured positions (title/org/dates, current position feeds `title`/`org`), and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser as a fallback; scroll the profile to mount every lazy-rendered section and re-parse (`forceLazySections` — unconditional on every probe, optimizing for complete data over wait time). The pass is **readiness-driven and bounded to 30 seconds**: it steps the scroller in small increments, looping top→bottom repeatedly (scrolling a section back out of view can cancel its in-flight lazy load), until every *scroll-mountable* required section — identity, Experience, About (see `profileReadiness`) — is in the DOM. About renders **above** Experience, so once Experience has mounted, an absent About can't still be coming — `profileReadiness` counts About done then. Contact info can't be scrolled in, but the "Contact info" LINK lives in the top card (in the DOM from first paint), so `extractProfile` records `hasContactInfoLink` and `profileReadiness` uses it as a definitive signal. The popup's **"Save anyway"** button sends a tab-targeted `guesswho.interrupt` keyed on `probeId` for an immediate partial result; otherwise the 30-second bound returns the partial result automatically. While the pass runs, it streams bounded, shape-only readiness/scroller/Experience-DOM fingerprints to the native extension log so a TestFlight export can diagnose a mobile DOM mismatch without retaining the person's name, slug, headings, or profile prose. The pass always restores the user's scroll position. **The window does NOT scroll on a LinkedIn profile** — `document.documentElement.scrollHeight` reads exactly one viewport; the real content lives in a nested `<main>` scroll container, so `resolveScroller()` walks up from a content anchor to the genuinely-scrollable ancestor and the pass drives *that* element's `scrollTop`. Then it fetches the full-res photo bytes in-session as a `data:` URL and replies to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
 | Background service worker | `App/GuessWhoLinkedIn/Resources/background.js` | The **only** place that can talk to native. Relays the final handoff and in-flight page diagnostics to the native handler via `sendNativeMessage`. Non-persistent (MV3 `service_worker`) — required on iOS, fine on macOS. |
 | Popup | `App/GuessWhoLinkedIn/Resources/popup.{html,js}` | User-facing toolbar UI. Orchestrates: probe the tab → hand off to native → open the wake URL. Sized for a phone sheet so it ports to iOS. |
 | Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Writes bounded web diagnostics to `extension-*.log`; for a final handoff, parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
@@ -51,6 +51,48 @@ content script still fetches the image bytes in-page and attaches the same
 `photo` payload. On save, title/email/phone/websites/photo use normal Contacts
 fields, the Rice profile URL is added as a website labeled `Rice`, and
 department/bio upsert the named `Rice Department` and `Rice Bio` fields.
+
+## The two LinkedIn layouts (desktop vs. mobile)
+
+linkedin.com serves two entirely different DOMs for the same `/in/<slug>` URL,
+chosen by User-Agent: the desktop layout (what Safari/Brave on the Mac gets)
+and the mobile layout (what **iPhone Safari** gets — also reproducible in a
+desktop browser's device-emulation mode, which is how the mobile fixture was
+captured). The parser must handle both; every claim below was validated
+against real captures (desktop webarchives, June–July 2026; mobile-mode save,
+2026-07-14).
+
+| Signal | Desktop | Mobile |
+| --- | --- | --- |
+| `<title>` | `"<Name> \| LinkedIn"` | **`"Profile \| LinkedIn"`** — generic chrome, must be REJECTED as a name |
+| Name element | `<h2>` in the top card (no `<h1>` on the page) | the page's only `<h1>` |
+| Headline/location | `<p>` elements a few ancestors above the name heading | bare `<span>`/`<div>` rows — **no `<p>` anywhere in the top card**; location line has `"500+ connections"` glued on; degree renders as `"3rd  Premium member"` |
+| Experience entries | `componentkey^="entity-collection-item"` wrappers | **no componentkey attributes at all** — entries are the leaf `<li>`s of the Experience card; a multi-role employer nests role `<li>`s inside its own `<li>` (employer name = parent's first line, recognizable by its bare total-duration second line) |
+| Contact info | overlay behind the "Contact info" link (click-then-parse) | **in-page `<h2>Contact</h2>` section** — parsed directly, nothing to click (its only "contact-info" href is a plain link to the profile itself; clicking would navigate away) |
+| Photo alt | `"View <Name>’s profile"` | `"Profile picture of <Name>"` |
+
+Traps that produced real bugs (fixed 2026-07-14, keep them fixed):
+
+- **A generic `<title>` must never win the name chain.** It used to, shipping
+  `fullName: "Profile"` — which then cascaded: no heading matched the "name",
+  so the top-card walk never ran and headline/location came back null.
+- **Both photo-alt patterns exist for OTHER people on the same page.** The
+  mobile "Other similar profiles" module reuses the desktop
+  `"View <Name>’s profile"` alt verbatim, and comment/activity modules can put
+  a `"Profile picture of <Name>"` ahead of the top card. When a name is known,
+  the photo anchor REQUIRES an alt asserting that name; bare first-in-document
+  is only trusted when nothing structural named the profile.
+- **Never pick "richest srcset anywhere" for the photo.** The viewer's own nav
+  avatar is the FIRST `profile-displayphoto` image in DOM order, and suggested
+  profiles carry srcsets too — that heuristic is exactly how a stranger's (or
+  your own) photo got saved onto a contact. Upgrade to a srcset only for the
+  SAME asset id (`…/image/v2/<ASSET>/…`, stable across size variants), or, when
+  the anchor has no asset id, only when the page-wide displayphoto srcsets
+  (outside the nav) are unambiguous — exactly one asset.
+- **The top-card `<p>` walk must stop at `<main>`.** The mobile page's first
+  `<p>`s live directly under `<main>` inside hidden share/report dialogs;
+  collecting there returns dialog chrome as the headline. (Desktop resolves at
+  depth ≤ 7, well below `<main>` — verified against a captured profile.)
 
 ## Two processes, two channels — do not conflate them
 
