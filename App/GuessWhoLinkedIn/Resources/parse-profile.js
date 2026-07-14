@@ -177,11 +177,18 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   // desktop path is unchanged.
   const stripTrailingCounts = (t) =>
     t.replace(/\s*\d[\d,.]*\+?\s+(connections?|followers?)\s*$/i, "").trim();
+  // Anchored to the WHOLE line: a badge row is "3rd", "· 2nd", "3rd  Premium
+  // member" — nothing else. A prefix match here would eat a real headline
+  // like "3rd generation winemaker".
   const isBadgeRow = (t) =>
-    /^[·\s]*\d+(st|nd|rd|th)\+?\b/i.test(t) || /^(premium member|verified|influencer)$/i.test(t);
+    /^[·\s]*\d+(st|nd|rd|th)\+?(\s+(degree( connection)?|premium member|verified))?\s*$/i.test(t) ||
+    /^(premium member|verified|influencer)$/i.test(t);
+  // EXACT button labels only — a prefix match would eat a real headline like
+  // "More than a recruiter" or "Save the bees". A noisy compound row
+  // ("Follow Alistair  Following") lives outside the card container in the
+  // validated capture, so exactness costs nothing there.
   const isActionRow = (t) =>
-    t.length < 40 &&
-    /^(connect|message|follow|following|more|pending|open to|view |report|share|save|block|mutual connection)/i.test(t);
+    /^(connect|message|follow|following|more|pending|report|share|save|block|open to work|view full profile|see more|see less)$/i.test(t);
   const topCardLinesFromText = safe(() => {
     if (!nameHeading || topCardLines.length) return [];
     let node = nameHeading;
