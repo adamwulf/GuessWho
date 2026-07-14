@@ -21,6 +21,118 @@ function log(step, detail) {
   }
 }
 
+// A profile must never drive the page forever. LinkedIn changes its mobile DOM
+// independently of the desktop layout; if a required section is visible to the
+// user but no longer matches our parser, readiness can otherwise remain false
+// indefinitely. After this bounded pass we ship the partial profile and let the
+// popup report exactly which sections were missing.
+const GW_LAZY_SCROLL_TIMEOUT_MS = 30_000;
+
+// Page-JS console output is not available in an exported TestFlight log bundle.
+// Stream a deliberately small DOM/readiness fingerprint through the background
+// worker to the native extension logger while the probe is still in flight.
+// No HTML, photo bytes, query string, or cookies are included.
+const gwProbeStartedAt = new Map();
+function gwClip(value, max = 160) {
+  if (value == null) return null;
+  const string = String(value).replace(/\s+/g, " ").trim();
+  return string.length > max ? string.slice(0, max) + "…" : string;
+}
+
+function gwElementFingerprint(el) {
+  if (!el) return null;
+  let overflowY = null;
+  try { overflowY = getComputedStyle(el).overflowY || null; } catch (_e) { /* detached element */ }
+  return {
+    tag: (el.tagName || "").toLowerCase() || null,
+    id: gwClip(el.id, 80),
+    role: gwClip(el.getAttribute && el.getAttribute("role"), 80),
+    componentKey: gwClip(el.getAttribute && el.getAttribute("componentkey"), 160),
+    testId: gwClip(el.getAttribute && el.getAttribute("data-testid"), 160),
+    viewName: gwClip(el.getAttribute && el.getAttribute("data-view-name"), 160),
+    overflowY,
+    clientHeight: Number(el.clientHeight) || 0,
+    scrollHeight: Number(el.scrollHeight) || 0,
+  };
+}
+
+function gwExperienceDOMFingerprint() {
+  const headings = [...document.querySelectorAll("h1, h2, h3")];
+  const experienceHead = headings.find((h) =>
+    /^experience$/i.test((h.textContent || "").trim())
+  ) || null;
+  const ancestors = [];
+  let paragraphSampleRoot = experienceHead ? experienceHead.closest("section") : null;
+  for (let node = experienceHead, depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+    const itemCount = node.querySelectorAll
+      ? node.querySelectorAll('[componentkey^="entity-collection-item"]').length
+      : 0;
+    const nullStateAnchors = node.querySelectorAll
+      ? [...node.querySelectorAll('[componentkey^="ProfileNullStateCardAnchor_"]')]
+          .slice(0, 8)
+          .map((el) => gwClip(el.getAttribute("componentkey"), 160))
+      : [];
+    if (!paragraphSampleRoot && itemCount > 0) paragraphSampleRoot = node;
+    ancestors.push({
+      depth,
+      element: gwElementFingerprint(node),
+      entityItemCount: itemCount,
+      paragraphCount: node.querySelectorAll ? node.querySelectorAll("p").length : 0,
+      listItemCount: node.querySelectorAll ? node.querySelectorAll("li").length : 0,
+      nullStateAnchors,
+    });
+  }
+  if (!paragraphSampleRoot && experienceHead) {
+    for (let node = experienceHead.parentElement, depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      if (node.querySelectorAll && node.querySelectorAll("p").length > 0) {
+        paragraphSampleRoot = node;
+        break;
+      }
+    }
+  }
+  return {
+    headings: headings.slice(0, 40).map((h) => ({
+      tag: (h.tagName || "").toLowerCase() || null,
+      text: gwClip(h.textContent, 100),
+    })),
+    experienceHeadingFound: !!experienceHead,
+    experienceAncestors: ancestors,
+    experienceParagraphSamples: paragraphSampleRoot
+      ? [...paragraphSampleRoot.querySelectorAll("p")]
+          .slice(0, 30)
+          .map((p) => gwClip(p.textContent, 180))
+      : [],
+  };
+}
+
+function gwSendDiagnostic(probeId, event, detail) {
+  if (!probeId) return;
+  const startedAt = gwProbeStartedAt.get(probeId) || Date.now();
+  const diagnostic = {
+    version: 1,
+    probeId,
+    event,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    page: {
+      host: location.hostname || null,
+      path: location.pathname || null,
+      userAgent: gwClip(globalThis.navigator && navigator.userAgent, 300),
+      viewport: {
+        width: Number(window.innerWidth) || 0,
+        height: Number(window.innerHeight) || 0,
+      },
+    },
+    detail: detail || {},
+  };
+  try {
+    const p = api.runtime.sendMessage({
+      type: "guesswho.diagnostic",
+      diagnostic,
+    });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_e) { /* diagnostic logging must never affect the probe */ }
+}
+
 function minimalProbe() {
   const slug = (location.pathname.match(/\/(?:in|faculty|staff)\/([^/]+)/) || [])[1] || null;
   return {
@@ -138,12 +250,13 @@ function scrollSectionsReady(readiness) {
 
 // --- Interrupt ("Save anyway") ----------------------------------------------
 //
-// There is no deadline anymore: the scroll pass waits until every scroll-
-// mountable section is present. The user's escape hatch is the popup's "Save
-// anyway" button, which sends a `guesswho.interrupt` message keyed on the
-// probeId. That listener (registered at the bottom of this file) records the id
-// in `interruptedProbes`; the scroll loop checks it each iteration and bails,
-// shipping whatever parsed so far.
+// The scroll pass normally waits until every scroll-mountable section is
+// present. The user's immediate escape hatch is the popup's "Save anyway"
+// button, which sends a `guesswho.interrupt` message keyed on the probeId. That
+// listener (registered at the bottom of this file) records the id in
+// `interruptedProbes`; the scroll loop checks it each iteration and bails,
+// shipping whatever parsed so far. A 30-second safety bound handles a changed
+// mobile DOM even if the user does nothing.
 //
 // `liveProbes` holds the probeIds still in flight. The interrupt listener adds
 // to `interruptedProbes` ONLY for a live probe, and both Sets drop the id when
@@ -168,16 +281,15 @@ function isInterrupted(probeId) {
 // The loop is driven by READINESS, not by a blind "stopped growing" heuristic:
 // after each scroll step we re-parse and ask whether every scroll-mountable
 // required section (identity, Experience, About) is now present. As soon as
-// they are, we stop. There is NO deadline — if the page bottoms out before
-// everything mounted (a slow load, or a section whose lazy load got cancelled
-// when an earlier fast scroll pushed it back out of view), we loop back to the
-// TOP and scroll down again rather than give up. The only ways out are: every
-// scroll section mounted, or the user pressed "Save anyway" (isInterrupted).
-// The user's scroll position is always restored.
+// they are, we stop. If the page bottoms out before everything mounted (a slow
+// load, or a section whose lazy load got cancelled when an earlier fast scroll
+// pushed it back out of view), we loop back to the TOP and sweep down again,
+// until readiness, "Save anyway", or the 30-second safety bound. The user's
+// scroll position is always restored.
 //
 // `onProgress(readiness, parsed)` is invoked after each re-parse (and once at
 // the start) so the caller can stream "X/Y sections loaded" to the popup while
-// this runs. Returns the last readiness.
+// this runs. Returns the last readiness plus the exit reason and duration.
 //
 // Uses the global `sleep`/`profileReadiness` from the sibling parse-profile.js
 // (both files share the content-script world; redeclaring `sleep` here would be
@@ -188,14 +300,53 @@ async function forceLazySections(onProgress, probeId) {
   const startTop = scroller.scrollTop;
   const startX = window.scrollX;
   const startY = window.scrollY;
+  const passStartedAt = Date.now();
+  let exitReason = "ready";
+  let sweepCount = 0;
+  let lastReadinessSignature = null;
+  let reportedMeasureError = false;
+
+  gwSendDiagnostic(probeId, "scroll-pass-start", {
+    timeoutMs: GW_LAZY_SCROLL_TIMEOUT_MS,
+    scroller: gwElementFingerprint(scroller),
+    scrollerIsDocument: scroller === document.scrollingElement || scroller === document.documentElement,
+    dom: gwExperienceDOMFingerprint(),
+  });
 
   // Re-parse and report progress; tolerate a parser throw mid-scroll (a
   // half-mounted DOM) by treating it as "nothing new this step".
   const measure = () => {
     let parsed = null;
-    try { parsed = extractProfile(); } catch (_e) { parsed = null; }
+    try {
+      parsed = extractProfile();
+    } catch (e) {
+      parsed = null;
+      if (!reportedMeasureError) {
+        reportedMeasureError = true;
+        gwSendDiagnostic(probeId, "scroll-reparse-error", {
+          error: gwClip(e && e.stack ? e.stack : e, 1000),
+        });
+      }
+    }
     const readiness = profileReadiness(parsed || {});
     try { if (onProgress) onProgress(readiness, parsed); } catch (_e) { /* never let the UI hook break the scroll */ }
+    const signature = (readiness.sections || [])
+      .map((section) => `${section.key}:${section.present ? 1 : 0}`)
+      .join(",");
+    if (signature !== lastReadinessSignature) {
+      lastReadinessSignature = signature;
+      gwSendDiagnostic(probeId, "readiness-change", {
+        loaded: readiness.loaded,
+        total: readiness.total,
+        ready: readiness.ready,
+        sections: readiness.sections,
+        parsedExperienceCount: parsed && Array.isArray(parsed.experience)
+          ? parsed.experience.length
+          : 0,
+        hasAbout: !!(parsed && parsed.about),
+        dom: gwExperienceDOMFingerprint(),
+      });
+    }
     return { parsed, readiness };
   };
 
@@ -204,24 +355,58 @@ async function forceLazySections(onProgress, probeId) {
   let last = measure();
 
   try {
-    if (scrollSectionsReady(last.readiness)) return last.readiness; // already up — no scroll needed
+    if (scrollSectionsReady(last.readiness)) {
+      const durationMs = Date.now() - passStartedAt;
+      gwSendDiagnostic(probeId, "scroll-pass-finish", {
+        exitReason,
+        durationMs,
+        sweepCount,
+        readiness: last.readiness,
+      });
+      return { readiness: last.readiness, exitReason, durationMs };
+    }
     // Step in SMALL increments (a fraction of the scroller's viewport), keeping
     // the same per-step delay. Small steps mean a section that starts loading
     // stays in view across several steps instead of being scrolled past in one
     // jump — which is what can cancel its lazy load (the user's concern).
     const step = Math.max(150, Math.floor(scroller.clientHeight * 0.25));
     let y = 0;
-    // No deadline. Bail only on readiness (scroll sections up) or interrupt.
+    // Readiness remains the normal exit. The timeout is a safety valve for a
+    // changed/unrecognized mobile DOM, while "Save anyway" is the immediate
+    // user-controlled escape hatch.
     while (!isInterrupted(probeId)) {
+      if (Date.now() - passStartedAt >= GW_LAZY_SCROLL_TIMEOUT_MS) {
+        exitReason = "timeout";
+        gwSendDiagnostic(probeId, "scroll-pass-timeout", {
+          timeoutMs: GW_LAZY_SCROLL_TIMEOUT_MS,
+          sweepCount,
+          readiness: last.readiness,
+          scroller: gwElementFingerprint(scroller),
+          dom: gwExperienceDOMFingerprint(),
+        });
+        break;
+      }
       y += step;
       const height = scroller.scrollHeight;
       const maxY = Math.max(0, height - scroller.clientHeight);
       // Past the bottom? Loop back to the top and sweep down again. Scrolling a
       // section out of view can cancel its in-flight lazy load, so a fresh
-      // top→bottom sweep gives every section another chance to mount. (No
-      // deadline — the user's "Save anyway" is the way out of a page that never
-      // fully mounts.)
-      if (y > maxY) y = 0;
+      // top→bottom sweep gives every section another chance to mount before the
+      // user interrupts or the safety bound expires.
+      if (y > maxY) {
+        y = 0;
+        sweepCount += 1;
+        // Enough cadence to reveal a stuck pass without filling the log during
+        // the 30-second bound.
+        if (sweepCount === 1 || sweepCount % 25 === 0) {
+          gwSendDiagnostic(probeId, "scroll-sweep-complete", {
+            sweepCount,
+            maxY,
+            scroller: gwElementFingerprint(scroller),
+            readiness: last.readiness,
+          });
+        }
+      }
       scroller.scrollTop = y;
       await sleep(200);
       if (isInterrupted(probeId)) break;
@@ -230,11 +415,20 @@ async function forceLazySections(onProgress, probeId) {
       // caller then opens the contact-info overlay for the last section.
       if (scrollSectionsReady(last.readiness)) break;
     }
+    if (isInterrupted(probeId)) exitReason = "interrupted";
   } finally {
     scroller.scrollTop = startTop;
     window.scrollTo(startX, startY);
   }
-  return last.readiness;
+  if (scrollSectionsReady(last.readiness)) exitReason = "ready";
+  const durationMs = Date.now() - passStartedAt;
+  gwSendDiagnostic(probeId, "scroll-pass-finish", {
+    exitReason,
+    durationMs,
+    sweepCount,
+    readiness: last.readiness,
+  });
+  return { readiness: last.readiness, exitReason, durationMs };
 }
 
 // Stream a progress update back to the popup while the scroll pass runs. The
@@ -265,6 +459,10 @@ function emitProgress(probeId, readiness) {
 }
 
 async function probe(probeId) {
+  gwSendDiagnostic(probeId, "probe-start", {
+    readyState: document.readyState,
+    dom: gwExperienceDOMFingerprint(),
+  });
   // Rice profiles are fully server-rendered: no lazy-section scroll and no
   // contact overlay are needed. Parse once, then use the exact same in-page
   // photo-byte fetch and native handoff as LinkedIn.
@@ -302,6 +500,7 @@ async function probe(probeId) {
     }
   } catch (e) {
     console.log("[GuessWho] extractProfile threw:", e);
+    gwSendDiagnostic(probeId, "initial-parse-error", { error: gwClip(e && e.stack ? e.stack : e, 1000) });
   }
   if (!result) result = minimalProbe();
 
@@ -324,20 +523,26 @@ async function probe(probeId) {
         about: !!result.about,
         positions: (result.experience || []).length,
       });
-      // Scroll (small steps, looping top→bottom, no deadline) until every
+      // Scroll (small steps, looping top→bottom) until every
       // scroll-mountable required section — identity, Experience, About — is in
-      // the DOM, streaming "X/Y sections loaded" to the popup as it goes. The
-      // ONLY early exit is the user's "Save anyway" (probeId interrupt). The
-      // pass re-parses each step; take the final re-parse WHOLESALE (below) —
+      // the DOM, streaming "X/Y sections loaded" to the popup as it goes. Save
+      // anyway interrupts immediately; the 30-second safety bound ships a
+      // partial result if the mobile DOM never matches. The pass re-parses each
+      // step; take the final re-parse WHOLESALE (below) —
       // sections stay mounted once rendered, and a per-field merge could pair a
       // title and an org from different sources (the atomicity rule in
       // parse-profile.js).
-      await forceLazySections(
+      const scrollOutcome = await forceLazySections(
         (readiness) => emitProgress(probeId, readiness),
         probeId
       );
       const second = extractProfile();
       if (second) result = second;
+      result._diagnostics = {
+        version: 1,
+        scrollExitReason: scrollOutcome.exitReason,
+        scrollDurationMs: scrollOutcome.durationMs,
+      };
       console.log("[GuessWho] scroll pass: done", {
         about: !!result.about,
         positions: (result.experience || []).length,
@@ -346,6 +551,7 @@ async function probe(probeId) {
     }
   } catch (e) {
     console.log("[GuessWho] scroll pass threw:", e);
+    gwSendDiagnostic(probeId, "scroll-pass-error", { error: gwClip(e && e.stack ? e.stack : e, 1000) });
   }
 
   // Contact info (emails/websites/profile URL) lives behind the "Contact info"
@@ -377,6 +583,7 @@ async function probe(probeId) {
     }
   } catch (e) {
     console.log("[GuessWho] extractContactInfo threw:", e);
+    gwSendDiagnostic(probeId, "contact-parse-error", { error: gwClip(e && e.stack ? e.stack : e, 1000) });
   }
 
   // Stamp the FINAL readiness (all four required sections, including contact)
@@ -392,6 +599,14 @@ async function probe(probeId) {
       loaded: result.readiness.loaded,
       total: result.readiness.total,
       interrupted: isInterrupted(probeId),
+    });
+    gwSendDiagnostic(probeId, "final-readiness", {
+      readiness: result.readiness,
+      parsedExperienceCount: Array.isArray(result.experience) ? result.experience.length : 0,
+      hasAbout: !!result.about,
+      hasContactInfo: !!result.contactInfo,
+      diagnostics: result._diagnostics || null,
+      dom: gwExperienceDOMFingerprint(),
     });
   }
 
@@ -461,7 +676,10 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // previous click). It's optional — an absent id just disables streaming AND
   // the interrupt (there's nothing to key the "save anyway" on).
   const probeId = message.probeId || null;
-  if (probeId) liveProbes.add(probeId);
+  if (probeId) {
+    liveProbes.add(probeId);
+    gwProbeStartedAt.set(probeId, Date.now());
+  }
   log("probe requested by popup", { probeId });
   probe(probeId)
     .then((result) => {
@@ -486,6 +704,7 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (probeId) {
         liveProbes.delete(probeId);
         interruptedProbes.delete(probeId);
+        gwProbeStartedAt.delete(probeId);
       }
     });
   return true;

@@ -1,12 +1,12 @@
-// Step-0 handoff spike — background service worker (non-persistent).
+// Background service worker (non-persistent).
 //
 // Role: the ONLY place that can talk to native code. Content scripts and the
 // popup send messages here; we forward them to the SafariWebExtensionHandler
 // via browser.runtime.sendNativeMessage. Safari ignores the application-id
 // argument and always routes to this extension's own handler.
 //
-// Kept deliberately trivial: this spike only proves the pipe
-// (content/popup -> background -> native -> app wake), not any LinkedIn logic.
+// It owns transport only: final profile handoffs and bounded diagnostic events.
+// Parsing/readiness decisions remain in the content script.
 
 const api = globalThis.browser ?? globalThis.chrome;
 
@@ -22,6 +22,32 @@ function log(step, detail) {
 }
 
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // Persist bounded page-level diagnostics through the native extension while
+  // the profile probe is still running. This is intentionally independent of
+  // the final handoff: a parser that never recognizes Experience must still
+  // leave useful evidence in the app's exported Logs zip.
+  if (message?.type === "guesswho.diagnostic") {
+    const diagnostic = message.diagnostic || {};
+    log("diagnostic received", {
+      probeId: diagnostic.probeId || null,
+      event: diagnostic.event || null,
+      elapsedMs: diagnostic.elapsedMs ?? null,
+    });
+    api.runtime.sendNativeMessage(
+      "application.id",
+      { diagnostic },
+      (response) => {
+        if (api.runtime.lastError) {
+          log("diagnostic native write failed", { error: api.runtime.lastError.message });
+          sendResponse({ ok: false, error: api.runtime.lastError.message });
+          return;
+        }
+        sendResponse({ ok: true, native: response });
+      }
+    );
+    return true;
+  }
+
   if (message?.type !== "guesswho.handoff") return false;
   log("handoff message received from popup");
 
