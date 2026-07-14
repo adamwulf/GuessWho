@@ -1,6 +1,6 @@
-// Step-0 handoff spike — popup orchestration.
+// Popup orchestration.
 //
-// Flow proved by this spike:
+// Flow:
 //   popup -> (probe) active content script -> popup
 //   popup -> background -> sendNativeMessage -> native handler
 //     -> native parks payload in App Group + acks the per-config wake URL
@@ -64,6 +64,7 @@ function show(obj, isError) {
 // active probeId, so a stale straggler from a previous click can't overwrite the
 // current run's display.
 let activeProbeId = null;
+let activeTabId = null;
 
 function renderProgress(update) {
   // The section count rides the always-spinning activity row's label; the
@@ -121,20 +122,30 @@ async function probeTab(tabId, probeId) {
   }
 }
 
-// "Save anyway": the user's escape hatch out of the (unbounded) wait. We DON'T
+// "Save anyway": the user's immediate escape hatch out of the bounded wait. We DON'T
 // run the handoff here — the probe is already in flight and will resolve and
 // hand off on its own. We just tell the content script to stop waiting and ship
 // whatever parsed, keyed on the active probeId. The in-flight `runHandoff`
 // then continues to the handoff with the (possibly partial) result.
 goBtn.addEventListener("click", () => {
-  if (!activeProbeId) return; // nothing in flight to interrupt
-  log("save anyway: interrupting probe", { probeId: activeProbeId });
+  if (!activeProbeId || activeTabId == null) return; // nothing in flight to interrupt
+  log("save anyway: interrupting probe", { probeId: activeProbeId, tabId: activeTabId });
   goBtn.disabled = true; // one interrupt is enough; block re-clicks
-  // Fire-and-forget one-way message; a rejection (no receiver) must not throw.
+  // Content scripts are reached with tabs.sendMessage, not runtime.sendMessage
+  // (the latter targets extension pages/background and never reaches the page's
+  // isolated content-script world). Fire-and-forget; the 30-second failsafe in
+  // content.js still guarantees completion if this tab disappeared meanwhile.
   try {
-    const p = api.runtime.sendMessage({ type: "guesswho.interrupt", probeId: activeProbeId });
-    if (p && typeof p.catch === "function") p.catch(() => {});
-  } catch (_e) { /* content script gone — the probe will resolve regardless */ }
+    const p = api.tabs.sendMessage(
+      activeTabId,
+      { type: "guesswho.interrupt", probeId: activeProbeId }
+    );
+    if (p && typeof p.catch === "function") {
+      p.catch((e) => log("save anyway: interrupt delivery failed", { error: String(e) }));
+    }
+  } catch (e) {
+    log("save anyway: interrupt delivery threw", { error: String(e) });
+  }
 });
 
 // The whole flow, run automatically when the popup opens — no initial button
@@ -157,12 +168,12 @@ async function runHandoff() {
     log("active tab", { tabId: tab.id, url: tab.url });
 
     // 1) Probe the content script (inject-and-retry if not present). The probe
-    // does NOT resolve until EITHER every required section (Profile, Experience,
-    // About, Contact info) has mounted OR the user pressed "Save anyway" — so by
-    // the time we get `probe` back below, we've either waited for everything or
-    // the user chose to send what parsed. A probeId lets us correlate this run's
-    // progress messages and route the interrupt to the right probe.
+    // resolves when every required section (Profile, Experience, About, Contact
+    // info) has mounted, the user presses "Save anyway", OR the content script's
+    // 30-second safety bound expires. A probeId lets us correlate this run's
+    // progress messages and route the interrupt to the right tab/probe.
     const probeId = newProbeId();
+    activeTabId = tab.id;
     activeProbeId = probeId;
     // No show() here — the always-on spinner row already says "Loading
     // profile…"; the result pane stays hidden until there's a real outcome.
@@ -256,6 +267,7 @@ async function runHandoff() {
     // instance won't start another; a fresh probe only happens when the popup
     // is reopened.
     clearProgress();
+    activeTabId = null;
     loadingEl.classList.add("done");
     goBtn.disabled = true;
   }

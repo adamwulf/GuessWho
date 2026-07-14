@@ -640,11 +640,10 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 // content.js is deliberately asymmetric, because the sections mount by
 // different means:
 //
-//   • identity, Experience, About — mount by SCROLLING. content.js's scroll
-//     pass is unbounded (no deadline): it loops top→bottom until all three are
-//     present. So if one of THESE is missing (a slow load), the pass keeps
-//     scrolling and the only way to hand off is the user's "Save anyway"
-//     (which interrupts and ships what parsed). The one carve-out is About on
+//   • identity, Experience, About — mount by SCROLLING. content.js loops
+//     top→bottom until all three are present, the user chooses "Save anyway",
+//     or a 30-second safety bound expires (which ships the partial profile plus
+//     native-exportable diagnostics). The one carve-out is About on
 //     a profile that has none: About renders ABOVE Experience, so once
 //     Experience has mounted, an absent About can't still be coming — the
 //     About section counts as done then (see below) instead of scrolling
@@ -657,7 +656,7 @@ async function extractContactInfo(doc = (typeof document !== "undefined" ? docum
 //     after the scroll sections are up, waits for the fields to load, and
 //     stamps `result.contactInfo`; the section is done when those fields land.
 //
-// Net: identity/Experience block until present-or-"Save anyway"; About blocks
+// Net: identity/Experience block until present, interrupt, or safety timeout; About blocks
 // until present, implied-absent (Experience mounted without it), or "Save
 // anyway"; contact info blocks only when a link exists but its fields haven't
 // loaded yet.

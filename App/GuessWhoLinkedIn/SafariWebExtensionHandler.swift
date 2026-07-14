@@ -2,16 +2,18 @@ import Foundation
 import SafariServices
 import GuessWhoLogging
 
-/// LinkedIn handoff native handler. Runs in the EXTENSION process.
+/// LinkedIn native-message handler. Runs in the EXTENSION process.
 ///
 /// It does NOT touch Contacts or the iCloud sidecar (the extension intentionally
 /// holds neither entitlement). It only:
-///   1. receives the parsed payload from the background script,
-///   2. parks it in the shared **App Group** container (ephemeral IPC handoff),
-///   3. acks back to JS with the per-configuration wake URL
+///   1. writes bounded page-parser diagnostics from the background script to
+///      the shared extension log (without parking or waking the app),
+///   2. receives the final parsed payload from the background script,
+///   3. parks it in the shared **App Group** container (ephemeral IPC handoff),
+///   4. acks back to JS with the per-configuration wake URL
 ///      (`guesswho-linkedin[-debug]://handoff`) the popup should then open to
 ///      wake the app (the handler itself cannot wake it — see below),
-///   4. the app's scene delegate drains the parked payload on wake.
+///   5. the app's scene delegate drains the parked payload on wake.
 /// The app process is where match/diff/save will live (it already holds the
 /// iCloud + Contacts entitlements).
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
@@ -49,6 +51,12 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// handler). Label is developer-facing; see GuessWhoLogging notes.
     private static let log = GuessWhoLog.logger("extension.handoff")
 
+    private static let buildDescription: String = {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "version=\(version) build=\(build)"
+    }()
+
     func beginRequest(with context: NSExtensionContext) {
         // Bootstrap file logging idempotently. beginRequest runs per request, so
         // the once-per-process guard inside bootstrap (lock-protected) makes
@@ -59,41 +67,31 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         let request = context.inputItems.first as? NSExtensionItem
         let rawMessage = request?.userInfo?[SFExtensionMessageKey]
 
-        // Log the raw shape + the App Group id this process resolved, so we can
-        // see (in extension.log and Console, label extension.handoff) both what
-        // Safari delivered and which container we'll write to.
+        // Log only the envelope shape, not the raw object: the final payload can
+        // contain a base64 photo and profile PII, neither of which belongs in a
+        // low-level transport breadcrumb. The app logs a compact photo-elided
+        // decoded profile after handoff; web diagnostics are separately bounded.
         Self.log.notice("EXTENSION resolved App Group id=\(Self.appGroupID)")
-        Self.log.notice("native message received: \(String(describing: rawMessage))")
+        Self.log.notice("EXTENSION \(Self.buildDescription)")
+        Self.log.notice("native message received: \(WebExtensionMessageCodec.messageShape(rawMessage))")
 
         var ack: [String: Any] = ["received": false]
 
-        if let payload = Self.extractPayload(from: rawMessage) {
+        if let diagnostic = WebExtensionMessageCodec.extractDiagnostic(from: rawMessage) {
+            Self.log.notice("web diagnostic: \(WebExtensionMessageCodec.diagnosticDescription(diagnostic))")
+            ack = ["received": true, "logged": true]
+        } else if let payload = WebExtensionMessageCodec.extractPayload(from: rawMessage) {
             let parked = parkPayload(payload)
             // The handler does NOT (and cannot) wake the app here — see `wakeURL`
             // note below. It returns the URL for the popup to open.
             ack = ["received": true, "parked": parked, "wakeURL": Self.handoffURL.absoluteString]
         } else {
-            Self.log.error("handoff message missing payload (raw: \(String(describing: rawMessage)))")
+            Self.log.error("native message missing diagnostic/payload: \(WebExtensionMessageCodec.messageShape(rawMessage))")
         }
 
         let response = NSExtensionItem()
         response.userInfo = [SFExtensionMessageKey: ack]
         context.completeRequest(returningItems: [response], completionHandler: nil)
-    }
-
-    /// Pull the `payload` out of whatever shape Safari delivered. Native
-    /// messaging payloads can arrive as the object directly
-    /// (`{ payload: ... }`) or wrapped under a `"message"` key
-    /// (`{ message: { payload: ... } }`) depending on the Safari version, so we
-    /// check both. Returns nil if no payload is present (e.g. the JS side sent
-    /// `undefined` because the content-script probe didn't respond).
-    private static func extractPayload(from raw: Any?) -> Any? {
-        guard let dict = raw as? [String: Any] else { return nil }
-        if let payload = dict["payload"] { return payload }
-        if let inner = dict["message"] as? [String: Any], let payload = inner["payload"] {
-            return payload
-        }
-        return nil
     }
 
     /// Writes the handoff payload as a small JSON file in the App Group container.

@@ -36,10 +36,10 @@ The extension is bundled inside the GuessWho app as a single
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" and "Experience" `<h2>`s) — never LinkedIn's obfuscated class names — `extractExperience` walks the Experience card's entry wrappers into structured positions (title/org/dates, current position feeds `title`/`org`), and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser as a fallback; scroll the profile to mount every lazy-rendered section and re-parse (`forceLazySections` — unconditional on every probe, optimizing for complete data over wait time). The pass is **readiness-driven and unbounded** (no deadline): it steps the scroller in small increments, looping top→bottom repeatedly (scrolling a section back out of view can cancel its in-flight lazy load), until every *scroll-mountable* required section — identity, Experience, About (see `profileReadiness`) — is in the DOM. About renders **above** Experience, so once Experience has mounted, an absent About can't still be coming — `profileReadiness` counts About done then, so a profile with no About text finishes on its own instead of scrolling until "Save anyway". Contact info can't be scrolled in, but the "Contact info" LINK lives in the top card (in the DOM from first paint), so `extractProfile` records `hasContactInfoLink` and `profileReadiness` uses it as a definitive signal: a profile with **no** link has nothing to fetch, so that fourth section is done immediately (it reaches 4/4 without any overlay). When the link **is** present, the overlay runs once after the scroll pass, waits for the contact fields to actually load into the dialog (not just the frame), parses emails/websites/profile URL, and restores the page. The only early exit is the popup's **"Save anyway"** button, which sends a `guesswho.interrupt` (keyed on `probeId`) that the loop checks each tick and bails; the pass always restores the user's scroll position. **The window does NOT scroll on a LinkedIn profile** — `document.documentElement.scrollHeight` reads exactly one viewport; the real content lives in a nested `<main>` scroll container, so `resolveScroller()` walks up from a content anchor to the genuinely-scrollable ancestor and the pass drives *that* element's `scrollTop` (driving the window is a no-op and mounts nothing). Then fetch the full-res photo bytes in-session as a `data:` URL; and reply to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
-| Background service worker | `App/GuessWhoLinkedIn/Resources/background.js` | The **only** place that can talk to native. Relays content/popup messages to the native handler via `sendNativeMessage`. Non-persistent (MV3 `service_worker`) — required on iOS, fine on macOS. |
+| Content script | `App/GuessWhoLinkedIn/Resources/content.js` + `parse-profile.js` | Runs in `linkedin.com/in/*` tabs (both files listed in the manifest's `content_scripts[].js` and injected into the same page context). `parse-profile.js` is the real parser: `extractProfile` anchors on **stable semantic signals** (page `<title>`, photo `alt`, top-card order, the "About" and "Experience" `<h2>`s) — never LinkedIn's obfuscated class names — `extractExperience` walks the Experience card's entry wrappers into structured positions (title/org/dates, current position feeds `title`/`org`), and `extractContactInfo` opens the "Contact info" overlay, parses emails/websites/profile URL, and restores the page. `content.js` orchestrates the probe: run the parser as a fallback; scroll the profile to mount every lazy-rendered section and re-parse (`forceLazySections` — unconditional on every probe, optimizing for complete data over wait time). The pass is **readiness-driven and bounded to 30 seconds**: it steps the scroller in small increments, looping top→bottom repeatedly (scrolling a section back out of view can cancel its in-flight lazy load), until every *scroll-mountable* required section — identity, Experience, About (see `profileReadiness`) — is in the DOM. About renders **above** Experience, so once Experience has mounted, an absent About can't still be coming — `profileReadiness` counts About done then. Contact info can't be scrolled in, but the "Contact info" LINK lives in the top card (in the DOM from first paint), so `extractProfile` records `hasContactInfoLink` and `profileReadiness` uses it as a definitive signal. The popup's **"Save anyway"** button sends a tab-targeted `guesswho.interrupt` keyed on `probeId` for an immediate partial result; otherwise the 30-second bound returns the partial result automatically. While the pass runs, it streams bounded, shape-only readiness/scroller/Experience-DOM fingerprints to the native extension log so a TestFlight export can diagnose a mobile DOM mismatch without retaining the person's name, slug, headings, or profile prose. The pass always restores the user's scroll position. **The window does NOT scroll on a LinkedIn profile** — `document.documentElement.scrollHeight` reads exactly one viewport; the real content lives in a nested `<main>` scroll container, so `resolveScroller()` walks up from a content anchor to the genuinely-scrollable ancestor and the pass drives *that* element's `scrollTop`. Then it fetches the full-res photo bytes in-session as a `data:` URL and replies to the popup. Every field is best-effort/null-on-failure; if the parser is missing or throws, `content.js` falls back to `minimalProbe()` (slug + title) so the pipe still proves out. |
+| Background service worker | `App/GuessWhoLinkedIn/Resources/background.js` | The **only** place that can talk to native. Relays the final handoff and in-flight page diagnostics to the native handler via `sendNativeMessage`. Non-persistent (MV3 `service_worker`) — required on iOS, fine on macOS. |
 | Popup | `App/GuessWhoLinkedIn/Resources/popup.{html,js}` | User-facing toolbar UI. Orchestrates: probe the tab → hand off to native → open the wake URL. Sized for a phone sheet so it ports to iOS. |
-| Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
+| Native handler | `App/GuessWhoLinkedIn/SafariWebExtensionHandler.swift` | Runs in the **extension process**. Writes bounded web diagnostics to `extension-*.log`; for a final handoff, parks the payload in the App Group and returns the wake URL. Holds **App Group only** — no Contacts, no iCloud. |
 | App receiver | `App/GuessWho/GuessWhoSceneDelegate.swift` | Runs in the **app process**. Receives the wake URL, drains the parked payload, then **matches** the profile, builds a **per-field before/after diff**, and presents a **confirm sheet** that saves the checked fields (see [Match → diff → confirm → save](#match--diff--confirm--save-app-side)). |
 
 Rice profile support uses the same transport and confirmation pipeline. The
@@ -385,7 +385,7 @@ The `EXTENSION resolved … id=` and `APP resolved … id=` lines must be
 **identical**, and the `park: writing to …` path must match `read: looking for …`.
 
 To see **what the parser captured** for a given profile (e.g. "why is the
-headline missing?"), there are two payload dumps, one per side of the boundary:
+headline missing?"), use these three complementary views across the boundary:
 
 - **Page console** — `content.js` logs `[GuessWho] parse result:` (full parsed
   JSON, photo bytes elided) in the LinkedIn tab's Web Inspector console. It
@@ -395,6 +395,29 @@ headline missing?"), there are two payload dumps, one per side of the boundary:
 - **App log** — after decoding the parked payload, the scene delegate logs
   `decoded payload: {…}` (photo elided) under `app.linkedin-handoff`, so "did
   field X arrive in the app?" is answerable from `app.log` alone.
+- **Extension file log** — during the scroll pass, `content.js` sends bounded
+  `guesswho.diagnostic` events through the background worker. The native handler
+  records them as `web diagnostic: {…}` in `extension-*.log`. Each record has a
+  probe id, elapsed time, readiness transition, scroller dimensions, viewport,
+  browser user agent, a redacted route shape (`/in/<redacted>`), semantic section
+  keys/text lengths, attribute presence/length/recognized kinds, Experience
+  ancestor counts, and paragraph shapes (length/line/separator/date-pattern
+  booleans). Error records contain only the error name and message length. It
+  intentionally excludes full HTML, verbatim headings/prose, names, profile
+  slugs, raw attribute values, URL query strings, cookies, error messages/stacks,
+  and photo bytes. The native codec preflights a JSON-escaped 32,768-byte budget
+  before JSON allocation, then enforces the exact serialized byte count; an
+  oversized record becomes a small fixed breadcrumb rather than truncated JSON.
+
+To collect these logs from a TestFlight build on iPhone:
+
+1. Enable **Settings → Apps → GuessWho → Debug Mode**.
+2. Run the Safari extension on the problem profile. Let it finish, wait for the
+   30-second partial-result fallback, or tap **Save anyway**.
+3. Open GuessWho's **Events** tab and tap **Export Logs** (the share icon beside
+   `+`).
+4. AirDrop or save `GuessWho-Logs-<timestamp>.zip`. The zip includes retained
+   `app-*.log` and `extension-*.log` files from the shared App Group.
 
 ## Runtime validation (needs a human)
 
