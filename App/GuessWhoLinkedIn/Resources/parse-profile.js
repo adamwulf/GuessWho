@@ -62,10 +62,13 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
   // win the || chain and cascade into a null top card. Fallbacks: the desktop
   // photo alt ("View <Name>’s profile"), the mobile photo alt ("Profile picture
   // of <Name>"), then the top-card <h1> (the mobile name element).
-  const photoImg = doc.querySelector('img[alt^="View "][alt*="profile"]');
-  // Mobile top-card photo. The prefix REQUIRES "of " so the viewer's own nav
-  // avatar ("<Me> Profile picture") and anonymous "Profile picture" alts on
+  // Both photo-alt sources skip nav chrome (header/nav/aside): the messaging
+  // and identity modules there carry OTHER people's "View <Name>’s profile"
+  // alts, and the mobile prefix REQUIRES "of " so the viewer's own nav avatar
+  // ("<Me> Profile picture") and anonymous "Profile picture" alts on
   // suggested-profile cards can never match.
+  const photoImg = [...doc.querySelectorAll('img[alt^="View "][alt*="profile"]')]
+    .find((im) => !im.closest("header, nav, aside")) || null;
   const mobilePhotoImgs = [...doc.querySelectorAll('img[alt^="Profile picture of "]')]
     .filter((im) => !im.closest("header, nav, aside"));
   const isChromeTitle = (t) =>
@@ -355,19 +358,22 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
     // When we know the name, REQUIRE the anchor's alt to assert that name —
     // both alt patterns also appear on suggested-profile/comment avatars of
     // OTHER people, and a first-in-document pick shipped a stranger's photo on
-    // the mobile layout. Bare first-match anchors are trusted only when no
-    // name was parsed at all (and then the name itself came from that alt).
-    const anchor =
-      (fullName && (
-        viewImgs.find((im) => viewAltName(im) === fullName) ||
-        mobilePhotoImgs.find((im) => picAltName(im) === fullName) ||
-        [...doc.images].filter(notNav).find((im) =>
-          (im.getAttribute("alt") || "").trim() === fullName)
-      )) ||
-      (!fullName && (viewImgs[0] || mobilePhotoImgs[0])) ||
-      [...doc.querySelectorAll('img[src*="profile-displayphoto"], img[srcset*="profile-displayphoto"]')]
-        .find(notNav) ||
-      null;
+    // the mobile layout. If a name is known and NO image asserts it (localized
+    // alt text, missing alts), return null — a missing photo beats a
+    // stranger's, and "People also viewed" avatars sit OUTSIDE the nav chrome,
+    // so first-in-document is not safe once a name exists to contradict.
+    // Bare first-match anchors are trusted only when no name was parsed at all
+    // (and then the name itself came from that alt).
+    const anchor = fullName
+      ? (viewImgs.find((im) => viewAltName(im) === fullName) ||
+         mobilePhotoImgs.find((im) => picAltName(im) === fullName) ||
+         [...doc.images].filter(notNav).find((im) =>
+           (im.getAttribute("alt") || "").trim() === fullName) ||
+         null)
+      : (viewImgs[0] || mobilePhotoImgs[0] ||
+         [...doc.querySelectorAll('img[src*="profile-displayphoto"], img[srcset*="profile-displayphoto"]')]
+           .find(notNav) ||
+         null);
     if (!anchor) return null;
 
     const anchorSource = sourceOf(anchor);
@@ -750,9 +756,16 @@ function findInPageContactSection(doc) {
   if (!head) return null;
   const section = head.closest("section") || head.parentElement;
   if (!section) return null;
+  // Require an actual contact FIELD link — a mailto, the /in/<slug> profile
+  // link, or an external (non-LinkedIn) website. Generic internal LinkedIn
+  // links don't count; without this, any stray "Contact" heading would turn
+  // its section into the contact source.
   const hasField = [...section.querySelectorAll("a[href]")].some((a) => {
     const href = a.getAttribute("href") || "";
-    return /^mailto:/i.test(href) || /^https?:/i.test(href) || /\/in\/[^/]+/.test(href);
+    if (/^mailto:/i.test(href)) return true;
+    if (/\/in\/[^/]+/.test(href)) return true;
+    return /^https?:/i.test(href) &&
+      !/(^https?:\/\/)?([^/]*\.)?linkedin\.com/i.test(unwrapSafetyURL(a.href));
   });
   return hasField ? section : null;
 }
@@ -977,6 +990,6 @@ function profileReadiness(result) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     extractProfile, extractRiceProfile, extractExperience, extractContactInfo,
-    profileReadiness, findInPageContactSection, gwPhotoAssetID,
+    profileReadiness, findInPageContactSection, gwContactFieldsFrom, gwPhotoAssetID,
   };
 }
