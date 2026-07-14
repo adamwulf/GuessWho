@@ -118,6 +118,39 @@ function gwElementFingerprint(el) {
   };
 }
 
+// Shape of one <li> as the mobile-layout Experience fallback would see it:
+// rendered line count plus how many of those lines are structured date
+// ranges. Counts only — no verbatim text.
+function gwListItemShape(li) {
+  const raw = typeof li.innerText === "string" ? li.innerText : li.textContent;
+  const lines = String(raw || "").split("\n").map((s) => s.trim()).filter(Boolean);
+  return {
+    lineCount: lines.length,
+    dateLineCount: lines.filter((t) =>
+      /\b(19|20)\d{2}\s*[-–]\s*(present\b|([a-z]{3,9}\.?\s+)?(19|20)\d{2}\b)/i.test(t)
+    ).length,
+  };
+}
+
+// Bounded fingerprint of the photo-anchor candidates (counts/booleans only).
+// Mirrors the anchor chain in parse-profile.js so an exported log shows WHY a
+// photo was or wasn't picked on an unrecognized layout.
+function gwPhotoDOMFingerprint() {
+  const notNav = (im) => !im.closest("header, nav, aside");
+  const displayphoto = [...document.querySelectorAll(
+    'img[src*="profile-displayphoto"], img[srcset*="profile-displayphoto"]'
+  )];
+  return {
+    imageCount: document.images.length,
+    viewAltCount: document.querySelectorAll('img[alt^="View "][alt*="profile"]').length,
+    mobileAltCount: document.querySelectorAll('img[alt^="Profile picture of "]').length,
+    displayphotoCount: displayphoto.length,
+    displayphotoOutsideNavCount: displayphoto.filter(notNav).length,
+    withMultiVariantSrcsetCount: [...document.images]
+      .filter((im) => /\d+w/.test(im.getAttribute("srcset") || "")).length,
+  };
+}
+
 function gwExperienceDOMFingerprint() {
   const headings = [...document.querySelectorAll("h1, h2, h3")];
   const experienceHead = headings.find((h) =>
@@ -152,7 +185,25 @@ function gwExperienceDOMFingerprint() {
       }
     }
   }
+  // The mobile layout has no <p>s or componentkeys — sample the leaf <li>s
+  // the parser's mobile fallback would classify, from the heading's section.
+  const listSampleRoot = paragraphSampleRoot
+    || (experienceHead && experienceHead.closest("section"))
+    || null;
   return {
+    // A generic tab title ("Profile") is the mobile layout's tell — record the
+    // shape, never the text.
+    titleShape: {
+      length: String(document.title || "").length,
+      generic: /^(profile|linkedin|feed|my network|jobs|messaging|notifications|search|settings|home|people)\s*([|·]\s*LinkedIn)?$/i
+        .test(String(document.title || "").trim()),
+    },
+    h1Shapes: [...document.querySelectorAll("h1")].slice(0, 5).map((h) => ({
+      characterCount: String(h.textContent || "").trim().length,
+      semanticKey: gwSemanticHeading(h.textContent),
+      inChrome: !!h.closest("header, nav, aside"),
+    })),
+    photo: gwPhotoDOMFingerprint(),
     headings: headings.slice(0, 40).map((h) => ({
       tag: (h.tagName || "").toLowerCase() || null,
       characterCount: String(h.textContent || "").trim().length,
@@ -164,6 +215,12 @@ function gwExperienceDOMFingerprint() {
       ? [...paragraphSampleRoot.querySelectorAll("p")]
           .slice(0, 30)
           .map(gwParagraphShape)
+      : [],
+    experienceLeafListShapes: listSampleRoot
+      ? [...listSampleRoot.querySelectorAll("li")]
+          .filter((li) => !li.querySelector("li"))
+          .slice(0, 16)
+          .map(gwListItemShape)
       : [],
   };
 }
@@ -277,7 +334,7 @@ async function fetchPhotoBytes(photoSrcset) {
 // where the window really is the scroller.
 function resolveScroller() {
   const anchor =
-    [...document.querySelectorAll("h2")].find((h) =>
+    [...document.querySelectorAll("h1, h2, h3")].find((h) =>
       /about|experience|education/i.test(h.textContent || "")
     ) ||
     document.querySelector("main") ||
