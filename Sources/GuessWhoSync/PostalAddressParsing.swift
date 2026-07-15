@@ -24,11 +24,12 @@ extension PostalAddress {
         guard let match = detector.firstMatch(in: trimmed, options: [], range: range),
               let components = match.addressComponents else { return nil }
 
+        // `NSDataDetector`'s address components map onto `NSTextCheckingKey`,
+        // which has no `subLocality` / `subAdministrativeArea` keys — those
+        // `PostalAddress` fields are left at their empty-string defaults.
         let parsed = PostalAddress(
             street: components[.street] ?? "",
-            subLocality: components[.subLocality] ?? "",
             city: components[.city] ?? "",
-            subAdministrativeArea: components[.subAdministrativeArea] ?? "",
             state: components[.state] ?? "",
             postalCode: components[.zip] ?? "",
             country: components[.country] ?? "",
@@ -36,8 +37,7 @@ extension PostalAddress {
         )
 
         let filledCount = [
-            parsed.street, parsed.subLocality, parsed.city,
-            parsed.subAdministrativeArea, parsed.state,
+            parsed.street, parsed.city, parsed.state,
             parsed.postalCode, parsed.country,
         ].filter { !$0.isEmpty }.count
         guard filledCount >= 2 else { return nil }
