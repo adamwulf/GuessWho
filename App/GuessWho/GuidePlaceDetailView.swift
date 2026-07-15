@@ -85,6 +85,14 @@ struct GuidePlaceDetailView: View {
         .task(id: matchKey) {
             await reloadAssociations()
         }
+        // Stamp lastViewed ONCE per open (not in the match task above, which
+        // re-runs when the address resolves). Fire-and-forget: the package
+        // no-ops when no sidecar exists, and the resulting sidecar change
+        // drives the places list's debounced reload so a "Last Viewed" sort
+        // re-orders. Mirrors the guide's on-open stamp.
+        .task {
+            service.stampPlaceViewed(uuid: placeID.uuidString)
+        }
     }
 
     private var navigationTitle: String {

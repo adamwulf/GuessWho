@@ -136,6 +136,94 @@ struct GuideSidecarTests {
         #expect(try sync.allPlaces().isEmpty)
     }
 
+    // MARK: - Last viewed
+
+    @Test func stampGuideViewedRoundTrips() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let key = SidecarKey(kind: .guide, id: guideID.uuidString)
+
+        // Never-viewed guides carry no stamp.
+        #expect(try sync.guide(at: key)?.lastViewedAt == nil)
+
+        let now = Date(timeIntervalSinceReferenceDate: 12_345)
+        try sync.stampGuideViewed(at: key, now: now)
+
+        let stamped = try #require(try sync.guide(at: key))
+        let readBack = try #require(stamped.lastViewedAt)
+        #expect(abs(readBack.timeIntervalSinceReferenceDate - now.timeIntervalSinceReferenceDate) < 1)
+        // Additive: name and source cells survive the stamp.
+        #expect(stamped.name == "Berlin")
+    }
+
+    @Test func stampGuideViewedIsANoOpForMissingSidecar() throws {
+        let (sync, _) = makeOrchestrator()
+        // Must not throw or mint an envelope.
+        try sync.stampGuideViewed(at: SidecarKey(kind: .guide, id: UUID().uuidString))
+        #expect(try sync.allGuides().isEmpty)
+    }
+
+    @Test func stampPlaceViewedRoundTrips() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let place = try #require(try sync.places(inGuide: guideID).first)
+        let key = SidecarKey(kind: .place, id: place.id.uuidString)
+
+        // Never-viewed places carry no stamp.
+        #expect(place.lastViewedAt == nil)
+
+        let now = Date(timeIntervalSinceReferenceDate: 67_890)
+        try sync.stampPlaceViewed(at: key, now: now)
+
+        let stamped = try #require(try sync.places(inGuide: guideID).first { $0.id == place.id })
+        let readBack = try #require(stamped.lastViewedAt)
+        #expect(abs(readBack.timeIntervalSinceReferenceDate - now.timeIntervalSinceReferenceDate) < 1)
+        // Additive: the place's guide membership and order survive the stamp.
+        #expect(stamped.guideID == guideID)
+        #expect(stamped.sortOrder == place.sortOrder)
+    }
+
+    @Test func stampPlaceViewedIsANoOpForMissingSidecar() throws {
+        let (sync, _) = makeOrchestrator()
+        // Must not throw or mint an envelope.
+        try sync.stampPlaceViewed(at: SidecarKey(kind: .place, id: UUID().uuidString))
+        #expect(try sync.allPlaces().isEmpty)
+    }
+
+    // MARK: - Reorder
+
+    @Test func reorderPlacesRewritesEntryOrder() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let original = try sync.places(inGuide: guideID)
+        #expect(original.map(\.sortOrder) == [0, 1, 2])
+
+        // Move the last place to the front.
+        let reordered = [original[2].id, original[0].id, original[1].id]
+        try sync.reorderPlaces(inGuide: guideID, orderedIDs: reordered)
+
+        let after = try sync.places(inGuide: guideID)
+        #expect(after.map(\.id) == reordered)
+        #expect(after.map(\.sortOrder) == [0, 1, 2])
+    }
+
+    @Test func reorderPlacesSkipsUnknownIDsAndMissingSidecars() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let original = try sync.places(inGuide: guideID)
+
+        // An unknown id interleaved with real ones is ignored; the real places
+        // still land at their listed positions.
+        let ghost = UUID()
+        try sync.reorderPlaces(
+            inGuide: guideID,
+            orderedIDs: [original[1].id, ghost, original[2].id, original[0].id]
+        )
+
+        let after = try sync.places(inGuide: guideID)
+        #expect(after.map(\.id) == [original[1].id, original[2].id, original[0].id])
+    }
+
     // MARK: - Deletion
 
     @Test func deleteGuideHidesGuideAndItsPlaces() throws {

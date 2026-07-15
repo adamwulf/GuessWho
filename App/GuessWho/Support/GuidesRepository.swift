@@ -18,8 +18,7 @@ extension Notification.Name {
 final class GuidesRepository: NSObject {
     private let service: SyncService
 
-    /// Live guides, newest import first (guide name as a deterministic
-    /// tiebreak for same-moment imports).
+    /// Live guides, ordered by `sortOrder`.
     private(set) var guides: [MapsGuide] = []
 
     /// Every live place, keyed by its guide — one sidecar walk backs both the
@@ -27,6 +26,35 @@ final class GuidesRepository: NSObject {
     private(set) var placesByGuide: [UUID: [MapsPlace]] = [:]
 
     private(set) var isLoading: Bool = false
+
+    /// The live sort order every guides list reads. Persistence is the app's
+    /// job (`GuideSortOrderSetting` writes UserDefaults and sets this);
+    /// setting it re-sorts in place and posts `.guidesRepositoryDidReload`
+    /// so visible lists re-snapshot — same shape as
+    /// `EventsRepository.sortOrder`. No-op (and no post) when unchanged.
+    var sortOrder: GuideSortOrder = .recentlyAdded {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            guides = sortOrder.sorted(guides)
+            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        }
+    }
+
+    /// The live sort order every guide's places list reads (global across all
+    /// guides). Persistence is `PlaceSortOrderSetting`'s job; setting it
+    /// re-sorts each guide's places in place and posts
+    /// `.guidesRepositoryDidReload` so the open places list re-snapshots. The
+    /// package's canonical `places(inGuide:)` stays in guide-entry order (the
+    /// resolver relies on it); only this display copy is reordered.
+    var placeSortOrder: PlaceSortOrder = .guideOrder {
+        didSet {
+            guard placeSortOrder != oldValue else { return }
+            for guideID in placesByGuide.keys {
+                placesByGuide[guideID] = placeSortOrder.sorted(placesByGuide[guideID] ?? [])
+            }
+            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        }
+    }
 
     init(service: SyncService) {
         self.service = service
@@ -73,22 +101,14 @@ final class GuidesRepository: NSObject {
         let fetchedGuides = await service.allGuides()
         let fetchedPlaces = await service.allPlaces()
 
-        guides = fetchedGuides.sorted { lhs, rhs in
-            let lhsStamp = lhs.createdAt ?? .distantPast
-            let rhsStamp = rhs.createdAt ?? .distantPast
-            if lhsStamp != rhsStamp { return lhsStamp > rhsStamp }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
+        guides = sortOrder.sorted(fetchedGuides)
 
         var byGuide: [UUID: [MapsPlace]] = [:]
         for place in fetchedPlaces {
             byGuide[place.guideID, default: []].append(place)
         }
         for guideID in byGuide.keys {
-            byGuide[guideID]?.sort { lhs, rhs in
-                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
+            byGuide[guideID] = placeSortOrder.sorted(byGuide[guideID] ?? [])
         }
         placesByGuide = byGuide
 
@@ -100,6 +120,24 @@ final class GuidesRepository: NSObject {
 
     func places(inGuide guideID: UUID) -> [MapsPlace] {
         placesByGuide[guideID] ?? []
+    }
+
+    /// Apply a drag-reorder of `guideID`'s places (source rows → destination
+    /// row, `Array.move(fromOffsets:toOffset:)` semantics), persist the new
+    /// entry order, and update the in-memory copy so the list repaints
+    /// immediately without waiting for the debounced sidecar reload. Only used
+    /// while the places list is in `.guideOrder` (the order this rewrites).
+    /// Mirrors `FavoritesListStore.move(from:to:)`.
+    func movePlaces(inGuide guideID: UUID, from source: IndexSet, to destination: Int) {
+        guard var places = placesByGuide[guideID] else { return }
+        places.move(fromOffsets: source, toOffset: destination)
+        // Renumber sortOrder so the in-memory copy matches the cells we're
+        // about to persist (and stays consistent if a reload races in).
+        for index in places.indices {
+            places[index].sortOrder = index
+        }
+        placesByGuide[guideID] = places
+        service.reorderPlaces(inGuide: guideID, orderedIDs: places.map(\.id))
     }
 
     func placeCount(inGuide guideID: UUID) -> Int {

@@ -593,10 +593,47 @@ final class SyncService {
         )
     }
 
+    /// Stamp `lastViewed = now` on the guide sidecar. Best-effort and silent
+    /// (a failed stamp must never break opening the guide); errors surface via
+    /// `lastError`. A no-op inside the package when no sidecar exists at
+    /// `uuid`. Mirrors `stampEventViewed(uuid:)`.
+    func stampGuideViewed(uuid: String) {
+        guard let sync else { return }
+        do {
+            try sync.stampGuideViewed(at: SidecarKey(kind: .guide, id: uuid))
+        } catch {
+            lastError = "stamp guide viewed failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Stamp `lastViewed = now` on the place sidecar. Best-effort and silent
+    /// (a failed stamp must never break opening the place). A no-op inside the
+    /// package when no sidecar exists at `uuid`. Mirrors `stampGuideViewed`.
+    func stampPlaceViewed(uuid: String) {
+        guard let sync else { return }
+        do {
+            try sync.stampPlaceViewed(at: SidecarKey(kind: .place, id: uuid))
+        } catch {
+            lastError = "stamp place viewed failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Soft-delete a guide and every place in it.
     func deleteGuide(uuid: String) throws {
         guard let sync else { throw SidecarUnavailableError() }
         try sync.deleteGuide(at: SidecarKey(kind: .guide, id: uuid))
+    }
+
+    /// Persist a drag-reorder of a guide's places into `orderedIDs` order.
+    /// Best-effort and silent; errors surface via `lastError`. Only meaningful
+    /// for the "Guide Order" sort, whose backing cell this rewrites.
+    func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) {
+        guard let sync else { return }
+        do {
+            try sync.reorderPlaces(inGuide: guideID, orderedIDs: orderedIDs)
+        } catch {
+            lastError = "reorder places failed: \(error.localizedDescription)"
+        }
     }
 
     /// Soft-delete a single place.

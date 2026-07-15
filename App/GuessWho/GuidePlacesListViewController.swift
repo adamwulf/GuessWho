@@ -27,6 +27,10 @@ final class GuidePlacesListViewController: UIViewController {
 
     private let emptyLabel = UILabel()
 
+    /// The sort pull-down button. Its menu is rebuilt in the reload observer so
+    /// the checkmark tracks the repository's live place order.
+    private var sortButton: UIBarButtonItem!
+
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
@@ -62,9 +66,17 @@ final class GuidePlacesListViewController: UIViewController {
         configureTableView()
         configureEmptyState()
         configureDataSource()
+        configureSortButton()
         observeRepositoryReloads()
 
         applySnapshot(animated: false)
+
+        // Stamp lastViewed ONCE per open (opening a guide's places is the
+        // guide equivalent of opening a detail view). Fire-and-forget: the
+        // package no-ops when no sidecar exists, and the resulting sidecar
+        // change drives the guides list's debounced reload so a "Last Viewed"
+        // sort re-orders. Mirrors EventDetailView's on-open stamp.
+        service.stampGuideViewed(uuid: guide.id.uuidString)
 
         // Retry any still-unresolved place IDs each time the guide opens (a
         // prior pass may have hit a network failure, or the app may have quit
@@ -90,6 +102,12 @@ final class GuidePlacesListViewController: UIViewController {
         tableView = UITableView(frame: .zero, style: .plain)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
+        // Press-and-hold to reorder, like the Favorites list. Dragging is only
+        // offered while sorted by "Guide Order" (see the drag delegate) — the
+        // other orders are derived, so hand-reordering them is meaningless.
+        tableView.dragDelegate = self
+        tableView.dropDelegate = self
+        tableView.dragInteractionEnabled = true
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 56
         tableView.register(PlaceCell.self, forCellReuseIdentifier: CellID.place.rawValue)
@@ -132,6 +150,11 @@ final class GuidePlacesListViewController: UIViewController {
         dataSource.defaultRowAnimation = .fade
     }
 
+    private func configureSortButton() {
+        sortButton = makePlaceSortBarButtonItem(repository: repository)
+        navigationItem.rightBarButtonItem = sortButton
+    }
+
     // MARK: - Snapshot wiring
 
     @MainActor
@@ -144,7 +167,11 @@ final class GuidePlacesListViewController: UIViewController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySnapshot(animated: true)
+                guard let self else { return }
+                self.applySnapshot(animated: true)
+                // Rebuild the sort menu so the checkmark tracks the order that
+                // produced this reload (menus are immutable snapshots).
+                self.sortButton.menu = self.makePlaceSortMenu(repository: self.repository)
             }
         }
         // The resolver moves its "looking up now" marker between rows without a
@@ -297,6 +324,60 @@ extension GuidePlacesListViewController: UITableViewDelegate {
 extension GuidePlacesListViewController: ScrollsToTop {
     func scrollToTop(animated: Bool) {
         tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
+// MARK: - Drag & drop reorder
+
+extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDropDelegate {
+    func tableView(
+        _ tableView: UITableView,
+        itemsForBeginning session: UIDragSession,
+        at indexPath: IndexPath
+    ) -> [UIDragItem] {
+        // Reordering only makes sense in the guide's own entry order — the
+        // Name / Last Viewed orders are derived, so hand-placing a row there
+        // has nothing to persist. Returning [] disables the drag lift.
+        guard repository.placeSortOrder == .guideOrder,
+              dataSource.itemIdentifier(for: indexPath) != nil else { return [] }
+        // Empty provider — the drop path uses item.sourceIndexPath, so there's
+        // nothing to encode (mirrors FavoritesListViewController).
+        return [UIDragItem(itemProvider: NSItemProvider())]
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        dropSessionDidUpdate session: UIDropSession,
+        withDestinationIndexPath destinationIndexPath: IndexPath?
+    ) -> UITableViewDropProposal {
+        guard repository.placeSortOrder == .guideOrder else {
+            return UITableViewDropProposal(operation: .cancel)
+        }
+        return UITableViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
+    }
+
+    func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
+        guard repository.placeSortOrder == .guideOrder else { return }
+        let destination = coordinator.destinationIndexPath
+            ?? IndexPath(row: tableView.numberOfRows(inSection: 0), section: 0)
+
+        // Collect every source row into one IndexSet so a single move handles
+        // the reorder atomically (same rationale as FavoritesListViewController).
+        var sourceRows = IndexSet()
+        for item in coordinator.items {
+            guard let source = item.sourceIndexPath else { continue }
+            sourceRows.insert(source.row)
+        }
+        guard !sourceRows.isEmpty else { return }
+
+        // Persists the new order and updates the in-memory copy, so the
+        // applySnapshot below paints the final order immediately (the debounced
+        // sidecar reload later reconciles to the same order).
+        repository.movePlaces(inGuide: guide.id, from: sourceRows, to: destination.row)
+        for item in coordinator.items {
+            coordinator.drop(item.dragItem, toRowAt: destination)
+        }
+        applySnapshot(animated: true)
     }
 }
 

@@ -6,6 +6,7 @@ extension GuessWhoSync {
     public static let guideNameCacheKey       = "nameCache"
     public static let guideSourceURLCellKey   = "sourceURL"
     public static let guideDeletedAtCellKey   = "deletedAt"
+    public static let guideLastViewedCellKey  = "lastViewed"
 
     public static let placeGuideIDCellKey     = "guideID"
     public static let placeNameCacheKey       = "nameCache"
@@ -16,6 +17,7 @@ extension GuessWhoSync {
     public static let placeResolvedAtCellKey  = "resolvedAt"
     public static let placeSortOrderCellKey   = "orderCache"
     public static let placeDeletedAtCellKey   = "deletedAt"
+    public static let placeLastViewedCellKey  = "lastViewed"
 
     // MARK: - Lifecycle
 
@@ -146,6 +148,66 @@ extension GuessWhoSync {
         }
     }
 
+    /// Stamp `lastViewed = now` on the guide envelope at `key`. ADDITIVE and
+    /// schema-stable, like the event view stamp: only the one cell changes,
+    /// every other cell (name cache, source URL) is preserved. No-op when no
+    /// envelope exists yet — a view stamp must never mint a sidecar on its own.
+    /// Mirrors `stampEventViewed(at:)`.
+    public func stampGuideViewed(at key: SidecarKey, now: Date = Date()) throws {
+        guard try sidecars.read(key) != nil else { return }
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.guideLastViewedCellKey,
+            fieldName: Self.guideLastViewedCellKey,
+            type: .date,
+            value: .string(SidecarISO8601.string(from: now)),
+            softDelete: false
+        )
+    }
+
+    /// Stamp `lastViewed = now` on the place envelope at `key`. ADDITIVE and
+    /// schema-stable, like `stampGuideViewed`: only the one cell changes, every
+    /// other cell (name/address caches, coordinate, order) is preserved. No-op
+    /// when no envelope exists yet.
+    public func stampPlaceViewed(at key: SidecarKey, now: Date = Date()) throws {
+        guard try sidecars.read(key) != nil else { return }
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.placeLastViewedCellKey,
+            fieldName: Self.placeLastViewedCellKey,
+            type: .date,
+            value: .string(SidecarISO8601.string(from: now)),
+            softDelete: false
+        )
+    }
+
+    /// Rewrite `guideID`'s places into `orderedIDs` order by stamping each
+    /// place's `orderCache` cell to its new index (0-based). `orderedIDs` must
+    /// be the guide's full place set in the desired order; entries with no live
+    /// sidecar are skipped. Only places whose index actually changed are
+    /// written, so a small drag touches only the shifted rows. Backs the
+    /// drag-to-reorder affordance in the places list — the "Guide Order" sort
+    /// IS this cell, so reordering here is what that sort reflects.
+    public func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) throws {
+        var currentOrder: [UUID: Int] = [:]
+        for place in try places(inGuide: guideID) {
+            currentOrder[place.id] = place.sortOrder
+        }
+        for (index, placeID) in orderedIDs.enumerated() {
+            if currentOrder[placeID] == index { continue }
+            let key = SidecarKey(kind: .place, id: placeID.uuidString)
+            guard try sidecars.read(key) != nil else { continue }
+            try writeWellKnownCell(
+                at: key,
+                cellKey: Self.placeSortOrderCellKey,
+                fieldName: Self.placeSortOrderCellKey,
+                type: .note,
+                value: .string(String(index)),
+                softDelete: false
+            )
+        }
+    }
+
     /// Whole-place soft-delete (removing a single row from a guide).
     public func deletePlace(at key: SidecarKey) throws {
         try writeWellKnownCell(
@@ -262,7 +324,9 @@ extension GuessWhoSync {
             id: id,
             name: decodeGuideStringValue(envelope: envelope, cellKey: Self.guideNameCacheKey) ?? "",
             sourceURL: decodeGuideStringValue(envelope: envelope, cellKey: Self.guideSourceURLCellKey),
-            createdAt: earliestGuideCellCreatedAt(envelope: envelope)
+            createdAt: earliestGuideCellCreatedAt(envelope: envelope),
+            lastViewedAt: decodeGuideStringValue(envelope: envelope, cellKey: Self.guideLastViewedCellKey)
+                .flatMap(SidecarISO8601.date(from:))
         )
     }
 
@@ -292,7 +356,9 @@ extension GuessWhoSync {
             mapsPlaceID: decodeGuideStringValue(envelope: envelope, cellKey: Self.placeMapsPlaceIDCellKey),
             resolvedAt: resolvedAtRaw.flatMap(SidecarISO8601.date(from:)),
             sortOrder: sortOrder,
-            createdAt: earliestGuideCellCreatedAt(envelope: envelope)
+            createdAt: earliestGuideCellCreatedAt(envelope: envelope),
+            lastViewedAt: decodeGuideStringValue(envelope: envelope, cellKey: Self.placeLastViewedCellKey)
+                .flatMap(SidecarISO8601.date(from:))
         )
     }
 
