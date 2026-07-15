@@ -338,6 +338,12 @@ struct ContactDetailView: View {
             if isEditingContact {
                 editingSections
             } else {
+                // Associated Organization leads the page (people only — renders
+                // nothing for orgs): the org row and its department row are the
+                // highest-signal navigation on a person's card, so they sit
+                // directly under the header, above the info rows.
+                associatedOrganizationSection(contact)
+
                 infoSection(contact)
 
                 contactNotesSection(contact)
@@ -345,8 +351,6 @@ struct ContactDetailView: View {
                 sidecarFieldsSection
 
                 referencedBySection(contact)
-
-                associatedOrganizationSection(contact)
 
                 departmentsSection(contact)
 
