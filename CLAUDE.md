@@ -48,7 +48,8 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
 
 - `Sources/GuessWhoSync/` — the storage + sync engine (Swift Package).
   Sidecar storage, EventKit/Contacts adapters, model types (`Event`,
-  `Contact`, `ContactLink`, `ContactNote`, `EventTag`, `SidecarKey`).
+  `Contact`, `ContactLink`, `ContactNote`, `EventTag`, `SidecarKey`,
+  `MapsGuide`, `MapsPlace`).
 - `App/GuessWho/` — the app target. SwiftUI + UIKit (Catalyst 3-column
   shell, iPhone tab-bar shell). Detail views, list view controllers,
   scene delegate.
@@ -59,8 +60,9 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   `README.md` for build/test/Web-Store instructions.
 - `App/GuessWhoShare/` — the iOS share extension: share a LinkedIn profile
   URL from the LinkedIn app and it re-opens in Safari, where the Safari
-  extension captures it. Bounce-only — no parsing, no storage, no
-  entitlements. iOS only (not Catalyst).
+  extension captures it; share an Apple Maps guide link and it bounces into
+  the app via the wake scheme for import. Bounce-only — no parsing, no
+  storage, no entitlements. iOS only (not Catalyst).
 - `App/GuessWhoAppKitBridge/` — in-process AppKit `.bundle` for the rare
   AppKit-only needs on Catalyst (e.g. `NSOpenPanel`).
 - `Sources/GuessWhoLogging/` — `GuessWhoLog`, a thin facade over
@@ -79,6 +81,9 @@ touching that subsystem:
 - [`docs/linkedin-safari-extension.md`](docs/linkedin-safari-extension.md) —
   the LinkedIn extension + extension↔app handoff: App Group / iCloud
   wiring, Debug-vs-Release ids, the wake-URL flow, match→diff→confirm→save.
+- [`docs/maps-guides.md`](docs/maps-guides.md) — the Apple Maps guide
+  import: the share-link/protobuf format, guide/place sidecars, MapKit
+  place-ID resolution, and the Guides tab's entry points.
 - [`docs/contacts-notes-entitlement-application.md`](docs/contacts-notes-entitlement-application.md)
   and [`docs/research/contact-note-134092-strategy.md`](docs/research/contact-note-134092-strategy.md)
   — how to obtain the `com.apple.developer.contacts.notes` entitlement, and

@@ -10,3 +10,9 @@ PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.share
 // Display name — the label under the icon in the share sheet. The Debug
 // counterpart is "GuessWho Debug".
 GUESSWHO_SHARE_DISPLAY_NAME = GuessWho
+
+// App wake scheme — must match GUESSWHO_LINKEDIN_URL_SCHEME in
+// GuessWho-Release.xcconfig so the extension's Apple Maps guide bounce
+// (`<scheme>://import-guide?url=…`) wakes the Release app. Fed into the
+// extension's Info.plist as GuessWhoLinkedInURLScheme.
+GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin

@@ -11,7 +11,7 @@ import GuessWhoLogging
 /// * iPhone and iPad regular-width → a `PermissionGateViewController`
 ///   that swaps between a ContentUnavailable gate and a
 ///   `UITabBarController` of navigation stacks (Favorites / People /
-///   Organizations / Events / Groups); selecting a row PUSHES a
+///   Organizations / Events / Guides / Groups); selecting a row PUSHES a
 ///   `UIHostingController(rootView: ContactDetailView…)` or
 ///   `EventDetailView` onto the tab's nav stack.
 ///
@@ -93,21 +93,38 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         #endif
 
-        // Cold-launch path: a LinkedIn handoff URL
-        // (`guesswho-linkedin[-debug]://handoff`) that woke the app arrives here, not in
-        // `scene(_:openURLContexts:)`. Drain it once the window exists so the
-        // spike alert has something to present on.
+        // Cold-launch path: a wake URL (`guesswho-linkedin[-debug]://…`) that
+        // woke the app arrives here, not in `scene(_:openURLContexts:)`.
+        // Drain it once the window exists so there's something to present on.
         if !connectionOptions.urlContexts.isEmpty {
-            handleLinkedInHandoff(urlContexts: connectionOptions.urlContexts, entry: "cold-launch")
+            handleIncomingURLs(urlContexts: connectionOptions.urlContexts, entry: "cold-launch")
         }
     }
 
-    /// Running-app path for the LinkedIn handoff spike: UIKit delivers the
-    /// `guesswho-linkedin[-debug]://handoff` URL here when a scene is already
-    /// connected. Only handoff-scheme URLs (`LinkedInHandoffScheme.scheme`) are
+    /// Running-app path for app-scheme wakes: UIKit delivers
+    /// `guesswho-linkedin[-debug]://…` URLs here when a scene is already
+    /// connected. Only app-scheme URLs (`LinkedInHandoffScheme.scheme`) are
     /// handled, not the `guesswho://contact/<uuid>` identity scheme.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        handleLinkedInHandoff(urlContexts: URLContexts, entry: "warm-open")
+        handleIncomingURLs(urlContexts: URLContexts, entry: "warm-open")
+    }
+
+    /// Route incoming wake URLs by host: `…://import-guide?url=…` (the share
+    /// extension's Apple Maps guide bounce) goes to the guide importer;
+    /// everything else stays on the LinkedIn handoff path, which owns its own
+    /// scheme filtering and logging.
+    private func handleIncomingURLs(urlContexts: Set<UIOpenURLContext>, entry: String) {
+        let guideContexts = urlContexts.filter { context in
+            context.url.scheme == LinkedInHandoffScheme.scheme
+                && context.url.host == Self.guideImportHost
+        }
+        for context in guideContexts {
+            handleGuideImportWake(context.url, entry: entry)
+        }
+        let remaining = urlContexts.subtracting(guideContexts)
+        if !remaining.isEmpty {
+            handleLinkedInHandoff(urlContexts: remaining, entry: entry)
+        }
     }
 
     // MARK: - Scene lifecycle breadcrumbs
@@ -331,6 +348,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split, for: .events)
+
+        case .guides:
+            let list = GuidesListViewController(
+                repository: appDelegate.guidesRepository,
+                service: appDelegate.service
+            )
+            // Selecting a guide PUSHES its places list onto the supplementary
+            // column's nav (back-button returns to the guides list) — the same
+            // drill-in shape as Groups → members. Tapping a place opens Apple
+            // Maps, so the detail column keeps its placeholder.
+            let nav = UINavigationController(rootViewController: list)
+            list.didSelectGuide = { [weak self, weak nav] guide in
+                self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate)
+            }
+            split.setViewController(nav, for: .supplementary)
+            installDetailPlaceholder(in: split, for: .guides)
 
         case .favorites:
             let list = FavoritesListViewController(
@@ -591,6 +624,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
     #endif
 
+    // MARK: - Shared guide drill-in (both shells)
+
+    /// Push a `GuidePlacesListViewController` for `guide` onto `nav`. Shared
+    /// by both shells: Catalyst pushes onto the supplementary column's nav,
+    /// the iPhone tab shell onto the Guides tab's nav stack — the same
+    /// drill-in shape as Groups → members.
+    private func pushGuidePlaces(
+        guide: MapsGuide,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let places = GuidePlacesListViewController(
+            guide: guide,
+            repository: appDelegate.guidesRepository,
+            service: appDelegate.service
+        )
+        nav.pushViewController(places, animated: true)
+    }
+
     // MARK: - Shared add-contact flow (both shells)
 
     /// The "+" add flow, shared by both shells and by the People and
@@ -771,12 +824,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let orgsNav = makeIPhoneOrganizationsTab(appDelegate: appDelegate)
         let eventsNav = makeIPhoneEventsTab(appDelegate: appDelegate)
         let favoritesNav = makeIPhoneFavoritesTab(appDelegate: appDelegate)
+        let guidesNav = makeIPhoneGuidesTab(appDelegate: appDelegate)
         let groupsNav = makeIPhoneGroupsTab(appDelegate: appDelegate)
 
         let tabs = UITabBarController()
         // Order matches the sidebar's `SidebarTab.allCases`: Favorites first,
-        // then People, Organizations, Events, and Groups last.
-        let tabNavs = [favoritesNav, peopleNav, orgsNav, eventsNav, groupsNav]
+        // then People, Organizations, Events, Guides, and Groups last.
+        let tabNavs = [favoritesNav, peopleNav, orgsNav, eventsNav, guidesNav, groupsNav]
         tabs.viewControllers = tabNavs
         // Observe each tab nav's push/pop so backing out of a detail re-syncs the
         // restore selection to the top VC (`navigationController(_:didShow:)`).
@@ -929,6 +983,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             title: SidebarTab.favorites.title,
             image: UIImage(systemName: SidebarTab.favorites.systemImage),
             tag: 0
+        )
+        return nav
+    }
+
+    /// Guides tab. A `GuidesListViewController` in its own nav stack;
+    /// selecting a guide PUSHES its places list — the same drill-in flow as
+    /// the Groups tab.
+    private func makeIPhoneGuidesTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = GuidesListViewController(
+            repository: appDelegate.guidesRepository,
+            service: appDelegate.service
+        )
+        list.didSelectGuide = { [weak self] guide in
+            self?.pushGuidePlaces(guide: guide, on: list.navigationController, appDelegate: appDelegate)
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.guides.title,
+            image: UIImage(systemName: SidebarTab.guides.systemImage),
+            tag: 5
         )
         return nav
     }
@@ -1116,6 +1190,86 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             .environment(\.pushGroupReference) { [weak self, weak nav] ref in
                 self?.pushGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
+    }
+
+    // MARK: - Apple Maps guide import wake
+
+    /// Host segment of the share extension's guide bounce URL:
+    /// `guesswho-linkedin[-debug]://import-guide?url=<share link>`. The share
+    /// extension builds this wake so a guide shared from Apple Maps lands in
+    /// the app; the same import path also backs the Guides list's "+" flow.
+    static let guideImportHost = "import-guide"
+
+    /// Guide-wake breadcrumbs. Developer-facing label; see GuessWhoLogging
+    /// notes.
+    private static let guidesLog = GuessWhoLog.logger("app.guides.wake")
+
+    /// Import the Apple Maps guide share link carried by a wake URL
+    /// (`…://import-guide?url=<percent-encoded share link>`). On success the
+    /// UI lands on the Guides section with the fresh guide's places open;
+    /// failures surface a plain-language alert.
+    private func handleGuideImportWake(_ url: URL, entry: String) {
+        Self.guidesLog.notice("guide wake received", ["entry": entry])
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let raw = components.queryItems?.first(where: { $0.name == "url" })?.value,
+              let shareURL = URL(string: raw),
+              MapsGuideURL.isGuideShareURL(shareURL)
+        else {
+            Self.guidesLog.error("guide wake carried no usable share link")
+            return
+        }
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        Task { @MainActor in
+            do {
+                let guideID = try await GuideImporter.importGuide(
+                    from: shareURL,
+                    service: appDelegate.service,
+                    repository: appDelegate.guidesRepository
+                )
+                self.showGuidesSection(revealing: guideID, appDelegate: appDelegate)
+            } catch {
+                Self.guidesLog.error("guide import failed: \(error.localizedDescription)")
+                self.presentGuideImportFailureAlert()
+            }
+        }
+    }
+
+    /// Land the UI on the Guides section after a wake-driven import. On
+    /// Catalyst the sidebar selection mounts the guides list (which shows the
+    /// new guide first); the iPhone shell additionally drills into the fresh
+    /// guide's places.
+    @MainActor
+    private func showGuidesSection(revealing guideID: UUID, appDelegate: GuessWhoAppDelegate) {
+        #if targetEnvironment(macCatalyst)
+        sidebar?.select(.guides)
+        #else
+        guard let root = window?.rootViewController,
+              let tabs = Self.firstTabBarController(in: root),
+              let index = SidebarTab.allCases.firstIndex(of: .guides)
+        else { return }
+        tabs.selectedIndex = index
+        noteSectionShown(.guides)
+        guard let nav = tabs.selectedViewController as? UINavigationController,
+              let guide = appDelegate.guidesRepository.guides.first(where: { $0.id == guideID })
+        else { return }
+        nav.popToRootViewController(animated: false)
+        pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate)
+        #endif
+    }
+
+    @MainActor
+    private func presentGuideImportFailureAlert() {
+        let alert = UIAlertController(
+            title: "Couldn't Add Guide",
+            message: "The guide couldn't be loaded. Check the link and your internet connection, then try again.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        guard let presenter = topmostPresenter() else {
+            Self.guidesLog.error("import-failed alert: NO presenter available")
+            return
+        }
+        presentAfterAnyDismissal(on: presenter) { presenter.present(alert, animated: true) }
     }
 
     // MARK: - LinkedIn handoff spike (step-0)
