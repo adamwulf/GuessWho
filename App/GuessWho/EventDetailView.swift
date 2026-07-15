@@ -88,7 +88,15 @@ struct EventDetailView: View {
             }
         }
         .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
-        .task { await reload() }
+        .task {
+            await reload()
+            // Stamp lastViewed ONCE per open (not in reload(), which every
+            // note/tag/link mutation re-runs), after adopt-on-load has swapped
+            // `resolvedUUID` to the real sidecar UUID. The package no-ops when
+            // no sidecar exists (e.g. a failed adoption), so a view can never
+            // mint one. Mirrors ContactDetailView's on-open stampViewed.
+            service.stampEventViewed(uuid: resolvedUUID)
+        }
         .toolbar {
             // Star sits BEFORE the existing Menu so the toolbar reads
             // star, ellipsis. Disabled until the event resolves AND the

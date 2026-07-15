@@ -19,6 +19,19 @@ final class EventsRepository: NSObject {
 
     var searchText: String = ""
 
+    /// The live sort order every events list reads. Persistence is the app's
+    /// job (`EventSortOrderSetting` writes UserDefaults and sets this);
+    /// setting it re-sorts in place and posts `.eventsRepositoryDidReload`
+    /// so visible lists re-snapshot — same shape as
+    /// `ContactsRepository.sortOrder`. No-op (and no post) when unchanged.
+    var sortOrder: EventSortOrder = .chronological {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            events = sortOrder.sorted(events)
+            NotificationCenter.default.post(name: .eventsRepositoryDidReload, object: self)
+        }
+    }
+
     init(service: SyncService) {
         self.service = service
         super.init()
@@ -78,7 +91,7 @@ final class EventsRepository: NSObject {
         let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
         let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
         let fetched = await service.fetchEventsRange(from: start, to: end)
-        events = fetched.sorted { $0.startDate < $1.startDate }
+        events = sortOrder.sorted(fetched)
         // Flip BEFORE posting so synchronous observers see the
         // post-load state. See ContactsRepository.reload() for the full
         // rationale.

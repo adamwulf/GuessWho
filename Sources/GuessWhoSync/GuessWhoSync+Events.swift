@@ -11,6 +11,10 @@ extension GuessWhoSync {
     public static let eventLocationCacheKey   = "locationCache"
     public static let eventNotesCacheKey      = "eventKitNotesCache"
     public static let eventDeletedAtCellKey   = "deletedAt"
+    /// Fixed cell key for the event's last-viewed timestamp. Same name as
+    /// the contact envelope's `ContactTimestamps.lastViewedKey` cell —
+    /// stable, part of the on-disk format, must never change.
+    public static let eventLastViewedCellKey  = "lastViewed"
 
     /// Well-known field name for event tag instances (E1.2 group b).
     public static let eventTagFieldName       = "tag"
@@ -176,6 +180,23 @@ extension GuessWhoSync {
             cellKey: Self.eventDeletedAtCellKey,
             fieldName: Self.eventDeletedAtCellKey,
             type: .note,
+            value: .string(SidecarISO8601.string(from: now)),
+            softDelete: false
+        )
+    }
+
+    /// Stamp `lastViewed = now` on the event envelope at `key`. ADDITIVE and
+    /// schema-stable, like the contact timestamp cells: only the one cell
+    /// changes, every other cell (caches, notes, tags) is preserved. No-op
+    /// when no envelope exists yet — a view stamp must never mint a sidecar
+    /// on its own (adoption owns minting).
+    public func stampEventViewed(at key: SidecarKey, now: Date = Date()) throws {
+        guard try sidecars.read(key) != nil else { return }
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.eventLastViewedCellKey,
+            fieldName: Self.eventLastViewedCellKey,
+            type: .date,
             value: .string(SidecarISO8601.string(from: now)),
             softDelete: false
         )
@@ -775,7 +796,9 @@ extension GuessWhoSync {
             endDate: end,
             isAllDay: isAllDay,
             location: location,
-            eventKitNotes: eventKitNotes
+            eventKitNotes: eventKitNotes,
+            createdAt: earliestCellCreatedAt(envelope: envelope),
+            lastViewedAt: decodeDateValue(envelope: envelope, cellKey: Self.eventLastViewedCellKey)
         )
     }
 
@@ -796,8 +819,34 @@ extension GuessWhoSync {
             eventKitNotes: live.eventKitNotes,
             attendees: live.attendees,
             calendarName: live.calendarName,
-            calendarColorHex: live.calendarColorHex
+            calendarColorHex: live.calendarColorHex,
+            // "Created" prefers the calendar's own stamp (EKEvent.creationDate)
+            // over the sidecar's mint time — the sidecar may have been adopted
+            // long after the event was put on the calendar. lastViewed is
+            // sidecar-only state, so it always rides the cached projection.
+            createdAt: live.createdAt ?? cached.createdAt,
+            lastViewedAt: cached.lastViewedAt
         )
+    }
+
+    /// The earliest inner `createdAt` stamp across the envelope's cells —
+    /// the closest durable witness to when the event record was created.
+    /// Every cell written through `makeInnerValue` carries one, and the
+    /// first write's stamp is preserved on rewrite, so for a manual event
+    /// this is its create time and for an adopted calendar event its
+    /// adoption time. nil when no cell carries a parseable stamp.
+    private func earliestCellCreatedAt(envelope: SidecarEnvelope) -> Date? {
+        var earliest: Date?
+        for cell in envelope.fields.values {
+            guard case .object(let inner) = cell.value,
+                  case .string(let raw) = inner[SidecarField.innerCreatedAtKey] ?? .null,
+                  let stamp = SidecarISO8601.date(from: raw)
+            else { continue }
+            if earliest == nil || stamp < earliest! {
+                earliest = stamp
+            }
+        }
+        return earliest
     }
 
     /// True when the envelope-level `deletedAt` cell is live (not absent

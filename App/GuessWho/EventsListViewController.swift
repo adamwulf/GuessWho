@@ -51,6 +51,9 @@ final class EventsListViewController: UIViewController {
 
     /// The "+" add button — always present.
     private var addButton: UIBarButtonItem!
+    /// The sort pull-down button — always present. Its menu is rebuilt in the
+    /// reload observer so the checkmark tracks the repository's live order.
+    private var sortButton: UIBarButtonItem!
     /// Debug-mode-only "Export Logs" button. Built once; included in the navbar
     /// only while debug mode is enabled.
     private var exportLogsButton: UIBarButtonItem!
@@ -185,6 +188,8 @@ final class EventsListViewController: UIViewController {
             }
         )
 
+        sortButton = makeEventSortBarButtonItem(repository: repository)
+
         // Debug-mode-only Export Logs button. This is a sanctioned debug-only
         // surface (like the contact-row reconcile checkmark): the label stays
         // plain ("Export Logs"). Gated below so it never shows without the
@@ -214,15 +219,18 @@ final class EventsListViewController: UIViewController {
         updateNavigationButtons()
     }
 
-    /// Re-evaluate which right-bar buttons to show. The "+" is always present;
-    /// Export Logs is appended only while debug mode is enabled.
+    /// Re-evaluate which right-bar buttons to show. The "+" and sort buttons
+    /// are always present; Export Logs is appended only while debug mode is
+    /// enabled.
     private func updateNavigationButtons() {
         let debugEnabled = UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled)
         // Right bar items render right-to-left: the first array element is the
-        // rightmost. Keep "+" rightmost (as before), Export Logs to its left.
+        // rightmost. Keep "+" rightmost (as before), sort next to it — the
+        // same relative placement the person lists give their sort button —
+        // and Export Logs leftmost.
         navigationItem.rightBarButtonItems = debugEnabled
-            ? [addButton, exportLogsButton]
-            : [addButton]
+            ? [addButton, sortButton, exportLogsButton]
+            : [addButton, sortButton]
     }
 
     private func presentLinkSheet() {
@@ -313,6 +321,10 @@ final class EventsListViewController: UIViewController {
             MainActor.assumeIsolated {
                 self?.applySnapshot(animated: true)
                 self?.updateHeaderBanners()
+                // Rebuild the sort menu so the checkmark tracks the order
+                // that produced this reload (menus are immutable snapshots).
+                guard let self else { return }
+                self.sortButton.menu = self.makeEventSortMenu(repository: self.repository)
             }
         }
 
