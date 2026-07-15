@@ -261,6 +261,7 @@ struct AddLinkSheet: View {
                     }
                 }
             }
+            .keyboardDismissible()
             .searchable(
                 text: $pickerSearch,
                 prompt: kind == .organization ? "Search organizations" : "Search contacts"
