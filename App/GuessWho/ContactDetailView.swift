@@ -69,6 +69,12 @@ struct ContactDetailView: View {
     // reloads) can't overwrite the freshest result. Stronger than a localID
     // check, which can't tell two same-localID reloads apart.
     @State private var recentEventsLoadID: UUID = UUID()
+    // Imported guides whose places' addresses contain one of this contact's
+    // structured street lines. Rendered directly under the address rows, in the
+    // same info section. Loaded async via SyncService on each contact load,
+    // guarded by its own load token like `recentEvents`.
+    @State private var addressGuides: [GuideAddressMatcher.Match] = []
+    @State private var addressGuidesLoadID: UUID = UUID()
     // Contacts.app groups this record belongs to (people AND organizations — a
     // group holds either). Loaded async via the repository on each contact load.
     @State private var memberGroups: [ContactGroup] = []
@@ -1041,6 +1047,14 @@ struct ContactDetailView: View {
                 // (navigate away and back).
                 ForEach(hidden) { row in
                     infoRow(row)
+                        .centeredRowContent()
+                }
+            }
+            if group == .address {
+                // Directly below the address rows, in the same section: a row per
+                // imported guide this contact's address appears in.
+                ForEach(addressGuides, id: \.guide.id) { match in
+                    GuideMatchRow(match: match)
                         .centeredRowContent()
                 }
             }
@@ -2101,6 +2115,7 @@ struct ContactDetailView: View {
             await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
             await reloadRecentEvents(for: loaded)
             await reloadGroups(for: loaded)
+            await reloadAddressGuides(for: loaded)
         } else {
             contact = nil
             // Contact disappeared from the store (e.g. deleted via the edit
@@ -2201,6 +2216,28 @@ struct ContactDetailView: View {
         // `recentEventsLoadID`).
         guard recentEventsLoadID == myLoadID else { return }
         recentEvents = fetched
+    }
+
+    /// Fetch the imported guides whose places' addresses contain one of this
+    /// contact's structured street lines, for the guide rows under the address
+    /// section. Guarded by a load token so a stale in-flight scan can't
+    /// overwrite a newer result — see `reloadRecentEvents`.
+    private func reloadAddressGuides(for contact: Contact) async {
+        let myLoadID = UUID()
+        addressGuidesLoadID = myLoadID
+        let streets = Set(
+            contact.postalAddresses
+                .map { $0.value.street.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !streets.isEmpty else {
+            // Synchronous from the token bump above — no suspension, no race.
+            addressGuides = []
+            return
+        }
+        let fetched = await service.guides(containingAddresses: streets)
+        guard addressGuidesLoadID == myLoadID else { return }
+        addressGuides = fetched
     }
 
     /// Fetch the Contacts.app groups this record belongs to (a membership scan

@@ -32,6 +32,15 @@ struct GroupReference: Hashable {
     let group: ContactGroup
 }
 
+/// Navigation payload for "open this imported guide's places." Carries the
+/// guide itself (like `GroupReference` carries its `ContactGroup`) so the scene
+/// delegate can build the destination `GuidePlacesListViewController` without a
+/// repository round-trip — the guide-row that vends this already holds the
+/// `MapsGuide` it matched.
+struct GuideReference: Hashable {
+    let guide: MapsGuide
+}
+
 struct EventReference: Hashable {
     let eventUUID: String
     /// Optional EventKit identifier carried as a hint so the detail view can

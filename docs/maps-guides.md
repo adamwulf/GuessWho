@@ -132,6 +132,39 @@ only populated after the MapKit resolution pass, so an unresolved place
 matches nothing — the association sections stay empty until its row fills in.
 Address entries (inline address + coordinate) match immediately.
 
+## Guide rows on contact / event detail (the reverse association)
+
+The place detail answers "who/what is here?"; the contact and event details
+answer the inverse — "which imported guides does this address appear in?" —
+and show one tappable row per matching guide directly under the address it
+matched, in the same section:
+
+* **`ContactDetailView`** — under the postal-address group, a row per guide
+  whose place addresses contain one of the contact's structured street lines.
+  Loaded by `reloadAddressGuides(for:)` on each contact load (its own load
+  token, like `reloadRecentEvents`).
+* **`EventDetailView`** — under the Location row in the Details section, a row
+  per guide whose place street lines appear inside the event's free-text
+  location. Loaded by a `.task(id: event?.location)` so it recomputes when the
+  location changes.
+
+Both call the shared `GuideAddressMatcher` (GuessWhoSync) via
+`SyncService.guides(containingAddresses:)` / `guides(matchingLocation:)`, which
+walk every guide + place sidecar (the background-hop `allGuides()` /
+`allPlaces()` overloads) and return one `Match` per guide (guide + the first
+matching place, for the row caption). The matcher reuses the same
+`EventLocationMatcher` street-line token logic as the place detail — only the
+needle/haystack direction differs (contact street line ⊂ place address vs.
+place street line ⊂ event location), and `GuideAddressMatcher.streetNeedle`
+derives a place's needle exactly as the place detail did (it now lives in the
+package and `GuidePlaceDetailView` calls it). Rows are the SwiftUI
+`GuideMatchRow`; tapping pushes the guide's places via a new
+`pushGuideReference` env closure (`GuideReference` carries the `MapsGuide`,
+like `GroupReference` carries its group) wired in both shells' scene-delegate
+push handlers. As with the place detail, matching keys off the resolved
+`address`, so an unresolved place-ID entry contributes nothing until its row
+fills in.
+
 ## Latitude/longitude: options and caveats
 
 Matching is street-line-based today. Coordinate-based matching was
