@@ -208,6 +208,77 @@ extension GuessWhoSync {
         return result
     }
 
+    /// Async overload of `allEvents()` — the walk is a coordinated read +
+    /// decode of EVERY event sidecar plus a per-linked EventKit fetch, so it
+    /// hops to a background queue rather than blocking the caller's actor.
+    /// Same continuation pattern as `eventsWindow` / `recentEvents`.
+    public func allEvents() async throws -> [Event] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [Event] = try self.allEvents()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// The most-recently-linked events: walk every link sidecar, keep live
+    /// (non-soft-deleted) links that touch at least one `.event` endpoint,
+    /// order by the link's `createdAt` (newest first, link UUID as a
+    /// deterministic tiebreak), then project each DISTINCT event endpoint via
+    /// `event(at:)` until `limit` events resolve. Endpoints whose event is
+    /// missing or whole-event-deleted are skipped and do not count against
+    /// the limit. Backs the link sheet's "Recently Linked" section.
+    /// O(N links) + at most a few event projections past `limit`.
+    public func recentlyLinkedEvents(limit: Int) throws -> [Event] {
+        guard limit > 0 else { return [] }
+        var live: [Link] = []
+        for key in try sidecars.allKeys() where key.kind == .link {
+            guard let envelope = try sidecars.read(key) else { continue }
+            guard let link = Link(from: envelope) else { continue }
+            guard link.deletedAt == nil else { continue }
+            guard link.endpointA.kind == .event || link.endpointB.kind == .event else { continue }
+            live.append(link)
+        }
+        live.sort { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+
+        var seenEndpoints: Set<SidecarKey> = []
+        var result: [Event] = []
+        for link in live {
+            for endpoint in [link.endpointA, link.endpointB] where endpoint.kind == .event {
+                guard seenEndpoints.insert(endpoint).inserted else { continue }
+                if let event = try event(at: endpoint) {
+                    result.append(event)
+                    if result.count == limit { return result }
+                }
+            }
+        }
+        return result
+    }
+
+    /// Async overload of `recentlyLinkedEvents(limit:)` — the walk covers
+    /// EVERY link sidecar (a coordinated read + decode per file), so it hops
+    /// to a background queue rather than blocking the caller's actor. Same
+    /// continuation pattern as `eventsWindow` / `recentEvents`.
+    public func recentlyLinkedEvents(limit: Int) async throws -> [Event] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [Event] = try self.recentlyLinkedEvents(limit: limit)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Reverse lookup: the sidecar event UUID currently pointing at `ekid`,
     /// or nil. O(N) over event sidecars. Soft-deleted `eventKitID` cells and
     /// whole-event-deleted envelopes are excluded. When multiple sidecars

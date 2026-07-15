@@ -72,8 +72,25 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     // MARK: - Reads
 
     public func fetchEvents(in interval: DateInterval) throws -> [Event] {
-        let predicate = store.predicateForEvents(withStart: interval.start, end: interval.end, calendars: nil)
-        return store.events(matching: predicate).compactMap(Self.toEvent)
+        // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
+        // predicate at a 4-year span; longer windows silently drop everything
+        // past the cap. Chunk like `eventsWithAttendee` does, but dedupe on
+        // (eventKitID, startDate) rather than eventKitID alone: this read
+        // returns OCCURRENCES, so distinct occurrences of a recurring event
+        // must all survive — only the same occurrence re-seen across a chunk
+        // boundary (a multi-day event straddling the seam) collapses.
+        var seen: Set<String> = []
+        var result: [Event] = []
+        for chunk in Self.chunked(interval: interval, maxYears: 4) {
+            let predicate = store.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: nil)
+            for event in store.events(matching: predicate).compactMap(Self.toEvent) {
+                let key = "\(event.eventKitID ?? "")|\(event.startDate.timeIntervalSinceReferenceDate)"
+                if seen.insert(key).inserted {
+                    result.append(event)
+                }
+            }
+        }
+        return result
     }
 
     public func fetch(eventKitID: String) throws -> Event? {
