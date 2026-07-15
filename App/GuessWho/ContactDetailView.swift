@@ -155,13 +155,24 @@ struct ContactDetailView: View {
         eventLinks.sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// The "Linked Events" link whose event endpoint matches `uuid`, if any.
-    /// Drives the recent-event long-press menu: a match means the row is
-    /// already linked, so the menu offers "Unlink Event" (removing this link)
-    /// instead of "Link Event".
-    private func eventLink(forEventUUID uuid: String) -> ContactLink? {
-        eventLinks.first {
-            repository.eventEndpointUUID(of: $0, for: loadedContactID ?? id) == uuid
+    /// The "Linked Events" link pointing at `event`, if any. Drives the
+    /// recent-event long-press menu: a match means the row is already linked,
+    /// so the menu offers "Unlink Event" (removing this link) instead of
+    /// "Link Event".
+    ///
+    /// Recent-event rows live in the EventKit id-space: their `id` is the
+    /// synthetic `Event.stableID(forEventKitID:)`, while a link's event
+    /// endpoint stores the real sidecar UUID — the two never compare equal.
+    /// Match on the linked sidecar event's `eventKitID` instead, keeping the
+    /// direct UUID comparison only for sidecar-only (manual) events.
+    private func eventLink(for event: Event) -> ContactLink? {
+        eventLinks.first { link in
+            guard let endpointUUID = repository.eventEndpointUUID(
+                of: link, for: loadedContactID ?? id
+            ) else { return false }
+            if endpointUUID == event.id.uuidString { return true }
+            guard let ekid = event.eventKitID else { return false }
+            return service.event(uuid: endpointUUID)?.eventKitID == ekid
         }
     }
 
@@ -1217,7 +1228,7 @@ struct ContactDetailView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if let link = eventLink(forEventUUID: event.id.uuidString) {
+            if let link = eventLink(for: event) {
                 // Already in "Linked Events" — offer to remove that curated link.
                 Button(role: .destructive) {
                     removeEventLink(link.id)
@@ -1226,12 +1237,36 @@ struct ContactDetailView: View {
                 }
             } else {
                 Button {
-                    Task { await addEventLink(eventUUID: event.id.uuidString, note: "") }
+                    Task { await linkRecentEvent(event) }
                 } label: {
                     Label("Link Event", systemImage: "calendar.badge.plus")
                 }
             }
         }
+    }
+
+    /// Long-press "Link Event" on a recent-event row. Recent events are
+    /// EventKit-sourced, so `event.id` is the synthetic
+    /// `Event.stableID(forEventKitID:)` with no sidecar behind it — linking
+    /// that UUID directly would persist a link whose event endpoint
+    /// `service.event(uuid:)` can never resolve, rendering "(Unknown event)".
+    /// Resolve-or-mint the real sidecar UUID first (`linkEvent` dedups
+    /// against an existing sidecar internally), mirroring
+    /// `EventLinkSheet.dedupAndLink`.
+    private func linkRecentEvent(_ event: Event) async {
+        let eventUUID: String
+        if let ekid = event.eventKitID {
+            do {
+                eventUUID = try await service.linkEvent(toEventKitID: ekid).uuidString
+            } catch {
+                service.recordError("link event failed: \(error.localizedDescription)")
+                return
+            }
+        } else {
+            // Sidecar-only event — its id IS the sidecar UUID.
+            eventUUID = event.id.uuidString
+        }
+        await addEventLink(eventUUID: eventUUID, note: "")
     }
 
     @ViewBuilder
