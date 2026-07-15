@@ -4,17 +4,34 @@ import os
 
 /// Principal view controller for the GuessWho share extension (iOS only).
 ///
-/// Its single job is the LinkedIn-app → Safari bounce: the user shares a
-/// profile URL from the LinkedIn app (or anywhere else), and this extension
-/// re-opens that URL in Safari, where the GuessWho LinkedIn Safari Web
-/// Extension captures the profile through the normal handoff pipeline
-/// (see docs/linkedin-safari-extension.md). Nothing is parsed or stored here —
-/// no App Group, no Contacts, no iCloud. If the shared link isn't a LinkedIn
-/// profile, we say so and bow out.
+/// Bounce-only, two routes:
+///
+/// * a **LinkedIn profile URL** re-opens in Safari, where the GuessWho
+///   LinkedIn Safari Web Extension captures the profile through the normal
+///   handoff pipeline (see docs/linkedin-safari-extension.md);
+/// * an **Apple Maps guide share link** (`maps.apple/ug/…`) bounces straight
+///   into the GuessWho app via the app's wake scheme
+///   (`…://import-guide?url=…`), where the guide is imported (see
+///   docs/maps-guides.md).
+///
+/// Nothing is parsed or stored here — no App Group, no Contacts, no iCloud.
+/// If the shared link is neither, we say so and bow out.
 final class ShareViewController: UIViewController {
 
     private static let log = Logger(
         subsystem: "com.milestonemade.guesswho.share", category: "share")
+
+    /// The app's wake scheme, mirrored from `LinkedInHandoffScheme` in the
+    /// app target (the appex doesn't link the app's sources). Resolved from
+    /// the `GuessWhoLinkedInURLScheme` Info.plist key (fed by
+    /// `GUESSWHO_LINKEDIN_URL_SCHEME` in this target's xcconfig) so Debug and
+    /// Release extensions wake the app built for the same configuration; an
+    /// empty expansion falls back to the Release literal.
+    /// `nonisolated`: read from the nonisolated URL-routing helpers below.
+    nonisolated private static let appScheme: String =
+        (Bundle.main.object(forInfoDictionaryKey: "GuessWhoLinkedInURLScheme") as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? "guesswho-linkedin"
 
     private var didStart = false
 
@@ -28,7 +45,7 @@ final class ShareViewController: UIViewController {
         spinner.startAnimating()
 
         let label = UILabel()
-        label.text = "Opening in Safari…"
+        label.text = "Opening…"
         label.font = .preferredFont(forTextStyle: .body)
         label.textColor = .secondaryLabel
 
@@ -50,12 +67,12 @@ final class ShareViewController: UIViewController {
         // work starts here rather than in viewDidLoad.
         guard !didStart else { return }
         didStart = true
-        loadSharedProfileURL()
+        loadSharedURL()
     }
 
     // MARK: - Attachment loading
 
-    private func loadSharedProfileURL() {
+    private func loadSharedURL() {
         let providers = (extensionContext?.inputItems ?? [])
             .compactMap { ($0 as? NSExtensionItem)?.attachments }
             .flatMap { $0 }
@@ -64,7 +81,7 @@ final class ShareViewController: UIViewController {
             $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
         }) {
             provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
-                let url = Self.url(fromItem: item).flatMap(Self.linkedInProfileURL(from:))
+                let url = Self.url(fromItem: item).flatMap(Self.routedURL(from:))
                 Task { @MainActor in self.finishLoading(url) }
             }
         } else if let provider = providers.first(where: {
@@ -72,7 +89,7 @@ final class ShareViewController: UIViewController {
         }) {
             // Some apps share "Check out this profile: <url>" as plain text.
             provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
-                let url = (item as? String).flatMap(Self.firstLinkedInProfileURL(inText:))
+                let url = (item as? String).flatMap(Self.firstRoutedURL(inText:))
                 Task { @MainActor in self.finishLoading(url) }
             }
         } else {
@@ -82,13 +99,24 @@ final class ShareViewController: UIViewController {
 
     private func finishLoading(_ url: URL?) {
         guard let url else {
-            Self.log.info("share item is not a LinkedIn profile URL")
+            Self.log.info("share item is not a LinkedIn profile or Apple Maps guide URL")
             presentAlert(
                 title: "Can’t Open This Link",
-                message: "Share a LinkedIn profile link (linkedin.com/in/…) and it will open in Safari.")
+                message: "Share a LinkedIn profile link (linkedin.com/in/…) or an Apple Maps guide link (maps.apple/ug/…).")
             return
         }
-        openInBrowser(url)
+        openExternally(url)
+    }
+
+    // MARK: - Routing
+
+    /// Map a shared URL to what this extension should open: a LinkedIn
+    /// profile re-opens in Safari (the Safari Web Extension takes it from
+    /// there); an Apple Maps guide link becomes the app's import wake URL.
+    nonisolated private static func routedURL(from raw: URL) -> URL? {
+        if let profile = linkedInProfileURL(from: raw) { return profile }
+        if let wake = guideImportWakeURL(from: raw) { return wake }
+        return nil
     }
 
     // MARK: - URL validation
@@ -123,21 +151,60 @@ final class ShareViewController: UIViewController {
         return slug.isEmpty ? nil : String(slug)
     }
 
-    nonisolated private static func firstLinkedInProfileURL(inText text: String) -> URL? {
+    /// Mirrors `MapsGuideURL.isGuideShareURL` in GuessWhoSync (the appex
+    /// doesn't link the package): the short share form (`maps.apple/ug/…`)
+    /// or the expanded web form (`maps.apple.com/guides…` / `…/ug…`).
+    nonisolated private static func isMapsGuideURL(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased()
+        else { return false }
+        let path = components.path
+        if host == "maps.apple" || host == "www.maps.apple" {
+            return path.hasPrefix("/ug")
+        }
+        if host == "maps.apple.com" || host == "www.maps.apple.com" {
+            return path.hasPrefix("/ug") || path.hasPrefix("/guides")
+        }
+        return false
+    }
+
+    /// The app wake URL for an Apple Maps guide share link:
+    /// `<appScheme>://import-guide?url=<https share link>`. The app's scene
+    /// delegate unwraps the `url` parameter and runs the import.
+    ///
+    /// The nested URL is percent-encoded by hand: `URLComponents.queryItems`
+    /// legally leaves `&`/`=`/`?` bare inside a query VALUE, which would let
+    /// an expanded guide link (`…guides?user=…`) split the wake URL's query
+    /// and truncate the payload.
+    nonisolated private static func guideImportWakeURL(from raw: URL) -> URL? {
+        guard isMapsGuideURL(raw) else { return nil }
+        guard var shareComponents = URLComponents(url: raw, resolvingAgainstBaseURL: false) else { return nil }
+        if shareComponents.scheme?.lowercased() == "http" {
+            shareComponents.scheme = "https"
+        }
+        guard let shareURL = shareComponents.url else { return nil }
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=?+")
+        guard let encoded = shareURL.absoluteString
+            .addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        return URL(string: "\(appScheme)://import-guide?url=\(encoded)")
+    }
+
+    nonisolated private static func firstRoutedURL(inText text: String) -> URL? {
         let types: NSTextCheckingResult.CheckingType = .link
         guard let detector = try? NSDataDetector(types: types.rawValue) else { return nil }
         let range = NSRange(text.startIndex..., in: text)
         for match in detector.matches(in: text, options: [], range: range) {
-            if let url = match.url, let profile = linkedInProfileURL(from: url) {
-                return profile
+            if let url = match.url, let routed = routedURL(from: url) {
+                return routed
             }
         }
         return nil
     }
 
-    // MARK: - Opening Safari
+    // MARK: - Opening Safari / the app
 
-    private func openInBrowser(_ url: URL) {
+    private func openExternally(_ url: URL) {
         // NSExtensionContext.open is only documented to work from Today
         // widgets and returns false from share extensions on current iOS,
         // but it is the sanctioned API — try it first, then fall back to
@@ -146,7 +213,7 @@ final class ShareViewController: UIViewController {
         context.open(url) { opened in
             Task { @MainActor in
                 if opened || self.openViaResponderChain(url) {
-                    Self.log.info("opened profile in browser")
+                    Self.log.info("opened shared link (scheme=\(url.scheme ?? "-", privacy: .public))")
                     // Give the openURL: dispatch a beat before this process
                     // winds down; completing immediately can cancel the open.
                     try? await Task.sleep(nanoseconds: 300_000_000)
@@ -154,8 +221,8 @@ final class ShareViewController: UIViewController {
                 } else {
                     Self.log.error("no responder accepted openURL:")
                     self.presentAlert(
-                        title: "Couldn’t Open Safari",
-                        message: "Copy the profile link and open it in Safari instead.")
+                        title: "Couldn’t Open This Link",
+                        message: "Copy the link and open it in Safari or GuessWho instead.")
                 }
             }
         }

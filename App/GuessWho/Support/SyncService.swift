@@ -477,6 +477,83 @@ final class SyncService {
         }
     }
 
+    // MARK: - Guides (imported Apple Maps guides)
+
+    /// Store a decoded guide share link as a guide + its places. Returns the
+    /// new guide's UUID. Pure storage — fetching/decoding the URL is
+    /// `GuideImporter`'s job, and MapKit resolution runs afterwards.
+    @discardableResult
+    func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.createGuide(from: snapshot, sourceURL: sourceURL)
+    }
+
+    /// Every live guide. `async`: the walk covers every guide sidecar, so it
+    /// rides the engine's background-hop overload.
+    func allGuides() async -> [MapsGuide] {
+        guard let sync else { return [] }
+        do {
+            return try await sync.allGuides()
+        } catch {
+            lastError = "guides read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Every live place across all guides — the guides list derives its
+    /// per-guide place counts from this single walk.
+    func allPlaces() async -> [MapsPlace] {
+        guard let sync else { return [] }
+        do {
+            return try await sync.allPlaces()
+        } catch {
+            lastError = "places read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// The live places in `guideID`, in the guide's shared order.
+    func places(inGuide guideID: UUID) async -> [MapsPlace] {
+        guard let sync else { return [] }
+        do {
+            return try await sync.places(inGuide: guideID)
+        } catch {
+            lastError = "places read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Fill a place's display fields from a MapKit place-ID resolution and
+    /// stamp it resolved.
+    func markPlaceResolved(
+        uuid: String,
+        name: String,
+        address: String?,
+        latitude: Double?,
+        longitude: Double?
+    ) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.markPlaceResolved(
+            at: SidecarKey(kind: .place, id: uuid),
+            name: name,
+            address: address,
+            latitude: latitude,
+            longitude: longitude
+        )
+    }
+
+    /// Soft-delete a guide and every place in it.
+    func deleteGuide(uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.deleteGuide(at: SidecarKey(kind: .guide, id: uuid))
+    }
+
+    /// Soft-delete a single place.
+    func deletePlace(uuid: String) throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        try sync.deletePlace(at: SidecarKey(kind: .place, id: uuid))
+    }
+
     // MARK: - Migration
 
     /// The one-shot migration run, memoized so every await after the first

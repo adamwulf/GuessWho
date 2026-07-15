@@ -1,0 +1,103 @@
+import Foundation
+import GuessWhoSync
+
+extension Notification.Name {
+    /// Posted by `GuidesRepository.reload()` after a fetch completes.
+    /// Parallels `.eventsRepositoryDidReload`; the guides and places list
+    /// controllers subscribe to re-apply their diffable snapshots.
+    static let guidesRepositoryDidReload = Notification.Name("GuidesRepositoryDidReload")
+}
+
+@MainActor
+@Observable
+final class GuidesRepository: NSObject {
+    private let service: SyncService
+
+    /// Live guides, newest import first (guide name as a deterministic
+    /// tiebreak for same-moment imports).
+    private(set) var guides: [MapsGuide] = []
+
+    /// Every live place, keyed by its guide — one sidecar walk backs both the
+    /// guides list's place counts and each guide's places screen.
+    private(set) var placesByGuide: [UUID: [MapsPlace]] = [:]
+
+    private(set) var isLoading: Bool = false
+
+    init(service: SyncService) {
+        self.service = service
+        super.init()
+        // Refresh when sidecar files change on disk — a guide arriving from
+        // another device, or a `notYetDownloaded` file materializing. Local
+        // writes (import, resolution, delete) drive explicit `reload()` calls
+        // from their call sites, so this observer only needs to cover the
+        // external path. Same selector + debounce shape as `EventsRepository`.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(storeDidChange(_:)),
+            name: .guessWhoSidecarsDidChange,
+            object: nil
+        )
+    }
+
+    /// See `EventsRepository.storeDidChange` — the selector API delivers on
+    /// the posting thread; hop to the main actor and debounce the burst.
+    @objc
+    private nonisolated func storeDidChange(_ note: Notification) {
+        Task { @MainActor [weak self] in
+            self?.scheduleDebouncedReload()
+        }
+    }
+
+    private var pendingReload: Task<Void, Never>?
+    private static let reloadDebounce: Duration = .milliseconds(300)
+
+    private func scheduleDebouncedReload() {
+        pendingReload?.cancel()
+        pendingReload = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.reloadDebounce)
+            } catch {
+                return   // superseded by a newer notification
+            }
+            await self?.reload()
+        }
+    }
+
+    func reload() async {
+        isLoading = true
+        let fetchedGuides = await service.allGuides()
+        let fetchedPlaces = await service.allPlaces()
+
+        guides = fetchedGuides.sorted { lhs, rhs in
+            let lhsStamp = lhs.createdAt ?? .distantPast
+            let rhsStamp = rhs.createdAt ?? .distantPast
+            if lhsStamp != rhsStamp { return lhsStamp > rhsStamp }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+
+        var byGuide: [UUID: [MapsPlace]] = [:]
+        for place in fetchedPlaces {
+            byGuide[place.guideID, default: []].append(place)
+        }
+        for guideID in byGuide.keys {
+            byGuide[guideID]?.sort { lhs, rhs in
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        }
+        placesByGuide = byGuide
+
+        // Flip BEFORE posting so synchronous observers see the post-load
+        // state — same ordering rationale as ContactsRepository.reload().
+        isLoading = false
+        NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+    }
+
+    func places(inGuide guideID: UUID) -> [MapsPlace] {
+        placesByGuide[guideID] ?? []
+    }
+
+    func placeCount(inGuide guideID: UUID) -> Int {
+        placesByGuide[guideID]?.count ?? 0
+    }
+}

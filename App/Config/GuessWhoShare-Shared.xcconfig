@@ -2,10 +2,12 @@
 // Config-invariant TARGET-level settings for the GuessWhoShare share-extension
 // target — the iOS share-sheet entry point that bounces a shared LinkedIn
 // profile URL to Safari, where the GuessWho LinkedIn Safari Web Extension
-// captures it (see docs/linkedin-safari-extension.md). The per-configuration
-// identifier settings — bundle id and display name — live in
-// GuessWhoShare-Debug.xcconfig and GuessWhoShare-Release.xcconfig, each wired
-// as that configuration's baseConfigurationReference in the project.
+// captures it (see docs/linkedin-safari-extension.md), and bounces a shared
+// Apple Maps guide link into the app via the wake scheme (see
+// docs/maps-guides.md). The per-configuration identifier settings — bundle
+// id, display name, and wake scheme — live in GuessWhoShare-Debug.xcconfig
+// and GuessWhoShare-Release.xcconfig, each wired as that configuration's
+// baseConfigurationReference in the project.
 
 #include "SharedVersion.xcconfig"
 

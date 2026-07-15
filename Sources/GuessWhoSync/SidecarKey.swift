@@ -9,8 +9,9 @@ public struct SidecarKey: Hashable, Sendable, Codable {
         // Contact, event, and link UUIDs are canonicalized to lowercase so the
         // same identifier can't be stored under two different cases. Events are
         // keyed by minted UUID, so `.event` takes the same lowercasing path.
+        // Guides and places are minted-UUID keys too and follow the same rule.
         switch kind {
-        case .contact, .link, .event:
+        case .contact, .link, .event, .guide, .place:
             self.id = id.lowercased()
         }
     }

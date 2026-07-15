@@ -79,6 +79,15 @@ final class SidebarViewController: UIViewController {
         SidebarTab.allCases
     }
 
+    /// Programmatically select `tab`: highlight its row and fire
+    /// `didSelectTab`, mirroring a user tap. Used when a deep link (e.g. an
+    /// imported Apple Maps guide) needs to land the UI on a section.
+    func select(_ tab: SidebarTab) {
+        guard let indexPath = dataSource.indexPath(for: tab) else { return }
+        collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
+        didSelectTab(tab)
+    }
+
     private func selectInitialTab() {
         // Restored section if set (and still a valid row), else the first tab.
         let target = initialTab.flatMap { sidebarTabs.contains($0) ? $0 : nil } ?? sidebarTabs.first

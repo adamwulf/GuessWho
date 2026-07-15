@@ -23,6 +23,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// Owned here for the same reason as `contactsRepository`: both the iPhone
     /// tab shell and the Catalyst columns consume this one instance.
     let eventsRepository: EventsRepository
+    /// Imported Apple Maps guides + their places. Owned here for the same
+    /// reason as the other repositories: one instance serves both shells and
+    /// every reload path.
+    let guidesRepository: GuidesRepository
     let contactPhotoLoader: ContactPhotoLoader
 
     #if targetEnvironment(macCatalyst)
@@ -63,6 +67,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         self.favoritesStore = FavoritesListStore(service: service)
         self.contactsRepository = contactsRepository
         self.eventsRepository = EventsRepository(service: service)
+        self.guidesRepository = GuidesRepository(service: service)
         self.contactPhotoLoader = ContactPhotoLoader(repository: contactsRepository)
         super.init()
     }
