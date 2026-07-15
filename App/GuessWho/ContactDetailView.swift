@@ -57,9 +57,11 @@ struct ContactDetailView: View {
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
     @State private var showingEventPicker = false
-    // EventKit events where this contact appears as an attendee (matched by any
-    // email on the card). Loaded async via SyncService on each contact load —
-    // separate from `eventLinks`, which are user-curated contact↔event links.
+    // EventKit events matched to this contact — the contact appears as an
+    // attendee (matched by any email on the card) or the event's location text
+    // contains one of the contact's street lines. Loaded async via SyncService
+    // on each contact load — separate from `eventLinks`, which are user-curated
+    // contact↔event links.
     @State private var recentEvents: [Event] = []
     // Token bumped at the start of every `reloadRecentEvents` call. The async
     // load captures it and bails on assignment when it no longer matches, so a
@@ -1207,10 +1209,12 @@ struct ContactDetailView: View {
         .centeredSectionFooter()
     }
 
-    /// "Recent Events": up to 10 EventKit events where this contact is an
-    /// attendee, matched by any email on the card. Distinct from the user-curated
-    /// "Linked Events" section. Tapping a row pushes the event detail; the
-    /// `eventKitID` hint lets its adopt-on-load path mint a sidecar on first open.
+    /// "Recent Events": up to 10 EventKit events matched to this contact by
+    /// email attendee (any address on the card) or by location (an event whose
+    /// location text contains one of the contact's street lines). Distinct from
+    /// the user-curated "Linked Events" section. Tapping a row pushes the event
+    /// detail; the `eventKitID` hint lets its adopt-on-load path mint a sidecar
+    /// on first open.
     @ViewBuilder
     private var recentEventsSection: some View {
         if !recentEvents.isEmpty {
@@ -2170,20 +2174,29 @@ struct ContactDetailView: View {
         await linksStore?.reload()
     }
 
-    /// Fetch up to 10 EventKit events where this contact is an attendee (matched
-    /// by any email on the card). Runs on a background queue inside
-    /// `SyncService.recentEvents`; the awaited result resumes on the main actor.
-    /// No-op when the contact has no emails.
+    /// Fetch up to 10 EventKit events matched to this contact — either the
+    /// contact appears as an attendee (matched by any email on the card) or the
+    /// event's location text contains one of the contact's street lines. Runs
+    /// on a background queue inside `SyncService.recentEvents`; the awaited
+    /// result resumes on the main actor. No-op when the contact has neither an
+    /// email nor a street address.
     private func reloadRecentEvents(for contact: Contact) async {
         let myLoadID = UUID()
         recentEventsLoadID = myLoadID
         let emails = Set(contact.emailAddresses.map { $0.value })
-        guard !emails.isEmpty else {
+        // Street lines drive location matching — city/state alone would sweep
+        // in every unrelated venue in the same town.
+        let addresses = Set(
+            contact.postalAddresses
+                .map { $0.value.street.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !(emails.isEmpty && addresses.isEmpty) else {
             // Synchronous from the token bump above — no suspension, no race.
             recentEvents = []
             return
         }
-        let fetched = await service.recentEvents(forEmails: emails, limit: 10)
+        let fetched = await service.recentEvents(forEmails: emails, addresses: addresses, limit: 10)
         // Bail if a newer reload started while this fetch was in flight (see
         // `recentEventsLoadID`).
         guard recentEventsLoadID == myLoadID else { return }

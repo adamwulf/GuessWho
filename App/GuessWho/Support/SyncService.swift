@@ -462,15 +462,23 @@ final class SyncService {
         }
     }
 
-    /// EventKit events where any of `emails` appears as an attendee. Backs the
-    /// contact detail "Recent Events" section. Scans a 10y-past / 1y-future
-    /// window via the package's async wrapper (which hops to a background queue),
-    /// most-recent first, capped at `limit`. Returns `[]` when calendar access is
-    /// denied or `emails` is empty.
-    func recentEvents(forEmails emails: Set<String>, limit: Int = 10) async -> [Event] {
-        guard eventsAuthorization == .authorized, let sync, !emails.isEmpty else { return [] }
+    /// EventKit events matched to a contact by attendee `emails` OR by street
+    /// `addresses` appearing in the event's location text. Backs the contact
+    /// detail "Recent Events" section. Scans a 10y-past / 1y-future window via
+    /// the package's async wrapper (which hops to a background queue),
+    /// most-recent first, capped at `limit`. Returns `[]` when calendar access
+    /// is denied or BOTH `emails` and `addresses` are empty.
+    func recentEvents(
+        forEmails emails: Set<String>,
+        addresses: Set<String> = [],
+        limit: Int = 10
+    ) async -> [Event] {
+        guard eventsAuthorization == .authorized, let sync,
+              !(emails.isEmpty && addresses.isEmpty) else { return [] }
         do {
-            return try await sync.recentEvents(matchingEmails: emails, limit: limit)
+            return try await sync.recentEvents(
+                matchingEmails: emails, matchingLocations: addresses, limit: limit
+            )
         } catch {
             lastError = "recent events lookup failed: \(error.localizedDescription)"
             return []
