@@ -1029,11 +1029,15 @@ public final class ContactsRepository: NSObject {
     /// B). Throws `SidecarUnavailableError` when the engine is unavailable.
     /// Mirrors `SyncService.addNote(body:forContactUUID:)`.
     @discardableResult
-    public func addNote(for id: ContactID, body: String) async throws -> UUID {
+    public func addNote(for id: ContactID, body: String, createdAt: Date = Date()) async throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
-        let noteID = try sync.addNote(at: SidecarKey(kind: .contact, id: guessWhoID), body: body)
+        let noteID = try sync.addNote(
+            at: SidecarKey(kind: .contact, id: guessWhoID),
+            body: body,
+            createdAt: createdAt
+        )
         await refreshCacheIfMinted(minted, localID: id.localID)
         return noteID
     }
@@ -1196,11 +1200,16 @@ public final class ContactsRepository: NSObject {
     /// writes, and the cache refreshed in that impossible case for safety.)
     /// Throws when the engine is unavailable. Mirrors
     /// `SyncService.editNote(id:newBody:forContactUUID:)`.
-    public func editNote(for id: ContactID, id noteID: UUID, newBody: String) async throws {
+    public func editNote(for id: ContactID, id noteID: UUID, newBody: String, createdAt: Date? = nil) async throws {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
-        try sync.editNote(at: SidecarKey(kind: .contact, id: guessWhoID), id: noteID, newBody: newBody)
+        try sync.editNote(
+            at: SidecarKey(kind: .contact, id: guessWhoID),
+            id: noteID,
+            newBody: newBody,
+            createdAt: createdAt
+        )
         await refreshCacheIfMinted(minted, localID: id.localID)
     }
 

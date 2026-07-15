@@ -8,7 +8,9 @@ import Foundation
 /// packed value.
 ///
 /// Body is the decoded JSON string payload; `createdAt` is the cell's
-/// inner `createdAt` timestamp (§5.2). Soft-deleted notes carry a
+/// inner `createdAt` timestamp (§5.2) — for notes this doubles as the
+/// user-visible, user-editable note date (settable at add time, re-stampable
+/// via `editNote`). Soft-deleted notes carry a
 /// non-nil `deletedAt`; callers that want the displayable list should use
 /// `GuessWhoSync.notes(at:)` which filters tombstones and sorts by
 /// `createdAt` ascending.

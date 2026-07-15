@@ -109,6 +109,61 @@ struct ContactNoteTests {
         #expect(notes.map(\.id) == [lowID, highID])
     }
 
+    // MARK: - user-set dates
+
+    @Test
+    func addNoteWithExplicitCreatedAtRoundTrips() throws {
+        // The note's user-visible date is settable at add time (back- or
+        // forward-dated); whole-second stamps round-trip ISO8601 exactly.
+        let (sync, _) = makeOrchestrator()
+        let pastDate = Date(timeIntervalSince1970: 1_000_000)
+        let id = try sync.addNote(at: contactKey, body: "back-dated", createdAt: pastDate)
+        let note = try #require(try sync.notes(at: contactKey).first)
+        #expect(note.id == id)
+        #expect(note.createdAt == pastDate)
+        // The cell's modifiedAt stamp is the actual write time, not the
+        // user-picked date.
+        #expect(note.modifiedAt > pastDate)
+    }
+
+    @Test
+    func addNoteWithExplicitCreatedAtSortsByThatDate() throws {
+        // A back-dated note sorts BEFORE an earlier-written note whose
+        // stamp is newer — ordering follows the user-visible date.
+        let (sync, _) = makeOrchestrator()
+        let now = try sync.addNote(at: contactKey, body: "written first")
+        let backDated = try sync.addNote(
+            at: contactKey,
+            body: "written second, dated earlier",
+            createdAt: Date(timeIntervalSince1970: 1_000_000)
+        )
+        let notes = try sync.notes(at: contactKey)
+        #expect(notes.map(\.id) == [backDated, now])
+    }
+
+    @Test
+    func editNoteRestampsCreatedAt() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addNote(at: contactKey, body: "v1")
+        let newDate = Date(timeIntervalSince1970: 2_000_000)
+        try sync.editNote(at: contactKey, id: id, newBody: "v2", createdAt: newDate)
+        let updated = try #require(try sync.notes(at: contactKey).first)
+        #expect(updated.id == id)
+        #expect(updated.body == "v2")
+        #expect(updated.createdAt == newDate)
+    }
+
+    @Test
+    func editNoteRestampReordersNotes() throws {
+        let (sync, _) = makeOrchestrator()
+        let a = try sync.addNote(at: contactKey, body: "A", createdAt: Date(timeIntervalSince1970: 1_000_000))
+        let b = try sync.addNote(at: contactKey, body: "B", createdAt: Date(timeIntervalSince1970: 2_000_000))
+        #expect(try sync.notes(at: contactKey).map(\.id) == [a, b])
+        // Move A after B; the live list re-sorts by the new date.
+        try sync.editNote(at: contactKey, id: a, newBody: "A", createdAt: Date(timeIntervalSince1970: 3_000_000))
+        #expect(try sync.notes(at: contactKey).map(\.id) == [b, a])
+    }
+
     // MARK: - edit
 
     @Test

@@ -48,11 +48,13 @@ final class NotesStore {
         id = contact.contactID
     }
 
-    func addNote(body: String) async {
+    /// `date` is the note's user-visible date; nil means "now" (stamped at
+    /// write time by the repository default).
+    func addNote(body: String, date: Date? = nil) async {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
-            try await repository.addNote(for: id, body: body)
+            try await repository.addNote(for: id, body: body, createdAt: date ?? Date())
         } catch {
             // Sidecar storage unavailable or write failed — leave the UI
             // state untouched; reload below will show what's on disk.
@@ -61,9 +63,10 @@ final class NotesStore {
         reload()
     }
 
-    func editNote(_ noteID: UUID, newBody: String) async {
+    /// A non-nil `date` re-stamps the note's user-visible date; nil keeps it.
+    func editNote(_ noteID: UUID, newBody: String, date: Date? = nil) async {
         do {
-            try await repository.editNote(for: id, id: noteID, newBody: newBody)
+            try await repository.editNote(for: id, id: noteID, newBody: newBody, createdAt: date)
         } catch {
             // ignore — reload reflects the truth
         }
