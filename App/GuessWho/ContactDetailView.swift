@@ -338,6 +338,12 @@ struct ContactDetailView: View {
             if isEditingContact {
                 editingSections
             } else {
+                // Associated Organization leads the page (people only — renders
+                // nothing for orgs): the org row and its department row are the
+                // highest-signal navigation on a person's card, so they sit
+                // directly under the header, above the info rows.
+                associatedOrganizationSection(contact)
+
                 infoSection(contact)
 
                 contactNotesSection(contact)
@@ -345,8 +351,6 @@ struct ContactDetailView: View {
                 sidecarFieldsSection
 
                 referencedBySection(contact)
-
-                associatedOrganizationSection(contact)
 
                 departmentsSection(contact)
 
@@ -836,8 +840,9 @@ struct ContactDetailView: View {
     }
 
     /// Inline detail header: large monogram circle, name, and a
-    /// `job title · organization` subtitle (for an organization, the
-    /// department). The nav-bar title is hidden so the name only appears once.
+    /// `job title · department · organization` subtitle (for an organization,
+    /// the department). The nav-bar title is hidden so the name only appears
+    /// once.
     @ViewBuilder
     private func headerView(_ contact: Contact) -> some View {
         VStack(spacing: 12) {
@@ -967,7 +972,7 @@ struct ContactDetailView: View {
         if contact.contactType == .organization {
             return contact.departmentName.trimmingCharacters(in: .whitespaces)
         }
-        let parts = [contact.jobTitle, contact.organizationName]
+        let parts = [contact.jobTitle, contact.departmentName, contact.organizationName]
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         return parts.joined(separator: " · ")
@@ -1436,24 +1441,18 @@ struct ContactDetailView: View {
         var rows: [InfoRowData] = []
 
         // Skip the name parts (in the inline header) and whatever the subtitle
-        // already renders (see `headerSubtitle`): for a person that's job title
-        // and organization, so department stays here; for an organization the
-        // subtitle is the department, so job title stays here instead. Phonetic
-        // organization is never in the header.
-        //
-        // A person's department also moves out of here when it's shown as the
-        // navigable second row in the Associated Organization section (see
-        // `associatedOrganizationSection`) — that row only appears when the
-        // company matches an org record, so keep the plain-text field as the
-        // fallback for people whose company names no such record.
-        let showsDepartmentAsNavRow = associatedOrganization(of: contact) != nil
+        // already renders (see `headerSubtitle`): for a person that's job title,
+        // department, and organization; for an organization the subtitle is the
+        // department, so job title stays here instead. Phonetic organization is
+        // never in the header. (A person's department may ALSO appear as the
+        // navigable second row in the Associated Organization section — that's
+        // deliberate: the subtitle states it, the row navigates to it.)
         let workParts: [(String, String)] = contact.contactType == .organization
             ? [
                 ("job title", contact.jobTitle),
                 ("phonetic organization", contact.phoneticOrganizationName),
             ]
             : [
-                ("department", showsDepartmentAsNavRow ? "" : contact.departmentName),
                 ("phonetic organization", contact.phoneticOrganizationName),
             ]
         for (label, value) in workParts where !value.isEmpty {
