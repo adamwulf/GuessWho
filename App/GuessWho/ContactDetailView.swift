@@ -2738,9 +2738,24 @@ private struct TappableInfoRow: View {
         if url != nil {
             tappableContent
                 .copyAffordances(value: value, allowsCopy: allowsCopy, onCopy: copy)
+                // Long-press (iOS) / right-click (Catalyst) Copy on EVERY tappable
+                // row — phone, email, url, and date alike — since the tap is
+                // consumed by call/email/open and the value can't be text-selected
+                // out of a Button. Routes through `copy()`, so phone/email still
+                // stamp lastInteracted (their `onInteract` is wired); url/date have
+                // a no-op `onInteract`, so those just copy. This is the uniform
+                // long-press path; the hover/swipe affordances above stay as the
+                // platform-native quick copy for phone/email.
+                .contextMenu {
+                    Button {
+                        copy()
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
         } else {
             // No URL to open: fall back to a plain, selectable label/value with
-            // no tap, stamp, or copy.
+            // no tap or stamp. Already copyable via text selection.
             labeledValue
         }
     }
@@ -2860,6 +2875,10 @@ private struct AddressRow: View {
             }
         }
         .buttonStyle(.plain)
+        // Tapping the row opens Maps, so long-press / right-click is the way to
+        // copy the address text (the formatted mailing string, matching what's
+        // shown).
+        .copyableText(formatted)
         .task {
             guard !didStartGeocode else { return }
             didStartGeocode = true

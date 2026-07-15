@@ -243,12 +243,15 @@ struct EventDetailView: View {
                     Text("Location").foregroundStyle(.secondary)
                     Spacer()
                     Text(location)
+                        // Long-press / right-click to copy the location text.
+                        .copyableText(location)
                 }
             }
             if let notes = event.eventKitNotes, !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Description").font(.caption).foregroundStyle(.secondary)
                     Text(notes)
+                        .copyableText(notes)
                 }
             }
         }
