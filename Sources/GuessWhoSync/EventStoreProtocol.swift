@@ -56,18 +56,23 @@ public protocol EventStoreProtocol: Sendable {
     /// all events in the interval.
     func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event]
 
-    /// EventKit events in `interval` whose `attendees` include any address in
-    /// `emails` (case-insensitive). Backs the contact detail "Recent Events"
-    /// section: pass the contact's email addresses, get back the events the
-    /// contact appears on. Results are sorted by `startDate` descending
-    /// (most-recent first) and truncated to `limit`. Returns `[]` when
-    /// `emails` is empty.
+    /// EventKit events in `interval` that match a contact by attendee email OR
+    /// by location. An event matches when any address in `emails` appears among
+    /// its `attendees` (case-insensitive), OR when its free-text `location`
+    /// contains any street line in `locations` as a contiguous run of words
+    /// (see `EventLocationMatcher`). Backs the contact detail "Recent Events"
+    /// section: pass the contact's email addresses and street lines, get back
+    /// the events the contact appears on or is located at. Results are
+    /// de-duplicated across both signals, sorted by `startDate` descending
+    /// (most-recent first) and truncated to `limit`. Returns `[]` when BOTH
+    /// `emails` and `locations` are empty.
     ///
     /// Adapter implementations may chunk the interval internally (EventKit's
     /// `predicateForEvents` caps each predicate at 4 years); callers may pass
     /// a window of any length without worrying about that limit.
     func eventsWithAttendee(
         matchingEmails emails: Set<String>,
+        orLocations locations: Set<String>,
         in interval: DateInterval,
         limit: Int
     ) throws -> [Event]

@@ -569,21 +569,23 @@ extension GuessWhoSync {
         }
     }
 
-    // MARK: - Attendee lookup (contact detail "Recent Events")
+    // MARK: - Attendee / location lookup (contact detail "Recent Events")
 
     /// Async wrapper around `events.eventsWithAttendee(...)` for the contact
-    /// detail "Recent Events" section. Builds a window of `[asOf - 10y, asOf
-    /// + 1y]` and hops the EventKit scan to a background queue via
-    /// `withCheckedThrowingContinuation`: EventKit's `events(matching:)` is
-    /// synchronous and scales with the window's calendar size, so it must NOT
-    /// block the caller's actor / main thread. Returns events sorted
-    /// most-recent-first, capped at `limit`.
+    /// detail "Recent Events" section. Matches events to a contact by attendee
+    /// `emails` OR by street-line `locations` (see `EventLocationMatcher`).
+    /// Builds a window of `[asOf - 10y, asOf + 1y]` and hops the EventKit scan
+    /// to a background queue via `withCheckedThrowingContinuation`: EventKit's
+    /// `events(matching:)` is synchronous and scales with the window's calendar
+    /// size, so it must NOT block the caller's actor / main thread. Returns
+    /// events sorted most-recent-first, capped at `limit`.
     public func recentEvents(
         matchingEmails emails: Set<String>,
+        matchingLocations locations: Set<String> = [],
         asOf now: Date = Date(),
         limit: Int = 10
     ) async throws -> [Event] {
-        guard !emails.isEmpty, limit > 0 else { return [] }
+        guard !(emails.isEmpty && locations.isEmpty), limit > 0 else { return [] }
         let calendar = Calendar(identifier: .gregorian)
         let start = calendar.date(byAdding: .year, value: -10, to: now) ?? now
         let end = calendar.date(byAdding: .year, value: 1, to: now) ?? now
@@ -597,6 +599,7 @@ extension GuessWhoSync {
                 do {
                     let result = try self.events.eventsWithAttendee(
                         matchingEmails: emails,
+                        orLocations: locations,
                         in: interval,
                         limit: limit
                     )

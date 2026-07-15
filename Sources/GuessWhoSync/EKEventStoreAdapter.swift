@@ -143,6 +143,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
 
     public func eventsWithAttendee(
         matchingEmails emails: Set<String>,
+        orLocations locations: Set<String> = [],
         in interval: DateInterval,
         limit: Int
     ) throws -> [Event] {
@@ -151,7 +152,15 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                 .filter { !$0.isEmpty }
         )
-        guard !normalized.isEmpty, limit > 0, interval.start < interval.end else { return [] }
+        // Street lines used to match an event's free-text location. Kept in
+        // their original case — `EventLocationMatcher` lowercases both sides.
+        let locationNeedles: Set<String> = Set(
+            locations
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard limit > 0, interval.start < interval.end,
+              !(normalized.isEmpty && locationNeedles.isEmpty) else { return [] }
 
         // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
         // predicate at a 4-year span; longer windows silently return nothing.
@@ -170,11 +179,15 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             let ekEvents = store.events(matching: predicate)
             for ek in ekEvents {
                 let participants = ek.attendees ?? []
-                let matches = participants.contains { p in
+                let matchesEmail = !normalized.isEmpty && participants.contains { p in
                     guard let email = Self.email(from: p.url)?.lowercased() else { return false }
                     return normalized.contains(email)
                 }
-                guard matches, let event = Self.toEvent(ek), let ekid = event.eventKitID else { continue }
+                let matchesLocation = EventLocationMatcher.matches(
+                    location: ek.location, anyOf: locationNeedles
+                )
+                guard matchesEmail || matchesLocation,
+                      let event = Self.toEvent(ek), let ekid = event.eventKitID else { continue }
                 if let existing = dedupe[ekid], existing.startDate >= event.startDate { continue }
                 dedupe[ekid] = event
             }

@@ -401,6 +401,7 @@ private final class StubEventStore: EventStoreProtocol, Sendable {
     func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] { unused() }
     func eventsWithAttendee(
         matchingEmails emails: Set<String>,
+        orLocations locations: Set<String> = [],
         in interval: DateInterval,
         limit: Int
     ) throws -> [Event] { unused() }

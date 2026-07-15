@@ -133,6 +133,7 @@ public final class InMemoryEventStore: EventStoreProtocol, @unchecked Sendable {
 
     public func eventsWithAttendee(
         matchingEmails emails: Set<String>,
+        orLocations locations: Set<String> = [],
         in interval: DateInterval,
         limit: Int
     ) throws -> [Event] {
@@ -141,15 +142,24 @@ public final class InMemoryEventStore: EventStoreProtocol, @unchecked Sendable {
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                 .filter { !$0.isEmpty }
         )
-        guard !normalized.isEmpty, limit > 0 else { return [] }
+        let locationNeedles: Set<String> = Set(
+            locations
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard limit > 0, !(normalized.isEmpty && locationNeedles.isEmpty) else { return [] }
         lock.lock()
         defer { lock.unlock() }
         let matches = eventsByEventKitID.values.filter { event in
             guard event.startDate <= interval.end, event.endDate >= interval.start else { return false }
-            return event.attendees.contains { attendee in
+            let matchesEmail = !normalized.isEmpty && event.attendees.contains { attendee in
                 guard let email = attendee.email?.lowercased() else { return false }
                 return normalized.contains(email)
             }
+            let matchesLocation = EventLocationMatcher.matches(
+                location: event.location, anyOf: locationNeedles
+            )
+            return matchesEmail || matchesLocation
         }
         return matches
             .sorted { $0.startDate > $1.startDate }

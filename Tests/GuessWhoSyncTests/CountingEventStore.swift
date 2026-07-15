@@ -69,13 +69,16 @@ final class CountingEventStore: EventStoreProtocol, @unchecked Sendable {
 
     func eventsWithAttendee(
         matchingEmails emails: Set<String>,
+        orLocations locations: Set<String> = [],
         in interval: DateInterval,
         limit: Int
     ) throws -> [Event] {
         lock.lock()
         eventsWithAttendeeCount += 1
         lock.unlock()
-        return try inner.eventsWithAttendee(matchingEmails: emails, in: interval, limit: limit)
+        return try inner.eventsWithAttendee(
+            matchingEmails: emails, orLocations: locations, in: interval, limit: limit
+        )
     }
 
     func createEvent(
