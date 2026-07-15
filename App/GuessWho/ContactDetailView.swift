@@ -155,6 +155,16 @@ struct ContactDetailView: View {
         eventLinks.sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// Event UUIDs already present in the "Linked Events" section, resolved
+    /// through each link's event endpoint. Used to gate the recent-event
+    /// long-press "Link Event" action so a row that's already linked can't
+    /// mint a duplicate link.
+    private var linkedEventUUIDs: Set<String> {
+        Set(eventLinks.compactMap {
+            repository.eventEndpointUUID(of: $0, for: loadedContactID ?? id)
+        })
+    }
+
     /// Split the connection links by the linked contact's type. Links whose
     /// other endpoint can't be resolved (rare: unreconciled/malformed) fall into
     /// the People bucket rather than being silently dropped.
@@ -1206,6 +1216,15 @@ struct ContactDetailView: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                Task { await addEventLink(eventUUID: event.id.uuidString, note: "") }
+            } label: {
+                Label("Link Event", systemImage: "calendar.badge.plus")
+            }
+            // Already in "Linked Events" — linking again would mint a duplicate.
+            .disabled(linkedEventUUIDs.contains(event.id.uuidString))
+        }
     }
 
     @ViewBuilder
