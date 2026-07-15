@@ -2575,7 +2575,11 @@ private struct InfoRow: View {
         case .phone(let number):
             // Phone taps call AND stamp lastInteracted; the row also offers a
             // platform-specific Copy affordance that copies the raw number.
-            TappableInfoRow(label: data.label, value: number, url: phoneURL(number),
+            // Display the OS-formatted number (dashes/parens) while keeping the
+            // raw digits for dialing and Copy.
+            TappableInfoRow(label: data.label, value: number,
+                            displayValue: PhoneNumberDisplayFormatter.shared.string(from: number),
+                            url: phoneURL(number),
                             stampsInteraction: true, allowsCopy: true, onInteract: onInteract)
         case .email(let address):
             TappableInfoRow(label: data.label, value: address, url: URL(string: "mailto:\(address)"),
@@ -2719,10 +2723,17 @@ private struct InfoRow: View {
 private struct TappableInfoRow: View {
     let label: String
     let value: String
+    /// The string SHOWN to the user, when it differs from `value`. Phone rows
+    /// pass the OS-formatted number here while keeping the raw digits in `value`
+    /// so dialing and Copy still use the unformatted number. `nil` = show `value`.
+    var displayValue: String? = nil
     let url: URL?
     let stampsInteraction: Bool
     let allowsCopy: Bool
     var onInteract: () -> Void = {}
+
+    /// What the tinted/selectable label renders — the formatted form if supplied.
+    private var shownValue: String { displayValue ?? value }
 
     @Environment(\.openURL) private var openURL
     // Drives the Catalyst hover-reveal of the trailing Copy button. Unused on
@@ -2756,7 +2767,7 @@ private struct TappableInfoRow: View {
                     Text(label)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(value)
+                    Text(shownValue)
                         .foregroundStyle(.tint)
                 }
                 #if targetEnvironment(macCatalyst)
@@ -2791,7 +2802,7 @@ private struct TappableInfoRow: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(value)
+            Text(shownValue)
                 .font(.body)
                 .textSelection(.enabled)
         }
