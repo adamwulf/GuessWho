@@ -486,6 +486,34 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         noteSelectionShown(.event(eventUUID: ref.eventUUID, eventKitID: ref.eventKitID), stampedOn: hosting)
     }
 
+    /// Push a `DepartmentMembersListViewController` for `ref` onto the
+    /// secondary-column `nav`. Mirrors `pushCatalystContactDetail`: an in-detail
+    /// drill-down PUSHES so back-swipe returns to the organization. Member
+    /// selection in turn pushes the person's detail onto the same nav.
+    private func pushCatalystDepartmentMembers(
+        ref: DepartmentReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav,
+              let organization = appDelegate.contactsRepository.contact(id: ref.organizationID)
+        else { return }
+        let members = DepartmentMembersListViewController(
+            organizationID: ref.organizationID,
+            organization: organization,
+            department: ref.department,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        members.didSelectContact = { [weak self, weak nav] contact in
+            self?.pushCatalystContactDetail(
+                ref: ContactReference(id: contact.contactID), on: nav, appDelegate: appDelegate
+            )
+        }
+        nav.pushViewController(members, animated: true)
+    }
+
     /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
     /// Both closures capture `nav` and `self` weakly so popping the stack or
     /// tearing down the scene doesn't keep this delegate or its column alive.
@@ -500,6 +528,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushEventReference) { [weak self, weak nav] ref in
                 self?.pushCatalystEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
+                self?.pushCatalystDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
 
@@ -984,6 +1015,31 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID), stampedOn: hosting)
     }
 
+    /// Push a `DepartmentMembersListViewController` for `ref` onto the owning
+    /// tab's `nav` stack. Mirrors `pushGroupMembers`: member selection pushes the
+    /// person's detail onto the same stack.
+    private func pushDepartmentMembers(
+        ref: DepartmentReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav,
+              let organization = appDelegate.contactsRepository.contact(id: ref.organizationID)
+        else { return }
+        let members = DepartmentMembersListViewController(
+            organizationID: ref.organizationID,
+            organization: organization,
+            department: ref.department,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        members.didSelectContact = { [weak self, weak nav] contact in
+            self?.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
+        }
+        nav.pushViewController(members, animated: true)
+    }
+
     /// Bind `pushContactReference` / `pushEventReference` to the SAME nav this
     /// view is pushed onto. Both closures capture `nav` weakly so popping the
     /// stack tears down cleanly, and `self` weakly so they can't keep the
@@ -999,6 +1055,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushEventReference) { [weak self, weak nav] ref in
                 self?.pushEventDetail(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
+                self?.pushDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
 

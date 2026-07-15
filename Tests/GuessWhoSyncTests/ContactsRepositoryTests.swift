@@ -58,4 +58,51 @@ struct ContactsRepositoryTests {
         #expect(repository.contactsAssociated(with: org).map(\.localID) == ["ada", "charles"])
         #expect(repository.contactsAssociated(with: rivalOrg).isEmpty)
     }
+
+    @Test @MainActor
+    func departmentsForAnOrganizationAreDistinctTrimmedAndSorted() async {
+        let org = Contact(localID: "org", contactType: .organization, organizationName: "Analytical Engine")
+        let ada = Contact(
+            localID: "ada", givenName: "Ada", familyName: "Lovelace",
+            departmentName: "  Engineering ", organizationName: "Analytical Engine"
+        )
+        let charles = Contact(
+            localID: "charles", givenName: "Charles", familyName: "Babbage",
+            departmentName: "engineering", organizationName: "analytical engine"
+        )
+        let grace = Contact(
+            localID: "grace", givenName: "Grace", familyName: "Hopper",
+            departmentName: "Research", organizationName: "Analytical Engine"
+        )
+        // No department — contributes to associated people but not to the
+        // department list.
+        let alan = Contact(
+            localID: "alan", givenName: "Alan", familyName: "Turing",
+            organizationName: "Analytical Engine"
+        )
+        // Different org — its department must not leak in.
+        let outsider = Contact(
+            localID: "outsider", givenName: "Klara", familyName: "von Neumann",
+            departmentName: "Mathematics", organizationName: "Bletchley Park"
+        )
+        let repository = ContactsRepository(
+            contacts: InMemoryContactStore(contacts: [org, ada, charles, grace, alan, outsider])
+        )
+
+        await repository.reload()
+
+        // Distinct (case-insensitive), trimmed to the first-seen display form,
+        // sorted A–Z; blank/other-org departments excluded.
+        #expect(repository.departments(in: org) == ["Engineering", "Research"])
+
+        // People in one department: subset of the associated people, matched
+        // case-insensitively on the department field, sorted by display name.
+        #expect(
+            repository.contactsAssociated(with: org, inDepartment: " ENGINEERING ").map(\.localID)
+                == ["ada", "charles"]
+        )
+        #expect(repository.contactsAssociated(with: org, inDepartment: "Research").map(\.localID) == ["grace"])
+        #expect(repository.contactsAssociated(with: org, inDepartment: "").isEmpty)
+        #expect(repository.contactsAssociated(with: org, inDepartment: "Mathematics").isEmpty)
+    }
 }

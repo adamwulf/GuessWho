@@ -15,4 +15,5 @@ import SwiftUI
 extension EnvironmentValues {
     @Entry var pushContactReference: (ContactReference) -> Void = { _ in }
     @Entry var pushEventReference: (EventReference) -> Void = { _ in }
+    @Entry var pushDepartmentReference: (DepartmentReference) -> Void = { _ in }
 }
