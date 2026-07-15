@@ -58,7 +58,7 @@ struct PostalAddressEditor: View {
                 ),
                 options: LabelOptions.address
             )
-            TextField("Street", text: binding(\.street))
+            TextField("Street", text: streetBinding)
                 .focused($focus, equals: .street)
                 .onSubmit { focus = .city }
             TextField("City", text: binding(\.city))
@@ -73,6 +73,33 @@ struct PostalAddressEditor: View {
             TextField("Country", text: binding(\.country))
                 .focused($focus, equals: .country)
         }
+    }
+
+    /// The street field doubles as a full-address drop zone: pasting
+    /// "1 Infinite Loop, Cupertino, CA 95014" splits it into street /
+    /// city / state / postal / country so the user doesn't have to.
+    ///
+    /// Only a multi-character jump (a paste or autofill, never keystroke
+    /// typing) that parses into two or more address components triggers
+    /// the split; anything else edits the street text as usual. On a
+    /// split the whole address value is replaced — including hidden
+    /// sub-fields like `isoCountryCode` — because a pasted full address
+    /// means "this address," and mixing it with leftovers from the old
+    /// one would produce a frankenaddress.
+    private var streetBinding: Binding<String> {
+        Binding(
+            get: { entry.value.street },
+            set: { newValue in
+                let isBulkInsert = newValue.count > entry.value.street.count + 1
+                if isBulkInsert, let parsed = PostalAddress.parse(fromFullAddress: newValue) {
+                    entry = LabeledPostalAddress(label: entry.label, value: parsed)
+                } else {
+                    var pa = entry.value
+                    pa.street = newValue
+                    entry = LabeledPostalAddress(label: entry.label, value: pa)
+                }
+            }
+        )
     }
 
     /// Bind a writable keypath on PostalAddress while leaving the
