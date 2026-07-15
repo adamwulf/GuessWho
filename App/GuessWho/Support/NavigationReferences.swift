@@ -23,6 +23,15 @@ struct DepartmentReference: Hashable {
     let department: String
 }
 
+/// Navigation payload for "show the members of this Contacts group." Carries
+/// the group itself: its `localID` is the membership key used to fetch members,
+/// and its name titles the destination list. Selecting a group row on a
+/// contact/organization detail pushes the same `GroupMembersListViewController`
+/// the Groups tab uses.
+struct GroupReference: Hashable {
+    let group: ContactGroup
+}
+
 struct EventReference: Hashable {
     let eventUUID: String
     /// Optional EventKit identifier carried as a hint so the detail view can

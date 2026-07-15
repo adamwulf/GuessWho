@@ -18,6 +18,7 @@ struct ContactDetailView: View {
     @Environment(\.pushContactReference) private var pushContactReference
     @Environment(\.pushEventReference) private var pushEventReference
     @Environment(\.pushDepartmentReference) private var pushDepartmentReference
+    @Environment(\.pushGroupReference) private var pushGroupReference
 
     /// The view's identity is the opaque, package-vended `ContactID` the scene
     /// delegate hands in — NEVER a raw `localID`. The view resolves it to a
@@ -66,6 +67,13 @@ struct ContactDetailView: View {
     // reloads) can't overwrite the freshest result. Stronger than a localID
     // check, which can't tell two same-localID reloads apart.
     @State private var recentEventsLoadID: UUID = UUID()
+    // Contacts.app groups this record belongs to (people AND organizations — a
+    // group holds either). Loaded async via the repository on each contact load.
+    @State private var memberGroups: [ContactGroup] = []
+    // Token bumped at the start of every `reloadGroups` call so a stale in-flight
+    // membership scan can't overwrite the freshest result, exactly like
+    // `recentEventsLoadID` guards the recent-events fetch.
+    @State private var memberGroupsLoadID: UUID = UUID()
     @State private var showingAddLinkSheet = false
     @State private var showingAddOrgLinkSheet = false
     @State private var showingNewNoteEditor = false
@@ -355,6 +363,8 @@ struct ContactDetailView: View {
                 departmentsSection(contact)
 
                 associatedContactsSection(contact)
+
+                groupsSection(contact)
 
                 notesSection
 
@@ -1441,6 +1451,65 @@ struct ContactDetailView: View {
         .buttonStyle(.plain)
     }
 
+    /// Contacts.app groups this record belongs to. Shown for BOTH people and
+    /// organizations — a Contacts group holds either — so unlike
+    /// `departmentsSection` there is no `contactType` gate. Each row taps through
+    /// to that group's member list (the same `GroupMembersListViewController` the
+    /// Groups tab pushes). Hidden when the record is in no groups.
+    @ViewBuilder
+    private func groupsSection(_ contact: Contact) -> some View {
+        if !memberGroups.isEmpty {
+            Section {
+                ForEach(memberGroups, id: \.localID) { group in
+                    groupRow(group)
+                        .centeredRowContent()
+                }
+            } header: {
+                Text("Groups").centeredSectionHeader()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func groupRow(_ group: ContactGroup) -> some View {
+        // Read through the @Observable favorites cache so the star repaints when
+        // the group is favorited/unfavorited from here or anywhere else.
+        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
+        Button {
+            pushGroupReference(GroupReference(group: group))
+        } label: {
+            ActivityRowLayout(systemImage: "person.3") {
+                HStack(spacing: 6) {
+                    Text(group.name.isEmpty ? "Group" : group.name)
+                        .foregroundStyle(.tint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isFavorited {
+                        Image(systemName: "star.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.yellow)
+                            .accessibilityLabel("Favorited")
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        // A group has no detail screen to host a star toolbar button, so the
+        // favorite toggle lives in the row's context menu (long-press / right-
+        // click), mirroring the recent-event row's link menu.
+        .contextMenu {
+            Button {
+                favoritesStore.toggle(kind: .group, id: group.localID)
+            } label: {
+                if isFavorited {
+                    Label("Unfavorite", systemImage: "star.slash")
+                } else {
+                    Label("Favorite", systemImage: "star")
+                }
+            }
+        }
+    }
+
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
@@ -2027,6 +2096,7 @@ struct ContactDetailView: View {
             }
             await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
             await reloadRecentEvents(for: loaded)
+            await reloadGroups(for: loaded)
         } else {
             contact = nil
             // Contact disappeared from the store (e.g. deleted via the edit
@@ -2039,6 +2109,7 @@ struct ContactDetailView: View {
             linksStore = nil
             eventLinks = []
             recentEvents = []
+            memberGroups = []
         }
     }
 
@@ -2117,6 +2188,18 @@ struct ContactDetailView: View {
         // `recentEventsLoadID`).
         guard recentEventsLoadID == myLoadID else { return }
         recentEvents = fetched
+    }
+
+    /// Fetch the Contacts.app groups this record belongs to (a membership scan
+    /// over every group, so it runs after the card paints rather than blocking
+    /// it). Guarded by a load token so a stale in-flight scan can't overwrite a
+    /// newer result — see `reloadRecentEvents`.
+    private func reloadGroups(for contact: Contact) async {
+        let myLoadID = UUID()
+        memberGroupsLoadID = myLoadID
+        let fetched = await repository.groups(containing: contact)
+        guard memberGroupsLoadID == myLoadID else { return }
+        memberGroups = fetched
     }
 
     // MARK: - Notes

@@ -339,6 +339,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 repository: appDelegate.contactsRepository,
                 photoLoader: appDelegate.contactPhotoLoader
             )
+            // Hoist the nav so a favorited-group tap can push its member list
+            // onto this supplementary column (member selection then replaces the
+            // secondary/detail column, exactly like the Groups sidebar tab).
+            let nav = UINavigationController(rootViewController: list)
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
@@ -349,11 +353,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     appDelegate: appDelegate
                 )
             }
-            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            list.didSelectGroup = { [weak self, weak nav] group in
+                self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+            }
+            split.setViewController(nav, for: .supplementary)
             installDetailPlaceholder(in: split, for: .favorites)
 
         case .groups:
-            let list = GroupsListViewController(repository: appDelegate.contactsRepository)
+            let list = GroupsListViewController(
+                repository: appDelegate.contactsRepository,
+                favoritesStore: appDelegate.favoritesStore
+            )
             // Selecting a group PUSHES the members list onto the supplementary
             // column's nav (back-button returns to the group list); selecting a
             // member REPLACES the secondary/detail column via
@@ -514,6 +524,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
+    /// Push a `GroupMembersListViewController` for `ref` onto the secondary-column
+    /// `nav`. Mirrors `pushCatalystDepartmentMembers`: an in-detail drill-down
+    /// PUSHES so back-swipe returns to the record, and member selection pushes the
+    /// person's detail onto the same nav.
+    private func pushCatalystGroupMembers(
+        ref: GroupReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let members = GroupMembersListViewController(
+            group: ref.group,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        members.didSelectContact = { [weak self, weak nav] contact in
+            self?.pushCatalystContactDetail(
+                ref: ContactReference(id: contact.contactID), on: nav, appDelegate: appDelegate
+            )
+        }
+        nav.pushViewController(members, animated: true)
+    }
+
     /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
     /// Both closures capture `nav` and `self` weakly so popping the stack or
     /// tearing down the scene doesn't keep this delegate or its column alive.
@@ -531,6 +565,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
                 self?.pushCatalystDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushGroupReference) { [weak self, weak nav] ref in
+                self?.pushCatalystGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
 
@@ -884,6 +921,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 appDelegate: appDelegate
             )
         }
+        list.didSelectGroup = { [weak self] group in
+            self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
+        }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.favorites.title,
@@ -898,7 +938,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// a member PUSHES the contact detail — the same push-to-drill-in flow as the
     /// People tab.
     private func makeIPhoneGroupsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
-        let list = GroupsListViewController(repository: appDelegate.contactsRepository)
+        let list = GroupsListViewController(
+            repository: appDelegate.contactsRepository,
+            favoritesStore: appDelegate.favoritesStore
+        )
         list.didSelectGroup = { [weak self] group in
             self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
         }
@@ -930,6 +973,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
         }
         nav.pushViewController(members, animated: true)
+    }
+
+    /// Reference-taking overload used by the in-detail Groups section. Reuses
+    /// `pushGroupMembers(group:on:appDelegate:)`, whose member selection already
+    /// pushes the contact detail onto the same nav stack.
+    private func pushGroupMembers(
+        ref: GroupReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushGroupMembers(group: ref.group, on: nav, appDelegate: appDelegate)
     }
 
     /// Push a fresh `UIHostingController<ContactDetailView>` onto the owning
@@ -1058,6 +1112,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
                 self?.pushDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushGroupReference) { [weak self, weak nav] ref in
+                self?.pushGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
 

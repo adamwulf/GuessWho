@@ -251,6 +251,27 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// The Contacts.app groups that `contact` belongs to, sorted by name.
+    /// Membership is keyed by Contacts `localID` (`CNContact.identifier`) — the
+    /// correct key, since groups are not GuessWho-ID'd — which this method reads
+    /// off the value so the app never has to touch the confined `localID`. A
+    /// failed fetch returns an empty array and records `lastError`, matching the
+    /// degrade-gracefully behavior of `members(ofGroup:)`. Like that pure read,
+    /// success does NOT clear `lastError` — a concurrent reload may have set it.
+    public func groups(containing contact: Contact) async -> [ContactGroup] {
+        do {
+            let memberships = try await contactsStore.fetchGroupMemberships(
+                contactLocalID: contact.localID
+            )
+            return memberships.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        } catch {
+            lastError = "Group memberships fetch failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
     /// Returns a currently-cached contact for an adapter-local refresh token.
     /// `localID` is intentionally confined to this Contacts-boundary API; it
     /// must not be persisted or used as application identity.
@@ -996,10 +1017,22 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// Look up a cached `ContactGroup` by its Contacts `localID`, matched
+    /// case-insensitively because favorites persist the `localID` lowercased
+    /// (see `Favorite.id`) while `CNGroup.identifier` is mixed-case. Reads the
+    /// `groups` cache filled by `loadGroups()`; returns nil until that lands or
+    /// when the group no longer exists.
+    public func group(localID: String) -> ContactGroup? {
+        let needle = localID.lowercased()
+        return groups.first { $0.localID.lowercased() == needle }
+    }
+
     /// Project persisted favorites into app-facing rows without exposing contact
     /// favorite UUIDs. Contact favorites resolve through this repository's
     /// GuessWhoID index; event favorites use the supplied resolver until the
-    /// deferred EventID migration moves event identity behind the package too.
+    /// deferred EventID migration moves event identity behind the package too;
+    /// group favorites resolve against the `groups` cache (case-insensitively —
+    /// see `group(localID:)`).
     public func favoriteListItems(
         from favorites: [Favorite],
         event: (String) -> Event?
@@ -1017,6 +1050,12 @@ public final class ContactsRepository: NSObject {
                     id: FavoriteListItem.ID(favorite.stableID),
                     kind: favorite.kind,
                     event: event(favorite.id)
+                )
+            case .group:
+                FavoriteListItem(
+                    id: FavoriteListItem.ID(favorite.stableID),
+                    kind: favorite.kind,
+                    group: group(localID: favorite.id)
                 )
             }
         }

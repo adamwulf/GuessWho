@@ -14,6 +14,7 @@ final class FavoritesListViewController: UIViewController {
     /// EventDetailView).
     var didSelectContact: (Contact) -> Void = { _ in }
     var didSelectEvent: (Event) -> Void = { _ in }
+    var didSelectGroup: (ContactGroup) -> Void = { _ in }
 
     private let store: FavoritesListStore
     private let service: SyncService
@@ -83,6 +84,13 @@ final class FavoritesListViewController: UIViewController {
         // observer below re-applies (the reconfigure pass repaints it).
         store.reload()
         applySnapshot(animated: false)
+
+        // Group favorites resolve against the repository's `groups` cache, which
+        // only `loadGroups()` fills — and the Favorites list may be opened before
+        // the Groups tab ever is. Kick a load so starred groups render their name
+        // instead of "Unavailable"; the resulting `.contactsRepositoryDidReload`
+        // re-applies the snapshot (observed below), repainting the rows.
+        Task { await repository.loadGroups() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -268,6 +276,10 @@ extension FavoritesListViewController: UITableViewDelegate {
             if let event = item.event {
                 didSelectEvent(event)
             }
+        case .group:
+            if let group = item.group {
+                didSelectGroup(group)
+            }
         }
     }
 
@@ -394,6 +406,8 @@ extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropD
 /// * .event resolved → calendar + title + start-date caption.
 /// * .event unresolved → calendar.badge.exclamationmark + "Unavailable"
 ///   with an "Event" caption.
+/// * .group resolved → person.3.fill + group name.
+/// * .group unresolved → person.3 + "Unavailable" with a "Group" caption.
 private final class FavoriteCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
@@ -561,6 +575,20 @@ private final class FavoriteCell: UITableViewCell {
                 iconView.image = UIImage(systemName: "calendar.badge.exclamationmark")
                 titleLabel.text = "Unavailable"
                 captionLabel.text = "Event"
+                captionLabel.isHidden = false
+            }
+        case .group:
+            iconView.contentMode = .scaleAspectFit
+            if let group = item.group {
+                iconView.image = UIImage(systemName: "person.3.fill")
+                let name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                titleLabel.text = name.isEmpty ? "(Unnamed Group)" : name
+                captionLabel.text = nil
+                captionLabel.isHidden = true
+            } else {
+                iconView.image = UIImage(systemName: "person.3")
+                titleLabel.text = "Unavailable"
+                captionLabel.text = "Group"
                 captionLabel.isHidden = false
             }
         }
