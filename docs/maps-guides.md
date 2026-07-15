@@ -95,7 +95,10 @@ Two entry shapes exist:
 
 ## UI shape
 
-`GuidesListViewController` (guides, newest import first, place counts) →
+`GuidesListViewController` (guides + place counts, with a nav-bar sort
+pull-down — `GuideSortOrder`: Name A–Z / Z–A, Recently Added (the default,
+newest import first), Last Viewed; persisted per-install by
+`GuideSortOrderSetting`, opening a guide stamps its `lastViewedAt`) →
 push → `GuidePlacesListViewController` (places in shared order; rows fill
 in one at a time as resolution lands, each row showing a spinner while it is
 being looked up, "Waiting to load…" while queued behind others, and its

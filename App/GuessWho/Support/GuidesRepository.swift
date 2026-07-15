@@ -18,8 +18,7 @@ extension Notification.Name {
 final class GuidesRepository: NSObject {
     private let service: SyncService
 
-    /// Live guides, newest import first (guide name as a deterministic
-    /// tiebreak for same-moment imports).
+    /// Live guides, ordered by `sortOrder`.
     private(set) var guides: [MapsGuide] = []
 
     /// Every live place, keyed by its guide — one sidecar walk backs both the
@@ -27,6 +26,19 @@ final class GuidesRepository: NSObject {
     private(set) var placesByGuide: [UUID: [MapsPlace]] = [:]
 
     private(set) var isLoading: Bool = false
+
+    /// The live sort order every guides list reads. Persistence is the app's
+    /// job (`GuideSortOrderSetting` writes UserDefaults and sets this);
+    /// setting it re-sorts in place and posts `.guidesRepositoryDidReload`
+    /// so visible lists re-snapshot — same shape as
+    /// `EventsRepository.sortOrder`. No-op (and no post) when unchanged.
+    var sortOrder: GuideSortOrder = .recentlyAdded {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            guides = sortOrder.sorted(guides)
+            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        }
+    }
 
     init(service: SyncService) {
         self.service = service
@@ -73,12 +85,7 @@ final class GuidesRepository: NSObject {
         let fetchedGuides = await service.allGuides()
         let fetchedPlaces = await service.allPlaces()
 
-        guides = fetchedGuides.sorted { lhs, rhs in
-            let lhsStamp = lhs.createdAt ?? .distantPast
-            let rhsStamp = rhs.createdAt ?? .distantPast
-            if lhsStamp != rhsStamp { return lhsStamp > rhsStamp }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
+        guides = sortOrder.sorted(fetchedGuides)
 
         var byGuide: [UUID: [MapsPlace]] = [:]
         for place in fetchedPlaces {

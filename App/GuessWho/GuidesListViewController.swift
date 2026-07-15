@@ -33,6 +33,12 @@ final class GuidesListViewController: UIViewController {
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
+    /// The "+" add button — always present.
+    private var addButton: UIBarButtonItem!
+    /// The sort pull-down button — always present. Its menu is rebuilt in the
+    /// reload observer so the checkmark tracks the repository's live order.
+    private var sortButton: UIBarButtonItem!
+
     /// Flips true once the first reload completes, so the empty state can
     /// show a spinner until then. Mirrors `GroupsListViewController.hasGroupsLoaded`.
     private var hasLoaded = false
@@ -143,12 +149,17 @@ final class GuidesListViewController: UIViewController {
     }
 
     private func configureAddButton() {
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        addButton = UIBarButtonItem(
             systemItem: .add,
             primaryAction: UIAction { [weak self] _ in
                 self?.presentAddGuideAlert()
             }
         )
+        sortButton = makeGuideSortBarButtonItem(repository: repository)
+        // Right bar items render right-to-left: "+" rightmost (as before),
+        // sort next to it — the same relative placement the events / person
+        // lists give their sort button.
+        navigationItem.rightBarButtonItems = [addButton, sortButton]
     }
 
     // MARK: - Add flow (paste a share link)
@@ -229,7 +240,11 @@ final class GuidesListViewController: UIViewController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySnapshot(animated: true)
+                guard let self else { return }
+                self.applySnapshot(animated: true)
+                // Rebuild the sort menu so the checkmark tracks the order that
+                // produced this reload (menus are immutable snapshots).
+                self.sortButton.menu = self.makeGuideSortMenu(repository: self.repository)
             }
         }
     }

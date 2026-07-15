@@ -136,6 +136,33 @@ struct GuideSidecarTests {
         #expect(try sync.allPlaces().isEmpty)
     }
 
+    // MARK: - Last viewed
+
+    @Test func stampGuideViewedRoundTrips() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let key = SidecarKey(kind: .guide, id: guideID.uuidString)
+
+        // Never-viewed guides carry no stamp.
+        #expect(try sync.guide(at: key)?.lastViewedAt == nil)
+
+        let now = Date(timeIntervalSinceReferenceDate: 12_345)
+        try sync.stampGuideViewed(at: key, now: now)
+
+        let stamped = try #require(try sync.guide(at: key))
+        let readBack = try #require(stamped.lastViewedAt)
+        #expect(abs(readBack.timeIntervalSinceReferenceDate - now.timeIntervalSinceReferenceDate) < 1)
+        // Additive: name and source cells survive the stamp.
+        #expect(stamped.name == "Berlin")
+    }
+
+    @Test func stampGuideViewedIsANoOpForMissingSidecar() throws {
+        let (sync, _) = makeOrchestrator()
+        // Must not throw or mint an envelope.
+        try sync.stampGuideViewed(at: SidecarKey(kind: .guide, id: UUID().uuidString))
+        #expect(try sync.allGuides().isEmpty)
+    }
+
     // MARK: - Deletion
 
     @Test func deleteGuideHidesGuideAndItsPlaces() throws {

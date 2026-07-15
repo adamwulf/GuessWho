@@ -593,6 +593,19 @@ final class SyncService {
         )
     }
 
+    /// Stamp `lastViewed = now` on the guide sidecar. Best-effort and silent
+    /// (a failed stamp must never break opening the guide); errors surface via
+    /// `lastError`. A no-op inside the package when no sidecar exists at
+    /// `uuid`. Mirrors `stampEventViewed(uuid:)`.
+    func stampGuideViewed(uuid: String) {
+        guard let sync else { return }
+        do {
+            try sync.stampGuideViewed(at: SidecarKey(kind: .guide, id: uuid))
+        } catch {
+            lastError = "stamp guide viewed failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Soft-delete a guide and every place in it.
     func deleteGuide(uuid: String) throws {
         guard let sync else { throw SidecarUnavailableError() }

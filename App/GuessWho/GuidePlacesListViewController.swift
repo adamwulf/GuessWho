@@ -66,6 +66,13 @@ final class GuidePlacesListViewController: UIViewController {
 
         applySnapshot(animated: false)
 
+        // Stamp lastViewed ONCE per open (opening a guide's places is the
+        // guide equivalent of opening a detail view). Fire-and-forget: the
+        // package no-ops when no sidecar exists, and the resulting sidecar
+        // change drives the guides list's debounced reload so a "Last Viewed"
+        // sort re-orders. Mirrors EventDetailView's on-open stamp.
+        service.stampGuideViewed(uuid: guide.id.uuidString)
+
         // Retry any still-unresolved place IDs each time the guide opens (a
         // prior pass may have hit a network failure, or the app may have quit
         // mid-resolution). No-op when everything is already resolved, or when
