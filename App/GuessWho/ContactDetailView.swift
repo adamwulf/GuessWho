@@ -1231,7 +1231,7 @@ struct ContactDetailView: View {
             let people = repository.contactsAssociated(with: contact)
             if !people.isEmpty {
                 Section {
-                    ForEach(people, id: \.localID) { person in
+                    ForEach(people, id: \.contactID) { person in
                         associatedContactRow(person)
                             .centeredRowContent()
                     }
