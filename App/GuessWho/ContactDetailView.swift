@@ -1656,11 +1656,11 @@ struct ContactDetailView: View {
             Divider()
 
             activityFooterButton(
-                title: "Add Org",
+                title: "Link Org",
                 systemImage: "building.2",
                 action: { showingAddOrgLinkSheet = true }
             )
-            // "Add Org" shares the "Link Contact" write path — an organization
+            // "Link Org" shares the "Link Contact" write path — an organization
             // is a Contact, so the link record and store are identical; only
             // the picker's eligibility filter differs.
             .disabled(linksStore == nil)
