@@ -385,7 +385,10 @@ extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropD
 
 /// Two-line favorite row. Cell presentation switches by `FavoriteListItem.kind`
 /// and resolution state:
-/// * .contact resolved → person.crop.circle.fill + display name.
+/// * .contact resolved → avatar + bold-family name, plus a
+///   "jobTitle, organizationName" caption for people (matching the People
+///   list's `ContactCell`); organizations render name-only like the
+///   Organizations list's `OrganizationCell`.
 /// * .contact unresolved → person.crop.circle.badge.questionmark +
 ///   "Unavailable" with a "Contact" caption.
 /// * .event resolved → calendar + title + start-date caption.
@@ -522,9 +525,14 @@ private final class FavoriteCell: UITableViewCell {
                         }
                     }
                 }
-                titleLabel.text = contact.displayName
-                captionLabel.text = nil
-                captionLabel.isHidden = true
+                titleLabel.attributedText = Self.nameAttributedString(for: contact)
+                // Same "jobTitle, organizationName" caption the People list
+                // shows. The helper returns "" for organizations (and people
+                // with no job/org), so those rows stay name-only with the
+                // caption hidden.
+                let subtitle = Self.subtitle(for: contact)
+                captionLabel.text = subtitle
+                captionLabel.isHidden = subtitle.isEmpty
             } else {
                 iconView.contentMode = .scaleAspectFit
                 iconView.image = UIImage(systemName: "person.crop.circle.badge.questionmark")
@@ -561,5 +569,47 @@ private final class FavoriteCell: UITableViewCell {
     func cancelPhotoLoad() {
         photoTask?.cancel()
         photoTask = nil
+    }
+
+    /// Bold-family-name title, matching the People / Organizations lists' row
+    /// cells so a favorited contact reads identically wherever it appears.
+    private static func nameAttributedString(for contact: Contact) -> NSAttributedString {
+        let given = contact.givenName.trimmingCharacters(in: .whitespaces)
+        let family = contact.familyName.trimmingCharacters(in: .whitespaces)
+        let bodyFont = UIFont.preferredFont(forTextStyle: .body)
+        let boldDescriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
+        let boldFont = UIFont(descriptor: boldDescriptor, size: bodyFont.pointSize)
+
+        let attributed = NSMutableAttributedString()
+        if !given.isEmpty, !family.isEmpty {
+            attributed.append(NSAttributedString(
+                string: given + " ",
+                attributes: [.font: bodyFont]
+            ))
+            attributed.append(NSAttributedString(
+                string: family,
+                attributes: [.font: boldFont]
+            ))
+            return attributed
+        }
+        if !family.isEmpty {
+            return NSAttributedString(string: family, attributes: [.font: boldFont])
+        }
+        if !given.isEmpty {
+            return NSAttributedString(string: given, attributes: [.font: bodyFont])
+        }
+        return NSAttributedString(string: contact.displayName, attributes: [.font: bodyFont])
+    }
+
+    /// "jobTitle, organizationName" caption for people; "" for organizations
+    /// (guarded on `contactType`) and for people missing both fields. Mirrors
+    /// `ContactCell.subtitle(for:)`.
+    private static func subtitle(for contact: Contact) -> String {
+        guard contact.contactType == .person else { return "" }
+        let title = contact.jobTitle
+        let org = contact.organizationName
+        if !title.isEmpty, !org.isEmpty { return "\(title), \(org)" }
+        if !title.isEmpty { return title }
+        return org
     }
 }
