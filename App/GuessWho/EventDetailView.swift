@@ -255,10 +255,11 @@ struct EventDetailView: View {
                         // Long-press / right-click to copy the location text.
                         .copyableText(location)
                 }
-                // Directly below the location, in the same section: a row per
-                // imported guide this address appears in.
-                ForEach(locationGuides, id: \.guide.id) { match in
-                    GuideMatchRow(match: match)
+                // Directly below the location, in the same section: one summary
+                // row that opens the matched place's detail, where every guide
+                // this place sits in is listed.
+                if !locationGuides.isEmpty {
+                    AddressGuidesSummaryRow(matches: locationGuides)
                 }
             }
             if let notes = event.eventKitNotes, !notes.isEmpty {

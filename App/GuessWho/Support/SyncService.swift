@@ -552,6 +552,17 @@ final class SyncService {
         )
     }
 
+    /// Imported guides that contain a place at `place`'s address — the reverse
+    /// lookup powering the place detail's "Guides" section. Derives `place`'s
+    /// street-line needle (`GuideAddressMatcher.streetNeedle`) and reuses
+    /// `guides(containingAddresses:)`, so a resolved place always lists at least
+    /// its own guide. Returns `[]` for an unresolved place-ID entry with no
+    /// address yet.
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide] {
+        guard let needle = GuideAddressMatcher.streetNeedle(for: place) else { return [] }
+        return await guides(containingAddresses: [needle]).map { $0.guide }
+    }
+
     /// The live places in `guideID`, in the guide's shared order.
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         guard let sync else { return [] }

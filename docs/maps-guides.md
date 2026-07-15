@@ -111,8 +111,14 @@ hosted the same way as `ContactDetailView` / `EventDetailView`. It shows the
 place's name, address, and coordinate with an **Open in Maps** button (the
 `maps.apple.com/place?place-id=…` / coordinate-fallback deep link that used
 to fire on row tap now lives on this button), plus three best-effort
-"who/what is here" sections derived from the place's address:
+"who/what is here" sections derived from the place's address, plus a
+**Guides** section:
 
+* **Guides** — every imported guide this place sits in (including its own),
+  via `SyncService.guides(containingPlace:)`, which derives the place's
+  street-line needle and reuses `guides(containingAddresses:)`. Tapping a
+  guide opens its places (`pushGuideReference`). This is the destination the
+  contact/event address summary row (below) navigates to.
 * **Recent Events** — calendar events whose free-text location contains the
   place's street line, via `SyncService.recentEvents(forEmails:addresses:)`
   with an empty email set and the place's street line as the location needle.
@@ -132,38 +138,42 @@ only populated after the MapKit resolution pass, so an unresolved place
 matches nothing — the association sections stay empty until its row fills in.
 Address entries (inline address + coordinate) match immediately.
 
-## Guide rows on contact / event detail (the reverse association)
+## Guide summary row on contact / event detail (the reverse association)
 
 The place detail answers "who/what is here?"; the contact and event details
 answer the inverse — "which imported guides does this address appear in?" —
-and show one tappable row per matching guide directly under the address it
-matched, in the same section:
+and show a single tappable summary row ("This place is in N guides") directly
+under the address it matched, in the same section. Tapping it opens the
+matched place's detail, where the **Guides** section (above) enumerates the
+full list; it does *not* jump straight to a guide.
 
-* **`ContactDetailView`** — under the postal-address group, a row per guide
-  whose place addresses contain one of the contact's structured street lines.
-  Loaded by `reloadAddressGuides(for:)` on each contact load (its own load
-  token, like `reloadRecentEvents`).
-* **`EventDetailView`** — under the Location row in the Details section, a row
-  per guide whose place street lines appear inside the event's free-text
-  location. Loaded by a `.task(id: event?.location)` so it recomputes when the
-  location changes.
+* **`ContactDetailView`** — under the postal-address group, one summary row
+  when the contact's structured street lines match any guide's place
+  addresses. Loaded by `reloadAddressGuides(for:)` on each contact load (its
+  own load token, like `reloadRecentEvents`).
+* **`EventDetailView`** — under the Location row in the Details section, one
+  summary row when the event's free-text location contains a guide place's
+  street line. Loaded by a `.task(id: event?.location)` so it recomputes when
+  the location changes.
 
 Both call the shared `GuideAddressMatcher` (GuessWhoSync) via
 `SyncService.guides(containingAddresses:)` / `guides(matchingLocation:)`, which
 walk every guide + place sidecar (the background-hop `allGuides()` /
 `allPlaces()` overloads) and return one `Match` per guide (guide + the first
-matching place, for the row caption). The matcher reuses the same
-`EventLocationMatcher` street-line token logic as the place detail — only the
-needle/haystack direction differs (contact street line ⊂ place address vs.
-place street line ⊂ event location), and `GuideAddressMatcher.streetNeedle`
-derives a place's needle exactly as the place detail did (it now lives in the
-package and `GuidePlaceDetailView` calls it). Rows are the SwiftUI
-`GuideMatchRow`; tapping pushes the guide's places via a new
-`pushGuideReference` env closure (`GuideReference` carries the `MapsGuide`,
-like `GroupReference` carries its group) wired in both shells' scene-delegate
-push handlers. As with the place detail, matching keys off the resolved
-`address`, so an unresolved place-ID entry contributes nothing until its row
-fills in.
+matching place). The matcher reuses the same `EventLocationMatcher` street-line
+token logic as the place detail — only the needle/haystack direction differs
+(contact street line ⊂ place address vs. place street line ⊂ event location),
+and `GuideAddressMatcher.streetNeedle` derives a place's needle exactly as the
+place detail did (it now lives in the package and `GuidePlaceDetailView` calls
+it). The row is the SwiftUI `AddressGuidesSummaryRow`; tapping pushes the first
+match's place via a `pushPlaceReference` env closure (`PlaceReference` carries
+the `MapsPlace`, which knows its own `guideID`) wired in both shells'
+scene-delegate push handlers — any matched place is equivalent, since they
+share the address and the place detail re-derives the full guide list from it.
+The place detail's own **Guides** section then pushes an individual guide via
+`pushGuideReference` (`GuideReference` carries the `MapsGuide`). As with the
+place detail, matching keys off the resolved `address`, so an unresolved
+place-ID entry contributes nothing until its row fills in.
 
 ## Latitude/longitude: options and caveats
 

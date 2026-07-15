@@ -25,14 +25,19 @@ struct GuidePlaceDetailView: View {
     @Environment(ContactsRepository.self) private var contactsRepository
     @Environment(\.openURL) private var openURL
 
-    // Bridge to the outer UIKit nav (both shells) so tapping an event or a
-    // matched contact pushes its detail. See `ReferenceNavigation.swift`.
+    // Bridge to the outer UIKit nav (both shells) so tapping an event, a
+    // matched contact, or a guide pushes its detail. See `ReferenceNavigation.swift`.
     @Environment(\.pushEventReference) private var pushEventReference
     @Environment(\.pushContactReference) private var pushContactReference
+    @Environment(\.pushGuideReference) private var pushGuideReference
 
     @State private var recentEvents: [Event] = []
     @State private var matchingPeople: [MatchedContact] = []
     @State private var matchingOrganizations: [MatchedContact] = []
+    // The imported guides this place sits in — every guide whose places share
+    // this place's street line (including this place's own guide). Populates the
+    // "Guides" section; loaded alongside the other associations.
+    @State private var containingGuides: [MapsGuide] = []
 
     /// A contact matched to this place, paired with the street line that
     /// triggered the match (shown as the row caption). View-local — nothing
@@ -54,6 +59,9 @@ struct GuidePlaceDetailView: View {
         Form {
             if let place {
                 locationSection(place)
+                if !containingGuides.isEmpty {
+                    guidesSection
+                }
                 if !recentEvents.isEmpty {
                     recentEventsSection
                 }
@@ -138,6 +146,38 @@ struct GuidePlaceDetailView: View {
         }
     }
 
+    // MARK: - Guides
+
+    /// The imported guides this place sits in. Reached here from the address
+    /// summary row on a contact/event detail ("This place is in N guides");
+    /// tapping a guide opens its places via `pushGuideReference`.
+    @ViewBuilder
+    private var guidesSection: some View {
+        Section("Guides") {
+            ForEach(containingGuides, id: \.id) { guide in
+                Button {
+                    pushGuideReference(GuideReference(guide: guide))
+                } label: {
+                    ActivityRowLayout(systemImage: "map") {
+                        Text(guideName(guide))
+                            .font(.body)
+                            .foregroundStyle(.tint)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// The guide's name, falling back to the same "(Unnamed Guide)" placeholder
+    /// the Guides list uses for a nameless import.
+    private func guideName(_ guide: MapsGuide) -> String {
+        let name = guide.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "(Unnamed Guide)" : name
+    }
+
     // MARK: - Recent events
 
     @ViewBuilder
@@ -209,10 +249,12 @@ struct GuidePlaceDetailView: View {
             recentEvents = []
             matchingPeople = []
             matchingOrganizations = []
+            containingGuides = []
             return
         }
 
         async let events = service.recentEvents(forEmails: [], addresses: [needle], limit: 10)
+        async let guidesForPlace = service.guides(containingPlace: place)
 
         // Match contacts whose street line appears inside the place's address.
         let haystack = place.address
@@ -228,6 +270,7 @@ struct GuidePlaceDetailView: View {
         }
 
         recentEvents = await events
+        containingGuides = await guidesForPlace
         matchingPeople = matched
             .filter { $0.contact.contactType == .person }
             .sorted { $0.contact.displayName.localizedCaseInsensitiveCompare($1.contact.displayName) == .orderedAscending }
