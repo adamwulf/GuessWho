@@ -81,6 +81,7 @@ struct EventLinkSheet: View {
     var body: some View {
         NavigationStack {
             content
+                .keyboardDismissible()
                 .navigationTitle(navigationTitle)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
