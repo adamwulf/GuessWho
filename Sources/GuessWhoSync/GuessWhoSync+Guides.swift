@@ -181,6 +181,33 @@ extension GuessWhoSync {
         )
     }
 
+    /// Rewrite `guideID`'s places into `orderedIDs` order by stamping each
+    /// place's `orderCache` cell to its new index (0-based). `orderedIDs` must
+    /// be the guide's full place set in the desired order; entries with no live
+    /// sidecar are skipped. Only places whose index actually changed are
+    /// written, so a small drag touches only the shifted rows. Backs the
+    /// drag-to-reorder affordance in the places list — the "Guide Order" sort
+    /// IS this cell, so reordering here is what that sort reflects.
+    public func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) throws {
+        var currentOrder: [UUID: Int] = [:]
+        for place in try places(inGuide: guideID) {
+            currentOrder[place.id] = place.sortOrder
+        }
+        for (index, placeID) in orderedIDs.enumerated() {
+            if currentOrder[placeID] == index { continue }
+            let key = SidecarKey(kind: .place, id: placeID.uuidString)
+            guard try sidecars.read(key) != nil else { continue }
+            try writeWellKnownCell(
+                at: key,
+                cellKey: Self.placeSortOrderCellKey,
+                fieldName: Self.placeSortOrderCellKey,
+                type: .note,
+                value: .string(String(index)),
+                softDelete: false
+            )
+        }
+    }
+
     /// Whole-place soft-delete (removing a single row from a guide).
     public func deletePlace(at key: SidecarKey) throws {
         try writeWellKnownCell(

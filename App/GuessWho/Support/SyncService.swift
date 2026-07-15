@@ -624,6 +624,18 @@ final class SyncService {
         try sync.deleteGuide(at: SidecarKey(kind: .guide, id: uuid))
     }
 
+    /// Persist a drag-reorder of a guide's places into `orderedIDs` order.
+    /// Best-effort and silent; errors surface via `lastError`. Only meaningful
+    /// for the "Guide Order" sort, whose backing cell this rewrites.
+    func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) {
+        guard let sync else { return }
+        do {
+            try sync.reorderPlaces(inGuide: guideID, orderedIDs: orderedIDs)
+        } catch {
+            lastError = "reorder places failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Soft-delete a single place.
     func deletePlace(uuid: String) throws {
         guard let sync else { throw SidecarUnavailableError() }

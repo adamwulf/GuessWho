@@ -190,6 +190,40 @@ struct GuideSidecarTests {
         #expect(try sync.allPlaces().isEmpty)
     }
 
+    // MARK: - Reorder
+
+    @Test func reorderPlacesRewritesEntryOrder() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let original = try sync.places(inGuide: guideID)
+        #expect(original.map(\.sortOrder) == [0, 1, 2])
+
+        // Move the last place to the front.
+        let reordered = [original[2].id, original[0].id, original[1].id]
+        try sync.reorderPlaces(inGuide: guideID, orderedIDs: reordered)
+
+        let after = try sync.places(inGuide: guideID)
+        #expect(after.map(\.id) == reordered)
+        #expect(after.map(\.sortOrder) == [0, 1, 2])
+    }
+
+    @Test func reorderPlacesSkipsUnknownIDsAndMissingSidecars() throws {
+        let (sync, _) = makeOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        let original = try sync.places(inGuide: guideID)
+
+        // An unknown id interleaved with real ones is ignored; the real places
+        // still land at their listed positions.
+        let ghost = UUID()
+        try sync.reorderPlaces(
+            inGuide: guideID,
+            orderedIDs: [original[1].id, ghost, original[2].id, original[0].id]
+        )
+
+        let after = try sync.places(inGuide: guideID)
+        #expect(after.map(\.id) == [original[1].id, original[2].id, original[0].id])
+    }
+
     // MARK: - Deletion
 
     @Test func deleteGuideHidesGuideAndItsPlaces() throws {

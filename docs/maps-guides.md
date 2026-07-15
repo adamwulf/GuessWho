@@ -103,7 +103,12 @@ push → `GuidePlacesListViewController` (places with a nav-bar sort pull-down
 — `PlaceSortOrder`: Guide Order (the default, the share-link entry order),
 Name A–Z / Z–A, Last Viewed; persisted per-install by `PlaceSortOrderSetting`,
 opening a place stamps its `lastViewedAt`; the package's `places(inGuide:)`
-stays in canonical guide order, only the app's display copy reorders; rows fill
+stays in canonical guide order, only the app's display copy reorders. In
+**Guide Order** the rows are press-and-hold draggable to reorder, like the
+Favorites list — the drop persists the new entry order through
+`GuessWhoSync.reorderPlaces(inGuide:orderedIDs:)` (which rewrites each place's
+`orderCache` cell), and dragging is disabled in the derived Name / Last Viewed
+orders since there is nothing there to persist. Rows fill
 in one at a time as resolution lands, each row showing a spinner while it is
 being looked up, "Waiting to load…" while queued behind others, and its
 name/address once done) → push → `GuidePlaceDetailView` (the place detail,

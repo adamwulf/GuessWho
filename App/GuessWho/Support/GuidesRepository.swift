@@ -122,6 +122,24 @@ final class GuidesRepository: NSObject {
         placesByGuide[guideID] ?? []
     }
 
+    /// Apply a drag-reorder of `guideID`'s places (source rows → destination
+    /// row, `Array.move(fromOffsets:toOffset:)` semantics), persist the new
+    /// entry order, and update the in-memory copy so the list repaints
+    /// immediately without waiting for the debounced sidecar reload. Only used
+    /// while the places list is in `.guideOrder` (the order this rewrites).
+    /// Mirrors `FavoritesListStore.move(from:to:)`.
+    func movePlaces(inGuide guideID: UUID, from source: IndexSet, to destination: Int) {
+        guard var places = placesByGuide[guideID] else { return }
+        places.move(fromOffsets: source, toOffset: destination)
+        // Renumber sortOrder so the in-memory copy matches the cells we're
+        // about to persist (and stays consistent if a reload races in).
+        for index in places.indices {
+            places[index].sortOrder = index
+        }
+        placesByGuide[guideID] = places
+        service.reorderPlaces(inGuide: guideID, orderedIDs: places.map(\.id))
+    }
+
     func placeCount(inGuide guideID: UUID) -> Int {
         placesByGuide[guideID]?.count ?? 0
     }
