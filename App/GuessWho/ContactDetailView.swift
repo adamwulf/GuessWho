@@ -327,9 +327,9 @@ struct ContactDetailView: View {
 
                 associatedOrganizationSection(contact)
 
-                associatedContactsSection(contact)
-
                 departmentsSection(contact)
+
+                associatedContactsSection(contact)
 
                 notesSection
 
@@ -442,7 +442,7 @@ struct ContactDetailView: View {
             Button {
                 showNewNoteEditor()
             } label: {
-                Label("Add Dated Note", systemImage: "note.text")
+                Label("Add Note", systemImage: "note.text")
             }
             .disabled(notesStore == nil || showingNewNoteEditor)
             .centeredRowContent()
@@ -1562,7 +1562,7 @@ struct ContactDetailView: View {
     private var activityFooter: some View {
         HStack(spacing: 0) {
             activityFooterButton(
-                title: "Add Dated Note",
+                title: "Add Note",
                 systemImage: "note.text",
                 action: { showNewNoteEditor() }
             )
