@@ -789,7 +789,10 @@ function gwContactFieldsFrom(container) {
     }),
     emails: safe(() =>
       uniq([...container.querySelectorAll('a[href^="mailto:"]')]
-        .map((a) => a.getAttribute("href").replace(/^mailto:/, "").trim()))
+        // The address ends at the first "?" — LinkedIn tags these hrefs with
+        // tracking params (mailto:me@example.com?trk=contact-info) that are
+        // not part of the address.
+        .map((a) => a.getAttribute("href").replace(/^mailto:/, "").split("?")[0].trim()))
     ) || [],
     websites: safe(() =>
       uniq([...container.querySelectorAll('a[href^="http"]')]
