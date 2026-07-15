@@ -12,6 +12,17 @@ struct ContactReference: Hashable {
     let id: ContactID
 }
 
+/// Navigation payload for "show the people in this department of this
+/// organization." Carries the organization's opaque `ContactID` (resolved to
+/// the org record when the destination list is built) plus the department name
+/// as the user typed it into their contacts. The pair identifies one department
+/// bucket within one organization — the same department string under a
+/// different organization is a distinct destination.
+struct DepartmentReference: Hashable {
+    let organizationID: ContactID
+    let department: String
+}
+
 struct EventReference: Hashable {
     let eventUUID: String
     /// Optional EventKit identifier carried as a hint so the detail view can

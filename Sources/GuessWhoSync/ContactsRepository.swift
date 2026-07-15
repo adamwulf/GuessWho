@@ -1519,6 +1519,80 @@ public final class ContactsRepository: NSObject {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
+    /// The distinct department names carried by the people associated with
+    /// `organization` (see `contactsAssociated(with:)`). Trimmed; blank
+    /// departments excluded; de-duplicated case-insensitively (the first-seen
+    /// display form wins); sorted A–Z. Empty when the organization has no
+    /// associated people or none of them names a department.
+    public func departments(in organization: Contact) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for person in contactsAssociated(with: organization) {
+            let name = person.departmentName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
+            result.append(name)
+        }
+        return result.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// The people associated with `organization` (see
+    /// `contactsAssociated(with:)`) whose Contacts "department" field matches
+    /// `department` (trimmed, case-insensitive). A subset of
+    /// `contactsAssociated(with:)`, sorted by display name.
+    public func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact] {
+        let needle = department.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contactsAssociated(with: organization).filter { person in
+            person.departmentName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+        }
+    }
+
+    /// Renames a department across the organization's people: every person
+    /// associated with `organization` (see `contactsAssociated(with:)`) whose
+    /// Contacts "department" field currently matches `oldName` (trimmed,
+    /// case-insensitive) has that field rewritten to `newName` (trimmed). Each
+    /// matching Contacts record is re-fetched fresh (see `editableContact(id:)`
+    /// for why the fresh path beats the bulk cache right after a write), edited,
+    /// and saved; the edited records are then refreshed into the cache in ONE
+    /// commit and a single reload is posted. Returns the number of records
+    /// updated.
+    ///
+    /// `newName` is trimmed and, when blank, the rename is a no-op returning 0 —
+    /// callers should still disable their Save affordance on an empty field, but
+    /// this keeps the invariant "a department never becomes nameless" at the
+    /// package boundary too. A write that throws (e.g. Contacts authorization
+    /// denied) propagates; records saved before the failure keep their new name.
+    @discardableResult
+    public func renameDepartment(from oldName: String, to newName: String, in organization: Contact) async throws -> Int {
+        let trimmedNew = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedNew.isEmpty else { return 0 }
+        let matches = contactsAssociated(with: organization, inDepartment: oldName)
+        guard !matches.isEmpty else { return 0 }
+
+        var editedLocalIDs: [String] = []
+        for match in matches {
+            // Fetch fresh for a reliable record; skip a record that vanished
+            // between the cache read and the write.
+            guard var fresh = try await contactsStore.fetch(localID: match.localID) else { continue }
+            fresh.departmentName = trimmedNew
+            Self.saveLog.notice("contact save requested", metadata: [
+                "op": "renameDepartment", "localID": .string(fresh.localID),
+            ])
+            try await contactsStore.save(fresh)
+            editedLocalIDs.append(fresh.localID)
+        }
+
+        // Refresh every edited record into one working copy so the indexes
+        // rebuild exactly once, then post a single reload.
+        var working = contacts
+        for localID in editedLocalIDs {
+            await refetch(localID: localID, into: &working)
+        }
+        setContacts(working)
+        postDidReload()
+        return editedLocalIDs.count
+    }
+
     /// Re-read one Contacts record and reconcile it into the cache.
     package func refreshContact(localID: String) async {
         await applyRefresh(localID: localID)

@@ -58,4 +58,98 @@ struct ContactsRepositoryTests {
         #expect(repository.contactsAssociated(with: org).map(\.localID) == ["ada", "charles"])
         #expect(repository.contactsAssociated(with: rivalOrg).isEmpty)
     }
+
+    @Test @MainActor
+    func departmentsForAnOrganizationAreDistinctTrimmedAndSorted() async {
+        let org = Contact(localID: "org", contactType: .organization, organizationName: "Analytical Engine")
+        let ada = Contact(
+            localID: "ada", givenName: "Ada", familyName: "Lovelace",
+            departmentName: "  Engineering ", organizationName: "Analytical Engine"
+        )
+        let charles = Contact(
+            localID: "charles", givenName: "Charles", familyName: "Babbage",
+            departmentName: "engineering", organizationName: "analytical engine"
+        )
+        let grace = Contact(
+            localID: "grace", givenName: "Grace", familyName: "Hopper",
+            departmentName: "Research", organizationName: "Analytical Engine"
+        )
+        // No department — contributes to associated people but not to the
+        // department list.
+        let alan = Contact(
+            localID: "alan", givenName: "Alan", familyName: "Turing",
+            organizationName: "Analytical Engine"
+        )
+        // Different org — its department must not leak in.
+        let outsider = Contact(
+            localID: "outsider", givenName: "Klara", familyName: "von Neumann",
+            departmentName: "Mathematics", organizationName: "Bletchley Park"
+        )
+        let repository = ContactsRepository(
+            contacts: InMemoryContactStore(contacts: [org, ada, charles, grace, alan, outsider])
+        )
+
+        await repository.reload()
+
+        // Distinct (case-insensitive), trimmed to the first-seen display form,
+        // sorted A–Z; blank/other-org departments excluded.
+        #expect(repository.departments(in: org) == ["Engineering", "Research"])
+
+        // People in one department: subset of the associated people, matched
+        // case-insensitively on the department field, sorted by display name.
+        #expect(
+            repository.contactsAssociated(with: org, inDepartment: " ENGINEERING ").map(\.localID)
+                == ["ada", "charles"]
+        )
+        #expect(repository.contactsAssociated(with: org, inDepartment: "Research").map(\.localID) == ["grace"])
+        #expect(repository.contactsAssociated(with: org, inDepartment: "").isEmpty)
+        #expect(repository.contactsAssociated(with: org, inDepartment: "Mathematics").isEmpty)
+    }
+
+    @Test @MainActor
+    func renamingADepartmentRewritesOnlyTheMatchingAssociatedContacts() async throws {
+        let org = Contact(localID: "org", contactType: .organization, organizationName: "Analytical Engine")
+        let ada = Contact(
+            localID: "ada", givenName: "Ada", familyName: "Lovelace",
+            departmentName: "Engineering", organizationName: "Analytical Engine"
+        )
+        let charles = Contact(
+            localID: "charles", givenName: "Charles", familyName: "Babbage",
+            departmentName: "  ENGINEERING ", organizationName: "Analytical Engine"
+        )
+        // Same department name but a DIFFERENT org — must not be rewritten.
+        let outsider = Contact(
+            localID: "outsider", givenName: "Klara", familyName: "von Neumann",
+            departmentName: "Engineering", organizationName: "Bletchley Park"
+        )
+        // Same org, different department — must not be rewritten.
+        let grace = Contact(
+            localID: "grace", givenName: "Grace", familyName: "Hopper",
+            departmentName: "Research", organizationName: "Analytical Engine"
+        )
+        let repository = ContactsRepository(
+            contacts: InMemoryContactStore(contacts: [org, ada, charles, outsider, grace])
+        )
+
+        await repository.reload()
+
+        // Blank new name is a no-op (the invariant "a department never becomes
+        // nameless" holds at the package boundary).
+        let noopCount = try await repository.renameDepartment(from: "Engineering", to: "   ", in: org)
+        #expect(noopCount == 0)
+        #expect(repository.departments(in: org) == ["Engineering", "Research"])
+
+        // Case-insensitive match, trimmed new value, both members rewritten.
+        let count = try await repository.renameDepartment(from: " engineering ", to: "  R&D ", in: org)
+        #expect(count == 2)
+
+        #expect(repository.contact(localID: "ada")?.departmentName == "R&D")
+        #expect(repository.contact(localID: "charles")?.departmentName == "R&D")
+        // Different org / different department left untouched.
+        #expect(repository.contact(localID: "outsider")?.departmentName == "Engineering")
+        #expect(repository.contact(localID: "grace")?.departmentName == "Research")
+
+        #expect(repository.departments(in: org) == ["R&D", "Research"])
+        #expect(repository.contactsAssociated(with: org, inDepartment: "R&D").map(\.localID) == ["ada", "charles"])
+    }
 }

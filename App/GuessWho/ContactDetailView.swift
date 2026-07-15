@@ -17,6 +17,7 @@ struct ContactDetailView: View {
     // which is also what Catalyst gets today.
     @Environment(\.pushContactReference) private var pushContactReference
     @Environment(\.pushEventReference) private var pushEventReference
+    @Environment(\.pushDepartmentReference) private var pushDepartmentReference
 
     /// The view's identity is the opaque, package-vended `ContactID` the scene
     /// delegate hands in — NEVER a raw `localID`. The view resolves it to a
@@ -327,6 +328,8 @@ struct ContactDetailView: View {
                 associatedOrganizationSection(contact)
 
                 associatedContactsSection(contact)
+
+                departmentsSection(contact)
 
                 notesSection
 
@@ -1307,6 +1310,46 @@ struct ContactDetailView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Departments seen on an organization's page: the distinct department names
+    /// carried by the people associated with this organization (see
+    /// `ContactsRepository.departments(in:)`). Each row taps through to a list of
+    /// the people in that department (`DepartmentReference` → the scene delegate's
+    /// department-members list). Organizations only; hidden when no associated
+    /// person names a department.
+    @ViewBuilder
+    private func departmentsSection(_ contact: Contact) -> some View {
+        if contact.contactType == .organization {
+            let departments = repository.departments(in: contact)
+            if !departments.isEmpty {
+                Section {
+                    ForEach(departments, id: \.self) { department in
+                        departmentRow(department, organization: contact)
+                            .centeredRowContent()
+                    }
+                } header: {
+                    Text("Departments").centeredSectionHeader()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func departmentRow(_ department: String, organization: Contact) -> some View {
+        Button {
+            pushDepartmentReference(
+                DepartmentReference(organizationID: organization.contactID, department: department)
+            )
+        } label: {
+            ActivityRowLayout(systemImage: "person.2") {
+                Text(department)
+                    .foregroundStyle(.tint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
         }
         .buttonStyle(.plain)
