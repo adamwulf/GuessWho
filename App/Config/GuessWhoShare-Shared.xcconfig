@@ -1,0 +1,44 @@
+// GuessWhoShare-Shared.xcconfig
+// Config-invariant TARGET-level settings for the GuessWhoShare share-extension
+// target — the iOS share-sheet entry point that bounces a shared LinkedIn
+// profile URL to Safari, where the GuessWho LinkedIn Safari Web Extension
+// captures it (see docs/linkedin-safari-extension.md). The per-configuration
+// identifier settings — bundle id and display name — live in
+// GuessWhoShare-Debug.xcconfig and GuessWhoShare-Release.xcconfig, each wired
+// as that configuration's baseConfigurationReference in the project.
+
+#include "SharedVersion.xcconfig"
+
+// Identity (config-invariant part). PRODUCT_BUNDLE_IDENTIFIER is per-config
+// and lives in GuessWhoShare-Debug/Release.xcconfig — the extension bundle id
+// must stay prefixed by the app bundle id (…guesswho.share).
+PRODUCT_NAME = $(TARGET_NAME)
+
+// Signing. No entitlements: the share extension holds nothing — no App Group,
+// no iCloud, no Contacts. It only re-opens a URL in the browser.
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+
+// Swift
+CLANG_ENABLE_MODULES = YES
+SWIFT_VERSION = 6.0
+SWIFT_EMIT_LOC_STRINGS = YES
+
+// Info.plist
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = GuessWhoShare/Info.plist
+
+// Platforms / devices — iOS ONLY. Share-from-the-LinkedIn-app is an iPhone/
+// iPad flow; on the Mac the user is already in a browser where the Safari or
+// Chrome extension runs directly, so the target doesn't build for Catalyst
+// (the app's embed phase and target dependency carry platformFilter = ios to
+// match).
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+IPHONEOS_DEPLOYMENT_TARGET = 26.0
+TARGETED_DEVICE_FAMILY = 1,2
+SUPPORTS_MACCATALYST = NO
+
+SKIP_INSTALL = YES
+
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks

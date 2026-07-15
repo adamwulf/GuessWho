@@ -1,0 +1,14 @@
+// GuessWhoShare-Debug.xcconfig
+// Debug-configuration identifiers for the GuessWhoShare share-extension
+// target. Wired as the target's Debug baseConfigurationReference. Debug uses
+// the production bundle id (prefixed by the app's) so Xcode builds exercise
+// the same signing as Release.
+
+#include "GuessWhoShare-Shared.xcconfig"
+
+// Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.share).
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.share
+
+// Display name — the label under the icon in the share sheet. "Debug"-suffixed
+// so an Xcode-installed extension is obvious, matching the app's naming.
+GUESSWHO_SHARE_DISPLAY_NAME = GuessWho Debug

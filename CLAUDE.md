@@ -57,6 +57,10 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   code copy: `build.sh` assembles it from the Safari extension's `Resources/`
   plus a Chrome-specific manifest/background (localhost handoff). See its
   `README.md` for build/test/Web-Store instructions.
+- `App/GuessWhoShare/` — the iOS share extension: share a LinkedIn profile
+  URL from the LinkedIn app and it re-opens in Safari, where the Safari
+  extension captures it. Bounce-only — no parsing, no storage, no
+  entitlements. iOS only (not Catalyst).
 - `App/GuessWhoAppKitBridge/` — in-process AppKit `.bundle` for the rare
   AppKit-only needs on Catalyst (e.g. `NSOpenPanel`).
 - `Sources/GuessWhoLogging/` — `GuessWhoLog`, a thin facade over
