@@ -15,6 +15,7 @@ final class OrganizationsListViewController: UIViewController {
 
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case organization
@@ -40,11 +41,21 @@ final class OrganizationsListViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
+    /// Observes `.favoritesDidChange` so a star toggled in a detail view
+    /// repaints the matching row here. Same `nonisolated(unsafe)` rationale as
+    /// `reloadObserver`.
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
-    init(repository: ContactsRepository, photoLoader: ContactPhotoLoader) {
+    init(
+        repository: ContactsRepository,
+        photoLoader: ContactPhotoLoader,
+        favoritesStore: FavoritesListStore
+    ) {
         self.repository = repository
         self.photoLoader = photoLoader
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = "Organizations"
     }
@@ -57,6 +68,9 @@ final class OrganizationsListViewController: UIViewController {
     deinit {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
     }
 
@@ -170,7 +184,11 @@ final class OrganizationsListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, id in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.organization.rawValue, for: indexPath)
             guard let self, let contact = self.repository.contact(id: id) else { return cell }
-            (cell as? OrganizationCell)?.configure(with: contact, photoLoader: self.photoLoader)
+            (cell as? OrganizationCell)?.configure(
+                with: contact,
+                photoLoader: self.photoLoader,
+                isFavorite: self.favoritesStore.isFavorite(contact.contactID)
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -193,6 +211,28 @@ final class OrganizationsListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // Favorite status isn't part of `Contact`, so the rendered-contact diff
+        // can't detect a star toggle — reconfigure the current rows explicitly
+        // when the favorites list changes (see ContactsListViewController).
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconfigureAllRows()
+            }
+        }
+    }
+
+    /// Re-run the cell provider for every row in the current snapshot so the
+    /// favorite stars repaint. Reconfigure only touches on-screen cells.
+    private func reconfigureAllRows() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     private func applySnapshot(animated: Bool) {
@@ -344,10 +384,12 @@ extension OrganizationsListViewController: UISearchResultsUpdating {
 
 /// Single-line organization row: leading avatar thumbnail (initials-
 /// circle fallback from `ContactAvatarImage`) + bold family name (which
-/// is the organization's name in the data model). No subtitle.
+/// is the organization's name in the data model). No subtitle; a trailing
+/// star marks favorited organizations.
 private final class OrganizationCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
+    private let starView = UIImageView()
     private var representedID: ContactID?
     private var photoTask: Task<Void, Never>?
 
@@ -391,22 +433,38 @@ private final class OrganizationCell: UITableViewCell {
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.numberOfLines = 1
 
+        // Trailing favorite star. The image stays installed and only
+        // `isHidden` toggles, so the star's intrinsic size keeps the layout
+        // deterministic and every row reserves the same text width (see
+        // ContactsListViewController's ContactCell).
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
+
         contentView.addSubview(iconView)
         contentView.addSubview(nameLabel)
+        contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 28),
             iconView.heightAnchor.constraint(equalToConstant: 28),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            nameLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            nameLabel.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             nameLabel.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             nameLabel.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
     }
 
-    func configure(with contact: Contact, photoLoader: ContactPhotoLoader) {
+    func configure(with contact: Contact, photoLoader: ContactPhotoLoader, isFavorite: Bool) {
         cancelPhotoLoad()
         let id = contact.contactID
         representedID = id
@@ -424,6 +482,7 @@ private final class OrganizationCell: UITableViewCell {
             }
         }
         nameLabel.attributedText = Self.nameAttributedString(for: contact)
+        starView.isHidden = !isFavorite
     }
 
     func cancelPhotoLoad() {

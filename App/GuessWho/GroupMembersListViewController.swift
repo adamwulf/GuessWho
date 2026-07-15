@@ -27,6 +27,7 @@ final class GroupMembersListViewController: UIViewController {
     private let group: ContactGroup
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case contact
@@ -55,10 +56,21 @@ final class GroupMembersListViewController: UIViewController {
     /// rationale (written once on main, read only from `deinit`).
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
-    init(group: ContactGroup, repository: ContactsRepository, photoLoader: ContactPhotoLoader) {
+    /// Observes `.favoritesDidChange` so a star toggled in a detail view
+    /// repaints the matching row here. Same `nonisolated(unsafe)` rationale as
+    /// `reloadObserver`.
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
+    init(
+        group: ContactGroup,
+        repository: ContactsRepository,
+        photoLoader: ContactPhotoLoader,
+        favoritesStore: FavoritesListStore
+    ) {
         self.group = group
         self.repository = repository
         self.photoLoader = photoLoader
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = GroupMembersListViewController.title(for: group)
     }
@@ -71,6 +83,9 @@ final class GroupMembersListViewController: UIViewController {
     deinit {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
     }
 
@@ -144,6 +159,28 @@ final class GroupMembersListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // Favorite status isn't part of `Contact`, so a star toggle never
+        // changes the snapshot — reconfigure the current rows explicitly when
+        // the favorites list changes (see ContactsListViewController).
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconfigureAllRows()
+            }
+        }
+    }
+
+    /// Re-run the cell provider for every row in the current snapshot so the
+    /// favorite stars repaint. Reconfigure only touches on-screen cells.
+    private func reconfigureAllRows() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     // MARK: - Table view
@@ -196,7 +233,11 @@ final class GroupMembersListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, id in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.contact.rawValue, for: indexPath)
             guard let self, let contact = self.membersByID[id] else { return cell }
-            (cell as? ContactCell)?.configure(with: contact, photoLoader: self.photoLoader)
+            (cell as? ContactCell)?.configure(
+                with: contact,
+                photoLoader: self.photoLoader,
+                isFavorite: self.favoritesStore.isFavorite(contact.contactID)
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -333,11 +374,13 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
 /// subtitle ("jobTitle, organizationName" for people; empty for organizations,
 /// padded with a non-breaking space so every row keeps the same height). A
 /// pragmatic mirror — each list VC in this shell owns its own private cell, and
-/// matching that convention keeps the member row pixel-identical to People.
+/// matching that convention keeps the member row pixel-identical to People
+/// (including the trailing star on favorited members).
 private final class ContactCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
     private let subtitleLabel = UILabel()
+    private let starView = UIImageView()
     private var representedID: ContactID?
     private var photoTask: Task<Void, Never>?
 
@@ -387,6 +430,19 @@ private final class ContactCell: UITableViewCell {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         subtitleLabel.numberOfLines = 1
 
+        // Trailing favorite star. The image stays installed and only
+        // `isHidden` toggles, so the star's intrinsic size keeps the layout
+        // deterministic and every row reserves the same text width (see
+        // ContactsListViewController's ContactCell).
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
+
         let textStack = UIStackView(arrangedSubviews: [nameLabel, subtitleLabel])
         textStack.axis = .vertical
         textStack.alignment = .leading
@@ -395,20 +451,23 @@ private final class ContactCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
+        contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 28),
             iconView.heightAnchor.constraint(equalToConstant: 28),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textStack.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
     }
 
-    func configure(with contact: Contact, photoLoader: ContactPhotoLoader) {
+    func configure(with contact: Contact, photoLoader: ContactPhotoLoader, isFavorite: Bool) {
         cancelPhotoLoad()
         let id = contact.contactID
         representedID = id
@@ -429,6 +488,7 @@ private final class ContactCell: UITableViewCell {
         // Non-breaking space keeps the row's two-line height stable when the
         // contact has no jobTitle/organizationName — matches the People row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
+        starView.isHidden = !isFavorite
     }
 
     func cancelPhotoLoad() {
