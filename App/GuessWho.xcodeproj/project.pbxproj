@@ -12,6 +12,7 @@
 		A100000000000000000000D6 /* GuessWhoSync in Embed Frameworks */ = {isa = PBXBuildFile; productRef = A100000000000000000000D2 /* GuessWhoSync */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B200000000000000000000D5 /* GuessWhoLogging in Frameworks */ = {isa = PBXBuildFile; productRef = B200000000000000000000D4 /* GuessWhoLogging */; };
 		B200000000000000000000F1 /* GuessWhoLinkedIn.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E300000000000000000000F1 /* GuessWhoShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E300000000000000000000C0 /* GuessWhoShare.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C50058FB2FFDA9A000F88A42 /* debug in Resources */ = {isa = PBXBuildFile; fileRef = C50058FA2FFDA9A000F88A42 /* debug */; platformFilter = maccatalyst; };
 		C5005A8C2FFDAEBE00F88A42 /* release in Resources */ = {isa = PBXBuildFile; fileRef = C5005A8B2FFDAEBE00F88A42 /* release */; platformFilter = maccatalyst; };
 		C700000000000000000000A1 /* AppKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F1 /* AppKitPlugin.swift */; };
@@ -50,6 +51,13 @@
 			remoteGlobalIDString = A100000000000000000000B1;
 			remoteInfo = GuessWho;
 		};
+		E300000000000000000000F2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A100000000000000000000A0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E300000000000000000000B1;
+			remoteInfo = GuessWhoShare;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -71,6 +79,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				B200000000000000000000F1 /* GuessWhoLinkedIn.appex in Embed Foundation Extensions */,
+				E300000000000000000000F1 /* GuessWhoShare.appex in Embed Foundation Extensions */,
 				C700000000000000000000A4 /* GuessWhoAppKitBridge.bundle in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -101,6 +110,10 @@
 		C700000000000000000000F1 /* AppKitPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKitPlugin.swift; sourceTree = "<group>"; };
 		C700000000000000000000F2 /* GuessWhoAppKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuessWhoAppKitBridge.swift; sourceTree = "<group>"; };
 		D100000000000000000000C0 /* GuessWhoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GuessWhoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E300000000000000000000C0 /* GuessWhoShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E300000000000000000000E6 /* GuessWhoShare-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoShare-Shared.xcconfig"; sourceTree = "<group>"; };
+		E300000000000000000000E9 /* GuessWhoShare-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoShare-Debug.xcconfig"; sourceTree = "<group>"; };
+		E300000000000000000000EA /* GuessWhoShare-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoShare-Release.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -118,6 +131,13 @@
 				Resources/manifest.json,
 			);
 			target = B200000000000000000000B1 /* GuessWhoLinkedIn */;
+		};
+		E300000000000000000000A4 /* Exceptions for "GuessWhoShare" folder in "GuessWhoShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E300000000000000000000B1 /* GuessWhoShare */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -141,6 +161,14 @@
 		C55586FA2FE7A7DE002F1969 /* GuessWhoUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = GuessWhoUITests;
+			sourceTree = "<group>";
+		};
+		E300000000000000000000A3 /* GuessWhoShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E300000000000000000000A4 /* Exceptions for "GuessWhoShare" folder in "GuessWhoShare" target */,
+			);
+			path = GuessWhoShare;
 			sourceTree = "<group>";
 		};
 		D100000000000000000000A3 /* GuessWhoTests */ = {
@@ -190,6 +218,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E300000000000000000000B4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -202,6 +237,7 @@
 				A100000000000000000000A3 /* GuessWho */,
 				C700000000000000000000D0 /* GuessWhoAppKitBridge */,
 				B200000000000000000000A3 /* GuessWhoLinkedIn */,
+				E300000000000000000000A3 /* GuessWhoShare */,
 				D100000000000000000000A3 /* GuessWhoTests */,
 				A100000000000000000000A5 /* Products */,
 				C55586FA2FE7A7DE002F1969 /* GuessWhoUITests */,
@@ -213,6 +249,7 @@
 			children = (
 				A100000000000000000000C0 /* GuessWho.app */,
 				B200000000000000000000C0 /* GuessWhoLinkedIn.appex */,
+				E300000000000000000000C0 /* GuessWhoShare.appex */,
 				C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */,
 				D100000000000000000000C0 /* GuessWhoTests.xctest */,
 				C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */,
@@ -233,6 +270,9 @@
 				A100000000000000000000E6 /* GuessWhoLinkedIn-Shared.xcconfig */,
 				A100000000000000000000E9 /* GuessWhoLinkedIn-Debug.xcconfig */,
 				A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */,
+				E300000000000000000000E6 /* GuessWhoShare-Shared.xcconfig */,
+				E300000000000000000000E9 /* GuessWhoShare-Debug.xcconfig */,
+				E300000000000000000000EA /* GuessWhoShare-Release.xcconfig */,
 				C700000000000000000000E5 /* GuessWhoAppKitBridge-Shared.xcconfig */,
 				C700000000000000000000E9 /* GuessWhoAppKitBridge-Debug.xcconfig */,
 				C700000000000000000000EA /* GuessWhoAppKitBridge-Release.xcconfig */,
@@ -267,6 +307,7 @@
 			);
 			dependencies = (
 				B200000000000000000000F3 /* PBXTargetDependency */,
+				E300000000000000000000F3 /* PBXTargetDependency */,
 				C700000000000000000000F6 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
@@ -303,6 +344,28 @@
 			);
 			productName = GuessWhoLinkedIn;
 			productReference = B200000000000000000000C0 /* GuessWhoLinkedIn.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		E300000000000000000000B1 /* GuessWhoShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E300000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoShare" */;
+			buildPhases = (
+				E300000000000000000000B2 /* Sources */,
+				E300000000000000000000B4 /* Frameworks */,
+				E300000000000000000000B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E300000000000000000000A3 /* GuessWhoShare */,
+			);
+			name = GuessWhoShare;
+			packageProductDependencies = (
+			);
+			productName = GuessWhoShare;
+			productReference = E300000000000000000000C0 /* GuessWhoShare.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 		C55586F82FE7A7DE002F1969 /* GuessWhoUITests */ = {
@@ -397,6 +460,9 @@
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = A100000000000000000000B1;
 					};
+					E300000000000000000000B1 = {
+						CreatedOnToolsVersion = 26.3;
+					};
 				};
 			};
 			buildConfigurationList = A100000000000000000000C1 /* Build configuration list for PBXProject "GuessWho" */;
@@ -418,6 +484,7 @@
 			targets = (
 				A100000000000000000000B1 /* GuessWho */,
 				B200000000000000000000B1 /* GuessWhoLinkedIn */,
+				E300000000000000000000B1 /* GuessWhoShare */,
 				C700000000000000000000B1 /* GuessWhoAppKitBridge */,
 				D100000000000000000000B1 /* GuessWhoTests */,
 				C55586F82FE7A7DE002F1969 /* GuessWhoUITests */,
@@ -450,6 +517,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D100000000000000000000B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E300000000000000000000B3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -597,6 +671,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E300000000000000000000B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -619,6 +700,12 @@
 			isa = PBXTargetDependency;
 			target = A100000000000000000000B1 /* GuessWho */;
 			targetProxy = D100000000000000000000F5 /* PBXContainerItemProxy */;
+		};
+		E300000000000000000000F3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = E300000000000000000000B1 /* GuessWhoShare */;
+			targetProxy = E300000000000000000000F2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -697,6 +784,20 @@
 		B200000000000000000000C22 /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = A100000000000000000000EA /* GuessWhoLinkedIn-Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		E300000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E300000000000000000000E9 /* GuessWhoShare-Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		E300000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E300000000000000000000EA /* GuessWhoShare-Release.xcconfig */;
 			buildSettings = {
 			};
 			name = Release;
@@ -1041,6 +1142,15 @@
 			buildConfigurations = (
 				B200000000000000000000C21 /* Debug */,
 				B200000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E300000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E300000000000000000000C21 /* Debug */,
+				E300000000000000000000C22 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

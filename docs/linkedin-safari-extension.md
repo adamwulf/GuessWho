@@ -174,6 +174,60 @@ Concrete contract:
   **reads and immediately deletes** the file (replay-proof) and caps the read
   size (`handoffMaxBytes`, 8 MB) so it never loads an unbounded/hostile file.
 
+## The iOS share-sheet entry point (`GuessWhoShare`)
+
+On iPhone/iPad the capture flow starts in the **LinkedIn app**, which has no
+extension surface — so `App/GuessWhoShare/` ships a minimal **share extension**
+(`com.apple.share-services`, bundle id `com.milestonemade.guesswho.share`)
+whose only job is the **bounce to Safari**:
+
+```
+LinkedIn app ──share sheet──▶ GuessWhoShare (ShareViewController)
+   │ validate: linkedin.com host + /in/<slug> path (or lnkd.in short link)
+   ▼ openURL: up the responder chain
+Safari opens the profile ──user taps the GuessWho LinkedIn extension──▶
+   normal capture → handoff → wake URL → match/diff/confirm/save
+```
+
+Design constraints, all deliberate:
+
+- **It parses nothing and stores nothing.** No App Group, no iCloud, no
+  Contacts — the target has **no entitlements at all**. Parsing stays in the
+  Safari extension where the user's authenticated session lives; a share
+  extension only receives a URL string, and fetching it ourselves hits the
+  HTTP 999 wall (see "Why an extension (not an API)").
+- **iOS only.** `SUPPORTED_PLATFORMS = iphoneos iphonesimulator`,
+  `SUPPORTS_MACCATALYST = NO`, and both the app's Embed Foundation Extensions
+  entry and the target dependency carry `platformFilter = ios`, so Catalyst
+  builds skip the target entirely. On the Mac the user is already in a browser
+  where the Safari/Chrome extension runs directly.
+- **Validation mirrors `LinkedInURL`** (host is `linkedin.com`/subdomain +
+  `/in/<slug>` path; `lnkd.in` short links pass through for Safari to
+  resolve) but is a small local copy — the appex deliberately doesn't link
+  `GuessWhoSync`. The activation rule
+  (`NSExtensionActivationSupportsWebURLWithMaxCount = 1`) can only filter by
+  type, not by host, so a non-LinkedIn share shows a plain-language "share a
+  LinkedIn profile link" alert and cancels.
+- **The open goes through the responder chain.** An extension process has no
+  `UIApplication.shared`; `NSExtensionContext.open` is tried first (it is the
+  sanctioned API) but returns false from share extensions on current iOS, so
+  the fallback walks the responder chain to the hosting `UIApplication` and
+  performs `openURL:` — the long-standing share-extension escape hatch. The
+  request completes ~300 ms after the open so the dispatch isn't cancelled by
+  process teardown.
+- **Config follows the house pattern:** `GuessWhoShare-Shared/-Debug/-Release.xcconfig`
+  wired as per-configuration `baseConfigurationReference`s, display name
+  "GuessWho" / "GuessWho Debug" via `GUESSWHO_SHARE_DISPLAY_NAME`, version via
+  `SharedVersion.xcconfig`.
+
+The bounce lands on the **mobile LinkedIn layout** (see
+[The two LinkedIn layouts](#the-two-linkedin-layouts-desktop-vs-mobile)), and
+the rest of the pipeline is the standard Safari-extension flow — so this entry
+point is only as done as the iOS Safari extension itself (see
+[Still future work](#still-future-work)).
+
+## The App Group's one job
+
 The App Group is used **only** for this ephemeral handoff. It is NOT synced
 storage — the synced GuessWho sidecar lives in the **iCloud ubiquity container**
 (`iCloud.com.milestonemade.guesswho`), a different container entirely. The
@@ -528,6 +582,11 @@ remains:
 - **The iOS extension target.** Only the Mac Catalyst path is proven
   end-to-end; the extension is authored to port (MV3 non-persistent worker,
   phone-sized popup) but the iOS target + provisioning aren't wired yet.
+- **iOS runtime validation of the share-sheet bounce.** `GuessWhoShare` (see
+  [The iOS share-sheet entry point](#the-ios-share-sheet-entry-point-guesswhoshare))
+  is wired and builds with the app, but the on-device round-trip — LinkedIn
+  app share sheet → Safari → extension → handoff — depends on the iOS Safari
+  extension above, so the two validate together on a real device.
 
 See [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md)
 for the overall feature plan.

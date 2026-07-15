@@ -1,0 +1,12 @@
+// GuessWhoShare-Release.xcconfig
+// Release-configuration identifiers for the GuessWhoShare share-extension
+// target. Wired as the target's Release baseConfigurationReference.
+
+#include "GuessWhoShare-Shared.xcconfig"
+
+// Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.share).
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.share
+
+// Display name — the label under the icon in the share sheet. The Debug
+// counterpart is "GuessWho Debug".
+GUESSWHO_SHARE_DISPLAY_NAME = GuessWho
