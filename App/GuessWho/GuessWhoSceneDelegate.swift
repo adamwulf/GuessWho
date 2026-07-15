@@ -303,6 +303,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
+            list.didRequestAddOrganization = { [weak self] in
+                self?.createNewContact(
+                    appDelegate: appDelegate,
+                    seed: Contact(contactType: .organization)
+                ) { [weak self] created in
+                    self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+                }
+            }
             split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
             installDetailPlaceholder(in: split, for: .organizations)
 
@@ -513,25 +521,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     // MARK: - Shared add-contact flow (both shells)
 
-    /// The "+" add-contact flow, shared by both shells: create a BLANK record
-    /// immediately (same brand-new-record semantics as Contacts.app), then hand
-    /// it to `show`, which opens the standard detail view already in edit mode —
-    /// the new-contact form IS the edit form. `show` runs on the main actor
+    /// The "+" add flow, shared by both shells and by the People and
+    /// Organizations lists: create a BLANK record immediately (same
+    /// brand-new-record semantics as Contacts.app), then hand it to `show`,
+    /// which opens the standard detail view already in edit mode — the
+    /// new-record form IS the edit form. `show` runs on the main actor
     /// only after the create succeeded; a failure is logged and shows nothing
     /// (the list is still consistent — nothing was created).
     ///
+    /// `seed` defaults to a blank person; the Organizations "+" passes a blank
+    /// `.organization` seed so the record lands in the Organizations list.
+    ///
     /// Shell-agnostic: the caller's `show` closure decides how to present —
-    /// Catalyst's People list REPLACES the secondary column via
-    /// `showContactDetail`, the iPhone tab shell PUSHES via `pushContactDetail`.
-    /// That's why this lives outside the Catalyst `#if`.
+    /// Catalyst's lists REPLACE the secondary column via `showContactDetail`,
+    /// the iPhone tab shell PUSHES via `pushContactDetail`. That's why this
+    /// lives outside the Catalyst `#if`.
     private func createNewContact(
         appDelegate: GuessWhoAppDelegate,
+        seed: Contact = Contact(),
         show: @escaping @MainActor (Contact) -> Void
     ) {
         Task { @MainActor in
             do {
-                let created = try await appDelegate.contactsRepository.createContact(Contact())
-                Self.contactsLog.notice("add-contact: created blank record")
+                let created = try await appDelegate.contactsRepository.createContact(seed)
+                Self.contactsLog.notice("add-contact: created blank \(seed.contactType.rawValue) record")
                 show(created)
             } catch {
                 Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
@@ -770,6 +783,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
+        }
+        list.didRequestAddOrganization = { [weak self, weak list] in
+            self?.createNewContact(
+                appDelegate: appDelegate,
+                seed: Contact(contactType: .organization)
+            ) { [weak self, weak list] created in
+                self?.pushContactDetail(
+                    id: created.contactID,
+                    on: list?.navigationController,
+                    appDelegate: appDelegate,
+                    startsInEditMode: true
+                )
+            }
         }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(

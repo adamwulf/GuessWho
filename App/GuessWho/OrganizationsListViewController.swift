@@ -8,6 +8,11 @@ import GuessWhoSync
 final class OrganizationsListViewController: UIViewController {
     var didSelectContact: (Contact) -> Void = { _ in }
 
+    /// Nav-bar "+" callback. The SceneDelegate owns what "add" means (create a
+    /// blank organization record and show it in edit mode) — see
+    /// `ContactsListViewController.didRequestAddContact` for the same pattern.
+    var didRequestAddOrganization: () -> Void = {}
+
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
 
@@ -61,7 +66,7 @@ final class OrganizationsListViewController: UIViewController {
 
         configureTableView()
         configureSearch()
-        configureSortMenu()
+        configureNavigationItems()
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
@@ -108,19 +113,31 @@ final class OrganizationsListViewController: UIViewController {
         navigationItem.hidesSearchBarWhenScrolling = false
     }
 
-    /// Install the global sort pull-down as the nav bar's right item. See
-    /// `ContactsListViewController.configureSortMenu` — identical wiring; the
-    /// menu is shared via `makeSortBarButtonItem` so all three person lists
-    /// present the same orders + checkmark rule.
-    private func configureSortMenu() {
-        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+    /// Install the nav bar's right items: "+" (add organization, rightmost)
+    /// and the global sort pull-down. See
+    /// `ContactsListViewController.configureNavigationItems` — identical
+    /// wiring; the menu is shared via `makeSortBarButtonItem` so all three
+    /// person lists present the same orders + checkmark rule. The sort item is
+    /// held in `sortBarButtonItem` because `navigationItem.rightBarButtonItem`
+    /// now resolves to the "+".
+    private func configureNavigationItems() {
+        let addItem = UIBarButtonItem(
+            image: UIImage(systemName: "plus"),
+            primaryAction: UIAction { [weak self] _ in self?.didRequestAddOrganization() }
+        )
+        addItem.accessibilityLabel = "Add Organization"
+        let sortItem = makeSortBarButtonItem(repository: repository)
+        sortBarButtonItem = sortItem
+        navigationItem.rightBarButtonItems = [addItem, sortItem]
     }
+
+    private var sortBarButtonItem: UIBarButtonItem?
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
     /// order. Called from the reload observer (a global sort change posts
     /// `.contactsRepositoryDidReload`).
     private func refreshSortMenu() {
-        navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
+        sortBarButtonItem?.menu = makeSortMenu(repository: repository)
     }
 
     private func configureEmptyState() {
