@@ -30,6 +30,7 @@ final class GuidePlacesListViewController: UIViewController {
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var resolutionObserver: NSObjectProtocol?
 
     init(guide: MapsGuide, repository: GuidesRepository, service: SyncService) {
         self.guide = guide
@@ -49,6 +50,9 @@ final class GuidePlacesListViewController: UIViewController {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
         }
+        if let resolutionObserver {
+            NotificationCenter.default.removeObserver(resolutionObserver)
+        }
     }
 
     override func viewDidLoad() {
@@ -64,10 +68,14 @@ final class GuidePlacesListViewController: UIViewController {
 
         // Retry any still-unresolved place IDs each time the guide opens (a
         // prior pass may have hit a network failure, or the app may have quit
-        // mid-resolution). No-op when everything is already resolved.
+        // mid-resolution). No-op when everything is already resolved, or when
+        // the import path's pass is still running (the resolver's per-guide
+        // in-flight guard coalesces the two). The resolver reloads the
+        // repository after each place, so rows fill in live.
         Task { [repository, service, guideID = guide.id] in
-            await GuidePlaceResolver.resolvePlaces(inGuide: guideID, service: service)
-            await repository.reload()
+            await GuidePlaceResolver.resolvePlaces(
+                inGuide: guideID, service: service, repository: repository
+            )
         }
     }
 
@@ -118,7 +126,7 @@ final class GuidePlacesListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, placeID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.place.rawValue, for: indexPath)
             guard let self, let place = self.placesByID[placeID] else { return cell }
-            (cell as? PlaceCell)?.configure(with: place)
+            (cell as? PlaceCell)?.configure(with: place, status: self.status(for: place))
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -139,6 +147,47 @@ final class GuidePlacesListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+        // The resolver moves its "looking up now" marker between rows without a
+        // data reload; repaint the unresolved rows so the spinner follows it.
+        resolutionObserver = NotificationCenter.default.addObserver(
+            forName: .guideResolutionActivePlaceDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshResolutionStatus()
+            }
+        }
+    }
+
+    /// Reconfigure the still-unresolved rows so their status (looking-up /
+    /// waiting) tracks the resolver's current place. Cheap: touches only the
+    /// pending rows, and no-ops when everything is resolved.
+    private func refreshResolutionStatus() {
+        var snapshot = dataSource.snapshot()
+        let unresolved = snapshot.itemIdentifiers.filter { placesByID[$0]?.needsResolution == true }
+        guard !unresolved.isEmpty else { return }
+        snapshot.reconfigureItems(unresolved)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// Display state for a place row, driven by the resolver.
+    enum PlaceRowStatus {
+        /// Fully populated (an address entry, or a resolved place-ID entry).
+        case resolved
+        /// The resolver is looking this place up right now.
+        case resolving
+        /// Unresolved, and a pass is working through the queue toward it.
+        case waiting
+        /// Unresolved with no pass currently running.
+        case idle
+    }
+
+    private func status(for place: MapsPlace) -> PlaceRowStatus {
+        if !place.needsResolution { return .resolved }
+        if GuidePlaceResolver.resolvingPlaceID == place.id { return .resolving }
+        if GuidePlaceResolver.isResolving(guide: guide.id) { return .waiting }
+        return .idle
     }
 
     private func applySnapshot(animated: Bool) {
@@ -253,10 +302,12 @@ extension GuidePlacesListViewController: ScrollsToTop {
 
 // MARK: - Row cell
 
-/// Place row: leading pin icon, place name (with graceful fallbacks while
-/// details are still resolving), and an address caption.
+/// Place row: leading pin icon (or a spinner while this place is being looked
+/// up), place name (with graceful fallbacks while details are still
+/// resolving), and an address caption.
 private final class PlaceCell: UITableViewCell {
     private let iconView = UIImageView()
+    private let spinner = UIActivityIndicatorView(style: .medium)
     private let nameLabel = UILabel()
     private let addressLabel = UILabel()
 
@@ -275,6 +326,7 @@ private final class PlaceCell: UITableViewCell {
         nameLabel.text = nil
         addressLabel.text = nil
         addressLabel.isHidden = false
+        showSpinner(false)
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -294,6 +346,9 @@ private final class PlaceCell: UITableViewCell {
         iconView.image = UIImage(systemName: "mappin.and.ellipse")
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
+        spinner.hidesWhenStopped = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+
         nameLabel.font = .preferredFont(forTextStyle: .body)
         nameLabel.adjustsFontForContentSizeCategory = true
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -312,6 +367,7 @@ private final class PlaceCell: UITableViewCell {
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
         contentView.addSubview(iconView)
+        contentView.addSubview(spinner)
         contentView.addSubview(textStack)
 
         NSLayoutConstraint.activate([
@@ -319,6 +375,10 @@ private final class PlaceCell: UITableViewCell {
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
+            // The spinner shares the icon's slot so text stays aligned whether a
+            // row shows the pin or is being looked up.
+            spinner.centerXAnchor.constraint(equalTo: iconView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
@@ -326,21 +386,54 @@ private final class PlaceCell: UITableViewCell {
         ])
     }
 
-    func configure(with place: MapsPlace) {
-        let trimmedName = place.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedName.isEmpty {
-            nameLabel.text = trimmedName
-            addressLabel.text = place.address
-            addressLabel.isHidden = (place.address?.isEmpty ?? true)
-        } else if let address = place.address, !address.isEmpty {
-            // Address entry (or a resolution that carried no name): the
-            // address IS the title.
-            nameLabel.text = address
-            addressLabel.isHidden = true
+    private func showSpinner(_ show: Bool) {
+        iconView.isHidden = show
+        if show {
+            spinner.startAnimating()
         } else {
-            // Place-ID entry still waiting on its MapKit lookup.
-            nameLabel.text = "Loading place details…"
-            addressLabel.isHidden = true
+            spinner.stopAnimating()
         }
+    }
+
+    func configure(with place: MapsPlace, status: GuidePlacesListViewController.PlaceRowStatus) {
+        switch status {
+        case .resolved:
+            showSpinner(false)
+            nameLabel.textColor = .label
+            let trimmedName = place.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedName.isEmpty {
+                nameLabel.text = trimmedName
+                addressLabel.text = place.address
+                addressLabel.isHidden = (place.address?.isEmpty ?? true)
+            } else if let address = place.address, !address.isEmpty {
+                // Address entry (or a resolution that carried no name): the
+                // address IS the title.
+                nameLabel.text = address
+                addressLabel.isHidden = true
+            } else {
+                // Resolved but empty — rare (MapKit returned no name/address).
+                nameLabel.text = "(No details)"
+                nameLabel.textColor = .secondaryLabel
+                addressLabel.isHidden = true
+            }
+        case .resolving:
+            showSpinner(true)
+            placeholder("Looking up location…")
+        case .waiting:
+            showSpinner(false)
+            placeholder("Waiting to load…")
+        case .idle:
+            showSpinner(false)
+            placeholder("Loading place details…")
+        }
+    }
+
+    /// Secondary-tinted single-line placeholder shown while a place-ID entry is
+    /// still unresolved.
+    private func placeholder(_ text: String) {
+        nameLabel.text = text
+        nameLabel.textColor = .secondaryLabel
+        addressLabel.text = nil
+        addressLabel.isHidden = true
     }
 }

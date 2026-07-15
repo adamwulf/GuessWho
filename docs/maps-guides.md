@@ -68,7 +68,17 @@ Two entry shapes exist:
 3. **Resolve** — `GuidePlaceResolver` (app target) turns each place-ID
    entry into name/address/coordinate via the public
    `MKMapItemRequest(mapItemIdentifier:)` API (iOS 18+/macCatalyst 18+;
-   silently skipped on older OSes) and stamps `resolvedAt`. Failed lookups
+   silently skipped on older OSes) and stamps `resolvedAt`. The pass is
+   **serial and rate-limited** — one lookup at a time, spaced
+   `requestInterval` apart (1s), with escalating backoff-and-retry when
+   MapKit returns `MKError.loadingThrottled` — so a large guide (100+ places)
+   doesn't burst past MapKit's place-ID rate limit. It reloads the repository
+   after each success, so rows fill in one at a time rather than all at the
+   end, and publishes the place it is currently looking up
+   (`resolvingPlaceID` + `.guideResolutionActivePlaceDidChange`) so the list
+   shows a per-row spinner / "waiting" state. A per-guide in-flight guard
+   coalesces the import-path pass and the list's on-open retry so they never
+   run duplicate passes (which would double the request rate). Failed lookups
    stay unresolved and retry the next time the guide opens.
 
 ## Entry points
@@ -87,10 +97,12 @@ Two entry shapes exist:
 
 `GuidesListViewController` (guides, newest import first, place counts) →
 push → `GuidePlacesListViewController` (places in shared order; rows fill
-in as resolution lands) → push → `GuidePlaceDetailView` (the place detail,
+in one at a time as resolution lands, each row showing a spinner while it is
+being looked up, "Waiting to load…" while queued behind others, and its
+name/address once done) → push → `GuidePlaceDetailView` (the place detail,
 below). Both shells share the two list VCs; per the product principle there
-is no user-facing "resolve"/"sidecar" vocabulary — unresolved rows just read
-"Loading place details…".
+is no user-facing "resolve"/"sidecar" vocabulary — the plain-language row
+states above stand in for it.
 
 ## Place detail and association matching
 
@@ -168,18 +180,16 @@ contact-geocode store (option 1) rather than geocoding live per place.
 * Place-ID resolution needs iOS 18 / macOS 15 (MapKit place-ID API).
   On older OSes place-ID entries stay as "Loading place details…" rows;
   address entries are unaffected.
-* **Bulk resolution is serial and best-effort, and does not scale to large
-  guides.** `GuidePlaceResolver.resolvePlaces` walks the pending places one
-  at a time (`for place in pending`, awaiting each
-  `MKMapItemRequest(mapItemIdentifier:)`), with no backoff and no per-request
-  timeout; failures are swallowed and retried on the next guide open. A large
-  guide (100+ place-ID entries) trips MapKit's server-side rate limit
-  (`MKError.loadingThrottled`) after the first several lookups, so most rows
-  stay stuck on "Loading place details…" and reopening re-runs straight into
-  the same wall. Because street/lat-long matching both key off the resolved
-  fields, an unresolved guide also shows empty association sections. Fixing
-  this (throttle-aware backoff, a per-request timeout so one stall can't block
-  the rest, and/or capping per-pass work) is a known follow-up — the serial
-  loop was sized for guides of "tens of places at most."
+* **Large guides resolve slowly (by design).** Resolution is serial and
+  rate-limited (see Import pipeline step 3), so a 150-place guide takes a few
+  minutes to fully fill in — but it does so live, one row at a time, and
+  survives navigating away (the pass is not tied to the list controller's
+  lifecycle). MapKit throttling is handled with backoff-and-retry rather than
+  swallowed; a place that still fails after its retries stays pending and is
+  retried the next time the guide opens. Note that street/lat-long matching on
+  the place detail keys off the *resolved* fields, so a place's association
+  sections stay empty until its row resolves. Remaining sharp edge: there is
+  no per-request timeout, so a single hung `MKMapItemRequest` can stall the
+  rest of that pass until the next guide open re-kicks it.
 * The protobuf schema is unofficial. The decoder rejects anything it can't
   parse cleanly (import fails with a plain alert) rather than guessing.

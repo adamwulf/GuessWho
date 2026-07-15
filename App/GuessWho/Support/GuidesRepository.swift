@@ -6,6 +6,11 @@ extension Notification.Name {
     /// Parallels `.eventsRepositoryDidReload`; the guides and places list
     /// controllers subscribe to re-apply their diffable snapshots.
     static let guidesRepositoryDidReload = Notification.Name("GuidesRepositoryDidReload")
+
+    /// Posted by `GuidePlaceResolver` when the place it is currently looking up
+    /// changes (including pass start/end). The places list observes it to move
+    /// its per-row "looking up now" spinner without a full data reload.
+    static let guideResolutionActivePlaceDidChange = Notification.Name("GuideResolutionActivePlaceDidChange")
 }
 
 @MainActor
