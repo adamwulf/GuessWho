@@ -311,6 +311,8 @@ struct ContactDetailView: View {
 
                 referencedBySection(contact)
 
+                associatedOrganizationSection(contact)
+
                 associatedContactsSection(contact)
 
                 notesSection
@@ -1219,6 +1221,40 @@ struct ContactDetailView: View {
         }
     }
 
+    /// Inferred membership on a person's page: when their Contacts "company"
+    /// field names an organization record, show that organization as a
+    /// read-only navigation row. The association remains owned by the person's
+    /// company field, matching the inverse "Associated Contacts" section.
+    @ViewBuilder
+    private func associatedOrganizationSection(_ contact: Contact) -> some View {
+        if contact.contactType == .person,
+           let organization = repository.organizationContact(named: contact.organizationName),
+           organization.contactID != contact.contactID {
+            Section {
+                associatedOrganizationRow(organization)
+                    .centeredRowContent()
+            } header: {
+                Text("Associated Organization").centeredSectionHeader()
+            }
+        }
+    }
+
+    private func associatedOrganizationRow(_ organization: Contact) -> some View {
+        Button {
+            pushContactReference(ContactReference(id: organization.contactID))
+        } label: {
+            ActivityRowLayout {
+                ContactAvatar(contact: organization, diameter: 20)
+            } content: {
+                Text(organization.displayName)
+                    .foregroundStyle(.tint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     /// Inferred membership on an organization's page: people whose Contacts
     /// "company" field names this organization (see
     /// `ContactsRepository.contactsAssociated(with:)`). Mirrors "Referenced
@@ -1285,22 +1321,6 @@ struct ContactDetailView: View {
             ]
         for (label, value) in workParts where !value.isEmpty {
             rows.append(.text(label: label, value: value))
-        }
-
-        // Inferred organization row: when a person's company string names an
-        // actual organization record, surface a tappable row to that
-        // organization's page. The header subtitle still shows the plain-text
-        // `job title · organization`; this row only appears when there's a
-        // real organization record to navigate to. Self-exclusion by
-        // ContactID guards the odd person record whose company names itself.
-        if contact.contactType == .person,
-           let org = repository.organizationContact(named: contact.organizationName),
-           org.contactID != contact.contactID {
-            rows.append(.contactLink(
-                label: "organization",
-                displayName: org.displayName,
-                contactID: org.contactID
-            ))
         }
 
         // Phone/email/url/address groups partition into non-"old" rows first,
