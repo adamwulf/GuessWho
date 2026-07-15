@@ -196,3 +196,70 @@ Both shells host the same SwiftUI detail views
 - Use `grep`, not `rg`.
 - Never silence an error by commenting it out; fix the underlying cause.
 - Slow is smooth; smooth is fast. Be methodical.
+
+# Codex
+
+Codex agents run inside an outer filesystem and process sandbox. A command
+that works in a normal interactive shell may fail before the compiler reaches
+project code. Treat the permission profile and writable roots supplied for the
+current session as authoritative; do not assume the whole home directory,
+Developer directory, simulator database, or system log directories are
+writable.
+
+## Compilation paths
+
+- Put DerivedData, SwiftPM build products, package checkouts, module caches,
+  and other generated output inside the current writable worktree whenever
+  the build tool supports an explicit path.
+- The system Xcode installation and SDKs may be readable while their usual
+  support directories are not writable. Use only the writable roots declared
+  by the harness. Commonly available scratch locations are the worktree,
+  explicitly listed cache directories, and temporary directories, but verify
+  availability from the active permission profile.
+- Do not redirect caches or change `HOME` merely to bypass the sandbox unless
+  the task requires it and the resulting location is explicitly writable.
+  Never write into the main checkout or another agent worktree from an
+  isolated worktree.
+- Keep each shell invocation to one command when the harness requires it. Do
+  not use pipelines, command chaining, subshells, or an environment-prefix
+  wrapper if the command allow-list rejects those forms.
+
+## Xcode and simulator constraints
+
+- `xcodebuild` can initialize CoreSimulator and related launchd services even
+  for a generic destination or a Mac Catalyst build. The outer sandbox may
+  deny those services, system log paths, filesystem event streams, or
+  simulator support directories and may terminate `xcodebuild` before
+  compilation begins.
+- Errors such as `Operation not permitted`, `sandbox_apply` failures,
+  unavailable CoreSimulatorService, or an early signal termination are
+  environment failures unless compiler diagnostics show that project sources
+  were actually compiled.
+- Do not weaken access control, expose package internals, change production
+  behavior, or edit project settings merely to make a sandbox-limited compile
+  start. Use the intended public API and validate as much as the environment
+  permits.
+
+## SwiftPM and tests
+
+- SwiftPM normally creates its own child sandbox. In an already sandboxed
+  harness this can fail with `sandbox_apply` before the package manifest is
+  evaluated. The SwiftPM `--disable-sandbox` option may avoid that nested
+  sandbox, but it does not expand the outer harness permissions.
+- Tests that need simulator services, backup attributes, restricted
+  user-library locations, or filesystem behavior outside writable roots can
+  fail for environmental reasons. Prefer a relevant targeted test when
+  possible, while still running the requested broader suite when the
+  environment supports it.
+- A successful package build does not prove that an application target
+  compiles. Conversely, an Xcode process that never reaches `CompileSwift`
+  does not establish a source-code failure.
+
+## Reporting verification
+
+Always report the exact verification command and outcome. Separate source
+diagnostics from harness limitations, include the first actionable
+environmental error, and never claim that a build or test passed when the
+sandbox prevented it from running. If full verification is blocked, perform
+safe static checks or narrower compiler checks that use allowed tools, then
+clearly state what remains to be run outside the sandbox.
