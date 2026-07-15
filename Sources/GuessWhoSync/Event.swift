@@ -39,6 +39,20 @@ public struct Event: Hashable, Sendable, Codable {
     /// swatch matching Calendar.app. Read-only mirror — never written back.
     public var calendarColorHex: String?
 
+    /// When the event record came into existence. For calendar-sourced
+    /// events this is `EKEvent.creationDate`; for manual (sidecar-only)
+    /// events it is derived from the earliest cell `createdAt` on the
+    /// event's envelope. nil when neither source carries a stamp (e.g. a
+    /// calendar event whose EKEvent reports no creation date). Backs the
+    /// events list's "Recently Added" sort.
+    public var createdAt: Date?
+
+    /// When the user last opened this event's detail in the app, read off
+    /// the sidecar's `lastViewed` cell. nil until first viewed (including
+    /// every ephemeral, pre-adoption EventKit row — a view mints the
+    /// sidecar and stamps it). Backs the events list's "Last Viewed" sort.
+    public var lastViewedAt: Date?
+
     public init(
         id: UUID = UUID(),
         eventKitID: String? = nil,
@@ -50,7 +64,9 @@ public struct Event: Hashable, Sendable, Codable {
         eventKitNotes: String? = nil,
         attendees: [EventAttendee] = [],
         calendarName: String? = nil,
-        calendarColorHex: String? = nil
+        calendarColorHex: String? = nil,
+        createdAt: Date? = nil,
+        lastViewedAt: Date? = nil
     ) {
         self.id = id
         self.eventKitID = eventKitID
@@ -63,6 +79,8 @@ public struct Event: Hashable, Sendable, Codable {
         self.attendees = attendees
         self.calendarName = calendarName
         self.calendarColorHex = calendarColorHex
+        self.createdAt = createdAt
+        self.lastViewedAt = lastViewedAt
     }
 }
 

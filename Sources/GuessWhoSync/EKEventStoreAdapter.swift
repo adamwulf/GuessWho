@@ -283,7 +283,10 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             eventKitNotes: notes,
             attendees: attendees,
             calendarName: calendarName,
-            calendarColorHex: calendarColorHex
+            calendarColorHex: calendarColorHex,
+            // EKEvent.creationDate is nil for some synced/imported events —
+            // the model tolerates it (sorts treat nil as oldest).
+            createdAt: e.creationDate
         )
     }
 

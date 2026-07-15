@@ -19,8 +19,32 @@ final class EventsRepository: NSObject {
 
     var searchText: String = ""
 
+    /// The live sort order every events list reads. Persistence is the app's
+    /// job (`EventSortOrderSetting` writes UserDefaults and sets this);
+    /// setting it re-sorts in place and posts `.eventsRepositoryDidReload`
+    /// so visible lists re-snapshot — same shape as
+    /// `ContactsRepository.sortOrder`. No-op (and no post) when unchanged.
+    var sortOrder: EventSortOrder = .chronological {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            events = sortOrder.sorted(events)
+            NotificationCenter.default.post(name: .eventsRepositoryDidReload, object: self)
+        }
+    }
+
+    /// Absolute bounds of the loaded window. `reload()` always fetches
+    /// exactly this range, so the debounced external-change reloads keep a
+    /// user-extended window instead of snapping back to the default. Seeded
+    /// at launch with the list's original −30d/+90d window; the paging
+    /// methods below are the only writers.
+    private(set) var windowStart: Date
+    private(set) var windowEnd: Date
+
     init(service: SyncService) {
         self.service = service
+        let now = Date()
+        self.windowStart = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        self.windowEnd = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
         super.init()
         // Refresh on any external store change that can affect the events list:
         // a Calendar.app edit (`.EKEventStoreChanged`), a contact change
@@ -74,16 +98,30 @@ final class EventsRepository: NSObject {
 
     func reload() async {
         isLoading = true
-        let now = Date()
-        let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
-        let end = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
-        let fetched = await service.fetchEventsRange(from: start, to: end)
-        events = fetched.sorted { $0.startDate < $1.startDate }
+        let fetched = await service.fetchEventsRange(from: windowStart, to: windowEnd)
+        events = sortOrder.sorted(fetched)
         // Flip BEFORE posting so synchronous observers see the
         // post-load state. See ContactsRepository.reload() for the full
         // rationale.
         isLoading = false
         NotificationCenter.default.post(name: .eventsRepositoryDidReload, object: self)
+    }
+
+    /// Extend the loaded window one month further back and reload — the
+    /// events-list twin of `EventLinkSheet.loadOlderMonth()`. Repeatable;
+    /// each call reveals one more month. Sidecar-only (manual) events in the
+    /// revealed month surface too, so this is not gated on calendar access.
+    func loadOlderMonth() async {
+        windowStart = Calendar.current.date(byAdding: .month, value: -1, to: windowStart) ?? windowStart
+        await reload()
+    }
+
+    /// Extend the loaded window one month further forward and reload.
+    /// Symmetric with `loadOlderMonth()` (the link sheet's forward paging
+    /// jumps a whole year, but the list reads better month-by-month).
+    func loadLaterMonth() async {
+        windowEnd = Calendar.current.date(byAdding: .month, value: 1, to: windowEnd) ?? windowEnd
+        await reload()
     }
 
     var filtered: [Event] {

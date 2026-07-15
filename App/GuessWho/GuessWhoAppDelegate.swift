@@ -88,6 +88,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // silent. This is the launch half of the single source of truth in
         // `SortOrderSetting` — the picker owns the runtime half.
         SortOrderSetting.restore(into: contactsRepository)
+        // Same launch-half restore for the events list's sort order (the
+        // picker in EventsListViewController owns the runtime half via
+        // `EventSortOrderSetting.apply`).
+        EventSortOrderSetting.restore(into: eventsRepository)
 
         // Kick the repositories' initial fetch so the UIKit list
         // controllers have data ready when the user picks a tab. Runs

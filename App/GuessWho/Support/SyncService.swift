@@ -308,6 +308,20 @@ final class SyncService {
         )
     }
 
+    /// Stamp `lastViewed = now` on the event sidecar. Best-effort and silent
+    /// (a failed stamp must never break opening the detail view); errors
+    /// surface via `lastError`. A no-op inside the package when no sidecar
+    /// exists at `uuid` — callers stamp AFTER adopt-on-load has resolved the
+    /// real sidecar UUID.
+    func stampEventViewed(uuid: String) {
+        guard let sync else { return }
+        do {
+            try sync.stampEventViewed(at: SidecarKey(kind: .event, id: uuid))
+        } catch {
+            lastError = "stamp event viewed failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Refresh (debounced, silent)
 
     private static let refreshDebounceInterval: TimeInterval = 60
