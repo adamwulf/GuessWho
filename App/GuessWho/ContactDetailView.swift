@@ -1295,18 +1295,34 @@ struct ContactDetailView: View {
         }
     }
 
+    /// The organization record inferred for a person from their Contacts
+    /// "company" field (see `organizationContact(named:)`), or nil when the
+    /// person names no company, the company matches no org record, or the match
+    /// is the person themselves. People only.
+    private func associatedOrganization(of contact: Contact) -> Contact? {
+        guard contact.contactType == .person,
+              let organization = repository.organizationContact(named: contact.organizationName),
+              organization.contactID != contact.contactID else { return nil }
+        return organization
+    }
+
     /// Inferred membership on a person's page: when their Contacts "company"
     /// field names an organization record, show that organization as a
     /// read-only navigation row. The association remains owned by the person's
-    /// company field, matching the inverse "Associated Contacts" section.
+    /// company field, matching the inverse "Associated Contacts" section. When
+    /// the person also names a department, a second row taps straight through to
+    /// that organization's department list (the person's own department bucket).
     @ViewBuilder
     private func associatedOrganizationSection(_ contact: Contact) -> some View {
-        if contact.contactType == .person,
-           let organization = repository.organizationContact(named: contact.organizationName),
-           organization.contactID != contact.contactID {
+        if let organization = associatedOrganization(of: contact) {
+            let department = contact.departmentName.trimmingCharacters(in: .whitespacesAndNewlines)
             Section {
                 associatedOrganizationRow(organization)
                     .centeredRowContent()
+                if !department.isEmpty {
+                    departmentRow(department, organization: organization)
+                        .centeredRowContent()
+                }
             } header: {
                 Text("Associated Organization").centeredSectionHeader()
             }
@@ -1424,13 +1440,20 @@ struct ContactDetailView: View {
         // and organization, so department stays here; for an organization the
         // subtitle is the department, so job title stays here instead. Phonetic
         // organization is never in the header.
+        //
+        // A person's department also moves out of here when it's shown as the
+        // navigable second row in the Associated Organization section (see
+        // `associatedOrganizationSection`) — that row only appears when the
+        // company matches an org record, so keep the plain-text field as the
+        // fallback for people whose company names no such record.
+        let showsDepartmentAsNavRow = associatedOrganization(of: contact) != nil
         let workParts: [(String, String)] = contact.contactType == .organization
             ? [
                 ("job title", contact.jobTitle),
                 ("phonetic organization", contact.phoneticOrganizationName),
             ]
             : [
-                ("department", contact.departmentName),
+                ("department", showsDepartmentAsNavRow ? "" : contact.departmentName),
                 ("phonetic organization", contact.phoneticOrganizationName),
             ]
         for (label, value) in workParts where !value.isEmpty {
