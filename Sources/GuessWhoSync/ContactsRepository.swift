@@ -1479,6 +1479,37 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// The cached organization record (`contactType == .organization`) whose
+    /// display name matches `name` (trimmed, case-insensitive). This is the
+    /// INFERRED person→organization association — a person's Contacts
+    /// "company" string pointing at an organization record by name; no
+    /// sidecar link is involved. Ambiguity (several organizations sharing
+    /// the name) resolves to the first in cache order, mirroring the
+    /// relation-row lookup. nil when `name` is blank or nothing matches.
+    public func organizationContact(named name: String) -> Contact? {
+        let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return nil }
+        return contacts.first { other in
+            other.contactType == .organization &&
+                other.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+        }
+    }
+
+    /// People whose Contacts "company" field matches `organization`'s display
+    /// name (trimmed, case-insensitive) — the inverse of
+    /// `organizationContact(named:)`. Inferred association only (no sidecar
+    /// link), people only, sorted by display name.
+    public func contactsAssociated(with organization: Contact) -> [Contact] {
+        let needle = organization.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contacts
+            .filter { person in
+                person.contactType == .person &&
+                    person.organizationName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+            }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
     /// Re-read one Contacts record and reconcile it into the cache.
     package func refreshContact(localID: String) async {
         await applyRefresh(localID: localID)

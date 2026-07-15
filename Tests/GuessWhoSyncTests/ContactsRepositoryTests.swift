@@ -35,4 +35,27 @@ struct ContactsRepositoryTests {
         #expect(repository.peopleSections.map(\.0) == ["L"])
         #expect(repository.contactsReferencing(contact: person).map(\.contact.localID) == ["referrer"])
     }
+
+    @Test @MainActor
+    func inferredOrganizationAssociationsMatchByCompanyName() async {
+        let org = Contact(localID: "org", contactType: .organization, organizationName: "Analytical Engine")
+        let rivalOrg = Contact(localID: "rival", contactType: .organization, organizationName: "Difference Engine")
+        let ada = Contact(localID: "ada", givenName: "Ada", familyName: "Lovelace", organizationName: "  analytical engine ")
+        let charles = Contact(localID: "charles", givenName: "Charles", familyName: "Babbage", organizationName: "Analytical Engine")
+        let outsider = Contact(localID: "outsider", givenName: "Alan", familyName: "Turing", organizationName: "Bletchley Park")
+        let repository = ContactsRepository(
+            contacts: InMemoryContactStore(contacts: [org, rivalOrg, ada, charles, outsider])
+        )
+
+        await repository.reload()
+
+        // Person→org: trimmed, case-insensitive, organizations only.
+        #expect(repository.organizationContact(named: " analytical ENGINE ")?.localID == "org")
+        #expect(repository.organizationContact(named: "") == nil)
+        #expect(repository.organizationContact(named: "Ada Lovelace") == nil)
+
+        // Org→people: company-field match, people only, sorted by display name.
+        #expect(repository.contactsAssociated(with: org).map(\.localID) == ["ada", "charles"])
+        #expect(repository.contactsAssociated(with: rivalOrg).isEmpty)
+    }
 }
