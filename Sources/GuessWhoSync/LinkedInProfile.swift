@@ -27,9 +27,21 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         public init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
             profileUrl = try values.decodeIfPresent(String.self, forKey: .profileUrl)
-            emails = try values.decodeIfPresent([String].self, forKey: .emails) ?? []
+            emails = (try values.decodeIfPresent([String].self, forKey: .emails) ?? [])
+                .map(Self.sanitizedEmail)
+                .filter { !$0.isEmpty }
             phones = try values.decodeIfPresent([String].self, forKey: .phones) ?? []
             websites = try values.decodeIfPresent([String].self, forKey: .websites) ?? []
+        }
+
+        /// Extension builds before the parse-profile.js fix forwarded the raw
+        /// `mailto:` href query along with the address
+        /// (`me@example.com?trk=contact-info`). The Chrome extension updates
+        /// independently of the app, so a stale parser can still hand us such
+        /// payloads — the address ends at the first `?`/`#`; drop the rest.
+        static func sanitizedEmail(_ raw: String) -> String {
+            raw.prefix { $0 != "?" && $0 != "#" }
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 

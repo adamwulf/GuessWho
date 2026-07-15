@@ -1268,7 +1268,7 @@ struct ContactDetailView: View {
         }
 
         for item in contact.socialProfiles {
-            rows.append(.text(label: socialProfileLabel(item), value: socialProfileValue(item.value)))
+            rows.append(socialProfileRow(item))
         }
         for item in contact.instantMessageAddresses {
             rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
@@ -2017,6 +2017,31 @@ struct ContactDetailView: View {
         if !profile.urlString.isEmpty { return profile.urlString }
         if !profile.userIdentifier.isEmpty { return profile.userIdentifier }
         return "—"
+    }
+
+    /// The info row for one social profile. Contacts stores the LinkedIn
+    /// profile as a bare username (the URL is derived from it — see
+    /// `LinkedInContactSeed`), which used to render as dead text; rebuild the
+    /// canonical public profile URL so the row taps through to the profile.
+    /// A profile that carries only a stored URL is likewise tappable. Anything
+    /// else keeps the plain-text fallback.
+    private func socialProfileRow(_ item: LabeledSocialProfile) -> InfoRowData {
+        let label = socialProfileLabel(item)
+        let profile = item.value
+        let username = profile.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLinkedIn = profile.service.caseInsensitiveCompare("linkedin") == .orderedSame
+            || item.label.caseInsensitiveCompare("linkedin") == .orderedSame
+        if isLinkedIn, !username.isEmpty {
+            // slug(from:) unwraps a full URL mistakenly stored in the username
+            // field; a bare slug passes through unchanged.
+            let slug = LinkedInURL.slug(from: username) ?? username
+            return InfoRowData(label: label, kind: .url(urlString: "https://www.linkedin.com/in/\(slug)"))
+        }
+        let storedURL = profile.urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if username.isEmpty, storedURL.lowercased().hasPrefix("http") {
+            return InfoRowData(label: label, kind: .url(urlString: storedURL))
+        }
+        return .text(label: label, value: socialProfileValue(profile))
     }
 
     private func instantMessageLabel(_ labeled: LabeledInstantMessageAddress) -> String {
