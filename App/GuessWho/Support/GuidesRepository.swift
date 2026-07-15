@@ -40,6 +40,22 @@ final class GuidesRepository: NSObject {
         }
     }
 
+    /// The live sort order every guide's places list reads (global across all
+    /// guides). Persistence is `PlaceSortOrderSetting`'s job; setting it
+    /// re-sorts each guide's places in place and posts
+    /// `.guidesRepositoryDidReload` so the open places list re-snapshots. The
+    /// package's canonical `places(inGuide:)` stays in guide-entry order (the
+    /// resolver relies on it); only this display copy is reordered.
+    var placeSortOrder: PlaceSortOrder = .guideOrder {
+        didSet {
+            guard placeSortOrder != oldValue else { return }
+            for guideID in placesByGuide.keys {
+                placesByGuide[guideID] = placeSortOrder.sorted(placesByGuide[guideID] ?? [])
+            }
+            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        }
+    }
+
     init(service: SyncService) {
         self.service = service
         super.init()
@@ -92,10 +108,7 @@ final class GuidesRepository: NSObject {
             byGuide[place.guideID, default: []].append(place)
         }
         for guideID in byGuide.keys {
-            byGuide[guideID]?.sort { lhs, rhs in
-                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
+            byGuide[guideID] = placeSortOrder.sorted(byGuide[guideID] ?? [])
         }
         placesByGuide = byGuide
 

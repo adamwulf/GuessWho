@@ -101,6 +101,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // picker in GuidesListViewController owns the runtime half via
         // `GuideSortOrderSetting.apply`).
         GuideSortOrderSetting.restore(into: guidesRepository)
+        // And for the per-guide places list's sort order (the picker in
+        // GuidePlacesListViewController owns the runtime half via
+        // `PlaceSortOrderSetting.apply`). Same repository backs both.
+        PlaceSortOrderSetting.restore(into: guidesRepository)
 
         // Kick the repositories' initial fetch so the UIKit list
         // controllers have data ready when the user picks a tab. Runs

@@ -82,6 +82,11 @@ public struct MapsPlace: Hashable, Sendable, Codable {
     /// `MapsGuide.createdAt`.
     public var createdAt: Date?
 
+    /// When the place's detail was last opened, stamped once per open by the
+    /// app. nil until first opened; backs the "Last Viewed" place sort order.
+    /// Mirrors `MapsGuide.lastViewedAt`.
+    public var lastViewedAt: Date?
+
     public init(
         id: UUID = UUID(),
         guideID: UUID,
@@ -92,7 +97,8 @@ public struct MapsPlace: Hashable, Sendable, Codable {
         mapsPlaceID: String? = nil,
         resolvedAt: Date? = nil,
         sortOrder: Int = 0,
-        createdAt: Date? = nil
+        createdAt: Date? = nil,
+        lastViewedAt: Date? = nil
     ) {
         self.id = id
         self.guideID = guideID
@@ -104,6 +110,7 @@ public struct MapsPlace: Hashable, Sendable, Codable {
         self.resolvedAt = resolvedAt
         self.sortOrder = sortOrder
         self.createdAt = createdAt
+        self.lastViewedAt = lastViewedAt
     }
 }
 

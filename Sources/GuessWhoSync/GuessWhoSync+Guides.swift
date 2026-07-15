@@ -17,6 +17,7 @@ extension GuessWhoSync {
     public static let placeResolvedAtCellKey  = "resolvedAt"
     public static let placeSortOrderCellKey   = "orderCache"
     public static let placeDeletedAtCellKey   = "deletedAt"
+    public static let placeLastViewedCellKey  = "lastViewed"
 
     // MARK: - Lifecycle
 
@@ -158,6 +159,22 @@ extension GuessWhoSync {
             at: key,
             cellKey: Self.guideLastViewedCellKey,
             fieldName: Self.guideLastViewedCellKey,
+            type: .date,
+            value: .string(SidecarISO8601.string(from: now)),
+            softDelete: false
+        )
+    }
+
+    /// Stamp `lastViewed = now` on the place envelope at `key`. ADDITIVE and
+    /// schema-stable, like `stampGuideViewed`: only the one cell changes, every
+    /// other cell (name/address caches, coordinate, order) is preserved. No-op
+    /// when no envelope exists yet.
+    public func stampPlaceViewed(at key: SidecarKey, now: Date = Date()) throws {
+        guard try sidecars.read(key) != nil else { return }
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.placeLastViewedCellKey,
+            fieldName: Self.placeLastViewedCellKey,
             type: .date,
             value: .string(SidecarISO8601.string(from: now)),
             softDelete: false
@@ -312,7 +329,9 @@ extension GuessWhoSync {
             mapsPlaceID: decodeGuideStringValue(envelope: envelope, cellKey: Self.placeMapsPlaceIDCellKey),
             resolvedAt: resolvedAtRaw.flatMap(SidecarISO8601.date(from:)),
             sortOrder: sortOrder,
-            createdAt: earliestGuideCellCreatedAt(envelope: envelope)
+            createdAt: earliestGuideCellCreatedAt(envelope: envelope),
+            lastViewedAt: decodeGuideStringValue(envelope: envelope, cellKey: Self.placeLastViewedCellKey)
+                .flatMap(SidecarISO8601.date(from:))
         )
     }
 

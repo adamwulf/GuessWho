@@ -27,6 +27,10 @@ final class GuidePlacesListViewController: UIViewController {
 
     private let emptyLabel = UILabel()
 
+    /// The sort pull-down button. Its menu is rebuilt in the reload observer so
+    /// the checkmark tracks the repository's live place order.
+    private var sortButton: UIBarButtonItem!
+
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
@@ -62,6 +66,7 @@ final class GuidePlacesListViewController: UIViewController {
         configureTableView()
         configureEmptyState()
         configureDataSource()
+        configureSortButton()
         observeRepositoryReloads()
 
         applySnapshot(animated: false)
@@ -139,6 +144,11 @@ final class GuidePlacesListViewController: UIViewController {
         dataSource.defaultRowAnimation = .fade
     }
 
+    private func configureSortButton() {
+        sortButton = makePlaceSortBarButtonItem(repository: repository)
+        navigationItem.rightBarButtonItem = sortButton
+    }
+
     // MARK: - Snapshot wiring
 
     @MainActor
@@ -151,7 +161,11 @@ final class GuidePlacesListViewController: UIViewController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySnapshot(animated: true)
+                guard let self else { return }
+                self.applySnapshot(animated: true)
+                // Rebuild the sort menu so the checkmark tracks the order that
+                // produced this reload (menus are immutable snapshots).
+                self.sortButton.menu = self.makePlaceSortMenu(repository: self.repository)
             }
         }
         // The resolver moves its "looking up now" marker between rows without a
