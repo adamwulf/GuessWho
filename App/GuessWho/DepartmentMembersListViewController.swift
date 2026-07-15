@@ -1,4 +1,5 @@
 import UIKit
+import SwiftUI
 import GuessWhoSync
 
 /// UIKit list of the people in one department of one organization. Pushed when a
@@ -25,7 +26,10 @@ final class DepartmentMembersListViewController: UIViewController {
     /// repository by `ContactID` so a renamed org still resolves its people.
     private let organizationID: ContactID
     private let fallbackOrganization: Contact
-    private let department: String
+    /// The department this list shows. Mutable: a successful rename rewrites it
+    /// (and the nav title) so the reload observer and subsequent recomputes
+    /// resolve members by the NEW name.
+    private var department: String
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
     private let favoritesStore: FavoritesListStore
@@ -95,7 +99,7 @@ final class DepartmentMembersListViewController: UIViewController {
         view.backgroundColor = .systemBackground
 
         configureTableView()
-        configureSortMenu()
+        configureNavigationItems()
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
@@ -130,18 +134,85 @@ final class DepartmentMembersListViewController: UIViewController {
         membersByID = byID
     }
 
-    // MARK: - Sort menu
+    // MARK: - Nav bar items
 
-    /// Install the global sort pull-down as the nav bar's right item. Shared with
-    /// the People / Organizations lists via `makeSortBarButtonItem`.
-    private func configureSortMenu() {
-        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+    /// Install the nav bar's right items: "Edit" (rename this department,
+    /// rightmost) and the global sort pull-down. The sort item is held in
+    /// `sortBarButtonItem` because `navigationItem.rightBarButtonItem` now
+    /// resolves to the first of the array — mirrors
+    /// `OrganizationsListViewController.configureNavigationItems`.
+    private func configureNavigationItems() {
+        let editItem = UIBarButtonItem(
+            title: "Edit",
+            primaryAction: UIAction { [weak self] _ in self?.presentRename() }
+        )
+        editItem.accessibilityLabel = "Rename Department"
+        let sortItem = makeSortBarButtonItem(repository: repository)
+        sortBarButtonItem = sortItem
+        navigationItem.rightBarButtonItems = [editItem, sortItem]
     }
+
+    private var sortBarButtonItem: UIBarButtonItem?
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
     /// order. Called from the reload observer.
     private func refreshSortMenu() {
-        navigationItem.rightBarButtonItem?.menu = makeSortMenu(repository: repository)
+        sortBarButtonItem?.menu = makeSortMenu(repository: repository)
+    }
+
+    // MARK: - Rename
+
+    /// Present the one-field rename form as a sheet, seeded with the current
+    /// department name. Save routes through `performRename`; Cancel just
+    /// dismisses.
+    private func presentRename() {
+        let sheet = DepartmentRenameView(
+            originalName: department,
+            onSave: { [weak self] newName in
+                self?.dismiss(animated: true)
+                self?.performRename(to: newName)
+            },
+            onCancel: { [weak self] in
+                self?.dismiss(animated: true)
+            }
+        )
+        let host = UIHostingController(rootView: sheet)
+        present(host, animated: true)
+    }
+
+    /// Rewrite the department across the organization's matching contacts, then
+    /// re-key this list onto the new name. `DepartmentRenameView` already trimmed
+    /// and non-empty-checked `newName`; a no-op change (same as the current name)
+    /// short-circuits without a write. On success the reload posted by the
+    /// repository refreshes every open list; here we also update our own
+    /// `department`/title and re-snapshot immediately so the list doesn't flash
+    /// empty against the stale name. Failures surface in a plain-copy alert.
+    private func performRename(to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != department else { return }
+        Task { @MainActor in
+            do {
+                try await repository.renameDepartment(
+                    from: department, to: trimmed, in: currentOrganization
+                )
+                department = trimmed
+                title = Self.title(for: trimmed)
+                recomputeMembers()
+                applySnapshot(animated: true)
+            } catch {
+                presentRenameError(error)
+            }
+        }
+    }
+
+    private func presentRenameError(_ error: Error) {
+        let alert = UIAlertController(
+            title: "Couldn't Rename Department",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     /// Observe `.contactsRepositoryDidReload` so both a GLOBAL sort change and a
