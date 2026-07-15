@@ -93,7 +93,7 @@ struct ContactEditView: View {
             .joined(separator: " ")
         if !name.isEmpty { return name }
         if !model.edited.organizationName.isEmpty { return model.edited.organizationName }
-        return "New Contact"
+        return model.edited.contactType == .organization ? "New Organization" : "New Contact"
     }
 
     /// True when the user has any unsaved work that Cancel would lose.
