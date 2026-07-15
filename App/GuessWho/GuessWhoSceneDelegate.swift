@@ -641,7 +641,40 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             repository: appDelegate.guidesRepository,
             service: appDelegate.service
         )
+        places.didSelectPlace = { [weak self, weak nav] place in
+            self?.pushGuidePlaceDetail(place: place, guideID: guide.id, on: nav, appDelegate: appDelegate)
+        }
         nav.pushViewController(places, animated: true)
+    }
+
+    /// Push a `GuidePlaceDetailView` for one place onto `nav`. Shared by both
+    /// shells; the SwiftUI detail is given the shell-appropriate
+    /// contact/event push handlers so its rows can fan out to those details
+    /// on the same nav stack (same wiring as the contact/event detail pushes).
+    private func pushGuidePlaceDetail(
+        place: MapsPlace,
+        guideID: UUID,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let detail = GuidePlaceDetailView(
+            placeID: place.id,
+            guideID: guideID,
+            repository: appDelegate.guidesRepository
+        )
+        .environment(appDelegate.service)
+        .environment(appDelegate.contactsRepository)
+        #if targetEnvironment(macCatalyst)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        #else
+        let hosting = UIHostingController(
+            rootView: injectIPhonePushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        #endif
+        nav.pushViewController(hosting, animated: true)
     }
 
     // MARK: - Shared add-contact flow (both shells)

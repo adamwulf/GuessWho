@@ -19,6 +19,12 @@ final class GuidePlacesListViewController: UIViewController {
 
     private var placesByID: [UUID: MapsPlace] = [:]
 
+    /// Invoked when a place row is tapped. The scene delegate wires this to push
+    /// a `GuidePlaceDetailView` onto the owning nav (with the shell-appropriate
+    /// push handlers). When unset, tapping falls back to opening Apple Maps
+    /// directly.
+    var didSelectPlace: ((MapsPlace) -> Void)?
+
     private let emptyLabel = UILabel()
 
     /// See `ContactsListViewController.reloadObserver` for the
@@ -191,7 +197,11 @@ extension GuidePlacesListViewController: UITableViewDelegate {
         tableView.deselectRow(at: indexPath, animated: true)
         guard let placeID = dataSource.itemIdentifier(for: indexPath),
               let place = placesByID[placeID] else { return }
-        openInMaps(place)
+        if let didSelectPlace {
+            didSelectPlace(place)
+        } else {
+            openInMaps(place)
+        }
     }
 
     func tableView(
