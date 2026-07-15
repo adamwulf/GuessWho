@@ -201,6 +201,11 @@ struct AddLinkSheet: View {
     /// and the link WRITE reconciles + mints both endpoints internally, so no
     /// UUID is needed here.
     let currentContactID: ContactID
+    /// Which record type the picker offers: `.person` for "Link Contact",
+    /// `.organization` for "Link Org". Both produce the same `Link` record —
+    /// an organization is a `Contact` — so this only filters the picker and
+    /// swaps the copy.
+    let kind: ContactType
     /// Hands back the far endpoint's ContactID (not a bare UUID): the store's
     /// async `addLink(to:note:)` resolves-or-mints both endpoints.
     let onSave: (_ other: ContactID, _ note: String) -> Void
@@ -220,14 +225,20 @@ struct AddLinkSheet: View {
                     TextField("Note (optional)", text: $noteText, axis: .vertical)
                 }
 
-                Section("Contact") {
+                Section(kind == .organization ? "Organization" : "Contact") {
                     if !didLoad {
                         ProgressView()
                     } else if eligible.isEmpty {
                         ContentUnavailableView(
-                            "No Contacts",
-                            systemImage: "person.crop.circle.badge.questionmark",
-                            description: Text("No other contacts are available to link.")
+                            kind == .organization ? "No Organizations" : "No Contacts",
+                            systemImage: kind == .organization
+                                ? "building.2"
+                                : "person.crop.circle.badge.questionmark",
+                            description: Text(
+                                kind == .organization
+                                    ? "No organizations are available to link."
+                                    : "No other contacts are available to link."
+                            )
                         )
                     } else {
                         ForEach(filtered(eligible: eligible), id: \.id) { entry in
@@ -250,7 +261,10 @@ struct AddLinkSheet: View {
                     }
                 }
             }
-            .searchable(text: $pickerSearch, prompt: "Search contacts")
+            .searchable(
+                text: $pickerSearch,
+                prompt: kind == .organization ? "Search organizations" : "Search contacts"
+            )
             .navigationTitle("Add Link")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -278,10 +292,13 @@ struct AddLinkSheet: View {
     private func loadEligibleContacts() async -> [EligibleContact] {
         var result: [EligibleContact] = []
         for contact in repository.contacts {
-            // Skip the contact we're linking from; everything else is eligible.
-            // Exclude by ContactID (effective GuessWho identity), not a raw
-            // guessWhoUUID compare. The link target's UUID is resolved on save
-            // inside the link WRITE, so we don't precompute a UUID per row.
+            // Only records of the requested type: "Link Contact" offers people,
+            // "Link Org" offers organizations. Skip the contact we're linking
+            // from; everything else of that type is eligible. Exclude by
+            // ContactID (effective GuessWho identity), not a raw guessWhoUUID
+            // compare. The link target's UUID is resolved on save inside the
+            // link WRITE, so we don't precompute a UUID per row.
+            guard contact.contactType == kind else { continue }
             let id = contact.contactID
             if id == currentContactID { continue }
             result.append(EligibleContact(contact: contact, id: id))

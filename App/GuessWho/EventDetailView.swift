@@ -52,6 +52,7 @@ struct EventDetailView: View {
     @State private var hasLoadedOnce: Bool = false
 
     @State private var showingPicker = false
+    @State private var showingOrgPicker = false
     @State private var showingEditSheet = false
     @State private var showingDeleteConfirm = false
 
@@ -73,7 +74,9 @@ struct EventDetailView: View {
                 guessWhoNotesSection
                 tagsSection
                 inviteesSection(event)
+                associatedOrganizationsSection(event)
                 linkedContactsSection
+                linkedOrganizationsSection
                 deleteActionSection
             } else if hasLoadedOnce {
                 Section { Text("(Unknown event)") }
@@ -127,13 +130,27 @@ struct EventDetailView: View {
                         Label("Add Contact", systemImage: "person.crop.circle.badge.plus")
                     }
                     .disabled(event == nil)
+
+                    Button {
+                        showingOrgPicker = true
+                    } label: {
+                        Label("Add Organization", systemImage: "building.2")
+                    }
+                    .disabled(event == nil)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
             }
         }
         .sheet(isPresented: $showingPicker) {
-            ContactPickerSheet { contact, note in
+            ContactPickerSheet(kind: .person) { contact, note in
+                await addLink(to: contact, note: note)
+            }
+        }
+        .sheet(isPresented: $showingOrgPicker) {
+            // Same link write as Add Contact — an organization is a Contact —
+            // the picker just filters to organization records.
+            ContactPickerSheet(kind: .organization) { contact, note in
                 await addLink(to: contact, note: note)
             }
         }
@@ -369,18 +386,110 @@ struct EventDetailView: View {
         )
     }
 
+    /// Split the event's contact links by the linked contact's type, mirroring
+    /// `ContactDetailView.connectionLinks(where:)`. Links whose contact
+    /// endpoint can't be resolved (rare: unreconciled/malformed) fall into the
+    /// People bucket rather than being silently dropped.
+    private func linkedConnections(where type: ContactType) -> [ContactLink] {
+        links.filter { link in
+            let contact = repository.linkedContact(of: link, forEventUUID: resolvedUUID)
+            return (contact?.contactType ?? .person) == type
+        }
+    }
+
+    /// Inferred organizations for this event, the org analog of the invitee
+    /// email→contact matching above: every person on the event (attendee-
+    /// matched contacts plus linked people) whose Contacts "company" field
+    /// names an organization record surfaces that organization here. Same
+    /// name-string inference as the contact page's "Associated Organization"
+    /// section — no sidecar link is involved, so rows are read-only and just
+    /// navigate to the organization. Deduped by ContactID; hidden when empty.
+    @ViewBuilder
+    private func associatedOrganizationsSection(_ event: Event) -> some View {
+        let organizations = associatedOrganizations(event)
+        if !organizations.isEmpty {
+            Section("Associated Organizations") {
+                ForEach(organizations, id: \.contactID) { organization in
+                    Button {
+                        pushContactReference(ContactReference(id: organization.contactID))
+                    } label: {
+                        HStack(spacing: 12) {
+                            ContactAvatar(contact: organization, diameter: 28)
+                            Text(organization.displayName)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func associatedOrganizations(_ event: Event) -> [Contact] {
+        // The event's people: attendee-matched contacts first (section order),
+        // then linked people. Organizations linked directly to the event are
+        // excluded — their company field is themselves, not an association.
+        var people: [Contact] = []
+        for attendee in event.attendees {
+            if let email = attendee.email,
+               let contactID = matchedContactID(forEmail: email),
+               let contact = repository.contact(id: contactID),
+               contact.contactType == .person {
+                people.append(contact)
+            }
+        }
+        for link in links {
+            if let contact = repository.linkedContact(of: link, forEventUUID: resolvedUUID),
+               contact.contactType == .person {
+                people.append(contact)
+            }
+        }
+
+        var seen = Set<ContactID>()
+        var organizations: [Contact] = []
+        for person in people {
+            guard let organization = repository.organizationContact(named: person.organizationName)
+            else { continue }
+            if seen.insert(organization.contactID).inserted {
+                organizations.append(organization)
+            }
+        }
+        return organizations
+    }
+
     @ViewBuilder
     private var linkedContactsSection: some View {
+        let peopleLinks = linkedConnections(where: .person)
         Section("Linked Contacts") {
-            if links.isEmpty {
+            if peopleLinks.isEmpty {
                 Text("No linked contacts")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(links, id: \.id) { link in
+                ForEach(peopleLinks, id: \.id) { link in
                     linkedContactRow(link)
                 }
                 .onDelete { offsets in
-                    let ids = offsets.map { links[$0].id }
+                    let ids = offsets.map { peopleLinks[$0].id }
+                    for id in ids { remove(linkID: id) }
+                }
+            }
+        }
+    }
+
+    /// Contact↔event links whose contact endpoint is an organization. Hidden
+    /// when empty (unlike Linked Contacts, which keeps its placeholder row),
+    /// matching the contact page's Linked Organizations section.
+    @ViewBuilder
+    private var linkedOrganizationsSection: some View {
+        let organizationLinks = linkedConnections(where: .organization)
+        if !organizationLinks.isEmpty {
+            Section("Linked Organizations") {
+                ForEach(organizationLinks, id: \.id) { link in
+                    linkedContactRow(link)
+                }
+                .onDelete { offsets in
+                    let ids = offsets.map { organizationLinks[$0].id }
                     for id in ids { remove(linkID: id) }
                 }
             }
@@ -692,6 +801,12 @@ private struct ContactPickerSheet: View {
     @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss
 
+    /// Which record type the picker offers: `.person` for "Add Contact",
+    /// `.organization` for "Add Organization". The link write is identical —
+    /// an organization is a `Contact` — so this only filters the list and
+    /// swaps the copy.
+    let kind: ContactType
+
     /// Returns `true` once the link has been created (or already existed),
     /// `false` if the underlying reconcile-then-link sequence failed. The
     /// picker surfaces its own neutral failure copy in that case — the host
@@ -710,7 +825,7 @@ private struct ContactPickerSheet: View {
             VStack(spacing: 0) {
                 if let selection {
                     Form {
-                        Section("Contact") {
+                        Section(kind == .organization ? "Organization" : "Contact") {
                             HStack {
                                 Text(selection.displayName)
                                 Spacer()
@@ -734,17 +849,26 @@ private struct ContactPickerSheet: View {
                         }
                     }
                 } else {
-                    List(filteredContacts, id: \.id) { entry in
-                        Button {
-                            selection = entry.contact
-                        } label: {
-                            Text(entry.contact.displayName)
+                    List {
+                        if filteredContacts.isEmpty {
+                            Text(kind == .organization ? "No organizations." : "No contacts.")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(filteredContacts, id: \.id) { entry in
+                            Button {
+                                selection = entry.contact
+                            } label: {
+                                Text(entry.contact.displayName)
+                            }
                         }
                     }
-                    .searchable(text: $query, prompt: "Search contacts")
+                    .searchable(
+                        text: $query,
+                        prompt: kind == .organization ? "Search organizations" : "Search contacts"
+                    )
                 }
             }
-            .navigationTitle(selection == nil ? "Pick Contact" : "Add Link")
+            .navigationTitle(pickerTitle)
             .toolbar {
                 // Cancel stays enabled while submitting: if the underlying
                 // CNContactStore.save hangs (iCloud contention, write lock),
@@ -774,7 +898,9 @@ private struct ContactPickerSheet: View {
                                 if didLink {
                                     dismiss()
                                 } else {
-                                    errorMessage = "Couldn't add this contact. Try again or pick another."
+                                    errorMessage = kind == .organization
+                                        ? "Couldn't add this organization. Try again or pick another."
+                                        : "Couldn't add this contact. Try again or pick another."
                                 }
                                 isSubmitting = false
                             }
@@ -789,8 +915,13 @@ private struct ContactPickerSheet: View {
                     }
                 }
             }
-            .task { contacts = repository.contacts }
+            .task { contacts = repository.contacts.filter { $0.contactType == kind } }
         }
+    }
+
+    private var pickerTitle: String {
+        if selection != nil { return "Add Link" }
+        return kind == .organization ? "Pick Organization" : "Pick Contact"
     }
 
     /// Picker rows keyed by opaque `ContactID` (not raw `localID`) so the List's
