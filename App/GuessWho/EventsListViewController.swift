@@ -110,7 +110,11 @@ final class EventsListViewController: UIViewController {
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            // Keyboard guide, not safe area: rows stay above the search
+            // keyboard instead of hiding under it. With no keyboard the guide
+            // rests at the safe-area bottom, so this is the same constraint
+            // the rest of the time.
+            tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
     }
 
@@ -119,6 +123,7 @@ final class EventsListViewController: UIViewController {
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.searchResultsUpdater = self
         searchController.searchBar.placeholder = "Search events"
+        searchController.installKeyboardDismissal(for: tableView)
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
     }
