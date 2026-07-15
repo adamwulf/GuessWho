@@ -853,6 +853,9 @@ struct ContactDetailView: View {
                 Text(contact.displayName)
                     .font(.title2.weight(.semibold))
                     .multilineTextAlignment(.center)
+                    // Long-press (iOS) / right-click (Catalyst) to copy the name
+                    // without entering the editor.
+                    .copyableText(contact.displayName)
 
                 let subtitle = headerSubtitle(contact)
                 if !subtitle.isEmpty {
@@ -860,6 +863,7 @@ struct ContactDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                        .copyableText(subtitle)
                 }
             }
         }

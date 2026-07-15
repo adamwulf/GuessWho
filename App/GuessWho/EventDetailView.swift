@@ -78,6 +78,7 @@ struct EventDetailView: View {
     var body: some View {
         Form {
             if let event {
+                titleHeaderSection(event)
                 detailsSection(event)
                 guessWhoNotesSection
                 tagsSection
@@ -98,7 +99,16 @@ struct EventDetailView: View {
                 }
             }
         }
-        .navigationTitle(event?.title.isEmpty == false ? event!.title : "Event")
+        // The inline title header (below) already shows the event title, so an
+        // empty nav-bar title avoids showing it twice — matching ContactDetailView,
+        // whose inline header likewise carries the name while the nav title stays
+        // empty. The toolbar (star + ellipsis) is unaffected.
+        .navigationTitle("")
+        #if !targetEnvironment(macCatalyst)
+        // Inline mode so the empty title doesn't reserve large-title space above
+        // the header on the pushed iPhone/iPad detail.
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .task {
             await reload()
             // Stamp lastViewed ONCE per open (not in reload(), which every
@@ -189,6 +199,23 @@ struct EventDetailView: View {
         ) {
             Button("Delete", role: .destructive) { delete() }
             Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    /// Inline title header shown above the details. Mirrors ContactDetailView's
+    /// header (which carries the name while the nav title stays empty) so the
+    /// event title has a visible, long-pressable home: long-press (iOS) /
+    /// right-click (Catalyst) offers Copy. Untitled events fall back to "Event",
+    /// matching the old nav-title fallback, but the copy menu is suppressed for a
+    /// blank title (see `copyableText`).
+    @ViewBuilder
+    private func titleHeaderSection(_ event: Event) -> some View {
+        Section {
+            Text(event.title.isEmpty ? "Event" : event.title)
+                .font(.title2.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .copyableText(event.title)
+                .listRowBackground(Color.clear)
         }
     }
 
