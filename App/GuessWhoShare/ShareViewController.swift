@@ -93,7 +93,7 @@ final class ShareViewController: UIViewController {
 
     // MARK: - URL validation
 
-    private static func url(fromItem item: (any NSSecureCoding)?) -> URL? {
+    nonisolated private static func url(fromItem item: (any NSSecureCoding)?) -> URL? {
         if let url = item as? URL { return url }
         if let data = item as? Data { return URL(dataRepresentation: data, relativeTo: nil) }
         if let string = item as? String { return URL(string: string) }
@@ -105,7 +105,7 @@ final class ShareViewController: UIViewController {
     /// `/in/<slug>` path. Returns the URL upgraded to https, or nil if it
     /// isn't recognizably a LinkedIn profile. `lnkd.in` short links pass
     /// through untouched — Safari resolves the redirect.
-    private static func linkedInProfileURL(from raw: URL) -> URL? {
+    nonisolated private static func linkedInProfileURL(from raw: URL) -> URL? {
         guard var components = URLComponents(url: raw, resolvingAgainstBaseURL: false),
               let host = components.host?.lowercased()
         else { return nil }
@@ -117,13 +117,13 @@ final class ShareViewController: UIViewController {
     }
 
     /// The `<slug>` in an `/in/<slug>` path, or nil.
-    private static func slug(fromPath path: String) -> String? {
+    nonisolated private static func slug(fromPath path: String) -> String? {
         guard let range = path.range(of: "/in/", options: .caseInsensitive) else { return nil }
         let slug = path[range.upperBound...].prefix { $0 != "/" }
         return slug.isEmpty ? nil : String(slug)
     }
 
-    private static func firstLinkedInProfileURL(inText text: String) -> URL? {
+    nonisolated private static func firstLinkedInProfileURL(inText text: String) -> URL? {
         let types: NSTextCheckingResult.CheckingType = .link
         guard let detector = try? NSDataDetector(types: types.rawValue) else { return nil }
         let range = NSRange(text.startIndex..., in: text)
