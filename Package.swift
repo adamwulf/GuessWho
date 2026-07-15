@@ -44,6 +44,11 @@ let package = Package(
         // routes to the same file. Replaces the in-house LogFileWriter /
         // LogfmtLogHandler this package used to ship.
         .package(url: "https://github.com/adamwulf/FellerBuncher.git", branch: "main"),
+        // PhoneNumberKit: libphonenumber-backed parsing/formatting. Used to
+        // render stored phone strings the way the OS does (dashes, parens,
+        // international grouping) rather than showing the raw typed value.
+        // Pinned to the 5.x line (the maintained PhoneNumberKit-org fork).
+        .package(url: "https://github.com/PhoneNumberKit/PhoneNumberKit.git", .upToNextMajor(from: "5.0.4")),
     ],
     targets: [
         // Thin Objective-C shim over the Swift-unavailable
@@ -61,6 +66,7 @@ let package = Package(
             dependencies: [
                 "GuessWhoSyncObjC",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "PhoneNumberKit", package: "PhoneNumberKit"),
             ]
         ),
         .target(name: "GuessWhoSyncTesting", dependencies: ["GuessWhoSync"]),
