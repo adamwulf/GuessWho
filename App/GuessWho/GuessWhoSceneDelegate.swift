@@ -514,6 +514,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
+    /// Push a `GroupMembersListViewController` for `ref` onto the secondary-column
+    /// `nav`. Mirrors `pushCatalystDepartmentMembers`: an in-detail drill-down
+    /// PUSHES so back-swipe returns to the record, and member selection pushes the
+    /// person's detail onto the same nav.
+    private func pushCatalystGroupMembers(
+        ref: GroupReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let members = GroupMembersListViewController(
+            group: ref.group,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        members.didSelectContact = { [weak self, weak nav] contact in
+            self?.pushCatalystContactDetail(
+                ref: ContactReference(id: contact.contactID), on: nav, appDelegate: appDelegate
+            )
+        }
+        nav.pushViewController(members, animated: true)
+    }
+
     /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
     /// Both closures capture `nav` and `self` weakly so popping the stack or
     /// tearing down the scene doesn't keep this delegate or its column alive.
@@ -531,6 +555,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
                 self?.pushCatalystDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushGroupReference) { [weak self, weak nav] ref in
+                self?.pushCatalystGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
 
@@ -932,6 +959,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
+    /// Reference-taking overload used by the in-detail Groups section. Reuses
+    /// `pushGroupMembers(group:on:appDelegate:)`, whose member selection already
+    /// pushes the contact detail onto the same nav stack.
+    private func pushGroupMembers(
+        ref: GroupReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        pushGroupMembers(group: ref.group, on: nav, appDelegate: appDelegate)
+    }
+
     /// Push a fresh `UIHostingController<ContactDetailView>` onto the owning
     /// tab's nav stack. Mirrors `showContactDetail` on Catalyst but PUSHES
     /// (back-swipe pops) instead of REPLACING the secondary column. The
@@ -1058,6 +1096,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
                 self?.pushDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushGroupReference) { [weak self, weak nav] ref in
+                self?.pushGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
     }
 

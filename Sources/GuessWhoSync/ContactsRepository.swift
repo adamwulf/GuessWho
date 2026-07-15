@@ -251,6 +251,27 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// The Contacts.app groups that `contact` belongs to, sorted by name.
+    /// Membership is keyed by Contacts `localID` (`CNContact.identifier`) — the
+    /// correct key, since groups are not GuessWho-ID'd — which this method reads
+    /// off the value so the app never has to touch the confined `localID`. A
+    /// failed fetch returns an empty array and records `lastError`, matching the
+    /// degrade-gracefully behavior of `members(ofGroup:)`. Like that pure read,
+    /// success does NOT clear `lastError` — a concurrent reload may have set it.
+    public func groups(containing contact: Contact) async -> [ContactGroup] {
+        do {
+            let memberships = try await contactsStore.fetchGroupMemberships(
+                contactLocalID: contact.localID
+            )
+            return memberships.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        } catch {
+            lastError = "Group memberships fetch failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
     /// Returns a currently-cached contact for an adapter-local refresh token.
     /// `localID` is intentionally confined to this Contacts-boundary API; it
     /// must not be persisted or used as application identity.
