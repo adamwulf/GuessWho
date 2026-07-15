@@ -68,11 +68,12 @@ enum GuideImporter {
 enum GuidePlaceResolver {
     private static let log = GuessWhoLog.logger("app.guides.resolve")
 
-    /// Minimum spacing between MapKit lookups. Sized to stay under MapKit's
-    /// place-ID rate limit; `.loadingThrottled` responses trigger the longer
-    /// backoff below on top of this. Bump toward `.seconds(3)` if throttling
-    /// persists.
-    static let requestInterval: Duration = .seconds(1)
+    /// Minimum spacing between MapKit lookups in the steady state. Kept short
+    /// so a large guide fills in quickly; when MapKit pushes back with
+    /// `.loadingThrottled` the per-place backoff below takes over (starting at
+    /// 1s) to slow things down. Bump this up if throttling persists from the
+    /// very first requests.
+    static let requestInterval: Duration = .milliseconds(200)
 
     /// How many times a single throttled place is retried before we give up on
     /// it for this pass (it stays pending and retries on the next guide open).
@@ -184,14 +185,16 @@ enum GuidePlaceResolver {
             } catch {
                 if isThrottled(error), attempt < maxThrottleRetries {
                     attempt += 1
-                    // Escalating backoff: 4s, 8s, 16s. MapKit clears the
-                    // throttle after a short cool-down, so a few waits usually
-                    // let the same place through.
-                    let backoff = Duration.seconds(4 << (attempt - 1))
+                    // Escalating backoff: 1s, 2s, 4s. The steady-state spacing
+                    // is only 0.2s, so the first throttle bumps us up to 1s and
+                    // grows from there. MapKit clears the throttle after a short
+                    // cool-down, so a few waits usually let the same place through.
+                    let backoffSeconds = 1 << (attempt - 1)
+                    let backoff = Duration.seconds(backoffSeconds)
                     log.notice("resolve: throttled, backing off", [
                         "placeID": place.mapsPlaceID ?? "-",
                         "attempt": String(attempt),
-                        "backoffSeconds": String(4 << (attempt - 1))
+                        "backoffSeconds": String(backoffSeconds)
                     ])
                     try? await Task.sleep(for: backoff)
                     continue

@@ -70,7 +70,7 @@ Two entry shapes exist:
    `MKMapItemRequest(mapItemIdentifier:)` API (iOS 18+/macCatalyst 18+;
    silently skipped on older OSes) and stamps `resolvedAt`. The pass is
    **serial and rate-limited** — one lookup at a time, spaced
-   `requestInterval` apart (1s), with escalating backoff-and-retry when
+   `requestInterval` apart (0.2s), escalating to a 1s+ backoff-and-retry when
    MapKit returns `MKError.loadingThrottled` — so a large guide (100+ places)
    doesn't burst past MapKit's place-ID rate limit. It reloads the repository
    after each success, so rows fill in one at a time rather than all at the
