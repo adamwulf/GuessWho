@@ -1472,17 +1472,42 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func groupRow(_ group: ContactGroup) -> some View {
+        // Read through the @Observable favorites cache so the star repaints when
+        // the group is favorited/unfavorited from here or anywhere else.
+        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
         Button {
             pushGroupReference(GroupReference(group: group))
         } label: {
             ActivityRowLayout(systemImage: "person.3") {
-                Text(group.name.isEmpty ? "Group" : group.name)
-                    .foregroundStyle(.tint)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(spacing: 6) {
+                    Text(group.name.isEmpty ? "Group" : group.name)
+                        .foregroundStyle(.tint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isFavorited {
+                        Image(systemName: "star.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.yellow)
+                            .accessibilityLabel("Favorited")
+                    }
+                }
+                .contentShape(Rectangle())
             }
         }
         .buttonStyle(.plain)
+        // A group has no detail screen to host a star toolbar button, so the
+        // favorite toggle lives in the row's context menu (long-press / right-
+        // click), mirroring the recent-event row's link menu.
+        .contextMenu {
+            Button {
+                favoritesStore.toggle(kind: .group, id: group.localID)
+            } label: {
+                if isFavorited {
+                    Label("Unfavorite", systemImage: "star.slash")
+                } else {
+                    Label("Favorite", systemImage: "star")
+                }
+            }
+        }
     }
 
     private func infoRows(for contact: Contact) -> [InfoRowData] {

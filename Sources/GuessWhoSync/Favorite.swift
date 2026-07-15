@@ -3,6 +3,10 @@ import Foundation
 public enum FavoriteKind: String, Codable, Sendable {
     case contact
     case event
+    /// A Contacts.app group. Unlike `contact`/`event`, a group has no GuessWho
+    /// UUID — it is keyed by its Contacts `localID` (`CNGroup.identifier`), which
+    /// is stored (lowercased, like every favorite `id`) as the favorite's `id`.
+    case group
 }
 
 public struct Favorite: Codable, Sendable, Hashable {

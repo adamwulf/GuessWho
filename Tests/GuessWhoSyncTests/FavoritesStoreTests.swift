@@ -47,6 +47,27 @@ struct FavoritesStoreTests {
     }
 
     @Test
+    func groupFavoriteRoundTripsThroughDisk() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        // CNGroup identifiers are mixed-case; the favorite persists it lowercased.
+        let id = "F00DCAFE-0000-0000-0000-0000000000AB"
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        #expect(try store.toggle(kind: .group, id: id, now: now) == true)
+        let afterAdd = try store.loadAll()
+        #expect(afterAdd.count == 1)
+        #expect(afterAdd[0].kind == .group)
+        #expect(afterAdd[0].id == id.lowercased())
+        // A case-varying lookup still resolves — the store canonicalizes both sides.
+        #expect(try store.isFavorite(kind: .group, id: id.uppercased()) == true)
+
+        #expect(try store.toggle(kind: .group, id: id, now: now.addingTimeInterval(1)) == false)
+        #expect(try store.loadAll().isEmpty)
+    }
+
+    @Test
     func setAllPreservesOrderAcrossReload() throws {
         let root = makeRoot()
         defer { cleanup(root) }

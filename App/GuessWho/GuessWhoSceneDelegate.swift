@@ -339,6 +339,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 repository: appDelegate.contactsRepository,
                 photoLoader: appDelegate.contactPhotoLoader
             )
+            // Hoist the nav so a favorited-group tap can push its member list
+            // onto this supplementary column (member selection then replaces the
+            // secondary/detail column, exactly like the Groups sidebar tab).
+            let nav = UINavigationController(rootViewController: list)
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
@@ -349,11 +353,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     appDelegate: appDelegate
                 )
             }
-            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            list.didSelectGroup = { [weak self, weak nav] group in
+                self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+            }
+            split.setViewController(nav, for: .supplementary)
             installDetailPlaceholder(in: split, for: .favorites)
 
         case .groups:
-            let list = GroupsListViewController(repository: appDelegate.contactsRepository)
+            let list = GroupsListViewController(
+                repository: appDelegate.contactsRepository,
+                favoritesStore: appDelegate.favoritesStore
+            )
             // Selecting a group PUSHES the members list onto the supplementary
             // column's nav (back-button returns to the group list); selecting a
             // member REPLACES the secondary/detail column via
@@ -911,6 +921,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 appDelegate: appDelegate
             )
         }
+        list.didSelectGroup = { [weak self] group in
+            self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
+        }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.favorites.title,
@@ -925,7 +938,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// a member PUSHES the contact detail — the same push-to-drill-in flow as the
     /// People tab.
     private func makeIPhoneGroupsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
-        let list = GroupsListViewController(repository: appDelegate.contactsRepository)
+        let list = GroupsListViewController(
+            repository: appDelegate.contactsRepository,
+            favoritesStore: appDelegate.favoritesStore
+        )
         list.didSelectGroup = { [weak self] group in
             self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
         }

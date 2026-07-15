@@ -1017,10 +1017,22 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// Look up a cached `ContactGroup` by its Contacts `localID`, matched
+    /// case-insensitively because favorites persist the `localID` lowercased
+    /// (see `Favorite.id`) while `CNGroup.identifier` is mixed-case. Reads the
+    /// `groups` cache filled by `loadGroups()`; returns nil until that lands or
+    /// when the group no longer exists.
+    public func group(localID: String) -> ContactGroup? {
+        let needle = localID.lowercased()
+        return groups.first { $0.localID.lowercased() == needle }
+    }
+
     /// Project persisted favorites into app-facing rows without exposing contact
     /// favorite UUIDs. Contact favorites resolve through this repository's
     /// GuessWhoID index; event favorites use the supplied resolver until the
-    /// deferred EventID migration moves event identity behind the package too.
+    /// deferred EventID migration moves event identity behind the package too;
+    /// group favorites resolve against the `groups` cache (case-insensitively —
+    /// see `group(localID:)`).
     public func favoriteListItems(
         from favorites: [Favorite],
         event: (String) -> Event?
@@ -1038,6 +1050,12 @@ public final class ContactsRepository: NSObject {
                     id: FavoriteListItem.ID(favorite.stableID),
                     kind: favorite.kind,
                     event: event(favorite.id)
+                )
+            case .group:
+                FavoriteListItem(
+                    id: FavoriteListItem.ID(favorite.stableID),
+                    kind: favorite.kind,
+                    group: group(localID: favorite.id)
                 )
             }
         }

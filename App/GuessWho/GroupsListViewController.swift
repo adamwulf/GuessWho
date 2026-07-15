@@ -20,6 +20,7 @@ final class GroupsListViewController: UIViewController {
     var didSelectGroup: (ContactGroup) -> Void = { _ in }
 
     private let repository: ContactsRepository
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case group
@@ -56,8 +57,15 @@ final class GroupsListViewController: UIViewController {
     /// nonisolated `deinit`).
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
-    init(repository: ContactsRepository) {
+    /// Observes `.favoritesDidChange` so a group starred/unstarred from the
+    /// member list, the contact detail Groups section, or the Favorites list
+    /// repaints its row's trailing star here. Same `nonisolated(unsafe)`
+    /// rationale as `reloadObserver`.
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
+    init(repository: ContactsRepository, favoritesStore: FavoritesListStore) {
         self.repository = repository
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = "Groups"
     }
@@ -70,6 +78,9 @@ final class GroupsListViewController: UIViewController {
     deinit {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
     }
 
@@ -150,7 +161,10 @@ final class GroupsListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, localID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.group.rawValue, for: indexPath)
             guard let self, let group = self.groupsByLocalID[localID] else { return cell }
-            (cell as? GroupCell)?.configure(with: group)
+            (cell as? GroupCell)?.configure(
+                with: group,
+                isFavorite: self.favoritesStore.isFavorite(kind: .group, id: group.localID)
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -173,6 +187,28 @@ final class GroupsListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // Favorite status isn't part of `ContactGroup`, so a star toggled
+        // elsewhere never changes the snapshot — reconfigure the visible rows so
+        // their trailing stars repaint (see ContactsListViewController).
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconfigureAllRows()
+            }
+        }
+    }
+
+    /// Re-run the cell provider for every current row so favorite stars repaint.
+    /// Reconfigure only touches on-screen cells.
+    private func reconfigureAllRows() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     private func applySnapshot(animated: Bool) {
@@ -244,6 +280,28 @@ extension GroupsListViewController: UITableViewDelegate {
               let group = groupsByLocalID[localID] else { return }
         didSelectGroup(group)
     }
+
+    /// Trailing swipe to favorite / unfavorite the group, mirroring the
+    /// Favorites list's swipe-to-unfavorite. The favorites store posts
+    /// `.favoritesDidChange`, which the observer above turns into a row repaint.
+    func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let group = groupsByLocalID[localID] else { return nil }
+        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
+        let action = UIContextualAction(
+            style: .normal,
+            title: isFavorited ? "Unfavorite" : "Favorite"
+        ) { [weak self] _, _, completion in
+            self?.favoritesStore.toggle(kind: .group, id: group.localID)
+            completion(true)
+        }
+        action.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
+        action.backgroundColor = .systemYellow
+        return UISwipeActionsConfiguration(actions: [action])
+    }
 }
 
 extension GroupsListViewController: ScrollsToTop {
@@ -261,6 +319,7 @@ extension GroupsListViewController: ScrollsToTop {
 private final class GroupCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
+    private let starView = UIImageView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -275,6 +334,7 @@ private final class GroupCell: UITableViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         nameLabel.text = nil
+        starView.isHidden = true
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -302,8 +362,21 @@ private final class GroupCell: UITableViewCell {
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.numberOfLines = 1
 
+        // Trailing favorite star. The image stays installed and only `isHidden`
+        // toggles, so its intrinsic size keeps the layout deterministic — same
+        // pattern as ContactsListViewController's ContactCell.
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
+
         contentView.addSubview(iconView)
         contentView.addSubview(nameLabel)
+        contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -311,14 +384,17 @@ private final class GroupCell: UITableViewCell {
             iconView.widthAnchor.constraint(equalToConstant: 28),
             iconView.heightAnchor.constraint(equalToConstant: 28),
             nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            nameLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: starView.leadingAnchor, constant: -8),
             nameLabel.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             nameLabel.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
         ])
     }
 
-    func configure(with group: ContactGroup) {
+    func configure(with group: ContactGroup, isFavorite: Bool) {
         nameLabel.text = Self.displayName(for: group)
+        starView.isHidden = !isFavorite
     }
 
     /// The user-facing name for a group, falling back to a neutral placeholder

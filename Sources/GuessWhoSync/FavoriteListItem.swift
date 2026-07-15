@@ -13,11 +13,19 @@ public struct FavoriteListItem: Hashable, Sendable {
     public let kind: FavoriteKind
     public let contact: Contact?
     public let event: Event?
+    public let group: ContactGroup?
 
-    public init(id: ID, kind: FavoriteKind, contact: Contact? = nil, event: Event? = nil) {
+    public init(
+        id: ID,
+        kind: FavoriteKind,
+        contact: Contact? = nil,
+        event: Event? = nil,
+        group: ContactGroup? = nil
+    ) {
         self.id = id
         self.kind = kind
         self.contact = contact
         self.event = event
+        self.group = group
     }
 }

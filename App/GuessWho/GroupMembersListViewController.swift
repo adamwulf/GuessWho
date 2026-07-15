@@ -36,6 +36,11 @@ final class GroupMembersListViewController: UIViewController {
     private var tableView: UITableView!
     private var dataSource: SectionedDataSource!
 
+    /// Nav-bar star that favorites/unfavorites THIS group — the group's
+    /// equivalent of the contact/event detail screen's favorite toolbar button
+    /// (a group has no detail screen of its own; its member list stands in).
+    private var favoriteBarButton: UIBarButtonItem!
+
     private var sectionLetters: [String] = []
 
     /// The members this VC fetched for `group`, keyed by `ContactID` — the SOLE
@@ -127,11 +132,40 @@ final class GroupMembersListViewController: UIViewController {
 
     // MARK: - Sort menu
 
-    /// Install the global sort pull-down as the nav bar's right item. Shared
-    /// with the People / Organizations lists via `makeSortBarButtonItem` so the
-    /// member list offers the same orders + checkmark.
+    /// Install the nav bar's right items: the group favorite star (leading) and
+    /// the global sort pull-down (trailing, rightmost). Sort is shared with the
+    /// People / Organizations lists via `makeSortBarButtonItem` so the member
+    /// list offers the same orders + checkmark.
     private func configureSortMenu() {
-        navigationItem.rightBarButtonItem = makeSortBarButtonItem(repository: repository)
+        favoriteBarButton = UIBarButtonItem(
+            image: nil,
+            style: .plain,
+            target: self,
+            action: #selector(toggleGroupFavorite)
+        )
+        // rightBarButtonItems places index 0 rightmost, so [sort, star] reads
+        // "star | sort" left-to-right — star nearest the title, matching the
+        // "star before Edit" order in the contact detail toolbar.
+        navigationItem.rightBarButtonItems = [
+            makeSortBarButtonItem(repository: repository),
+            favoriteBarButton,
+        ]
+        updateFavoriteButton()
+    }
+
+    /// Repaint the star to reflect the group's current favorite state.
+    private func updateFavoriteButton() {
+        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
+        favoriteBarButton.image = UIImage(systemName: isFavorited ? "star.fill" : "star")
+        favoriteBarButton.accessibilityLabel = isFavorited ? "Unfavorite" : "Favorite"
+    }
+
+    /// Toggle this group's favorite and repaint the star. The favorites store
+    /// posts `.favoritesDidChange`, which every other favorites surface (the
+    /// Favorites list, the contact detail Groups section) observes to refresh.
+    @objc private func toggleGroupFavorite() {
+        favoritesStore.toggle(kind: .group, id: group.localID)
+        updateFavoriteButton()
     }
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
@@ -170,6 +204,9 @@ final class GroupMembersListViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.reconfigureAllRows()
+                // Keep this group's own star in sync if it was toggled from the
+                // Favorites list or the contact detail Groups section.
+                self?.updateFavoriteButton()
             }
         }
     }
