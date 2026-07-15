@@ -205,7 +205,7 @@ struct GuidePlaceDetailView: View {
     /// `SyncService.recentEvents`; the contact scan reads the already-loaded
     /// in-memory `contacts` array, so it stays on the main actor.
     private func reloadAssociations() async {
-        guard let place, let needle = Self.streetNeedle(for: place) else {
+        guard let place, let needle = GuideAddressMatcher.streetNeedle(for: place) else {
             recentEvents = []
             matchingPeople = []
             matchingOrganizations = []
@@ -234,25 +234,6 @@ struct GuidePlaceDetailView: View {
         matchingOrganizations = matched
             .filter { $0.contact.contactType == .organization }
             .sorted { $0.contact.displayName.localizedCaseInsensitiveCompare($1.contact.displayName) == .orderedAscending }
-    }
-
-    /// A street-line needle for matching this place against event locations.
-    /// The stored `address` is a formatted single line (MapKit's
-    /// `placemark.title`); parse the street component out of it, falling back to
-    /// the first comma-delimited segment (conventionally the street line).
-    /// `EventLocationMatcher` ignores needles shorter than two words, so a bare
-    /// city name never leaks through.
-    static func streetNeedle(for place: MapsPlace) -> String? {
-        guard let address = place.address?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !address.isEmpty else { return nil }
-        if let parsed = PostalAddress.parse(fromFullAddress: address), !parsed.street.isEmpty {
-            return parsed.street
-        }
-        let firstSegment = address
-            .split(separator: ",")
-            .first
-            .map { $0.trimmingCharacters(in: .whitespaces) } ?? address
-        return firstSegment.isEmpty ? nil : firstSegment
     }
 
     // MARK: - Maps deep link

@@ -602,6 +602,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             .environment(\.pushGroupReference) { [weak self, weak nav] ref in
                 self?.pushCatalystGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
             }
+            .environment(\.pushGuideReference) { [weak self, weak nav] ref in
+                self?.pushGuidePlaces(guide: ref.guide, on: nav, appDelegate: appDelegate)
+            }
     }
 
     private func installDetailPlaceholder(in split: UISplitViewController, for tab: SidebarTab) {
@@ -1222,6 +1225,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushGroupReference) { [weak self, weak nav] ref in
                 self?.pushGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushGuideReference) { [weak self, weak nav] ref in
+                self?.pushGuidePlaces(guide: ref.guide, on: nav, appDelegate: appDelegate)
             }
     }
 

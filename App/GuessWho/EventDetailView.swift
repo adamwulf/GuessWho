@@ -33,6 +33,9 @@ struct EventDetailView: View {
     @State private var links: [ContactLink] = []
     @State private var notes: [ContactNote] = []
     @State private var tags: [EventTag] = []
+    // Imported guides whose places' addresses appear in this event's location
+    // text. Loaded async via SyncService, keyed on the location string.
+    @State private var locationGuides: [GuideAddressMatcher.Match] = []
     /// Drives the "Add Contact" sheet from the invitees section. Non-nil
     /// holds the pre-filled `Contact` seed handed to `ContactEditView`.
     @State private var addingContactSeed: AddingContactSeed?
@@ -117,6 +120,12 @@ struct EventDetailView: View {
             // no sidecar exists (e.g. a failed adoption), so a view can never
             // mint one. Mirrors ContactDetailView's on-open stampViewed.
             service.stampEventViewed(uuid: resolvedUUID)
+        }
+        // Recompute the guide rows whenever the event's location text changes
+        // (including the initial nil → loaded transition). Empty/nil location
+        // yields no rows.
+        .task(id: event?.location) {
+            locationGuides = await service.guides(matchingLocation: event?.location)
         }
         .toolbar {
             // Star sits BEFORE the existing Menu so the toolbar reads
@@ -245,6 +254,11 @@ struct EventDetailView: View {
                     Text(location)
                         // Long-press / right-click to copy the location text.
                         .copyableText(location)
+                }
+                // Directly below the location, in the same section: a row per
+                // imported guide this address appears in.
+                ForEach(locationGuides, id: \.guide.id) { match in
+                    GuideMatchRow(match: match)
                 }
             }
             if let notes = event.eventKitNotes, !notes.isEmpty {
