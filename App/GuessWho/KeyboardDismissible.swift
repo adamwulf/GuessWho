@@ -9,7 +9,7 @@ import UIKit
 /// back on. This modifier gives such content the same two escapes we give the
 /// search lists:
 ///
-/// 1. Swipe: `.scrollDismissesKeyboard(.interactive)` pulls the keyboard down
+/// 1. Swipe: `.scrollDismissesKeyboard(.interactively)` pulls the keyboard down
 ///    with a drag over the scrollable content.
 /// 2. Tap: a keyboard accessory bar with a right-aligned dismiss button, for
 ///    users who won't discover the swipe. Same `keyboard.chevron.compact.down`
@@ -25,7 +25,7 @@ import UIKit
 private struct KeyboardDismissible: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .scrollDismissesKeyboard(.interactive)
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
