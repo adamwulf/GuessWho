@@ -202,7 +202,7 @@ struct AddLinkSheet: View {
     /// UUID is needed here.
     let currentContactID: ContactID
     /// Which record type the picker offers: `.person` for "Link Contact",
-    /// `.organization` for "Link Org". Both produce the same `Link` record —
+    /// `.organization` for "Add Org". Both produce the same `Link` record —
     /// an organization is a `Contact` — so this only filters the picker and
     /// swaps the copy.
     let kind: ContactType
@@ -293,7 +293,7 @@ struct AddLinkSheet: View {
         var result: [EligibleContact] = []
         for contact in repository.contacts {
             // Only records of the requested type: "Link Contact" offers people,
-            // "Link Org" offers organizations. Skip the contact we're linking
+            // "Add Org" offers organizations. Skip the contact we're linking
             // from; everything else of that type is eligible. Exclude by
             // ContactID (effective GuessWho identity), not a raw guessWhoUUID
             // compare. The link target's UUID is resolved on save inside the
