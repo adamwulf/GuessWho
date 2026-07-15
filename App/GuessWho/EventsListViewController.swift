@@ -20,11 +20,28 @@ final class EventsListViewController: UIViewController {
 
     private enum CellID: String {
         case event
+        case pager
     }
+
+    /// Snapshot sections. The two pager sections exist only in chronological
+    /// sort while not searching — the same visibility rule as the link
+    /// sheet's "Load older events" / "Show more" rows.
+    private enum Section: Int {
+        case olderPager
+        case events
+        case laterPager
+    }
+
+    /// Sentinel item identifiers for the two paging rows. Fixed UUIDs so the
+    /// diffable snapshot keeps a stable identity for them across applies
+    /// (their month labels change via reconfigure); a collision with a real
+    /// event UUID is impossible in practice.
+    private static let loadOlderItemID = UUID(uuidString: "D3AD0B5D-0A6E-4F1B-9C7A-1A2B3C4D5E6F")!
+    private static let loadLaterItemID = UUID(uuidString: "F6E5D4C3-B2A1-4F9E-8D7C-6B5A4B3C2D1E")!
 
     private var tableView: UITableView!
     private var searchController: UISearchController!
-    private var dataSource: UITableViewDiffableDataSource<Int, UUID>!
+    private var dataSource: UITableViewDiffableDataSource<Section, UUID>!
 
     private var eventsByID: [UUID: Event] = [:]
 
@@ -118,6 +135,7 @@ final class EventsListViewController: UIViewController {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 56
         tableView.register(EventCell.self, forCellReuseIdentifier: CellID.event.rawValue)
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: CellID.pager.rawValue)
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -166,11 +184,16 @@ final class EventsListViewController: UIViewController {
     }
 
     private func configureDataSource() {
-        dataSource = UITableViewDiffableDataSource<Int, UUID>(
+        dataSource = UITableViewDiffableDataSource<Section, UUID>(
             tableView: tableView
-        ) { [weak self] tableView, indexPath, eventID in
+        ) { [weak self] tableView, indexPath, itemID in
+            if itemID == Self.loadOlderItemID || itemID == Self.loadLaterItemID {
+                let cell = tableView.dequeueReusableCell(withIdentifier: CellID.pager.rawValue, for: indexPath)
+                self?.configurePagerCell(cell, older: itemID == Self.loadOlderItemID)
+                return cell
+            }
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.event.rawValue, for: indexPath)
-            guard let self, let event = self.eventsByID[eventID] else { return cell }
+            guard let self, let event = self.eventsByID[itemID] else { return cell }
             (cell as? EventCell)?.configure(
                 with: event,
                 isFavorite: self.favoritesStore.isFavorite(kind: .event, id: event.id.uuidString)
@@ -178,6 +201,39 @@ final class EventsListViewController: UIViewController {
             return cell
         }
         dataSource.defaultRowAnimation = .fade
+    }
+
+    /// Style a paging row like the link sheet's Label rows: tinted text +
+    /// chevron pointing the direction the window will grow, naming the month
+    /// the tap reveals.
+    private func configurePagerCell(_ cell: UITableViewCell, older: Bool) {
+        var content = UIListContentConfiguration.cell()
+        content.text = older
+            ? "Load older events (\(pagerMonthTitle(older: true)))"
+            : "Load later events (\(pagerMonthTitle(older: false)))"
+        content.textProperties.color = .tintColor
+        content.image = UIImage(systemName: older ? "chevron.up" : "chevron.down")
+        content.imageProperties.tintColor = .tintColor
+        cell.contentConfiguration = content
+    }
+
+    /// "May 2026"-style title of the month the next paging tap will reveal —
+    /// same template as `EventLinkSheet.previousMonthTitle`.
+    private func pagerMonthTitle(older: Bool) -> String {
+        let cal = Calendar.current
+        let anchor = older ? repository.windowStart : repository.windowEnd
+        let revealed = cal.date(byAdding: .month, value: older ? -1 : 1, to: anchor) ?? anchor
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        return formatter.string(from: revealed)
+    }
+
+    /// The paging rows show in chronological order only (the other orders
+    /// aren't date-anchored, so "older/later" has no meaning there) and hide
+    /// while searching, mirroring the link sheet.
+    private var showsPagingRows: Bool {
+        repository.sortOrder == .chronological
+            && repository.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func configureAddButton() {
@@ -361,16 +417,32 @@ final class EventsListViewController: UIViewController {
         }
         eventsByID = byID
 
-        var snapshot = NSDiffableDataSourceSnapshot<Int, UUID>()
-        snapshot.appendSections([0])
-        snapshot.appendItems(events.map { $0.id }, toSection: 0)
+        var snapshot = NSDiffableDataSourceSnapshot<Section, UUID>()
+        if showsPagingRows {
+            snapshot.appendSections([.olderPager, .events, .laterPager])
+            snapshot.appendItems([Self.loadOlderItemID], toSection: .olderPager)
+            snapshot.appendItems(events.map { $0.id }, toSection: .events)
+            snapshot.appendItems([Self.loadLaterItemID], toSection: .laterPager)
+            // The pager identifiers are stable but their month labels move
+            // with the window — reconfigure the ones surviving from the
+            // previous snapshot so a post-paging apply re-runs the provider.
+            let surviving = [Self.loadOlderItemID, Self.loadLaterItemID].filter {
+                dataSource.snapshot().indexOfItem($0) != nil
+            }
+            snapshot.reconfigureItems(surviving)
+        } else {
+            snapshot.appendSections([.events])
+            snapshot.appendItems(events.map { $0.id }, toSection: .events)
+        }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
         updateEmptyState()
     }
 
     private func updateEmptyState() {
-        let isEmpty = dataSource.snapshot().numberOfItems == 0
+        // Count EVENTS, not snapshot items — the paging rows are always
+        // present in chronological mode and must not defeat the empty label.
+        let isEmpty = eventsByID.isEmpty
         emptyLabel.isHidden = !isEmpty || repository.isLoading
         if isEmpty && repository.isLoading {
             activityIndicator.startAnimating()
@@ -487,8 +559,22 @@ final class EventsListViewController: UIViewController {
 
 extension EventsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let eventID = dataSource.itemIdentifier(for: indexPath),
-              let event = eventsByID[eventID] else { return }
+        guard let itemID = dataSource.itemIdentifier(for: indexPath) else { return }
+        if itemID == Self.loadOlderItemID || itemID == Self.loadLaterItemID {
+            tableView.deselectRow(at: indexPath, animated: true)
+            let older = (itemID == Self.loadOlderItemID)
+            // The reload posts `.eventsRepositoryDidReload`, which re-applies
+            // the snapshot (revealed events + refreshed pager labels).
+            Task { [repository] in
+                if older {
+                    await repository.loadOlderMonth()
+                } else {
+                    await repository.loadLaterMonth()
+                }
+            }
+            return
+        }
+        guard let event = eventsByID[itemID] else { return }
         didSelectEvent(event)
     }
 
