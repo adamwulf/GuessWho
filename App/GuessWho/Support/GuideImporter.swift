@@ -192,6 +192,7 @@ enum GuidePlaceResolver {
                     let backoffSeconds = 1 << (attempt - 1)
                     let backoff = Duration.seconds(backoffSeconds)
                     log.notice("resolve: throttled, backing off", [
+                        "placeUUID": place.id.uuidString,
                         "placeID": place.mapsPlaceID ?? "-",
                         "attempt": String(attempt),
                         "backoffSeconds": String(backoffSeconds)
@@ -200,12 +201,16 @@ enum GuidePlaceResolver {
                     continue
                 }
                 // Give up for this pass — the place stays pending and retries
-                // the next time the guide opens. Transient network failures and
-                // genuinely-gone places look the same here.
-                log.notice("resolve: lookup failed", [
-                    "placeID": place.mapsPlaceID ?? "-",
-                    "error": error.localizedDescription
-                ])
+                // the next time the guide opens. Log at `.error` with the full
+                // error breakdown + place metadata: for a place that never
+                // resolves even on repeat passes, `error.localizedDescription`
+                // alone (usually the generic "operation couldn't be completed")
+                // isn't enough to tell throttling from an unknown identifier
+                // from MapKit returning nothing at all.
+                var metadata = placeMetadata(place, identifier: identifier)
+                metadata["attempts"] = String(attempt + 1)
+                metadata.merge(errorMetadata(error)) { current, _ in current }
+                log.error("resolve: lookup failed", metadata)
                 return false
             }
         }
@@ -214,6 +219,74 @@ enum GuidePlaceResolver {
     /// Whether `error` is MapKit telling us to slow down.
     private static func isThrottled(_ error: Error) -> Bool {
         (error as? MKError)?.code == .loadingThrottled
+    }
+
+    /// Failure modes this pass raises itself (as opposed to errors MapKit
+    /// hands back). Kept distinct so the failure log names the real cause.
+    private enum ResolutionError: LocalizedError {
+        /// `MKMapItemRequest.getMapItem` called back with neither an item nor
+        /// an error — no place, no reason. A likely fingerprint for a place-ID
+        /// that has gone stale/unresolvable in MapKit's catalog.
+        case mapKitReturnedNothing
+
+        var errorDescription: String? {
+            switch self {
+            case .mapKitReturnedNothing:
+                return "MapKit returned neither a map item nor an error"
+            }
+        }
+    }
+
+    /// Identifying fields for `place`, so a failure line can be tied back to
+    /// the exact row (and its Apple Maps identifier) in the log.
+    private static func placeMetadata(
+        _ place: MapsPlace,
+        identifier: MKMapItem.Identifier
+    ) -> [String: CustomStringConvertible] {
+        [
+            "placeUUID": place.id.uuidString,
+            "guideID": place.guideID.uuidString,
+            "placeID": place.mapsPlaceID ?? "-",
+            "identifier": identifier.rawValue,
+            "name": place.name.isEmpty ? "-" : place.name,
+            "sortOrder": String(place.sortOrder)
+        ]
+    }
+
+    /// Decompose `error` into the fields that actually explain a resolution
+    /// failure: the bridged `NSError` domain/code (present even when the
+    /// localized description is the generic "operation couldn't be completed"),
+    /// the specific `MKError` case when MapKit is the source, and any
+    /// underlying error it wraps.
+    private static func errorMetadata(_ error: Error) -> [String: CustomStringConvertible] {
+        let nsError = error as NSError
+        var metadata: [String: CustomStringConvertible] = [
+            "error": error.localizedDescription,
+            "errorDomain": nsError.domain,
+            "errorCode": String(nsError.code)
+        ]
+        if let mkError = error as? MKError {
+            metadata["mkErrorCode"] = mkErrorCodeName(mkError.code)
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            metadata["underlyingDomain"] = underlying.domain
+            metadata["underlyingCode"] = String(underlying.code)
+        }
+        return metadata
+    }
+
+    /// A stable, greppable name for an `MKError.Code` (the raw enum prints as
+    /// its integer, which is opaque in a log line).
+    private static func mkErrorCodeName(_ code: MKError.Code) -> String {
+        switch code {
+        case .unknown: return "unknown"
+        case .serverFailure: return "serverFailure"
+        case .loadingThrottled: return "loadingThrottled"
+        case .placemarkNotFound: return "placemarkNotFound"
+        case .directionsNotFound: return "directionsNotFound"
+        case .decodingFailed: return "decodingFailed"
+        @unknown default: return "unmapped(\(code.rawValue))"
+        }
     }
 
     /// The Sendable subset of a resolved `MKMapItem` this pass stores.
@@ -241,7 +314,12 @@ enum GuidePlaceResolver {
                         longitude: item.placemark.coordinate.longitude
                     ))
                 } else {
-                    continuation.resume(throwing: error ?? CocoaError(.fileNoSuchFile))
+                    // Distinguish "MapKit reported a failure" from "MapKit
+                    // called back with neither an item nor an error" — the
+                    // latter is a plausible signature for a place-ID that no
+                    // longer resolves, and folding it into a generic Cocoa
+                    // error would hide that in the logs.
+                    continuation.resume(throwing: error ?? ResolutionError.mapKitReturnedNothing)
                 }
             }
         }
