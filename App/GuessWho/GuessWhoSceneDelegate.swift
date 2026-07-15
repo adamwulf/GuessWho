@@ -281,7 +281,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .people:
             let list = ContactsListViewController(
                 repository: appDelegate.contactsRepository,
-                photoLoader: appDelegate.contactPhotoLoader
+                photoLoader: appDelegate.contactPhotoLoader,
+                favoritesStore: appDelegate.favoritesStore
             )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -298,7 +299,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .organizations:
             let list = OrganizationsListViewController(
                 repository: appDelegate.contactsRepository,
-                photoLoader: appDelegate.contactPhotoLoader
+                photoLoader: appDelegate.contactPhotoLoader,
+                favoritesStore: appDelegate.favoritesStore
             )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -317,7 +319,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .events:
             let list = EventsListViewController(
                 repository: appDelegate.eventsRepository,
-                service: appDelegate.service
+                service: appDelegate.service,
+                favoritesStore: appDelegate.favoritesStore
             )
             list.didSelectEvent = { [weak self] event in
                 self?.showEventDetail(
@@ -376,7 +379,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let members = GroupMembersListViewController(
             group: group,
             repository: appDelegate.contactsRepository,
-            photoLoader: appDelegate.contactPhotoLoader
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
         )
         members.didSelectContact = { [weak self] contact in
             self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -752,7 +756,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func makeIPhonePeopleTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = ContactsListViewController(
             repository: appDelegate.contactsRepository,
-            photoLoader: appDelegate.contactPhotoLoader
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
@@ -779,7 +784,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func makeIPhoneOrganizationsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = OrganizationsListViewController(
             repository: appDelegate.contactsRepository,
-            photoLoader: appDelegate.contactPhotoLoader
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
@@ -809,7 +815,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func makeIPhoneEventsTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = EventsListViewController(
             repository: appDelegate.eventsRepository,
-            service: appDelegate.service
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectEvent = { [weak self] event in
             self?.pushEventDetail(
@@ -885,7 +892,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let members = GroupMembersListViewController(
             group: group,
             repository: appDelegate.contactsRepository,
-            photoLoader: appDelegate.contactPhotoLoader
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
         )
         members.didSelectContact = { [weak self, weak nav] contact in
             self?.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)

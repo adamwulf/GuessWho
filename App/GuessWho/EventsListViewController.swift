@@ -16,6 +16,7 @@ final class EventsListViewController: UIViewController {
 
     private let repository: EventsRepository
     private let service: SyncService
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case event
@@ -38,6 +39,11 @@ final class EventsListViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
+    /// Observes `.favoritesDidChange` so a star toggled in a detail view
+    /// repaints the matching row here. Same `nonisolated(unsafe)` rationale as
+    /// `reloadObserver`.
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
     /// Observes `UserDefaults.didChangeNotification` so the debug-mode-only
     /// Export Logs button appears/disappears live when the toggle flips while
     /// the app is open (same `nonisolated(unsafe)` rationale as `reloadObserver`).
@@ -49,9 +55,10 @@ final class EventsListViewController: UIViewController {
     /// only while debug mode is enabled.
     private var exportLogsButton: UIBarButtonItem!
 
-    init(repository: EventsRepository, service: SyncService) {
+    init(repository: EventsRepository, service: SyncService, favoritesStore: FavoritesListStore) {
         self.repository = repository
         self.service = service
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = "Events"
     }
@@ -64,6 +71,9 @@ final class EventsListViewController: UIViewController {
     deinit {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
         if let debugModeObserver {
             NotificationCenter.default.removeObserver(debugModeObserver)
@@ -158,7 +168,10 @@ final class EventsListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, eventID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.event.rawValue, for: indexPath)
             guard let self, let event = self.eventsByID[eventID] else { return cell }
-            (cell as? EventCell)?.configure(with: event)
+            (cell as? EventCell)?.configure(
+                with: event,
+                isFavorite: self.favoritesStore.isFavorite(kind: .event, id: event.id.uuidString)
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -302,6 +315,29 @@ final class EventsListViewController: UIViewController {
                 self?.updateHeaderBanners()
             }
         }
+
+        // Favorite status isn't part of `Event`, and the snapshot's UUID items
+        // don't change on a star toggle — reconfigure the current rows
+        // explicitly when the favorites list changes (posted by
+        // `FavoritesListStore.reload()` after every toggle).
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconfigureAllRows()
+            }
+        }
+    }
+
+    /// Re-run the cell provider for every row in the current snapshot so the
+    /// favorite stars repaint. Reconfigure only touches on-screen cells.
+    private func reconfigureAllRows() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     private func applySnapshot(animated: Bool) {
@@ -510,11 +546,13 @@ extension EventsListViewController: UISearchResultsUpdating {
 /// the calendar's name. The calendar line lets the user tell apart the same
 /// event duplicated across several calendars (a common pattern when one copy
 /// is shared per audience). Manual events omit the third line and stay
-/// two-line; the row self-sizes so its height follows the content.
+/// two-line; the row self-sizes so its height follows the content. A trailing
+/// star marks favorited events.
 private final class EventCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let dateLabel = UILabel()
+    private let starView = UIImageView()
     private let calendarSwatch = UIView()
     private let calendarLabel = UILabel()
     private let calendarRow = UIStackView()
@@ -577,6 +615,19 @@ private final class EventCell: UITableViewCell {
         calendarRow.addArrangedSubview(calendarSwatch)
         calendarRow.addArrangedSubview(calendarLabel)
 
+        // Trailing favorite star. The image stays installed and only
+        // `isHidden` toggles, so the star's intrinsic size keeps the layout
+        // deterministic and every row reserves the same text width (see
+        // ContactsListViewController's ContactCell).
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
+
         let textStack = UIStackView(arrangedSubviews: [titleLabel, dateLabel, calendarRow])
         textStack.axis = .vertical
         textStack.alignment = .leading
@@ -585,6 +636,7 @@ private final class EventCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
+        contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -593,17 +645,20 @@ private final class EventCell: UITableViewCell {
             iconView.heightAnchor.constraint(equalToConstant: 24),
             calendarSwatch.widthAnchor.constraint(equalToConstant: 10),
             calendarSwatch.heightAnchor.constraint(equalToConstant: 10),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textStack.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
     }
 
-    func configure(with event: Event) {
+    func configure(with event: Event, isFavorite: Bool) {
         iconView.image = UIImage(systemName: "calendar")
         titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
         dateLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
+        starView.isHidden = !isFavorite
 
         // Third line appears only for calendar-sourced events that carry a
         // calendar name; manual events stay two-line. Both branches fully

@@ -21,6 +21,7 @@ final class ContactsListViewController: UIViewController {
 
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case contact
@@ -52,11 +53,21 @@ final class ContactsListViewController: UIViewController {
     /// 6) — no concurrent access to guard against.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
+    /// Observes `.favoritesDidChange` so a star toggled in a detail view
+    /// repaints the matching row here. Same `nonisolated(unsafe)` rationale as
+    /// `reloadObserver`.
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
-    init(repository: ContactsRepository, photoLoader: ContactPhotoLoader) {
+    init(
+        repository: ContactsRepository,
+        photoLoader: ContactPhotoLoader,
+        favoritesStore: FavoritesListStore
+    ) {
         self.repository = repository
         self.photoLoader = photoLoader
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = "People"
     }
@@ -69,6 +80,9 @@ final class ContactsListViewController: UIViewController {
     deinit {
         if let reloadObserver {
             NotificationCenter.default.removeObserver(reloadObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
     }
 
@@ -191,7 +205,11 @@ final class ContactsListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, id in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.contact.rawValue, for: indexPath)
             guard let self, let contact = self.repository.contact(id: id) else { return cell }
-            (cell as? ContactCell)?.configure(with: contact, photoLoader: self.photoLoader)
+            (cell as? ContactCell)?.configure(
+                with: contact,
+                photoLoader: self.photoLoader,
+                isFavorite: self.favoritesStore.isFavorite(contact.contactID)
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -227,6 +245,30 @@ final class ContactsListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // Favorite status isn't part of `Contact`, so applySnapshot's
+        // rendered-contact diff can't detect a star toggle — reconfigure the
+        // current rows explicitly when the favorites list changes (posted by
+        // `FavoritesListStore.reload()` after every toggle).
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconfigureAllRows()
+            }
+        }
+    }
+
+    /// Re-run the cell provider for every row in the current snapshot so the
+    /// favorite stars repaint. Reconfigure only touches on-screen cells, so
+    /// this is cheap even for a large list.
+    private func reconfigureAllRows() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     private func applySnapshot(animated: Bool) {
@@ -408,11 +450,12 @@ extension ContactsListViewController: UISearchResultsUpdating {
 /// Two-line contact row: leading avatar thumbnail (initials-circle fallback from
 /// `ContactAvatarImage`), name with bold family name, caption-sized subtitle
 /// showing "jobTitle, organizationName" (a non-breaking space when empty keeps
-/// every row the same height).
+/// every row the same height), and a trailing star on favorited contacts.
 private final class ContactCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
     private let subtitleLabel = UILabel()
+    private let starView = UIImageView()
     private var representedID: ContactID?
     private var photoTask: Task<Void, Never>?
 
@@ -462,6 +505,19 @@ private final class ContactCell: UITableViewCell {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         subtitleLabel.numberOfLines = 1
 
+        // Trailing favorite star. The image stays installed and only
+        // `isHidden` toggles, so the star's intrinsic size keeps the layout
+        // deterministic (an image-less UIImageView has no intrinsic size) and
+        // every row reserves the same text width whether or not it's starred.
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
+
         let textStack = UIStackView(arrangedSubviews: [nameLabel, subtitleLabel])
         textStack.axis = .vertical
         textStack.alignment = .leading
@@ -470,20 +526,23 @@ private final class ContactCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
+        contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 28),
             iconView.heightAnchor.constraint(equalToConstant: 28),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textStack.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
     }
 
-    func configure(with contact: Contact, photoLoader: ContactPhotoLoader) {
+    func configure(with contact: Contact, photoLoader: ContactPhotoLoader, isFavorite: Bool) {
         cancelPhotoLoad()
         let id = contact.contactID
         representedID = id
@@ -504,6 +563,7 @@ private final class ContactCell: UITableViewCell {
         // Non-breaking space when there's no jobTitle/organizationName — an empty
         // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
+        starView.isHidden = !isFavorite
     }
 
     func cancelPhotoLoad() {
