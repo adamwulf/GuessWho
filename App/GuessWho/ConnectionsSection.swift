@@ -264,6 +264,7 @@ struct AddLinkSheet: View {
             .keyboardDismissible()
             .searchable(
                 text: $pickerSearch,
+                placement: .navigationBarDrawer(displayMode: .always),
                 prompt: kind == .organization ? "Search organizations" : "Search contacts"
             )
             .navigationTitle("Add Link")

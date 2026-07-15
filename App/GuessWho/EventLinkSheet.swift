@@ -206,7 +206,7 @@ struct EventLinkSheet: View {
                 }
             }
         }
-        .searchable(text: $search, prompt: "Search events")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search events")
         .refreshable { await loadOlderMonth() }
         // First non-empty search term backfills the pool with ±5 years of
         // calendar (once per sheet); afterwards every search is a local
