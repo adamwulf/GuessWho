@@ -798,8 +798,8 @@ struct ContactDetailView: View {
     }
 
     /// Inline detail header: large monogram circle, name, and a
-    /// `job title · organization` subtitle. The nav-bar title is hidden so the
-    /// name only appears once.
+    /// `job title · organization` subtitle (for an organization, the
+    /// department). The nav-bar title is hidden so the name only appears once.
     @ViewBuilder
     private func headerView(_ contact: Contact) -> some View {
         VStack(spacing: 12) {
@@ -922,6 +922,13 @@ struct ContactDetailView: View {
     }
 
     private func headerSubtitle(_ contact: Contact) -> String {
+        // An organization's display name IS its organization name, so the
+        // `job title · organization` subtitle would just repeat the title.
+        // Show the department instead (a job title on an org record falls
+        // back to the info rows — see `infoRows`).
+        if contact.contactType == .organization {
+            return contact.departmentName.trimmingCharacters(in: .whitespaces)
+        }
         let parts = [contact.jobTitle, contact.organizationName]
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -1213,14 +1220,20 @@ struct ContactDetailView: View {
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
-        // Skip the name parts (in the inline header) and the two fields the
-        // subtitle already renders — job title and organization (see
-        // `headerSubtitle`). Department and phonetic organization aren't in the
-        // header, so they stay.
-        let workParts: [(String, String)] = [
-            ("department", contact.departmentName),
-            ("phonetic organization", contact.phoneticOrganizationName),
-        ]
+        // Skip the name parts (in the inline header) and whatever the subtitle
+        // already renders (see `headerSubtitle`): for a person that's job title
+        // and organization, so department stays here; for an organization the
+        // subtitle is the department, so job title stays here instead. Phonetic
+        // organization is never in the header.
+        let workParts: [(String, String)] = contact.contactType == .organization
+            ? [
+                ("job title", contact.jobTitle),
+                ("phonetic organization", contact.phoneticOrganizationName),
+            ]
+            : [
+                ("department", contact.departmentName),
+                ("phonetic organization", contact.phoneticOrganizationName),
+            ]
         for (label, value) in workParts where !value.isEmpty {
             rows.append(.text(label: label, value: value))
         }
