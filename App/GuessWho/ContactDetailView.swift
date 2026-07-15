@@ -2284,7 +2284,10 @@ private struct InfoRow: View {
                             stampsInteraction: true, allowsCopy: true, onInteract: onInteract)
         case .url(let urlString):
             // URL / date taps just open their target — not interactions, no copy.
-            TappableInfoRow(label: data.label, value: urlString, url: URL(string: urlString),
+            // Present (and open) the https-normalized form; the stored value on
+            // the contact is left untouched.
+            let displayURL = httpsDisplayURLString(urlString)
+            TappableInfoRow(label: data.label, value: displayURL, url: URL(string: displayURL),
                             stampsInteraction: false, allowsCopy: false)
         case .address(let address):
             AddressRow(label: data.label, address: address)
@@ -2347,6 +2350,28 @@ private struct InfoRow: View {
                 .foregroundStyle(valueColor ?? .primary)
                 .textSelection(.enabled)
         }
+    }
+
+    /// Display-only https normalization for URL rows (per product): an
+    /// `http://` value reads and opens as `https://`, and a scheme-less value
+    /// (e.g. "example.com") gets an `https://` prefix. Non-web schemes
+    /// (mailto:, ftp:, …) pass through unchanged, and the stored contact
+    /// value is never rewritten.
+    private func httpsDisplayURLString(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        if trimmed.lowercased().hasPrefix("http://") {
+            return "https://" + trimmed.dropFirst("http://".count)
+        }
+        // Any other explicit scheme (https:, mailto:, ftp:, …) is respected.
+        if trimmed.range(of: "^[A-Za-z][A-Za-z0-9+.-]*:", options: .regularExpression) != nil {
+            return trimmed
+        }
+        // Protocol-relative ("//example.com") just needs the scheme itself.
+        if trimmed.hasPrefix("//") {
+            return "https:" + trimmed
+        }
+        return "https://" + trimmed
     }
 
     private func phoneURL(_ raw: String) -> URL? {
