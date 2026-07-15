@@ -155,14 +155,14 @@ struct ContactDetailView: View {
         eventLinks.sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// Event UUIDs already present in the "Linked Events" section, resolved
-    /// through each link's event endpoint. Used to gate the recent-event
-    /// long-press "Link Event" action so a row that's already linked can't
-    /// mint a duplicate link.
-    private var linkedEventUUIDs: Set<String> {
-        Set(eventLinks.compactMap {
-            repository.eventEndpointUUID(of: $0, for: loadedContactID ?? id)
-        })
+    /// The "Linked Events" link whose event endpoint matches `uuid`, if any.
+    /// Drives the recent-event long-press menu: a match means the row is
+    /// already linked, so the menu offers "Unlink Event" (removing this link)
+    /// instead of "Link Event".
+    private func eventLink(forEventUUID uuid: String) -> ContactLink? {
+        eventLinks.first {
+            repository.eventEndpointUUID(of: $0, for: loadedContactID ?? id) == uuid
+        }
     }
 
     /// Split the connection links by the linked contact's type. Links whose
@@ -1217,13 +1217,20 @@ struct ContactDetailView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button {
-                Task { await addEventLink(eventUUID: event.id.uuidString, note: "") }
-            } label: {
-                Label("Link Event", systemImage: "calendar.badge.plus")
+            if let link = eventLink(forEventUUID: event.id.uuidString) {
+                // Already in "Linked Events" — offer to remove that curated link.
+                Button(role: .destructive) {
+                    removeEventLink(link.id)
+                } label: {
+                    Label("Unlink Event", systemImage: "calendar.badge.minus")
+                }
+            } else {
+                Button {
+                    Task { await addEventLink(eventUUID: event.id.uuidString, note: "") }
+                } label: {
+                    Label("Link Event", systemImage: "calendar.badge.plus")
+                }
             }
-            // Already in "Linked Events" — linking again would mint a duplicate.
-            .disabled(linkedEventUUIDs.contains(event.id.uuidString))
         }
     }
 
