@@ -155,6 +155,16 @@ struct ContactDetailView: View {
         eventLinks.sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// The "Linked Events" link whose event endpoint matches `uuid`, if any.
+    /// Drives the recent-event long-press menu: a match means the row is
+    /// already linked, so the menu offers "Unlink Event" (removing this link)
+    /// instead of "Link Event".
+    private func eventLink(forEventUUID uuid: String) -> ContactLink? {
+        eventLinks.first {
+            repository.eventEndpointUUID(of: $0, for: loadedContactID ?? id) == uuid
+        }
+    }
+
     /// Split the connection links by the linked contact's type. Links whose
     /// other endpoint can't be resolved (rare: unreconciled/malformed) fall into
     /// the People bucket rather than being silently dropped.
@@ -327,9 +337,9 @@ struct ContactDetailView: View {
 
                 associatedOrganizationSection(contact)
 
-                associatedContactsSection(contact)
-
                 departmentsSection(contact)
+
+                associatedContactsSection(contact)
 
                 notesSection
 
@@ -442,7 +452,7 @@ struct ContactDetailView: View {
             Button {
                 showNewNoteEditor()
             } label: {
-                Label("Add Dated Note", systemImage: "note.text")
+                Label("Add Note", systemImage: "note.text")
             }
             .disabled(notesStore == nil || showingNewNoteEditor)
             .centeredRowContent()
@@ -1206,6 +1216,22 @@ struct ContactDetailView: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let link = eventLink(forEventUUID: event.id.uuidString) {
+                // Already in "Linked Events" — offer to remove that curated link.
+                Button(role: .destructive) {
+                    removeEventLink(link.id)
+                } label: {
+                    Label("Unlink Event", systemImage: "calendar.badge.minus")
+                }
+            } else {
+                Button {
+                    Task { await addEventLink(eventUUID: event.id.uuidString, note: "") }
+                } label: {
+                    Label("Link Event", systemImage: "calendar.badge.plus")
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1562,7 +1588,7 @@ struct ContactDetailView: View {
     private var activityFooter: some View {
         HStack(spacing: 0) {
             activityFooterButton(
-                title: "Add Dated Note",
+                title: "Add Note",
                 systemImage: "note.text",
                 action: { showNewNoteEditor() }
             )
