@@ -128,17 +128,24 @@ extension SidecarField {
     }
 
     /// Build the inner-value object for an edit, preserving the existing
-    /// `type` and `createdAt` (immutable / write-once per §5.2 + §7.3).
+    /// `type` (immutable per §5.2 + §7.3). `createdAt` is preserved by
+    /// default; a non-nil `newCreatedAt` rewrites it — notes surface
+    /// `createdAt` as the user-visible, user-editable note date, so an edit
+    /// may deliberately re-stamp it.
     static func makeInnerValueForEdit(
         existingCell: SidecarCell,
         newField: String,
-        newValue: JSONValue
+        newValue: JSONValue,
+        newCreatedAt: Date? = nil
     ) -> JSONValue? {
         guard case .object(var inner) = existingCell.value else { return nil }
-        // Preserve type (immutable) and createdAt (write-once) by leaving them
-        // untouched; only update field name and value.
+        // Preserve type (immutable) by leaving it untouched; update field
+        // name and value, and createdAt only when the caller re-stamps it.
         inner[innerFieldKey] = .string(newField)
         inner[innerValueKey] = newValue
+        if let newCreatedAt {
+            inner[innerCreatedAtKey] = .string(SidecarISO8601.string(from: newCreatedAt))
+        }
         return .object(inner)
     }
 

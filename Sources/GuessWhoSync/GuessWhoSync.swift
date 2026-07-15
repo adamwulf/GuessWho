@@ -125,13 +125,16 @@ public final class GuessWhoSync: @unchecked Sendable {
 
     /// Adds a new field instance. Mints a UUID, writes a cell whose inner
     /// value object is { field, type, value, createdAt }. Returns the
-    /// minted UUID.
+    /// minted UUID. `createdAt` defaults to now; callers may back- or
+    /// forward-date it (notes surface it as the user-editable note date).
+    /// The cell's `modifiedAt` stamp is always the actual write time.
     @discardableResult
     public func addField(
         at key: SidecarKey,
         field: String,
         type: SidecarFieldType,
-        value: JSONValue
+        value: JSONValue,
+        createdAt: Date = Date()
     ) throws -> UUID {
         try SidecarField.validate(value: value, against: type)
         return try withKeyLocked(key) { ctx in
@@ -142,7 +145,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 field: field,
                 type: type,
                 value: value,
-                createdAt: now
+                createdAt: createdAt
             )
             let cell = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
             var fields = existing?.fields ?? [:]
@@ -161,13 +164,16 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// value. Reads the existing cell to recover the immutable `type`;
     /// throws `typeValueMismatch` if the new value doesn't match. Bumps
     /// `modifiedAt`/`modifiedBy` and clears `deletedAt` (undelete: writing
-    /// to a soft-deleted cell brings it back as live). Silent no-op if the
-    /// cell is missing.
+    /// to a soft-deleted cell brings it back as live). A non-nil `createdAt`
+    /// re-stamps the inner `createdAt` (the user-editable date on notes);
+    /// nil preserves the existing stamp. Silent no-op if the cell is
+    /// missing.
     public func setField(
         at key: SidecarKey,
         id: UUID,
         field: String,
-        value: JSONValue
+        value: JSONValue,
+        createdAt: Date? = nil
     ) throws {
         try withKeyLocked(key) { ctx in
             guard let existing = try ctx.read(),
@@ -179,7 +185,8 @@ public final class GuessWhoSync: @unchecked Sendable {
             guard let inner = SidecarField.makeInnerValueForEdit(
                 existingCell: existingCell,
                 newField: field,
-                newValue: value
+                newValue: value,
+                newCreatedAt: createdAt
             ) else { return }
 
             let cell = SidecarCell(

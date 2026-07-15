@@ -56,8 +56,16 @@ struct EventDetailView: View {
     @State private var showingDeleteConfirm = false
 
     @State private var newNoteText: String = ""
+    // The new note's user-picked date. nil = untouched, meaning "now" at
+    // commit time, so a note typed slowly still stamps the save moment
+    // unless the user picked a date.
+    @State private var newNoteDate: Date?
     @State private var editingNoteID: UUID?
     @State private var editingNoteDraft: String = ""
+    // The edited note's working date (seeded from createdAt) and its
+    // edit-start snapshot; commit re-stamps only when the date moved.
+    @State private var editingNoteDate: Date = .now
+    @State private var editingNoteDateSnapshot: Date = .now
 
     @State private var newTagText: String = ""
 
@@ -215,26 +223,52 @@ struct EventDetailView: View {
             TextField("Add a note", text: $newNoteText, axis: .vertical)
                 .submitLabel(.done)
                 .onSubmit { commitNewNote() }
+            // The date row appears once the user starts typing, defaulting
+            // to now; an untouched picker stamps the actual save time.
+            if !newNoteText.isEmpty {
+                DatePicker(
+                    "Date",
+                    selection: Binding(
+                        get: { newNoteDate ?? Date() },
+                        set: { newNoteDate = $0 }
+                    ),
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+            }
         }
     }
 
     @ViewBuilder
     private func noteRow(_ note: ContactNote) -> some View {
         if editingNoteID == note.id {
-            HStack {
-                TextField("", text: $editingNoteDraft, axis: .vertical)
-                Button("Save") {
-                    commitEdit(note.id)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    TextField("", text: $editingNoteDraft, axis: .vertical)
+                    Button("Save") {
+                        commitEdit(note.id)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
+                DatePicker(
+                    "Date",
+                    selection: $editingNoteDate,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
             }
         } else {
-            Text(note.body)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    editingNoteID = note.id
-                    editingNoteDraft = note.body
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(note.body)
+                Text(note.createdAt, format: .relative(presentation: .named))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                editingNoteID = note.id
+                editingNoteDraft = note.body
+                editingNoteDate = note.createdAt
+                editingNoteDateSnapshot = note.createdAt
+            }
         }
     }
 
@@ -563,8 +597,14 @@ struct EventDetailView: View {
         let trimmed = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
-            _ = try service.addEventNote(body: trimmed, forEventUUID: resolvedUUID)
+            // nil date = picker untouched — stamp "now" at save time.
+            _ = try service.addEventNote(
+                body: trimmed,
+                createdAt: newNoteDate ?? Date(),
+                forEventUUID: resolvedUUID
+            )
             newNoteText = ""
+            newNoteDate = nil
         } catch {
             service.recordError("add event note failed: \(error.localizedDescription)")
         }
@@ -579,7 +619,15 @@ struct EventDetailView: View {
             return
         }
         do {
-            try service.editEventNote(id: id, newBody: trimmed, forEventUUID: resolvedUUID)
+            // Re-stamp the date only when the user moved it, so an untouched
+            // picker preserves the note's exact stored timestamp.
+            let dateChanged = editingNoteDate != editingNoteDateSnapshot
+            try service.editEventNote(
+                id: id,
+                newBody: trimmed,
+                createdAt: dateChanged ? editingNoteDate : nil,
+                forEventUUID: resolvedUUID
+            )
         } catch {
             service.recordError("edit event note failed: \(error.localizedDescription)")
         }

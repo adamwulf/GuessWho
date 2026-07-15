@@ -93,8 +93,14 @@ struct ContactDetailView: View {
     }
     @FocusState private var noteFocus: NoteFocus?
     @State private var newNoteText: String = ""
+    // The new note's user-picked date. nil = untouched, meaning "now" at
+    // commit time (not at editor-open time), so a note typed slowly still
+    // stamps the actual save moment unless the user picked a date.
+    @State private var newNoteDate: Date?
     @State private var editingNoteID: UUID?
     @State private var draftBody: String = ""
+    // The edited note's working date, seeded from the note's createdAt.
+    @State private var draftNoteDate: Date = .now
     // Sidecar-field edit state: the field being edited (presented in an alert)
     // and its working text.
     @State private var editingField: SidecarField?
@@ -103,6 +109,9 @@ struct ContactDetailView: View {
     // unchanged from THIS snapshot — never the current on-disk value. Matters
     // when a reconcile lands mid-edit and rewrites the on-disk body.
     @State private var editStartSnapshot: String = ""
+    // Date captured at edit-start; commit re-stamps the note's date only when
+    // the draft date moved off THIS snapshot.
+    @State private var editStartDateSnapshot: Date = .now
 
     @AppStorage(AppSettings.Key.debugModeEnabled) private var debugModeEnabled = AppSettings.Default.debugModeEnabled
 
@@ -116,7 +125,10 @@ struct ContactDetailView: View {
     @State private var editLinkStartSnapshot: String = ""
 
     private var isEditingAnything: Bool {
-        noteFocus != nil
+        // Keyboard focus alone isn't enough: interacting with a note editor's
+        // date picker drops text-field focus while the editor is still open,
+        // and the Done checkmark must stay reachable to commit it.
+        noteFocus != nil || showingNewNoteEditor || editingNoteID != nil
     }
 
     private var isEditingContact: Bool {
@@ -420,10 +432,7 @@ struct ContactDetailView: View {
             }
 
             if showingNewNoteEditor {
-                TextField("Add a dated note", text: $newNoteText, axis: .vertical)
-                    .lineLimit(3...)
-                    .focused($noteFocus, equals: .newNote)
-                    .centeredRowContent()
+                newNoteEditorRows
             }
 
             Button {
@@ -1454,10 +1463,7 @@ struct ContactDetailView: View {
                 }
 
                 if showingNewNoteEditor {
-                    TextField("Add a dated note", text: $newNoteText, axis: .vertical)
-                        .lineLimit(3...)
-                        .focused($noteFocus, equals: .newNote)
-                        .centeredRowContent()
+                    newNoteEditorRows
                 }
             } header: {
                 Text("Dated Notes")
@@ -1578,13 +1584,42 @@ struct ContactDetailView: View {
         .buttonStyle(.plain)
     }
 
+    /// The inline new-note editor: body text field plus a date picker so the
+    /// user can back-date the note. Shared by the read-mode `notesSection`
+    /// and the contact-edit `editableNotesSection`. The picker binding maps
+    /// nil (untouched) to "now" for display; commit stamps the actual save
+    /// time unless the user picked a date.
+    @ViewBuilder
+    private var newNoteEditorRows: some View {
+        TextField("Add a dated note", text: $newNoteText, axis: .vertical)
+            .lineLimit(3...)
+            .focused($noteFocus, equals: .newNote)
+            .centeredRowContent()
+        DatePicker(
+            "Date",
+            selection: Binding(
+                get: { newNoteDate ?? Date() },
+                set: { newNoteDate = $0 }
+            ),
+            displayedComponents: [.date, .hourAndMinute]
+        )
+        .centeredRowContent()
+    }
+
     @ViewBuilder
     private func noteRow(_ note: ContactNote) -> some View {
         if editingNoteID == note.id {
             ActivityRowLayout(systemImage: "text.rectangle") {
-                TextField("", text: $draftBody, axis: .vertical)
-                    .lineLimit(3...)
-                    .focused($noteFocus, equals: .noteRow(note.id))
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("", text: $draftBody, axis: .vertical)
+                        .lineLimit(3...)
+                        .focused($noteFocus, equals: .noteRow(note.id))
+                    DatePicker(
+                        "Date",
+                        selection: $draftNoteDate,
+                        displayedComponents: [.date, .hourAndMinute]
+                    )
+                }
             }
         } else {
             Button {
@@ -1707,6 +1742,7 @@ struct ContactDetailView: View {
     private func showNewNoteEditor() {
         guard notesStore != nil else { return }
         showingNewNoteEditor = true
+        newNoteDate = nil
         noteFocus = .newNote
     }
 
@@ -1953,6 +1989,8 @@ struct ContactDetailView: View {
         editingNoteID = note.id
         draftBody = note.body
         editStartSnapshot = note.body
+        draftNoteDate = note.createdAt
+        editStartDateSnapshot = note.createdAt
         noteFocus = .noteRow(note.id)
     }
 
@@ -1979,7 +2017,12 @@ struct ContactDetailView: View {
         case .linkRow:
             commitLinkEditIfChanged()
         case .none:
-            break
+            // Keyboard focus can drop while an editor is still open (e.g.
+            // after interacting with a note's date picker) — commit whatever
+            // editor is pending rather than silently discarding it.
+            if showingNewNoteEditor { commitNewNote() }
+            if editingNoteID != nil { commitRowEditIfChanged() }
+            if editingLinkID != nil { commitLinkEditIfChanged() }
         }
         noteFocus = nil
     }
@@ -1988,9 +2031,13 @@ struct ContactDetailView: View {
         let body = newNoteText
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, let notesStore {
-            Task { await notesStore.addNote(body: body) }
+            // A nil date means the picker was never touched — stamp "now" at
+            // save time (the store's default), not editor-open time.
+            let date = newNoteDate
+            Task { await notesStore.addNote(body: body, date: date) }
         }
         newNoteText = ""
+        newNoteDate = nil
         showingNewNoteEditor = false
     }
 
@@ -1998,12 +2045,19 @@ struct ContactDetailView: View {
         guard let id = editingNoteID else { return }
         let proposed = draftBody
         let snapshot = editStartSnapshot
+        let proposedDate = draftNoteDate
+        let dateSnapshot = editStartDateSnapshot
         editingNoteID = nil
         draftBody = ""
         editStartSnapshot = ""
-        if proposed == snapshot { return }
+        let dateChanged = proposedDate != dateSnapshot
+        if proposed == snapshot && !dateChanged { return }
         if let notesStore {
-            Task { await notesStore.editNote(id, newBody: proposed) }
+            // Pass the date only when the user moved it, so an untouched
+            // picker preserves the note's exact stored timestamp.
+            Task {
+                await notesStore.editNote(id, newBody: proposed, date: dateChanged ? proposedDate : nil)
+            }
         }
     }
 

@@ -13,26 +13,32 @@ extension GuessWhoSync {
     /// one cell, and returns the UUID so the caller can later edit or
     /// delete that specific note. Empty / whitespace-only bodies are
     /// allowed at this layer — callers (e.g. the UI) trim and gate.
+    /// `createdAt` is the note's user-visible date; it defaults to now but
+    /// the caller may back- or forward-date it (the UI lets the user pick).
     @discardableResult
-    public func addNote(at key: SidecarKey, body: String) throws -> UUID {
+    public func addNote(at key: SidecarKey, body: String, createdAt: Date = Date()) throws -> UUID {
         try addField(
             at: key,
             field: Self.contactNoteFieldName,
             type: .note,
-            value: .string(body)
+            value: .string(body),
+            createdAt: createdAt
         )
     }
 
-    /// Edit an existing note's body. Preserves `createdAt` and the per-note
-    /// UUID; bumps `modifiedAt` / `modifiedBy`; undeletes the note if it
-    /// was previously soft-deleted (mirrors `setField` semantics). Silent
-    /// no-op if no note with `id` exists at `key`.
-    public func editNote(at key: SidecarKey, id: UUID, newBody: String) throws {
+    /// Edit an existing note's body and, optionally, its date. Preserves the
+    /// per-note UUID; bumps `modifiedAt` / `modifiedBy`; undeletes the note
+    /// if it was previously soft-deleted (mirrors `setField` semantics). A
+    /// non-nil `createdAt` re-stamps the note's user-visible date (which
+    /// also re-sorts it in `notes(at:)`); nil preserves the existing date.
+    /// Silent no-op if no note with `id` exists at `key`.
+    public func editNote(at key: SidecarKey, id: UUID, newBody: String, createdAt: Date? = nil) throws {
         try setField(
             at: key,
             id: id,
             field: Self.contactNoteFieldName,
-            value: .string(newBody)
+            value: .string(newBody),
+            createdAt: createdAt
         )
     }
 

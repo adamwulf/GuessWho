@@ -382,15 +382,17 @@ final class SyncService {
         }
     }
 
+    /// `createdAt` is the note's user-visible date (defaults to now).
     @discardableResult
-    func addEventNote(body: String, forEventUUID uuid: String) throws -> UUID {
+    func addEventNote(body: String, createdAt: Date = Date(), forEventUUID uuid: String) throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
-        return try sync.addNote(at: SidecarKey(kind: .event, id: uuid), body: body)
+        return try sync.addNote(at: SidecarKey(kind: .event, id: uuid), body: body, createdAt: createdAt)
     }
 
-    func editEventNote(id: UUID, newBody: String, forEventUUID uuid: String) throws {
+    /// A non-nil `createdAt` re-stamps the note's user-visible date; nil keeps it.
+    func editEventNote(id: UUID, newBody: String, createdAt: Date? = nil, forEventUUID uuid: String) throws {
         guard let sync else { throw SidecarUnavailableError() }
-        try sync.editNote(at: SidecarKey(kind: .event, id: uuid), id: id, newBody: newBody)
+        try sync.editNote(at: SidecarKey(kind: .event, id: uuid), id: id, newBody: newBody, createdAt: createdAt)
     }
 
     func deleteEventNote(id: UUID, forEventUUID uuid: String) throws {
