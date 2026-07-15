@@ -66,6 +66,7 @@ struct ContactDetailView: View {
     // check, which can't tell two same-localID reloads apart.
     @State private var recentEventsLoadID: UUID = UUID()
     @State private var showingAddLinkSheet = false
+    @State private var showingAddOrgLinkSheet = false
     @State private var showingNewNoteEditor = false
     @State private var editFetchErrorMessage: String?
 
@@ -1542,7 +1543,26 @@ struct ContactDetailView: View {
                     // store's async addLink resolves-or-mints BOTH endpoints.
                     // The store is @Observable, so adding the link re-renders the
                     // connection rows, each resolving its other endpoint.
-                    AddLinkSheet(currentContactID: id) { otherID, note in
+                    AddLinkSheet(currentContactID: id, kind: .person) { otherID, note in
+                        Task { await linksStore.addLink(to: otherID, note: note) }
+                    }
+                }
+            }
+
+            Divider()
+
+            activityFooterButton(
+                title: "Add Org",
+                systemImage: "building.2",
+                action: { showingAddOrgLinkSheet = true }
+            )
+            // "Add Org" shares the "Link Contact" write path — an organization
+            // is a Contact, so the link record and store are identical; only
+            // the picker's eligibility filter differs.
+            .disabled(linksStore == nil)
+            .sheet(isPresented: $showingAddOrgLinkSheet) {
+                if let linksStore {
+                    AddLinkSheet(currentContactID: id, kind: .organization) { otherID, note in
                         Task { await linksStore.addLink(to: otherID, note: note) }
                     }
                 }
