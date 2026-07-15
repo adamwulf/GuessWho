@@ -34,6 +34,10 @@ public protocol EventStoreProtocol: Sendable {
     /// `eventKitID` (so SwiftUI / EventReference identity is stable across
     /// repeat fetches). The orchestrator/app maps to the real sidecar UUID
     /// via `eventKitID`. `isLinked == true`.
+    ///
+    /// Adapter implementations may chunk the interval internally (EventKit's
+    /// `predicateForEvents` caps each predicate at 4 years); callers may pass
+    /// a window of any length without worrying about that limit.
     func fetchEvents(in interval: DateInterval) throws -> [Event]
 
     /// One EventKit event by its `calendarItemExternalIdentifier`, or nil if

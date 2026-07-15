@@ -412,29 +412,36 @@ final class SyncService {
         try sync.deleteTag(at: SidecarKey(kind: .event, id: uuid), id: id)
     }
 
-    // MARK: - Calendar search (link-sheet backing reads)
+    // MARK: - Link-sheet backing reads
 
-    /// EventKit events whose start falls on the given calendar day. Returns
-    /// `[]` when calendar access is denied — gated here so the orchestrator
-    /// stays permission-agnostic.
-    func eventsOnDay(_ day: Date) -> [Event] {
-        guard eventsAuthorization == .authorized else { return [] }
+    /// Every sidecar-backed event (manual + linked), projected via Option C.
+    /// Sidecar-only read — NOT gated on eventsAuthorization, so custom events
+    /// stay reachable for write-only users. Backs the link sheet's search
+    /// pool: merging these in makes app-created events findable even when
+    /// their date falls outside the loaded calendar window. `async`: the walk
+    /// covers every event sidecar, so it rides the engine's background-hop
+    /// overload.
+    func allSidecarEvents() async -> [Event] {
+        guard let sync else { return [] }
         do {
-            return try eventsAdapter.fetchEvents(on: day)
+            return try await sync.allEvents()
         } catch {
-            lastError = "events-on-day failed: \(error.localizedDescription)"
+            lastError = "all events read failed: \(error.localizedDescription)"
             return []
         }
     }
 
-    /// EventKit events matching `text` within `interval`. Returns `[]` when
-    /// access is denied. Empty `text` returns all events in the interval.
-    func searchCalendarEvents(text: String, in interval: DateInterval) -> [Event] {
-        guard eventsAuthorization == .authorized else { return [] }
+    /// The `limit` most-recently-linked events (by link `createdAt`, newest
+    /// first, deduped per event). Backs the link sheet's "Recently Linked"
+    /// section. Sidecar-only read — NOT gated on eventsAuthorization.
+    /// `async`: the walk covers every link sidecar, so it rides the engine's
+    /// background-hop overload.
+    func recentlyLinkedEvents(limit: Int) async -> [Event] {
+        guard let sync else { return [] }
         do {
-            return try eventsAdapter.searchEvents(matching: text, in: interval)
+            return try await sync.recentlyLinkedEvents(limit: limit)
         } catch {
-            lastError = "search events failed: \(error.localizedDescription)"
+            lastError = "recently linked read failed: \(error.localizedDescription)"
             return []
         }
     }

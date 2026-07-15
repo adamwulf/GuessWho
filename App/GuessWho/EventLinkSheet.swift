@@ -26,19 +26,32 @@ struct EventLinkSheet: View {
     let mode: Mode
 
     @State private var search: String = ""
-    /// EventKit events grouped by start-of-day. Today is preloaded; the
-    /// "Show more" button extends the window forward 365 days, pull-to-
-    /// refresh prepends a year at a time backward.
+    /// The event pool, grouped by start-of-day. Every load path merges here:
+    /// the initial today window, the repeatable "Load older events" button
+    /// (one month backward per tap), "Show more" (a year forward), the
+    /// one-time ±5-year search backfill, and the sidecar walk that keeps
+    /// app-created events findable. Browsing shows only the loaded window
+    /// (plus sidecar-backed events); searching filters the whole pool.
     @State private var loadedDays: [Date: [Event]] = [:]
     @State private var expandedBeyondToday = false
     @State private var loadedForwardThrough: Date = Calendar.current.startOfDay(for: Date())
     @State private var loadedBackwardThrough: Date = Calendar.current.startOfDay(for: Date())
-    /// `true` once the user has tapped "Add Other" OR when authorization
-    /// blocks calendar browsing (manual-only fallback).
+    /// Dedup keys (see `dedupKey(for:)`) of every sidecar-backed event merged
+    /// into the pool. Sidecar-backed events are the user's own records
+    /// (created or previously linked in the app), so they stay visible while
+    /// browsing even when their day falls outside the loaded window — that's
+    /// what makes a custom event reachable without paging to its month.
+    @State private var sidecarEventKeys: Set<String> = []
+    /// The most recently linked events, newest first (link-mode only) —
+    /// rendered as a "Recently Linked" section above the day groups.
+    @State private var recentlyLinked: [Event] = []
+    /// `true` once the user has tapped "Add Other".
     @State private var manualEntry = false
-    /// `true` when a search miss triggered the inline "Search older events"
-    /// merge. Used to suppress repeated taps from the same empty state.
-    @State private var didMergeOlderSearch = false
+    /// One-time ±5-year calendar backfill for search: flipped after the first
+    /// non-empty search term triggers the wide window merge, so every later
+    /// keystroke filters locally instead of re-walking ten years of calendar.
+    @State private var didLoadSearchWindow = false
+    @State private var searchWindowLoading = false
 
     // Manual-entry form fields.
     @State private var draftTitle: String = ""
@@ -80,7 +93,7 @@ struct EventLinkSheet: View {
                         }
                     }
                 }
-                .task { initialLoad() }
+                .task { await initialLoad() }
         }
     }
 
@@ -126,9 +139,43 @@ struct EventLinkSheet: View {
                 }
             }
 
-            let groups = grouped(filteredEvents)
+            if isSearching, searchWindowLoading {
+                Section {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Searching your calendar…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // Link-mode only, hidden while searching (the same events are in
+            // the search pool). Rows show their date — unlike the day groups
+            // below, this section spans arbitrary days.
+            if case .link = mode, !isSearching, !recentlyLinked.isEmpty {
+                Section("Recently Linked") {
+                    ForEach(recentlyLinked, id: \.id) { event in
+                        Button { Task { await pick(event) } } label: { eventRow(event, showsDate: true) }
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            // Repeatable backward paging: each tap prepends one more month.
+            // Hidden while searching — the search pool already spans ±5 years.
+            if canBrowseCalendar && !isSearching {
+                Section {
+                    Button {
+                        Task { await loadOlderMonth() }
+                    } label: {
+                        Label("Load older events (\(previousMonthTitle))", systemImage: "chevron.up")
+                    }
+                }
+            }
+
+            let groups = grouped(visibleEvents)
             if groups.isEmpty {
-                emptyOrSearchSection
+                emptySection
             } else {
                 ForEach(groups, id: \.day) { group in
                     Section(header: Text(sectionTitle(for: group.day))) {
@@ -140,7 +187,7 @@ struct EventLinkSheet: View {
                 }
             }
 
-            if canBrowseCalendar && !expandedBeyondToday {
+            if canBrowseCalendar && !expandedBeyondToday && !isSearching {
                 Section {
                     Button {
                         Task { await loadShowMore() }
@@ -159,42 +206,30 @@ struct EventLinkSheet: View {
             }
         }
         .searchable(text: $search, prompt: "Search events")
-        .refreshable { await loadOneMoreYearBackward() }
-        .onChange(of: search) { _, _ in
-            // Reset the "Search older events" affordance whenever the search
-            // term changes so subsequent zero-hit searches can re-trigger it.
-            didMergeOlderSearch = false
+        .refreshable { await loadOlderMonth() }
+        // First non-empty search term backfills the pool with ±5 years of
+        // calendar (once per sheet); afterwards every search is a local
+        // filter. Debounced so a burst of keystrokes triggers one load, and
+        // keyed on `search` so an abandoned term cancels the pending load.
+        .task(id: search) {
+            let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, canBrowseCalendar, !didLoadSearchWindow else { return }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await loadSearchWindow()
         }
     }
 
     @ViewBuilder
-    private var emptyOrSearchSection: some View {
-        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            Section {
-                Text("No events.")
-                    .foregroundStyle(.secondary)
-            }
-        } else if canBrowseCalendar && !didMergeOlderSearch {
-            Section {
-                Button {
-                    searchOlderEvents()
-                } label: {
-                    Label("Search older events", systemImage: "magnifyingglass")
-                }
-            } footer: {
-                Text("Searches the past 3 years and next year in your calendar.")
-            }
-        } else {
-            Section {
-                Text("No matches.")
-                    .foregroundStyle(.secondary)
-            }
+    private var emptySection: some View {
+        Section {
+            Text(isSearching ? "No matches." : "No events.")
+                .foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
-    private func eventRow(_ event: Event) -> some View {
+    private func eventRow(_ event: Event, showsDate: Bool = false) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "calendar")
                 .foregroundStyle(.secondary)
@@ -202,6 +237,15 @@ struct EventLinkSheet: View {
                 Text(event.title.isEmpty ? "(Untitled event)" : event.title)
                     .font(.body)
                 HStack(spacing: 6) {
+                    // Rows inside a day group inherit their date from the
+                    // section header; rows in cross-day sections (Recently
+                    // Linked) carry it themselves.
+                    if showsDate {
+                        Text(event.startDate, style: .date)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("•").font(.caption).foregroundStyle(.secondary)
+                    }
                     if event.isAllDay {
                         Text("All-day")
                             .font(.caption)
@@ -307,77 +351,108 @@ struct EventLinkSheet: View {
         service.eventsAuthorization == .authorized
     }
 
-    // MARK: - Initial load
+    private var isSearching: Bool {
+        !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
-    private func initialLoad() {
-        if !canBrowseCalendar {
-            // No-permission fallback: force manual-entry only.
-            manualEntry = true
-            return
-        }
+    /// "May 2026"-style title of the month the next "Load older events" tap
+    /// will prepend.
+    private var previousMonthTitle: String {
+        let cal = Calendar.current
+        let previous = cal.date(byAdding: .month, value: -1, to: loadedBackwardThrough) ?? loadedBackwardThrough
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        return formatter.string(from: previous)
+    }
+
+    // MARK: - Loading
+
+    /// Every load goes through the sidecar-inclusive window read
+    /// (`fetchEventsRange`), so app-created (manual) events surface alongside
+    /// calendar ones. When calendar access is denied the picker still shows
+    /// the user's own events instead of forcing manual entry — the hint
+    /// section at the top explains how to enable calendar browsing.
+    private func initialLoad() async {
         let today = Calendar.current.startOfDay(for: Date())
-        loadedForwardThrough = today
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today) ?? today
+        loadedForwardThrough = tomorrow
         loadedBackwardThrough = today
-        let todays = service.eventsOnDay(today)
-        var bucket = loadedDays
-        bucket[today] = todays
-        loadedDays = bucket
+        let todays = await service.fetchEventsRange(from: today, to: tomorrow)
+        mergeIntoLoadedDays(todays)
+        // Sidecar-backed events join the pool unconditionally: they're the
+        // user's own records, so search — and the always-visible carve-out in
+        // `visibleEvents` — must reach them no matter the loaded window.
+        let sidecarEvents = await service.allSidecarEvents()
+        mergeIntoLoadedDays(sidecarEvents, sidecarBacked: true)
+        if case .link = mode {
+            recentlyLinked = await service.recentlyLinkedEvents(limit: 5)
+        }
     }
 
     private func loadShowMore() async {
-        let today = Calendar.current.startOfDay(for: Date())
-        let end = Calendar.current.date(byAdding: .day, value: 365, to: today) ?? today
+        let from = loadedForwardThrough
+        let end = Calendar.current.date(byAdding: .day, value: 365, to: from) ?? from
         // Use the window read for the range; the orchestrator handles EventKit
         // gating internally and falls back gracefully when access is denied.
-        let events = await service.fetchEventsRange(from: today, to: end)
+        let events = await service.fetchEventsRange(from: from, to: end)
         mergeIntoLoadedDays(events)
         expandedBeyondToday = true
         loadedForwardThrough = end
     }
 
-    private func loadOneMoreYearBackward() async {
+    private func loadOlderMonth() async {
         guard canBrowseCalendar else { return }
         let to = loadedBackwardThrough
-        guard let from = Calendar.current.date(byAdding: .year, value: -1, to: to) else { return }
+        guard let from = Calendar.current.date(byAdding: .month, value: -1, to: to) else { return }
         let events = await service.fetchEventsRange(from: from, to: to)
         mergeIntoLoadedDays(events)
         loadedBackwardThrough = from
     }
 
-    private func searchOlderEvents() {
-        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, canBrowseCalendar else { return }
+    /// One-time search backfill: merge five years back and five years ahead
+    /// into the pool, then let `filteredEvents` do all the matching locally.
+    /// The window read is a single chunk-safe EventKit batch plus the sidecar
+    /// walk, hopped to a background queue by the service.
+    private func loadSearchWindow() async {
+        guard !searchWindowLoading, !didLoadSearchWindow else { return }
+        searchWindowLoading = true
+        defer { searchWindowLoading = false }
         let today = Calendar.current.startOfDay(for: Date())
-        let from = Calendar.current.date(byAdding: .year, value: -3, to: today) ?? today
-        let to = Calendar.current.date(byAdding: .day, value: 365, to: today) ?? today
-        let interval = DateInterval(start: from, end: to)
-        let hits = service.searchCalendarEvents(text: trimmed, in: interval)
-        mergeIntoLoadedDays(hits)
-        didMergeOlderSearch = true
+        guard let from = Calendar.current.date(byAdding: .year, value: -5, to: today),
+              let to = Calendar.current.date(byAdding: .year, value: 5, to: today)
+        else { return }
+        let events = await service.fetchEventsRange(from: from, to: to)
+        mergeIntoLoadedDays(events)
+        didLoadSearchWindow = true
     }
 
-    /// Stable cross-source identity for dedup. `initialLoad` (via
-    /// `eventsOnDay`) and `loadShowMore`/`loadOneMoreYearBackward` (via
-    /// `fetchEventsRange`/`eventsWindow`) live in two id-spaces: the adapter
-    /// hands back `Event.stableID(forEventKitID:)`; the window read projects
-    /// sidecar-backed events under the real sidecar UUID. Both produce the
-    /// SAME `eventKitID` for any EventKit-backed event, so it dedups across
-    /// both paths. Manual events (no `eventKitID`) only come through the
-    /// window read and so can't collide with adapter rows; fall back to the
-    /// UUID string. Do NOT "simplify" this back to `event.id` — that key
-    /// silently produces duplicate rows for any user-touched (linked)
-    /// EventKit event.
+    /// Stable cross-source identity for dedup. The window reads
+    /// (`fetchEventsRange`/`eventsWindow`) and the sidecar walk
+    /// (`allSidecarEvents`) live in two id-spaces: ephemeral EventKit-only
+    /// rows carry `Event.stableID(forEventKitID:)` while sidecar-backed rows
+    /// carry the real sidecar UUID. Both produce the SAME `eventKitID` for
+    /// any EventKit-backed event, so it dedups across both. Manual events
+    /// (no `eventKitID`) only ever carry their sidecar UUID and so can't
+    /// collide; fall back to the UUID string. Do NOT "simplify" this back to
+    /// `event.id` — that key silently produces duplicate rows for any
+    /// user-touched (linked) EventKit event.
     private func dedupKey(for event: Event) -> String {
         event.eventKitID ?? event.id.uuidString
     }
 
-    private func mergeIntoLoadedDays(_ events: [Event]) {
+    /// `sidecarBacked: true` marks the merged events as the user's own
+    /// records (see `sidecarEventKeys`); the events themselves land in the
+    /// same pool either way.
+    private func mergeIntoLoadedDays(_ events: [Event], sidecarBacked: Bool = false) {
         var bucket = loadedDays
         let cal = Calendar.current
         for event in events {
             let day = cal.startOfDay(for: event.startDate)
             var existing = bucket[day] ?? []
             let key = dedupKey(for: event)
+            if sidecarBacked {
+                sidecarEventKeys.insert(key)
+            }
             if !existing.contains(where: { dedupKey(for: $0) == key }) {
                 existing.append(event)
             }
@@ -387,6 +462,19 @@ struct EventLinkSheet: View {
     }
 
     // MARK: - Filtering + grouping
+
+    /// What the day groups render. Browsing shows the loaded window plus the
+    /// user's own (sidecar-backed) events — merged search hits from outside
+    /// the window must NOT linger in the browse list after the search field
+    /// clears. Searching matches the whole pool, which spans ±5 years once
+    /// `loadSearchWindow` has run.
+    private var visibleEvents: [Event] {
+        guard !isSearching else { return filteredEvents }
+        return loadedDays.values.flatMap { $0 }.filter { event in
+            if sidecarEventKeys.contains(dedupKey(for: event)) { return true }
+            return event.startDate >= loadedBackwardThrough && event.startDate <= loadedForwardThrough
+        }
+    }
 
     private var filteredEvents: [Event] {
         let all = loadedDays.values.flatMap { $0 }
