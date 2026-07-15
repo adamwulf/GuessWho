@@ -41,6 +41,16 @@ struct GuideReference: Hashable {
     let guide: MapsGuide
 }
 
+/// Navigation payload for "open this place's detail." Carries the matched
+/// `MapsPlace` (which knows its own `guideID`) so the scene delegate can build
+/// `GuidePlaceDetailView` without a lookup. Vended by the address-guides
+/// summary row under a contact's address / event's location: any of the
+/// matched places works as the representative, since they share the address and
+/// the place detail re-derives the full guide list from it.
+struct PlaceReference: Hashable {
+    let place: MapsPlace
+}
+
 struct EventReference: Hashable {
     let eventUUID: String
     /// Optional EventKit identifier carried as a hint so the detail view can

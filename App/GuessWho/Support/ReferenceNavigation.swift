@@ -18,4 +18,5 @@ extension EnvironmentValues {
     @Entry var pushDepartmentReference: (DepartmentReference) -> Void = { _ in }
     @Entry var pushGroupReference: (GroupReference) -> Void = { _ in }
     @Entry var pushGuideReference: (GuideReference) -> Void = { _ in }
+    @Entry var pushPlaceReference: (PlaceReference) -> Void = { _ in }
 }

@@ -1050,13 +1050,12 @@ struct ContactDetailView: View {
                         .centeredRowContent()
                 }
             }
-            if group == .address {
-                // Directly below the address rows, in the same section: a row per
-                // imported guide this contact's address appears in.
-                ForEach(addressGuides, id: \.guide.id) { match in
-                    GuideMatchRow(match: match)
-                        .centeredRowContent()
-                }
+            if group == .address, !addressGuides.isEmpty {
+                // Directly below the address rows, in the same section: one
+                // summary row that opens the matched place's detail, where the
+                // full list of guides this place sits in is enumerated.
+                AddressGuidesSummaryRow(matches: addressGuides)
+                    .centeredRowContent()
             }
         } footer: {
             if !isExpanded, !hidden.isEmpty {
