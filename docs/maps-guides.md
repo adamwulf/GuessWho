@@ -87,11 +87,78 @@ Two entry shapes exist:
 
 `GuidesListViewController` (guides, newest import first, place counts) →
 push → `GuidePlacesListViewController` (places in shared order; rows fill
-in as resolution lands; tap opens Apple Maps via
-`maps.apple.com/place?place-id=…` or coordinate fallback). Both shells
-share these VCs; per the product principle there is no user-facing
-"resolve"/"sidecar" vocabulary — unresolved rows just read "Loading place
-details…".
+in as resolution lands) → push → `GuidePlaceDetailView` (the place detail,
+below). Both shells share the two list VCs; per the product principle there
+is no user-facing "resolve"/"sidecar" vocabulary — unresolved rows just read
+"Loading place details…".
+
+## Place detail and association matching
+
+Tapping a place row pushes `GuidePlaceDetailView` (App target, SwiftUI),
+hosted the same way as `ContactDetailView` / `EventDetailView`. It shows the
+place's name, address, and coordinate with an **Open in Maps** button (the
+`maps.apple.com/place?place-id=…` / coordinate-fallback deep link that used
+to fire on row tap now lives on this button), plus three best-effort
+"who/what is here" sections derived from the place's address:
+
+* **Recent Events** — calendar events whose free-text location contains the
+  place's street line, via `SyncService.recentEvents(forEmails:addresses:)`
+  with an empty email set and the place's street line as the location needle.
+* **Contacts** / **Organizations** — records whose structured postal street
+  line appears inside the place's address, partitioned by `ContactType`.
+
+All three reuse the **street-line token matcher** (`EventLocationMatcher`,
+GuessWhoSync) that already backs the contact detail's "Recent Events"
+section: a needle must appear as a contiguous run of ≥2 words inside the
+haystack, so a shared city/state alone never sweeps in unrelated records.
+The place's street-line needle is derived from its formatted `address`
+(MapKit's `placemark.title`) with `PostalAddress.parse(fromFullAddress:)`,
+falling back to the first comma-delimited segment.
+
+**Matching keys off the resolved `address`.** For place-ID entries that is
+only populated after the MapKit resolution pass, so an unresolved place
+matches nothing — the association sections stay empty until its row fills in.
+Address entries (inline address + coordinate) match immediately.
+
+## Latitude/longitude: options and caveats
+
+Matching is street-line-based today. Coordinate-based matching was
+considered and deferred; this records why and what it would take.
+
+**What coordinate data we actually have, and when:**
+
+* **Address entries** carry a coordinate (and address) inline in the payload
+  — available at import, no resolution needed.
+* **Place-ID entries** have **no coordinate until the MapKit resolution pass
+  stamps `latitude`/`longitude`** — the *same* pass that fills `address`. So
+  before resolution a place-ID entry has neither a street line nor a
+  coordinate; lat/long is not a way around an unresolved place.
+* Contacts/organizations store **postal addresses only — no coordinates.**
+  Any geo match needs their addresses geocoded first.
+
+**Options for using lat/long, each with its caveat:**
+
+1. **Geo-radius contact/org match** — geocode each contact's postal address
+   to a coordinate (`CLGeocoder`) and match those within *N* meters of the
+   place. Caveats: `CLGeocoder` is online-only and aggressively rate-limited
+   (throttles within a small burst), asynchronous, and its results must be
+   cached/sidecar-stored to avoid re-geocoding the whole address book on
+   every place open — i.e. a new geocode+storage subsystem. Radius choice
+   trades recall against false matches (a building's pin and a contact's
+   mailing address for the same site can differ by tens of meters), and exact
+   coordinate equality is meaningless for floating-point lat/long.
+2. **Event proximity** — EventKit events rarely carry a coordinate
+   (`structuredLocation.geoLocation` is usually nil; the location is free
+   text), so geo-matching events is low-recall. Street-text matching is the
+   pragmatic path and is what we do.
+3. **Reverse-geocode the place coordinate to a street, then street-match** —
+   redundant, since resolution already returns a formatted address; only
+   marginally useful for address entries that lack a street breakdown.
+
+**Decision:** street-line matching now — no new dependencies, no geocoding
+quota, deterministic, and it works from the data resolution already gives us.
+If coordinate matching is pursued later, gate it on a cached
+contact-geocode store (option 1) rather than geocoding live per place.
 
 ## Known limitations
 
@@ -101,5 +168,18 @@ details…".
 * Place-ID resolution needs iOS 18 / macOS 15 (MapKit place-ID API).
   On older OSes place-ID entries stay as "Loading place details…" rows;
   address entries are unaffected.
+* **Bulk resolution is serial and best-effort, and does not scale to large
+  guides.** `GuidePlaceResolver.resolvePlaces` walks the pending places one
+  at a time (`for place in pending`, awaiting each
+  `MKMapItemRequest(mapItemIdentifier:)`), with no backoff and no per-request
+  timeout; failures are swallowed and retried on the next guide open. A large
+  guide (100+ place-ID entries) trips MapKit's server-side rate limit
+  (`MKError.loadingThrottled`) after the first several lookups, so most rows
+  stay stuck on "Loading place details…" and reopening re-runs straight into
+  the same wall. Because street/lat-long matching both key off the resolved
+  fields, an unresolved guide also shows empty association sections. Fixing
+  this (throttle-aware backoff, a per-request timeout so one stall can't block
+  the rest, and/or capping per-pass work) is a known follow-up — the serial
+  loop was sized for guides of "tens of places at most."
 * The protobuf schema is unofficial. The decoder rejects anything it can't
   parse cleanly (import fails with a plain alert) rather than guessing.
