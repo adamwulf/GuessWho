@@ -12,7 +12,7 @@ struct LabeledTextSection: View {
     let keyboardType: PlatformKeyboardType
 
     var body: some View {
-        Section(title) {
+        Section {
             ForEach(items.indices, id: \.self) { idx in
                 HStack {
                     LabelPicker(
@@ -41,6 +41,8 @@ struct LabeledTextSection: View {
                 Label("Add \(title)", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
+        } header: {
+            Text(title).centeredSectionHeader()
         }
     }
 }

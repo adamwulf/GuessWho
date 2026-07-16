@@ -5,7 +5,7 @@ struct BirthdayRow: View {
     @Binding var model: ContactEditModel
 
     var body: some View {
-        Section("Birthday") {
+        Section {
             if model.edited.birthday != nil {
                 // SwiftUI's DatePicker only exposes the `.date` component
                 // (no month/day-only variant). When `birthdayHasYear` is
@@ -54,6 +54,8 @@ struct BirthdayRow: View {
                 }
                 .centeredRowContent()
             }
+        } header: {
+            Text("Birthday").centeredSectionHeader()
         }
     }
 }
