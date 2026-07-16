@@ -4,7 +4,7 @@ import GuessWhoSync
 struct SocialProfileRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
-        Section("Social Profile") {
+        Section {
             ForEach(model.edited.socialProfiles.indices, id: \.self) { idx in
                 VStack(alignment: .leading) {
                     // Picker drives SocialProfile.service (the CN-recognized
@@ -52,6 +52,8 @@ struct SocialProfileRow: View {
                 Label("Add Social Profile", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
+        } header: {
+            Text("Social Profile").centeredSectionHeader()
         }
     }
 

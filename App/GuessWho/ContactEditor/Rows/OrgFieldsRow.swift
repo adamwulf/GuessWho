@@ -36,7 +36,7 @@ struct OrgFieldsRow: View {
             .onChange(of: model.edited.contactType) { _, _ in model.isDirty = true }
             .centeredRowContent()
         } header: {
-            Text("Organization")
+            Text("Organization").centeredSectionHeader()
         } footer: {
             Text("Organizations appear in their own list, separate from People.")
                 .centeredSectionFooter()

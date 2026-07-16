@@ -4,7 +4,7 @@ import GuessWhoSync
 struct RelationRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
-        Section("Related") {
+        Section {
             ForEach(model.edited.contactRelations.indices, id: \.self) { idx in
                 HStack {
                     LabelPicker(
@@ -53,6 +53,8 @@ struct RelationRow: View {
                 Label("Add Related", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
+        } header: {
+            Text("Related").centeredSectionHeader()
         }
     }
 }
