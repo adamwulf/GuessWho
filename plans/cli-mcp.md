@@ -1,9 +1,14 @@
 # GuessWho CLI + MCP — Implementation Plan
 
 **Author:** `cli-mcp` (guesswho repo) · **Reviewers:** `allume-mcp-cli-helper`, `essentialmcp-helper`, `essential-mcp-research-helper`, Adam
-**Status:** APPROVED by both reference agents; all refinements folded in. Distribution ANSWERED (App Store + TestFlight + Setapp; mirror Allume/Muse). All three MAS unknowns RESOLVED by Adam — Muse ships this seam in production (symlink works on MAS via an entitlement; client launches the helper which connects to the app; App Review clean). Phase 0 is now a confirmation, not a discovery. Obtaining the exact symlink entitlement from allume, then Phase 0 kicks off. · **Date:** 2026-07-16
+**Status:** APPROVED by both reference agents; all refinements folded in. Distribution ANSWERED (App Store + TestFlight + Setapp; mirror Allume/Muse). All three MAS unknowns RESOLVED by Adam — Muse ships this seam in production (symlink works on MAS via the runtime auth API; client launches the helper which connects to the app; App Review clean). Phase 0 is now a confirmation, not a discovery. **ONE open item:** Adam's (a)-vs-(b) reconciliation of the symlink entitlement wording (blocks nothing structural). · **Date:** 2026-07-16
 
 Phases are executed **serially**. Each phase has explicit exit criteria and a review cycle. We do not start phase *N+1* until phase *N*'s criteria are met and reviewed.
+
+### Provenance map (what's proven vs ours vs open — for whoever executes Phase 0)
+- **Verified from Muse's shipping source + inherited:** two-process relay; per-helper request pipe + announce-channel discovery; native-macOS-Mach-O helper embedded per-channel; per-channel app-group derived from ONE shared build var (never hardcoded); hardened runtime + sandbox + `get-task-allow` Debug-only; `Bundle.main.url(forAuxiliaryExecutable:)` as the single helper-path source; copy-path = pasteboard-set; 4-state symlink resolver (`destinationOfSymbolicLink` + `resolvingSymlinksInPath` both sides); symlink install via `NSWorkspace.requestAuthorization(.createSymbolicLink)`; `files.user-selected.read-write` on the app. MAS symlink + client-spawn + App-Review-clean are Adam-confirmed production facts.
+- **Our improvements over Muse:** per-helper request pipe (Muse uses a central pipe; ours is needed because PIPE_BUF is 512B and we carry large payloads); INV-3 note-exclusion (more rigorous than Muse's note-handling); the concurrent-large-request test (proves the transport fix Muse never explicitly tested); awaited per-helper read-pipe teardown (avoids needing Muse's watchdog).
+- **Held open — Adam only:** the (a)-vs-(b) symlink-entitlement wording. One tagged question, blocks nothing structural.
 
 ---
 
