@@ -9,18 +9,25 @@ extension UIViewController {
         animated: Bool
     ) {
         guard shouldDeselectListSelectionOnNavigationReturn,
-              let selectedIndexPath = tableView.indexPathForSelectedRow else { return }
+              let selectedIndexPaths = tableView.indexPathsForSelectedRows,
+              !selectedIndexPaths.isEmpty else { return }
 
         if let transitionCoordinator {
             transitionCoordinator.animate(alongsideTransition: { _ in
-                tableView.deselectRow(at: selectedIndexPath, animated: animated)
+                for indexPath in selectedIndexPaths {
+                    tableView.deselectRow(at: indexPath, animated: animated)
+                }
             }, completion: { context in
                 if context.isCancelled {
-                    tableView.selectRow(at: selectedIndexPath, animated: false, scrollPosition: .none)
+                    for indexPath in selectedIndexPaths {
+                        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
+                    }
                 }
             })
         } else {
-            tableView.deselectRow(at: selectedIndexPath, animated: animated)
+            for indexPath in selectedIndexPaths {
+                tableView.deselectRow(at: indexPath, animated: animated)
+            }
         }
     }
 

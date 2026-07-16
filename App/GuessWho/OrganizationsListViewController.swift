@@ -7,6 +7,7 @@ import GuessWhoSync
 /// have no subtitle).
 final class OrganizationsListViewController: UIViewController {
     var didSelectContact: (Contact) -> Void = { _ in }
+    var didSelectContacts: ([Contact]) -> Void = { _ in }
 
     /// Nav-bar "+" callback. The SceneDelegate owns what "add" means (create a
     /// blank organization record and show it in edit mode) — see
@@ -97,6 +98,7 @@ final class OrganizationsListViewController: UIViewController {
 
     private func configureTableView() {
         tableView = UITableView(frame: .zero, style: .plain)
+        ContactMultiSelectionSupport.configure(tableView)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.prefetchDataSource = self
@@ -142,10 +144,39 @@ final class OrganizationsListViewController: UIViewController {
         addItem.accessibilityLabel = "Add Organization"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        navigationItem.rightBarButtonItems = [addItem, sortItem]
+        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
+            self?.toggleSelectionMode()
+        }
+        selectionBarButtonItem = selectionItem
+        navigationItem.rightBarButtonItems = [addItem, sortItem] + [selectionItem].compactMap { $0 }
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
+    private var selectionBarButtonItem: UIBarButtonItem?
+
+    private func toggleSelectionMode() {
+        if tableView.isEditing {
+            tableView.setEditing(false, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
+            notifySelectionChanged()
+        } else {
+            tableView.setEditing(true, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
+        }
+    }
+
+    private func notifySelectionChanged() {
+        let contacts = ContactMultiSelectionSupport.selectedContacts(
+            in: tableView,
+            repository: repository,
+            itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
+        )
+        if contacts.count == 1, let contact = contacts.first {
+            didSelectContact(contact)
+        } else if contacts.count > 1 {
+            didSelectContacts(contacts)
+        }
+    }
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
     /// order. Called from the reload observer (a global sort change posts
@@ -302,9 +333,16 @@ final class OrganizationsListViewController: UIViewController {
 
 extension OrganizationsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let id = dataSource.itemIdentifier(for: indexPath),
-              let contact = repository.contact(id: id) else { return }
-        didSelectContact(contact)
+        #if !targetEnvironment(macCatalyst)
+        guard !tableView.isEditing else { return }
+        #endif
+        notifySelectionChanged()
+    }
+
+    func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        #if targetEnvironment(macCatalyst)
+        notifySelectionChanged()
+        #endif
     }
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
