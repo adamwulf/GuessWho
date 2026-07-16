@@ -45,7 +45,7 @@ struct ContactDetailStackView: View {
                             // Only the visible card owns a live detail view. Hidden
                             // details would stamp every selected contact as viewed,
                             // mint identities, and contribute competing toolbars.
-                            ContactDetailView(id: id)
+                            ContactDetailView(id: id, selectedContactIDs: ids)
                         } else {
                             Color(uiColor: .systemBackground)
                         }

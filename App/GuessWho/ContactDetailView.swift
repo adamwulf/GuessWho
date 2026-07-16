@@ -37,6 +37,13 @@ struct ContactDetailView: View {
     /// existing contacts share one form (no separate new-contact sheet).
     var startsInEditMode: Bool = false
 
+    /// The full selection when this card is the front sheet of a stacked
+    /// multi-contact detail. An empty array is the normal single-contact path.
+    /// Multi-selection keeps this card's content while adapting its toolbar:
+    /// editing one arbitrary member is unavailable and favorite mutations apply
+    /// to the complete selection.
+    var selectedContactIDs: [ContactID] = []
+
     @State private var contact: Contact?
     @State private var headerPhoto: UIImage?
     // Drives the fullscreen, zoomable photo viewer. Set when the user taps the
@@ -608,20 +615,22 @@ struct ContactDetailView: View {
 
     @ToolbarContentBuilder
     private var readOnlyToolbarContent: some ToolbarContent {
-        // Star sits BEFORE Edit so the toolbar reads star, Edit. Always enabled:
-        // the favorite write resolves-or-mints the GuessWho UUID internally, so
-        // favoriting a never-touched contact needs no existing-UUID gate.
+        // Star sits BEFORE Edit in the single-contact toolbar. It remains the
+        // only action for a multi-selection, where it represents the aggregate
+        // favorite state and updates every selected contact.
         ToolbarItem(placement: .primaryAction) {
             Button {
-                Task { await toggleFavorite() }
+                Task { await toggleFavoriteSelection() }
             } label: {
-                Image(systemName: isContactFavorited ? "star.fill" : "star")
+                Image(systemName: areFavoriteTargetsFavorited ? "star.fill" : "star")
             }
-            .accessibilityLabel(isContactFavorited ? "Unfavorite" : "Favorite")
+            .accessibilityLabel(areFavoriteTargetsFavorited ? "Unfavorite" : "Favorite")
         }
-        ToolbarItem(placement: .primaryAction) {
-            Button("Edit") {
-                Task { await beginInlineEdit() }
+        if !isMultiSelection {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Edit") {
+                    Task { await beginInlineEdit() }
+                }
             }
         }
     }
@@ -1992,31 +2001,41 @@ struct ContactDetailView: View {
         return contact.contactID
     }
 
-    private var isContactFavorited: Bool {
-        // Read through the @Observable app-side favorites cache so the star
-        // reacts to a toggle. The cache uses package `Favorite.matches(_:)` to
-        // compare the opaque ContactID against the stored GuessWho UUID.
-        guard let id = loadedContactID else { return false }
-        return favoritesStore.isFavorite(id)
+    private var isMultiSelection: Bool {
+        selectedContactIDs.count > 1
     }
 
-    private func toggleFavorite() async {
-        // Route through the repository: it resolves-or-mints the GuessWho UUID
-        // (favoriting a never-touched contact mints, transparently), toggles the
-        // favorite, and pokes its cache. Then reload the contact so its
-        // `ContactID` carries the just-minted `guessWhoID`, and refresh the
-        // @Observable favorites cache so the star + favorites list update — the
-        // repository writes the on-disk file the store mirrors but doesn't drive
-        // its observable state.
-        do {
-            _ = try await repository.toggleFavorite(id)
-        } catch {
-            // Sidecar storage unavailable or write failed. Record it to the
-            // service's error state (the surface `addEventLink` uses) rather than
-            // swallowing it; the reload + refresh below still show what landed on
-            // disk.
-            service.recordError("toggle favorite failed: \(error.localizedDescription)")
+    /// Current IDs for the favorite targets. Re-resolving through the repository
+    /// is important after a first favorite mints a GuessWho ID: the navigation
+    /// IDs captured when selection began may still be pre-mint IDs.
+    private var favoriteTargetIDs: [ContactID] {
+        let targets = isMultiSelection ? selectedContactIDs : [loadedContactID ?? id]
+        return targets.map { repository.contact(id: $0)?.contactID ?? $0 }
+    }
+
+    private var areFavoriteTargetsFavorited: Bool {
+        let targets = favoriteTargetIDs
+        return !targets.isEmpty && targets.allSatisfy(favoritesStore.isFavorite)
+    }
+
+    private func toggleFavoriteSelection() async {
+        // A mixed selection converges to all-favorited; only an already fully
+        // favorited selection converges to none. Skip contacts already in the
+        // desired state so a mixed selection never inverts its favorited subset.
+        let shouldFavorite = !areFavoriteTargetsFavorited
+        for targetID in favoriteTargetIDs {
+            guard favoritesStore.isFavorite(targetID) != shouldFavorite else { continue }
+            do {
+                _ = try await repository.toggleFavorite(targetID)
+            } catch {
+                // Continue through the selection so one failed contact does not
+                // prevent the remaining requested updates. The observable reload
+                // below reflects whichever writes actually landed.
+                service.recordError("toggle favorite failed: \(error.localizedDescription)")
+            }
         }
+
+        // Favoriting may mint IDs, including for the visible front contact.
         await loadContact()
         favoritesStore.reload()
     }
