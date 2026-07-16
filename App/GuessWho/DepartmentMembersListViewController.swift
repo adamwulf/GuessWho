@@ -453,7 +453,7 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     var showsSectionIndex = true
 
     override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        true
+        tableView.isEditing
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
