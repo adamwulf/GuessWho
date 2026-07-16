@@ -1,7 +1,7 @@
 # GuessWho CLI + MCP — Implementation Plan
 
 **Author:** `cli-mcp` (guesswho repo) · **Planning-consult agents:** `allume-mcp-cli-helper`, `essentialmcp-helper`, `essential-mcp-research-helper` (architecture; two gave final approval) · **Plan reviewers (this cycle):** two independent researcher agents
-**Status:** Reviewed (2 researcher agents, code-grounded) — CHANGES NEEDED findings ALL folded in this revision. Distribution ANSWERED (App Store + TestFlight + Setapp; mirror Allume/Muse); MAS packaging + symlink-entitlement CLOSED (Muse production-proven; symlink needs no special key). **Open item re-surfaced by review:** the App-Review risk of egressing TCC-Contacts data to agents (Muse never tested it) — tracked in the provenance map + Phase 3 mitigation, not a blocker. Phase 0 is a confirmation, not a discovery. · **Date:** 2026-07-16
+**Status:** ✅ APPROVED by both researcher reviewers (code-grounded, two rounds; all CHANGES-NEEDED findings + non-blocking nits folded in). Distribution ANSWERED (App Store + TestFlight + Setapp; mirror Allume/Muse); MAS packaging + symlink-entitlement CLOSED (Muse production-proven; symlink needs no special key). **One tracked open item (not a blocker):** the App-Review risk of egressing TCC-Contacts data to agents (Muse never tested it) — provenance map + Phase 3 mitigation. Phase 0 is a confirmation, not a discovery — ready to kick off on Adam's go-ahead. · **Date:** 2026-07-16
 
 Phases are executed **serially**. Each phase has explicit exit criteria and a review cycle. We do not start phase *N+1* until phase *N*'s criteria are met and reviewed.
 
