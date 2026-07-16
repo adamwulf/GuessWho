@@ -162,9 +162,10 @@ final class DepartmentMembersListViewController: UIViewController {
 
     private func toggleSelectionMode() {
         if tableView.isEditing {
+            let contacts = selectedContacts()
             tableView.setEditing(false, animated: true)
             ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
-            notifySelectionChanged()
+            notifySelectionChanged(contacts)
         } else {
             tableView.setEditing(true, animated: true)
             ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
@@ -178,8 +179,12 @@ final class DepartmentMembersListViewController: UIViewController {
         )
     }
 
-    private func notifySelectionChanged() {
-        let contacts = selectedIDs().compactMap { membersByID[$0] }
+    private func selectedContacts() -> [Contact] {
+        selectedIDs().compactMap { membersByID[$0] }
+    }
+
+    private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
+        let contacts = contacts ?? selectedContacts()
         if contacts.count == 1, let contact = contacts.first {
             didSelectContact(contact)
         } else if contacts.count > 1 {

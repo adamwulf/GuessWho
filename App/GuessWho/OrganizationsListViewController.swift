@@ -156,21 +156,26 @@ final class OrganizationsListViewController: UIViewController {
 
     private func toggleSelectionMode() {
         if tableView.isEditing {
+            let contacts = selectedContacts()
             tableView.setEditing(false, animated: true)
             ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
-            notifySelectionChanged()
+            notifySelectionChanged(contacts)
         } else {
             tableView.setEditing(true, animated: true)
             ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
         }
     }
 
-    private func notifySelectionChanged() {
-        let contacts = ContactMultiSelectionSupport.selectedContacts(
+    private func selectedContacts() -> [Contact] {
+        ContactMultiSelectionSupport.selectedContacts(
             in: tableView,
             repository: repository,
             itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
         )
+    }
+
+    private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
+        let contacts = contacts ?? selectedContacts()
         if contacts.count == 1, let contact = contacts.first {
             didSelectContact(contact)
         } else if contacts.count > 1 {

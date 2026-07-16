@@ -177,9 +177,13 @@ final class ContactsListViewController: UIViewController {
 
     private func toggleSelectionMode() {
         if tableView.isEditing {
+            // UIKit may clear editing selections as editing ends. Snapshot the
+            // contacts first so Done always presents the selection the user
+            // just made.
+            let contacts = selectedContacts()
             tableView.setEditing(false, animated: true)
             ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
-            notifySelectionChanged()
+            notifySelectionChanged(contacts)
         } else {
             tableView.setEditing(true, animated: true)
             ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
@@ -194,8 +198,8 @@ final class ContactsListViewController: UIViewController {
         )
     }
 
-    private func notifySelectionChanged() {
-        let contacts = selectedContacts()
+    private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
+        let contacts = contacts ?? selectedContacts()
         if contacts.count == 1, let contact = contacts.first {
             didSelectContact(contact)
         } else if contacts.count > 1 {
