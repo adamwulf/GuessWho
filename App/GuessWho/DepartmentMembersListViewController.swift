@@ -452,6 +452,10 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
     var showsSectionIndex = true
 
+    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        true
+    }
+
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         let ids = snapshot().sectionIdentifiers
         return ids.indices.contains(section) ? ids[section] : nil

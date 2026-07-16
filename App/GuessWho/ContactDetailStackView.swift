@@ -12,7 +12,16 @@ struct ContactDetailStackView: View {
         ZStack(alignment: .topLeading) {
             ForEach(Array(ids.enumerated()), id: \.element) { index, id in
                 let depth = CGFloat(min(index, 6))
-                ContactDetailView(id: id)
+                Group {
+                    if index == 0 {
+                        // Only the visible card owns a live detail view. Hidden
+                        // details would stamp every selected contact as viewed,
+                        // mint identities, and contribute competing toolbars.
+                        ContactDetailView(id: id)
+                    } else {
+                        Color(uiColor: .systemBackground)
+                    }
+                }
                     .background(Color(uiColor: .systemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .overlay {
