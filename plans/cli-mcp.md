@@ -69,6 +69,8 @@ The MCP client is headless — the human is in Claude Desktop / Terminal, not st
 **Open question for Adam (GATING — asked, awaiting answer):** how is GuessWho distributed — **App Store / TestFlight** (my strong assumption from Xcode Cloud + the Contacts-notes-entitlement submission + TestFlight history), direct-download (Developer ID), and/or Setapp? It's gating because **MAS sandbox likely blocks BOTH the `/usr/local/bin` symlink AND may complicate a client exec'ing `Contents/MacOS`** — so the spike must target the *right build type*, and the install UX (symlink vs manual-config-path vs separate Developer-ID CLI) falls out of the answer.
 **Fallback** if MAS bundling/spawn is restricted: ship the helper as a separately-installed (Developer-ID) CLI that still carries the app-group entitlement, or a manual-config install path.
 
+**Debugging order (from allume) — check criterion 3 FIRST.** The moment Adam answers distribution and the spike runs on the real ship build type, verify criterion 3 (app + CLI resolve the SAME container path) before anything else. If it fails it is ALWAYS an entitlement / group-id mismatch, never a code bug — **do not debug IPC until it passes.** Everything else in Phase 0 is downstream of it.
+
 **Review cycle** → then Phase 1.
 
 ---
