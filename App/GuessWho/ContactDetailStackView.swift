@@ -7,11 +7,31 @@ import GuessWhoSync
 struct ContactDetailStackView: View {
     let ids: [ContactID]
 
+    /// Sheets deeper than this collapse onto the last visible sheet — Mail
+    /// shows a few page edges, not a staircase.
+    private static let maxVisibleSheets = 3
+    /// How far each sheet drops below the one in front of it.
+    private static let sheetDrop: CGFloat = 10
+
+    /// Sheets must peek out from behind the front card in points, never via
+    /// `scaleEffect`: a proportional scale displaces edges by a fraction of
+    /// the pane size, which swamps any fixed offset in a full-size detail
+    /// pane and hides the stack entirely. Alternating the horizontal side
+    /// gives Mail's loose-pile look.
+    private func sheetOffset(depth: Int) -> CGSize {
+        guard depth > 0 else { return .zero }
+        let side: CGFloat = depth.isMultiple(of: 2) ? -1 : 1
+        return CGSize(
+            width: side * (5 + CGFloat(depth) * 3),
+            height: CGFloat(depth) * Self.sheetDrop
+        )
+    }
+
     var body: some View {
-        let visibleDepth = CGFloat(min(max(ids.count - 1, 0), 6))
-        ZStack(alignment: .topLeading) {
-            ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                let depth = CGFloat(min(index, 6))
+        let visibleSheets = min(max(ids.count - 1, 0), Self.maxVisibleSheets)
+        let sidePeek = visibleSheets == 0 ? 0 : 5 + CGFloat(visibleSheets) * 3
+        ZStack(alignment: .top) {
+            ForEach(Array(ids.prefix(Self.maxVisibleSheets + 1).enumerated()), id: \.element) { index, id in
                 Group {
                     if index == 0 {
                         // Only the visible card owns a live detail view. Hidden
@@ -29,17 +49,15 @@ struct ContactDetailStackView: View {
                             .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
                     }
                     .shadow(color: .black.opacity(0.13), radius: 8, y: 3)
-                    .scaleEffect(1 - depth * 0.018, anchor: .topLeading)
-                    .offset(x: depth * 9, y: depth * 12)
-                    .zIndex(Double(ids.count - index))
+                    .offset(sheetOffset(depth: index))
+                    .zIndex(Double(-index))
                     .allowsHitTesting(index == 0)
                     .accessibilityHidden(index != 0)
             }
         }
         .padding(.top, 12)
-        .padding(.leading, 12)
-        .padding(.trailing, 12 + visibleDepth * 9)
-        .padding(.bottom, 12 + visibleDepth * 12)
+        .padding(.horizontal, 12 + sidePeek)
+        .padding(.bottom, 12 + CGFloat(visibleSheets) * Self.sheetDrop)
         .background(Color(uiColor: .secondarySystemBackground))
         .navigationTitle("\(ids.count) Contacts Selected")
     }
