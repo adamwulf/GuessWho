@@ -20,6 +20,7 @@ final class DepartmentMembersListViewController: UIViewController {
     /// `ContactDetailView` (push on iPhone, replace-secondary on Catalyst)
     /// without us holding a reference to the nav stack or the split.
     var didSelectContact: (Contact) -> Void = { _ in }
+    var didSelectContacts: ([Contact]) -> Void = { _ in }
 
     /// The organization whose department this list shows. Captured at init as a
     /// fallback; each recompute re-resolves the freshest record from the
@@ -149,10 +150,47 @@ final class DepartmentMembersListViewController: UIViewController {
         editItem.accessibilityLabel = "Rename Department"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        navigationItem.rightBarButtonItems = [editItem, sortItem]
+        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
+            self?.toggleSelectionMode()
+        }
+        selectionBarButtonItem = selectionItem
+        navigationItem.rightBarButtonItems = [editItem, sortItem] + [selectionItem].compactMap { $0 }
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
+    private var selectionBarButtonItem: UIBarButtonItem?
+
+    private func toggleSelectionMode() {
+        if tableView.isEditing {
+            let contacts = selectedContacts()
+            tableView.setEditing(false, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
+            notifySelectionChanged(contacts)
+        } else {
+            tableView.setEditing(true, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
+        }
+    }
+
+    private func selectedIDs() -> [ContactID] {
+        ContactMultiSelectionSupport.selectedIDs(
+            in: tableView,
+            itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
+        )
+    }
+
+    private func selectedContacts() -> [Contact] {
+        selectedIDs().compactMap { membersByID[$0] }
+    }
+
+    private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
+        let contacts = contacts ?? selectedContacts()
+        if contacts.count == 1, let contact = contacts.first {
+            didSelectContact(contact)
+        } else if contacts.count > 1 {
+            didSelectContacts(contacts)
+        }
+    }
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
     /// order. Called from the reload observer.
@@ -260,6 +298,7 @@ final class DepartmentMembersListViewController: UIViewController {
 
     private func configureTableView() {
         tableView = UITableView(frame: .zero, style: .plain)
+        ContactMultiSelectionSupport.configure(tableView)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.prefetchDataSource = self
@@ -348,9 +387,16 @@ final class DepartmentMembersListViewController: UIViewController {
 
 extension DepartmentMembersListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let id = dataSource.itemIdentifier(for: indexPath),
-              let contact = membersByID[id] else { return }
-        didSelectContact(contact)
+        #if !targetEnvironment(macCatalyst)
+        guard !tableView.isEditing else { return }
+        #endif
+        notifySelectionChanged()
+    }
+
+    func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        #if targetEnvironment(macCatalyst)
+        notifySelectionChanged()
+        #endif
     }
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
@@ -405,6 +451,10 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     /// `!repository.sortOrder.isTimeOrder` before each apply — see
     /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
     var showsSectionIndex = true
+
+    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        tableView.isEditing
+    }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         let ids = snapshot().sectionIdentifiers

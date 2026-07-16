@@ -14,6 +14,10 @@ final class ContactsListViewController: UIViewController {
     /// this VC holding a strong reference to the split.
     var didSelectContact: (Contact) -> Void = { _ in }
 
+    /// Multi-selection callback. The scene renders these contacts with the
+    /// same detail views arranged as a Mail-style stack.
+    var didSelectContacts: ([Contact]) -> Void = { _ in }
+
     /// Nav-bar "+" callback. The SceneDelegate owns what "add" means (create a
     /// blank record, then open its detail already editing) — this VC only
     /// vends the tap, same pattern as `didSelectContact`.
@@ -114,6 +118,7 @@ final class ContactsListViewController: UIViewController {
 
     private func configureTableView() {
         tableView = UITableView(frame: .zero, style: .plain)
+        ContactMultiSelectionSupport.configure(tableView)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.prefetchDataSource = self
@@ -160,10 +165,47 @@ final class ContactsListViewController: UIViewController {
         addItem.accessibilityLabel = "Add Contact"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        navigationItem.rightBarButtonItems = [addItem, sortItem]
+        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
+            self?.toggleSelectionMode()
+        }
+        selectionBarButtonItem = selectionItem
+        navigationItem.rightBarButtonItems = [addItem, sortItem] + [selectionItem].compactMap { $0 }
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
+    private var selectionBarButtonItem: UIBarButtonItem?
+
+    private func toggleSelectionMode() {
+        if tableView.isEditing {
+            // UIKit may clear editing selections as editing ends. Snapshot the
+            // contacts first so Done always presents the selection the user
+            // just made.
+            let contacts = selectedContacts()
+            tableView.setEditing(false, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
+            notifySelectionChanged(contacts)
+        } else {
+            tableView.setEditing(true, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
+        }
+    }
+
+    private func selectedContacts() -> [Contact] {
+        ContactMultiSelectionSupport.selectedContacts(
+            in: tableView,
+            repository: repository,
+            itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
+        )
+    }
+
+    private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
+        let contacts = contacts ?? selectedContacts()
+        if contacts.count == 1, let contact = contacts.first {
+            didSelectContact(contact)
+        } else if contacts.count > 1 {
+            didSelectContacts(contacts)
+        }
+    }
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
     /// order. Called from the reload observer because a sort change posts
@@ -348,9 +390,16 @@ final class ContactsListViewController: UIViewController {
 
 extension ContactsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let id = dataSource.itemIdentifier(for: indexPath),
-              let contact = repository.contact(id: id) else { return }
-        didSelectContact(contact)
+        #if !targetEnvironment(macCatalyst)
+        guard !tableView.isEditing else { return }
+        #endif
+        notifySelectionChanged()
+    }
+
+    func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        #if targetEnvironment(macCatalyst)
+        notifySelectionChanged()
+        #endif
     }
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
@@ -402,6 +451,10 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     /// sections ("Today", "This Week", …) where an alphabetical index is
     /// meaningless, so it's hidden.
     var showsSectionIndex = true
+
+    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        tableView.isEditing
+    }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         // The snapshot's section identifier IS the letter — use it directly.

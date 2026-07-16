@@ -304,6 +304,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
             }
+            list.didSelectContacts = { [weak self] contacts in
+                self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+            }
             list.didRequestAddContact = { [weak self] in
                 self?.createNewContact(appDelegate: appDelegate) { [weak self] created in
                     self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
@@ -321,6 +324,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             )
             list.didSelectContact = { [weak self] contact in
                 self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            list.didSelectContacts = { [weak self] contacts in
+                self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
             }
             list.didRequestAddOrganization = { [weak self] in
                 self?.createNewContact(
@@ -428,6 +434,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         members.didSelectContact = { [weak self] contact in
             self?.showContactDetail(contact: contact, appDelegate: appDelegate)
         }
+        members.didSelectContacts = { [weak self] contacts in
+            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+        }
         nav.pushViewController(members, animated: true)
     }
 
@@ -463,6 +472,33 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // closures.
         split.setViewController(nav, for: .secondary)
         noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
+    }
+
+    private func showContactDetailStack(
+        contacts: [Contact],
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard contacts.count > 1, let split else {
+            if let contact = contacts.first {
+                showContactDetail(contact: contact, appDelegate: appDelegate)
+            }
+            return
+        }
+        let nav = UINavigationController()
+        let stack = ContactDetailStackView(ids: contacts.map(\.contactID))
+            .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.contactPhotoLoader)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(stack, on: nav, appDelegate: appDelegate)
+        )
+        nav.viewControllers = [hosting]
+        nav.delegate = self
+        split.setViewController(nav, for: .secondary)
+        // Multi-selection is intentionally not persisted as one arbitrary
+        // contact. Reopening the scene returns to the current list section.
+        syncSelectionToTop(hosting)
     }
 
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
@@ -554,6 +590,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 ref: ContactReference(id: contact.contactID), on: nav, appDelegate: appDelegate
             )
         }
+        members.didSelectContacts = { [weak self, weak nav] contacts in
+            self?.pushCatalystContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
+        }
         nav.pushViewController(members, animated: true)
     }
 
@@ -578,7 +617,28 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 ref: ContactReference(id: contact.contactID), on: nav, appDelegate: appDelegate
             )
         }
+        members.didSelectContacts = { [weak self, weak nav] contacts in
+            self?.pushCatalystContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
+        }
         nav.pushViewController(members, animated: true)
+    }
+
+    private func pushCatalystContactDetailStack(
+        contacts: [Contact],
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard contacts.count > 1, let nav else { return }
+        let stack = ContactDetailStackView(ids: contacts.map(\.contactID))
+            .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.contactPhotoLoader)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(stack, on: nav, appDelegate: appDelegate)
+        )
+        nav.pushViewController(hosting, animated: true)
+        syncSelectionToTop(hosting)
     }
 
     /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
@@ -923,6 +983,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
         }
+        list.didSelectContacts = { [weak self] contacts in
+            self?.pushContactDetailStack(
+                contacts: contacts, on: list.navigationController, appDelegate: appDelegate
+            )
+        }
         list.didRequestAddContact = { [weak self, weak list] in
             self?.createNewContact(appDelegate: appDelegate) { [weak self, weak list] created in
                 self?.pushContactDetail(
@@ -950,6 +1015,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         list.didSelectContact = { [weak self] contact in
             self?.pushContactDetail(contact: contact, on: list.navigationController, appDelegate: appDelegate)
+        }
+        list.didSelectContacts = { [weak self] contacts in
+            self?.pushContactDetailStack(
+                contacts: contacts, on: list.navigationController, appDelegate: appDelegate
+            )
         }
         list.didRequestAddOrganization = { [weak self, weak list] in
             self?.createNewContact(
@@ -1085,6 +1155,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         members.didSelectContact = { [weak self, weak nav] contact in
             self?.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
         }
+        members.didSelectContacts = { [weak self, weak nav] contacts in
+            self?.pushContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
+        }
         nav.pushViewController(members, animated: true)
     }
 
@@ -1153,6 +1226,31 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         noteSelectionShown(.contact(id.restorationToken), stampedOn: hosting)
     }
 
+    private func pushContactDetailStack(
+        contacts: [Contact],
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard contacts.count > 1, let nav else {
+            if let contact = contacts.first {
+                pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
+            }
+            return
+        }
+        let stack = injectIPhonePushHandlers(
+            ContactDetailStackView(ids: contacts.map(\.contactID))
+                .environment(appDelegate.service)
+                .environment(appDelegate.contactsRepository)
+                .environment(appDelegate.contactPhotoLoader)
+                .environment(appDelegate.favoritesStore),
+            on: nav,
+            appDelegate: appDelegate
+        )
+        let hosting = UIHostingController(rootView: stack)
+        nav.pushViewController(hosting, animated: true)
+        syncSelectionToTop(hosting)
+    }
+
     private func pushEventDetail(
         ref: EventReference,
         on nav: UINavigationController?,
@@ -1203,6 +1301,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         members.didSelectContact = { [weak self, weak nav] contact in
             self?.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
+        }
+        members.didSelectContacts = { [weak self, weak nav] contacts in
+            self?.pushContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
         }
         nav.pushViewController(members, animated: true)
     }

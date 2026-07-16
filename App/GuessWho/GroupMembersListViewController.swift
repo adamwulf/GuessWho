@@ -23,6 +23,7 @@ final class GroupMembersListViewController: UIViewController {
     /// `ContactDetailView` (push on iPhone, replace-secondary on Catalyst)
     /// without us holding a reference to the nav stack or the split.
     var didSelectContact: (Contact) -> Void = { _ in }
+    var didSelectContacts: ([Contact]) -> Void = { _ in }
 
     private let group: ContactGroup
     private let repository: ContactsRepository
@@ -40,6 +41,7 @@ final class GroupMembersListViewController: UIViewController {
     /// equivalent of the contact/event detail screen's favorite toolbar button
     /// (a group has no detail screen of its own; its member list stands in).
     private var favoriteBarButton: UIBarButtonItem!
+    private var selectionBarButtonItem: UIBarButtonItem?
 
     private var sectionLetters: [String] = []
 
@@ -146,11 +148,47 @@ final class GroupMembersListViewController: UIViewController {
         // rightBarButtonItems places index 0 rightmost, so [sort, star] reads
         // "star | sort" left-to-right — star nearest the title, matching the
         // "star before Edit" order in the contact detail toolbar.
+        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
+            self?.toggleSelectionMode()
+        }
+        selectionBarButtonItem = selectionItem
         navigationItem.rightBarButtonItems = [
             makeSortBarButtonItem(repository: repository),
             favoriteBarButton,
-        ]
+        ] + [selectionItem].compactMap { $0 }
         updateFavoriteButton()
+    }
+
+    private func toggleSelectionMode() {
+        if tableView.isEditing {
+            let contacts = selectedContacts()
+            tableView.setEditing(false, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
+            notifySelectionChanged(contacts)
+        } else {
+            tableView.setEditing(true, animated: true)
+            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
+        }
+    }
+
+    private func selectedIDs() -> [ContactID] {
+        ContactMultiSelectionSupport.selectedIDs(
+            in: tableView,
+            itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
+        )
+    }
+
+    private func selectedContacts() -> [Contact] {
+        selectedIDs().compactMap { membersByID[$0] }
+    }
+
+    private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
+        let contacts = contacts ?? selectedContacts()
+        if contacts.count == 1, let contact = contacts.first {
+            didSelectContact(contact)
+        } else if contacts.count > 1 {
+            didSelectContacts(contacts)
+        }
     }
 
     /// Repaint the star to reflect the group's current favorite state.
@@ -224,6 +262,7 @@ final class GroupMembersListViewController: UIViewController {
 
     private func configureTableView() {
         tableView = UITableView(frame: .zero, style: .plain)
+        ContactMultiSelectionSupport.configure(tableView)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.prefetchDataSource = self
@@ -330,9 +369,16 @@ final class GroupMembersListViewController: UIViewController {
 
 extension GroupMembersListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let id = dataSource.itemIdentifier(for: indexPath),
-              let contact = membersByID[id] else { return }
-        didSelectContact(contact)
+        #if !targetEnvironment(macCatalyst)
+        guard !tableView.isEditing else { return }
+        #endif
+        notifySelectionChanged()
+    }
+
+    func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        #if targetEnvironment(macCatalyst)
+        notifySelectionChanged()
+        #endif
     }
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
@@ -387,6 +433,10 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     /// `!repository.sortOrder.isTimeOrder` before each apply — see
     /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
     var showsSectionIndex = true
+
+    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        tableView.isEditing
+    }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         let ids = snapshot().sectionIdentifiers
