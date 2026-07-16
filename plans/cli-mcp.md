@@ -79,7 +79,7 @@ The MCP client is headless — the human is in Claude Desktop / Terminal, not st
 
 **What this changes for Phase 0:** the packaging seam is no longer an open risk — it is **proven in production by Muse**, and GuessWho mirrors it. Phase 0 becomes a *confirmation that our build reproduces Muse's working setup* (esp. the per-channel app-group derivation + the symlink runtime-auth path), not a discovery of whether the approach is viable. The symlink can be the primary install on all channels; copy-path remains the always-works fallback. **Action:** the symlink MECHANISM is verified (runtime `requestAuthorization(.createSymbolicLink)` + `files.user-selected.read-write`, not a bespoke entitlement); the only OPEN item is Adam confirming whether a profile-side entitlement beyond `files.user-selected.read-write` is also needed (see criterion 5).
 
-**Debugging order (from allume) — check criterion 3 FIRST.** The moment Adam answers distribution and the spike runs on the real ship build type, verify criterion 3 (app + CLI resolve the SAME container path) before anything else. If it fails it is ALWAYS an entitlement / group-id mismatch, never a code bug — **do not debug IPC until it passes.** Everything else in Phase 0 is downstream of it.
+**Debugging order (from allume) — check criterion 3 FIRST.** When the spike runs on each real ship build type (App Store, Setapp), verify criterion 3 (app + CLI resolve the SAME container path) before anything else. If it fails it is ALWAYS an entitlement / group-id mismatch (almost certainly the per-channel app-group derivation), never a code bug — **do not debug IPC until it passes.** Everything else in Phase 0 is downstream of it.
 
 **Review cycle** → then Phase 1.
 
