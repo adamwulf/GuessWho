@@ -49,7 +49,7 @@ final class GuidesRepository: NSObject {
     var sortOrder: GuideSortOrder = .recentlyAdded {
         didSet {
             guard sortOrder != oldValue else { return }
-            guides = sortOrder.sorted(guides)
+            guides = sortOrder.sorted(guides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
             NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
         }
     }
@@ -116,8 +116,10 @@ final class GuidesRepository: NSObject {
         let fetchedPlaces = await service.allPlaces()
         let fetchedLinkedPlaceIDs = await service.linkedEndpointIDs(ofKind: .place)
 
-        guides = sortOrder.sorted(fetchedGuides)
-
+        // Build the per-guide place map BEFORE sorting the guides: the
+        // `.placeCount` order sorts guides by how many places each has, so the
+        // counts (which `placeCount(inGuide:)` reads from `placesByGuide`) must
+        // be in place first.
         var byGuide: [UUID: [MapsPlace]] = [:]
         for place in fetchedPlaces {
             byGuide[place.guideID, default: []].append(place)
@@ -127,6 +129,8 @@ final class GuidesRepository: NSObject {
         }
         placesByGuide = byGuide
         linkedPlaceIDs = fetchedLinkedPlaceIDs
+
+        guides = sortOrder.sorted(fetchedGuides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
 
         // Flip BEFORE posting so synchronous observers see the post-load
         // state — same ordering rationale as ContactsRepository.reload().
