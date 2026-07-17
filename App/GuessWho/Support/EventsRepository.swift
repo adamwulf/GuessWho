@@ -9,6 +9,23 @@ extension Notification.Name {
     static let eventsRepositoryDidReload = Notification.Name("EventsRepositoryDidReload")
 }
 
+/// Candidate set shown by the Events tab. Filtering is independent of
+/// `EventSortOrder`: the repository fetches/selects the matching events, then
+/// applies whichever sort order the user currently has selected.
+enum EventListFilter: CaseIterable, Sendable {
+    case showAll
+    case linked
+    case hasAttendees
+
+    var title: String {
+        switch self {
+        case .showAll: "Show All"
+        case .linked: "Linked"
+        case .hasAttendees: "Has Attendees"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class EventsRepository: NSObject {
@@ -18,6 +35,22 @@ final class EventsRepository: NSObject {
     private(set) var isLoading: Bool = false
 
     var searchText: String = ""
+
+    /// The active Events-tab filter. A change clears the prior filter's
+    /// candidate set immediately, then reloads the correct backing pool:
+    /// Linked walks every relationship in the database, while Show All and
+    /// Has Attendees use the existing date-windowed Calendar query.
+    var filter: EventListFilter = .showAll {
+        didSet {
+            guard filter != oldValue else { return }
+            isLoading = true
+            events = []
+            NotificationCenter.default.post(name: .eventsRepositoryDidReload, object: self)
+            Task { [weak self] in
+                await self?.reload()
+            }
+        }
+    }
 
     /// The live sort order every events list reads. Persistence is the app's
     /// job (`EventSortOrderSetting` writes UserDefaults and sets this);
@@ -97,8 +130,20 @@ final class EventsRepository: NSObject {
     }
 
     func reload() async {
+        let requestedFilter = filter
         isLoading = true
-        let fetched = await service.fetchEventsRange(from: windowStart, to: windowEnd)
+        let fetched: [Event]
+        switch requestedFilter {
+        case .linked:
+            fetched = await service.allLinkedEvents()
+        case .showAll, .hasAttendees:
+            fetched = await service.fetchEventsRange(from: windowStart, to: windowEnd)
+        }
+
+        // The filter can change while its asynchronous backing read is in
+        // flight. Never let an older request overwrite the newer selection;
+        // that selection has already started its own reload from `didSet`.
+        guard requestedFilter == filter else { return }
         events = sortOrder.sorted(fetched)
         // Flip BEFORE posting so synchronous observers see the
         // post-load state. See ContactsRepository.reload() for the full
@@ -125,10 +170,18 @@ final class EventsRepository: NSObject {
     }
 
     var filtered: [Event] {
+        let candidates: [Event]
+        switch filter {
+        case .showAll, .linked:
+            candidates = events
+        case .hasAttendees:
+            candidates = events.filter { !$0.attendees.isEmpty }
+        }
+
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return events }
+        guard !trimmed.isEmpty else { return candidates }
         let needle = trimmed.lowercased()
-        return events.filter { e in
+        return candidates.filter { e in
             e.title.lowercased().contains(needle)
                 || (e.location ?? "").lowercased().contains(needle)
                 || (e.eventKitNotes ?? "").lowercased().contains(needle)

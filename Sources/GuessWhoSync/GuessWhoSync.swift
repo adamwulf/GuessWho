@@ -684,6 +684,41 @@ public final class GuessWhoSync: @unchecked Sendable {
         }
     }
 
+    /// Every distinct endpoint of `kind` that participates in at least one
+    /// live (non-soft-deleted) link. This is the bulk form of `links(at:)` for
+    /// list filters: one O(N links) pass can identify all linked contacts,
+    /// events, or places without performing an O(N endpoints × N links) scan.
+    public func linkedEndpoints(ofKind kind: SidecarKind) throws -> Set<SidecarKey> {
+        var result: Set<SidecarKey> = []
+        for key in try sidecars.allKeys() where key.kind == .link {
+            guard let envelope = try sidecars.read(key),
+                  let link = Link(from: envelope),
+                  link.deletedAt == nil else { continue }
+            if link.endpointA.kind == kind {
+                result.insert(link.endpointA)
+            }
+            if link.endpointB.kind == kind {
+                result.insert(link.endpointB)
+            }
+        }
+        return result
+    }
+
+    /// Async overload of `linkedEndpoints(ofKind:)`; the complete link scan
+    /// runs on a background queue so a list reload never blocks its actor.
+    public func linkedEndpoints(ofKind kind: SidecarKind) async throws -> Set<SidecarKey> {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.linkedEndpoints(ofKind: kind)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Contact timestamp cells
 
     /// Upserts ONE named timestamp cell on the envelope at `key`, writing

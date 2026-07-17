@@ -67,6 +67,23 @@ public final class ContactsRepository: NSObject {
     public var peopleSearch = ""
     public var organizationsSearch = ""
 
+    /// People and Organizations keep independent relationship filters while
+    /// sharing the same contact cache and global sort order. Changing either
+    /// filter is presentation-only and immediately republishes the derived
+    /// sections; search and sort remain in effect.
+    public var peopleFilter: LinkFilter = .all {
+        didSet {
+            guard peopleFilter != oldValue else { return }
+            postDidReload(contactDataChanged: false)
+        }
+    }
+    public var organizationsFilter: LinkFilter = .all {
+        didSet {
+            guard organizationsFilter != oldValue else { return }
+            postDidReload(contactDataChanged: false)
+        }
+    }
+
     /// Contacts.app groups (`CNGroup`), cached for the Groups list. Filled by
     /// `loadGroups()`; a failed fetch leaves an empty array and records
     /// `lastError`, exactly like `reload()` does for contacts. Groups are
@@ -116,6 +133,11 @@ public final class ContactsRepository: NSObject {
     /// — list re-renders come from the `contacts`/`sortOrder` changes and
     /// `postDidReload()`.
     @ObservationIgnored private var contactTimestampsByID: [String: ContactTimestamps] = [:]
+
+    /// Canonical GuessWho UUIDs for contact endpoints participating in at
+    /// least one live link. Refreshed in the same sidecar-derived passes as
+    /// timestamps so Linked filters react to both local and iCloud changes.
+    @ObservationIgnored private var linkedContactIDs: Set<String> = []
 
     /// The CURRENT global list sort order. The repository holds it; the APP owns
     /// persistence (e.g. `UserDefaults`, via the stable `rawValue`s) and sets it
@@ -178,6 +200,7 @@ public final class ContactsRepository: NSObject {
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
         await refreshTimestampCache()
+        await refreshLinkedContactIDs()
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
@@ -202,6 +225,15 @@ public final class ContactsRepository: NSObject {
             return
         }
         contactTimestampsByID = (try? await sync.allContactTimestamps()) ?? [:]
+    }
+
+    private func refreshLinkedContactIDs() async {
+        guard let sync else {
+            linkedContactIDs = []
+            return
+        }
+        let endpoints = (try? await sync.linkedEndpoints(ofKind: .contact)) ?? []
+        linkedContactIDs = Set(endpoints.map(\.id))
     }
 
     // MARK: - Groups (read-only)
@@ -1500,11 +1532,25 @@ public final class ContactsRepository: NSObject {
     }
 
     public var people: [Contact] {
-        filtered(matching: peopleSearch, where: { $0.contactType == .person })
+        filtered(matching: peopleSearch, where: {
+            $0.contactType == .person && matchesLinkFilter(peopleFilter, contact: $0)
+        })
     }
 
     public var organizations: [Contact] {
-        filtered(matching: organizationsSearch, where: { $0.contactType == .organization })
+        filtered(matching: organizationsSearch, where: {
+            $0.contactType == .organization && matchesLinkFilter(organizationsFilter, contact: $0)
+        })
+    }
+
+    private func matchesLinkFilter(_ filter: LinkFilter, contact: Contact) -> Bool {
+        switch filter {
+        case .all:
+            return true
+        case .linked:
+            guard let guessWhoID = ContactID(contact: contact).guessWhoID else { return false }
+            return linkedContactIDs.contains(SidecarKey(kind: .contact, id: guessWhoID).id)
+        }
     }
 
     public var peopleSections: [(String, [Contact])] { sectioned(people) }
@@ -1825,6 +1871,7 @@ public final class ContactsRepository: NSObject {
     /// watcher post would re-trigger itself in a loop.
     private func refreshFromSidecarChange() async {
         await refreshTimestampCache()
+        await refreshLinkedContactIDs()
         postDidReload(contactDataChanged: false)
     }
 

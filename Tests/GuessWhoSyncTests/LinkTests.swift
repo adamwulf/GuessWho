@@ -125,6 +125,32 @@ struct LinkTests {
         #expect(live.isEmpty)
     }
 
+    @Test
+    func linkedEndpointsReturnsDistinctLiveEndpointsOfRequestedKind() throws {
+        let (sync, _) = makeOrchestrator()
+        let place = SidecarKey(kind: .place, id: "44444444-4444-4444-4444-444444444444")
+        let keptA = try sync.addLink(from: contactA, to: eventX, note: "")
+        _ = try sync.addLink(from: eventX, to: contactB, note: "")
+        _ = try sync.addLink(from: contactA, to: place, note: "duplicate contact endpoint")
+        let removed = try sync.addLink(from: contactB, to: place, note: "removed")
+        try sync.removeLink(id: removed.id)
+
+        #expect(keptA.deletedAt == nil)
+        #expect(try sync.linkedEndpoints(ofKind: .contact) == Set([contactA, contactB]))
+        #expect(try sync.linkedEndpoints(ofKind: .event) == Set([eventX]))
+        #expect(try sync.linkedEndpoints(ofKind: .place) == Set([place]))
+        #expect(try sync.linkedEndpoints(ofKind: .guide).isEmpty)
+    }
+
+    @Test
+    func linkedEndpointsAsyncReturnsRequestedKind() async throws {
+        let (sync, _) = makeOrchestrator()
+        _ = try sync.addLink(from: contactA, to: eventX, note: "")
+
+        let asynchronous = try await sync.linkedEndpoints(ofKind: .contact)
+        #expect(asynchronous == Set([contactA]))
+    }
+
     // MARK: - Cross-kind endpoints
 
     @Test

@@ -32,6 +32,7 @@ final class GuidePlacesListViewController: UIViewController {
     private var sortButton: UIBarButtonItem!
     private var refreshButton: UIBarButtonItem!
     private var isRefreshing = false
+    private var filterButton: UIBarButtonItem!
 
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
@@ -161,9 +162,12 @@ final class GuidePlacesListViewController: UIViewController {
         )
         refreshButton.accessibilityLabel = "Refresh Guide"
         refreshButton.isEnabled = guide.sourceURL != nil
-        // The first item is the trailing (top-right) item; keep the sort menu
-        // beside it so both existing and new actions remain available.
-        navigationItem.rightBarButtonItems = [refreshButton, sortButton]
+        filterButton = makeLinkFilterBarButtonItem(current: repository.placeFilter) { [weak repository] filter in
+            repository?.placeFilter = filter
+        }
+        // The first item is the trailing (top-right) item. Preserve Refresh in
+        // that position, with Filter and Sort beside it.
+        navigationItem.rightBarButtonItems = [refreshButton, filterButton, sortButton]
     }
 
     @objc
@@ -205,6 +209,12 @@ final class GuidePlacesListViewController: UIViewController {
         present(alert, animated: true)
     }
 
+    private func refreshFilterMenu() {
+        filterButton.menu = makeLinkFilterMenu(current: repository.placeFilter) { [weak repository] filter in
+            repository?.placeFilter = filter
+        }
+    }
+
     // MARK: - Snapshot wiring
 
     @MainActor
@@ -222,6 +232,7 @@ final class GuidePlacesListViewController: UIViewController {
                 // Rebuild the sort menu so the checkmark tracks the order that
                 // produced this reload (menus are immutable snapshots).
                 self.sortButton.menu = self.makePlaceSortMenu(repository: self.repository)
+                self.refreshFilterMenu()
             }
         }
         // The resolver moves its "looking up now" marker between rows without a
@@ -287,6 +298,7 @@ final class GuidePlacesListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        emptyLabel.text = repository.placeFilter == .linked ? "No Linked Places" : "No Places"
         emptyLabel.isHidden = !places.isEmpty
     }
 
@@ -389,6 +401,7 @@ extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDro
         // Name / Last Viewed orders are derived, so hand-placing a row there
         // has nothing to persist. Returning [] disables the drag lift.
         guard repository.placeSortOrder == .guideOrder,
+              repository.placeFilter == .all,
               dataSource.itemIdentifier(for: indexPath) != nil else { return [] }
         // Empty provider — the drop path uses item.sourceIndexPath, so there's
         // nothing to encode (mirrors FavoritesListViewController).
@@ -400,14 +413,16 @@ extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDro
         dropSessionDidUpdate session: UIDropSession,
         withDestinationIndexPath destinationIndexPath: IndexPath?
     ) -> UITableViewDropProposal {
-        guard repository.placeSortOrder == .guideOrder else {
+        guard repository.placeSortOrder == .guideOrder,
+              repository.placeFilter == .all else {
             return UITableViewDropProposal(operation: .cancel)
         }
         return UITableViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
     }
 
     func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
-        guard repository.placeSortOrder == .guideOrder else { return }
+        guard repository.placeSortOrder == .guideOrder,
+              repository.placeFilter == .all else { return }
         let destination = coordinator.destinationIndexPath
             ?? IndexPath(row: tableView.numberOfRows(inSection: 0), section: 0)
 

@@ -144,14 +144,19 @@ final class OrganizationsListViewController: UIViewController {
         addItem.accessibilityLabel = "Add Organization"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
+        let filterItem = makeLinkFilterBarButtonItem(current: repository.organizationsFilter) { [weak repository] filter in
+            repository?.organizationsFilter = filter
+        }
+        filterBarButtonItem = filterItem
         let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
             self?.toggleSelectionMode()
         }
         selectionBarButtonItem = selectionItem
-        navigationItem.rightBarButtonItems = [addItem, sortItem] + [selectionItem].compactMap { $0 }
+        navigationItem.rightBarButtonItems = [addItem, filterItem, sortItem] + [selectionItem].compactMap { $0 }
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
+    private var filterBarButtonItem: UIBarButtonItem?
     private var selectionBarButtonItem: UIBarButtonItem?
 
     private func toggleSelectionMode() {
@@ -188,6 +193,12 @@ final class OrganizationsListViewController: UIViewController {
     /// `.contactsRepositoryDidReload`).
     private func refreshSortMenu() {
         sortBarButtonItem?.menu = makeSortMenu(repository: repository)
+    }
+
+    private func refreshFilterMenu() {
+        filterBarButtonItem?.menu = makeLinkFilterMenu(current: repository.organizationsFilter) { [weak repository] filter in
+            repository?.organizationsFilter = filter
+        }
     }
 
     private func configureEmptyState() {
@@ -244,6 +255,7 @@ final class OrganizationsListViewController: UIViewController {
                 // ContactsListViewController) — the global sort change posts
                 // this same notification.
                 self?.refreshSortMenu()
+                self?.refreshFilterMenu()
                 self?.applySnapshot(animated: true)
             }
         }
@@ -328,6 +340,8 @@ final class OrganizationsListViewController: UIViewController {
         }
         if isEmpty && !repository.organizationsSearch.isEmpty {
             emptyLabel.text = "No organizations match \"\(repository.organizationsSearch)\"."
+        } else if repository.organizationsFilter == .linked {
+            emptyLabel.text = "No Linked Organizations"
         } else {
             emptyLabel.text = "No Organizations"
         }
