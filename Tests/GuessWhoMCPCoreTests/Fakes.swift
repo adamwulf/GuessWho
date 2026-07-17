@@ -38,9 +38,21 @@ final class FakeContactSource: MCPContactSource {
     var membersByGroup: [String: [Contact]] = [:]
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
-    var linksByEffectiveID: [String: [Link]] = [:]
+    var linksByID: [UUID: Link] = [:]
     var linkedContactsByLinkID: [UUID: Contact] = [:]
     var favoriteEffectiveIDs: Set<String> = []
+
+    /// When true, every write throws like the engine's `.unavailable`
+    /// storage state.
+    var unavailable = false
+    /// How many identity mints the fake performed (a mint = a first write
+    /// to a contact with no durable identity).
+    private(set) var mintCount = 0
+    /// One-shot: the NEXT mint stores its data under its own fresh UUID but
+    /// stamps the card with a DIFFERENT UUID — simulating a concurrent
+    /// first-writer (e.g. the UI) whose mint won the race. Exercises the
+    /// dispatcher's post-mint verify + retry.
+    var simulateLosingMintOnce = false
 
     nonisolated init() {}
 
@@ -48,6 +60,43 @@ final class FakeContactSource: MCPContactSource {
         // Same rule the engine uses: durable identity first, local fallback.
         // Test-side only; nothing here crosses a wire.
         id.restorationToken.guessWhoID ?? id.restorationToken.localID
+    }
+
+    /// Resolve-or-mint, mirroring the engine's structure: the resolve spans
+    /// an `await`, so two UNSERIALIZED first-writers interleave exactly like
+    /// the real `resolveOrMintGuessWhoID` race — each mints, the last stamp
+    /// wins the card, the loser's data is stranded. The dispatcher's
+    /// single-flight + post-mint verify are what keep tests green here.
+    private func effectiveWriteID(_ id: ContactID) async throws -> String {
+        if unavailable { throw SidecarUnavailableError() }
+        if let existing = id.restorationToken.guessWhoID { return existing }
+        let localID = id.restorationToken.localID
+        if let carried = contacts.first(where: { $0.contactID.restorationToken.localID == localID })?
+            .contactID.restorationToken.guessWhoID {
+            return carried
+        }
+        mintCount += 1
+        let minted = UUID().uuidString.lowercased()
+        await Task.yield() // the engine's await window: racers interleave here
+        if simulateLosingMintOnce {
+            simulateLosingMintOnce = false
+            stamp(localID: localID, guessWhoID: UUID().uuidString.lowercased())
+            return minted // our data lands under the losing identity
+        }
+        stamp(localID: localID, guessWhoID: minted) // last write wins the card
+        return minted
+    }
+
+    private func stamp(localID: String, guessWhoID: String) {
+        guard let index = contacts.firstIndex(where: {
+            $0.contactID.restorationToken.localID == localID
+        }) else { return }
+        var contact = contacts[index]
+        // The real adapter replaces urlAddresses wholesale — LWW, one URL.
+        contact.urlAddresses.removeAll { $0.value.hasPrefix("guesswho://") }
+        contact.urlAddresses.append(
+            LabeledValue(label: "", value: "guesswho://contact/\(guessWhoID)"))
+        contacts[index] = contact
     }
 
     var allContacts: [Contact] { contacts }
@@ -63,21 +112,41 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func notes(for id: ContactID) -> [ContactNote] {
+        // Mirrors the live read contract: tombstones are excluded.
+        (notesByEffectiveID[effectiveID(id)] ?? []).filter { !$0.isDeleted }
+    }
+
+    func allNotes(for id: ContactID) -> [ContactNote] {
         notesByEffectiveID[effectiveID(id)] ?? []
     }
 
     func fields(for id: ContactID) -> [SidecarField] {
         // Mirrors the live `fields(for:)` contract: attachment-typed fields
-        // are excluded at the source.
-        (fieldsByEffectiveID[effectiveID(id)] ?? []).filter { $0.type != .blob }
+        // and tombstones are excluded at the source.
+        (fieldsByEffectiveID[effectiveID(id)] ?? [])
+            .filter { $0.type != .blob && $0.deletedAt == nil }
+    }
+
+    func allFields(for id: ContactID) -> [SidecarField] {
+        fieldsByEffectiveID[effectiveID(id)] ?? []
     }
 
     func links(for id: ContactID) async -> [Link] {
-        linksByEffectiveID[effectiveID(id)] ?? []
+        let effective = effectiveID(id)
+        return linksByID.values
+            .filter { link in
+                link.deletedAt == nil
+                    && (link.endpointA.id == effective || link.endpointB.id == effective)
+            }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     func linkedContact(of link: Link, for id: ContactID) -> Contact? {
         linkedContactsByLinkID[link.id]
+    }
+
+    func link(id linkID: UUID) -> Link? {
+        linksByID[linkID]
     }
 
     func isFavorite(_ id: ContactID) -> Bool {
@@ -89,13 +158,157 @@ final class FakeContactSource: MCPContactSource {
     func members(ofGroup groupLocalID: String) async -> [Contact] {
         membersByGroup[groupLocalID] ?? []
     }
+
+    // MARK: Writes
+
+    func addNote(for id: ContactID, body: String, createdAt: Date) async throws -> UUID {
+        let key = try await effectiveWriteID(id)
+        let noteID = UUID()
+        notesByEffectiveID[key, default: []].append(ContactNote(
+            id: noteID, body: body, createdAt: createdAt,
+            modifiedAt: Date(), modifiedBy: Sentinels.deviceID))
+        return noteID
+    }
+
+    func editNote(for id: ContactID, id noteID: UUID, newBody: String, createdAt: Date?) async throws {
+        let key = try await effectiveWriteID(id)
+        guard var list = notesByEffectiveID[key],
+              let index = list.firstIndex(where: { $0.id == noteID }) else { return }
+        let old = list[index]
+        // setField semantics: an edit bumps the stamp and UN-deletes.
+        list[index] = ContactNote(
+            id: old.id, body: newBody, createdAt: createdAt ?? old.createdAt,
+            modifiedAt: Date(), modifiedBy: Sentinels.deviceID, deletedAt: nil)
+        notesByEffectiveID[key] = list
+    }
+
+    func deleteNote(for id: ContactID, id noteID: UUID) async throws {
+        let key = try await effectiveWriteID(id)
+        guard var list = notesByEffectiveID[key],
+              let index = list.firstIndex(where: { $0.id == noteID }),
+              list[index].deletedAt == nil else { return }
+        let old = list[index]
+        let now = Date()
+        list[index] = ContactNote(
+            id: old.id, body: old.body, createdAt: old.createdAt,
+            modifiedAt: now, modifiedBy: Sentinels.deviceID, deletedAt: now)
+        notesByEffectiveID[key] = list
+    }
+
+    func upsertField(
+        for id: ContactID, field: String, value: JSONValue, type: SidecarFieldType
+    ) async throws -> UUID {
+        let key = try await effectiveWriteID(id)
+        var list = fieldsByEffectiveID[key] ?? []
+        if let index = list.firstIndex(where: { $0.deletedAt == nil && $0.field == field }) {
+            let old = list[index]
+            if old.type == type {
+                list[index] = SidecarField(
+                    id: old.id, field: field, type: type, value: value,
+                    createdAt: old.createdAt, modifiedAt: Date(),
+                    modifiedBy: Sentinels.deviceID, deletedAt: nil)
+                fieldsByEffectiveID[key] = list
+                return old.id
+            }
+            // Type change: replace (tombstone old, mint new) — the engine's
+            // type-replace upsert, the reason reserved names are rejected.
+            list[index] = SidecarField(
+                id: old.id, field: old.field, type: old.type, value: old.value,
+                createdAt: old.createdAt, modifiedAt: Date(),
+                modifiedBy: Sentinels.deviceID, deletedAt: Date())
+        }
+        let newID = UUID()
+        list.append(SidecarField(
+            id: newID, field: field, type: type, value: value,
+            createdAt: Date(), modifiedAt: Date(),
+            modifiedBy: Sentinels.deviceID, deletedAt: nil))
+        fieldsByEffectiveID[key] = list
+        return newID
+    }
+
+    func editField(for id: ContactID, id fieldID: UUID, value: String) async throws {
+        let key = try await effectiveWriteID(id)
+        guard var list = fieldsByEffectiveID[key],
+              let index = list.firstIndex(where: { $0.id == fieldID }) else { return }
+        let old = list[index]
+        list[index] = SidecarField(
+            id: old.id, field: old.field, type: old.type, value: .string(value),
+            createdAt: old.createdAt, modifiedAt: Date(),
+            modifiedBy: Sentinels.deviceID, deletedAt: nil)
+        fieldsByEffectiveID[key] = list
+    }
+
+    func deleteField(for id: ContactID, id fieldID: UUID) async throws {
+        let key = try await effectiveWriteID(id)
+        guard var list = fieldsByEffectiveID[key],
+              let index = list.firstIndex(where: { $0.id == fieldID }),
+              list[index].deletedAt == nil else { return }
+        let old = list[index]
+        let now = Date()
+        list[index] = SidecarField(
+            id: old.id, field: old.field, type: old.type, value: old.value,
+            createdAt: old.createdAt, modifiedAt: now,
+            modifiedBy: Sentinels.deviceID, deletedAt: now)
+        fieldsByEffectiveID[key] = list
+    }
+
+    func addLink(from a: ContactID, to b: ContactID, note: String) async throws -> Link {
+        let aKey = try await effectiveWriteID(a)
+        let bKey = try await effectiveWriteID(b)
+        let now = Date()
+        let link = Link(
+            id: UUID(),
+            endpointA: SidecarKey(kind: .contact, id: aKey),
+            endpointB: SidecarKey(kind: .contact, id: bKey),
+            note: note, createdAt: now, modifiedAt: now,
+            modifiedBy: Sentinels.deviceID)
+        linksByID[link.id] = link
+        if let far = contacts.first(where: { $0.contactID.restorationToken.guessWhoID == bKey }) {
+            linkedContactsByLinkID[link.id] = far
+        }
+        return link
+    }
+
+    func setLinkNote(id linkID: UUID, note: String) throws {
+        if unavailable { throw SidecarUnavailableError() }
+        guard var link = linksByID[linkID] else { return }
+        link.note = note
+        link.modifiedAt = Date()
+        link.deletedAt = nil // undelete, mirroring the engine
+        linksByID[linkID] = link
+    }
+
+    func removeLink(id linkID: UUID) throws {
+        if unavailable { throw SidecarUnavailableError() }
+        guard var link = linksByID[linkID], link.deletedAt == nil else { return }
+        let now = Date()
+        link.deletedAt = now
+        link.modifiedAt = now
+        linksByID[linkID] = link
+    }
+
+    func toggleFavorite(_ id: ContactID) async throws -> Bool {
+        let key = try await effectiveWriteID(id)
+        if favoriteEffectiveIDs.contains(key) {
+            favoriteEffectiveIDs.remove(key)
+            return false
+        }
+        favoriteEffectiveIDs.insert(key)
+        return true
+    }
 }
 
 @MainActor
 final class FakeEventSource: MCPEventSource {
     var events: [Event] = []
     var eventKitOnlyEvents: [String: Event] = [:]
-    var tagsByEventUUID: [String: [EventTag]] = [:]
+    /// Tag storage mirrors the engine: tags are `.note`-typed field cells
+    /// named "tag"; the live `eventTags` read derives from these.
+    var tagFieldsByEventUUID: [String: [SidecarField]] = [:]
+    /// Every event UUID a tag WRITE touched — the Option B test asserts
+    /// this stays empty for un-adopted events (the dispatcher must never
+    /// reach the engine).
+    private(set) var tagWriteEventUUIDs: [String] = []
 
     nonisolated init() {}
 
@@ -112,7 +325,52 @@ final class FakeEventSource: MCPEventSource {
     }
 
     func eventTags(forEventUUID uuid: String) -> [EventTag] {
-        tagsByEventUUID[uuid.lowercased()] ?? []
+        (tagFieldsByEventUUID[uuid.lowercased()] ?? []).compactMap { field in
+            guard field.deletedAt == nil, case .string(let text) = field.value else { return nil }
+            return EventTag(id: field.id, text: text, createdAt: field.createdAt, deletedAt: nil)
+        }
+    }
+
+    func allEventTagFields(forEventUUID uuid: String) -> [SidecarField] {
+        tagFieldsByEventUUID[uuid.lowercased()] ?? []
+    }
+
+    func addEventTag(text: String, forEventUUID uuid: String) throws -> UUID {
+        tagWriteEventUUIDs.append(uuid)
+        let tagID = UUID()
+        tagFieldsByEventUUID[uuid.lowercased(), default: []].append(SidecarField(
+            id: tagID, field: "tag", type: .note, value: .string(text),
+            createdAt: Date(), modifiedAt: Date(),
+            modifiedBy: Sentinels.deviceID, deletedAt: nil))
+        return tagID
+    }
+
+    func editEventTag(id: UUID, text: String, forEventUUID uuid: String) throws {
+        tagWriteEventUUIDs.append(uuid)
+        let key = uuid.lowercased()
+        guard var list = tagFieldsByEventUUID[key],
+              let index = list.firstIndex(where: { $0.id == id }) else { return }
+        let old = list[index]
+        list[index] = SidecarField(
+            id: old.id, field: old.field, type: old.type, value: .string(text),
+            createdAt: old.createdAt, modifiedAt: Date(),
+            modifiedBy: Sentinels.deviceID, deletedAt: nil)
+        tagFieldsByEventUUID[key] = list
+    }
+
+    func deleteEventTag(id: UUID, forEventUUID uuid: String) throws {
+        tagWriteEventUUIDs.append(uuid)
+        let key = uuid.lowercased()
+        guard var list = tagFieldsByEventUUID[key],
+              let index = list.firstIndex(where: { $0.id == id }),
+              list[index].deletedAt == nil else { return }
+        let old = list[index]
+        let now = Date()
+        list[index] = SidecarField(
+            id: old.id, field: old.field, type: old.type, value: old.value,
+            createdAt: old.createdAt, modifiedAt: now,
+            modifiedBy: Sentinels.deviceID, deletedAt: now)
+        tagFieldsByEventUUID[key] = list
     }
 }
 
@@ -127,6 +385,36 @@ final class FakeGuideSource: MCPGuideSource {
     func allPlaces() async -> [MapsPlace] { places }
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         places.filter { $0.guideID == guideID }
+    }
+
+    func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
+        let guide = MapsGuide(
+            id: UUID(), name: snapshot.name, sourceURL: sourceURL, createdAt: Date())
+        guides.append(guide)
+        for entry in snapshot.entries {
+            places.append(MapsPlace(
+                id: UUID(), guideID: guide.id,
+                name: entry.address ?? "",
+                address: entry.address,
+                latitude: entry.latitude, longitude: entry.longitude))
+        }
+        return guide.id
+    }
+
+    func deleteGuide(uuid: String) throws {
+        guides.removeAll { $0.id.uuidString.lowercased() == uuid.lowercased() }
+        places.removeAll { $0.guideID.uuidString.lowercased() == uuid.lowercased() }
+    }
+
+    func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) {
+        let byID = Dictionary(uniqueKeysWithValues: places.map { ($0.id, $0) })
+        var reordered: [MapsPlace] = places.filter { $0.guideID != guideID }
+        reordered.append(contentsOf: orderedIDs.compactMap { byID[$0] })
+        places = reordered
+    }
+
+    func deletePlace(uuid: String) throws {
+        places.removeAll { $0.id.uuidString.lowercased() == uuid.lowercased() }
     }
 }
 
@@ -151,6 +439,7 @@ struct Fixture {
     let events: FakeEventSource
     let guides: FakeGuideSource
     let gates: FakeGateSource
+    let audit: MCPAuditLog
 
     static let helper = RequestOrigin.mcp.makeHelperId()
 
@@ -175,7 +464,7 @@ struct Fixture {
     }
 
     /// A never-reconciled person (no identity URL — exercises the
-    /// nil-identity fingerprint path).
+    /// nil-identity fingerprint path and the first-write mint).
     @MainActor
     static func freshFace() -> Contact {
         Contact(
@@ -195,12 +484,24 @@ struct Fixture {
             note: Sentinels.appleNote)
     }
 
+    /// A temp-file audit log, unique per fixture.
+    static func makeAuditLog() -> MCPAuditLog {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mcp-audit-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("audit.jsonl")
+        return MCPAuditLog(fileURL: url)
+    }
+
     @MainActor
-    static func make() -> Fixture {
+    static func make(
+        writeLimitPerWindow: Int = 30,
+        writeWindowSeconds: TimeInterval = 60
+    ) -> Fixture {
         let contacts = FakeContactSource()
         let events = FakeEventSource()
         let guides = FakeGuideSource()
         let gates = FakeGateSource()
+        let audit = makeAuditLog()
 
         let jane = janeDoe()
         let fresh = freshFace()
@@ -250,7 +551,8 @@ struct Fixture {
             createdAt: Date(timeIntervalSince1970: 1_691_000_000),
             modifiedAt: Date(timeIntervalSince1970: 1_691_000_000),
             modifiedBy: Sentinels.deviceID)
-        contacts.linksByEffectiveID[janeKey] = [personLink, organizationLink]
+        contacts.linksByID[personLink.id] = personLink
+        contacts.linksByID[organizationLink.id] = organizationLink
         contacts.linkedContactsByLinkID[personLink.id] = fresh
         contacts.linkedContactsByLinkID[organizationLink.id] = organization
         contacts.favoriteEffectiveIDs = [janeKey]
@@ -275,8 +577,12 @@ struct Fixture {
             startDate: Date(timeIntervalSince1970: 1_760_100_000),
             endDate: Date(timeIntervalSince1970: 1_760_103_600))
         events.eventKitOnlyEvents["EK-SENTINEL-42"] = systemOnly
-        events.tagsByEventUUID[gala.id.uuidString.lowercased()] = [
-            EventTag(id: UUID(), text: "fundraiser", createdAt: Date(timeIntervalSince1970: 1_750_000_000))
+        events.tagFieldsByEventUUID[gala.id.uuidString.lowercased()] = [
+            SidecarField(
+                id: UUID(), field: "tag", type: .note, value: .string("fundraiser"),
+                createdAt: Date(timeIntervalSince1970: 1_750_000_000),
+                modifiedAt: Date(timeIntervalSince1970: 1_750_000_000),
+                modifiedBy: Sentinels.deviceID, deletedAt: nil)
         ]
 
         let guide = MapsGuide(
@@ -291,10 +597,13 @@ struct Fixture {
         ]
 
         let dispatcher = ToolDispatcher(
-            contacts: contacts, events: events, guides: guides, gates: gates)
+            contacts: contacts, events: events, guides: guides, gates: gates,
+            audit: audit,
+            writeLimitPerWindow: writeLimitPerWindow,
+            writeWindowSeconds: writeWindowSeconds)
         return Fixture(
             dispatcher: dispatcher, contacts: contacts, events: events,
-            guides: guides, gates: gates)
+            guides: guides, gates: gates, audit: audit)
     }
 }
 

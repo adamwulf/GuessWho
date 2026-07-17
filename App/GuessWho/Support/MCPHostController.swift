@@ -43,10 +43,34 @@ final class MCPHostController: NSObject {
         CLIHelper.appGroupID.flatMap { UserDefaults(suiteName: $0) }
     }
 
+    /// Device-local agent-activity log (plans/cli-mcp.md Phase 2). Lives in
+    /// the app's own Application Support directory — NEVER the synced
+    /// sidecar root or an iCloud container (a synced audit log would be
+    /// LWW-merged across devices and burn the quota the write budget
+    /// protects). Owned here, independent of the channel's running state,
+    /// so the Recently Deleted screen works while the channel is off.
+    let auditLog = MCPAuditLog(fileURL: MCPHostController.auditLogURL())
+
     init(service: SyncService, repository: ContactsRepository) {
         self.service = service
         self.repository = repository
         super.init()
+    }
+
+    private static func auditLogURL() -> URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("AgentActivity", isDirectory: true)
+            .appendingPathComponent("agent-activity.jsonl")
+    }
+
+    /// Backing model for the app's Recently Deleted screen: the audit log's
+    /// delete entries resolved against the SAME live repository/service
+    /// instances the UI uses, restores routed through the same write paths.
+    func makeRecentlyDeletedService() -> RecentlyDeletedService {
+        RecentlyDeletedService(audit: auditLog, contacts: repository, events: service)
     }
 
     // MARK: - Lifecycle
@@ -129,7 +153,8 @@ final class MCPHostController: NSObject {
 
         let gates = MCPGates(service: service, defaults: UserDefaults(suiteName: groupID))
         let dispatcher = ToolDispatcher(
-            contacts: repository, events: service, guides: service, gates: gates)
+            contacts: repository, events: service, guides: service, gates: gates,
+            audit: auditLog)
         let newHost = MCPPipeHost(
             container: container,
             handler: { request in await dispatcher.handle(request) },
