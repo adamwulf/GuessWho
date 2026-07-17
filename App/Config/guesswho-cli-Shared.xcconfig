@@ -20,6 +20,23 @@ PRODUCT_NAME = guesswho-cli
 SDKROOT = macosx
 SUPPORTED_PLATFORMS = macosx
 
+// The transport stack (GuessWhoMCPWire/GuessWhoMCPTransport → mcp-template)
+// declares a macOS 15 floor; override the project-level 14.0.
+MACOSX_DEPLOYMENT_TARGET = 15.0
+
+// Xcode 26 builds package products consumed by multiple project targets
+// (swift-log's Logging, via GuessWhoSync + GuessWhoLogging + this helper)
+// as shared dynamic "…_PackageProduct" frameworks. The app embeds the
+// CATALYST variants at Contents/Frameworks — a native macOS Mach-O cannot
+// load those ("incompatible platform"), so the app target's "Embed CLI
+// Frameworks" script phase copies the helper's macOS-platform package
+// frameworks to Contents/Frameworks/CLI and this rpath points there.
+// dyld resolves @executable_path through the /usr/local/bin symlink to
+// the real binary location, so the symlinked `guesswho` invocation works
+// too. Without this the shipped helper dies at dyld ("Library not
+// loaded: @rpath/Logging…").
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks/CLI
+
 SWIFT_VERSION = 6.0
 
 // Signing — matches the app's automatic-signing setup, plus the Muse helper

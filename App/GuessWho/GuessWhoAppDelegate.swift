@@ -28,6 +28,13 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// every reload path.
     let guidesRepository: GuidesRepository
     let contactPhotoLoader: ContactPhotoLoader
+    #if targetEnvironment(macCatalyst)
+    /// App-side end of the CLI/MCP channel (plans/cli-mcp.md). Lazy so it
+    /// only materializes on `bootstrap()` in `didFinishLaunching`; Catalyst
+    /// only (INV-5 — iOS has no host to serve).
+    private(set) lazy var mcpHostController = MCPHostController(
+        service: service, repository: contactsRepository)
+    #endif
 
     #if targetEnvironment(macCatalyst)
     /// Loopback listener for the Chrome/Brave extension's LinkedIn handoff
@@ -191,6 +198,11 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
         updateCLIProbeListener()
+
+        // App-side end of the CLI/MCP channel: observes the master toggles
+        // and runs the channel only while one is on (plans/cli-mcp.md
+        // Phase 1). Injects the live service + repository (INV-2b).
+        mcpHostController.bootstrap()
         #endif
 
         return true
@@ -269,6 +281,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// log.
     func applicationWillTerminate(_ application: UIApplication) {
         Self.lifecycleLog.notice("app willTerminate")
+        #if targetEnvironment(macCatalyst)
+        mcpHostController.shutdown()
+        #endif
     }
 
     // MARK: - Help menu (developer-facing debug actions)

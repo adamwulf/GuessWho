@@ -195,6 +195,15 @@ final class SyncService {
         }
     }
 
+    /// Snapshot of a system calendar event by its EventKit identifier —
+    /// read-only, mints nothing. Used by the CLI/MCP read path to resolve
+    /// events the user can see but that have no GuessWho record yet
+    /// (reads never adopt; see plans/cli-mcp.md).
+    func eventKitEvent(eventKitID: String) -> Event? {
+        guard eventsAuthorization == .authorized else { return nil }
+        return (try? eventsAdapter.fetch(eventKitID: eventKitID)) ?? nil
+    }
+
     // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or
     // nil. `async`: the lookup walks every event sidecar, so it rides the
     // engine's background-hop overload.

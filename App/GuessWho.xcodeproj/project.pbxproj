@@ -21,6 +21,8 @@
 		C700000000000000000000A4 /* GuessWhoAppKitBridge.bundle in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = D100000000000000000000D2 /* GuessWhoSync */; };
 		F400000000000000000000D3 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D2 /* ArgumentParser */; };
+		F400000000000000000000D5 /* GuessWhoMCPWire in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D4 /* GuessWhoMCPWire */; };
+		F400000000000000000000D7 /* GuessWhoMCPTransport in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D6 /* GuessWhoMCPTransport */; };
 		F400000000000000000000F1 /* guesswho-cli in Embed CLI */ = {isa = PBXBuildFile; fileRef = F400000000000000000000C0 /* guesswho-cli */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -272,6 +274,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				F400000000000000000000D3 /* ArgumentParser in Frameworks */,
+				F400000000000000000000D5 /* GuessWhoMCPWire in Frameworks */,
+				F400000000000000000000D7 /* GuessWhoMCPTransport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -361,6 +365,7 @@
 				A100000000000000000000F7 /* Embed Frameworks */,
 				B200000000000000000000F0 /* Embed Foundation Extensions */,
 				F400000000000000000000F0 /* Embed CLI */,
+				F400000000000000000000F8 /* Embed CLI Frameworks */,
 			);
 			buildRules = (
 			);
@@ -510,6 +515,8 @@
 			name = "guesswho-cli";
 			packageProductDependencies = (
 				F400000000000000000000D2 /* ArgumentParser */,
+				F400000000000000000000D4 /* GuessWhoMCPWire */,
+				F400000000000000000000D6 /* GuessWhoMCPTransport */,
 			);
 			productName = "guesswho-cli";
 			productReference = F400000000000000000000C0 /* guesswho-cli */;
@@ -620,6 +627,29 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		F400000000000000000000F8 /* Embed CLI Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/guesswho-cli",
+				"$(BUILD_DIR)/$(CONFIGURATION)/PackageFrameworks/**",
+			);
+			name = "Embed CLI Frameworks";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Frameworks/CLI",
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Frameworks/CLI/**",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copies the embedded helper's macOS-platform package frameworks next to it.\n# Xcode links package products consumed by multiple targets (swift-log's\n# Logging) as shared dynamic PackageProduct frameworks; the app embeds the\n# CATALYST variants at Contents/Frameworks, which the native macOS helper\n# cannot load (incompatible platform). This phase discovers the helper's\n# @rpath PackageProduct dependencies and copies the macOS-built variants to\n# Contents/Frameworks/CLI (the helper's rpath), re-signing each. See\n# Config/guesswho-cli-Shared.xcconfig (LD_RUNPATH_SEARCH_PATHS).\nset -eu\nCLI=\"${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}/guesswho-cli\"\nif [ ! -f \"$CLI\" ]; then\n  # iOS builds do not embed the helper (INV-5).\n  exit 0\nfi\nDEST=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Frameworks/CLI\"\nSRC_DIR=\"${BUILD_DIR}/${CONFIGURATION}/PackageFrameworks\"\nmkdir -p \"$DEST\"\notool -L \"$CLI\" | sed -n 's|.*@rpath/\\([^/]*_PackageProduct\\.framework\\).*|\\1|p' | sort -u | while read -r FW; do\n  if [ ! -d \"${SRC_DIR}/${FW}\" ]; then\n    echo \"error: ${FW} not found at ${SRC_DIR} - the helper links a package framework this build did not produce\" >&2\n    exit 1\n  fi\n  rm -rf \"${DEST}/${FW}\"\n  cp -R \"${SRC_DIR}/${FW}\" \"${DEST}/${FW}\"\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"${DEST}/${FW}\"\ndone\n";
+		};
 		B200000000000000000000B5 /* Generate manifest.json */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -1346,6 +1376,14 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
 			productName = ArgumentParser;
+		};
+		F400000000000000000000D4 /* GuessWhoMCPWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoMCPWire;
+		};
+		F400000000000000000000D6 /* GuessWhoMCPTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoMCPTransport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
