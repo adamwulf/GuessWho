@@ -61,11 +61,12 @@ extension UIViewController {
     @MainActor
     func makeLinkFilterMenu(
         current: LinkFilter,
+        allTitle: String,
         onSelect: @escaping (LinkFilter) -> Void
     ) -> UIMenu {
         let actions = LinkFilter.allCases.map { filter in
             UIAction(
-                title: filter == .all ? "All" : "Linked",
+                title: filter == .all ? allTitle : "Linked",
                 state: filter == current ? .on : .off
             ) { _ in
                 onSelect(filter)
@@ -78,13 +79,14 @@ extension UIViewController {
     @MainActor
     func makeLinkFilterBarButtonItem(
         current: LinkFilter,
+        allTitle: String,
         onSelect: @escaping (LinkFilter) -> Void
     ) -> UIBarButtonItem {
         let item = UIBarButtonItem(
             title: "Filter",
             image: nil,
             primaryAction: nil,
-            menu: makeLinkFilterMenu(current: current, onSelect: onSelect)
+            menu: makeLinkFilterMenu(current: current, allTitle: allTitle, onSelect: onSelect)
         )
         item.accessibilityLabel = "Filter"
         return item

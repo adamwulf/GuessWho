@@ -144,7 +144,10 @@ final class OrganizationsListViewController: UIViewController {
         addItem.accessibilityLabel = "Add Organization"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        let filterItem = makeLinkFilterBarButtonItem(current: repository.organizationsFilter) { [weak repository] filter in
+        let filterItem = makeLinkFilterBarButtonItem(
+            current: repository.organizationsFilter,
+            allTitle: "All Orgs"
+        ) { [weak repository] filter in
             repository?.organizationsFilter = filter
         }
         filterBarButtonItem = filterItem
@@ -196,7 +199,10 @@ final class OrganizationsListViewController: UIViewController {
     }
 
     private func refreshFilterMenu() {
-        filterBarButtonItem?.menu = makeLinkFilterMenu(current: repository.organizationsFilter) { [weak repository] filter in
+        filterBarButtonItem?.menu = makeLinkFilterMenu(
+            current: repository.organizationsFilter,
+            allTitle: "All Orgs"
+        ) { [weak repository] filter in
             repository?.organizationsFilter = filter
         }
     }

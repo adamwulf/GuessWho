@@ -165,7 +165,10 @@ final class ContactsListViewController: UIViewController {
         addItem.accessibilityLabel = "Add Contact"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        let filterItem = makeLinkFilterBarButtonItem(current: repository.peopleFilter) { [weak repository] filter in
+        let filterItem = makeLinkFilterBarButtonItem(
+            current: repository.peopleFilter,
+            allTitle: "All People"
+        ) { [weak repository] filter in
             repository?.peopleFilter = filter
         }
         filterBarButtonItem = filterItem
@@ -221,7 +224,10 @@ final class ContactsListViewController: UIViewController {
     }
 
     private func refreshFilterMenu() {
-        filterBarButtonItem?.menu = makeLinkFilterMenu(current: repository.peopleFilter) { [weak repository] filter in
+        filterBarButtonItem?.menu = makeLinkFilterMenu(
+            current: repository.peopleFilter,
+            allTitle: "All People"
+        ) { [weak repository] filter in
             repository?.peopleFilter = filter
         }
     }

@@ -19,7 +19,7 @@ enum EventListFilter: CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .showAll: "Show All"
+        case .showAll: "All Events"
         case .linked: "Linked"
         case .hasAttendees: "Has Attendees"
         }

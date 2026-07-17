@@ -162,7 +162,10 @@ final class GuidePlacesListViewController: UIViewController {
         )
         refreshButton.accessibilityLabel = "Refresh Guide"
         refreshButton.isEnabled = guide.sourceURL != nil
-        filterButton = makeLinkFilterBarButtonItem(current: repository.placeFilter) { [weak repository] filter in
+        filterButton = makeLinkFilterBarButtonItem(
+            current: repository.placeFilter,
+            allTitle: "All Places"
+        ) { [weak repository] filter in
             repository?.placeFilter = filter
         }
         // The first item is the trailing (top-right) item. Preserve Refresh in
@@ -210,7 +213,10 @@ final class GuidePlacesListViewController: UIViewController {
     }
 
     private func refreshFilterMenu() {
-        filterButton.menu = makeLinkFilterMenu(current: repository.placeFilter) { [weak repository] filter in
+        filterButton.menu = makeLinkFilterMenu(
+            current: repository.placeFilter,
+            allTitle: "All Places"
+        ) { [weak repository] filter in
             repository?.placeFilter = filter
         }
     }
