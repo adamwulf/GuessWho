@@ -4,8 +4,10 @@ GuessWho ships a local, user-enabled agent interface: an MCP server that AI
 assistants (Claude Desktop, Claude Code, Cursor, …) connect to, and a
 terminal command, both backed by the running app. Everything is
 device-local — no network transport, no server, and contact data never
-leaves the machine. Both surfaces are **OFF by default** and **read-only by
-default**; the user opts in from the app's Settings (⌘, on Mac).
+leaves the machine. Each surface has ONE tri-state access setting — **off
+→ read-only → read-write** — defaulting to **off**; the user opts in from
+the app's Settings (⌘, on Mac). Read-write is what unlocks writes,
+including full Contact Store contact-record edits (Revision 2).
 
 The build plan (design rationale, invariants, review history) is
 `plans/cli-mcp.md`. This doc describes what shipped.
@@ -49,13 +51,17 @@ guesswho-cli relay  ◀── FIFOs in the ──▶  MCPHostController
 
 ## Enabling and gating
 
-Settings (⌘,) has four toggles, stored in the CLI App-Group
-`UserDefaults` (`MCPToggleKeys`): **AI assistant access** / **Terminal
-access** (both OFF by default) and a **read-only** toggle per surface (ON
-by default). The app enforces them **server-side per call** — hiding write
-tools from `tools/list` is UX, not the gate — so a flip applies to the
-very next request. Contacts/Calendar permission gates apply on top: the
-agent only ever sees what the user has granted the app.
+Settings (⌘,) has one tri-state picker per surface — **AI Assistant
+Access** and **Terminal Access**, each **Off / Read-only / Read-write**,
+both defaulting to Off — stored in the CLI App-Group `UserDefaults`
+(`MCPToggleKeys.mcpAccessMode` / `.cliAccessMode`; the pre-Revision-2
+boolean pairs migrate once at launch). The app enforces the mode
+**server-side per call** — hiding write tools from `tools/list` is UX, not
+the gate — so a change applies to the very next request. Contacts/Calendar
+permission gates apply on top: the agent only ever sees what the user has
+granted the app. `contacts_delete` has an extra per-call bar: an in-app
+confirmation alert naming the specific contact, which the user must
+explicitly approve (see Tools).
 
 ## Install
 
@@ -127,39 +133,86 @@ descriptions, schemas, permission domain, read/write class, timeouts — is
 `places_list`. (Plus `guesswho_status`, served by the relay itself when
 the app is unreachable / to re-check.)
 
-**Write (16, all GuessWho-owned data only — never system contact or
-calendar content):** `contacts_add_note`, `contacts_edit_note`,
-`contacts_delete_note`, `contacts_set_custom_field`,
+**Write (19):** the GuessWho-data writes — `contacts_add_note`,
+`contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_add_linked_contact`,
 `contacts_add_linked_organization`, `contacts_remove_linked_contact`,
 `contacts_set_favorite`, `events_add_tag`, `events_edit_tag`,
 `events_delete_tag`, `guides_create`, `guides_delete`,
-`guides_reorder_places`, `places_delete`.
+`guides_reorder_places`, `places_delete` — plus, since Revision 2, full
+Contact Store parity with the app's own editor: **`contacts_create`**,
+**`contacts_update`** (PATCH semantics: only passed fields change; list
+fields replace as whole lists), and **`contacts_delete`**.
 
-Write safety machinery (Phase 2): per-call read-only gate; a global
-per-host-run write budget; per-contact single-flight with post-mint
-verification (no duplicate identity mints); idempotency-token replay
-dedup; deletes are soft — restorable from **Settings → Recently Deleted**;
-and every agent write is appended to a device-local audit log
-(`MCPAuditLog`, Application Support — deliberately never synced) that
-Settings renders as the plain-language **Agent Activity** list.
+Contact-record writes route through the SAME repository entry points the
+app's contact editor uses (`editableContact`/`saveContact`/
+`createContact`), so the editor's identity-URL carry-through merge and
+change-watcher behavior apply identically; a wire-supplied web address
+using the app's reserved internal form is rejected, and a note-shaped
+argument is rejected with a pointer to `contacts_add_note`. Contact Store
+saves can fail (the documented Cocoa 134092 store-rejection family,
+revoked Contacts access, a record deleted elsewhere) — failures map to
+typed codes (`writeFailed` / `permissionDenied` / `notFound`) via the same
+`ContactEditModel.saveErrorCategory` the editor uses; never a crash, never
+a silent success.
 
-## The Apple-note exclusion invariant
+`contacts_delete` is uniquely destructive, so it carries an extra human
+gate: the request returns out of band (fire-and-forget, correlated by
+message id) while the app presents a confirmation alert naming the
+specific contact on the frontmost active scene. Approve → the delete runs
+and is audited; Cancel → a NORMAL non-error "the user declined" result (so
+agents don't retry-loop); nothing to present on → a typed refusal. The
+tool's declarative timeout is 300s (a human is thinking), and the app
+re-checks elapsed time before performing an approved delete so a
+timed-out call can never also have deleted.
 
-`CNContact.note` is **never** readable, writable, or searchable over this
-interface — the app keeps the `com.apple.developer.contacts.notes`
-entitlement for its own UI, so the **wire boundary is the only line**:
+Write safety machinery: per-call access-mode gate; a global per-host-run
+write budget (confirmation requests count against it, and only one
+confirmation can be on screen at a time); per-contact single-flight with
+post-mint verification; idempotency-token replay dedup; GuessWho-data
+deletes are soft — restorable from **Settings → Recently Deleted**; and
+every agent write is appended to a device-local audit log (`MCPAuditLog`,
+Application Support — deliberately never synced) that Settings renders as
+the plain-language **Agent Activity** list.
 
-- Wire DTOs are a positive per-field **allowlist** (`WireDTOs.swift`);
-  there is no note field to forget to strip, and `Contact`/`Event` model
-  values are never serialized directly (INV-3/INV-3b).
-- Contact search matches only allowlisted fields; error messages never
-  interpolate model values.
-- Enforced by tests that run under plain `swift test`: DTO-allowlist
-  round-trips, the adversarial note-exclusion suite (a note-bearing
-  contact goes through every read tool and search path; the note text
-  must appear nowhere in any encoded response), and the banned-vocabulary
-  scan over every agent- and user-facing string.
+### Ids
+
+A contact's wire `id` IS its GuessWho UUID (Revision 2 — no per-session
+tokens). A contact that has never been written to has no minted UUID yet,
+so the wire hands out `Contact.deterministicGuessWhoID` — the exact UUID
+the deterministic mint will assign on its first write — making the id
+stable across the mint boundary. The id is a lookup key only; no write
+tool can change it. Events ride their record UUID (or a derived `e-` id
+for system-calendar-only rows, which keeps resolving after the user opens
+the event in the app); groups ride a one-way `g-` digest of their system
+identifier; notes/fields/tags/links/guides/places ride their own record
+UUIDs. `WireRecordID` (GuessWhoMCPCore) is the whole scheme.
+
+## The exclusion invariant
+
+The wire carries the whole record the user sees EXCEPT four named fields
+(Revision 2's focused-exclusion model, replacing the earlier positive
+allowlist): the **Apple contact note**, **Apple local identifiers**, the
+**`modifiedBy` device id**, and the **`guesswho://` URL form** (the
+identity rides as the bare UUID id instead).
+
+The Apple note is the hard line: `CNContact.note` is **never** readable,
+writable, or searchable over this interface — the app keeps the
+`com.apple.developer.contacts.notes` entitlement for its own UI, so the
+**wire boundary is the only line**:
+
+- No wire DTO has a note field, no write tool accepts a note-shaped
+  argument (one is explicitly rejected), the update path carries the
+  stored note through byte-identical, and `Contact`/`Event` model values
+  are never serialized directly.
+- Contact search matches only wire-visible fields; error messages never
+  interpolate model values (even save-failure details are fixed strings).
+- Enforced by tests that run under plain `swift test`: the targeted
+  exclusion suite (a sentinel planted in EACH excluded field, asserted
+  absent from every read output, write echo, and error — both
+  directions), the adversarial note-exclusion suite (content AND
+  match-presence), and the banned-vocabulary scan over every agent- and
+  user-facing string.
 
 The GuessWho notes exposed by `contacts_list_notes` / `contacts_add_note`
 etc. are GuessWho's own per-contact dated notes, not the Apple note.
@@ -168,18 +221,18 @@ etc. are GuessWho's own per-contact dated notes, not the Apple note.
 
 | Piece | Location |
 |---|---|
-| Wire types, tool inventory, DTO allowlist, user-facing copy | `Sources/GuessWhoMCPWire/` |
-| Dispatch core (per-tool handlers, mappers, audit log, Recently Deleted service, symlink resolver) | `Sources/GuessWhoMCPCore/` |
+| Wire types, tool inventory, DTOs, user-facing copy | `Sources/GuessWhoMCPWire/` |
+| Dispatch core (per-tool handlers, mappers, id scheme, audit log, Recently Deleted service, symlink resolver) | `Sources/GuessWhoMCPCore/` |
 | FIFO transport (host + relay ends, reconnect, reaping) | `Sources/GuessWhoMCPTransport/` |
 | Relay entry point | `App/guesswho-cli/` |
-| App host + gates | `App/GuessWho/Support/MCPHostController.swift` |
+| App host + gates + delete-confirmation presenter | `App/GuessWho/Support/MCPHostController.swift` |
 | Helper locator (the ONE place the path is derived) | `App/GuessWho/Support/CLIHelper.swift` |
 | Settings sheet (toggles, install, activity, Recently Deleted) | `App/GuessWho/MCPPreferencesView.swift` |
 | Admin-auth symlink creation | `App/GuessWhoAppKitBridge/` |
 
-Package-level tests (wire round-trip, DTO allowlist, framing-injection,
-note exclusion, banned vocabulary, resolver, formatter) run with
-`swift test`; the app-hosted integration legs (INV-2 live-instance writes,
-read-only gating against the real host) live in the `GuessWhoTests`
-bundle. App-Review positioning and the privacy-label answers are in
+Package-level tests (wire round-trip, the exclusion suite, framing
+injection, note exclusion, contact-record writes + confirmation flow,
+banned vocabulary, resolver, formatter) run with `swift test`; the
+app-hosted integration legs (INV-2 live-instance writes, access-mode
+gating against the real host) live in the `GuessWhoTests` bundle. App-Review positioning and the privacy-label answers are in
 `docs/cli-mcp-app-review.md`.
