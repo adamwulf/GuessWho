@@ -151,6 +151,38 @@ struct LinkTests {
         #expect(asynchronous == Set([contactA]))
     }
 
+    @Test
+    func linkCountsTalliesLiveLinksPerEndpoint() throws {
+        let (sync, _) = makeOrchestrator()
+        // contactA: three live links (two contact-contact + one event). contactB
+        // shares one of those. A soft-deleted link on both must not count.
+        _ = try sync.addLink(from: contactA, to: contactB, note: "")
+        _ = try sync.addLink(from: contactA, to: contactB, note: "duplicate pair")
+        _ = try sync.addLink(from: contactA, to: eventX, note: "")
+        let removed = try sync.addLink(from: contactB, to: eventX, note: "removed")
+        try sync.removeLink(id: removed.id)
+
+        let counts = try sync.linkCounts(ofKind: .contact)
+        // A contact-contact link is counted for BOTH of its endpoints.
+        #expect(counts[contactA] == 3)
+        #expect(counts[contactB] == 2)
+        // The soft-deleted link is excluded, so eventX only sees the one live link.
+        #expect(try sync.linkCounts(ofKind: .event)[eventX] == 1)
+        // An endpoint with 0 links is simply absent from the tally.
+        let place = SidecarKey(kind: .place, id: "44444444-4444-4444-4444-444444444444")
+        #expect(counts[place] == nil)
+        #expect(try sync.linkCounts(ofKind: .place).isEmpty)
+    }
+
+    @Test
+    func linkCountsAsyncReturnsRequestedKind() async throws {
+        let (sync, _) = makeOrchestrator()
+        _ = try sync.addLink(from: contactA, to: contactB, note: "")
+
+        let asynchronous = try await sync.linkCounts(ofKind: .contact)
+        #expect(asynchronous == [contactA: 1, contactB: 1])
+    }
+
     // MARK: - Cross-kind endpoints
 
     @Test

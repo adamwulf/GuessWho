@@ -475,6 +475,20 @@ final class SyncService {
         }
     }
 
+    /// Per-endpoint link COUNT for endpoints of `kind`, keyed by endpoint id
+    /// string. Bulk form used by list repositories to badge each row with the
+    /// number of links it participates in — one scan, no per-row disk read.
+    func linkCountsByEndpointID(ofKind kind: SidecarKind) async -> [String: Int] {
+        guard let sync else { return [:] }
+        do {
+            let counts = try await sync.linkCounts(ofKind: kind)
+            return Dictionary(uniqueKeysWithValues: counts.map { ($0.key.id, $0.value) })
+        } catch {
+            lastError = "link counts read failed: \(error.localizedDescription)"
+            return [:]
+        }
+    }
+
     /// The `limit` most-recently-linked events (by link `createdAt`, newest
     /// first, deduped per event). Backs the link sheet's "Recently Linked"
     /// section. Sidecar-only read — NOT gated on eventsAuthorization.
