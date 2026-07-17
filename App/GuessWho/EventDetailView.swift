@@ -11,6 +11,7 @@ struct EventDetailView: View {
     // `ReferenceNavigation.swift` for the env-closure defaults
     // (no-op for Catalyst / SwiftUI previews).
     @Environment(\.pushContactReference) private var pushContactReference
+    @Environment(\.pushEventReference) private var pushEventReference
 
     /// Optional EventKit identifier carried so the detail view can adopt
     /// (mint or look up) the sidecar for an ephemeral EventKit row whose
@@ -56,6 +57,7 @@ struct EventDetailView: View {
 
     @State private var showingPicker = false
     @State private var showingOrgPicker = false
+    @State private var showingEventPicker = false
     @State private var showingEditSheet = false
     @State private var showingDeleteConfirm = false
 
@@ -89,7 +91,9 @@ struct EventDetailView: View {
                 associatedOrganizationsSection(event)
                 linkedContactsSection
                 linkedOrganizationsSection
+                linkedEventsSection
                 deleteActionSection
+                Section { linkActionsFooter }
             } else if hasLoadedOnce {
                 Section { Text("(Unknown event)") }
             } else {
@@ -150,20 +154,6 @@ struct EventDetailView: View {
                         Label("Edit Event", systemImage: "pencil")
                     }
                     .disabled(event == nil)
-
-                    Button {
-                        showingPicker = true
-                    } label: {
-                        Label("Add Contact", systemImage: "person.crop.circle.badge.plus")
-                    }
-                    .disabled(event == nil)
-
-                    Button {
-                        showingOrgPicker = true
-                    } label: {
-                        Label("Add Organization", systemImage: "building.2")
-                    }
-                    .disabled(event == nil)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -180,6 +170,15 @@ struct EventDetailView: View {
             ContactPickerSheet(kind: .organization) { contact, note in
                 await addLink(to: contact, note: note)
             }
+        }
+        .sheet(isPresented: $showingEventPicker) {
+            EventLinkSheet(
+                mode: .link(onLinked: { eventUUID, note in
+                    Task { await addEventLink(eventUUID: eventUUID, note: note) }
+                }),
+                excludingEventUUIDs: [resolvedUUID],
+                excludingEventKitIDs: eventKitID.map { Set([$0]) } ?? []
+            )
         }
         .sheet(isPresented: $showingEditSheet) {
             if let event {
@@ -471,9 +470,23 @@ struct EventDetailView: View {
     /// People bucket rather than being silently dropped.
     private func linkedConnections(where type: ContactType) -> [ContactLink] {
         links.filter { link in
+            guard SyncService.otherEndpoint(of: link, from: eventEndpoint).kind == .contact else {
+                return false
+            }
             let contact = repository.linkedContact(of: link, forEventUUID: resolvedUUID)
             return (contact?.contactType ?? .person) == type
         }
+    }
+
+    private var eventEndpoint: SidecarKey {
+        SidecarKey(kind: .event, id: resolvedUUID)
+    }
+
+    private var linkedEventItems: [ContactLink] {
+        links.filter {
+            SyncService.otherEndpoint(of: $0, from: eventEndpoint).kind == .event
+        }
+        .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Inferred organizations for this event, the org analog of the invitee
@@ -573,6 +586,87 @@ struct EventDetailView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var linkedEventsSection: some View {
+        if !linkedEventItems.isEmpty {
+            Section("Linked Events") {
+                ForEach(linkedEventItems, id: \.id) { link in
+                    linkedEventRow(link)
+                }
+                .onDelete { offsets in
+                    let ids = offsets.map { linkedEventItems[$0].id }
+                    for id in ids { remove(linkID: id) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkedEventRow(_ link: ContactLink) -> some View {
+        let other = SyncService.otherEndpoint(of: link, from: eventEndpoint)
+        let linkedEvent = other.kind == .event ? service.event(uuid: other.id) : nil
+
+        if let linkedEvent {
+            Button {
+                pushEventReference(
+                    EventReference(
+                        eventUUID: linkedEvent.id.uuidString,
+                        eventKitID: linkedEvent.eventKitID
+                    )
+                )
+            } label: {
+                ActivityRowLayout(systemImage: "calendar") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(linkedEvent.title.isEmpty ? "(Untitled event)" : linkedEvent.title)
+                        if !link.note.isEmpty {
+                            Text(link.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            ActivityRowLayout(systemImage: "calendar") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("(Unknown event)")
+                        .foregroundStyle(.secondary)
+                    if !link.note.isEmpty {
+                        Text(link.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var linkActionsFooter: some View {
+        DetailActivityFooter(actions: [
+            DetailFooterAction(
+                title: "Link Contact",
+                systemImage: "person.line.dotted.person",
+                isDisabled: event == nil,
+                action: { showingPicker = true }
+            ),
+            DetailFooterAction(
+                title: "Link Org",
+                systemImage: "building.2",
+                isDisabled: event == nil,
+                action: { showingOrgPicker = true }
+            ),
+            DetailFooterAction(
+                title: "Link Event",
+                systemImage: "calendar.badge.plus",
+                isDisabled: event == nil,
+                action: { showingEventPicker = true }
+            ),
+        ])
     }
 
     @ViewBuilder
@@ -678,7 +772,7 @@ struct EventDetailView: View {
         }
         await service.refreshEvent(uuid: resolvedUUID)
         event = service.event(uuid: resolvedUUID)
-        links = await service.contactLinks(forEventUUID: resolvedUUID)
+        links = await service.links(at: eventEndpoint)
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
         // Attendee→contact and linked-contact→contact resolution happen on
@@ -709,6 +803,18 @@ struct EventDetailView: View {
         }
         await reload()
         return true
+    }
+
+    private func addEventLink(eventUUID: String, note: String) async {
+        let other = SidecarKey(kind: .event, id: eventUUID)
+        guard other != eventEndpoint else { return }
+        do {
+            _ = try service.addLink(from: eventEndpoint, to: other, note: note)
+        } catch {
+            service.recordError("add event-event link failed: \(error.localizedDescription)")
+            return
+        }
+        await reload()
     }
 
     private func remove(linkID: UUID) {
@@ -889,7 +995,7 @@ private struct EventEditSheet: View {
     }
 }
 
-private struct ContactPickerSheet: View {
+struct ContactPickerSheet: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
     @Environment(\.dismiss) private var dismiss

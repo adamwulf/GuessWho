@@ -11,7 +11,7 @@ import GuessWhoSyncTesting
 /// - READS (`notes(for:)`/`links(for:)`/`eventLinks(for:)`/`isFavorite(_:)`)
 ///   are synchronous, return empty/false on an unreconciled id, and MINT
 ///   NOTHING.
-/// - WRITES (`addNote`/`editNote`/`deleteNote`/`addLink`/`addEventLink`/
+/// - WRITES (`addNote`/`editNote`/`deleteNote`/`addLink`/`addEventLink`/`addPlaceLink`/
 ///   `toggleFavorite`) resolve-or-mint, call the engine, then refresh the cache
 ///   on mint (decision B). They THROW when the engine/favorites store is nil.
 ///
@@ -294,10 +294,42 @@ struct ContactsRepositoryContactAPITests {
         await #expect(throws: SidecarUnavailableError.self) {
             _ = try await repository.addEventLink(for: id, eventUUID: "evt", note: "x")
         }
+        await #expect(throws: SidecarUnavailableError.self) {
+            _ = try await repository.addPlaceLink(for: id, placeUUID: "place", note: "x")
+        }
         // toggleFavorite throws when the favorites store is nil.
         await #expect(throws: SidecarUnavailableError.self) {
             _ = try await repository.toggleFavorite(id)
         }
+    }
+
+    @Test @MainActor
+    func addPlaceLink_resolvesContactAndCanResolveItFromPlaceEndpoint() async throws {
+        let target = Contact(localID: "TARGET", givenName: "Ada")
+        let store = InMemoryContactStore(contacts: [target])
+        let sync = makeSync(contacts: store)
+        let repository = ContactsRepository(contacts: store, sync: sync)
+        await repository.reload()
+
+        let id = (try #require(repository.contact(localID: "TARGET"))).contactID
+        #expect(id.guessWhoID == nil)
+
+        let link = try await repository.addPlaceLink(
+            for: id,
+            placeUUID: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+            note: "Host"
+        )
+        let placeEndpoint = SidecarKey(
+            kind: .place,
+            id: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        )
+
+        let stored = try await sync.links(at: placeEndpoint)
+        #expect(stored == [link])
+        #expect(repository.linkedContact(of: link, at: placeEndpoint)?.displayName == "Ada")
+
+        let saved = try #require(try await store.fetch(localID: "TARGET"))
+        #expect(ContactID(contact: saved).guessWhoID != nil)
     }
 
     // MARK: - Linked-event UUID accessors (6d)

@@ -38,6 +38,10 @@ struct GuidePlaceDetailView: View {
     // this place's street line (including this place's own guide). Populates the
     // "Guides" section; loaded alongside the other associations.
     @State private var containingGuides: [MapsGuide] = []
+    @State private var links: [ContactLink] = []
+    @State private var showingContactPicker = false
+    @State private var showingOrganizationPicker = false
+    @State private var showingEventPicker = false
 
     /// A contact matched to this place, paired with the street line that
     /// triggered the match (shown as the row caption). View-local — nothing
@@ -71,6 +75,10 @@ struct GuidePlaceDetailView: View {
                 if !matchingOrganizations.isEmpty {
                     contactsSection(title: "Organizations", people: matchingOrganizations)
                 }
+                linkedContactsSection
+                linkedOrganizationsSection
+                linkedEventsSection
+                Section { linkActionsFooter }
             } else {
                 Text("This place is no longer available.")
                     .foregroundStyle(.secondary)
@@ -92,6 +100,22 @@ struct GuidePlaceDetailView: View {
         // re-orders. Mirrors the guide's on-open stamp.
         .task {
             service.stampPlaceViewed(uuid: placeID.uuidString)
+            await reloadLinks()
+        }
+        .sheet(isPresented: $showingContactPicker) {
+            ContactPickerSheet(kind: .person) { contact, note in
+                await addContactLink(to: contact, note: note)
+            }
+        }
+        .sheet(isPresented: $showingOrganizationPicker) {
+            ContactPickerSheet(kind: .organization) { contact, note in
+                await addContactLink(to: contact, note: note)
+            }
+        }
+        .sheet(isPresented: $showingEventPicker) {
+            EventLinkSheet(mode: .link(onLinked: { eventUUID, note in
+                Task { await addEventLink(eventUUID: eventUUID, note: note) }
+            }))
         }
     }
 
@@ -246,6 +270,157 @@ struct GuidePlaceDetailView: View {
         }
     }
 
+    // MARK: - Explicit links
+
+    private var placeEndpoint: SidecarKey {
+        SidecarKey(kind: .place, id: placeID.uuidString)
+    }
+
+    private func linkedContacts(where type: ContactType) -> [ContactLink] {
+        links.filter { link in
+            guard SyncService.otherEndpoint(of: link, from: placeEndpoint).kind == .contact else {
+                return false
+            }
+            let contact = contactsRepository.linkedContact(of: link, at: placeEndpoint)
+            return (contact?.contactType ?? .person) == type
+        }
+        .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private var linkedEventItems: [ContactLink] {
+        links.filter {
+            SyncService.otherEndpoint(of: $0, from: placeEndpoint).kind == .event
+        }
+        .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    @ViewBuilder
+    private var linkedContactsSection: some View {
+        linkedContactSection(title: "Linked Contacts", links: linkedContacts(where: .person))
+    }
+
+    @ViewBuilder
+    private var linkedOrganizationsSection: some View {
+        linkedContactSection(title: "Linked Organizations", links: linkedContacts(where: .organization))
+    }
+
+    @ViewBuilder
+    private func linkedContactSection(title: String, links: [ContactLink]) -> some View {
+        if !links.isEmpty {
+            Section(title) {
+                ForEach(links, id: \.id) { link in
+                    linkedContactRow(link)
+                }
+                .onDelete { offsets in
+                    for index in offsets {
+                        removeLink(id: links[index].id)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkedContactRow(_ link: ContactLink) -> some View {
+        let contact = contactsRepository.linkedContact(of: link, at: placeEndpoint)
+        if let contact {
+            Button {
+                pushContactReference(ContactReference(id: contact.contactID))
+            } label: {
+                ActivityRowLayout {
+                    ContactAvatar(contact: contact, diameter: 20)
+                } content: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contact.displayName)
+                        if !link.note.isEmpty {
+                            Text(link.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            ActivityRowLayout {
+                UnknownContactAvatar(diameter: 20)
+            } content: {
+                Text("(Unknown contact)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var linkedEventsSection: some View {
+        if !linkedEventItems.isEmpty {
+            Section("Linked Events") {
+                ForEach(linkedEventItems, id: \.id) { link in
+                    linkedEventRow(link)
+                }
+                .onDelete { offsets in
+                    for index in offsets {
+                        removeLink(id: linkedEventItems[index].id)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkedEventRow(_ link: ContactLink) -> some View {
+        let other = SyncService.otherEndpoint(of: link, from: placeEndpoint)
+        let event = other.kind == .event ? service.event(uuid: other.id) : nil
+        if let event {
+            Button {
+                pushEventReference(
+                    EventReference(eventUUID: event.id.uuidString, eventKitID: event.eventKitID)
+                )
+            } label: {
+                ActivityRowLayout(systemImage: "calendar") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(event.title.isEmpty ? "(Untitled event)" : event.title)
+                        if !link.note.isEmpty {
+                            Text(link.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            ActivityRowLayout(systemImage: "calendar") {
+                Text("(Unknown event)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var linkActionsFooter: some View {
+        DetailActivityFooter(actions: [
+            DetailFooterAction(
+                title: "Link Contact",
+                systemImage: "person.line.dotted.person",
+                action: { showingContactPicker = true }
+            ),
+            DetailFooterAction(
+                title: "Link Org",
+                systemImage: "building.2",
+                action: { showingOrganizationPicker = true }
+            ),
+            DetailFooterAction(
+                title: "Link Event",
+                systemImage: "calendar.badge.plus",
+                action: { showingEventPicker = true }
+            ),
+        ])
+    }
+
     // MARK: - Data
 
     /// Fetch the events + contacts + organizations associated with this place's
@@ -285,6 +460,48 @@ struct GuidePlaceDetailView: View {
         matchingOrganizations = matched
             .filter { $0.contact.contactType == .organization }
             .sorted { $0.contact.displayName.localizedCaseInsensitiveCompare($1.contact.displayName) == .orderedAscending }
+    }
+
+    private func reloadLinks() async {
+        links = await service.links(at: placeEndpoint)
+    }
+
+    private func addContactLink(to contact: Contact, note: String) async -> Bool {
+        do {
+            _ = try await contactsRepository.addPlaceLink(
+                for: contact.contactID,
+                placeUUID: placeID.uuidString,
+                note: note
+            )
+        } catch {
+            service.recordError("add contact-place link failed: \(error.localizedDescription)")
+            return false
+        }
+        await reloadLinks()
+        return true
+    }
+
+    private func addEventLink(eventUUID: String, note: String) async {
+        do {
+            _ = try service.addLink(
+                from: placeEndpoint,
+                to: SidecarKey(kind: .event, id: eventUUID),
+                note: note
+            )
+        } catch {
+            service.recordError("add place-event link failed: \(error.localizedDescription)")
+            return
+        }
+        await reloadLinks()
+    }
+
+    private func removeLink(id: UUID) {
+        do {
+            try service.removeLink(id: id)
+        } catch {
+            service.recordError("remove place link failed: \(error.localizedDescription)")
+        }
+        Task { await reloadLinks() }
     }
 
     // MARK: - Maps deep link

@@ -763,26 +763,32 @@ final class SyncService {
         try await contactsAdapter.save(contact)
     }
 
-    // MARK: - Contact ↔ Event links (event side)
+    // MARK: - Entity links
     //
     // The CONTACT-keyed notes/links/event-link methods live on
     // `ContactsRepository` (keyed on `ContactID`). The EVENT-side reads below
     // stay here until the deferred event-identity migration.
 
-    /// `async`: the link read walks every link sidecar, so it rides the
-    /// engine's background-hop overload rather than blocking the main actor.
-    func contactLinks(forEventUUID uuid: String) async -> [Link] {
+    /// Every live link touching `endpoint`. The engine's async overload keeps
+    /// the all-link sidecar scan off the main actor; callers classify the far
+    /// endpoint for their detail page.
+    func links(at endpoint: SidecarKey) async -> [Link] {
         guard let sync else { return [] }
-        let endpoint = SidecarKey(kind: .event, id: uuid)
         do {
-            let all = try await sync.links(at: endpoint)
-            return all.filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
-            }
+            return try await sync.links(at: endpoint).filter { $0.deletedAt == nil }
         } catch {
-            lastError = "contact links read failed: \(error.localizedDescription)"
+            lastError = "links read failed: \(error.localizedDescription)"
             return []
         }
+    }
+
+    /// Create a generic entity link. Contact endpoints should use
+    /// `ContactsRepository` instead so an unreconciled contact resolves or
+    /// mints its canonical identity before the link is written.
+    @discardableResult
+    func addLink(from: SidecarKey, to: SidecarKey, note: String) throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.addLink(from: from, to: to, note: note)
     }
 
     func removeLink(id: UUID) throws {

@@ -1,6 +1,48 @@
 import SwiftUI
 import GuessWhoSync
 
+/// One action in the shared bottom row used by entity detail pages. Keeping
+/// the row's layout here makes contacts, events, and places expose linking in
+/// the same predictable location without coupling their sheet state.
+struct DetailFooterAction {
+    let title: String
+    let systemImage: String
+    var isDisabled: Bool = false
+    let action: () -> Void
+}
+
+/// Full-width icon-and-caption actions separated by dividers. Hosts provide
+/// the actions because each detail page owns its picker presentation state.
+struct DetailActivityFooter: View {
+    let actions: [DetailFooterAction]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(actions.enumerated()), id: \.offset) { index, item in
+                if index > 0 {
+                    Divider()
+                }
+
+                Button(action: item.action) {
+                    VStack(spacing: 4) {
+                        Image(systemName: item.systemImage)
+                            .font(.title3)
+                        Text(item.title)
+                            .font(.caption)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(item.isDisabled)
+            }
+        }
+        .listRowInsets(EdgeInsets())
+        .centeredRowContent()
+    }
+}
+
 enum LinkDirection {
     case outgoing(other: SidecarKey)
     case incoming(other: SidecarKey)

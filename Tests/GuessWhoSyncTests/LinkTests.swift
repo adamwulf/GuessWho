@@ -147,6 +147,19 @@ struct LinkTests {
     }
 
     @Test
+    func placeLinksRoundTripForContactAndEventEndpoints() throws {
+        let (sync, _) = makeOrchestrator()
+        let place = SidecarKey(kind: .place, id: UUID().uuidString)
+        let contactLink = try sync.addLink(from: place, to: contactA, note: "host")
+        let eventLink = try sync.addLink(from: place, to: eventX, note: "venue")
+
+        let atPlace = try sync.links(at: place)
+        #expect(Set(atPlace.map(\.id)) == Set([contactLink.id, eventLink.id]))
+        #expect(try sync.link(id: contactLink.id)?.endpointB == contactA)
+        #expect(try sync.link(id: eventLink.id)?.endpointB == eventX)
+    }
+
+    @Test
     func personEventLinkRoundTripsWithUUIDEventKey() throws {
         let (sync, _) = makeOrchestrator()
         let eventUUID = SidecarKey(kind: .event, id: "11111111-1111-1111-1111-111111111111")
