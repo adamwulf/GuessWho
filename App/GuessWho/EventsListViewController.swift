@@ -294,12 +294,13 @@ final class EventsListViewController: UIViewController {
     private func updateNavigationButtons() {
         let debugEnabled = UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled)
         // Right bar items render right-to-left: the first array element is the
-        // rightmost. Keep "+" rightmost (as before), then the Filter glyph,
-        // then the sort glyph. Export Logs remains leftmost when debug mode is
+        // rightmost. Keep "+" rightmost (as before), then the sort glyph beside
+        // it, then the Filter glyph on the left. Left-to-right the user reads:
+        // filter, sort, +. Export Logs remains leftmost when debug mode is
         // enabled.
         navigationItem.rightBarButtonItems = debugEnabled
-            ? [addButton, filterButton, sortButton, exportLogsButton]
-            : [addButton, filterButton, sortButton]
+            ? [addButton, sortButton, filterButton, exportLogsButton]
+            : [addButton, sortButton, filterButton]
     }
 
     /// Build the Events-tab filter menu. The chosen filter changes only the

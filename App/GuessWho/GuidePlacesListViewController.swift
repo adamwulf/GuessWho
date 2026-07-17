@@ -179,8 +179,9 @@ final class GuidePlacesListViewController: UIViewController {
             repository?.placeFilter = filter
         }
         // The first item is the trailing (top-right) item. Preserve Refresh in
-        // that position, with Filter and Sort beside it.
-        navigationItem.rightBarButtonItems = [refreshButton, filterButton, sortButton]
+        // that position, with the sort glyph beside it and the filter glyph on
+        // the left. Left-to-right the user reads: filter, sort, refresh.
+        navigationItem.rightBarButtonItems = [refreshButton, sortButton, filterButton]
     }
 
     @objc
