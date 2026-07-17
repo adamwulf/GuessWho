@@ -172,7 +172,10 @@ final class ContactsListViewController: UIViewController {
             repository?.peopleFilter = filter
         }
         filterBarButtonItem = filterItem
-        navigationItem.rightBarButtonItems = [addItem, filterItem, sortItem]
+        // Right bar items render right-to-left (index 0 is rightmost): "+" stays
+        // rightmost, then the sort glyph beside it, then the filter glyph on the
+        // left. Left-to-right the user reads: filter, sort, +.
+        navigationItem.rightBarButtonItems = [addItem, sortItem, filterItem]
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
