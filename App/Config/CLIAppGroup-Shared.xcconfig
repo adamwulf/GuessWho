@@ -1,0 +1,39 @@
+// CLIAppGroup-Shared.xcconfig
+// THE single derivation of the CLI/MCP App Group id — INV-4 in plans/cli-mcp.md.
+//
+// Both the GuessWho app target AND the guesswho-cli helper target #include the
+// per-configuration variant of this file (CLIAppGroup-Debug.xcconfig /
+// CLIAppGroup-Release.xcconfig), so within any single build the two processes
+// always derive the SAME group string. Never hardcode this group anywhere —
+// a hardcoded copy that drifts from this derivation is a silent IPC failure
+// (app and helper resolve different containers; plan Phase 0, exit crit 3).
+//
+// Form: `<TeamID>.<parent-bundle-id>.cli<channel-suffix>` — the TeamID-prefixed
+// (NOT `group.`-prefixed) App Group form, matching the app's existing Catalyst
+// group (see GuessWho-Release.xcconfig): self-authorizing by code signature,
+// no provisioning/portal registration, and no macOS 15+ consent prompt. The
+// Muse reference derives `group.$(DEVELOPMENT_TEAM).$(PARENT_BUNDLE_IDENTIFIER)`;
+// GuessWho adapts the same structure to its documented TeamID-form convention.
+//
+// The channel suffix is what makes the string differ per channel. Muse gets
+// this for free because its parent bundle id is itself channel-suffixed
+// (museios-appstore / museios-setapp / museios-dev); GuessWho's Debug builds
+// deliberately share the production bundle id (GuessWho-Debug.xcconfig), so
+// the channel distinction is an explicit suffix component instead:
+//   * Debug:               <team>.com.milestonemade.guesswho.cli.debug
+//   * Release (App Store + TestFlight): <team>.com.milestonemade.guesswho.cli
+//   * TODO(Setapp): when the Setapp channel is stood up (new configuration +
+//     Developer ID signing — real, separate work; see plan Phase 0
+//     "Channel-config prerequisite"), add CLIAppGroup-Setapp.xcconfig with
+//     GUESSWHO_CLI_CHANNEL_SUFFIX = .setapp and re-run the Phase 0 exit
+//     criteria on that channel.
+//
+// Runtime consumers (never a literal string):
+//   * app:    GuessWhoCLIAppGroup Info.plist key (GuessWho/Info.plist)
+//   * helper: GuessWhoCLIAppGroup key in its embedded Info.plist
+//             (guesswho-cli/Info.plist, embedded via
+//             CREATE_INFOPLIST_SECTION_IN_BINARY)
+//   * both entitlements files reference $(GUESSWHO_CLI_APP_GROUP) directly.
+
+GUESSWHO_CLI_PARENT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
+GUESSWHO_CLI_APP_GROUP = $(DEVELOPMENT_TEAM).$(GUESSWHO_CLI_PARENT_BUNDLE_IDENTIFIER).cli$(GUESSWHO_CLI_CHANNEL_SUFFIX)

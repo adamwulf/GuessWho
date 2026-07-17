@@ -1,0 +1,10 @@
+// CLIAppGroup-Debug.xcconfig
+// Debug-channel input to the single CLI App Group derivation (INV-4).
+// #included by GuessWho-Debug.xcconfig AND guesswho-cli-Debug.xcconfig so the
+// app and the embedded helper always agree within a Debug build.
+
+#include "CLIAppGroup-Shared.xcconfig"
+
+// Debug is a distinct channel: a Debug helper must never reach a production
+// app's container (and vice versa), so the group string is `.debug`-suffixed.
+GUESSWHO_CLI_CHANNEL_SUFFIX = .debug

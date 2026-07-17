@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mirrors Muse's shipping helper entitlements, minus
+	     com.apple.security.get-task-allow, which is Debug-only and must never
+	     ship (see guesswho-cli-Debug.entitlements). The App Group adapts
+	     Muse's structure to GuessWho's TeamID-form derivation:
+	     $(GUESSWHO_CLI_APP_GROUP) expands at signing time from the ONE shared
+	     per-channel var in Config/CLIAppGroup-*.xcconfig (INV-4 — never
+	     hardcode the group). -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(GUESSWHO_CLI_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>
