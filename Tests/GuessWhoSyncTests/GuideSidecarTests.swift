@@ -123,16 +123,24 @@ struct GuideSidecarTests {
             now: viewedAt
         )
 
+        // The user has dragged the address ahead of the resolved place. The
+        // refreshed Apple snapshot below puts those retained entries in the
+        // opposite order; refresh must preserve this local choice.
+        try sync.reorderPlaces(
+            inGuide: guideID,
+            orderedIDs: [retainedAddress.id, retainedPlaceID.id, removedPlaceID.id]
+        )
+
         let refreshed = MapsGuideURL.Snapshot(
             name: "Berlin Favorites",
             entries: [
+                MapsGuideURL.Entry(mapsPlaceID: "ID09B4D36386DC9DA"),
+                MapsGuideURL.Entry(mapsPlaceID: "INEWPLACE"),
                 MapsGuideURL.Entry(
                     address: "Samariterstraße 31, Friedrichshain, 10247 Berlin, Germany",
                     latitude: 52.517,
                     longitude: 13.4652
                 ),
-                MapsGuideURL.Entry(mapsPlaceID: "INEWPLACE"),
-                MapsGuideURL.Entry(mapsPlaceID: "ID09B4D36386DC9DA"),
             ]
         )
 
@@ -158,11 +166,11 @@ struct GuideSidecarTests {
         #expect(places.map(\.sortOrder) == [0, 1, 2])
         #expect(places[0].id == retainedAddress.id)
         #expect(places[0].latitude == 52.517)
-        #expect(places[1].mapsPlaceID == "INEWPLACE")
-        #expect(places[1].needsResolution)
-        #expect(places[2].id == retainedPlaceID.id)
-        #expect(places[2].name == "nhow")
-        #expect(!places[2].needsResolution)
+        #expect(places[1].id == retainedPlaceID.id)
+        #expect(places[1].name == "nhow")
+        #expect(!places[1].needsResolution)
+        #expect(places[2].mapsPlaceID == "INEWPLACE")
+        #expect(places[2].needsResolution)
         #expect(!places.contains { $0.id == removedPlaceID.id })
     }
 

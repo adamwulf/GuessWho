@@ -67,7 +67,8 @@ Two entry shapes exist:
    same iCloud root. Refresh uses `refreshGuide(at:from:sourceURL:)` to
    update that guide in place: unchanged entries retain their local UUIDs
    (and resolved MapKit details), new entries are minted, removed entries
-   are soft-deleted, and the fetched order replaces the previous order.
+   are soft-deleted, retained entries keep their user-defined relative order,
+   and newly discovered entries append in their fetched order.
 3. **Resolve** — `GuidePlaceResolver` (app target) turns each place-ID
    entry into name/address/coordinate via the public
    `MKMapItemRequest(mapItemIdentifier:)` API (iOS 18+/macCatalyst 18+;

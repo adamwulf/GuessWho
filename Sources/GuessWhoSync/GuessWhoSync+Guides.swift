@@ -63,8 +63,10 @@ extension GuessWhoSync {
 
     /// Replace an existing guide's imported snapshot while keeping the
     /// guide's local UUID and any unchanged places' local UUIDs. The fetched
-    /// guide is authoritative for its name, membership, and entry order:
-    /// entries no longer present are soft-deleted and new entries are minted.
+    /// guide is authoritative for its name and membership: entries no longer
+    /// present are soft-deleted and new entries are minted. Existing places
+    /// keep their user-defined relative order; newly discovered entries append
+    /// at the end in their order from the fetched snapshot.
     ///
     /// Unchanged place-ID entries retain their resolved MapKit fields. Address
     /// entries are matched by normalized address (or coordinate when they have
@@ -111,20 +113,38 @@ extension GuessWhoSync {
         }
 
         var retainedIDs: Set<UUID> = []
-        for (index, entry) in snapshot.entries.enumerated() {
+        var newEntries: [MapsGuideURL.Entry] = []
+        for entry in snapshot.entries {
             let identity = GuideEntryIdentity(entry: entry)
             if var candidates = available[identity], !candidates.isEmpty {
                 let place = candidates.removeFirst()
                 available[identity] = candidates
                 retainedIDs.insert(place.id)
-                try refreshPlace(place, from: entry, sortOrder: index)
+                try refreshPlace(place, from: entry)
             } else {
-                _ = try createPlace(entry: entry, guideID: guideID, sortOrder: index)
+                newEntries.append(entry)
             }
         }
 
         for place in existingPlaces where !retainedIDs.contains(place.id) {
             try deletePlace(at: SidecarKey(kind: .place, id: place.id.uuidString))
+        }
+
+        // `existingPlaces` is already in the locally persisted guide order.
+        // Compact surviving rows without changing their relative order, then
+        // append newly fetched entries so refresh never discards a user drag.
+        var nextSortOrder = 0
+        for place in existingPlaces where retainedIDs.contains(place.id) {
+            try updatePlaceSortOrder(place, to: nextSortOrder)
+            nextSortOrder += 1
+        }
+        for entry in newEntries {
+            _ = try createPlace(
+                entry: entry,
+                guideID: guideID,
+                sortOrder: nextSortOrder
+            )
+            nextSortOrder += 1
         }
         return true
     }
@@ -167,8 +187,7 @@ extension GuessWhoSync {
     /// payload. Address entries refresh their inline address and coordinate.
     private func refreshPlace(
         _ place: MapsPlace,
-        from entry: MapsGuideURL.Entry,
-        sortOrder: Int
+        from entry: MapsGuideURL.Entry
     ) throws {
         let key = SidecarKey(kind: .place, id: place.id.uuidString)
 
@@ -183,9 +202,6 @@ extension GuessWhoSync {
             )
         }
 
-        if place.sortOrder != sortOrder {
-            try write(Self.placeSortOrderCellKey, .string(String(sortOrder)))
-        }
         guard entry.mapsPlaceID == nil else { return }
         if let address = entry.address, !address.isEmpty, address != place.address {
             try write(Self.placeAddressCacheKey, .string(address))
@@ -197,6 +213,19 @@ extension GuessWhoSync {
             try write(Self.placeLatitudeCellKey, .string(String(latitude)))
             try write(Self.placeLongitudeCellKey, .string(String(longitude)))
         }
+    }
+
+    private func updatePlaceSortOrder(_ place: MapsPlace, to sortOrder: Int) throws {
+        guard place.sortOrder != sortOrder else { return }
+        let key = SidecarKey(kind: .place, id: place.id.uuidString)
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.placeSortOrderCellKey,
+            fieldName: Self.placeSortOrderCellKey,
+            type: .note,
+            value: .string(String(sortOrder)),
+            softDelete: false
+        )
     }
 
     /// Fill a place's display fields from a MapKit place-ID resolution and
