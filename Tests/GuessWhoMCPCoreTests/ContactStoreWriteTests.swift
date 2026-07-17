@@ -394,6 +394,96 @@ final class ContactStoreWriteTests: XCTestCase {
         XCTAssertTrue(names.contains("Jane Doe"), "no dialog seen -> no delete, ever")
     }
 
+    /// THE safety property of confirmation-gated deletes (the EssentialMCP
+    /// gap that must never be inherited): an approval that arrives AFTER
+    /// the caller's wait has expired performs NO delete and sends NO late
+    /// success — "the agent saw a timeout" and "the delete fired" are
+    /// mutually exclusive. Driven deterministically through the injected
+    /// clock, with the REAL tool timeout and margin.
+    func testConfirmationApprovedAfterAbandonmentDoesNotDelete() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
+        let clock = MutableClock()
+        let gate = SlowConfirmationSource()
+        let probe = DeferredResponseProbe()
+        let dispatcher = ToolDispatcher(
+            contacts: fixture.contacts, events: fixture.events,
+            guides: fixture.guides, gates: fixture.gates,
+            confirmations: gate, audit: fixture.audit,
+            now: { clock.now })
+        await dispatcher.setDeferredResponder { response in
+            await probe.record(response)
+        }
+
+        let immediate = await dispatcher.handle(.contactsDelete(
+            helperId: Fixture.helper, messageId: "del-late",
+            contactId: jane, idempotencyToken: nil))
+        XCTAssertNil(immediate, "the request answers out of band")
+
+        // The human ponders past the caller's entire wait — the helper has
+        // already reported a timeout to the agent — and only THEN clicks
+        // Delete.
+        clock.advance(by: MCPTool.contactsDelete.timeout + 1)
+        await gate.release(with: true)
+
+        guard let deferred = await probe.next() else {
+            return XCTFail("expected the deferred response")
+        }
+        XCTAssertEqual(deferred.errorPayload?.code, .writeFailed)
+        XCTAssertEqual(deferred.errorPayload?.message, WireErrorMessage.confirmationExpired)
+        XCTAssertEqual(deferred.messageId, "del-late")
+
+        // Nothing was deleted — the engine's delete path was never reached —
+        // and no late success ever follows for the abandoned message id.
+        let (names, engineDeletes) = await MainActor.run {
+            (fixture.contacts.contacts.map(\.displayName),
+             fixture.contacts.deletedContactLocalIDs)
+        }
+        XCTAssertTrue(names.contains("Jane Doe"), "an abandoned approval must never delete")
+        XCTAssertTrue(engineDeletes.isEmpty, "the delete path must not be reached at all")
+        let extra = await probe.next()
+        XCTAssertNil(extra, "no further response may follow for the abandoned call")
+        let entries = await fixture.audit.entries()
+        XCTAssertFalse(entries.contains { $0.action == .deleteContact },
+                       "an unperformed delete must not be audited as performed")
+    }
+
+    /// The margin edge: an approval just INSIDE the margin window (elapsed
+    /// > timeout - margin, but < timeout) is already refused — the margin
+    /// is what keeps the host's clock from disagreeing with the helper's.
+    func testConfirmationApprovedInsideTheMarginWindowIsRefused() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
+        let clock = MutableClock()
+        let gate = SlowConfirmationSource()
+        let probe = DeferredResponseProbe()
+        let dispatcher = ToolDispatcher(
+            contacts: fixture.contacts, events: fixture.events,
+            guides: fixture.guides, gates: fixture.gates,
+            confirmations: gate, audit: nil,
+            now: { clock.now })
+        await dispatcher.setDeferredResponder { response in
+            await probe.record(response)
+        }
+
+        let immediate = await dispatcher.handle(.contactsDelete(
+            helperId: Fixture.helper, messageId: "del-margin",
+            contactId: jane, idempotencyToken: nil))
+        XCTAssertNil(immediate)
+
+        clock.advance(
+            by: MCPTool.contactsDelete.timeout
+                - ToolDispatcher.confirmationTimeoutMargin + 1)
+        await gate.release(with: true)
+
+        guard let deferred = await probe.next() else {
+            return XCTFail("expected the deferred response")
+        }
+        XCTAssertEqual(deferred.errorPayload?.message, WireErrorMessage.confirmationExpired)
+        let names = await MainActor.run { fixture.contacts.contacts.map(\.displayName) }
+        XCTAssertTrue(names.contains("Jane Doe"))
+    }
+
     func testSecondDeleteWhileConfirmationPendingIsBusy() async {
         let fixture = await writableFixture()
         guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
@@ -428,20 +518,52 @@ final class ContactStoreWriteTests: XCTestCase {
     }
 }
 
+/// A manually-advanced clock for the abandonment tests: the dispatcher
+/// reads time only through its injected `now`, so advancing this drives
+/// the timed-out-then-approved race deterministically.
+private final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let base = Date()
+    private var offset: TimeInterval = 0
+
+    var now: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return base.addingTimeInterval(offset)
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        offset += interval
+        lock.unlock()
+    }
+}
+
 /// A confirmation source that parks until released — for the
-/// one-dialog-at-a-time test.
+/// one-dialog-at-a-time and abandonment tests. `release` may run before
+/// the dispatcher's task has even asked (the spawn is fire-and-forget), so
+/// an early decision is buffered and handed out on the ask.
 @MainActor
 private final class SlowConfirmationSource: MCPConfirmationSource {
     private var continuation: CheckedContinuation<Bool?, Never>?
+    private var bufferedDecision: Bool??
 
     nonisolated init() {}
 
     func confirmContactDelete(named contactName: String) async -> Bool? {
-        await withCheckedContinuation { continuation = $0 }
+        if let decision = bufferedDecision {
+            bufferedDecision = nil
+            return decision
+        }
+        return await withCheckedContinuation { continuation = $0 }
     }
 
     func release(with decision: Bool?) {
-        continuation?.resume(returning: decision)
-        continuation = nil
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(returning: decision)
+        } else {
+            bufferedDecision = decision
+        }
     }
 }

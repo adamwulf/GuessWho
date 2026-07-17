@@ -37,6 +37,20 @@ public actor ToolDispatcher {
     /// own denial-of-service.
     private var pendingConfirmation = false
 
+    /// Clock for the confirmation-abandonment check, injectable so tests
+    /// can drive the timed-out-then-approved race deterministically. The
+    /// check is THE safety property of confirmation-gated deletes ("the
+    /// agent saw a timeout" and "the delete fired" must be mutually
+    /// exclusive), so it has to be regression-testable with the real
+    /// timeout arithmetic, not a warped margin.
+    private let now: @Sendable () -> Date
+
+    /// Safety margin under the tool's declarative timeout: covers the gap
+    /// between the helper starting its timer (at send) and the host
+    /// starting its own (at receipt), plus response-delivery time. Public
+    /// so the abandonment regression tests exercise the REAL arithmetic.
+    public static let confirmationTimeoutMargin: TimeInterval = 15
+
     /// Sliding-window rate limit for contacts_search, global across ALL
     /// helpers for the host run (a per-helper budget would reset on the
     /// cheap automatic re-handshake). `matches()` is linear over the whole
@@ -90,7 +104,8 @@ public actor ToolDispatcher {
         searchWindowSeconds: TimeInterval = 60,
         writeLimitPerWindow: Int = 30,
         writeWindowSeconds: TimeInterval = 60,
-        idempotencyWindowSeconds: TimeInterval = 600
+        idempotencyWindowSeconds: TimeInterval = 600,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.contacts = contacts
         self.events = events
@@ -98,6 +113,7 @@ public actor ToolDispatcher {
         self.gates = gates
         self.confirmations = confirmations
         self.audit = audit
+        self.now = now
         self.searchLimitPerWindow = searchLimitPerWindow
         self.searchWindowSeconds = searchWindowSeconds
         self.writeLimitPerWindow = writeLimitPerWindow
@@ -1475,7 +1491,7 @@ public actor ToolDispatcher {
                 code: .requiresAppAction, message: WireErrorMessage.confirmationUnavailable)
         }
         pendingConfirmation = true
-        let receivedAt = Date()
+        let receivedAt = now()
         Task { [weak self] in
             await self?.runContactDeleteConfirmation(
                 helperId: helperId, messageId: messageId, contactId: contactId,
@@ -1509,11 +1525,9 @@ public actor ToolDispatcher {
             // Abandonment check (the EssentialMCP gap we must not inherit):
             // if the caller's wait has expired, the agent was already told
             // "timed out" — performing the delete now would make its report
-            // and the actual effect disagree. The margin covers the gap
-            // between the helper starting its timer (at send) and us
-            // starting ours (at receipt).
-            let elapsed = Date().timeIntervalSince(receivedAt)
-            if elapsed > MCPTool.contactsDelete.timeout - 15 {
+            // and the actual effect disagree.
+            let elapsed = now().timeIntervalSince(receivedAt)
+            if elapsed > MCPTool.contactsDelete.timeout - Self.confirmationTimeoutMargin {
                 response = .error(
                     helperId: helperId, messageId: messageId,
                     code: .writeFailed, message: WireErrorMessage.confirmationExpired)
