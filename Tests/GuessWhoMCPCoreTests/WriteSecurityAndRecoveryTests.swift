@@ -11,8 +11,8 @@ final class WriteEchoSecurityTests: XCTestCase {
     private func writableFixture() async -> Fixture {
         let fixture = await Fixture.make()
         await MainActor.run {
-            fixture.gates.isMCPReadOnly = false
-            fixture.gates.isCLIReadOnly = false
+            fixture.gates.mcpAccess = .readWrite
+            fixture.gates.cliAccess = .readWrite
         }
         return fixture
     }
@@ -25,7 +25,12 @@ final class WriteEchoSecurityTests: XCTestCase {
         var responses: [WireResponse] = []
 
         func run(_ request: WireRequest) async -> WireResponse {
-            let response = await dispatcher.handle(request)
+            guard let response = await dispatcher.handle(request) else {
+                XCTFail("expected an immediate response for \(request)")
+                return .error(
+                    helperId: helper, messageId: "missing",
+                    code: .invalidParams, message: "missing")
+            }
             responses.append(response)
             return response
         }
@@ -81,6 +86,48 @@ final class WriteEchoSecurityTests: XCTestCase {
         _ = await run(.contactsSetFavorite(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: fresh, favorite: true, idempotencyToken: nil))
+
+        // Contact-record writes (Revision 2): create, patch, failed save,
+        // and a user-confirmed delete — echo and error outputs all scanned.
+        var createFields = WireContactFields()
+        createFields.givenName = "Echo"
+        createFields.familyName = "Person"
+        createFields.phoneNumbers = [WireLabeledValue(label: "mobile", value: "+1 555 0000")]
+        let created = await run(.contactsCreate(
+            helperId: helper, messageId: TestMessageID.next(),
+            kind: "person", fields: createFields, idempotencyToken: nil))
+        var patch = WireContactFields()
+        patch.jobTitle = "Echo Tester"
+        _ = await run(.contactsUpdate(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, fields: patch, idempotencyToken: nil))
+        // A failed contact-record save surfaces typed, never leaks.
+        await MainActor.run {
+            fixture.contacts.nextContactStoreError = NSError(
+                domain: "NSCocoaErrorDomain", code: 134092,
+                userInfo: [NSLocalizedDescriptionKey: Sentinels.appleNote])
+        }
+        _ = await run(.contactsUpdate(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, fields: patch, idempotencyToken: nil))
+        if case .contact(_, _, let createdContact) = created {
+            await MainActor.run { fixture.confirmations.decisions = [true] }
+            let probe = DeferredResponseProbe()
+            await dispatcher.setDeferredResponder { response in
+                await probe.record(response)
+            }
+            let immediate = await dispatcher.handle(.contactsDelete(
+                helperId: helper, messageId: TestMessageID.next(),
+                contactId: createdContact.id, idempotencyToken: nil))
+            XCTAssertNil(immediate, "the delete answers out of band")
+            if let deferred = await probe.next() {
+                responses.append(deferred)
+            } else {
+                XCTFail("expected the deferred delete response")
+            }
+        } else {
+            XCTFail("expected the created contact echo")
+        }
 
         // Error outputs: reserved name, blob type, un-adopted tag write.
         _ = await run(.contactsSetCustomField(
@@ -146,10 +193,16 @@ final class WriteEchoSecurityTests: XCTestCase {
         let responses = await allWriteOutputs(fixture)
         XCTAssertGreaterThan(responses.count, 15, "the sweep should exercise every write tool")
 
-        // Write-direction: after every write tool ran, every fixture
-        // contact's Apple note is byte-identical — no tool has a parameter
-        // that can reach it.
-        let appleNotes = await MainActor.run { fixture.contacts.contacts.map(\.note) }
+        // Write-direction: after every write tool ran — including the
+        // whole-card contacts_update — every original fixture contact's
+        // Apple note is byte-identical: no tool has a parameter that can
+        // reach it, and the update path carries it through untouched.
+        let appleNotes = await MainActor.run {
+            fixture.contacts.contacts
+                .filter { $0.contactID.restorationToken.localID.hasPrefix("ABPerson-LOCAL-") }
+                .filter { !$0.contactID.restorationToken.localID.contains("CREATED") }
+                .map(\.note)
+        }
         XCTAssertEqual(appleNotes.count, 3)
         for note in appleNotes {
             XCTAssertEqual(note, Sentinels.appleNote, "a write tool mutated the Apple contact note")
@@ -158,18 +211,15 @@ final class WriteEchoSecurityTests: XCTestCase {
         // Write-echo: the sentinel and every sealed identifier stay off the
         // wire across ALL write outputs, success and error alike.
         let output = responses.map { $0.agentVisibleText + "\n" + $0.wireJSON }.joined(separator: "\n")
+        // The four excluded fields, absent from every write echo and error
+        // (the ids that DO appear are the records' own durable UUIDs).
         XCTAssertFalse(output.contains(Sentinels.appleNote), "Apple note leaked via write echo")
         XCTAssertFalse(output.lowercased().contains("cabbage"), "Apple note fragment leaked")
-        XCTAssertFalse(output.contains(Sentinels.guessWhoUUID), "GuessWho UUID leaked")
-        XCTAssertFalse(output.contains("guesswho://"), "identity URL leaked")
+        XCTAssertFalse(output.contains("guesswho://"), "identity URL form leaked")
         XCTAssertFalse(output.contains(Sentinels.localID), "Apple local id leaked")
         XCTAssertFalse(output.contains("ABPerson-LOCAL"), "an Apple local id leaked")
         XCTAssertFalse(output.contains(Sentinels.deviceID), "device id leaked")
         XCTAssertFalse(output.contains("modifiedBy"), "modifiedBy key leaked")
-        let uuidPattern = #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#
-        XCTAssertNil(
-            output.range(of: uuidPattern, options: .regularExpression),
-            "a raw UUID crossed the wire in a write response")
     }
 
     /// The search oracle still holds after writes (a write must not
@@ -195,8 +245,8 @@ final class RecentlyDeletedTests: XCTestCase {
     private func writableFixture() async -> Fixture {
         let fixture = await Fixture.make()
         await MainActor.run {
-            fixture.gates.isMCPReadOnly = false
-            fixture.gates.isCLIReadOnly = false
+            fixture.gates.mcpAccess = .readWrite
+            fixture.gates.cliAccess = .readWrite
         }
         return fixture
     }

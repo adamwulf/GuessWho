@@ -45,6 +45,8 @@ final class BannedVocabularyTests: XCTestCase {
         // Phase 3 install-section copy.
         "GuessWho has moved",
         "the guesswho command",
+        // Revision 2 confirmation copy.
+        "bring the GuessWho app to the front",
     ]
 
     private func assertClean(_ text: String, context: String) {
@@ -98,6 +100,9 @@ final class BannedVocabularyTests: XCTestCase {
         for string in AgentActivityStrings.allFixedStrings {
             assertClean(string, context: "agent-activity string")
         }
+        for string in ConfirmationStrings.allFixedStrings {
+            assertClean(string, context: "confirmation string")
+        }
     }
 
     /// Live listTools output — the AGENT-VISIBLE surface an MCP client
@@ -117,15 +122,15 @@ final class BannedVocabularyTests: XCTestCase {
         if let status { assertClean(status, context: "listTools status") }
     }
 
-    /// The error-code NAME `staleHandle` (and friends) must never ride an
-    /// agent-visible string — only the plain message does.
+    /// Error-code NAMES must never ride an agent-visible string — only the
+    /// plain message does.
     func testErrorCodeNamesStayOutOfAgentText() async {
         let fixture = await Fixture.make()
         let response = await fixture.dispatcher.handle(.contactsGet(
-            helperId: Fixture.helper, messageId: "stale", contactId: "bogus-id"))
-        let text = response.agentVisibleText
-        XCTAssertFalse(text.contains("staleHandle"))
+            helperId: Fixture.helper, messageId: "gone", contactId: "bogus-id"))
+        let text = response?.agentVisibleText ?? ""
+        XCTAssertFalse(text.contains("notFound"))
         XCTAssertFalse(text.contains("invalidParams"))
-        XCTAssertEqual(text, WireErrorMessage.staleReference)
+        XCTAssertEqual(text, WireErrorMessage.notFoundContact)
     }
 }

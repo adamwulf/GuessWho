@@ -64,6 +64,9 @@ public enum AgentActivityFormatter {
         case .deleteGuide: return AgentActivityStrings.deletedGuide
         case .reorderPlaces: return AgentActivityStrings.reorderedPlaces
         case .deletePlace: return AgentActivityStrings.deletedPlace
+        case .createContact: return AgentActivityStrings.createdContact
+        case .editContact: return AgentActivityStrings.editedContact
+        case .deleteContact: return AgentActivityStrings.deletedContact
         }
     }
 

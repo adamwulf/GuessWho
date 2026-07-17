@@ -3,16 +3,19 @@ import GuessWhoSync
 import GuessWhoMCPCore
 import GuessWhoMCPWire
 
-/// Gates, sealed-id lifecycle, pagination, caps, and rate limiting —
-/// the dispatch-core behavior the Phase 1 exit criteria name.
+/// Gates, wire-id lifecycle, pagination, caps, and rate limiting — the
+/// dispatch-core behavior the exit criteria name (ids per Revision 2: the
+/// contact id IS the GuessWho UUID, stable across the deterministic mint).
 final class DispatcherBehaviorTests: XCTestCase {
 
     private func expectError(
-        _ response: WireResponse, code: WireErrorCode,
+        _ response: WireResponse?, code: WireErrorCode,
         file: StaticString = #filePath, line: UInt = #line
     ) {
-        guard let payload = response.errorPayload else {
-            return XCTFail("expected \(code) error, got \(response)", file: file, line: line)
+        guard let payload = response?.errorPayload else {
+            return XCTFail(
+                "expected \(code) error, got \(String(describing: response))",
+                file: file, line: line)
         }
         XCTAssertEqual(payload.code, code, file: file, line: line)
         XCTAssertFalse(payload.message.isEmpty, file: file, line: line)
@@ -22,7 +25,7 @@ final class DispatcherBehaviorTests: XCTestCase {
 
     func testMasterToggleOffHidesToolsAndRejectsCallsServerSide() async {
         let fixture = await Fixture.make()
-        await MainActor.run { fixture.gates.isMCPEnabled = false }
+        await MainActor.run { fixture.gates.mcpAccess = .off }
 
         let list = await fixture.dispatcher.handle(
             .listTools(helperId: Fixture.helper, messageId: "m"))
@@ -62,8 +65,8 @@ final class DispatcherBehaviorTests: XCTestCase {
     func testOriginPicksItsOwnToggle() async {
         let fixture = await Fixture.make()
         await MainActor.run {
-            fixture.gates.isMCPEnabled = false
-            fixture.gates.isCLIEnabled = true
+            fixture.gates.mcpAccess = .off
+            fixture.gates.cliAccess = .readOnly
         }
         let cliHelper = RequestOrigin.cli.makeHelperId()
         let response = await fixture.dispatcher.handle(.contactsSearch(
@@ -73,41 +76,89 @@ final class DispatcherBehaviorTests: XCTestCase {
         }
     }
 
-    // MARK: - Sealed ids
+    // MARK: - Wire ids
 
-    func testUnknownIdIsStaleNotTransportError() async {
+    func testUnknownIdIsNotFound() async {
         let fixture = await Fixture.make()
-        let response = await fixture.dispatcher.handle(.contactsGet(
-            helperId: Fixture.helper, messageId: "m", contactId: "never-minted"))
-        expectError(response, code: .staleHandle)
+        // Not id-shaped at all.
+        expectError(await fixture.dispatcher.handle(.contactsGet(
+            helperId: Fixture.helper, messageId: "m", contactId: "never-minted")),
+            code: .notFound)
+        // UUID-shaped but referring to nothing.
+        expectError(await fixture.dispatcher.handle(.contactsGet(
+            helperId: Fixture.helper, messageId: "m2",
+            contactId: UUID().uuidString.lowercased())),
+            code: .notFound)
     }
 
-    func testWrongKindIdIsInvalidParams() async {
+    func testWrongKindIdIsNotFound() async {
         let fixture = await Fixture.make()
         let guidesResponse = await fixture.dispatcher.handle(.guidesList(
             helperId: Fixture.helper, messageId: "m", limit: nil, cursor: nil))
         guard case .guidePage(_, _, let page) = guidesResponse,
-              let guideHandle = page.items.first?.id
+              let guideID = page.items.first?.id
         else { return XCTFail("expected a guide") }
 
+        // A guide's UUID handed to a contacts tool resolves to no contact.
         let response = await fixture.dispatcher.handle(.contactsGet(
-            helperId: Fixture.helper, messageId: "m2", contactId: guideHandle))
-        expectError(response, code: .invalidParams)
+            helperId: Fixture.helper, messageId: "m2", contactId: guideID))
+        expectError(response, code: .notFound)
     }
 
     func testSameRecordKeepsSameIdWithinARun() async {
         let fixture = await Fixture.make()
-        func janeHandle() async -> String? {
+        func janeID() async -> String? {
             let response = await fixture.dispatcher.handle(.contactsSearch(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
                 query: "jane", limit: nil, cursor: nil))
             guard case .contactPage(_, _, let page) = response else { return nil }
             return page.items.first(where: { $0.name == "Jane Doe" })?.id
         }
-        let first = await janeHandle()
-        let second = await janeHandle()
+        let first = await janeID()
+        let second = await janeID()
         XCTAssertNotNil(first)
-        XCTAssertEqual(first, second, "ids must be stable across repeated reads in one run")
+        XCTAssertEqual(first, second, "ids must be stable across repeated reads")
+    }
+
+    /// THE Revision 2 id property: the id handed out for a never-written
+    /// contact is the exact UUID the deterministic mint assigns on its
+    /// first write — one id, stable across the mint boundary.
+    func testPreMintIdSurvivesTheMint() async {
+        let fixture = await Fixture.make()
+        await MainActor.run {
+            fixture.gates.mcpAccess = .readWrite
+            fixture.gates.cliAccess = .readWrite
+        }
+        let search = await fixture.dispatcher.handle(.contactsSearch(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            query: "fresh", limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let page) = search,
+              let preMintID = page.items.first(where: { $0.name == "Fresh Face" })?.id
+        else { return XCTFail("expected the fresh contact") }
+
+        // First write mints.
+        let write = await fixture.dispatcher.handle(.contactsAddNote(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: preMintID, body: "first write", idempotencyToken: nil))
+        XCTAssertNil(write?.errorPayload)
+
+        let (mintedUUID, mintCount) = await MainActor.run { () -> (String?, Int) in
+            let contact = fixture.contacts.contacts.first {
+                $0.contactID.restorationToken.localID == "ABPerson-LOCAL-FRESH-88"
+            }
+            return (contact?.contactID.restorationToken.guessWhoID, fixture.contacts.mintCount)
+        }
+        XCTAssertEqual(mintCount, 1)
+        XCTAssertEqual(mintedUUID, preMintID,
+                       "the card must mint EXACTLY the id the wire already handed out")
+
+        // And the same id still lists after the mint.
+        let again = await fixture.dispatcher.handle(.contactsSearch(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            query: "fresh", limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let pageAfter) = again else { return XCTFail("no page") }
+        XCTAssertEqual(
+            pageAfter.items.first(where: { $0.name == "Fresh Face" })?.id, preMintID)
     }
 
     /// An event with no GuessWho record of its own (system calendar only)
@@ -229,46 +280,90 @@ final class DispatcherBehaviorTests: XCTestCase {
     }
 }
 
-/// Sealed-handle registry unit behavior.
-final class HandleRegistryTests: XCTestCase {
-    func testMintingIsIdempotentPerReferent() async {
-        let registry = HandleRegistry()
-        let referent = HandleReferent.group(localID: "G1")
-        let first = await registry.handle(for: referent)
-        let second = await registry.handle(for: referent)
-        XCTAssertEqual(first, second)
-        let other = await registry.handle(for: .group(localID: "G2"))
-        XCTAssertNotEqual(first, other)
-    }
-
-    func testHandlesAreOpaqueTokensNotUUIDs() async {
-        let registry = HandleRegistry()
-        let handle = await registry.handle(for: .group(localID: "G1"))
-        XCTAssertEqual(handle.count, 32)
-        XCTAssertNil(handle.range(
-            of: #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}"#, options: .regularExpression))
-        XCTAssertNotNil(handle.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression))
-    }
-
-    func testUnknownHandleResolvesToNothing() async {
-        let registry = HandleRegistry()
-        let entry = await registry.entry(for: "feedfacefeedfacefeedfacefeedface")
-        XCTAssertNil(entry)
-    }
+/// Deterministic-identity unit behavior (Revision 2): the wire id scheme
+/// and the package's deterministic mint agree by construction.
+final class DeterministicIdentityTests: XCTestCase {
 
     @MainActor
-    func testFingerprintMintedOnlyForContactsWithoutDurableIdentity() async {
-        let registry = HandleRegistry()
+    func testDeterministicMintIsAValidStableUUID() {
         let fresh = Fixture.freshFace()
-        let fingerprint = HandleRegistry.displayNameFingerprint(fresh)
-        let handle = await registry.handle(
-            for: .contact(fresh.contactID.restorationToken), fingerprint: fingerprint)
-        let entry = await registry.entry(for: handle)
-        XCTAssertEqual(entry?.fingerprint, fingerprint)
-        XCTAssertNotEqual(fingerprint, 0)
+        let first = fresh.deterministicGuessWhoID
+        let second = Fixture.freshFace().deterministicGuessWhoID
+        XCTAssertEqual(first, second, "same inputs must derive the same UUID")
+        XCTAssertNotNil(UUID(uuidString: first), "must be a real UUID (the GuessWho id format)")
+        XCTAssertEqual(first, first.lowercased(), "canonical lowercase")
+        // Distinct contacts derive distinct UUIDs.
+        XCTAssertNotEqual(first, Fixture.janeDoe().deterministicGuessWhoID)
+    }
 
-        // Same name → same fingerprint (deterministic, process-independent).
-        let again = HandleRegistry.displayNameFingerprint(Fixture.freshFace())
-        XCTAssertEqual(fingerprint, again)
+    /// The pre-mint id embeds the display name: if system unification
+    /// re-points the localID at a DIFFERENT person, the id stops resolving
+    /// (the structural stale-localID guard) — asserted end-to-end here.
+    func testPreMintIdStopsResolvingWhenTheContactIsRepointed() async {
+        let fixture = await Fixture.make()
+        await MainActor.run {
+            fixture.gates.mcpAccess = .readWrite
+            fixture.gates.cliAccess = .readWrite
+        }
+        let search = await fixture.dispatcher.handle(.contactsSearch(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            query: "fresh", limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let page) = search,
+              let preMintID = page.items.first(where: { $0.name == "Fresh Face" })?.id
+        else { return XCTFail("expected the fresh contact") }
+
+        await MainActor.run {
+            guard let index = fixture.contacts.contacts.firstIndex(where: {
+                $0.contactID.restorationToken.localID == "ABPerson-LOCAL-FRESH-88"
+            }) else { return }
+            var repointed = fixture.contacts.contacts[index]
+            repointed.givenName = "Somebody"
+            repointed.familyName = "Else"
+            fixture.contacts.contacts[index] = repointed
+        }
+
+        let write = await fixture.dispatcher.handle(.contactsAddNote(
+            helperId: Fixture.helper, messageId: "m",
+            contactId: preMintID, body: "wrong person", idempotencyToken: nil))
+        XCTAssertEqual(write?.errorPayload?.code, .notFound,
+                       "a re-pointed pre-mint id must stop resolving, never misdirect a write")
+        let allBodies = await MainActor.run {
+            fixture.contacts.notesByEffectiveID.values.flatMap { $0 }.map(\.body)
+        }
+        XCTAssertFalse(allBodies.contains("wrong person"))
+    }
+
+    /// System-only events ride a DERIVED id (never the raw calendar id),
+    /// and it keeps resolving after the user adopts the event in the app.
+    func testSystemEventIdIsDerivedAndSurvivesAdoption() async {
+        let fixture = await Fixture.make()
+        let list = await fixture.dispatcher.handle(.eventsList(
+            helperId: Fixture.helper, messageId: "m",
+            startDate: "2025-01-01T00:00:00Z", endDate: "2025-12-01T00:00:00Z",
+            limit: nil, cursor: nil))
+        guard case .eventPage(_, _, let page) = list,
+              let dentist = page.items.first(where: { $0.title == "Dentist" })
+        else { return XCTFail("expected the system-only event") }
+        XCTAssertFalse(dentist.id.contains("EK-SENTINEL"), "raw calendar id must not ride")
+        XCTAssertTrue(dentist.id.hasPrefix("e-"))
+
+        // The user opens the event in the app: a record now exists for the
+        // calendar id. The SAME wire id keeps resolving, now to the record.
+        await MainActor.run {
+            let adopted = Event(
+                id: UUID(),
+                eventKitID: "EK-SENTINEL-42",
+                title: "Dentist",
+                startDate: Date(timeIntervalSince1970: 1_760_100_000),
+                endDate: Date(timeIntervalSince1970: 1_760_103_600))
+            fixture.events.events.append(adopted)
+            fixture.events.eventKitOnlyEvents.removeValue(forKey: "EK-SENTINEL-42")
+        }
+        let after = await fixture.dispatcher.handle(.eventsGet(
+            helperId: Fixture.helper, messageId: "m2", eventId: dentist.id))
+        guard case .event(_, _, let event) = after else {
+            return XCTFail("the derived id should still resolve after adoption; got \(String(describing: after))")
+        }
+        XCTAssertEqual(event.title, "Dentist")
     }
 }

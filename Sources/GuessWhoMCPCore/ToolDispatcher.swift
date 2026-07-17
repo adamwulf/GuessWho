@@ -21,7 +21,21 @@ public actor ToolDispatcher {
     private let events: MCPEventSource
     private let guides: MCPGuideSource
     private let gates: MCPGateSource
-    private let registry: HandleRegistry
+    /// Presents human-in-the-loop confirmations (contacts_delete). nil =
+    /// no way to confirm, so confirmation-gated writes answer the typed
+    /// "couldn't show the confirmation" error.
+    private let confirmations: MCPConfirmationSource?
+
+    /// Sends a response OUT OF BAND — after `handle` already returned nil
+    /// for a confirmation-gated request (fire-and-forget dispatch: the
+    /// request handler never blocks on a human; the answer is correlated
+    /// by helperId+messageId when it exists). Wired by the host to the
+    /// pipe writer; wired by tests to a probe.
+    private var deferredSend: (@Sendable (WireResponse) async -> Void)?
+
+    /// One confirmation on screen at a time — a flood of dialogs is its
+    /// own denial-of-service.
+    private var pendingConfirmation = false
 
     /// Sliding-window rate limit for contacts_search, global across ALL
     /// helpers for the host run (a per-helper budget would reset on the
@@ -70,7 +84,7 @@ public actor ToolDispatcher {
         events: MCPEventSource,
         guides: MCPGuideSource,
         gates: MCPGateSource,
-        registry: HandleRegistry = HandleRegistry(),
+        confirmations: MCPConfirmationSource? = nil,
         audit: MCPAuditLog? = nil,
         searchLimitPerWindow: Int = 30,
         searchWindowSeconds: TimeInterval = 60,
@@ -82,7 +96,7 @@ public actor ToolDispatcher {
         self.events = events
         self.guides = guides
         self.gates = gates
-        self.registry = registry
+        self.confirmations = confirmations
         self.audit = audit
         self.searchLimitPerWindow = searchLimitPerWindow
         self.searchWindowSeconds = searchWindowSeconds
@@ -91,9 +105,18 @@ public actor ToolDispatcher {
         self.idempotencyWindowSeconds = idempotencyWindowSeconds
     }
 
+    /// Install the out-of-band response sender (see `deferredSend`).
+    public func setDeferredResponder(_ send: @escaping @Sendable (WireResponse) async -> Void) {
+        deferredSend = send
+    }
+
     // MARK: - Entry point
 
-    public func handle(_ request: WireRequest) async -> WireResponse {
+    /// Handle one request. Returns the response to send — or nil for a
+    /// confirmation-gated request whose answer will arrive later through
+    /// the deferred responder (fire-and-forget; the request-reading path
+    /// must never block on a human decision).
+    public func handle(_ request: WireRequest) async -> WireResponse? {
         let helperId = request.helperId
         let messageId = request.messageId
 
@@ -111,6 +134,13 @@ public actor ToolDispatcher {
 
         if let gateError = await gateCheck(tool: tool, helperId: helperId, messageId: messageId) {
             return gateError
+        }
+
+        if case .contactsDelete(_, _, let contactId, let idempotencyToken) = request {
+            // Confirmation-gated: may return nil (answer sent later).
+            return await contactsDeleteRequested(
+                helperId: helperId, messageId: messageId,
+                contactId: contactId, idempotencyToken: idempotencyToken)
         }
 
         if tool.isWrite {
@@ -174,15 +204,17 @@ public actor ToolDispatcher {
             response = .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
-        case .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
+        case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
              .contactsRemoveLinkedContact, .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             // Unreachable: every write case dispatched through handleWrite
-            // above (tool.isWrite). Kept explicit so a new write case that
-            // forgets its isWrite classification fails a test, not silently.
+            // (or the confirmation-gated delete path) above. Kept explicit
+            // so a new write case that forgets its isWrite classification
+            // fails a test, not silently.
             response = .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
@@ -193,25 +225,24 @@ public actor ToolDispatcher {
     // MARK: - Gates
 
     /// Tools visible to `listTools`, given the live gates. Empty when the
-    /// origin's master toggle is off — with the status string riding along
+    /// origin's access mode is off — with the status string riding along
     /// so the agent relays something actionable instead of "no tools".
     private func listTools(helperId: String, messageId: String) async -> WireResponse {
         let origin = RequestOrigin.from(helperId: helperId) ?? .mcp
-        let (enabled, readOnly, contactsOK, eventsOK) = await MainActor.run {
+        let (mode, contactsOK, eventsOK) = await MainActor.run {
             (
-                origin == .cli ? gates.isCLIEnabled : gates.isMCPEnabled,
-                origin == .cli ? gates.isCLIReadOnly : gates.isMCPReadOnly,
+                gates.accessMode(for: origin),
                 gates.contactsAuthorized,
                 gates.eventsAuthorized
             )
         }
-        guard enabled else {
+        guard mode.allowsReads else {
             return .toolList(
                 helperId: helperId, messageId: messageId,
                 tools: [], status: WireErrorMessage.disabled)
         }
         let tools = MCPTool.allCases.filter { tool in
-            if tool.isWrite && readOnly { return false }
+            if tool.isWrite && !mode.allowsWrites { return false }
             switch tool.permissionDomain {
             case .contacts: return contactsOK
             case .events: return eventsOK
@@ -223,26 +254,25 @@ public actor ToolDispatcher {
             tools: tools.map(\.metadata), status: nil)
     }
 
-    /// The per-call server-side gate: master toggle by origin, then the
-    /// origin's read-only toggle for write tools (THE consent gate — writes
-    /// are off by default, no per-call dialogs), then the tool's permission
-    /// domain. Returns the error to send, or nil to proceed.
+    /// The per-call server-side gate: the origin's tri-state access mode
+    /// (off rejects everything; read-only rejects write tools — THE consent
+    /// gate, no per-call dialogs; read-write passes), then the tool's
+    /// permission domain. Returns the error to send, or nil to proceed.
     private func gateCheck(tool: MCPTool, helperId: String, messageId: String) async -> WireResponse? {
         let origin = RequestOrigin.from(helperId: helperId) ?? .mcp
-        let (enabled, readOnly, contactsOK, eventsOK) = await MainActor.run {
+        let (mode, contactsOK, eventsOK) = await MainActor.run {
             (
-                origin == .cli ? gates.isCLIEnabled : gates.isMCPEnabled,
-                origin == .cli ? gates.isCLIReadOnly : gates.isMCPReadOnly,
+                gates.accessMode(for: origin),
                 gates.contactsAuthorized,
                 gates.eventsAuthorized
             )
         }
-        guard enabled else {
+        guard mode.allowsReads else {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .disabled, message: WireErrorMessage.disabled)
         }
-        if tool.isWrite && readOnly {
+        if tool.isWrite && !mode.allowsWrites {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .readOnly, message: WireErrorMessage.readOnly)
@@ -296,11 +326,7 @@ public actor ToolDispatcher {
             }
         }
         let (slice, nextCursor) = page.slice(matching)
-        var items: [WireContactSummary] = []
-        items.reserveCapacity(slice.count)
-        for contact in slice {
-            items.append(WireMapping.summary(contact, handle: await mintContactHandle(contact)))
-        }
+        let items = slice.map { WireMapping.summary($0, id: WireRecordID.contactID(for: $0)) }
         return .contactPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -312,10 +338,10 @@ public actor ToolDispatcher {
             return failure.response(helperId: helperId, messageId: messageId)
         case .success(let contact):
             let isFavorite = await MainActor.run { contacts.isFavorite(contact.contactID) }
-            let handle = await mintContactHandle(contact)
             return .contact(
                 helperId: helperId, messageId: messageId,
-                contact: WireMapping.contact(contact, handle: handle, isFavorite: isFavorite))
+                contact: WireMapping.contact(
+                    contact, id: WireRecordID.contactID(for: contact), isFavorite: isFavorite))
         }
     }
 
@@ -335,10 +361,8 @@ public actor ToolDispatcher {
                 .filter { !$0.isDeleted }
                 .sorted { $0.createdAt < $1.createdAt }
             let (slice, nextCursor) = page.slice(notes)
-            var items: [WireNote] = []
-            for note in slice {
-                let handle = await registry.handle(for: .note(note.id))
-                if let dto = WireMapping.note(note, handle: handle) { items.append(dto) }
+            let items = slice.compactMap {
+                WireMapping.note($0, id: $0.id.uuidString.lowercased())
             }
             return .notePage(
                 helperId: helperId, messageId: messageId,
@@ -363,10 +387,8 @@ public actor ToolDispatcher {
             let fetchedFields = await MainActor.run { contacts.fields(for: id) }
             let fields = fetchedFields.filter { $0.deletedAt == nil }
             let (slice, nextCursor) = page.slice(fields)
-            var items: [WireCustomField] = []
-            for field in slice {
-                let handle = await registry.handle(for: .customField(field.id))
-                if let dto = WireMapping.customField(field, handle: handle) { items.append(dto) }
+            let items = slice.compactMap {
+                WireMapping.customField($0, id: $0.id.uuidString.lowercased())
             }
             return .customFieldPage(
                 helperId: helperId, messageId: messageId,
@@ -410,14 +432,10 @@ public actor ToolDispatcher {
             }
             pairs.sort { $0.0.createdAt < $1.0.createdAt }
             let (slice, nextCursor) = page.slice(pairs)
-            var items: [WireLinkedContact] = []
-            for (link, other) in slice {
-                let linkHandle = await registry.handle(for: .link(link.id))
-                let otherHandle = await mintContactHandle(other)
-                if let dto = WireMapping.linkedContact(
-                    link: link, linkHandle: linkHandle, other: other, otherHandle: otherHandle) {
-                    items.append(dto)
-                }
+            let items = slice.compactMap { link, other in
+                WireMapping.linkedContact(
+                    link: link, linkID: link.id.uuidString.lowercased(),
+                    other: other, otherID: WireRecordID.contactID(for: other))
             }
             return .linkedContactPage(
                 helperId: helperId, messageId: messageId,
@@ -435,10 +453,7 @@ public actor ToolDispatcher {
             contacts.allContacts.filter { contacts.isFavorite($0.contactID) }
         }
         let (slice, nextCursor) = page.slice(favorites)
-        var items: [WireContactSummary] = []
-        for contact in slice {
-            items.append(WireMapping.summary(contact, handle: await mintContactHandle(contact)))
-        }
+        let items = slice.map { WireMapping.summary($0, id: WireRecordID.contactID(for: $0)) }
         return .contactPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -452,11 +467,7 @@ public actor ToolDispatcher {
         }
         let groups = await contacts.fetchGroups()
         let (slice, nextCursor) = page.slice(groups)
-        var items: [WireGroup] = []
-        for group in slice {
-            let handle = await registry.handle(for: .group(localID: group.localID))
-            items.append(WireMapping.group(group, handle: handle))
-        }
+        let items = slice.map { WireMapping.group($0, id: WireRecordID.groupID(for: $0)) }
         return .groupPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -468,19 +479,15 @@ public actor ToolDispatcher {
         guard let page = pageBounds(limit: limit, cursor: cursor) else {
             return invalidCursor(helperId: helperId, messageId: messageId)
         }
-        guard let entry = await registry.entry(for: groupId),
-              case .group(let localID) = entry.referent
-        else {
+        let groups = await contacts.fetchGroups()
+        guard let group = WireRecordID.group(for: groupId, in: groups) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundGroup)
         }
-        let members = await contacts.members(ofGroup: localID)
+        let members = await contacts.members(ofGroup: group.localID)
         let (slice, nextCursor) = page.slice(members)
-        var items: [WireContactSummary] = []
-        for contact in slice {
-            items.append(WireMapping.summary(contact, handle: await mintContactHandle(contact)))
-        }
+        let items = slice.map { WireMapping.summary($0, id: WireRecordID.contactID(for: $0)) }
         return .contactPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -519,11 +526,7 @@ public actor ToolDispatcher {
         let fetched = await events.fetchEventsRange(from: start, to: end)
         let sorted = fetched.sorted { $0.startDate < $1.startDate }
         let (slice, nextCursor) = page.slice(sorted)
-        var items: [WireEventSummary] = []
-        for event in slice {
-            let handle = await mintEventHandle(event)
-            items.append(WireMapping.eventSummary(event, handle: handle))
-        }
+        let items = slice.map { WireMapping.eventSummary($0, id: WireRecordID.eventID(for: $0)) }
         return .eventPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -534,10 +537,9 @@ public actor ToolDispatcher {
         case .failure(let failure):
             return failure.response(helperId: helperId, messageId: messageId)
         case .success(let event):
-            let handle = await mintEventHandle(event)
             return .event(
                 helperId: helperId, messageId: messageId,
-                event: WireMapping.event(event, handle: handle))
+                event: WireMapping.event(event, id: WireRecordID.eventID(for: event)))
         }
     }
 
@@ -555,10 +557,8 @@ public actor ToolDispatcher {
             let fetchedTags = await MainActor.run { events.eventTags(forEventUUID: uuid) }
             let tags = fetchedTags.filter { $0.deletedAt == nil }
             let (slice, nextCursor) = page.slice(tags)
-            var items: [WireTag] = []
-            for tag in slice {
-                let handle = await registry.handle(for: .tag(tag.id))
-                if let dto = WireMapping.tag(tag, handle: handle) { items.append(dto) }
+            let items = slice.compactMap {
+                WireMapping.tag($0, id: $0.id.uuidString.lowercased())
             }
             return .tagPage(
                 helperId: helperId, messageId: messageId,
@@ -577,34 +577,27 @@ public actor ToolDispatcher {
         let all = await guides.allGuides()
         let sorted = all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         let (slice, nextCursor) = page.slice(sorted)
-        var items: [WireGuide] = []
-        for guide in slice {
-            let handle = await registry.handle(for: .guide(guide.id))
-            items.append(WireMapping.guide(guide, handle: handle))
-        }
+        let items = slice.map { WireMapping.guide($0, id: $0.id.uuidString.lowercased()) }
         return .guidePage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
     }
 
     private func guidesGet(helperId: String, messageId: String, guideId: String) async -> WireResponse {
-        guard let entry = await registry.entry(for: guideId),
-              case .guide(let id) = entry.referent
-        else {
+        guard let id = WireRecordID.recordUUID(guideId) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
         let all = await guides.allGuides()
         guard let guide = all.first(where: { $0.id == id }) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
-        let handle = await registry.handle(for: .guide(guide.id))
         return .guide(
             helperId: helperId, messageId: messageId,
-            guide: WireMapping.guide(guide, handle: handle))
+            guide: WireMapping.guide(guide, id: guide.id.uuidString.lowercased()))
     }
 
     private func placesList(
@@ -615,23 +608,20 @@ public actor ToolDispatcher {
         }
         let places: [MapsPlace]
         if let guideId {
-            guard let entry = await registry.entry(for: guideId),
-                  case .guide(let id) = entry.referent
-            else {
+            guard let id = WireRecordID.recordUUID(guideId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundGuide)
             }
             places = await guides.places(inGuide: id)
         } else {
             places = await guides.allPlaces()
         }
         let (slice, nextCursor) = page.slice(places)
-        var items: [WirePlace] = []
-        for place in slice {
-            let handle = await registry.handle(for: .place(place.id))
-            let guideHandle = await registry.handle(for: .guide(place.guideID))
-            items.append(WireMapping.place(place, handle: handle, guideHandle: guideHandle))
+        let items = slice.map {
+            WireMapping.place(
+                $0, id: $0.id.uuidString.lowercased(),
+                guideID: $0.guideID.uuidString.lowercased())
         }
         return .placePage(
             helperId: helperId, messageId: messageId,
@@ -670,6 +660,12 @@ public actor ToolDispatcher {
         _ request: WireRequest, helperId: String, messageId: String
     ) async -> WireResponse {
         switch request {
+        case .contactsCreate(_, _, let kind, let fields, _):
+            return await contactsCreate(
+                helperId: helperId, messageId: messageId, kind: kind, fields: fields)
+        case .contactsUpdate(_, _, let contactId, let fields, _):
+            return await contactsUpdate(
+                helperId: helperId, messageId: messageId, contactId: contactId, fields: fields)
         case .contactsAddNote(_, _, let contactId, let body, _):
             return await contactsAddNote(
                 helperId: helperId, messageId: messageId, contactId: contactId, body: body)
@@ -753,8 +749,7 @@ public actor ToolDispatcher {
                     contacts.allNotes(for: effective.contactID).first { $0.id == noteID }
                 }
                 guard let written,
-                      let dto = WireMapping.note(
-                        written, handle: await registry.handle(for: .note(written.id)))
+                      let dto = WireMapping.note(written, id: written.id.uuidString.lowercased())
                 else {
                     return writeFailure(helperId: helperId, messageId: messageId)
                 }
@@ -776,10 +771,10 @@ public actor ToolDispatcher {
         case .failure(let failure):
             return failure.response(helperId: helperId, messageId: messageId)
         case .success(let contact):
-            guard let noteUUID = await resolveInstance(noteId, kind: "note") else {
+            guard let noteUUID = WireRecordID.recordUUID(noteId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundNote)
             }
             let id = contact.contactID
             let prior = await MainActor.run {
@@ -798,8 +793,7 @@ public actor ToolDispatcher {
                     contacts.allNotes(for: id).first { $0.id == noteUUID }
                 }
                 guard let written,
-                      let dto = WireMapping.note(
-                        written, handle: await registry.handle(for: .note(written.id)))
+                      let dto = WireMapping.note(written, id: written.id.uuidString.lowercased())
                 else {
                     return writeFailure(helperId: helperId, messageId: messageId)
                 }
@@ -821,10 +815,10 @@ public actor ToolDispatcher {
         case .failure(let failure):
             return failure.response(helperId: helperId, messageId: messageId)
         case .success(let contact):
-            guard let noteUUID = await resolveInstance(noteId, kind: "note") else {
+            guard let noteUUID = WireRecordID.recordUUID(noteId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundNote)
             }
             let id = contact.contactID
             let prior = await MainActor.run {
@@ -920,8 +914,7 @@ public actor ToolDispatcher {
                     contacts.allFields(for: effective.contactID).first { $0.id == fieldID }
                 }
                 guard let written,
-                      let dto = WireMapping.customField(
-                        written, handle: await registry.handle(for: .customField(written.id)))
+                      let dto = WireMapping.customField(written, id: written.id.uuidString.lowercased())
                 else {
                     return writeFailure(helperId: helperId, messageId: messageId)
                 }
@@ -943,10 +936,10 @@ public actor ToolDispatcher {
         case .failure(let failure):
             return failure.response(helperId: helperId, messageId: messageId)
         case .success(let contact):
-            guard let fieldUUID = await resolveInstance(fieldId, kind: "customField") else {
+            guard let fieldUUID = WireRecordID.recordUUID(fieldId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundField)
             }
             let id = contact.contactID
             let prior = await MainActor.run {
@@ -1059,10 +1052,9 @@ public actor ToolDispatcher {
                 let final = try await resolveBoth()
                 return (final.0, final.1, link)
             }
-            let linkHandle = await registry.handle(for: .link(link.id))
-            let farHandle = await mintContactHandle(effectiveFar)
             guard let dto = WireMapping.linkedContact(
-                link: link, linkHandle: linkHandle, other: effectiveFar, otherHandle: farHandle)
+                link: link, linkID: link.id.uuidString.lowercased(),
+                other: effectiveFar, otherID: WireRecordID.contactID(for: effectiveFar))
             else {
                 return writeFailure(helperId: helperId, messageId: messageId)
             }
@@ -1079,10 +1071,10 @@ public actor ToolDispatcher {
     private func contactsRemoveLink(
         helperId: String, messageId: String, linkId: String
     ) async -> WireResponse {
-        guard let linkUUID = await resolveInstance(linkId, kind: "link") else {
+        guard let linkUUID = WireRecordID.recordUUID(linkId) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundLink)
         }
         let existing = await MainActor.run { contacts.link(id: linkUUID) }
         guard let existing, existing.deletedAt == nil else {
@@ -1171,6 +1163,402 @@ public actor ToolDispatcher {
         }
     }
 
+    // MARK: - Contact-record writes (Revision 2: full Contact Store parity)
+
+    /// Map a thrown contact-record save error to its typed wire response.
+    /// Categorization rides the SAME `ContactEditModel.saveErrorCategory`
+    /// the app's editor uses (incl. the 134092 store-rejection family —
+    /// documented fragile; a failed save must surface typed, never crash,
+    /// never claim success). Messages are FIXED strings: the category's
+    /// detail text can carry contact data, so it never crosses.
+    private func contactSaveFailure(
+        _ error: Error, helperId: String, messageId: String
+    ) -> WireResponse {
+        switch ContactEditModel.saveErrorCategory(error) {
+        case .authorizationDenied:
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied, message: WireErrorMessage.permissionDeniedContacts)
+        case .recordDoesNotExist:
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundContact)
+        case .invalidField:
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.contactFieldRejected)
+        case .storeRejected, .unknown:
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .writeFailed, message: WireErrorMessage.writeFailed)
+        }
+    }
+
+    /// Whether any wire-supplied web address uses the app's own reserved
+    /// address form — an agent must never be able to plant (or spoof) an
+    /// identity URL through the writable URL list.
+    private static func containsReservedURL(_ urls: [WireLabeledValue]?) -> Bool {
+        guard let urls else { return false }
+        return urls.contains {
+            $0.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .hasPrefix(SidecarKey.guessWhoContactURLPrefix)
+        }
+    }
+
+    /// "yyyy-MM-dd" / "--MM-dd" → `DateComponents`; nil for anything else.
+    private static func parseCalendarDate(_ string: String) -> DateComponents? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("--") {
+            let parts = trimmed.dropFirst(2).split(separator: "-")
+            guard parts.count == 2, let month = Int(parts[0]), let day = Int(parts[1]),
+                  (1...12).contains(month), (1...31).contains(day)
+            else { return nil }
+            return DateComponents(month: month, day: day)
+        }
+        let parts = trimmed.split(separator: "-")
+        guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]),
+              let day = Int(parts[2]), (1...12).contains(month), (1...31).contains(day)
+        else { return nil }
+        return DateComponents(year: year, month: month, day: day)
+    }
+
+    /// Apply the supplied fields onto `contact` — every field EXCEPT the
+    /// URL list, which each caller handles (create sets it; update merges
+    /// through `ContactEditModel.mergeURLAddresses` so the carried-through
+    /// internal URLs survive). By construction there is no path to
+    /// `Contact.note` (the DTO has no such member) and none to the
+    /// contact's identity. Returns a message for an unparseable value.
+    private static func applyFields(
+        _ fields: WireContactFields, to contact: inout Contact
+    ) -> String? {
+        if let value = fields.namePrefix { contact.namePrefix = value }
+        if let value = fields.givenName { contact.givenName = value }
+        if let value = fields.middleName { contact.middleName = value }
+        if let value = fields.familyName { contact.familyName = value }
+        if let value = fields.previousFamilyName { contact.previousFamilyName = value }
+        if let value = fields.nameSuffix { contact.nameSuffix = value }
+        if let value = fields.nickname { contact.nickname = value }
+        if let value = fields.phoneticGivenName { contact.phoneticGivenName = value }
+        if let value = fields.phoneticMiddleName { contact.phoneticMiddleName = value }
+        if let value = fields.phoneticFamilyName { contact.phoneticFamilyName = value }
+        if let value = fields.organization { contact.organizationName = value }
+        if let value = fields.phoneticOrganization { contact.phoneticOrganizationName = value }
+        if let value = fields.department { contact.departmentName = value }
+        if let value = fields.jobTitle { contact.jobTitle = value }
+        if let values = fields.phoneNumbers {
+            contact.phoneNumbers = values.map { LabeledValue(label: $0.label ?? "", value: $0.value) }
+        }
+        if let values = fields.emailAddresses {
+            contact.emailAddresses = values.map { LabeledValue(label: $0.label ?? "", value: $0.value) }
+        }
+        if let values = fields.postalAddresses {
+            contact.postalAddresses = values.map { address in
+                LabeledPostalAddress(
+                    label: address.label ?? "",
+                    value: PostalAddress(
+                        street: address.street,
+                        subLocality: address.subLocality ?? "",
+                        city: address.city,
+                        subAdministrativeArea: address.subAdministrativeArea ?? "",
+                        state: address.state,
+                        postalCode: address.postalCode,
+                        country: address.country,
+                        isoCountryCode: address.isoCountryCode ?? ""))
+            }
+        }
+        if let value = fields.birthday {
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                contact.birthday = nil
+            } else if let components = parseCalendarDate(value) {
+                contact.birthday = components
+            } else {
+                return WireErrorMessage.invalidCalendarDateValue
+            }
+        }
+        if let values = fields.dates {
+            var parsed: [LabeledDate] = []
+            for date in values {
+                guard let components = parseCalendarDate(date.date) else {
+                    return WireErrorMessage.invalidCalendarDateValue
+                }
+                parsed.append(LabeledDate(label: date.label ?? "", value: components))
+            }
+            contact.dates = parsed
+        }
+        if let values = fields.socialProfiles {
+            contact.socialProfiles = values.map { profile in
+                LabeledSocialProfile(
+                    label: profile.label ?? "",
+                    value: SocialProfile(
+                        urlString: profile.url ?? "",
+                        username: profile.username ?? "",
+                        userIdentifier: "",
+                        service: profile.service ?? ""))
+            }
+        }
+        if let values = fields.instantMessages {
+            contact.instantMessageAddresses = values.map { address in
+                LabeledInstantMessageAddress(
+                    label: address.label ?? "",
+                    value: InstantMessageAddress(
+                        username: address.username, service: address.service ?? ""))
+            }
+        }
+        if let values = fields.relatedNames {
+            contact.contactRelations = values.map { relation in
+                LabeledContactRelation(
+                    label: relation.label ?? "",
+                    value: ContactRelation(name: relation.value))
+            }
+        }
+        return nil
+    }
+
+    private func contactsCreate(
+        helperId: String, messageId: String, kind: String?, fields: WireContactFields
+    ) async -> WireResponse {
+        let contactType: ContactType
+        switch kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case nil, "", "person": contactType = .person
+        case "organization": contactType = .organization
+        default:
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidKindArgument)
+        }
+        guard !Self.containsReservedURL(fields.urlAddresses) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.reservedWebAddress)
+        }
+        var seed = Contact(contactType: contactType)
+        if let problem = Self.applyFields(fields, to: &seed) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        if let urls = fields.urlAddresses {
+            seed.urlAddresses = urls.map { LabeledValue(label: $0.label ?? "", value: $0.value) }
+        }
+        // displayName falls back to a placeholder for a blank card, so
+        // check the actual components: some name part or an organization.
+        let nameParts = [
+            seed.namePrefix, seed.givenName, seed.middleName, seed.familyName,
+            seed.nameSuffix, seed.nickname, seed.organizationName,
+        ]
+        guard nameParts.contains(where: {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.contactNeedsAName)
+        }
+        do {
+            let created = try await contacts.createContact(seed)
+            await recordAudit(
+                .createContact, kind: .contact, contact: created,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: nil, newValue: created.displayName)
+            return .contact(
+                helperId: helperId, messageId: messageId,
+                contact: WireMapping.contact(
+                    created, id: WireRecordID.contactID(for: created), isFavorite: false))
+        } catch {
+            return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func contactsUpdate(
+        helperId: String, messageId: String, contactId: String, fields: WireContactFields
+    ) async -> WireResponse {
+        guard !fields.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.updateNeedsAField)
+        }
+        guard !Self.containsReservedURL(fields.urlAddresses) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.reservedWebAddress)
+        }
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) { () -> WireResponse in
+                    // Fresh fetch through the SAME editable path the app's
+                    // editor uses — it carries every field, including ones
+                    // the wire never sees (the Apple note rides through
+                    // UNTOUCHED; the identity URLs are re-merged below).
+                    guard let editable = try await contacts.editableContact(id: contact.contactID)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    var edited = editable
+                    if let problem = Self.applyFields(fields, to: &edited) {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .invalidParams, message: problem)
+                    }
+                    if let urls = fields.urlAddresses {
+                        // The editor's own merge: the wire list replaces the
+                        // user-visible addresses; internal identity URLs keep
+                        // their slots verbatim.
+                        edited.urlAddresses = ContactEditModel.mergeURLAddresses(
+                            original: editable.urlAddresses,
+                            visible: urls.map { LabeledValue(label: $0.label ?? "", value: $0.value) })
+                    }
+                    try await contacts.saveContact(edited, for: contact.contactID)
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? edited
+                    let isFavorite = await MainActor.run { contacts.isFavorite(fresh.contactID) }
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: nil,
+                        newValue: fields.providedFieldNames.joined(separator: ", "))
+                    return .contact(
+                        helperId: helperId, messageId: messageId,
+                        contact: WireMapping.contact(
+                            fresh, id: WireRecordID.contactID(for: fresh), isFavorite: isFavorite))
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    // MARK: - Confirmation-gated delete (fire-and-forget)
+
+    /// contacts_delete, part 1 — runs on the request path and NEVER waits
+    /// on the human: it either answers immediately (replay, budget, resolve
+    /// and presentation errors) or schedules the confirmation and returns
+    /// nil; the real answer goes out later through the deferred responder,
+    /// correlated by helperId+messageId.
+    private func contactsDeleteRequested(
+        helperId: String, messageId: String, contactId: String, idempotencyToken: String?
+    ) async -> WireResponse? {
+        if let token = idempotencyToken {
+            pruneIdempotencyCache()
+            if let cached = idempotencyCache[Self.idempotencyKey(helperId: helperId, token: token)] {
+                return cached.response.readdressed(helperId: helperId, messageId: messageId)
+            }
+        }
+        // One dialog at a time — a queue of confirmations is an attack
+        // surface, not a feature.
+        guard !pendingConfirmation else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .busy, message: WireErrorMessage.confirmationAlreadyPending)
+        }
+        guard admitWrite() else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .busy, message: WireErrorMessage.writeBusy)
+        }
+        let contact: Contact
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let resolved):
+            contact = resolved
+        }
+        guard confirmations != nil else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .requiresAppAction, message: WireErrorMessage.confirmationUnavailable)
+        }
+        pendingConfirmation = true
+        let receivedAt = Date()
+        Task { [weak self] in
+            await self?.runContactDeleteConfirmation(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                contactName: contact.displayName, receivedAt: receivedAt,
+                idempotencyToken: idempotencyToken)
+        }
+        return nil
+    }
+
+    /// contacts_delete, part 2 — awaits the user's decision, applies (or
+    /// refuses) the delete, and sends the deferred response.
+    private func runContactDeleteConfirmation(
+        helperId: String, messageId: String, contactId: String,
+        contactName: String, receivedAt: Date, idempotencyToken: String?
+    ) async {
+        defer { pendingConfirmation = false }
+        let decision = await confirmations?.confirmContactDelete(named: contactName)
+        let response: WireResponse
+        switch decision {
+        case nil:
+            // Nothing could be presented (no foreground scene). NEVER
+            // proceed without the dialog having been seen.
+            response = .error(
+                helperId: helperId, messageId: messageId,
+                code: .requiresAppAction, message: WireErrorMessage.confirmationUnavailable)
+        case false?:
+            response = .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.contactDeleteDeclined)
+        case true?:
+            // Abandonment check (the EssentialMCP gap we must not inherit):
+            // if the caller's wait has expired, the agent was already told
+            // "timed out" — performing the delete now would make its report
+            // and the actual effect disagree. The margin covers the gap
+            // between the helper starting its timer (at send) and us
+            // starting ours (at receipt).
+            let elapsed = Date().timeIntervalSince(receivedAt)
+            if elapsed > MCPTool.contactsDelete.timeout - 15 {
+                response = .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .writeFailed, message: WireErrorMessage.confirmationExpired)
+            } else {
+                response = await performConfirmedContactDelete(
+                    helperId: helperId, messageId: messageId, contactId: contactId)
+            }
+        }
+        if let token = idempotencyToken, response.errorPayload == nil {
+            idempotencyCache[Self.idempotencyKey(helperId: helperId, token: token)] =
+                (Date(), response)
+        }
+        if let deferredSend {
+            await deferredSend(response)
+        }
+    }
+
+    private func performConfirmedContactDelete(
+        helperId: String, messageId: String, contactId: String
+    ) async -> WireResponse {
+        // Re-resolve: the book may have changed while the dialog was up.
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            do {
+                let deleted = try await contacts.deleteContact(id: contact.contactID)
+                guard deleted else {
+                    return .error(
+                        helperId: helperId, messageId: messageId,
+                        code: .notFound, message: WireErrorMessage.notFoundContact)
+                }
+                await recordAudit(
+                    .deleteContact, kind: .contact, contact: contact,
+                    instanceID: nil, postModifiedAt: nil,
+                    priorValue: contact.displayName, newValue: nil)
+                return .acknowledged(
+                    helperId: helperId, messageId: messageId,
+                    message: WireAckMessage.contactDeleted)
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
     // MARK: - Event tag writes
 
     private func eventsAddTag(
@@ -1190,8 +1578,7 @@ public actor ToolDispatcher {
                     events.eventTags(forEventUUID: uuid).first { $0.id == tagID }
                 }
                 guard let written,
-                      let dto = WireMapping.tag(
-                        written, handle: await registry.handle(for: .tag(written.id)))
+                      let dto = WireMapping.tag(written, id: written.id.uuidString.lowercased())
                 else {
                     return writeFailure(helperId: helperId, messageId: messageId)
                 }
@@ -1217,10 +1604,10 @@ public actor ToolDispatcher {
         case .unadopted, .stale:
             return resolution.failureResponse(helperId: helperId, messageId: messageId)
         case .adopted(let event):
-            guard let tagUUID = await resolveInstance(tagId, kind: "tag") else {
+            guard let tagUUID = WireRecordID.recordUUID(tagId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundTag)
             }
             let uuid = Self.eventUUIDString(event)
             let prior = await MainActor.run {
@@ -1239,8 +1626,7 @@ public actor ToolDispatcher {
                     events.eventTags(forEventUUID: uuid).first { $0.id == tagUUID }
                 }
                 guard let written,
-                      let dto = WireMapping.tag(
-                        written, handle: await registry.handle(for: .tag(written.id)))
+                      let dto = WireMapping.tag(written, id: written.id.uuidString.lowercased())
                 else {
                     return writeFailure(helperId: helperId, messageId: messageId)
                 }
@@ -1266,10 +1652,10 @@ public actor ToolDispatcher {
         case .unadopted, .stale:
             return resolution.failureResponse(helperId: helperId, messageId: messageId)
         case .adopted(let event):
-            guard let tagUUID = await resolveInstance(tagId, kind: "tag") else {
+            guard let tagUUID = WireRecordID.recordUUID(tagId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundTag)
             }
             let uuid = Self.eventUUIDString(event)
             let prior = await MainActor.run {
@@ -1326,7 +1712,6 @@ public actor ToolDispatcher {
             guard let created else {
                 return writeFailure(helperId: helperId, messageId: messageId)
             }
-            let handle = await registry.handle(for: .guide(created.id))
             await recordAudit(
                 .createGuide, kind: .guide,
                 subjectID: created.id.uuidString.lowercased(), subjectName: created.name,
@@ -1334,7 +1719,7 @@ public actor ToolDispatcher {
                 priorValue: nil, newValue: trimmed)
             return .guide(
                 helperId: helperId, messageId: messageId,
-                guide: WireMapping.guide(created, handle: handle))
+                guide: WireMapping.guide(created, id: created.id.uuidString.lowercased()))
         } catch {
             return writeFailure(error, helperId: helperId, messageId: messageId)
         }
@@ -1343,12 +1728,10 @@ public actor ToolDispatcher {
     private func guidesDelete(
         helperId: String, messageId: String, guideId: String
     ) async -> WireResponse {
-        guard let entry = await registry.entry(for: guideId),
-              case .guide(let id) = entry.referent
-        else {
+        guard let id = WireRecordID.recordUUID(guideId) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
         guard let guide = await guides.allGuides().first(where: { $0.id == id }) else {
             return .error(
@@ -1373,20 +1756,18 @@ public actor ToolDispatcher {
     private func guidesReorderPlaces(
         helperId: String, messageId: String, guideId: String, placeIds: [String]
     ) async -> WireResponse {
-        guard let entry = await registry.entry(for: guideId),
-              case .guide(let id) = entry.referent
-        else {
+        guard let id = WireRecordID.recordUUID(guideId) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
         var orderedIDs: [UUID] = []
         orderedIDs.reserveCapacity(placeIds.count)
-        for placeHandle in placeIds {
-            guard let placeUUID = await resolveInstancePlace(placeHandle) else {
+        for placeId in placeIds {
+            guard let placeUUID = WireRecordID.recordUUID(placeId) else {
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundPlace)
             }
             orderedIDs.append(placeUUID)
         }
@@ -1412,10 +1793,10 @@ public actor ToolDispatcher {
     private func placesDelete(
         helperId: String, messageId: String, placeId: String
     ) async -> WireResponse {
-        guard let placeUUID = await resolveInstancePlace(placeId) else {
+        guard let placeUUID = WireRecordID.recordUUID(placeId) else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
         }
         guard let place = await guides.allPlaces().first(where: { $0.id == placeUUID }) else {
             return .error(
@@ -1444,26 +1825,13 @@ public actor ToolDispatcher {
         case verifyFailed
     }
 
-    /// Resolve a contact wire id for a WRITE: the read-side resolution PLUS
-    /// the display-name fingerprint check for ids minted without a durable
-    /// identity — Apple unification can silently re-point such a contact's
-    /// local id at a different person mid-conversation, and a write must not
-    /// land on the wrong card (plans/cli-mcp.md stale-localID guard).
-    private func resolveContactForWrite(_ handle: String) async -> Result<Contact, ResolveFailure> {
-        guard let entry = await registry.entry(for: handle) else {
-            return .failure(.stale(WireErrorMessage.staleReference))
-        }
-        guard case .contact(let token) = entry.referent else {
-            return .failure(.wrongKind("That id doesn't belong to a contact. Use an id from contacts_search or a contacts list tool."))
-        }
-        guard let contact = await MainActor.run(body: { contacts.contact(restorationToken: token) }) else {
-            return .failure(.stale(WireErrorMessage.staleReference))
-        }
-        if let fingerprint = entry.fingerprint,
-           HandleRegistry.displayNameFingerprint(contact) != fingerprint {
-            return .failure(.stale(WireErrorMessage.staleReference))
-        }
-        return .success(contact)
+    /// Resolve a contact wire id for a WRITE. Same resolution as reads —
+    /// and for pre-mint ids the deterministic derivation EMBEDS the display
+    /// name, so a localID that system unification silently re-pointed at a
+    /// different person stops resolving instead of landing the write on the
+    /// wrong card (the stale-localID guard, now structural).
+    private func resolveContactForWrite(_ id: String) async -> Result<Contact, ResolveFailure> {
+        await resolveContact(id)
     }
 
     private enum EventWriteResolution {
@@ -1479,7 +1847,7 @@ public actor ToolDispatcher {
             case .adopted:
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .invalidParams, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .invalidParams, message: WireErrorMessage.notFoundEvent)
             case .unadopted:
                 return .error(
                     helperId: helperId, messageId: messageId,
@@ -1487,7 +1855,7 @@ public actor ToolDispatcher {
             case .stale:
                 return .error(
                     helperId: helperId, messageId: messageId,
-                    code: .staleHandle, message: WireErrorMessage.staleReferenceGeneric)
+                    code: .notFound, message: WireErrorMessage.notFoundEvent)
             }
         }
     }
@@ -1498,39 +1866,28 @@ public actor ToolDispatcher {
     /// reads-never-mint (plans/cli-mcp.md Phase 2 event-tag rule; a
     /// mint-on-write would race the app's own adopt-on-load and strand a
     /// duplicate record that is never collapsed).
-    private func resolveEventForWrite(_ handle: String) async -> EventWriteResolution {
-        guard let entry = await registry.entry(for: handle),
-              case .event(let uuid, let eventKitID) = entry.referent
-        else {
+    private func resolveEventForWrite(_ id: String) async -> EventWriteResolution {
+        guard let parsed = WireRecordID.parseEventID(id) else { return .stale }
+        switch parsed {
+        case .record(let uuid):
+            if let event = await MainActor.run(body: { events.event(uuid: uuid) }) {
+                return .adopted(event)
+            }
+            return .stale
+        case .system(let eventKitID):
+            // The user may have opened the event in the app since this id
+            // was handed out — a record may now exist for the calendar id.
+            if let uuid = await events.eventUUID(forEventKitID: eventKitID),
+               let event = await MainActor.run(body: {
+                   events.event(uuid: uuid.uuidString.lowercased())
+               }) {
+                return .adopted(event)
+            }
+            if await MainActor.run(body: { events.eventKitEvent(eventKitID: eventKitID) }) != nil {
+                return .unadopted
+            }
             return .stale
         }
-        if let event = await MainActor.run(body: { events.event(uuid: uuid) }) {
-            return .adopted(event)
-        }
-        if let eventKitID,
-           await MainActor.run(body: { events.eventKitEvent(eventKitID: eventKitID) }) != nil {
-            return .unadopted
-        }
-        return .stale
-    }
-
-    /// Resolve an instance wire id (note / custom field / tag / link) to
-    /// its record UUID; nil for unknown ids or ids of another kind.
-    private func resolveInstance(_ handle: String, kind: String) async -> UUID? {
-        guard let entry = await registry.entry(for: handle) else { return nil }
-        switch (entry.referent, kind) {
-        case (.note(let id), "note"): return id
-        case (.customField(let id), "customField"): return id
-        case (.tag(let id), "tag"): return id
-        case (.link(let id), "link"): return id
-        default: return nil
-        }
-    }
-
-    private func resolveInstancePlace(_ handle: String) async -> UUID? {
-        guard let entry = await registry.entry(for: handle),
-              case .place(let id) = entry.referent else { return nil }
-        return id
     }
 
     /// Executes a contact write with the double-mint protections
@@ -1660,7 +2017,7 @@ public actor ToolDispatcher {
         if let problem = error as? WriteProblem, case .stale = problem {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .staleHandle, message: WireErrorMessage.staleReference)
+                code: .notFound, message: WireErrorMessage.notFoundContact)
         }
         return .error(
             helperId: helperId, messageId: messageId,
@@ -1702,70 +2059,52 @@ public actor ToolDispatcher {
     // MARK: - Resolution
 
     private enum ResolveFailure: Error {
-        case stale(String)
-        case wrongKind(String)
+        case notFound(String)
 
         func response(helperId: String, messageId: String) -> WireResponse {
             switch self {
-            case .stale(let message):
-                return .error(helperId: helperId, messageId: messageId, code: .staleHandle, message: message)
-            case .wrongKind(let message):
-                return .error(helperId: helperId, messageId: messageId, code: .invalidParams, message: message)
+            case .notFound(let message):
+                return .error(helperId: helperId, messageId: messageId, code: .notFound, message: message)
             }
         }
     }
 
-    private func resolveContact(_ handle: String) async -> Result<Contact, ResolveFailure> {
-        guard let entry = await registry.entry(for: handle) else {
-            return .failure(.stale(WireErrorMessage.staleReference))
+    private func resolveContact(_ id: String) async -> Result<Contact, ResolveFailure> {
+        let found = await MainActor.run {
+            WireRecordID.contact(for: id, in: contacts.allContacts)
         }
-        guard case .contact(let token) = entry.referent else {
-            return .failure(.wrongKind("That id doesn't belong to a contact. Use an id from contacts_search or a contacts list tool."))
+        guard let found else {
+            return .failure(.notFound(WireErrorMessage.notFoundContact))
         }
-        guard let contact = await MainActor.run(body: { contacts.contact(restorationToken: token) }) else {
-            return .failure(.stale(WireErrorMessage.staleReference))
-        }
-        return .success(contact)
+        return .success(found)
     }
 
-    private func resolveEvent(_ handle: String) async -> Result<Event, ResolveFailure> {
-        guard let entry = await registry.entry(for: handle) else {
-            return .failure(.stale(WireErrorMessage.staleReferenceGeneric))
+    private func resolveEvent(_ id: String) async -> Result<Event, ResolveFailure> {
+        guard let parsed = WireRecordID.parseEventID(id) else {
+            return .failure(.notFound(WireErrorMessage.notFoundEvent))
         }
-        guard case .event(let uuid, let eventKitID) = entry.referent else {
-            return .failure(.wrongKind("That id doesn't belong to an event. Use an id from events_list."))
+        switch parsed {
+        case .record(let uuid):
+            if let event = await MainActor.run(body: { events.event(uuid: uuid) }) {
+                return .success(event)
+            }
+            return .failure(.notFound(WireErrorMessage.notFoundEvent))
+        case .system(let eventKitID):
+            if let uuid = await events.eventUUID(forEventKitID: eventKitID),
+               let event = await MainActor.run(body: {
+                   events.event(uuid: uuid.uuidString.lowercased())
+               }) {
+                return .success(event)
+            }
+            if let event = await MainActor.run(body: { events.eventKitEvent(eventKitID: eventKitID) }) {
+                return .success(event)
+            }
+            return .failure(.notFound(WireErrorMessage.notFoundEvent))
         }
-        if let event = await MainActor.run(body: { events.event(uuid: uuid) }) {
-            return .success(event)
-        }
-        if let eventKitID,
-           let event = await MainActor.run(body: { events.eventKitEvent(eventKitID: eventKitID) }) {
-            return .success(event)
-        }
-        return .failure(.stale(WireErrorMessage.staleReferenceGeneric))
-    }
-
-    // MARK: - Handle minting
-
-    private func mintContactHandle(_ contact: Contact) async -> String {
-        let id = contact.contactID
-        let token = id.restorationToken
-        // Snapshot the display-name fingerprint ONLY for contacts with no
-        // durable identity yet — the write-side guard for the localID
-        // re-pointing hazard (compared in Phase 2, minted now).
-        let fingerprint: UInt64? = token.guessWhoID == nil
-            ? HandleRegistry.displayNameFingerprint(contact)
-            : nil
-        return await registry.handle(for: .contact(token), fingerprint: fingerprint)
     }
 
     private static func eventUUIDString(_ event: Event) -> String {
         event.id.uuidString.lowercased()
-    }
-
-    private func mintEventHandle(_ event: Event) async -> String {
-        await registry.handle(
-            for: .event(uuid: Self.eventUUIDString(event), eventKitID: event.eventKitID))
     }
 
     // MARK: - Pagination, caps, limits

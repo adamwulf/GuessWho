@@ -10,11 +10,13 @@ import GuessWhoMCPWire
 final class WriteToolTests: XCTestCase {
 
     private func expectError(
-        _ response: WireResponse, code: WireErrorCode,
+        _ response: WireResponse?, code: WireErrorCode,
         file: StaticString = #filePath, line: UInt = #line
     ) {
-        guard let payload = response.errorPayload else {
-            return XCTFail("expected \(code) error, got \(response)", file: file, line: line)
+        guard let payload = response?.errorPayload else {
+            return XCTFail(
+                "expected \(code) error, got \(String(describing: response))",
+                file: file, line: line)
         }
         XCTAssertEqual(payload.code, code, file: file, line: line)
         XCTAssertFalse(payload.message.isEmpty, file: file, line: line)
@@ -29,8 +31,8 @@ final class WriteToolTests: XCTestCase {
             writeLimitPerWindow: writeLimitPerWindow,
             writeWindowSeconds: writeWindowSeconds)
         await MainActor.run {
-            fixture.gates.isMCPReadOnly = false
-            fixture.gates.isCLIReadOnly = false
+            fixture.gates.mcpAccess = .readWrite
+            fixture.gates.cliAccess = .readWrite
         }
         return fixture
     }
@@ -129,11 +131,17 @@ final class WriteToolTests: XCTestCase {
     func testEditUnknownNoteIsNotFound() async {
         let fixture = await writableFixture()
         guard let jane = await janeHandle(fixture) else { return XCTFail("no jane") }
-        // A handle of the wrong kind is rejected as stale before any write.
+        // A malformed note id is rejected before any write.
         let response = await fixture.dispatcher.handle(.contactsEditNote(
             helperId: Fixture.helper, messageId: "m",
             contactId: jane, noteId: "not-minted", body: "x", idempotencyToken: nil))
-        expectError(response, code: .staleHandle)
+        expectError(response, code: .notFound)
+        // A well-formed id of a note that doesn't exist is notFound too.
+        let ghost = await fixture.dispatcher.handle(.contactsEditNote(
+            helperId: Fixture.helper, messageId: "m2",
+            contactId: jane, noteId: UUID().uuidString.lowercased(),
+            body: "x", idempotencyToken: nil))
+        expectError(ghost, code: .notFound)
     }
 
     // MARK: - Custom-field guardrails
@@ -146,7 +154,7 @@ final class WriteToolTests: XCTestCase {
             contactId: jane, name: "Sneaky", type: "blob",
             value: "blob:sha256/feedface", idempotencyToken: nil))
         expectError(response, code: .invalidParams)
-        XCTAssertEqual(response.errorPayload?.message, WireErrorMessage.invalidFieldType)
+        XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.invalidFieldType)
         let fields = await MainActor.run {
             fixture.contacts.fieldsByEffectiveID[Sentinels.guessWhoUUID] ?? []
         }
@@ -164,7 +172,7 @@ final class WriteToolTests: XCTestCase {
                 contactId: jane, name: name, type: nil,
                 value: "clobber", idempotencyToken: nil))
             expectError(response, code: .invalidParams)
-            XCTAssertEqual(response.errorPayload?.message, WireErrorMessage.reservedFieldName)
+            XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.reservedFieldName)
         }
         let fields = await MainActor.run {
             fixture.contacts.fieldsByEffectiveID[Sentinels.guessWhoUUID] ?? []
@@ -230,7 +238,7 @@ final class WriteToolTests: XCTestCase {
             helperId: Fixture.helper, messageId: "m2",
             eventId: dentist.id, text: "checkup", idempotencyToken: nil))
         expectError(response, code: .requiresAppAction)
-        XCTAssertEqual(response.errorPayload?.message, WireErrorMessage.eventNeedsAppFirst)
+        XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.eventNeedsAppFirst)
 
         // Writes-do-not-adopt: no record was created and the engine's tag
         // write path was never reached.
@@ -291,8 +299,8 @@ final class WriteToolTests: XCTestCase {
             helperId: Fixture.helper, messageId: "race-2",
             contactId: fresh, body: "second writer", idempotencyToken: nil))
         let (r1, r2) = await (first, second)
-        XCTAssertNil(r1.errorPayload, "first write should succeed")
-        XCTAssertNil(r2.errorPayload, "second write should succeed")
+        XCTAssertNil(r1?.errorPayload, "first write should succeed")
+        XCTAssertNil(r2?.errorPayload, "second write should succeed")
 
         let (mintCount, bodies) = await MainActor.run { () -> (Int, [String]) in
             let identity = fixture.contacts.contacts
@@ -319,7 +327,7 @@ final class WriteToolTests: XCTestCase {
         let response = await fixture.dispatcher.handle(.contactsAddNote(
             helperId: Fixture.helper, messageId: "verify-1",
             contactId: fresh, body: "must not strand", idempotencyToken: nil))
-        XCTAssertNil(response.errorPayload, "the verify+retry should heal the losing mint")
+        XCTAssertNil(response?.errorPayload, "the verify+retry should heal the losing mint")
 
         let bodies = await MainActor.run { () -> [String] in
             let identity = fixture.contacts.contacts
@@ -353,7 +361,7 @@ final class WriteToolTests: XCTestCase {
         let response = await fixture.dispatcher.handle(.contactsAddNote(
             helperId: Fixture.helper, messageId: "m",
             contactId: fresh, body: "wrong person", idempotencyToken: nil))
-        expectError(response, code: .staleHandle)
+        expectError(response, code: .notFound)
         let allBodies = await MainActor.run {
             fixture.contacts.notesByEffectiveID.values.flatMap { $0 }.map(\.body)
         }
@@ -379,7 +387,7 @@ final class WriteToolTests: XCTestCase {
             return XCTFail("expected the replayed note echo, got \(retry)")
         }
         XCTAssertEqual(retryNote.id, firstNote.id, "the replay must return the ORIGINAL result")
-        XCTAssertEqual(retry.messageId, "idem-2", "the replay must be re-addressed to the retry's message id")
+        XCTAssertEqual(retry?.messageId, "idem-2", "the replay must be re-addressed to the retry's message id")
 
         let count = await MainActor.run {
             (fixture.contacts.notesByEffectiveID[Sentinels.guessWhoUUID] ?? [])
@@ -398,7 +406,7 @@ final class WriteToolTests: XCTestCase {
             let response = await fixture.dispatcher.handle(.contactsAddNote(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
                 contactId: jane, body: "budget \(index)", idempotencyToken: nil))
-            XCTAssertNil(response.errorPayload, "write \(index) should pass")
+            XCTAssertNil(response?.errorPayload, "write \(index) should pass")
         }
         // A "reconnected" helper (fresh random id) must NOT reset the
         // budget — it is keyed per host run, never per helper.
@@ -407,7 +415,7 @@ final class WriteToolTests: XCTestCase {
             helperId: reconnected, messageId: TestMessageID.next(),
             contactId: jane, body: "budget 3", idempotencyToken: nil))
         expectError(flooded, code: .busy)
-        XCTAssertEqual(flooded.errorPayload?.message, WireErrorMessage.writeBusy)
+        XCTAssertEqual(flooded?.errorPayload?.message, WireErrorMessage.writeBusy)
     }
 
     // MARK: - Audit log
@@ -419,23 +427,24 @@ final class WriteToolTests: XCTestCase {
         let added = await fixture.dispatcher.handle(.contactsAddNote(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, body: "for the record", idempotencyToken: nil))
-        XCTAssertNil(added.errorPayload)
+        XCTAssertNil(added?.errorPayload)
 
         let entries = await fixture.audit.entries()
         guard let entry = entries.last else { return XCTFail("expected an audit entry") }
         XCTAssertEqual(entry.action, .addNote)
         XCTAssertEqual(entry.subjectKind, .contact)
-        XCTAssertEqual(entry.subjectID, Sentinels.guessWhoUUID, "the durable referent, not a wire id")
+        XCTAssertEqual(entry.subjectID, Sentinels.guessWhoUUID, "the durable referent")
         XCTAssertEqual(entry.subjectName, "Jane Doe")
         XCTAssertNotNil(entry.instanceID)
         XCTAssertNotNil(entry.postModifiedAt)
         XCTAssertEqual(entry.newValue, "for the record")
 
-        // The audited referent must never appear in the wire output.
-        XCTAssertFalse(added.wireJSON.contains(Sentinels.guessWhoUUID))
-        if let instanceID = entry.instanceID {
-            XCTAssertFalse(added.wireJSON.lowercased().contains(instanceID.lowercased()),
-                           "the raw instance UUID must not cross the wire")
+        // Since Revision 2 the note's wire id IS its record UUID — the
+        // audit's instance referent and the echoed id agree.
+        if case .note(_, _, let note) = added {
+            XCTAssertEqual(note.id, entry.instanceID)
+        } else {
+            XCTFail("expected note echo")
         }
     }
 

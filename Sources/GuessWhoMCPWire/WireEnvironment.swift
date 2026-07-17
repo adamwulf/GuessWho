@@ -100,12 +100,71 @@ public enum RequestOrigin: String, Sendable {
     }
 }
 
-/// The master-toggle keys in the shared-container UserDefaults. All OFF by
-/// default; the user opts in via the app's settings. The app enforces them
-/// PER-CALL server-side — hiding tools from listTools is UX, not the gate.
+/// Per-surface access level (plans/cli-mcp.md Revision 2): ONE tri-state
+/// per surface — off → read-only → read-write — replacing the earlier
+/// enable + read-only boolean pair. OFF by default; the user opts in via
+/// the app's settings. The app enforces the mode PER-CALL server-side —
+/// hiding tools from listTools is UX, not the gate. `read-write` is what
+/// unlocks writes, including Contact Store contact-record writes.
+public enum MCPAccessMode: String, Codable, Sendable, CaseIterable {
+    case off
+    case readOnly
+    case readWrite
+
+    public var allowsReads: Bool { self != .off }
+    public var allowsWrites: Bool { self == .readWrite }
+}
+
+/// The access-mode keys in the shared-container UserDefaults, plus the
+/// retired boolean keys they migrated from.
 public enum MCPToggleKeys {
-    public static let isMCPEnabled = "isMCPEnabled"
-    public static let isCLIEnabled = "isCLIEnabled"
-    public static let isMCPReadOnly = "isMCPReadOnly"
-    public static let isCLIReadOnly = "isCLIReadOnly"
+    /// Tri-state keys (the current model). The stored value is the
+    /// `MCPAccessMode` raw string; an absent or unparseable value reads as
+    /// `.off`.
+    public static let mcpAccessMode = "mcpAccessMode"
+    public static let cliAccessMode = "cliAccessMode"
+
+    /// Legacy boolean keys (pre-Revision-2), read only by the one-shot
+    /// migration below.
+    public static let legacyIsMCPEnabled = "isMCPEnabled"
+    public static let legacyIsCLIEnabled = "isCLIEnabled"
+    public static let legacyIsMCPReadOnly = "isMCPReadOnly"
+    public static let legacyIsCLIReadOnly = "isCLIReadOnly"
+
+    /// The stored access mode for a surface; `.off` when absent/garbled.
+    public static func accessMode(forKey key: String, in defaults: UserDefaults) -> MCPAccessMode {
+        guard let raw = defaults.string(forKey: key),
+              let mode = MCPAccessMode(rawValue: raw)
+        else { return .off }
+        return mode
+    }
+
+    /// One-shot migration of the legacy boolean pairs onto the tri-state
+    /// keys. Runs only while the tri-state key is unset, so a user's later
+    /// choice is never overwritten: enabled + read-only → `.readOnly`;
+    /// enabled + writable → `.readWrite`; disabled (or never set) → `.off`
+    /// (left as the absent-key default).
+    public static func migrateLegacyTogglesIfNeeded(in defaults: UserDefaults) {
+        migrate(
+            defaults, modeKey: mcpAccessMode,
+            enabledKey: legacyIsMCPEnabled, readOnlyKey: legacyIsMCPReadOnly)
+        migrate(
+            defaults, modeKey: cliAccessMode,
+            enabledKey: legacyIsCLIEnabled, readOnlyKey: legacyIsCLIReadOnly)
+    }
+
+    private static func migrate(
+        _ defaults: UserDefaults, modeKey: String, enabledKey: String, readOnlyKey: String
+    ) {
+        guard defaults.string(forKey: modeKey) == nil else { return }
+        guard defaults.object(forKey: enabledKey) != nil else { return }
+        if defaults.bool(forKey: enabledKey) {
+            // The legacy read-only toggle defaulted ON (absent = read-only).
+            let readOnly = (defaults.object(forKey: readOnlyKey) as? Bool) ?? true
+            defaults.set(
+                (readOnly ? MCPAccessMode.readOnly : .readWrite).rawValue,
+                forKey: modeKey)
+        }
+        // Disabled surfaces stay at the absent-key default (.off).
+    }
 }

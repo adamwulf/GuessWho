@@ -42,6 +42,12 @@ public enum WireRequest: Codable, Sendable {
     // optional client-supplied `idempotencyToken`: the app dedups a retried
     // token within a host-run-scoped window, so a timeout-then-retry can't
     // double-apply a non-idempotent write.
+    // Contact-record writes (Revision 2: full Contact Store parity).
+    // `fields` is a PATCH — only supplied fields apply. contacts_delete is
+    // additionally gated on an in-app user confirmation.
+    case contactsCreate(helperId: String, messageId: String, kind: String?, fields: WireContactFields, idempotencyToken: String?)
+    case contactsUpdate(helperId: String, messageId: String, contactId: String, fields: WireContactFields, idempotencyToken: String?)
+    case contactsDelete(helperId: String, messageId: String, contactId: String, idempotencyToken: String?)
     case contactsAddNote(helperId: String, messageId: String, contactId: String, body: String, idempotencyToken: String?)
     case contactsEditNote(helperId: String, messageId: String, contactId: String, noteId: String, body: String, idempotencyToken: String?)
     case contactsDeleteNote(helperId: String, messageId: String, contactId: String, noteId: String, idempotencyToken: String?)
@@ -78,6 +84,9 @@ public enum WireRequest: Codable, Sendable {
         case .guidesList: return .guidesList
         case .guidesGet: return .guidesGet
         case .placesList: return .placesList
+        case .contactsCreate: return .contactsCreate
+        case .contactsUpdate: return .contactsUpdate
+        case .contactsDelete: return .contactsDelete
         case .contactsAddNote: return .contactsAddNote
         case .contactsEditNote: return .contactsEditNote
         case .contactsDeleteNote: return .contactsDeleteNote
@@ -102,7 +111,10 @@ public enum WireRequest: Codable, Sendable {
     /// client didn't token.
     public var idempotencyToken: String? {
         switch self {
-        case .contactsAddNote(_, _, _, _, let token),
+        case .contactsCreate(_, _, _, _, let token),
+             .contactsUpdate(_, _, _, _, let token),
+             .contactsDelete(_, _, _, let token),
+             .contactsAddNote(_, _, _, _, let token),
              .contactsEditNote(_, _, _, _, _, let token),
              .contactsDeleteNote(_, _, _, _, let token),
              .contactsSetCustomField(_, _, _, _, _, _, let token),
@@ -147,6 +159,9 @@ extension WireRequest: MCPRequestProtocol {
              .guidesList(let helperId, _, _, _),
              .guidesGet(let helperId, _, _),
              .placesList(let helperId, _, _, _, _),
+             .contactsCreate(let helperId, _, _, _, _),
+             .contactsUpdate(let helperId, _, _, _, _),
+             .contactsDelete(let helperId, _, _, _),
              .contactsAddNote(let helperId, _, _, _, _),
              .contactsEditNote(let helperId, _, _, _, _, _),
              .contactsDeleteNote(let helperId, _, _, _, _),
@@ -187,6 +202,9 @@ extension WireRequest: MCPRequestProtocol {
              .guidesList(_, let messageId, _, _),
              .guidesGet(_, let messageId, _),
              .placesList(_, let messageId, _, _, _),
+             .contactsCreate(_, let messageId, _, _, _),
+             .contactsUpdate(_, let messageId, _, _, _),
+             .contactsDelete(_, let messageId, _, _),
              .contactsAddNote(_, let messageId, _, _, _),
              .contactsEditNote(_, let messageId, _, _, _, _),
              .contactsDeleteNote(_, let messageId, _, _, _),
@@ -312,6 +330,23 @@ extension WireRequest: MCPRequestProtocol {
                 guideId: try args.optionalString("guideId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
 
+        case .contactsCreate:
+            return .contactsCreate(
+                helperId: helperId, messageId: messageId,
+                kind: try args.optionalString("kind"),
+                fields: try args.contactFields(),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsUpdate:
+            return .contactsUpdate(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                fields: try args.contactFields(),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDelete:
+            return .contactsDelete(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsAddNote:
             return .contactsAddNote(
                 helperId: helperId, messageId: messageId,
@@ -421,6 +456,10 @@ public enum WireRequestError: Error, CustomStringConvertible {
     case unknownTool(String)
     case missingArgument(tool: String, name: String)
     case invalidArgument(tool: String, name: String, expected: String)
+    /// An argument that must be rejected with a specific fixed message
+    /// (e.g. a note-shaped argument on a contact-card write — the Apple
+    /// note is never writable over this channel).
+    case unsupportedArgument(message: String)
 
     public var description: String {
         switch self {
@@ -430,6 +469,8 @@ public enum WireRequestError: Error, CustomStringConvertible {
             return "\(tool) requires the \(name) argument."
         case .invalidArgument(let tool, let name, let expected):
             return "The \(name) argument for \(tool) must be \(expected)."
+        case .unsupportedArgument(let message):
+            return message
         }
     }
 }
@@ -503,6 +544,128 @@ private struct ToolArguments {
         if let double = value.doubleValue { return double }
         if let int = value.intValue { return Double(int) }
         return nil
+    }
+
+    /// The contacts_create / contacts_update field set. A PATCH: absent
+    /// keys stay nil (untouched). Rejects any note-shaped argument up
+    /// front — the Apple contact note is never writable over the wire, and
+    /// silently ignoring it would let an agent believe a note was saved.
+    func contactFields() throws -> WireContactFields {
+        for key in ["note", "notes"] where values[key] != nil && values[key] != .null {
+            throw WireRequestError.unsupportedArgument(
+                message: WireErrorMessage.contactNoteNotAccepted)
+        }
+        var fields = WireContactFields()
+        fields.namePrefix = try optionalString("namePrefix")
+        fields.givenName = try optionalString("givenName")
+        fields.middleName = try optionalString("middleName")
+        fields.familyName = try optionalString("familyName")
+        fields.previousFamilyName = try optionalString("previousFamilyName")
+        fields.nameSuffix = try optionalString("nameSuffix")
+        fields.nickname = try optionalString("nickname")
+        fields.phoneticGivenName = try optionalString("phoneticGivenName")
+        fields.phoneticMiddleName = try optionalString("phoneticMiddleName")
+        fields.phoneticFamilyName = try optionalString("phoneticFamilyName")
+        fields.organization = try optionalString("organization")
+        fields.phoneticOrganization = try optionalString("phoneticOrganization")
+        fields.department = try optionalString("department")
+        fields.jobTitle = try optionalString("jobTitle")
+        fields.phoneNumbers = try optionalLabeledValues("phoneNumbers")
+        fields.emailAddresses = try optionalLabeledValues("emailAddresses")
+        fields.urlAddresses = try optionalLabeledValues("urlAddresses")
+        fields.postalAddresses = try optionalPostalAddresses("postalAddresses")
+        fields.birthday = try optionalString("birthday")
+        fields.dates = try optionalLabeledDates("dates")
+        fields.socialProfiles = try optionalSocialProfiles("socialProfiles")
+        fields.instantMessages = try optionalInstantMessages("instantMessages")
+        fields.relatedNames = try optionalLabeledValues("relatedNames")
+        return fields
+    }
+
+    private func objectItems(_ name: String) throws -> [[String: Value]]? {
+        guard let value = values[name], value != .null else { return nil }
+        guard case .array(let items) = value else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name, expected: "a list")
+        }
+        return try items.map { item in
+            guard case .object(let object) = item else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name, expected: "a list of objects")
+            }
+            return object
+        }
+    }
+
+    private func stringField(_ object: [String: Value], _ key: String) -> String? {
+        guard let value = object[key], value != .null else { return nil }
+        return value.stringValue
+    }
+
+    func optionalLabeledValues(_ name: String) throws -> [WireLabeledValue]? {
+        guard let items = try objectItems(name) else { return nil }
+        return try items.map { object in
+            guard let value = stringField(object, "value"), !value.isEmpty else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name,
+                    expected: "a list of entries, each with a non-empty value")
+            }
+            return WireLabeledValue(label: stringField(object, "label"), value: value)
+        }
+    }
+
+    func optionalPostalAddresses(_ name: String) throws -> [WirePostalAddress]? {
+        guard let items = try objectItems(name) else { return nil }
+        return items.map { object in
+            WirePostalAddress(
+                label: stringField(object, "label"),
+                street: stringField(object, "street") ?? "",
+                subLocality: stringField(object, "subLocality"),
+                city: stringField(object, "city") ?? "",
+                subAdministrativeArea: stringField(object, "subAdministrativeArea"),
+                state: stringField(object, "state") ?? "",
+                postalCode: stringField(object, "postalCode") ?? "",
+                country: stringField(object, "country") ?? "",
+                isoCountryCode: stringField(object, "isoCountryCode"))
+        }
+    }
+
+    func optionalLabeledDates(_ name: String) throws -> [WireLabeledDate]? {
+        guard let items = try objectItems(name) else { return nil }
+        return try items.map { object in
+            guard let date = stringField(object, "date"), !date.isEmpty else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name,
+                    expected: "a list of entries, each with a date like 2026-08-01 or --08-01")
+            }
+            return WireLabeledDate(label: stringField(object, "label"), date: date)
+        }
+    }
+
+    func optionalSocialProfiles(_ name: String) throws -> [WireSocialProfile]? {
+        guard let items = try objectItems(name) else { return nil }
+        return items.map { object in
+            WireSocialProfile(
+                label: stringField(object, "label"),
+                service: stringField(object, "service"),
+                username: stringField(object, "username"),
+                url: stringField(object, "url"))
+        }
+    }
+
+    func optionalInstantMessages(_ name: String) throws -> [WireInstantMessage]? {
+        guard let items = try objectItems(name) else { return nil }
+        return try items.map { object in
+            guard let username = stringField(object, "username"), !username.isEmpty else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name,
+                    expected: "a list of entries, each with a non-empty username")
+            }
+            return WireInstantMessage(
+                label: stringField(object, "label"),
+                service: stringField(object, "service"),
+                username: username)
+        }
     }
 
     func optionalNewPlaces(_ name: String) throws -> [WireNewPlace]? {
