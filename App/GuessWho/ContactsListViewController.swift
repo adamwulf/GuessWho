@@ -247,7 +247,8 @@ final class ContactsListViewController: UIViewController {
             (cell as? ContactCell)?.configure(
                 with: contact,
                 photoLoader: self.photoLoader,
-                isFavorite: self.favoritesStore.isFavorite(contact.contactID)
+                isFavorite: self.favoritesStore.isFavorite(contact.contactID),
+                linkCount: self.repository.linkCount(for: contact)
             )
             return cell
         }
@@ -508,6 +509,7 @@ private final class ContactCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
     private let subtitleLabel = UILabel()
+    private let linkCountLabel = UILabel()
     private let starView = UIImageView()
     private var representedID: ContactID?
     private var photoTask: Task<Void, Never>?
@@ -527,6 +529,8 @@ private final class ContactCell: UITableViewCell {
         cancelPhotoLoad()
         representedID = nil
         iconView.image = nil
+        linkCountLabel.text = nil
+        linkCountLabel.isHidden = true
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -558,6 +562,17 @@ private final class ContactCell: UITableViewCell {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         subtitleLabel.numberOfLines = 1
 
+        // Trailing "N links" caption, shown only when the contact has at least
+        // one link (hidden otherwise, so a linkless row looks unchanged).
+        linkCountLabel.font = .preferredFont(forTextStyle: .caption1)
+        linkCountLabel.textColor = .secondaryLabel
+        linkCountLabel.adjustsFontForContentSizeCategory = true
+        linkCountLabel.numberOfLines = 1
+        linkCountLabel.isHidden = true
+        linkCountLabel.setContentHuggingPriority(.required, for: .horizontal)
+        linkCountLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        linkCountLabel.translatesAutoresizingMaskIntoConstraints = false
+
         // Trailing favorite star. The image stays installed and only
         // `isHidden` toggles, so the star's intrinsic size keeps the layout
         // deterministic (an image-less UIImageView has no intrinsic size) and
@@ -579,6 +594,7 @@ private final class ContactCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
+        contentView.addSubview(linkCountLabel)
         contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
@@ -588,14 +604,16 @@ private final class ContactCell: UITableViewCell {
             iconView.heightAnchor.constraint(equalToConstant: 28),
             starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            linkCountLabel.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
+            linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
+            textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
     }
 
-    func configure(with contact: Contact, photoLoader: ContactPhotoLoader, isFavorite: Bool) {
+    func configure(with contact: Contact, photoLoader: ContactPhotoLoader, isFavorite: Bool, linkCount: Int) {
         cancelPhotoLoad()
         let id = contact.contactID
         representedID = id
@@ -616,6 +634,14 @@ private final class ContactCell: UITableViewCell {
         // Non-breaking space when there's no jobTitle/organizationName — an empty
         // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
+        // Reset every configure so a recycled cell never shows a stale count.
+        if linkCount > 0 {
+            linkCountLabel.text = linkCount == 1 ? "1 link" : "\(linkCount) links"
+            linkCountLabel.isHidden = false
+        } else {
+            linkCountLabel.text = nil
+            linkCountLabel.isHidden = true
+        }
         starView.isHidden = !isFavorite
     }
 

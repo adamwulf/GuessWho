@@ -157,7 +157,7 @@ final class GuidePlacesListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, placeID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.place.rawValue, for: indexPath)
             guard let self, let place = self.placesByID[placeID] else { return cell }
-            (cell as? PlaceCell)?.configure(with: place, status: self.status(for: place))
+            (cell as? PlaceCell)?.configure(with: place, status: self.status(for: place), linkCount: self.repository.linkCount(for: place))
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -512,6 +512,7 @@ private final class PlaceCell: UITableViewCell {
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let nameLabel = UILabel()
     private let addressLabel = UILabel()
+    private let linkCountLabel = UILabel()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -528,6 +529,8 @@ private final class PlaceCell: UITableViewCell {
         nameLabel.text = nil
         addressLabel.text = nil
         addressLabel.isHidden = false
+        linkCountLabel.text = nil
+        linkCountLabel.isHidden = true
         showSpinner(false)
     }
 
@@ -562,6 +565,17 @@ private final class PlaceCell: UITableViewCell {
         addressLabel.translatesAutoresizingMaskIntoConstraints = false
         addressLabel.numberOfLines = 2
 
+        // Trailing "N links" caption, shown only when the place has at least one
+        // link (hidden otherwise, so a linkless row looks unchanged).
+        linkCountLabel.font = .preferredFont(forTextStyle: .caption1)
+        linkCountLabel.textColor = .secondaryLabel
+        linkCountLabel.adjustsFontForContentSizeCategory = true
+        linkCountLabel.numberOfLines = 1
+        linkCountLabel.isHidden = true
+        linkCountLabel.setContentHuggingPriority(.required, for: .horizontal)
+        linkCountLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        linkCountLabel.translatesAutoresizingMaskIntoConstraints = false
+
         let textStack = UIStackView(arrangedSubviews: [nameLabel, addressLabel])
         textStack.axis = .vertical
         textStack.alignment = .leading
@@ -571,6 +585,7 @@ private final class PlaceCell: UITableViewCell {
         contentView.addSubview(iconView)
         contentView.addSubview(spinner)
         contentView.addSubview(textStack)
+        contentView.addSubview(linkCountLabel)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -581,8 +596,10 @@ private final class PlaceCell: UITableViewCell {
             // row shows the pin or is being looked up.
             spinner.centerXAnchor.constraint(equalTo: iconView.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
+            linkCountLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
@@ -597,7 +614,15 @@ private final class PlaceCell: UITableViewCell {
         }
     }
 
-    func configure(with place: MapsPlace, status: GuidePlacesListViewController.PlaceRowStatus) {
+    func configure(with place: MapsPlace, status: GuidePlacesListViewController.PlaceRowStatus, linkCount: Int) {
+        // Reset every configure so a recycled cell never shows a stale count.
+        if linkCount > 0 {
+            linkCountLabel.text = linkCount == 1 ? "1 link" : "\(linkCount) links"
+            linkCountLabel.isHidden = false
+        } else {
+            linkCountLabel.text = nil
+            linkCountLabel.isHidden = true
+        }
         switch status {
         case .resolved:
             showSpinner(false)

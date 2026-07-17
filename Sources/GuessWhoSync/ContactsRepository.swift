@@ -139,6 +139,13 @@ public final class ContactsRepository: NSObject {
     /// timestamps so Linked filters react to both local and iCloud changes.
     @ObservationIgnored private var linkedContactIDs: Set<String> = []
 
+    /// Per-contact link COUNT keyed by canonical GuessWho UUID string. Powers
+    /// the "N links" list badge; refreshed in the same sidecar-derived passes
+    /// as `linkedContactIDs`. A contact with no entry has zero links and shows
+    /// no badge. Purely derived read-model state, so `@ObservationIgnored` like
+    /// its sibling overlays.
+    @ObservationIgnored private var linkCountsByID: [String: Int] = [:]
+
     /// The CURRENT global list sort order. The repository holds it; the APP owns
     /// persistence (e.g. `UserDefaults`, via the stable `rawValue`s) and sets it
     /// here. Setting it re-renders every list: it is `@Observable`-tracked AND
@@ -201,6 +208,7 @@ public final class ContactsRepository: NSObject {
         }
         await refreshTimestampCache()
         await refreshLinkedContactIDs()
+        await refreshLinkCounts()
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
@@ -234,6 +242,15 @@ public final class ContactsRepository: NSObject {
         }
         let endpoints = (try? await sync.linkedEndpoints(ofKind: .contact)) ?? []
         linkedContactIDs = Set(endpoints.map(\.id))
+    }
+
+    private func refreshLinkCounts() async {
+        guard let sync else {
+            linkCountsByID = [:]
+            return
+        }
+        let counts = (try? await sync.linkCounts(ofKind: .contact)) ?? [:]
+        linkCountsByID = Dictionary(uniqueKeysWithValues: counts.map { ($0.key.id, $0.value) })
     }
 
     // MARK: - Groups (read-only)
@@ -1553,6 +1570,15 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// Number of live links touching `contact` (any far-endpoint kind), for the
+    /// "N links" list badge. Zero for an unreconciled contact (no GuessWho UUID)
+    /// or one with no links; callers hide the badge on zero. Keyed the same way
+    /// as `matchesLinkFilter`'s Linked case so the badge and the filter agree.
+    public func linkCount(for contact: Contact) -> Int {
+        guard let guessWhoID = ContactID(contact: contact).guessWhoID else { return 0 }
+        return linkCountsByID[SidecarKey(kind: .contact, id: guessWhoID).id] ?? 0
+    }
+
     public var peopleSections: [(String, [Contact])] { sectioned(people) }
     public var organizationsSections: [(String, [Contact])] { sectioned(organizations) }
 
@@ -1872,6 +1898,7 @@ public final class ContactsRepository: NSObject {
     private func refreshFromSidecarChange() async {
         await refreshTimestampCache()
         await refreshLinkedContactIDs()
+        await refreshLinkCounts()
         postDidReload(contactDataChanged: false)
     }
 

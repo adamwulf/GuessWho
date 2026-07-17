@@ -41,6 +41,11 @@ final class GuidesRepository: NSObject {
     /// Reloaded with the rest of the sidecar-backed guide projection.
     private var linkedPlaceIDs: Set<String> = []
 
+    /// Per-place link COUNT keyed by lowercased place UUID string. Powers the
+    /// "N links" list badge; reloaded in the same pass as `linkedPlaceIDs`. A
+    /// place with no entry has zero links and shows no badge.
+    private var linkCountsByID: [String: Int] = [:]
+
     /// The live sort order every guides list reads. Persistence is the app's
     /// job (`GuideSortOrderSetting` writes UserDefaults and sets this);
     /// setting it re-sorts in place and posts `.guidesRepositoryDidReload`
@@ -115,6 +120,7 @@ final class GuidesRepository: NSObject {
         let fetchedGuides = await service.allGuides()
         let fetchedPlaces = await service.allPlaces()
         let fetchedLinkedPlaceIDs = await service.linkedEndpointIDs(ofKind: .place)
+        let fetchedLinkCounts = await service.linkCountsByEndpointID(ofKind: .place)
 
         // Build the per-guide place map BEFORE sorting the guides: the
         // `.placeCount` order sorts guides by how many places each has, so the
@@ -129,6 +135,7 @@ final class GuidesRepository: NSObject {
         }
         placesByGuide = byGuide
         linkedPlaceIDs = fetchedLinkedPlaceIDs
+        linkCountsByID = fetchedLinkCounts
 
         guides = sortOrder.sorted(fetchedGuides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
 
@@ -168,5 +175,13 @@ final class GuidesRepository: NSObject {
 
     func placeCount(inGuide guideID: UUID) -> Int {
         placesByGuide[guideID]?.count ?? 0
+    }
+
+    /// Number of live links touching `place` (any far-endpoint kind), for the
+    /// "N links" list badge. Zero for a place with no links; callers hide the
+    /// badge on zero. Keyed the same way as `linkedPlaceIDs` so the badge and
+    /// the Linked filter agree.
+    func linkCount(for place: MapsPlace) -> Int {
+        linkCountsByID[place.id.uuidString.lowercased()] ?? 0
     }
 }

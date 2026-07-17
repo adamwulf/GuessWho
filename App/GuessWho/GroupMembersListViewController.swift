@@ -294,7 +294,8 @@ final class GroupMembersListViewController: UIViewController {
             (cell as? ContactCell)?.configure(
                 with: contact,
                 photoLoader: self.photoLoader,
-                isFavorite: self.favoritesStore.isFavorite(contact.contactID)
+                isFavorite: self.favoritesStore.isFavorite(contact.contactID),
+                linkCount: self.repository.linkCount(for: contact)
             )
             return cell
         }
