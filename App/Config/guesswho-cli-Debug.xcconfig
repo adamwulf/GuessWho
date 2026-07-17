@@ -1,0 +1,15 @@
+// guesswho-cli-Debug.xcconfig
+// Debug-configuration identifiers for the guesswho-cli helper target. Wired
+// as the target's Debug baseConfigurationReference.
+
+#include "guesswho-cli-Shared.xcconfig"
+#include "CLIAppGroup-Debug.xcconfig"
+
+// Channel-suffixed like the Debug App Group, so a Debug helper is
+// distinguishable end to end.
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.cli.debug
+
+// Debug entitlements INCLUDE com.apple.security.get-task-allow so the helper
+// can be attached to a debugger during local development. The Release file
+// omits it — get-task-allow must never ship (Muse strips it the same way).
+CODE_SIGN_ENTITLEMENTS = guesswho-cli/guesswho-cli-Debug.entitlements

@@ -20,6 +20,8 @@
 		C700000000000000000000A3 /* GuessWhoAppKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C700000000000000000000F2 /* GuessWhoAppKitBridge.swift */; };
 		C700000000000000000000A4 /* GuessWhoAppKitBridge.bundle in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D100000000000000000000D3 /* GuessWhoSync in Frameworks */ = {isa = PBXBuildFile; productRef = D100000000000000000000D2 /* GuessWhoSync */; };
+		F400000000000000000000D3 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D2 /* ArgumentParser */; };
+		F400000000000000000000F1 /* guesswho-cli in Embed CLI */ = {isa = PBXBuildFile; fileRef = F400000000000000000000C0 /* guesswho-cli */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,6 +60,13 @@
 			remoteGlobalIDString = E300000000000000000000B1;
 			remoteInfo = GuessWhoShare;
 		};
+		F400000000000000000000F5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A100000000000000000000A0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F400000000000000000000B1;
+			remoteInfo = "guesswho-cli";
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -83,6 +92,17 @@
 				C700000000000000000000A4 /* GuessWhoAppKitBridge.bundle in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F400000000000000000000F0 /* Embed CLI */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				F400000000000000000000F1 /* guesswho-cli in Embed CLI */,
+			);
+			name = "Embed CLI";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -114,6 +134,13 @@
 		E300000000000000000000E6 /* GuessWhoShare-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoShare-Shared.xcconfig"; sourceTree = "<group>"; };
 		E300000000000000000000E9 /* GuessWhoShare-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoShare-Debug.xcconfig"; sourceTree = "<group>"; };
 		E300000000000000000000EA /* GuessWhoShare-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "GuessWhoShare-Release.xcconfig"; sourceTree = "<group>"; };
+		F400000000000000000000C0 /* guesswho-cli */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "guesswho-cli"; sourceTree = BUILT_PRODUCTS_DIR; };
+		F400000000000000000000E1 /* CLIAppGroup-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "CLIAppGroup-Shared.xcconfig"; sourceTree = "<group>"; };
+		F400000000000000000000E2 /* CLIAppGroup-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "CLIAppGroup-Debug.xcconfig"; sourceTree = "<group>"; };
+		F400000000000000000000E3 /* CLIAppGroup-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "CLIAppGroup-Release.xcconfig"; sourceTree = "<group>"; };
+		F400000000000000000000E5 /* guesswho-cli-Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "guesswho-cli-Shared.xcconfig"; sourceTree = "<group>"; };
+		F400000000000000000000E9 /* guesswho-cli-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "guesswho-cli-Debug.xcconfig"; sourceTree = "<group>"; };
+		F400000000000000000000EA /* guesswho-cli-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "guesswho-cli-Release.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -138,6 +165,13 @@
 				Info.plist,
 			);
 			target = E300000000000000000000B1 /* GuessWhoShare */;
+		};
+		F400000000000000000000A4 /* Exceptions for "guesswho-cli" folder in "guesswho-cli" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F400000000000000000000B1 /* guesswho-cli */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -174,6 +208,14 @@
 		D100000000000000000000A3 /* GuessWhoTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = GuessWhoTests;
+			sourceTree = "<group>";
+		};
+		F400000000000000000000A3 /* guesswho-cli */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F400000000000000000000A4 /* Exceptions for "guesswho-cli" folder in "guesswho-cli" target */,
+			);
+			path = "guesswho-cli";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -225,6 +267,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F400000000000000000000B4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F400000000000000000000D3 /* ArgumentParser in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -238,6 +288,7 @@
 				C700000000000000000000D0 /* GuessWhoAppKitBridge */,
 				B200000000000000000000A3 /* GuessWhoLinkedIn */,
 				E300000000000000000000A3 /* GuessWhoShare */,
+				F400000000000000000000A3 /* guesswho-cli */,
 				D100000000000000000000A3 /* GuessWhoTests */,
 				A100000000000000000000A5 /* Products */,
 				C55586FA2FE7A7DE002F1969 /* GuessWhoUITests */,
@@ -251,6 +302,7 @@
 				B200000000000000000000C0 /* GuessWhoLinkedIn.appex */,
 				E300000000000000000000C0 /* GuessWhoShare.appex */,
 				C700000000000000000000C0 /* GuessWhoAppKitBridge.bundle */,
+				F400000000000000000000C0 /* guesswho-cli */,
 				D100000000000000000000C0 /* GuessWhoTests.xctest */,
 				C55586F92FE7A7DE002F1969 /* GuessWhoUITests.xctest */,
 			);
@@ -276,6 +328,12 @@
 				C700000000000000000000E5 /* GuessWhoAppKitBridge-Shared.xcconfig */,
 				C700000000000000000000E9 /* GuessWhoAppKitBridge-Debug.xcconfig */,
 				C700000000000000000000EA /* GuessWhoAppKitBridge-Release.xcconfig */,
+				F400000000000000000000E1 /* CLIAppGroup-Shared.xcconfig */,
+				F400000000000000000000E2 /* CLIAppGroup-Debug.xcconfig */,
+				F400000000000000000000E3 /* CLIAppGroup-Release.xcconfig */,
+				F400000000000000000000E5 /* guesswho-cli-Shared.xcconfig */,
+				F400000000000000000000E9 /* guesswho-cli-Debug.xcconfig */,
+				F400000000000000000000EA /* guesswho-cli-Release.xcconfig */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -302,6 +360,7 @@
 				A100000000000000000000B3 /* Resources */,
 				A100000000000000000000F7 /* Embed Frameworks */,
 				B200000000000000000000F0 /* Embed Foundation Extensions */,
+				F400000000000000000000F0 /* Embed CLI */,
 			);
 			buildRules = (
 			);
@@ -309,6 +368,7 @@
 				B200000000000000000000F3 /* PBXTargetDependency */,
 				E300000000000000000000F3 /* PBXTargetDependency */,
 				C700000000000000000000F6 /* PBXTargetDependency */,
+				F400000000000000000000F6 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A100000000000000000000A3 /* GuessWho */,
@@ -433,6 +493,28 @@
 			productReference = D100000000000000000000C0 /* GuessWhoTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		F400000000000000000000B1 /* guesswho-cli */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F400000000000000000000C2 /* Build configuration list for PBXNativeTarget "guesswho-cli" */;
+			buildPhases = (
+				F400000000000000000000B2 /* Sources */,
+				F400000000000000000000B4 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F400000000000000000000A3 /* guesswho-cli */,
+			);
+			name = "guesswho-cli";
+			packageProductDependencies = (
+				F400000000000000000000D2 /* ArgumentParser */,
+			);
+			productName = "guesswho-cli";
+			productReference = F400000000000000000000C0 /* guesswho-cli */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -463,6 +545,9 @@
 					E300000000000000000000B1 = {
 						CreatedOnToolsVersion = 26.3;
 					};
+					F400000000000000000000B1 = {
+						CreatedOnToolsVersion = 26.3;
+					};
 				};
 			};
 			buildConfigurationList = A100000000000000000000C1 /* Build configuration list for PBXProject "GuessWho" */;
@@ -476,6 +561,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A100000000000000000000D1 /* XCLocalSwiftPackageReference ".." */,
+				F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A100000000000000000000A5 /* Products */;
@@ -486,6 +572,7 @@
 				B200000000000000000000B1 /* GuessWhoLinkedIn */,
 				E300000000000000000000B1 /* GuessWhoShare */,
 				C700000000000000000000B1 /* GuessWhoAppKitBridge */,
+				F400000000000000000000B1 /* guesswho-cli */,
 				D100000000000000000000B1 /* GuessWhoTests */,
 				C55586F82FE7A7DE002F1969 /* GuessWhoUITests */,
 			);
@@ -678,6 +765,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F400000000000000000000B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -706,6 +800,12 @@
 			platformFilter = ios;
 			target = E300000000000000000000B1 /* GuessWhoShare */;
 			targetProxy = E300000000000000000000F2 /* PBXContainerItemProxy */;
+		};
+		F400000000000000000000F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = maccatalyst;
+			target = F400000000000000000000B1 /* guesswho-cli */;
+			targetProxy = F400000000000000000000F5 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1116,6 +1216,20 @@
 			};
 			name = Release;
 		};
+		F400000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = F400000000000000000000E9 /* guesswho-cli-Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		F400000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = F400000000000000000000EA /* guesswho-cli-Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1182,6 +1296,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F400000000000000000000C2 /* Build configuration list for PBXNativeTarget "guesswho-cli" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F400000000000000000000C21 /* Debug */,
+				F400000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1190,6 +1313,17 @@
 			relativePath = ..;
 		};
 /* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-argument-parser";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.5.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		A100000000000000000000D2 /* GuessWhoSync */ = {
@@ -1207,6 +1341,11 @@
 		D100000000000000000000D2 /* GuessWhoSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GuessWhoSync;
+		};
+		F400000000000000000000D2 /* ArgumentParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
+			productName = ArgumentParser;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

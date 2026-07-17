@@ -1,0 +1,11 @@
+// CLIAppGroup-Release.xcconfig
+// Release-channel (App Store + TestFlight) input to the single CLI App Group
+// derivation (INV-4). #included by GuessWho-Release.xcconfig AND
+// guesswho-cli-Release.xcconfig so the app and the embedded helper always
+// agree within a Release build. TestFlight rides the App Store id (no
+// suffix of its own).
+
+#include "CLIAppGroup-Shared.xcconfig"
+
+// Empty suffix — the App Store channel is the unsuffixed base string.
+GUESSWHO_CLI_CHANNEL_SUFFIX =

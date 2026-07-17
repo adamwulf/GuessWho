@@ -1,0 +1,14 @@
+// guesswho-cli-Release.xcconfig
+// Release-configuration (App Store + TestFlight) identifiers for the
+// guesswho-cli helper target. Wired as the target's Release
+// baseConfigurationReference.
+
+#include "guesswho-cli-Shared.xcconfig"
+#include "CLIAppGroup-Release.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.cli
+
+// Release entitlements OMIT com.apple.security.get-task-allow — it must never
+// ship in a distribution build (notarization/App Store both reject it on an
+// embedded binary; Muse strips it identically).
+CODE_SIGN_ENTITLEMENTS = guesswho-cli/guesswho-cli-Release.entitlements
