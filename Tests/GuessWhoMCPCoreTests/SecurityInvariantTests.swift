@@ -3,24 +3,33 @@ import GuessWhoSync
 import GuessWhoMCPCore
 import GuessWhoMCPWire
 
-/// INV-3 (the Apple note never crosses the wire, in content OR in match-
-/// presence) and INV-3b (positive field allowlist: no identity URL, no raw
-/// UUID/local id, no device id) — plans/cli-mcp.md Phase 1 exit criteria.
+/// The focused-exclusion invariants (plans/cli-mcp.md Revision 2): the wire
+/// carries the whole record EXCEPT four named fields — the Apple contact
+/// note (INV-3, in content AND in match-presence), Apple local identifiers,
+/// the `modifiedBy` device id, and the `guesswho://` URL form. Each has a
+/// sentinel planted in the fixture; every tool output (reads, lists,
+/// search, errors — the write direction is covered in
+/// WriteSecurityAndRecoveryTests) is scanned for all of them.
 final class SecurityInvariantTests: XCTestCase {
 
     /// Every read tool exercised against the fixture, including error
-    /// responses — the complete Phase 1 output surface.
+    /// responses — the complete read-side output surface.
     private func allOutputs(_ fixture: Fixture) async -> [WireResponse] {
         let dispatcher = fixture.dispatcher
         let helper = Fixture.helper
         var responses: [WireResponse] = []
-        var contactHandles: [String] = []
-        var eventHandles: [String] = []
-        var groupHandles: [String] = []
-        var guideHandles: [String] = []
+        var contactIDs: [String] = []
+        var eventIDs: [String] = []
+        var groupIDs: [String] = []
+        var guideIDs: [String] = []
 
         func run(_ request: WireRequest) async -> WireResponse {
-            let response = await dispatcher.handle(request)
+            guard let response = await dispatcher.handle(request) else {
+                XCTFail("read tools always answer immediately")
+                return .error(
+                    helperId: helper, messageId: "missing",
+                    code: .invalidParams, message: "missing")
+            }
             responses.append(response)
             return response
         }
@@ -30,25 +39,25 @@ final class SecurityInvariantTests: XCTestCase {
                 helperId: helper, messageId: TestMessageID.next(),
                 query: query, limit: nil, cursor: nil))
             if case .contactPage(_, _, let page) = response {
-                contactHandles.append(contentsOf: page.items.map(\.id))
+                contactIDs.append(contentsOf: page.items.map(\.id))
             }
         }
-        XCTAssertFalse(contactHandles.isEmpty, "fixture searches should find contacts")
+        XCTAssertFalse(contactIDs.isEmpty, "fixture searches should find contacts")
 
-        for handle in Set(contactHandles) {
-            _ = await run(.contactsGet(helperId: helper, messageId: TestMessageID.next(), contactId: handle))
+        for id in Set(contactIDs) {
+            _ = await run(.contactsGet(helperId: helper, messageId: TestMessageID.next(), contactId: id))
             _ = await run(.contactsListNotes(
                 helperId: helper, messageId: TestMessageID.next(),
-                contactId: handle, limit: nil, cursor: nil))
+                contactId: id, limit: nil, cursor: nil))
             _ = await run(.contactsListCustomFields(
                 helperId: helper, messageId: TestMessageID.next(),
-                contactId: handle, limit: nil, cursor: nil))
+                contactId: id, limit: nil, cursor: nil))
             _ = await run(.contactsListLinkedContacts(
                 helperId: helper, messageId: TestMessageID.next(),
-                contactId: handle, limit: nil, cursor: nil))
+                contactId: id, limit: nil, cursor: nil))
             _ = await run(.contactsListLinkedOrganizations(
                 helperId: helper, messageId: TestMessageID.next(),
-                contactId: handle, limit: nil, cursor: nil))
+                contactId: id, limit: nil, cursor: nil))
         }
 
         _ = await run(.contactsListFavorites(
@@ -56,12 +65,12 @@ final class SecurityInvariantTests: XCTestCase {
         let groupsResponse = await run(.contactsListGroups(
             helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         if case .groupPage(_, _, let page) = groupsResponse {
-            groupHandles = page.items.map(\.id)
+            groupIDs = page.items.map(\.id)
         }
-        for handle in groupHandles {
+        for id in groupIDs {
             _ = await run(.groupsListMembers(
                 helperId: helper, messageId: TestMessageID.next(),
-                groupId: handle, limit: nil, cursor: nil))
+                groupId: id, limit: nil, cursor: nil))
         }
 
         let eventsResponse = await run(.eventsList(
@@ -69,26 +78,26 @@ final class SecurityInvariantTests: XCTestCase {
             startDate: "2025-01-01T00:00:00Z", endDate: "2025-12-01T00:00:00Z",
             limit: nil, cursor: nil))
         if case .eventPage(_, _, let page) = eventsResponse {
-            eventHandles = page.items.map(\.id)
+            eventIDs = page.items.map(\.id)
         }
-        XCTAssertFalse(eventHandles.isEmpty, "fixture window should find events")
-        for handle in eventHandles {
-            _ = await run(.eventsGet(helperId: helper, messageId: TestMessageID.next(), eventId: handle))
+        XCTAssertFalse(eventIDs.isEmpty, "fixture window should find events")
+        for id in eventIDs {
+            _ = await run(.eventsGet(helperId: helper, messageId: TestMessageID.next(), eventId: id))
             _ = await run(.eventsListTags(
                 helperId: helper, messageId: TestMessageID.next(),
-                eventId: handle, limit: nil, cursor: nil))
+                eventId: id, limit: nil, cursor: nil))
         }
 
         let guidesResponse = await run(.guidesList(
             helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         if case .guidePage(_, _, let page) = guidesResponse {
-            guideHandles = page.items.map(\.id)
+            guideIDs = page.items.map(\.id)
         }
-        for handle in guideHandles {
-            _ = await run(.guidesGet(helperId: helper, messageId: TestMessageID.next(), guideId: handle))
+        for id in guideIDs {
+            _ = await run(.guidesGet(helperId: helper, messageId: TestMessageID.next(), guideId: id))
             _ = await run(.placesList(
                 helperId: helper, messageId: TestMessageID.next(),
-                guideId: handle, limit: nil, cursor: nil))
+                guideId: id, limit: nil, cursor: nil))
         }
         _ = await run(.placesList(
             helperId: helper, messageId: TestMessageID.next(),
@@ -136,7 +145,7 @@ final class SecurityInvariantTests: XCTestCase {
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
                 query: query, limit: nil, cursor: nil))
             guard case .contactPage(_, _, let page) = response else {
-                XCTFail("search should return a page; got \(response)")
+                XCTFail("search should return a page; got \(String(describing: response))")
                 continue
             }
             XCTAssertEqual(
@@ -145,104 +154,62 @@ final class SecurityInvariantTests: XCTestCase {
         }
     }
 
-    // MARK: - INV-3b: allowlist / identity sealing
+    // MARK: - Identity-URL exclusion (the id is the bare UUID, never the URL)
 
-    func testSearchForGuessWhoFindsNothing() async {
+    func testSearchForGuessWhoURLFindsNothing() async {
         let fixture = await Fixture.make()
-        for query in ["guesswho", "guesswho://", Sentinels.guessWhoUUID] {
+        for query in ["guesswho", "guesswho://"] {
             let response = await fixture.dispatcher.handle(.contactsSearch(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
                 query: query, limit: nil, cursor: nil))
             guard case .contactPage(_, _, let page) = response else {
-                XCTFail("search should return a page; got \(response)")
+                XCTFail("search should return a page; got \(String(describing: response))")
                 continue
             }
             XCTAssertEqual(
                 page.items.count, 0,
-                "search(\(query)) matched the internal identity URL (INV-3b)")
+                "search(\(query)) matched the internal identity URL form")
         }
     }
 
-    func testNoSealedIdentifierAppearsInAnyOutput() async {
+    // MARK: - The targeted exclusion test (replaces the allowlist golden test)
+
+    /// One sentinel per excluded field, asserted absent from EVERY read
+    /// output and error. (The write direction — no tool accepting these
+    /// fields, write echoes clean — is WriteSecurityAndRecoveryTests.)
+    func testExcludedFieldSentinelsAppearInZeroReadOutputs() async {
         let fixture = await Fixture.make()
         let output = combinedOutput(await allOutputs(fixture))
 
-        XCTAssertFalse(output.contains("guesswho://"), "identity URL leaked")
-        XCTAssertFalse(output.contains(Sentinels.guessWhoUUID), "GuessWho UUID leaked")
+        // Exclusion 1: the Apple contact note.
+        XCTAssertFalse(output.contains(Sentinels.appleNote), "Apple note leaked")
+        // Exclusion 2: Apple local identifiers — contact, group, calendar.
         XCTAssertFalse(output.contains(Sentinels.localID), "Apple local id leaked")
         XCTAssertFalse(output.contains("ABPerson-LOCAL"), "an Apple local id leaked")
+        XCTAssertFalse(output.contains("CNGroup-LOCAL"), "group local id leaked")
+        XCTAssertFalse(output.contains("EK-SENTINEL"), "raw calendar id leaked (must ride derived)")
+        // Exclusion 3: the modifiedBy device id.
         XCTAssertFalse(output.contains(Sentinels.deviceID), "modifiedBy device id leaked")
         XCTAssertFalse(output.contains("modifiedBy"), "modifiedBy key leaked")
-        XCTAssertFalse(output.contains("CNGroup-LOCAL"), "group local id leaked")
-        XCTAssertFalse(output.contains("EK-SENTINEL"), "system calendar id leaked")
-
-        // No bare UUID of ANY kind: every id on the wire is a sealed
-        // 32-hex-char token, deliberately not UUID-shaped.
-        let uuidPattern = #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#
-        XCTAssertNil(
-            output.range(of: uuidPattern, options: .regularExpression),
-            "a raw UUID crossed the wire")
+        // Exclusion 4: the guesswho:// URL FORM. The bare UUID is the
+        // contact's id and DOES appear; the URL wrapping never may.
+        XCTAssertFalse(output.contains("guesswho://"), "identity URL form leaked")
+        XCTAssertTrue(
+            output.contains(Sentinels.guessWhoUUID),
+            "the GuessWho UUID IS the contact id and should appear as one")
     }
 
-    func testGoldenDTOKeySetsMatchAllowlist() async throws {
+    /// The contact id is the plain GuessWho UUID and stays stable across
+    /// repeated reads (it is the record's own durable identity).
+    func testContactIDIsTheGuessWhoUUID() async {
         let fixture = await Fixture.make()
-        let helper = Fixture.helper
-
-        func jsonKeys(_ text: String) throws -> Set<String> {
-            let object = try JSONSerialization.jsonObject(with: Data(text.utf8))
-            guard let dictionary = object as? [String: Any] else { return [] }
-            return Set(dictionary.keys)
-        }
-        func itemKeys(_ text: String) throws -> [Set<String>] {
-            let object = try JSONSerialization.jsonObject(with: Data(text.utf8))
-            guard let dictionary = object as? [String: Any],
-                  let items = dictionary["items"] as? [[String: Any]] else { return [] }
-            return items.map { Set($0.keys) }
-        }
-
-        let searchResponse = await fixture.dispatcher.handle(.contactsSearch(
-            helperId: helper, messageId: "m1", query: "jane", limit: nil, cursor: nil))
-        let summaryAllowlist: Set<String> = ["id", "kind", "name", "organization", "jobTitle"]
-        for keys in try itemKeys(searchResponse.agentVisibleText) {
-            XCTAssertTrue(keys.isSubset(of: summaryAllowlist), "summary keys \(keys) exceed allowlist")
-            XCTAssertTrue(keys.isSuperset(of: ["id", "kind", "name"]))
-        }
-        guard case .contactPage(_, _, let searchPage) = searchResponse,
-              let janeHandle = searchPage.items.first?.id
-        else {
-            return XCTFail("expected Jane in search results")
-        }
-
-        let contactResponse = await fixture.dispatcher.handle(.contactsGet(
-            helperId: helper, messageId: "m2", contactId: janeHandle))
-        let contactAllowlist: Set<String> = [
-            "id", "kind", "name", "givenName", "familyName", "nickname",
-            "organization", "department", "jobTitle", "phoneNumbers",
-            "emailAddresses", "postalAddresses", "urlAddresses", "birthday",
-            "dates", "isFavorite",
-        ]
-        let contactKeys = try jsonKeys(contactResponse.agentVisibleText)
-        XCTAssertTrue(contactKeys.isSubset(of: contactAllowlist), "contact keys \(contactKeys) exceed allowlist")
-        XCTAssertTrue(contactKeys.isSuperset(of: ["id", "kind", "name", "phoneNumbers", "isFavorite"]))
-        XCTAssertFalse(contactKeys.contains("note"), "Apple-note-shaped key on the contact DTO")
-
-        let notesResponse = await fixture.dispatcher.handle(.contactsListNotes(
-            helperId: helper, messageId: "m3", contactId: janeHandle, limit: nil, cursor: nil))
-        for keys in try itemKeys(notesResponse.agentVisibleText) {
-            XCTAssertEqual(keys, ["id", "body", "createdAt", "modifiedAt"])
-        }
-
-        let fieldsResponse = await fixture.dispatcher.handle(.contactsListCustomFields(
-            helperId: helper, messageId: "m4", contactId: janeHandle, limit: nil, cursor: nil))
-        for keys in try itemKeys(fieldsResponse.agentVisibleText) {
-            XCTAssertEqual(keys, ["id", "name", "type", "value", "modifiedAt"])
-        }
-
-        let groupsResponse = await fixture.dispatcher.handle(.contactsListGroups(
-            helperId: helper, messageId: "m5", limit: nil, cursor: nil))
-        for keys in try itemKeys(groupsResponse.agentVisibleText) {
-            XCTAssertEqual(keys, ["id", "name"], "group DTO must carry ONLY id+name (no localID)")
-        }
+        let response = await fixture.dispatcher.handle(.contactsSearch(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            query: "jane", limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let page) = response,
+              let jane = page.items.first(where: { $0.name == "Jane Doe" })
+        else { return XCTFail("expected Jane") }
+        XCTAssertEqual(jane.id, Sentinels.guessWhoUUID)
     }
 
     /// The attachment-typed field never surfaces (the previousPhoto

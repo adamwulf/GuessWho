@@ -76,7 +76,12 @@ final class FakeContactSource: MCPContactSource {
             return carried
         }
         mintCount += 1
-        let minted = UUID().uuidString.lowercased()
+        // Mirrors the engine's DETERMINISTIC mint (Revision 2): the minted
+        // UUID is derived from localID + display name, so the wire id an
+        // agent got BEFORE the mint is the id the card ends up carrying.
+        let minted = contacts.first(where: {
+            $0.contactID.restorationToken.localID == localID
+        })?.deterministicGuessWhoID ?? UUID().uuidString.lowercased()
         await Task.yield() // the engine's await window: racers interleave here
         if simulateLosingMintOnce {
             simulateLosingMintOnce = false
@@ -306,6 +311,118 @@ final class FakeContactSource: MCPContactSource {
         favoriteEffectiveIDs.insert(key)
         return true
     }
+
+    // MARK: Contact-record writes (Revision 2)
+
+    /// When set, the next saveContact/createContact/deleteContact throws it
+    /// (one-shot) — the 134092-style store-rejection / revoked-access
+    /// simulation.
+    var nextContactStoreError: Error?
+    private(set) var deletedContactLocalIDs: [String] = []
+
+    private func takeContactStoreError() throws {
+        if unavailable { throw SidecarUnavailableError() }
+        if let error = nextContactStoreError {
+            nextContactStoreError = nil
+            throw error
+        }
+    }
+
+    func editableContact(id: ContactID) async throws -> Contact? {
+        try takeContactStoreError()
+        return contact(restorationToken: id.restorationToken)
+    }
+
+    func saveContact(_ edited: Contact, for id: ContactID) async throws {
+        try takeContactStoreError()
+        guard let index = contacts.firstIndex(where: {
+            $0.contactID.restorationToken.localID == edited.contactID.restorationToken.localID
+        }) else { return }
+        contacts[index] = edited
+    }
+
+    func createContact(_ seed: Contact) async throws -> Contact {
+        try takeContactStoreError()
+        // The store issues the local identifier; the seed's is ignored —
+        // mirrors CNContactStoreAdapter.create.
+        let created = Contact(
+            localID: "ABPerson-LOCAL-CREATED-\(contacts.count + 1)",
+            contactType: seed.contactType,
+            namePrefix: seed.namePrefix,
+            givenName: seed.givenName,
+            middleName: seed.middleName,
+            familyName: seed.familyName,
+            previousFamilyName: seed.previousFamilyName,
+            nameSuffix: seed.nameSuffix,
+            nickname: seed.nickname,
+            phoneticGivenName: seed.phoneticGivenName,
+            phoneticMiddleName: seed.phoneticMiddleName,
+            phoneticFamilyName: seed.phoneticFamilyName,
+            jobTitle: seed.jobTitle,
+            departmentName: seed.departmentName,
+            organizationName: seed.organizationName,
+            phoneticOrganizationName: seed.phoneticOrganizationName,
+            note: seed.note,
+            phoneNumbers: seed.phoneNumbers,
+            emailAddresses: seed.emailAddresses,
+            postalAddresses: seed.postalAddresses,
+            urlAddresses: seed.urlAddresses,
+            birthday: seed.birthday,
+            nonGregorianBirthday: seed.nonGregorianBirthday,
+            dates: seed.dates,
+            socialProfiles: seed.socialProfiles,
+            instantMessageAddresses: seed.instantMessageAddresses,
+            contactRelations: seed.contactRelations,
+            imageDataAvailable: seed.imageDataAvailable)
+        contacts.append(created)
+        return created
+    }
+
+    func deleteContact(id: ContactID) async throws -> Bool {
+        try takeContactStoreError()
+        let localID = id.restorationToken.localID
+        guard let index = contacts.firstIndex(where: {
+            $0.contactID.restorationToken.localID == localID
+        }) else { return false }
+        deletedContactLocalIDs.append(localID)
+        contacts.remove(at: index)
+        return true
+    }
+}
+
+/// Test double for the human-in-the-loop confirmation: scripted decisions,
+/// recorded prompts.
+@MainActor
+final class FakeConfirmationSource: MCPConfirmationSource {
+    /// The next answers to hand out, in order. Empty = `unpresentable` (nil).
+    var decisions: [Bool?] = []
+    private(set) var promptedNames: [String] = []
+
+    nonisolated init() {}
+
+    func confirmContactDelete(named contactName: String) async -> Bool? {
+        promptedNames.append(contactName)
+        guard !decisions.isEmpty else { return nil }
+        return decisions.removeFirst()
+    }
+}
+
+/// Collects deferred (out-of-band) responses for tests, with a wait helper.
+actor DeferredResponseProbe {
+    private var responses: [WireResponse] = []
+
+    func record(_ response: WireResponse) {
+        responses.append(response)
+    }
+
+    /// Poll until at least one response arrives (or ~2s pass).
+    func next() async -> WireResponse? {
+        for _ in 0..<200 {
+            if !responses.isEmpty { return responses.removeFirst() }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return nil
+    }
 }
 
 @MainActor
@@ -343,6 +460,10 @@ final class FakeEventSource: MCPEventSource {
 
     func allEventTagFields(forEventUUID uuid: String) -> [SidecarField] {
         tagFieldsByEventUUID[uuid.lowercased()] ?? []
+    }
+
+    func eventUUID(forEventKitID eventKitID: String) async -> UUID? {
+        events.first { $0.eventKitID == eventKitID }?.id
     }
 
     func addEventTag(text: String, forEventUUID uuid: String) throws -> UUID {
@@ -430,10 +551,11 @@ final class FakeGuideSource: MCPGuideSource {
 
 @MainActor
 final class FakeGateSource: MCPGateSource {
-    var isMCPEnabled = true
-    var isCLIEnabled = true
-    var isMCPReadOnly = true
-    var isCLIReadOnly = true
+    /// Read-only by default — the fixture's stand-in for a user who has
+    /// opted in to reads but not writes; write tests flip to `.readWrite`
+    /// the way the user's setting would.
+    var mcpAccess: MCPAccessMode = .readOnly
+    var cliAccess: MCPAccessMode = .readOnly
     var contactsAuthorized = true
     var eventsAuthorized = true
 
@@ -449,6 +571,7 @@ struct Fixture {
     let events: FakeEventSource
     let guides: FakeGuideSource
     let gates: FakeGateSource
+    let confirmations: FakeConfirmationSource
     let audit: MCPAuditLog
 
     static let helper = RequestOrigin.mcp.makeHelperId()
@@ -511,6 +634,7 @@ struct Fixture {
         let events = FakeEventSource()
         let guides = FakeGuideSource()
         let gates = FakeGateSource()
+        let confirmations = FakeConfirmationSource()
         let audit = makeAuditLog()
 
         let jane = janeDoe()
@@ -608,12 +732,13 @@ struct Fixture {
 
         let dispatcher = ToolDispatcher(
             contacts: contacts, events: events, guides: guides, gates: gates,
+            confirmations: confirmations,
             audit: audit,
             writeLimitPerWindow: writeLimitPerWindow,
             writeWindowSeconds: writeWindowSeconds)
         return Fixture(
             dispatcher: dispatcher, contacts: contacts, events: events,
-            guides: guides, gates: gates, audit: audit)
+            guides: guides, gates: gates, confirmations: confirmations, audit: audit)
     }
 }
 

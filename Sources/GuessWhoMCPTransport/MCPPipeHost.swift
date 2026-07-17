@@ -69,6 +69,16 @@ public actor MCPPipeHost {
     /// Number of live helper sessions (test seam).
     public var sessionCount: Int { sessions.count }
 
+    /// Deliver an out-of-band response — one minted AFTER the handler
+    /// already returned nil for its request (human-in-the-loop
+    /// confirmations run fire-and-forget: the request path never blocks on
+    /// the user; the answer is correlated by the helperId/messageId the
+    /// response carries). Dropped silently if the helper's session is gone
+    /// — the caller timed out long ago and nobody is listening.
+    public func deliver(_ response: WireResponse) async {
+        await send(response, to: response.helperId)
+    }
+
     // MARK: - Lifecycle
 
     public func startListening() async throws {

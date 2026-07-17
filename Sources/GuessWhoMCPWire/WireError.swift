@@ -13,13 +13,12 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     case permissionDenied
     case readOnly
     case tooLarge
-    /// A write named an instance (note, tag, field, row) that doesn't
-    /// exist on the target record — distinct from `staleHandle` (the id
-    /// itself is unknown/expired). Phase 1's read tools answer every
-    /// unresolvable id with `staleHandle`; Phase 2's writes use this when
-    /// the id resolves but the instance is gone.
+    /// The id doesn't resolve to a live record — unknown, out of date
+    /// (the record changed or was removed), or of the wrong kind. Since
+    /// Revision 2 the wire id is the record's own durable id, so there is
+    /// no separate per-run stale-reference state: every unresolvable id is
+    /// `notFound`, with guidance to search/list again.
     case notFound
-    case staleHandle
     case invalidParams
     /// Rate-limit rejection (search / global budgets). Additive to the
     /// plan's taxonomy: the rate limit needs an honest code of its own —
@@ -54,20 +53,21 @@ public enum WireErrorMessage {
         "Editing is turned off. The user can enable it in GuessWho's settings."
     public static let tooLarge =
         "That result is too large — narrow the search or lower the limit."
-    public static let staleReference =
-        "That contact reference is out of date. Search again to get a current one, then retry."
-    public static let staleReferenceGeneric =
-        "That id is out of date. Run the matching list tool again to get a current one, then retry."
     public static let busy =
         "Too many requests at once. Wait a moment and try again."
-    // The notFound* strings pair with the `notFound` code above: unused by
-    // Phase 1's reads (which answer `staleHandle` uniformly), wired up by
-    // Phase 2's write tools. Kept under the banned-vocabulary test from day
-    // one.
-    public static let notFoundContact = "No matching contact was found."
-    public static let notFoundEvent = "No matching event was found."
-    public static let notFoundGroup = "No matching group was found."
-    public static let notFoundGuide = "No matching guide was found."
+    // The notFound* strings pair with the `notFound` code above. Since the
+    // wire id is the record's own durable id, an unresolvable id always
+    // means the record is gone or changed — the fix is to search/list again.
+    public static let notFoundContact =
+        "No matching contact was found for that id. It may have changed or been removed — search again to get a current id."
+    public static let notFoundEvent =
+        "No matching event was found for that id. Run events_list again to get current ids."
+    public static let notFoundGroup =
+        "No matching group was found for that id. Run contacts_list_groups again to get current ids."
+    public static let notFoundGuide =
+        "No matching guide was found for that id. Run guides_list again to get current ids."
+    public static let notFoundGenericID =
+        "Nothing was found for that id. Run the matching search or list tool again to get current ids, then retry."
     public static let notFoundNote =
         "No matching note was found on that contact. List the notes again to get current ids."
     public static let notFoundField =
@@ -111,6 +111,43 @@ public enum WireErrorMessage {
         "The value argument for a checkbox field must be \"true\" or \"false\"."
     public static let reorderMustCoverEveryPlace =
         "The placeIds argument must contain every place in the guide exactly once, in the desired order."
+    // Contact-record write errors (plans/cli-mcp.md Revision 2: full
+    // Contact Store read/write parity).
+    /// A create/update whose field set leaves the contact unnameable.
+    public static let contactNeedsAName =
+        "Provide at least a name or an organization for the contact."
+    public static let invalidKindArgument =
+        "The kind argument must be \"person\" or \"organization\"."
+    public static let updateNeedsAField =
+        "Pass at least one field to change."
+    public static let invalidCalendarDateValue =
+        "Dates must look like 2026-08-01, or --08-01 when the year is unknown."
+    /// A wire-supplied web address tried to use the app's own reserved
+    /// address form.
+    public static let reservedWebAddress =
+        "One of the web addresses uses a form reserved for the app's own use. Remove it and try again."
+    /// A create/update carried a note-shaped argument. Contact cards never
+    /// accept one over this channel; GuessWho's own dated notes are the
+    /// supported way to write notes.
+    public static let contactNoteNotAccepted =
+        "Contact cards don't accept a note argument. To save a note about a contact, use contacts_add_note."
+    /// The system rejected a field value on save (CNError validation
+    /// family). Deliberately carries NO detail — interpolating the system's
+    /// description could echo contact data into an error string.
+    public static let contactFieldRejected =
+        "The system rejected one of the field values. Check the values and try again."
+    /// Confirmation-gated writes: nothing on screen to present the
+    /// confirmation on.
+    public static let confirmationUnavailable =
+        "This change needs the user's confirmation, but the confirmation couldn't be shown. Ask the user to bring the GuessWho app to the front, then try again."
+    /// Confirmation-gated writes: the user answered after the call had
+    /// already timed out, so the change was NOT applied (the reported
+    /// timeout and the actual effect must always agree).
+    public static let confirmationExpired =
+        "The confirmation wasn't answered in time, so nothing was changed. Try again and ask the user to respond to the dialog."
+    /// A second confirmation-gated request while one is already on screen.
+    public static let confirmationAlreadyPending =
+        "Another change is already waiting for the user's confirmation. Wait for that answer, then try again."
     /// Shown in place of a tool list when the app isn't reachable. Worded as
     /// a pass-through instruction so the agent relays "open the app," not
     /// "there are no tools."
@@ -127,8 +164,9 @@ public enum WireErrorMessage {
     public static var allFixedStrings: [String] {
         [
             notRunning, disabled, permissionDeniedContacts, permissionDeniedEvents,
-            readOnly, tooLarge, staleReference, staleReferenceGeneric, busy,
-            notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide, noHostStatus,
+            readOnly, tooLarge, busy,
+            notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide,
+            notFoundGenericID, noHostStatus,
             hostNotReady, timedOut,
             notFoundNote, notFoundField, notFoundTag, notFoundLink, notFoundPlace,
             eventNeedsAppFirst, writeFailed, writeBusy, reservedFieldName,
@@ -136,6 +174,11 @@ public enum WireErrorMessage {
             linkedKindIsPerson, linkedKindIsOrganization, emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
             reorderMustCoverEveryPlace,
+            contactNeedsAName, invalidKindArgument, updateNeedsAField,
+            invalidCalendarDateValue,
+            reservedWebAddress, contactNoteNotAccepted,
+            contactFieldRejected, confirmationUnavailable, confirmationExpired,
+            confirmationAlreadyPending,
         ]
     }
 }
@@ -153,14 +196,39 @@ public enum WireAckMessage {
     public static let guideDeleted = "The guide was deleted."
     public static let placeDeleted = "The place was deleted."
     public static let placesReordered = "The new order was saved."
+    /// contacts_delete after the user approved the in-app confirmation.
+    public static let contactDeleted = "The contact was deleted."
+    /// contacts_delete after the user cancelled the in-app confirmation.
+    /// Deliberately a NORMAL (non-error) result: the agent should read
+    /// "declined" as an answer, not a failure to retry.
+    public static let contactDeleteDeclined =
+        "The user declined to delete this contact. Nothing was changed."
 
     /// Every fixed string above, for the banned-vocabulary test.
     public static var allFixedStrings: [String] {
         [
             noteDeleted, fieldDeleted, tagDeleted, linkRemoved,
             favoriteSet, favoriteCleared, guideDeleted, placeDeleted,
-            placesReordered,
+            placesReordered, contactDeleted, contactDeleteDeclined,
         ]
+    }
+}
+
+/// User-facing copy for the in-app confirmation that gates uniquely
+/// destructive agent writes (contacts_delete — plans/cli-mcp.md Revision
+/// 2). Presented by the app as a standard alert naming the SPECIFIC
+/// contact; the delete proceeds only on an explicit Delete. Lives here so
+/// the banned-vocabulary test covers it.
+public enum ConfirmationStrings {
+    public static let deleteContactTitle = "Delete Contact?"
+    /// %@ is the contact's display name.
+    public static let deleteContactMessage =
+        "An assistant is asking to delete “%@” from your contacts. This removes the contact from Contacts on all your devices."
+    public static let deleteButton = "Delete"
+    public static let cancelButton = "Cancel"
+
+    public static var allFixedStrings: [String] {
+        [deleteContactTitle, deleteContactMessage, deleteButton, cancelButton]
     }
 }
 
@@ -169,21 +237,37 @@ public enum WireAckMessage {
 /// covers them from day one). Plain language only — the user thinks in
 /// assistants, contacts, and events, never in transport mechanics.
 public enum PreferencesStrings {
-    public static let mcpToggleTitle = "AI assistant access"
-    public static let mcpToggleFooter =
-        "Let AI assistants you connect (like Claude) look up your contacts, events, and guides while GuessWho is open."
-    public static let cliToggleTitle = "Terminal access"
-    public static let cliToggleFooter =
-        "Let terminal commands look up your contacts, events, and guides while GuessWho is open."
-    public static let mcpReadOnlyTitle = "Read-only for AI assistants"
-    public static let cliReadOnlyTitle = "Read-only for terminal commands"
-    public static let readOnlyFooter =
-        "When read-only is on, lookups work but nothing can be added, changed, or deleted."
+    public static let mcpSectionTitle = "AI Assistant Access"
+    public static let cliSectionTitle = "Terminal Access"
+
+    /// The one tri-state control per surface (off → read-only →
+    /// read-write; Allume's access-mode row, collapsed with its enable
+    /// switch into a single picker).
+    public static let accessModeLabel = "Access"
+    public static let accessModeOff = "Off"
+    public static let accessModeReadOnly = "Read-only"
+    public static let accessModeReadWrite = "Read-write"
+
+    // Per-state descriptions, per surface, shown under the picker.
+    public static let mcpOffDescription =
+        "AI assistants you connect (like Claude) can't see or change anything."
+    public static let mcpReadOnlyDescription =
+        "Read-only: assistants can look up your contacts, events, and guides while GuessWho is open. Nothing can be added, changed, or deleted."
+    public static let mcpReadWriteDescription =
+        "Read-write: assistants can look up your contacts, events, and guides, and can add and edit them — including contact details like phone numbers and addresses — while GuessWho is open."
+    public static let cliOffDescription =
+        "Terminal commands can't see or change anything."
+    public static let cliReadOnlyDescription =
+        "Read-only: terminal commands can look up your contacts, events, and guides while GuessWho is open. Nothing can be added, changed, or deleted."
+    public static let cliReadWriteDescription =
+        "Read-write: terminal commands can look up your contacts, events, and guides, and can add and edit them — including contact details like phone numbers and addresses — while GuessWho is open."
 
     public static var allFixedStrings: [String] {
         [
-            mcpToggleTitle, mcpToggleFooter, cliToggleTitle, cliToggleFooter,
-            mcpReadOnlyTitle, cliReadOnlyTitle, readOnlyFooter,
+            mcpSectionTitle, cliSectionTitle,
+            accessModeLabel, accessModeOff, accessModeReadOnly, accessModeReadWrite,
+            mcpOffDescription, mcpReadOnlyDescription, mcpReadWriteDescription,
+            cliOffDescription, cliReadOnlyDescription, cliReadWriteDescription,
         ]
     }
 }
@@ -270,6 +354,9 @@ public enum AgentActivityStrings {
     public static let deletedGuide = "Deleted the guide %@"
     public static let reorderedPlaces = "Reordered the places in %@"
     public static let deletedPlace = "Deleted a place from %@"
+    public static let createdContact = "Added the contact %@"
+    public static let editedContact = "Edited the contact %@"
+    public static let deletedContact = "Deleted the contact %@ (approved by you)"
     /// Fallback when the entry's display-name snapshot is empty.
     public static let unknownSubject = "an item"
 
@@ -282,6 +369,7 @@ public enum AgentActivityStrings {
             markedFavorite, clearedFavorite,
             addedTag, editedTag, deletedTag,
             createdGuide, deletedGuide, reorderedPlaces, deletedPlace,
+            createdContact, editedContact, deletedContact,
             unknownSubject,
         ]
     }

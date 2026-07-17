@@ -34,9 +34,16 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case guidesGet = "guides_get"
     case placesList = "places_list"
 
-    // Write tools (plans/cli-mcp.md Phase 2). All mutate GuessWho's OWN
-    // data only — never system contact/calendar content — and every one is
-    // rejected per-call while the origin's read-only toggle is on.
+    // Write tools. The Phase 2 set mutates GuessWho's OWN data (notes,
+    // fields, links, favorites, tags, guides); Revision 2 adds full
+    // Contact Store parity — create/update/delete of the contact record
+    // itself, the same power the user has in the app's editor. Every write
+    // is rejected per-call unless the origin's access mode is read-write;
+    // contacts_delete additionally requires the user to approve an in-app
+    // confirmation naming the contact.
+    case contactsCreate = "contacts_create"
+    case contactsUpdate = "contacts_update"
+    case contactsDelete = "contacts_delete"
     case contactsAddNote = "contacts_add_note"
     case contactsEditNote = "contacts_edit_note"
     case contactsDeleteNote = "contacts_delete_note"
@@ -71,6 +78,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsListCustomFields, .contactsListLinkedContacts,
              .contactsListLinkedOrganizations, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
+             .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
@@ -98,7 +106,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .eventsList, .eventsGet, .eventsListTags,
              .guidesList, .guidesGet, .placesList:
             return false
-        case .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
+        case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
              .contactsRemoveLinkedContact, .contactsSetFavorite,
@@ -108,10 +117,20 @@ public enum MCPTool: String, CaseIterable, Sendable {
         }
     }
 
-    /// Per-tool response timeout, seconds — declarative in metadata (plan
-    /// design note) so a future interactive tool can opt into a longer
-    /// window without a global change. All v1 reads use the same 10s.
-    public var timeout: TimeInterval { 10 }
+    /// Per-tool response timeout, seconds — declarative in metadata so an
+    /// interactive tool can opt into a longer window without a global
+    /// change, and the relay reads it per request (`request.tool?.timeout`).
+    /// contacts_delete waits on a HUMAN answering an in-app confirmation,
+    /// so it gets minutes, not seconds — a short helper timeout here is the
+    /// safety bug where "the agent saw a timeout" and "the delete happened"
+    /// could both be true (the app also re-checks elapsed time before
+    /// performing the delete; both sides use THIS constant).
+    public var timeout: TimeInterval {
+        switch self {
+        case .contactsDelete: return 300
+        default: return 10
+        }
+    }
 
     // MARK: - Agent-facing schema
 
@@ -152,6 +171,114 @@ public enum MCPTool: String, CaseIterable, Sendable {
         [
             "limit": integer(limitDoc),
             "cursor": string(cursorDoc),
+        ]
+    }
+
+    private static func labeledArray(_ description: String, valueDoc: String) -> Value {
+        [
+            "type": "array",
+            "description": .string(description),
+            "items": .object([
+                "type": "object",
+                "properties": .object([
+                    "label": string("Optional label, e.g. \"work\" or \"home\"."),
+                    "value": string(valueDoc),
+                ]),
+                "required": .array([.string("value")]),
+            ]),
+        ]
+    }
+
+    /// The editable contact-card field set shared by contacts_create and
+    /// contacts_update. There is deliberately NO note-shaped property here
+    /// (notes ride contacts_add_note), and the contact id is never among
+    /// the editable fields.
+    private static var contactFieldProperties: [String: Value] {
+        [
+            "namePrefix": string("Name prefix, e.g. \"Dr.\"."),
+            "givenName": string("First name."),
+            "middleName": string("Middle name."),
+            "familyName": string("Last name."),
+            "previousFamilyName": string("Previous last name (e.g. a maiden name)."),
+            "nameSuffix": string("Name suffix, e.g. \"Jr.\"."),
+            "nickname": string("Nickname."),
+            "phoneticGivenName": string("Phonetic first name."),
+            "phoneticMiddleName": string("Phonetic middle name."),
+            "phoneticFamilyName": string("Phonetic last name."),
+            "organization": string("Organization or company name."),
+            "phoneticOrganization": string("Phonetic organization name."),
+            "department": string("Department within the organization."),
+            "jobTitle": string("Job title."),
+            "phoneNumbers": labeledArray(
+                "Phone numbers. Replaces the whole list when passed.",
+                valueDoc: "The phone number."),
+            "emailAddresses": labeledArray(
+                "Email addresses. Replaces the whole list when passed.",
+                valueDoc: "The email address."),
+            "urlAddresses": labeledArray(
+                "Web addresses. Replaces the whole list when passed.",
+                valueDoc: "The web address."),
+            "postalAddresses": [
+                "type": "array",
+                "description": .string("Postal addresses. Replaces the whole list when passed."),
+                "items": .object([
+                    "type": "object",
+                    "properties": .object([
+                        "label": string("Optional label, e.g. \"home\"."),
+                        "street": string("Street address (may span lines)."),
+                        "subLocality": string("Neighborhood or sub-locality."),
+                        "city": string("City."),
+                        "subAdministrativeArea": string("County or sub-administrative area."),
+                        "state": string("State or province."),
+                        "postalCode": string("Postal or ZIP code."),
+                        "country": string("Country name."),
+                        "isoCountryCode": string("ISO country code, e.g. \"us\"."),
+                    ]),
+                ]),
+            ],
+            "birthday": string(
+                "Birthday as yyyy-MM-dd, or --MM-dd when the year is unknown. Pass an empty string to clear it."),
+            "dates": [
+                "type": "array",
+                "description": .string("Other labeled dates (anniversaries etc.). Replaces the whole list when passed."),
+                "items": .object([
+                    "type": "object",
+                    "properties": .object([
+                        "label": string("The date's label, e.g. \"anniversary\"."),
+                        "date": string("yyyy-MM-dd, or --MM-dd when the year is unknown."),
+                    ]),
+                    "required": .array([.string("date")]),
+                ]),
+            ],
+            "socialProfiles": [
+                "type": "array",
+                "description": .string("Social profiles. Replaces the whole list when passed."),
+                "items": .object([
+                    "type": "object",
+                    "properties": .object([
+                        "label": string("Optional label."),
+                        "service": string("The service name, e.g. \"LinkedIn\"."),
+                        "username": string("The username on that service."),
+                        "url": string("The profile's web address."),
+                    ]),
+                ]),
+            ],
+            "instantMessages": [
+                "type": "array",
+                "description": .string("Instant-message addresses. Replaces the whole list when passed."),
+                "items": .object([
+                    "type": "object",
+                    "properties": .object([
+                        "label": string("Optional label."),
+                        "service": string("The messaging service name."),
+                        "username": string("The username on that service."),
+                    ]),
+                    "required": .array([.string("username")]),
+                ]),
+            ],
+            "relatedNames": labeledArray(
+                "Name-only related people (e.g. label \"mother\", value \"Ann Doe\"). Replaces the whole list when passed.",
+                valueDoc: "The related person's name."),
         ]
     }
 
@@ -255,6 +382,31 @@ public enum MCPTool: String, CaseIterable, Sendable {
 
         // MARK: Write tools
 
+        case .contactsCreate:
+            var props = Self.contactFieldProperties
+            props["kind"] = Self.string(
+                "\"person\" (the default) or \"organization\".")
+            props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "Create a new contact. Provide at least a name or an organization; any of the other contact fields may be included. Returns the new contact's full card, including its id.",
+                inputSchema: Self.schema(props))
+        case .contactsUpdate:
+            var props = Self.contactFieldProperties
+            props["contactId"] = Self.string(Self.contactIdDoc)
+            props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "Edit a contact's card. Only the fields you pass change: text fields are replaced (pass an empty string to clear one), and list fields like phoneNumbers are replaced as a whole list (pass the complete new list; pass an empty list to clear it). Returns the updated card.",
+                inputSchema: Self.schema(props, required: ["contactId"]))
+        case .contactsDelete:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a contact entirely. The user must approve a confirmation in the GuessWho app before anything happens, so this can take a while; if they decline, the result says so and nothing is changed.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId"]))
         case .contactsAddNote:
             return ToolMetadata(
                 name: rawValue,

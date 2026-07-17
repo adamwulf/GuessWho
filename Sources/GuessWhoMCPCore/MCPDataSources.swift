@@ -1,5 +1,6 @@
 import Foundation
 import GuessWhoSync
+import GuessWhoMCPWire
 
 /// The seams between the dispatch core and the app's LIVE data layer
 /// (plans/cli-mcp.md INV-2b): the host injects the app's existing
@@ -57,6 +58,20 @@ public protocol MCPContactSource: AnyObject {
     func allNotes(for id: ContactID) -> [ContactNote]
     func allFields(for id: ContactID) -> [SidecarField]
     func link(id linkID: UUID) -> Link?
+
+    // Contact-record writes (plans/cli-mcp.md Revision 2: full Contact
+    // Store parity) — the SAME repository entry points the app's contact
+    // editor uses, so merge rules (identity-URL carry-through) and the
+    // change-watcher behave identically. Saves can fail (the 134092
+    // store-rejection family, revoked access); the dispatcher maps thrown
+    // errors to typed wire codes and never crashes.
+    func editableContact(id: ContactID) async throws -> Contact?
+    func saveContact(_ edited: Contact, for id: ContactID) async throws
+    func createContact(_ seed: Contact) async throws -> Contact
+    /// Whole-contact delete — reachable ONLY through the user-confirmed
+    /// contacts_delete path. Returns false when the id no longer resolves.
+    @discardableResult
+    func deleteContact(id: ContactID) async throws -> Bool
 }
 
 extension ContactsRepository: MCPContactSource {
@@ -88,6 +103,25 @@ public protocol MCPEventSource: AnyObject {
     /// The raw tag cells INCLUDING tombstones (with their `modifiedAt`
     /// stamps), for the audit trail and the Recently Deleted surface.
     func allEventTagFields(forEventUUID uuid: String) -> [SidecarField]
+    /// The record UUID currently bound to a system calendar identifier, or
+    /// nil when that calendar event has no GuessWho record. Lets a derived
+    /// (`e-`) wire id keep resolving after the user opens the event in the
+    /// app.
+    func eventUUID(forEventKitID eventKitID: String) async -> UUID?
+}
+
+/// Human-in-the-loop confirmation for uniquely destructive agent writes
+/// (contacts_delete). The app presents a standard alert naming the
+/// specific record on the frontmost scene; the dispatcher awaits the
+/// answer OFF the request-reading path (fire-and-forget dispatch) and
+/// sends the response when the user decides.
+@MainActor
+public protocol MCPConfirmationSource: AnyObject {
+    /// Present the delete-contact confirmation naming `contactName`.
+    /// Returns the user's decision — or nil when nothing could be
+    /// presented (no foreground scene): the caller must NOT proceed, and
+    /// must never treat "no dialog was seen" as approval.
+    func confirmContactDelete(named contactName: String) async -> Bool?
 }
 
 @MainActor
@@ -106,15 +140,21 @@ public protocol MCPGuideSource: AnyObject {
     func deletePlace(uuid: String) throws
 }
 
-/// Master toggles + system-permission state, read live per call — the
-/// server-side gate (hiding tools from listTools is UX; this is the
-/// enforcement).
+/// Per-surface access mode + system-permission state, read live per call —
+/// the server-side gate (hiding tools from listTools is UX; this is the
+/// enforcement). One tri-state per surface (off → read-only → read-write),
+/// both defaulting to off (plans/cli-mcp.md Revision 2).
 @MainActor
 public protocol MCPGateSource: AnyObject {
-    var isMCPEnabled: Bool { get }
-    var isCLIEnabled: Bool { get }
-    var isMCPReadOnly: Bool { get }
-    var isCLIReadOnly: Bool { get }
+    var mcpAccess: MCPAccessMode { get }
+    var cliAccess: MCPAccessMode { get }
     var contactsAuthorized: Bool { get }
     var eventsAuthorized: Bool { get }
+}
+
+extension MCPGateSource {
+    /// The access mode governing a request, by its origin surface.
+    public func accessMode(for origin: RequestOrigin) -> MCPAccessMode {
+        origin == .cli ? cliAccess : mcpAccess
+    }
 }

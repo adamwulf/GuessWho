@@ -18,6 +18,9 @@ public struct MCPAuditEntry: Codable, Sendable {
         case setFavorite
         case addTag, editTag, deleteTag
         case createGuide, deleteGuide, reorderPlaces, deletePlace
+        // Contact-record writes (Revision 2). `deleteContact` is only ever
+        // recorded AFTER the user approved the in-app confirmation.
+        case createContact, editContact, deleteContact
     }
 
     public enum SubjectKind: String, Codable, Sendable {
