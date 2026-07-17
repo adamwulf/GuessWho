@@ -104,16 +104,25 @@ it exists:
   already omit it).
 Per the plan, this re-run does NOT block Phase 1.
 
-## Known Phase-1 risk discovered in Muse's source (heads-up, no action now)
+## Known Phase-1 risk discovered in Muse's source — MATERIALIZED + FIXED (2026-07-17)
 
 Muse embeds its helper via a nested-`xcodebuild` script phase, NOT a target
 dependency, because when the Catalyst app and the macOS tool BOTH depend on
 `mcp-template` (→ swift-sdk → swift-nio) in one build graph, the SwiftPM
 planner emits duplicate compile commands for shared C targets
 ("Multiple commands produce …") and build planning aborts. Phase 0's
-in-project dependency is fine (no shared packages). When Phase 1 adds
-`mcp-template` to both targets, if that collision appears, the proven
-fallback is Muse's script (`muse-ios/Muse.xcodeproj`, "Build and Embed
-muse-mcp-server" phase): nested xcodebuild with isolated derived data +
-manual codesign with sed-expanded entitlements + PlistBuddy get-task-allow
-strip for non-Debug.
+in-project dependency was fine (no shared packages), but once Phase 1 put
+`mcp-template` in both targets, `xcodebuild archive` (default DerivedData)
+failed exactly this way — ~15 "Multiple commands produce
+…/UninstalledProducts/macosx/<X>" errors. (The earlier "local Release
+archive green" check above ran with `-derivedDataPath .build/DerivedData`,
+which masks the collision — archive-verify WITHOUT that flag.)
+
+The Muse fallback is now IMPLEMENTED: `guesswho-cli` moved to its own
+`App/guesswho-cli.xcodeproj` (Debug+Release configs matching the app's),
+and the app target's "Build and Embed guesswho-cli" Run Script
+nested-builds it into an isolated derived-data path under TARGET_TEMP_DIR,
+copies the binary to `Contents/MacOS/guesswho-cli`, and codesigns it with
+the sed-expanded `$(GUESSWHO_CLI_APP_GROUP)` entitlements (PlistBuddy
+get-task-allow strip + secure timestamp for non-Debug). Items 2–4 above
+are unchanged — the TestFlight upload remains the shipped-artifact proof.
