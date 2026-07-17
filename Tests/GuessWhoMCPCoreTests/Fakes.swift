@@ -226,13 +226,23 @@ final class FakeContactSource: MCPContactSource {
         return newID
     }
 
-    func editField(for id: ContactID, id fieldID: UUID, value: String) async throws {
+    func editField(for id: ContactID, id fieldID: UUID, value: JSONValue) async throws {
         let key = try await effectiveWriteID(id)
         guard var list = fieldsByEffectiveID[key],
               let index = list.firstIndex(where: { $0.id == fieldID }) else { return }
         let old = list[index]
+        // setField semantics: the payload must match the cell's immutable
+        // type (string cells take strings, checkbox cells take bools), the
+        // stamp bumps, and the cell UN-deletes.
+        switch (old.type, value) {
+        case (.note, .string), (.multilineNote, .string), (.date, .string), (.checkbox, .bool):
+            break
+        default:
+            struct TypeValueMismatch: Error {}
+            throw TypeValueMismatch()
+        }
         list[index] = SidecarField(
-            id: old.id, field: old.field, type: old.type, value: .string(value),
+            id: old.id, field: old.field, type: old.type, value: value,
             createdAt: old.createdAt, modifiedAt: Date(),
             modifiedBy: Sentinels.deviceID, deletedAt: nil)
         fieldsByEffectiveID[key] = list

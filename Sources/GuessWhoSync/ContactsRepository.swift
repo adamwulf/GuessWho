@@ -1353,6 +1353,16 @@ public final class ContactsRepository: NSObject {
     /// `id` is the CONTACT, `fieldID` the field. Silent no-op if the field is
     /// gone. Throws `SidecarUnavailableError` if no engine.
     public func editField(for id: ContactID, id fieldID: UUID, value: String) async throws {
+        try await editField(for: id, id: fieldID, value: JSONValue.string(value))
+    }
+
+    /// `JSONValue` overload of `editField(for:id:value:)` for non-string
+    /// payload types (a `.checkbox` field's value is a JSON bool). The
+    /// Recently Deleted restore rides this with the tombstone's own
+    /// preserved value, so any field type restores verbatim; the engine
+    /// still validates the payload against the cell's immutable type. The
+    /// String overload above delegates here.
+    public func editField(for id: ContactID, id fieldID: UUID, value: JSONValue) async throws {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
@@ -1360,7 +1370,7 @@ public final class ContactsRepository: NSObject {
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let name = ((try? sync.fields(at: key)) ?? []).first { $0.id == fieldID }?.field
         if let name {
-            try sync.setField(at: key, id: fieldID, field: name, value: .string(value))
+            try sync.setField(at: key, id: fieldID, field: name, value: value)
         }
         await refreshCacheIfMinted(minted, localID: id.localID)
     }

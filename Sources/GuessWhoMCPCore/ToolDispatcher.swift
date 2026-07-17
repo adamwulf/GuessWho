@@ -863,7 +863,7 @@ public actor ToolDispatcher {
         guard !fieldName.isEmpty else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .invalidParams, message: "The name argument must not be empty.")
+                code: .invalidParams, message: WireErrorMessage.emptyNameArgument)
         }
         // Reserved-name guardrail: the upsert-by-name path REPLACES an
         // existing same-name field of a different type, so a write named
@@ -883,8 +883,8 @@ public actor ToolDispatcher {
         }
         guard let payload = Self.fieldPayload(value, for: fieldType) else {
             let expected = fieldType == .date
-                ? "The value argument for a date field must be an ISO 8601 date, like 2026-07-01."
-                : "The value argument for a checkbox field must be \"true\" or \"false\"."
+                ? WireErrorMessage.invalidDateFieldValue
+                : WireErrorMessage.invalidCheckboxFieldValue
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: expected)
@@ -1006,8 +1006,8 @@ public actor ToolDispatcher {
         let farIsOrganization = far.contactType == .organization
         guard farIsOrganization == wantOrganization else {
             let message = wantOrganization
-                ? "That id belongs to a person. Use contacts_add_linked_contact for people."
-                : "That id belongs to an organization. Use contacts_add_linked_organization for organizations."
+                ? WireErrorMessage.linkedKindIsPerson
+                : WireErrorMessage.linkedKindIsOrganization
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: message)
@@ -1309,7 +1309,7 @@ public actor ToolDispatcher {
         guard !trimmed.isEmpty else {
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .invalidParams, message: "The name argument must not be empty.")
+                code: .invalidParams, message: WireErrorMessage.emptyNameArgument)
         }
         let snapshot = MapsGuideURL.Snapshot(
             name: trimmed,
@@ -1395,7 +1395,7 @@ public actor ToolDispatcher {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams,
-                message: "The placeIds argument must contain every place in the guide exactly once, in the desired order.")
+                message: WireErrorMessage.reorderMustCoverEveryPlace)
         }
         let finalOrder = orderedIDs
         await MainActor.run { guides.reorderPlaces(inGuide: id, orderedIDs: finalOrder) }
