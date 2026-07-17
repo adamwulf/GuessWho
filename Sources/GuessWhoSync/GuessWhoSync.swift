@@ -1101,7 +1101,12 @@ public final class GuessWhoSync: @unchecked Sendable {
             url.value.hasPrefix(SidecarKey.guessWhoContactURLPrefix)
                 && SidecarKey.parseGuessWhoContactURL(url.value) == nil
         }
-        let newUUID = UUID().uuidString.lowercased()
+        // Deterministic mint (plans/cli-mcp.md Revision 2): derived from the
+        // contact's localID + display name, so the CLI/MCP wire can hand out
+        // the same value BEFORE the mint and it stays the contact's id after.
+        // Cross-device divergence is unchanged from random minting (localIDs
+        // differ per device) and still converges via Case D.
+        let newUUID = contact.deterministicGuessWhoID
         contact.urlAddresses.append(
             LabeledValue(label: "GuessWho", value: SidecarKey.guessWhoContactURLPrefix + newUUID)
         )
