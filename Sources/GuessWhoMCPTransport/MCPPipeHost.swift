@@ -152,7 +152,7 @@ public actor MCPPipeHost {
             // The helper creates + opens its response reader BEFORE sending
             // initialize, so opening our writer here succeeds; failure means
             // the helper died in the announce window — abort, no session.
-            let writePipe = try WritePipe(url: responseURL)
+            let writePipe = try ChunkedWritePipe(url: responseURL, logger: logger)
             try await writePipe.open()
             let responsePipe = HostResponsePipe<WireResponse>(
                 helperId: helperId, writePipe: writePipe, logger: logger)
