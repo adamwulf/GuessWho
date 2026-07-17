@@ -13,6 +13,21 @@ extension Notification.Name {
     static let guideResolutionActivePlaceDidChange = Notification.Name("GuideResolutionActivePlaceDidChange")
 }
 
+/// One section of the unified Places tab. The `.byGuide` order produces one
+/// section per guide (plus, rarely, a trailing untitled bucket for places
+/// whose guide sidecar hasn't synced yet); the flat orders produce a single
+/// untitled section.
+struct UnifiedPlaceSection {
+    /// The owning guide, or nil for the flat single section and the orphan
+    /// bucket. Doubles as the diffable section identity (nil is free for the
+    /// no-guide cases because grouped and flat sections never coexist).
+    let guideID: UUID?
+    /// Section header text (the guide's name); nil when the section shouldn't
+    /// render a header.
+    let title: String?
+    let places: [MapsPlace]
+}
+
 @MainActor
 @Observable
 final class GuidesRepository: NSObject {
@@ -71,6 +86,19 @@ final class GuidesRepository: NSObject {
             for guideID in placesByGuide.keys {
                 placesByGuide[guideID] = placeSortOrder.sorted(placesByGuide[guideID] ?? [])
             }
+            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        }
+    }
+
+    /// The live sort order the unified Places tab reads. Persistence is
+    /// `AllPlacesSortOrderSetting`'s job — same shape as `placeSortOrder`,
+    /// but deliberately a SEPARATE property: re-sorting the cross-guide tab
+    /// must not silently reorder every guide's own places screen. No stored
+    /// copy to re-sort here — `unifiedPlaceSections()` computes on demand —
+    /// so the setter only posts the reload.
+    var allPlacesSortOrder: AllPlacesSortOrder = .byGuide {
+        didSet {
+            guard allPlacesSortOrder != oldValue else { return }
             NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
         }
     }
@@ -153,6 +181,59 @@ final class GuidesRepository: NSObject {
         case .linked:
             return places.filter { linkedPlaceIDs.contains($0.id.uuidString.lowercased()) }
         }
+    }
+
+    /// The unified Places tab's content: every live place across every guide,
+    /// filtered by `placeFilter` and arranged by `allPlacesSortOrder`. For
+    /// `.byGuide`, one section per guide holding places (section order follows
+    /// `guides`, i.e. the user's guides-list order; guides left empty by the
+    /// filter are skipped), plus a trailing untitled bucket for places whose
+    /// guide sidecar hasn't arrived yet (a sync race — dropping their rows
+    /// would make them look deleted). The flat orders return one untitled
+    /// section. Within-section order for `.byGuide` is the guide's canonical
+    /// entry order, NOT the per-guide lists' `placeSortOrder` — the two
+    /// surfaces sort independently.
+    func unifiedPlaceSections() -> [UnifiedPlaceSection] {
+        func filtered(_ places: [MapsPlace]) -> [MapsPlace] {
+            switch placeFilter {
+            case .all:
+                return places
+            case .linked:
+                return places.filter { linkedPlaceIDs.contains($0.id.uuidString.lowercased()) }
+            }
+        }
+
+        if allPlacesSortOrder.isFlat {
+            let all = filtered(placesByGuide.values.flatMap { $0 })
+            return [UnifiedPlaceSection(
+                guideID: nil,
+                title: nil,
+                places: allPlacesSortOrder.sorted(all)
+            )]
+        }
+
+        var sections: [UnifiedPlaceSection] = []
+        var remaining = placesByGuide
+        for guide in guides {
+            guard let places = remaining.removeValue(forKey: guide.id) else { continue }
+            let kept = filtered(places)
+            guard !kept.isEmpty else { continue }
+            let name = guide.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            sections.append(UnifiedPlaceSection(
+                guideID: guide.id,
+                title: name.isEmpty ? "Guide" : name,
+                places: AllPlacesSortOrder.byGuide.sorted(kept)
+            ))
+        }
+        let orphans = filtered(remaining.values.flatMap { $0 })
+        if !orphans.isEmpty {
+            sections.append(UnifiedPlaceSection(
+                guideID: nil,
+                title: nil,
+                places: AllPlacesSortOrder.nameAscending.sorted(orphans)
+            ))
+        }
+        return sections
     }
 
     /// Apply a drag-reorder of `guideID`'s places (source rows → destination

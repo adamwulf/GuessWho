@@ -371,6 +371,20 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             split.setViewController(nav, for: .supplementary)
             installDetailPlaceholder(in: split, for: .guides)
 
+        case .places:
+            let list = PlacesListViewController(
+                repository: appDelegate.guidesRepository,
+                service: appDelegate.service
+            )
+            // A top-level list, so selecting a place REPLACES the secondary
+            // column with its detail — the People/Events pattern, not the
+            // Guides tab's drill-in push.
+            list.didSelectPlace = { [weak self] place in
+                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+            }
+            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+            installDetailPlaceholder(in: split, for: .places)
+
         case .favorites:
             let list = FavoritesListViewController(
                 store: appDelegate.favoritesStore,
@@ -519,6 +533,29 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.delegate = self
         split.setViewController(nav, for: .secondary)
         noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID), stampedOn: hosting)
+    }
+
+    /// Replace the secondary column with one place's detail — the Places tab's
+    /// selection handler. Same wiring as `showEventDetail`; place selections
+    /// are not persisted for restoration (like the Guides tab's place pushes),
+    /// so reopening the scene returns to the list.
+    private func showPlaceDetail(place: MapsPlace, appDelegate: GuessWhoAppDelegate) {
+        guard let split else { return }
+        let nav = UINavigationController()
+        let detail = GuidePlaceDetailView(
+            placeID: place.id,
+            guideID: place.guideID,
+            repository: appDelegate.guidesRepository
+        )
+        .environment(appDelegate.service)
+        .environment(appDelegate.contactsRepository)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        nav.viewControllers = [hosting]
+        nav.delegate = self
+        split.setViewController(nav, for: .secondary)
+        syncSelectionToTop(hosting)
     }
 
     /// Catalyst-side analog of `injectIPhonePushHandlers`. Pushes a fresh hosted
@@ -924,12 +961,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let eventsNav = makeIPhoneEventsTab(appDelegate: appDelegate)
         let favoritesNav = makeIPhoneFavoritesTab(appDelegate: appDelegate)
         let guidesNav = makeIPhoneGuidesTab(appDelegate: appDelegate)
+        let placesNav = makeIPhonePlacesTab(appDelegate: appDelegate)
         let groupsNav = makeIPhoneGroupsTab(appDelegate: appDelegate)
 
         let tabs = UITabBarController()
         // Order matches the sidebar's `SidebarTab.allCases`: Favorites first,
-        // then People, Organizations, Events, Guides, and Groups last.
-        let tabNavs = [favoritesNav, peopleNav, orgsNav, eventsNav, guidesNav, groupsNav]
+        // then People, Organizations, Events, Guides, Places, and Groups last.
+        let tabNavs = [favoritesNav, peopleNav, orgsNav, eventsNav, guidesNav, placesNav, groupsNav]
         tabs.viewControllers = tabNavs
         // Observe each tab nav's push/pop so backing out of a detail re-syncs the
         // restore selection to the top VC (`navigationController(_:didShow:)`).
@@ -1112,6 +1150,31 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             title: SidebarTab.guides.title,
             image: UIImage(systemName: SidebarTab.guides.systemImage),
             tag: 5
+        )
+        return nav
+    }
+
+    /// Places tab. A `PlacesListViewController` (every place across every
+    /// guide) in its own nav stack; selecting a place PUSHES its detail — the
+    /// same shape as the Guides tab's place rows, minus the guide drill-in.
+    private func makeIPhonePlacesTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
+        let list = PlacesListViewController(
+            repository: appDelegate.guidesRepository,
+            service: appDelegate.service
+        )
+        list.didSelectPlace = { [weak self] place in
+            self?.pushGuidePlaceDetail(
+                place: place,
+                guideID: place.guideID,
+                on: list.navigationController,
+                appDelegate: appDelegate
+            )
+        }
+        let nav = UINavigationController(rootViewController: list)
+        nav.tabBarItem = UITabBarItem(
+            title: SidebarTab.places.title,
+            image: UIImage(systemName: SidebarTab.places.systemImage),
+            tag: 6
         )
         return nav
     }

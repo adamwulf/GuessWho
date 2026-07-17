@@ -157,6 +157,26 @@ below). Both shells share the two list VCs; per the product principle there
 is no user-facing "resolve"/"sidecar" vocabulary — the plain-language row
 states above stand in for it.
 
+Alongside the Guides section there is a unified **Places** section
+(`PlacesListViewController`, a sidebar row on Catalyst / a tab on iPhone):
+every place across every guide in one list. Its nav-bar sort pull-down is a
+SEPARATE order from the per-guide list's (`AllPlacesSortOrder`: By Guide —
+the default, one section per guide in the guides-list order with places in
+guide entry order, plus a trailing untitled bucket for places whose guide
+sidecar hasn't synced yet — Name A–Z / Z–A, Recently Added, Last Viewed;
+persisted per-install by `AllPlacesSortOrderSetting`), and its Filter button
+shares the same global All Places / Linked `placeFilter` as the per-guide
+lists. The flat sorts caption each row with its guide's name (the shared
+`PlaceCell` grows an optional guide line for this). No drag-to-reorder, no
+Refresh, and no "+" here — entry order, the source URL, and importing are
+per-guide concepts. Opening the section retries unresolved place IDs one
+guide at a time (sequentially, so MapKit traffic stays at the resolver's
+serial pace; the per-guide in-flight guard coalesces with passes started
+from a guide's own screen). Selecting a place replaces the detail column
+with `GuidePlaceDetailView` on Catalyst (the People/Events pattern) and
+pushes it on iPhone; swipe-to-Remove works as in the per-guide list, with
+the guide named in the confirmation.
+
 ## Place detail and association matching
 
 Tapping a place row pushes `GuidePlaceDetailView` (App target, SwiftUI),
