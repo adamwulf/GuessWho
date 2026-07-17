@@ -253,7 +253,7 @@ final class EventsListViewController: UIViewController {
         sortButton = makeEventSortBarButtonItem(repository: repository)
         filterButton = UIBarButtonItem(
             title: nil,
-            image: UIImage(systemName: "line.3.horizontal.decrease"),
+            image: UIImage(systemName: "line.3.horizontal.decrease.circle"),
             primaryAction: nil,
             menu: makeEventFilterMenu(repository: repository)
         )

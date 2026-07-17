@@ -82,7 +82,7 @@ extension UIViewController {
     @MainActor
     func makeEventSortBarButtonItem(repository: EventsRepository) -> UIBarButtonItem {
         UIBarButtonItem(
-            image: UIImage(systemName: "arrow.up.arrow.down"),
+            image: UIImage(systemName: "arrow.up.arrow.down.circle"),
             menu: makeEventSortMenu(repository: repository)
         )
     }

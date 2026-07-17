@@ -79,7 +79,7 @@ extension UIViewController {
     @MainActor
     func makePlaceSortBarButtonItem(repository: GuidesRepository) -> UIBarButtonItem {
         UIBarButtonItem(
-            image: UIImage(systemName: "arrow.up.arrow.down"),
+            image: UIImage(systemName: "arrow.up.arrow.down.circle"),
             menu: makePlaceSortMenu(repository: repository)
         )
     }
