@@ -330,6 +330,14 @@ public actor ToolDispatcher {
             let links = await contacts.links(for: id)
             var pairs: [(Link, Contact)] = []
             for link in links where link.deletedAt == nil {
+                // DELIBERATE divergence from the UI: a link whose far
+                // endpoint doesn't resolve (deleted / not-yet-synced
+                // contact) is DROPPED here, while the detail view buckets
+                // it into "People" as a placeholder row. The placeholder
+                // exists so a human can repair or delete the link; an
+                // agent can't act on a row with no name and no id (there
+                // is no Contact to mint a sealed reference from), and a
+                // partial DTO would break the allowlist shape.
                 guard let other = await MainActor.run(body: { contacts.linkedContact(of: link, for: id) })
                 else { continue }
                 let isOrganization = other.contactType == .organization
@@ -673,6 +681,12 @@ public actor ToolDispatcher {
     /// becomes the typed too-large error with guidance — never a silent
     /// truncation (a truncated list read as complete is a correctness
     /// trap).
+    ///
+    /// The measuring encode here is a second encode (the transport encodes
+    /// again when writing the pipe) — accepted: payloads are ≤256KB by
+    /// this very check, both encodes run off the main actor, and threading
+    /// pre-encoded bytes through the host's response writer would couple
+    /// the dispatcher to the transport's framing.
     private func capped(_ response: WireResponse) -> WireResponse {
         if case .error = response { return response }
         guard let encoded = try? JSONEncoder().encode(response) else { return response }
