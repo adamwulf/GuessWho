@@ -59,9 +59,25 @@ Two entry shapes exist:
    decodes the `user` payload with a minimal protobuf reader. Pure decode
    paths are unit-tested against a real Berlin guide payload
    (`MapsGuideURLTests`).
-2. **Store** — `GuessWhoSync.importGuide(from:sourceURL:)` first looks for a
-   guide whose stored source URL exactly equals the original, pre-redirect
-   input URL. An exact match refreshes that guide in place; otherwise
+2. **Store** — two layers decide new-vs-update, because Apple Maps mints a
+   **fresh share URL on every export** (each share is a static snapshot; the
+   URL is not stable and re-fetching an old URL never reflects later edits),
+   so URL identity alone can't recognize "the same guide again":
+   * **Package layer.** `GuessWhoSync.importGuide(from:sourceURL:)` upserts on
+     an *exact* source-URL match only — it refreshes an existing guide whose
+     stored URL equals the pre-redirect input, otherwise it creates. Because a
+     re-share yields a different URL, this rarely fires; it exists so re-importing
+     the *identical* link is idempotent.
+   * **App layer (interactive imports).** `GuideImporter.importGuideResolving`
+     `NameCollision(…)` — used by the Guides "+" flow and the share/deep-link
+     wake — fetches the snapshot, then looks up existing guides by **name**
+     (`GuessWhoSync.guides(matchingName:)`, case/whitespace-insensitive). No
+     match → create. A same-name guide under this *exact* URL → update it
+     silently. A same-name guide under a *different* URL → present an alert:
+     **Import as New** (`createGuide`, a second copy) or **Update Guide**
+     (`refreshGuide` into the oldest same-name match, adopting the new URL).
+     An unnamed guide never collides — it always creates.
+
    `createGuide(from:sourceURL:)` mints a guide sidecar
    (`guides/<uuid>.json`, kind `.guide`) plus one place sidecar per entry
    (`places/<uuid>.json`, kind `.place`). Places carry a `guideID` cell
@@ -95,12 +111,17 @@ Two entry shapes exist:
   `maps.apple` guide link and bounces it into the app via the wake scheme:
   `guesswho-linkedin[-debug]://import-guide?url=<share link>`. The scene
   delegate (`handleGuideImportWake`) runs the import and lands the UI on
-  the new guide. (Same bounce-only philosophy as the LinkedIn share flow —
-  the extension parses and stores nothing.)
+  the new (or updated) guide. (Same bounce-only philosophy as the LinkedIn
+  share flow — the extension parses and stores nothing.)
 * **"+" on the Guides list (both platforms)** — paste the share link into
   a small alert; pre-filled from the pasteboard when it already holds a
-  guide link. Importing the exact same original URL again refreshes and opens
-  the existing guide rather than creating a duplicate.
+  guide link.
+
+  Both entry points run the same name-collision flow (step 2 above): if a
+  guide with the same name already exists (under a different URL, which a
+  re-share always is), a follow-up alert asks **Import as New** or **Update
+  Guide** — so the user can deliberately keep two same-named guides, or fold a
+  fresh export into the one they already have.
 * **Refresh on an open guide (both platforms)** — the top-right refresh
   button re-fetches the saved `sourceURL`, reconciles the fetched snapshot
   into the existing guide, reloads the visible rows, and resolves newly
@@ -121,7 +142,14 @@ stays in canonical guide order, only the app's display copy reorders. In
 Favorites list — the drop persists the new entry order through
 `GuessWhoSync.reorderPlaces(inGuide:orderedIDs:)` (which rewrites each place's
 `orderCache` cell), and dragging is disabled in the derived Name / Last Viewed
-orders since there is nothing there to persist. Rows fill
+orders since there is nothing there to persist. Unlike Favorites, this list
+runs a live resolution pass that reloads after every place, so a
+`dataSource.apply` can land mid-drag; that reasserts the lifted row in place
+(a duplicate with no gap). `GuidePlacesListViewController` therefore **defers**
+any reload / resolution-status apply while `tableView.hasActiveDrag`/`Drop` is
+true (`needsSnapshotAfterDrag`), flushing it from `performDropWith` and
+`dragSessionDidEnd` — the reorder writes still persist immediately; only the
+view's repaint waits for the drag to settle. Rows fill
 in one at a time as resolution lands, each row showing a spinner while it is
 being looked up, "Waiting to load…" while queued behind others, and its
 name/address once done) → push → `GuidePlaceDetailView` (the place detail,
@@ -248,13 +276,21 @@ contact-geocode store (option 1) rather than geocoding live per place.
 
 ## Known limitations
 
-* Imports de-duplicate only on an exact match of the original input URL. The
-  observed protobuf has no guide-level identifier; its `muid` values identify
-  places, not the guide. Two different share URLs can therefore still create
-  duplicate guides even when their decoded snapshots happen to represent the
-  same Apple Maps guide.
-* Refresh is user-initiated, not automatic. Apple Maps edits appear only
-  after the top-right refresh action re-fetches the saved source link.
+* De-dup keys off the guide **name**, not the URL, because the observed
+  protobuf has no guide-level identifier (its `muid` values identify places,
+  not the guide) and Apple mints a fresh share URL per export. On import, a
+  same-name guide prompts the user to update it or keep both (see Import
+  pipeline step 2). Consequences: two genuinely different guides that happen to
+  share a name will offer to update each other, and renaming a guide in Apple
+  Maps makes the next re-share look like a new guide (no same-name match).
+  Name is simply the best user-meaningful handle the payload exposes.
+* Refresh is user-initiated, not automatic, and each Apple Maps share is a
+  **static snapshot**: the top-right refresh re-fetches the *saved* source
+  link, but that old link is frozen at the moment it was created, so it will
+  not surface edits made in Apple Maps after the share. To pull in later edits,
+  re-share from Apple Maps and re-import — the name-collision prompt then
+  offers **Update Guide**, which reconciles the new snapshot into the existing
+  guide (preserving local UUIDs, resolved details, and user place order).
 * Place-ID resolution needs iOS 18 / macOS 15 (MapKit place-ID API).
   On older OSes place-ID entries stay as "Loading place details…" rows;
   address entries are unaffected.

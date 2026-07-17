@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import MapKit
 import GuessWhoSync
 import GuessWhoLogging
@@ -21,30 +22,251 @@ enum GuideImporter {
     /// storage refreshes that guide in place and returns its existing UUID
     /// rather than creating a duplicate. Place resolution continues in the
     /// background and reloads again as details land.
+    ///
+    /// This is the collision-unaware path: it upserts on the exact source URL
+    /// only. Since Apple Maps mints a fresh share URL per export, that rarely
+    /// matches, so most calls create a new guide. Prefer the collision-aware
+    /// `fetchSnapshot` + `store(snapshot:decision:)` split (below) at the
+    /// interactive entry points so the user can choose "Import as New" vs.
+    /// "Update Guide" on a name collision.
     @discardableResult
     static func importGuide(
         from url: URL,
         service: SyncService,
         repository: GuidesRepository
     ) async throws -> UUID {
+        let snapshot = try await fetchSnapshot(from: url)
+        let guideID = try service.importGuide(from: snapshot, sourceURL: url.absoluteString)
+        await repository.reload()
+        startResolution(inGuide: guideID, service: service, repository: repository)
+        return guideID
+    }
+
+    /// Fetch + decode the guide behind `url`, without storing anything. The
+    /// interactive import flow calls this first so it can inspect the decoded
+    /// name for a collision before deciding whether to create or update.
+    static func fetchSnapshot(from url: URL) async throws -> MapsGuideURL.Snapshot {
         log.notice("import: fetching guide link", ["host": url.host ?? "-"])
         let snapshot = try await MapsGuideURL.fetchSnapshot(from: url)
         log.notice("import: decoded guide", [
             "name": snapshot.name,
             "entries": snapshot.entries.count
         ])
-        let guideID = try service.importGuide(from: snapshot, sourceURL: url.absoluteString)
-        await repository.reload()
+        return snapshot
+    }
 
-        // Resolve place IDs into names/addresses off the import path — the
-        // guide is usable immediately and rows fill in one at a time as MapKit
-        // answers (the resolver reloads the repository after each place).
+    /// How a fetched snapshot should be stored, once the UI has resolved any
+    /// same-name collision.
+    enum ImportDecision {
+        /// Create a brand-new guide (the "Import as New" choice, or no collision).
+        case createNew
+        /// Reconcile the snapshot into the existing guide with this UUID (the
+        /// "Update Guide" choice), preserving its local UUIDs, place order, and
+        /// resolved details where the entries are unchanged.
+        case update(UUID)
+    }
+
+    /// Store an already-fetched `snapshot` per `decision`, reload the repository,
+    /// and kick the background resolution pass. Returns the affected guide's
+    /// UUID (a fresh one for `.createNew`, the existing one for `.update`).
+    /// Throws `GuideRefreshError.guideNoLongerExists` if an `.update` target was
+    /// deleted between the collision check and the store.
+    @discardableResult
+    static func store(
+        snapshot: MapsGuideURL.Snapshot,
+        decision: ImportDecision,
+        sourceURL: String?,
+        service: SyncService,
+        repository: GuidesRepository
+    ) async throws -> UUID {
+        let guideID: UUID
+        switch decision {
+        case .createNew:
+            guideID = try service.createGuide(from: snapshot, sourceURL: sourceURL)
+            log.notice("import: created new guide", [
+                "guideID": guideID.uuidString,
+                "name": snapshot.name,
+                "entries": snapshot.entries.count
+            ])
+        case .update(let existingID):
+            let updated = try service.refreshGuide(
+                uuid: existingID.uuidString,
+                from: snapshot,
+                sourceURL: sourceURL
+            )
+            guard updated else { throw GuideRefreshError.guideNoLongerExists }
+            guideID = existingID
+            log.notice("import: updated existing guide", [
+                "guideID": guideID.uuidString,
+                "name": snapshot.name,
+                "entries": snapshot.entries.count
+            ])
+        }
+        await repository.reload()
+        startResolution(inGuide: guideID, service: service, repository: repository)
+        return guideID
+    }
+
+    /// Resolve place IDs into names/addresses off the import path — the guide is
+    /// usable immediately and rows fill in one at a time as MapKit answers (the
+    /// resolver reloads the repository after each place).
+    private static func startResolution(
+        inGuide guideID: UUID,
+        service: SyncService,
+        repository: GuidesRepository
+    ) {
         Task {
             await GuidePlaceResolver.resolvePlaces(
                 inGuide: guideID, service: service, repository: repository
             )
         }
-        return guideID
+    }
+
+    // MARK: - Interactive import (name-collision aware)
+
+    /// The single interactive import entry point shared by the Guides list "+"
+    /// paste flow and the share-extension / deep-link wake. Fetches the link,
+    /// then decides how to store it:
+    ///
+    /// * No same-named guide exists → create a new guide.
+    /// * A same-named guide already carries this exact share URL → update it
+    ///   silently (a true re-import of the identical link; nothing to ask).
+    /// * A same-named guide exists under a different URL → ask the user, since
+    ///   Apple Maps guides are static one-shot exports with a fresh URL per
+    ///   share and no stable identifier: "Import as New" keeps both, "Update
+    ///   Guide" reconciles the fetch into the existing (oldest) same-named guide.
+    ///
+    /// All storage and reloads happen here; `onImported` receives the resulting
+    /// guide UUID (so the caller can navigate to it), `onFailure` the fetch /
+    /// store error, and Cancel invokes neither. `presenter` hosts the alert.
+    static func importGuideResolvingNameCollision(
+        from url: URL,
+        service: SyncService,
+        repository: GuidesRepository,
+        presenter: UIViewController,
+        onImported: @escaping (UUID) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) async {
+        let snapshot: MapsGuideURL.Snapshot
+        do {
+            snapshot = try await fetchSnapshot(from: url)
+        } catch {
+            onFailure(error)
+            return
+        }
+
+        let matches = await service.guides(matchingName: snapshot.name)
+        let sourceURL = url.absoluteString
+
+        // A same-named guide already imported from this exact link — treat as a
+        // plain re-import and update it without prompting.
+        if let sameLink = matches.first(where: { $0.sourceURL == sourceURL }) {
+            await performStore(
+                snapshot: snapshot,
+                decision: .update(sameLink.id),
+                sourceURL: sourceURL,
+                service: service,
+                repository: repository,
+                onImported: onImported,
+                onFailure: onFailure
+            )
+            return
+        }
+
+        guard let existing = matches.first else {
+            // No collision — create it outright.
+            await performStore(
+                snapshot: snapshot,
+                decision: .createNew,
+                sourceURL: sourceURL,
+                service: service,
+                repository: repository,
+                onImported: onImported,
+                onFailure: onFailure
+            )
+            return
+        }
+
+        presentCollisionAlert(
+            guideName: snapshot.name,
+            presenter: presenter
+        ) { choice in
+            guard let choice else { return } // Cancel — do nothing.
+            let decision: ImportDecision
+            switch choice {
+            case .createNew: decision = .createNew
+            case .update: decision = .update(existing.id)
+            }
+            Task {
+                await performStore(
+                    snapshot: snapshot,
+                    decision: decision,
+                    sourceURL: sourceURL,
+                    service: service,
+                    repository: repository,
+                    onImported: onImported,
+                    onFailure: onFailure
+                )
+            }
+        }
+    }
+
+    /// The user's answer to the same-name collision alert. `.update` carries no
+    /// UUID here — the caller already knows which guide it offered to update.
+    private enum CollisionChoice {
+        case createNew
+        case update
+    }
+
+    /// Present the "a guide named X already exists" alert. Calls `completion`
+    /// with the chosen action, or `nil` on Cancel.
+    private static func presentCollisionAlert(
+        guideName: String,
+        presenter: UIViewController,
+        completion: @escaping (CollisionChoice?) -> Void
+    ) {
+        let trimmed = guideName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmed.isEmpty ? "this guide" : "\"\(trimmed)\""
+        let alert = UIAlertController(
+            title: "Guide Already Exists",
+            message: "A guide named \(displayName) is already in your guides. Update it with the latest places, or import this as a separate guide?",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Update Guide", style: .default) { _ in
+            completion(.update)
+        })
+        alert.addAction(UIAlertAction(title: "Import as New", style: .default) { _ in
+            completion(.createNew)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            completion(nil)
+        })
+        presenter.present(alert, animated: true)
+    }
+
+    /// Store `snapshot` per `decision` and fan the result out to the caller's
+    /// callbacks. Shared tail of every interactive-import branch.
+    private static func performStore(
+        snapshot: MapsGuideURL.Snapshot,
+        decision: ImportDecision,
+        sourceURL: String?,
+        service: SyncService,
+        repository: GuidesRepository,
+        onImported: @escaping (UUID) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) async {
+        do {
+            let guideID = try await store(
+                snapshot: snapshot,
+                decision: decision,
+                sourceURL: sourceURL,
+                service: service,
+                repository: repository
+            )
+            onImported(guideID)
+        } catch {
+            onFailure(error)
+        }
     }
 
     /// Re-fetch an imported guide's saved source URL and reconcile the new
@@ -60,11 +282,7 @@ enum GuideImporter {
               let url = URL(string: rawURL)
         else { throw GuideRefreshError.missingSourceURL }
 
-        log.notice("refresh: fetching guide link", [
-            "guideID": guide.id.uuidString,
-            "host": url.host ?? "-"
-        ])
-        let snapshot = try await MapsGuideURL.fetchSnapshot(from: url)
+        let snapshot = try await fetchSnapshot(from: url)
         let updated = try service.refreshGuide(
             uuid: guide.id.uuidString,
             from: snapshot,
@@ -78,12 +296,7 @@ enum GuideImporter {
             "entries": snapshot.entries.count
         ])
         await repository.reload()
-
-        Task {
-            await GuidePlaceResolver.resolvePlaces(
-                inGuide: guide.id, service: service, repository: repository
-            )
-        }
+        startResolution(inGuide: guide.id, service: service, repository: repository)
         return snapshot
     }
 }

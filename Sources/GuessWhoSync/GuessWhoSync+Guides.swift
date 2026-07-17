@@ -399,6 +399,39 @@ extension GuessWhoSync {
             .min(by: Self.prefersGuideForExactURLMatch)
     }
 
+    /// Every live guide whose display name matches `name` case- and
+    /// whitespace-insensitively, oldest-created first (UUID breaks a tie). The
+    /// import UI uses this to detect a name collision so it can offer "Import as
+    /// New" vs. "Update Guide": Apple Maps share links are one-shot exports with
+    /// no stable guide identifier and a fresh URL per share, so the guide name
+    /// is the only user-meaningful handle for "the same guide again."
+    public func guides(matchingName name: String) throws -> [MapsGuide] {
+        let needle = Self.normalizedGuideName(name)
+        guard !needle.isEmpty else { return [] }
+        return try allGuides()
+            .filter { Self.normalizedGuideName($0.name) == needle }
+            .sorted(by: Self.prefersGuideForExactURLMatch)
+    }
+
+    /// Async overload of `guides(matchingName:)` — same background-hop rationale
+    /// as `allGuides()`, so the import UI can call it off the main actor.
+    public func guides(matchingName name: String) async throws -> [MapsGuide] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [MapsGuide] = try self.guides(matchingName: name)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func normalizedGuideName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
     /// Every live guide. O(N) over guide sidecars; unordered — display
     /// ordering is the caller's choice.
     public func allGuides() throws -> [MapsGuide] {

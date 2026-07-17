@@ -34,6 +34,16 @@ final class GuidePlacesListViewController: UIViewController {
     private var isRefreshing = false
     private var filterButton: UIBarButtonItem!
 
+    /// Set true when a reload / resolution notification arrives during an active
+    /// drag, so we can defer the `dataSource.apply` until the drag ends. Applying
+    /// a diffable snapshot mid-drag re-materializes the lifted source row in the
+    /// list (the lift preview is a separate snapshot view), leaving a duplicate
+    /// with no gap. The background resolution pass reloads the repository after
+    /// every place, so without this gate a drag over an unresolved guide is
+    /// almost always interrupted. Flushed by `flushDeferredSnapshotIfNeeded()`
+    /// when the drag ends (`performDropWith` / `dragSessionDidEnd`).
+    private var needsSnapshotAfterDrag = false
+
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
@@ -234,6 +244,12 @@ final class GuidePlacesListViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                // A diffable apply mid-drag re-materializes the lifted row (see
+                // `needsSnapshotAfterDrag`); defer it until the drag settles.
+                guard !self.isDragActive else {
+                    self.needsSnapshotAfterDrag = true
+                    return
+                }
                 self.applySnapshot(animated: true)
                 // Rebuild the sort menu so the checkmark tracks the order that
                 // produced this reload (menus are immutable snapshots).
@@ -258,11 +274,34 @@ final class GuidePlacesListViewController: UIViewController {
     /// waiting) tracks the resolver's current place. Cheap: touches only the
     /// pending rows, and no-ops when everything is resolved.
     private func refreshResolutionStatus() {
+        // Same mid-drag guard as the reload observer: reconfiguring rows is a
+        // `dataSource.apply`, which would re-materialize the lifted row.
+        guard !isDragActive else {
+            needsSnapshotAfterDrag = true
+            return
+        }
         var snapshot = dataSource.snapshot()
         let unresolved = snapshot.itemIdentifiers.filter { placesByID[$0]?.needsResolution == true }
         guard !unresolved.isEmpty else { return }
         snapshot.reconfigureItems(unresolved)
         dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// True while a drag (or its drop animation) is in flight, so a snapshot
+    /// apply would disrupt the lift. Covers both the source table's drag and an
+    /// incoming drop.
+    private var isDragActive: Bool {
+        tableView.hasActiveDrag || tableView.hasActiveDrop
+    }
+
+    /// Apply any snapshot deferred during a drag. Called when the drag ends —
+    /// whether it completed in a drop or was cancelled — so the list catches up
+    /// on resolution progress that landed while the user was dragging.
+    private func flushDeferredSnapshotIfNeeded() {
+        guard needsSnapshotAfterDrag else { return }
+        needsSnapshotAfterDrag = false
+        applySnapshot(animated: true)
+        sortButton.menu = makePlaceSortMenu(repository: repository)
     }
 
     /// Display state for a place row, driven by the resolver.
@@ -448,7 +487,18 @@ extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDro
         for item in coordinator.items {
             coordinator.drop(item.dragItem, toRowAt: destination)
         }
+        // This apply already reflects the newest repository state, so any reload
+        // deferred during the drag is now redundant — clear the pending flag.
+        needsSnapshotAfterDrag = false
         applySnapshot(animated: true)
+    }
+
+    /// Fires when the drag ends for ANY reason — a completed drop, a cancel, or
+    /// a lift-and-release in place. `performDropWith` handles the reorder case;
+    /// this catches the no-drop cases so a reload/resolution update that arrived
+    /// mid-drag still gets applied instead of being stranded.
+    func tableView(_ tableView: UITableView, dragSessionDidEnd session: UIDragSession) {
+        flushDeferredSnapshotIfNeeded()
     }
 }
 

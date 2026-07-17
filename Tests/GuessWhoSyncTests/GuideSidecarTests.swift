@@ -139,6 +139,49 @@ struct GuideSidecarTests {
         #expect(try sync.allGuides().count == 2)
     }
 
+    // MARK: - Name-collision lookup (backs "Import as New" / "Update Guide")
+
+    @Test func guidesMatchingNameIsCaseAndWhitespaceInsensitive() throws {
+        let (sync, _) = makeOrchestrator()
+        let berlinID = try sync.createGuide(from: sampleSnapshot, sourceURL: "https://maps.apple/ug/a")
+        _ = try sync.createGuide(
+            from: MapsGuideURL.Snapshot(name: "Tokyo", entries: []),
+            sourceURL: "https://maps.apple/ug/b"
+        )
+
+        // Exact, differently-cased, and whitespace-padded names all match.
+        for needle in ["Berlin", "berlin", "  BERLIN  "] {
+            let matches = try sync.guides(matchingName: needle)
+            #expect(matches.count == 1)
+            #expect(matches.first?.id == berlinID)
+        }
+
+        // A different name, and an empty/blank needle, match nothing.
+        #expect(try sync.guides(matchingName: "Munich").isEmpty)
+        #expect(try sync.guides(matchingName: "").isEmpty)
+        #expect(try sync.guides(matchingName: "   ").isEmpty)
+    }
+
+    @Test func guidesMatchingNameReturnsAllMatchesOldestFirst() throws {
+        let (sync, _) = makeOrchestrator()
+        let first = try sync.createGuide(from: sampleSnapshot, sourceURL: "https://maps.apple/ug/1")
+        let second = try sync.createGuide(from: sampleSnapshot, sourceURL: "https://maps.apple/ug/2")
+
+        let matches = try sync.guides(matchingName: "Berlin")
+        #expect(matches.count == 2)
+        // Oldest-created first (createdAt, UUID tiebreak) — the UI updates the
+        // first match on "Update Guide".
+        #expect(Set(matches.map(\.id)) == Set([first, second]))
+    }
+
+    @Test func guidesMatchingNameExcludesDeletedGuides() throws {
+        let (sync, _) = makeOrchestrator()
+        let doomed = try sync.createGuide(from: sampleSnapshot, sourceURL: "https://maps.apple/ug/x")
+        try sync.deleteGuide(at: SidecarKey(kind: .guide, id: doomed.uuidString))
+
+        #expect(try sync.guides(matchingName: "Berlin").isEmpty)
+    }
+
     @Test func refreshGuideReconcilesSnapshotInPlace() throws {
         let (sync, _) = makeOrchestrator()
         let sourceURL = "https://maps.apple/ug/abc"
