@@ -97,6 +97,20 @@ public enum WireErrorMessage {
     /// The custom-field type isn't one an assistant may write.
     public static let invalidFieldType =
         "The type argument must be \"text\", \"multilineNote\", \"date\", or \"checkbox\"."
+    // Write-path argument errors, centralized here (rather than inline in
+    // the dispatcher) so the banned-vocabulary test scans them.
+    public static let linkedKindIsPerson =
+        "That id belongs to a person. Use contacts_add_linked_contact for people."
+    public static let linkedKindIsOrganization =
+        "That id belongs to an organization. Use contacts_add_linked_organization for organizations."
+    public static let emptyNameArgument =
+        "The name argument must not be empty."
+    public static let invalidDateFieldValue =
+        "The value argument for a date field must be an ISO 8601 date, like 2026-07-01."
+    public static let invalidCheckboxFieldValue =
+        "The value argument for a checkbox field must be \"true\" or \"false\"."
+    public static let reorderMustCoverEveryPlace =
+        "The placeIds argument must contain every place in the guide exactly once, in the desired order."
     /// Shown in place of a tool list when the app isn't reachable. Worded as
     /// a pass-through instruction so the agent relays "open the app," not
     /// "there are no tools."
@@ -119,6 +133,9 @@ public enum WireErrorMessage {
             notFoundNote, notFoundField, notFoundTag, notFoundLink, notFoundPlace,
             eventNeedsAppFirst, writeFailed, writeBusy, reservedFieldName,
             invalidFieldType,
+            linkedKindIsPerson, linkedKindIsOrganization, emptyNameArgument,
+            invalidDateFieldValue, invalidCheckboxFieldValue,
+            reorderMustCoverEveryPlace,
         ]
     }
 }

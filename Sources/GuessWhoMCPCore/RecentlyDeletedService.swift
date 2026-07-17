@@ -110,11 +110,15 @@ public final class RecentlyDeletedService {
         case .deleteCustomField:
             guard let contact = contact(guessWhoID: item.entry.subjectID),
                   let tombstone = contacts.allFields(for: contact.contactID)
-                    .first(where: { $0.id == instanceUUID }),
-                  case .string(let value) = tombstone.value
+                    .first(where: { $0.id == instanceUUID })
             else { return false }
             do {
-                try await contacts.editField(for: contact.contactID, id: instanceUUID, value: value)
+                // Re-write the tombstone's own preserved value: type-aware
+                // by construction (checkbox bools included — the engine
+                // validates the payload against the cell's immutable type),
+                // and the field write un-deletes the cell.
+                try await contacts.editField(
+                    for: contact.contactID, id: instanceUUID, value: tombstone.value)
                 return true
             } catch {
                 return false
@@ -175,7 +179,7 @@ public final class RecentlyDeletedService {
             return RecentlyDeletedItem(
                 id: instanceID, kind: .customField,
                 title: String(format: RecentlyDeletedStrings.fieldRowTitle, subjectName(entry)),
-                detail: entry.priorValue ?? field.field,
+                detail: field.field + (entry.priorValue.map { ": \($0)" } ?? ""),
                 deletedAt: entry.at,
                 canRestore: Self.matches(field.modifiedAt, entry.postModifiedAt),
                 entry: entry)

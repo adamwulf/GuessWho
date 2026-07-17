@@ -258,6 +258,65 @@ final class RecentlyDeletedTests: XCTestCase {
         XCTAssertFalse(after.contains { $0.detail == "restore me" })
     }
 
+    /// The restore path must be TYPE-AWARE: a checkbox cell's value is a
+    /// JSON bool, not a string, and a string-only restore guard would show
+    /// an enabled Restore button that fails forever (review-cycle finding).
+    /// Date locks the other non-plain-text branch of the same path.
+    func testDeletedCheckboxAndDateCustomFieldsAreRestorable() async {
+        let fixture = await writableFixture()
+        let search = await fixture.dispatcher.handle(.contactsSearch(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            query: "jane", limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let page) = search,
+              let jane = page.items.first(where: { $0.name == "Jane Doe" })?.id
+        else { return XCTFail("no jane") }
+
+        for (name, type, value) in [
+            ("Newsletter", "checkbox", "true"),
+            ("Next check-in", "date", "2026-08-01"),
+        ] {
+            let created = await fixture.dispatcher.handle(.contactsSetCustomField(
+                helperId: Fixture.helper, messageId: TestMessageID.next(),
+                contactId: jane, name: name, type: type, value: value,
+                idempotencyToken: nil))
+            guard case .customField(_, _, let field) = created else {
+                return XCTFail("expected field echo for \(name), got \(created)")
+            }
+            let deleted = await fixture.dispatcher.handle(.contactsDeleteCustomField(
+                helperId: Fixture.helper, messageId: TestMessageID.next(),
+                contactId: jane, fieldId: field.id, idempotencyToken: nil))
+            guard case .acknowledged = deleted else {
+                return XCTFail("expected acknowledgement for \(name), got \(deleted)")
+            }
+        }
+
+        let service = await makeService(fixture)
+        let items = await service.items()
+        for name in ["Newsletter", "Next check-in"] {
+            guard let item = items.first(where: {
+                $0.kind == .customField && $0.detail.hasPrefix(name)
+            }) else {
+                return XCTFail("deleted \(name) field should be listed")
+            }
+            XCTAssertTrue(item.canRestore, "\(name) should be restorable")
+            let restored = await service.restore(item)
+            XCTAssertTrue(restored, "\(name) restore must succeed, not fail forever")
+        }
+
+        // Both fields are live again with their ORIGINAL typed values.
+        let liveFields = await MainActor.run { () -> [SidecarField] in
+            guard let contact = fixture.contacts.contacts.first(where: { $0.displayName == "Jane Doe" })
+            else { return [] }
+            return fixture.contacts.fields(for: contact.contactID)
+        }
+        let newsletter = liveFields.first { $0.field == "Newsletter" }
+        XCTAssertEqual(newsletter?.type, .checkbox)
+        XCTAssertEqual(newsletter?.value, .bool(true), "the checkbox restores as its typed bool")
+        let checkIn = liveFields.first { $0.field == "Next check-in" }
+        XCTAssertEqual(checkIn?.type, .date)
+        XCTAssertEqual(checkIn?.value, .string("2026-08-01T00:00:00Z"))
+    }
+
     func testRestoreBlockedWhenRecordChangedSinceTheDelete() async {
         let fixture = await writableFixture()
         guard let (_, _) = await addAndDeleteNote(fixture, body: "contested") else {

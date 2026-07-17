@@ -40,8 +40,10 @@ public protocol MCPContactSource: AnyObject {
     @discardableResult
     func upsertField(for id: ContactID, field: String, value: JSONValue, type: SidecarFieldType) async throws -> UUID
     /// By-id value write; un-deletes a tombstoned field (the Recently
-    /// Deleted restore path rides this).
-    func editField(for id: ContactID, id fieldID: UUID, value: String) async throws
+    /// Deleted restore path rides this). Takes the payload as `JSONValue`
+    /// so every field type restores — a checkbox cell's value is a JSON
+    /// bool, not a string.
+    func editField(for id: ContactID, id fieldID: UUID, value: JSONValue) async throws
     func deleteField(for id: ContactID, id fieldID: UUID) async throws
     @discardableResult
     func addLink(from a: ContactID, to b: ContactID, note: String) async throws -> Link
