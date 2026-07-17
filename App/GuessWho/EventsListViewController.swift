@@ -71,6 +71,10 @@ final class EventsListViewController: UIViewController {
     /// The sort pull-down button — always present. Its menu is rebuilt in the
     /// reload observer so the checkmark tracks the repository's live order.
     private var sortButton: UIBarButtonItem!
+    /// The filter pull-down button — always present and independent of sort.
+    /// Its menu is rebuilt after repository changes so the selected candidate
+    /// set keeps an accurate checkmark.
+    private var filterButton: UIBarButtonItem!
     /// Debug-mode-only "Export Logs" button. Built once; included in the navbar
     /// only while debug mode is enabled.
     private var exportLogsButton: UIBarButtonItem!
@@ -233,6 +237,7 @@ final class EventsListViewController: UIViewController {
     /// while searching, mirroring the link sheet.
     private var showsPagingRows: Bool {
         repository.sortOrder == .chronological
+            && repository.filter != .linked
             && repository.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -245,6 +250,13 @@ final class EventsListViewController: UIViewController {
         )
 
         sortButton = makeEventSortBarButtonItem(repository: repository)
+        filterButton = UIBarButtonItem(
+            title: "Filter",
+            image: nil,
+            primaryAction: nil,
+            menu: makeEventFilterMenu(repository: repository)
+        )
+        filterButton.accessibilityLabel = "Filter Events"
 
         // Debug-mode-only Export Logs button. This is a sanctioned debug-only
         // surface (like the contact-row reconcile checkmark): the label stays
@@ -275,18 +287,33 @@ final class EventsListViewController: UIViewController {
         updateNavigationButtons()
     }
 
-    /// Re-evaluate which right-bar buttons to show. The "+" and sort buttons
-    /// are always present; Export Logs is appended only while debug mode is
-    /// enabled.
+    /// Re-evaluate which right-bar buttons to show. The "+", Filter, and sort
+    /// buttons are always present; Export Logs is appended only while debug
+    /// mode is enabled.
     private func updateNavigationButtons() {
         let debugEnabled = UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled)
         // Right bar items render right-to-left: the first array element is the
-        // rightmost. Keep "+" rightmost (as before), sort next to it — the
-        // same relative placement the person lists give their sort button —
-        // and Export Logs leftmost.
+        // rightmost. Keep "+" rightmost (as before), then the new textual
+        // Filter control, then the established sort glyph. Export Logs remains
+        // leftmost when debug mode is enabled.
         navigationItem.rightBarButtonItems = debugEnabled
-            ? [addButton, sortButton, exportLogsButton]
-            : [addButton, sortButton]
+            ? [addButton, filterButton, sortButton, exportLogsButton]
+            : [addButton, filterButton, sortButton]
+    }
+
+    /// Build the Events-tab filter menu. The chosen filter changes only the
+    /// candidate set; `EventsRepository` then applies its existing sort order,
+    /// so the two controls compose instead of replacing one another.
+    private func makeEventFilterMenu(repository: EventsRepository) -> UIMenu {
+        let actions = EventListFilter.allCases.map { filter in
+            UIAction(
+                title: filter.title,
+                state: filter == repository.filter ? .on : .off
+            ) { [weak repository] _ in
+                repository?.filter = filter
+            }
+        }
+        return UIMenu(title: "Filter Events", children: actions)
     }
 
     private func presentLinkSheet() {
@@ -381,6 +408,7 @@ final class EventsListViewController: UIViewController {
                 // that produced this reload (menus are immutable snapshots).
                 guard let self else { return }
                 self.sortButton.menu = self.makeEventSortMenu(repository: self.repository)
+                self.filterButton.menu = self.makeEventFilterMenu(repository: self.repository)
             }
         }
 
@@ -452,7 +480,14 @@ final class EventsListViewController: UIViewController {
         if isEmpty && !repository.searchText.isEmpty {
             emptyLabel.text = "No events match \"\(repository.searchText)\"."
         } else {
-            emptyLabel.text = "No Events"
+            switch repository.filter {
+            case .showAll:
+                emptyLabel.text = "No Events"
+            case .linked:
+                emptyLabel.text = "No Linked Events"
+            case .hasAttendees:
+                emptyLabel.text = "No Events with Attendees"
+            }
         }
     }
 

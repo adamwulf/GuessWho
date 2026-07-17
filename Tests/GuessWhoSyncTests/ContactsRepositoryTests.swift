@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
@@ -34,6 +35,84 @@ struct ContactsRepositoryTests {
         #expect(repository.organizations.map(\.localID) == ["org"])
         #expect(repository.peopleSections.map(\.0) == ["L"])
         #expect(repository.contactsReferencing(contact: person).map(\.contact.localID) == ["referrer"])
+    }
+
+    @Test @MainActor
+    func linkedFiltersComposeIndependentlyWithSearchAndSort() async throws {
+        let amyID = "11111111-1111-1111-1111-111111111111"
+        let zedID = "22222222-2222-2222-2222-222222222222"
+        let orgID = "33333333-3333-3333-3333-333333333333"
+        func identifiedContact(
+            localID: String,
+            uuid: String,
+            givenName: String = "",
+            familyName: String = "",
+            type: ContactType = .person,
+            organizationName: String = ""
+        ) -> Contact {
+            Contact(
+                localID: localID,
+                contactType: type,
+                givenName: givenName,
+                familyName: familyName,
+                organizationName: organizationName,
+                urlAddresses: [
+                    LabeledValue(label: "GuessWho", value: "guesswho://contact/\(uuid)")
+                ]
+            )
+        }
+
+        let amy = identifiedContact(localID: "amy", uuid: amyID, givenName: "Amy", familyName: "Able")
+        let zed = identifiedContact(localID: "zed", uuid: zedID, givenName: "Zed", familyName: "Zero")
+        let bob = Contact(localID: "bob", givenName: "Bob", familyName: "Baker")
+        let linkedOrg = identifiedContact(
+            localID: "linked-org", uuid: orgID, type: .organization, organizationName: "Acme"
+        )
+        let unlinkedOrg = Contact(
+            localID: "unlinked-org", contactType: .organization, organizationName: "Beta"
+        )
+
+        let store = InMemoryContactStore(contacts: [zed, bob, linkedOrg, amy, unlinkedOrg])
+        let sidecars = InMemorySidecarStore()
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
+            deviceID: "device-A"
+        )
+        _ = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: amyID),
+            to: SidecarKey(kind: .event, id: UUID().uuidString),
+            note: ""
+        )
+        _ = try sync.addLink(
+            from: SidecarKey(kind: .place, id: UUID().uuidString),
+            to: SidecarKey(kind: .contact, id: zedID),
+            note: ""
+        )
+        _ = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: orgID),
+            to: SidecarKey(kind: .contact, id: amyID),
+            note: ""
+        )
+
+        let repository = ContactsRepository(contacts: store, sync: sync)
+        await repository.reload()
+        repository.sortOrder = .firstLast
+        repository.peopleFilter = .linked
+
+        #expect(repository.people.map(\.localID) == ["amy", "zed"])
+        repository.peopleSearch = "zed"
+        #expect(repository.people.map(\.localID) == ["zed"])
+
+        repository.organizationsFilter = .linked
+        #expect(repository.organizations.map(\.localID) == ["linked-org"])
+        #expect(repository.people.map(\.localID) == ["zed"])
+
+        repository.peopleSearch = ""
+        repository.peopleFilter = .all
+        #expect(repository.people.map(\.localID) == ["amy", "bob", "zed"])
+        #expect(repository.organizations.map(\.localID) == ["linked-org"])
     }
 
     @Test @MainActor

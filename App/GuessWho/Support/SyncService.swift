@@ -447,6 +447,34 @@ final class SyncService {
         }
     }
 
+    /// Every event in the database that participates in at least one live
+    /// relationship. This is intentionally not bounded by the events list's
+    /// Calendar window: the Linked filter must include older and future
+    /// sidecar-backed events too. The repository applies the user's selected
+    /// sort order after this query returns.
+    func allLinkedEvents() async -> [Event] {
+        guard let sync else { return [] }
+        do {
+            return try await sync.allLinkedEvents()
+        } catch {
+            lastError = "linked events read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// IDs of every endpoint of `kind` that participates in a live database
+    /// relationship. Used by list repositories to implement Linked filters in
+    /// one bulk scan instead of querying links once per row.
+    func linkedEndpointIDs(ofKind kind: SidecarKind) async -> Set<String> {
+        guard let sync else { return [] }
+        do {
+            return Set(try await sync.linkedEndpoints(ofKind: kind).map(\.id))
+        } catch {
+            lastError = "linked endpoints read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
     /// The `limit` most-recently-linked events (by link `createdAt`, newest
     /// first, deduped per event). Backs the link sheet's "Recently Linked"
     /// section. Sidecar-only read — NOT gated on eventsAuthorization.

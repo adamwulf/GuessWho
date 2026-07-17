@@ -54,6 +54,44 @@ enum SortOrderSetting {
 }
 
 extension UIViewController {
+    /// Shared two-option relationship filter used by People, Organizations,
+    /// and Places. Each screen supplies its own current state and setter, so
+    /// the controls are independent while presenting identical All/Linked
+    /// semantics.
+    @MainActor
+    func makeLinkFilterMenu(
+        current: LinkFilter,
+        allTitle: String,
+        onSelect: @escaping (LinkFilter) -> Void
+    ) -> UIMenu {
+        let actions = LinkFilter.allCases.map { filter in
+            UIAction(
+                title: filter == .all ? allTitle : "Linked",
+                state: filter == current ? .on : .off
+            ) { _ in
+                onSelect(filter)
+            }
+        }
+        return UIMenu(title: "Filter", children: actions)
+    }
+
+    /// Textual nav-bar Filter button wrapping `makeLinkFilterMenu`.
+    @MainActor
+    func makeLinkFilterBarButtonItem(
+        current: LinkFilter,
+        allTitle: String,
+        onSelect: @escaping (LinkFilter) -> Void
+    ) -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            title: "Filter",
+            image: nil,
+            primaryAction: nil,
+            menu: makeLinkFilterMenu(current: current, allTitle: allTitle, onSelect: onSelect)
+        )
+        item.accessibilityLabel = "Filter"
+        return item
+    }
+
     /// Build the shared pull-down sort menu used by every person list
     /// (`ContactsListViewController`, `OrganizationsListViewController`,
     /// `GroupMembersListViewController`). Factored here so all three present an

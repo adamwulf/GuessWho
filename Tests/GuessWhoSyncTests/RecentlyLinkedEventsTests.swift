@@ -187,4 +187,25 @@ struct RecentlyLinkedEventsTests {
         let viaAsync = try await sync.recentlyLinkedEvents(limit: 5)
         #expect(viaAsync.map(\.id) == [eventID])
     }
+
+    @Test
+    func allLinkedEventsReturnsEveryLinkedEventWithoutAWindowOrLimit() async throws {
+        let (sync, sidecars) = makeOrchestrator()
+        let base = Date(timeIntervalSinceReferenceDate: 700_000_000)
+        var linkedIDs: [UUID] = []
+        for index in 0..<8 {
+            let eventID = try makeManualEvent(sync, title: "Event \(index)", daysFromNow: index * 500)
+            linkedIDs.append(eventID)
+            try writeLink(
+                sidecars: sidecars,
+                from: contactA,
+                to: eventKey(eventID),
+                createdAt: base.addingTimeInterval(Double(index))
+            )
+        }
+        _ = try makeManualEvent(sync, title: "Unlinked", daysFromNow: -5_000)
+
+        let all = try await sync.allLinkedEvents()
+        #expect(Set(all.map(\.id)) == Set(linkedIDs))
+    }
 }

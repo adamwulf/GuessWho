@@ -246,6 +246,22 @@ extension GuessWhoSync {
         }
     }
 
+    /// Every distinct, live event that participates in at least one live
+    /// link. Unlike `eventsWindow`, this walks the complete sidecar database,
+    /// so linked events outside the list's current Calendar window are still
+    /// returned. Results are ordered by their most-recent link, newest first;
+    /// callers may apply their own presentation sort afterwards.
+    public func allLinkedEvents() throws -> [Event] {
+        try recentlyLinkedEvents(limit: .max)
+    }
+
+    /// Async overload of `allLinkedEvents()` for UI callers. The underlying
+    /// query walks every link sidecar and therefore runs off the caller's
+    /// actor via `recentlyLinkedEvents(limit:)`'s async implementation.
+    public func allLinkedEvents() async throws -> [Event] {
+        try await recentlyLinkedEvents(limit: .max)
+    }
+
     /// The most-recently-linked events: walk every link sidecar, keep live
     /// (non-soft-deleted) links that touch at least one `.event` endpoint,
     /// order by the link's `createdAt` (newest first, link UUID as a

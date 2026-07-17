@@ -165,14 +165,22 @@ final class ContactsListViewController: UIViewController {
         addItem.accessibilityLabel = "Add Contact"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
+        let filterItem = makeLinkFilterBarButtonItem(
+            current: repository.peopleFilter,
+            allTitle: "All People"
+        ) { [weak repository] filter in
+            repository?.peopleFilter = filter
+        }
+        filterBarButtonItem = filterItem
         let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
             self?.toggleSelectionMode()
         }
         selectionBarButtonItem = selectionItem
-        navigationItem.rightBarButtonItems = [addItem, sortItem] + [selectionItem].compactMap { $0 }
+        navigationItem.rightBarButtonItems = [addItem, filterItem, sortItem] + [selectionItem].compactMap { $0 }
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
+    private var filterBarButtonItem: UIBarButtonItem?
     private var selectionBarButtonItem: UIBarButtonItem?
 
     private func toggleSelectionMode() {
@@ -213,6 +221,15 @@ final class ContactsListViewController: UIViewController {
     /// order it was built with.
     private func refreshSortMenu() {
         sortBarButtonItem?.menu = makeSortMenu(repository: repository)
+    }
+
+    private func refreshFilterMenu() {
+        filterBarButtonItem?.menu = makeLinkFilterMenu(
+            current: repository.peopleFilter,
+            allTitle: "All People"
+        ) { [weak repository] filter in
+            repository?.peopleFilter = filter
+        }
     }
 
     private func configureEmptyState() {
@@ -284,6 +301,7 @@ final class ContactsListViewController: UIViewController {
                 // posts this same notification, so the menu must re-read the
                 // live order too, not just the snapshot.
                 self?.refreshSortMenu()
+                self?.refreshFilterMenu()
                 self?.applySnapshot(animated: true)
             }
         }
@@ -380,6 +398,8 @@ final class ContactsListViewController: UIViewController {
         }
         if isEmpty && !repository.peopleSearch.isEmpty {
             emptyLabel.text = "No people match \"\(repository.peopleSearch)\"."
+        } else if repository.peopleFilter == .linked {
+            emptyLabel.text = "No Linked People"
         } else {
             emptyLabel.text = "No People"
         }

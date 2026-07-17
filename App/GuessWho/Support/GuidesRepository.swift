@@ -27,6 +27,20 @@ final class GuidesRepository: NSObject {
 
     private(set) var isLoading: Bool = false
 
+    /// Relationship filter for every guide's Places page. It changes only
+    /// the candidate rows returned by `places(inGuide:)`; `placeSortOrder`
+    /// continues to order that filtered set.
+    var placeFilter: LinkFilter = .all {
+        didSet {
+            guard placeFilter != oldValue else { return }
+            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        }
+    }
+
+    /// Canonical place UUID strings participating in at least one live link.
+    /// Reloaded with the rest of the sidecar-backed guide projection.
+    private var linkedPlaceIDs: Set<String> = []
+
     /// The live sort order every guides list reads. Persistence is the app's
     /// job (`GuideSortOrderSetting` writes UserDefaults and sets this);
     /// setting it re-sorts in place and posts `.guidesRepositoryDidReload`
@@ -100,6 +114,7 @@ final class GuidesRepository: NSObject {
         isLoading = true
         let fetchedGuides = await service.allGuides()
         let fetchedPlaces = await service.allPlaces()
+        let fetchedLinkedPlaceIDs = await service.linkedEndpointIDs(ofKind: .place)
 
         guides = sortOrder.sorted(fetchedGuides)
 
@@ -111,6 +126,7 @@ final class GuidesRepository: NSObject {
             byGuide[guideID] = placeSortOrder.sorted(byGuide[guideID] ?? [])
         }
         placesByGuide = byGuide
+        linkedPlaceIDs = fetchedLinkedPlaceIDs
 
         // Flip BEFORE posting so synchronous observers see the post-load
         // state — same ordering rationale as ContactsRepository.reload().
@@ -119,7 +135,13 @@ final class GuidesRepository: NSObject {
     }
 
     func places(inGuide guideID: UUID) -> [MapsPlace] {
-        placesByGuide[guideID] ?? []
+        let places = placesByGuide[guideID] ?? []
+        switch placeFilter {
+        case .all:
+            return places
+        case .linked:
+            return places.filter { linkedPlaceIDs.contains($0.id.uuidString.lowercased()) }
+        }
     }
 
     /// Apply a drag-reorder of `guideID`'s places (source rows → destination
