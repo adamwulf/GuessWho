@@ -54,6 +54,12 @@ public enum WireErrorMessage {
     /// "there are no tools."
     public static let noHostStatus =
         "GuessWho isn't open, so its tools are unavailable right now. Ask the user to open the GuessWho app, then list tools again."
+    /// The app is running but the session handshake didn't complete — a
+    /// distinct, diagnosable state from "not running".
+    public static let hostNotReady =
+        "GuessWho is open but couldn't get ready. Wait a moment and try again."
+    public static let timedOut =
+        "GuessWho didn't answer in time. Try again in a moment."
 
     /// Every fixed string above, for the banned-vocabulary test.
     public static var allFixedStrings: [String] {
@@ -61,6 +67,7 @@ public enum WireErrorMessage {
             notRunning, disabled, permissionDeniedContacts, permissionDeniedEvents,
             readOnly, tooLarge, staleReference, staleReferenceGeneric, busy,
             notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide, noHostStatus,
+            hostNotReady, timedOut,
         ]
     }
 }
