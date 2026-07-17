@@ -203,6 +203,12 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // and runs the channel only while one is on (plans/cli-mcp.md
         // Phase 1). Injects the live service + repository (INV-2b).
         mcpHostController.bootstrap()
+
+        // Phase 3 launch check: confirm the embedded helper resolves, and
+        // breadcrumb when the app's location changed since the user last
+        // copied/installed the helper path (their client configs are then
+        // stale — the Settings sheet shows the plain repair hint).
+        CLIInstallModel.verifyHelperAtLaunch()
         #endif
 
         return true
@@ -335,21 +341,26 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         builder.insertChild(menu, atEndOfMenu: .help)
 
         #if targetEnvironment(macCatalyst)
-        // "Recently Deleted" (File menu) — the recovery surface for items an
-        // assistant deleted (plans/cli-mcp.md Phase 2: a user-reachable
-        // undo is the prerequisite for enabling agent writes). Catalyst-only,
-        // like the assistant channel itself.
-        let recentlyDeleted = UIMenu(
-            title: "",
-            options: .displayInline,
-            children: [
-                UICommand(
-                    title: "Recently Deleted…",
-                    action: #selector(recentlyDeletedMenuAction)
-                )
-            ]
+        // Settings… (⌘,) — the in-app Settings sheet (plans/cli-mcp.md
+        // Phase 3): the CLI/MCP toggles, command-line install, agent
+        // activity, Recently Deleted, and the Debug Mode toggle. Replaces
+        // the system-provided preferences item (which auto-renders
+        // Settings.bundle — that bundle stays for iOS, and its one control,
+        // Debug Mode, lives in the sheet too so Catalyst loses nothing).
+        // Phase 2's File-menu "Recently Deleted…" entry moved into the
+        // sheet as a Preferences row.
+        let settings = UIKeyCommand(
+            title: "Settings…",
+            action: #selector(settingsMenuAction),
+            input: ",",
+            modifierFlags: .command
         )
-        builder.insertChild(recentlyDeleted, atEndOfMenu: .file)
+        builder.replace(menu: .preferences, with: UIMenu(
+            title: "",
+            identifier: .preferences,
+            options: .displayInline,
+            children: [settings]
+        ))
         #endif
     }
 
@@ -369,9 +380,8 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         DebugMenuActions.openResourcesFolder()
     }
 
-    @objc private func recentlyDeletedMenuAction() {
-        RecentlyDeletedPresenter.present(
-            service: mcpHostController.makeRecentlyDeletedService())
+    @objc private func settingsMenuAction() {
+        MCPPreferencesPresenter.present()
     }
     #endif
 }
