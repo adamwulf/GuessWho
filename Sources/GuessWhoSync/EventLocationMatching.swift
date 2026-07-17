@@ -58,9 +58,10 @@ public enum EventLocationMatcher {
         return false
     }
 
-    /// Known video-call / meeting hosts. An `Event.location` that reads as one
-    /// of these — with or without a scheme ("https://zoom.us/j/123", but also a
-    /// bare "meet.google.com/abc-defg") — is a virtual join link, not a place.
+    /// Known video-call / meeting hosts. An `Event.location` whose text carries
+    /// one of these at a label boundary — with or without a scheme
+    /// ("https://zoom.us/j/123", but also a bare "meet.google.com/abc-defg") —
+    /// is a virtual join link, not a place.
     private static let videoCallHosts: [String] = [
         "zoom.us",
         "meet.google.com",
@@ -76,13 +77,27 @@ public enum EventLocationMatcher {
         "skype.com",
     ]
 
+    /// Non-`://` URI scheme prefixes that name a link/action rather than a
+    /// place. `geo:` is Apple's own maps scheme and the one most likely to land
+    /// in an `Event.location`; `mailto:`/`tel:`/`sms:` round out the common
+    /// scheme-only forms. Matched only as a leading prefix of a single-token
+    /// (space-free) string, so plain text like "Standup: Room 4" (space after
+    /// the colon) is never mistaken for one.
+    private static let nonSlashSchemePrefixes: [String] = [
+        "geo:",
+        "mailto:",
+        "tel:",
+        "sms:",
+    ]
+
     /// True iff `location` names a real, physical place: non-empty AND not a
     /// web/video-call link. Powers the Events list's "Physical Location"
     /// filter. Excludes anything that reads as a URL — a `scheme://…` link (any
-    /// scheme, so `zoommtg://` and custom join schemes count), a bare
-    /// "https"-less web address whose sole content is a domain/path, or a
-    /// string carrying a known video-call host. A normal street address or
-    /// venue name ("1 Infinite Loop, Cupertino", "Conference Room B") is kept.
+    /// scheme, so `zoommtg://` and custom join schemes count), a scheme-only
+    /// URI like `geo:`/`mailto:`, a bare "https"-less web address whose sole
+    /// content is a domain/path, or a string carrying a known video-call host.
+    /// A normal street address or venue name ("1 Infinite Loop, Cupertino",
+    /// "Conference Room B") is kept.
     public static func isPhysicalLocation(_ location: String?) -> Bool {
         guard let location else { return false }
         let trimmed = location.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -95,17 +110,26 @@ public enum EventLocationMatcher {
     static func isURLLike(_ text: String) -> Bool {
         let lower = text.lowercased()
 
-        // Any explicit scheme ("scheme://…") reads as a link. Guard against a
-        // false "://" hiding mid-address by requiring the scheme to sit at the
-        // start of the (single-token) string.
-        if let schemeRange = lower.range(of: "://"),
-           !lower[..<schemeRange.lowerBound].contains(where: { $0 == " " }) {
+        // Any explicit "scheme://" reads as a link, wherever it sits — a real
+        // street address never contains "://", so an embedded web/join URL in
+        // prose ("Come to https://example.com/party") is still a link.
+        if lower.contains("://") {
             return true
         }
 
-        // A known video-call host anywhere in the text is a join link even
+        // A scheme-only URI (no "//"): geo:/mailto:/tel:/sms:. Only when the
+        // whole string is a single token starting with the prefix — this keeps
+        // "Standup: Room 4" (space after the colon) a place.
+        if !lower.contains(where: { $0 == " " }),
+           nonSlashSchemePrefixes.contains(where: { lower.hasPrefix($0) }) {
+            return true
+        }
+
+        // A known video-call host at a label boundary is a join link even
         // without a scheme (calendars often store a bare "meet.google.com/…").
-        for host in videoCallHosts where lower.contains(host) {
+        // Boundary-anchoring avoids dropping a real place whose name merely
+        // embeds a host token ("myzoom.us.club" must NOT match "zoom.us").
+        for host in videoCallHosts where containsHostAtBoundary(lower, host) {
             return true
         }
 
@@ -119,6 +143,27 @@ public enum EventLocationMatcher {
             return true
         }
 
+        return false
+    }
+
+    /// True iff `host` appears in `text` at a leading label boundary — either
+    /// at the start of the string or immediately after a domain separator
+    /// (`/`, `@`, or `.`). This distinguishes the real host "zoom.us" (start,
+    /// or "…/zoom.us") from a longer label that merely contains it as a
+    /// substring ("myzoom.us.club", where "zoom" is preceded by the letter
+    /// "y"). `text` and `host` are both assumed lowercased.
+    private static func containsHostAtBoundary(_ text: String, _ host: String) -> Bool {
+        var searchStart = text.startIndex
+        while let range = text.range(of: host, range: searchStart..<text.endIndex) {
+            if range.lowerBound == text.startIndex {
+                return true
+            }
+            let before = text[text.index(before: range.lowerBound)]
+            if before == "/" || before == "@" || before == "." {
+                return true
+            }
+            searchStart = text.index(after: range.lowerBound)
+        }
         return false
     }
 
