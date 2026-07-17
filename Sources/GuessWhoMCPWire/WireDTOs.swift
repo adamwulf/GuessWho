@@ -298,6 +298,21 @@ public struct WireGuide: Codable, Sendable {
     }
 }
 
+/// INPUT-side place description for guides_create: the caller's initial
+/// places, by address (+ optional coordinates). An input DTO — it rides
+/// requests, never responses, so it carries no id.
+public struct WireNewPlace: Codable, Sendable, Equatable {
+    public let address: String
+    public let latitude: Double?
+    public let longitude: Double?
+
+    public init(address: String, latitude: Double?, longitude: Double?) {
+        self.address = address
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+}
+
 /// A place in a guide.
 public struct WirePlace: Codable, Sendable {
     public let id: String

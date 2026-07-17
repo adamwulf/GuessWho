@@ -38,6 +38,27 @@ public enum WireRequest: Codable, Sendable {
     case guidesGet(helperId: String, messageId: String, guideId: String)
     case placesList(helperId: String, messageId: String, guideId: String?, limit: Int?, cursor: String?)
 
+    // Write tools (plans/cli-mcp.md Phase 2). Every write carries an
+    // optional client-supplied `idempotencyToken`: the app dedups a retried
+    // token within a host-run-scoped window, so a timeout-then-retry can't
+    // double-apply a non-idempotent write.
+    case contactsAddNote(helperId: String, messageId: String, contactId: String, body: String, idempotencyToken: String?)
+    case contactsEditNote(helperId: String, messageId: String, contactId: String, noteId: String, body: String, idempotencyToken: String?)
+    case contactsDeleteNote(helperId: String, messageId: String, contactId: String, noteId: String, idempotencyToken: String?)
+    case contactsSetCustomField(helperId: String, messageId: String, contactId: String, name: String, type: String?, value: String, idempotencyToken: String?)
+    case contactsDeleteCustomField(helperId: String, messageId: String, contactId: String, fieldId: String, idempotencyToken: String?)
+    case contactsAddLinkedContact(helperId: String, messageId: String, contactId: String, personId: String, note: String?, idempotencyToken: String?)
+    case contactsAddLinkedOrganization(helperId: String, messageId: String, contactId: String, organizationId: String, note: String?, idempotencyToken: String?)
+    case contactsRemoveLinkedContact(helperId: String, messageId: String, linkId: String, idempotencyToken: String?)
+    case contactsSetFavorite(helperId: String, messageId: String, contactId: String, favorite: Bool, idempotencyToken: String?)
+    case eventsAddTag(helperId: String, messageId: String, eventId: String, text: String, idempotencyToken: String?)
+    case eventsEditTag(helperId: String, messageId: String, eventId: String, tagId: String, text: String, idempotencyToken: String?)
+    case eventsDeleteTag(helperId: String, messageId: String, eventId: String, tagId: String, idempotencyToken: String?)
+    case guidesCreate(helperId: String, messageId: String, name: String, places: [WireNewPlace], idempotencyToken: String?)
+    case guidesDelete(helperId: String, messageId: String, guideId: String, idempotencyToken: String?)
+    case guidesReorderPlaces(helperId: String, messageId: String, guideId: String, placeIds: [String], idempotencyToken: String?)
+    case placesDelete(helperId: String, messageId: String, placeId: String, idempotencyToken: String?)
+
     /// The tool identity for tool-call cases; nil for control messages.
     public var tool: MCPTool? {
         switch self {
@@ -57,6 +78,49 @@ public enum WireRequest: Codable, Sendable {
         case .guidesList: return .guidesList
         case .guidesGet: return .guidesGet
         case .placesList: return .placesList
+        case .contactsAddNote: return .contactsAddNote
+        case .contactsEditNote: return .contactsEditNote
+        case .contactsDeleteNote: return .contactsDeleteNote
+        case .contactsSetCustomField: return .contactsSetCustomField
+        case .contactsDeleteCustomField: return .contactsDeleteCustomField
+        case .contactsAddLinkedContact: return .contactsAddLinkedContact
+        case .contactsAddLinkedOrganization: return .contactsAddLinkedOrganization
+        case .contactsRemoveLinkedContact: return .contactsRemoveLinkedContact
+        case .contactsSetFavorite: return .contactsSetFavorite
+        case .eventsAddTag: return .eventsAddTag
+        case .eventsEditTag: return .eventsEditTag
+        case .eventsDeleteTag: return .eventsDeleteTag
+        case .guidesCreate: return .guidesCreate
+        case .guidesDelete: return .guidesDelete
+        case .guidesReorderPlaces: return .guidesReorderPlaces
+        case .placesDelete: return .placesDelete
+        }
+    }
+
+    /// The client-supplied idempotency token, if this is a write request
+    /// that carries one. Nil for reads, control messages, and writes the
+    /// client didn't token.
+    public var idempotencyToken: String? {
+        switch self {
+        case .contactsAddNote(_, _, _, _, let token),
+             .contactsEditNote(_, _, _, _, _, let token),
+             .contactsDeleteNote(_, _, _, _, let token),
+             .contactsSetCustomField(_, _, _, _, _, _, let token),
+             .contactsDeleteCustomField(_, _, _, _, let token),
+             .contactsAddLinkedContact(_, _, _, _, _, let token),
+             .contactsAddLinkedOrganization(_, _, _, _, _, let token),
+             .contactsRemoveLinkedContact(_, _, _, let token),
+             .contactsSetFavorite(_, _, _, _, let token),
+             .eventsAddTag(_, _, _, _, let token),
+             .eventsEditTag(_, _, _, _, _, let token),
+             .eventsDeleteTag(_, _, _, _, let token),
+             .guidesCreate(_, _, _, _, let token),
+             .guidesDelete(_, _, _, let token),
+             .guidesReorderPlaces(_, _, _, _, let token),
+             .placesDelete(_, _, _, let token):
+            return token
+        default:
+            return nil
         }
     }
 }
@@ -82,7 +146,23 @@ extension WireRequest: MCPRequestProtocol {
              .eventsListTags(let helperId, _, _, _, _),
              .guidesList(let helperId, _, _, _),
              .guidesGet(let helperId, _, _),
-             .placesList(let helperId, _, _, _, _):
+             .placesList(let helperId, _, _, _, _),
+             .contactsAddNote(let helperId, _, _, _, _),
+             .contactsEditNote(let helperId, _, _, _, _, _),
+             .contactsDeleteNote(let helperId, _, _, _, _),
+             .contactsSetCustomField(let helperId, _, _, _, _, _, _),
+             .contactsDeleteCustomField(let helperId, _, _, _, _),
+             .contactsAddLinkedContact(let helperId, _, _, _, _, _),
+             .contactsAddLinkedOrganization(let helperId, _, _, _, _, _),
+             .contactsRemoveLinkedContact(let helperId, _, _, _),
+             .contactsSetFavorite(let helperId, _, _, _, _),
+             .eventsAddTag(let helperId, _, _, _, _),
+             .eventsEditTag(let helperId, _, _, _, _, _),
+             .eventsDeleteTag(let helperId, _, _, _, _),
+             .guidesCreate(let helperId, _, _, _, _),
+             .guidesDelete(let helperId, _, _, _),
+             .guidesReorderPlaces(let helperId, _, _, _, _),
+             .placesDelete(let helperId, _, _, _):
             return helperId
         }
     }
@@ -106,7 +186,23 @@ extension WireRequest: MCPRequestProtocol {
              .eventsListTags(_, let messageId, _, _, _),
              .guidesList(_, let messageId, _, _),
              .guidesGet(_, let messageId, _),
-             .placesList(_, let messageId, _, _, _):
+             .placesList(_, let messageId, _, _, _),
+             .contactsAddNote(_, let messageId, _, _, _),
+             .contactsEditNote(_, let messageId, _, _, _, _),
+             .contactsDeleteNote(_, let messageId, _, _, _),
+             .contactsSetCustomField(_, let messageId, _, _, _, _, _),
+             .contactsDeleteCustomField(_, let messageId, _, _, _),
+             .contactsAddLinkedContact(_, let messageId, _, _, _, _),
+             .contactsAddLinkedOrganization(_, let messageId, _, _, _, _),
+             .contactsRemoveLinkedContact(_, let messageId, _, _),
+             .contactsSetFavorite(_, let messageId, _, _, _),
+             .eventsAddTag(_, let messageId, _, _, _),
+             .eventsEditTag(_, let messageId, _, _, _, _),
+             .eventsDeleteTag(_, let messageId, _, _, _),
+             .guidesCreate(_, let messageId, _, _, _),
+             .guidesDelete(_, let messageId, _, _),
+             .guidesReorderPlaces(_, let messageId, _, _, _),
+             .placesDelete(_, let messageId, _, _):
             return messageId
         case .deinitialize(let helperId):
             return "deinit_\(helperId)"
@@ -215,6 +311,106 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 guideId: try args.optionalString("guideId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+
+        case .contactsAddNote:
+            return .contactsAddNote(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                body: try args.requiredString("body"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditNote:
+            return .contactsEditNote(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                noteId: try args.requiredString("noteId"),
+                body: try args.requiredString("body"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeleteNote:
+            return .contactsDeleteNote(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                noteId: try args.requiredString("noteId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsSetCustomField:
+            return .contactsSetCustomField(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                name: try args.requiredString("name"),
+                type: try args.optionalString("type"),
+                value: try args.requiredString("value"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeleteCustomField:
+            return .contactsDeleteCustomField(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                fieldId: try args.requiredString("fieldId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddLinkedContact:
+            return .contactsAddLinkedContact(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                personId: try args.requiredString("personId"),
+                note: try args.optionalString("note"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddLinkedOrganization:
+            return .contactsAddLinkedOrganization(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                organizationId: try args.requiredString("organizationId"),
+                note: try args.optionalString("note"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsRemoveLinkedContact:
+            return .contactsRemoveLinkedContact(
+                helperId: helperId, messageId: messageId,
+                linkId: try args.requiredString("linkId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsSetFavorite:
+            return .contactsSetFavorite(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                favorite: try args.requiredBool("favorite"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .eventsAddTag:
+            return .eventsAddTag(
+                helperId: helperId, messageId: messageId,
+                eventId: try args.requiredString("eventId"),
+                text: try args.requiredString("text"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .eventsEditTag:
+            return .eventsEditTag(
+                helperId: helperId, messageId: messageId,
+                eventId: try args.requiredString("eventId"),
+                tagId: try args.requiredString("tagId"),
+                text: try args.requiredString("text"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .eventsDeleteTag:
+            return .eventsDeleteTag(
+                helperId: helperId, messageId: messageId,
+                eventId: try args.requiredString("eventId"),
+                tagId: try args.requiredString("tagId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .guidesCreate:
+            return .guidesCreate(
+                helperId: helperId, messageId: messageId,
+                name: try args.requiredString("name"),
+                places: try args.optionalNewPlaces("places") ?? [],
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .guidesDelete:
+            return .guidesDelete(
+                helperId: helperId, messageId: messageId,
+                guideId: try args.requiredString("guideId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .guidesReorderPlaces:
+            return .guidesReorderPlaces(
+                helperId: helperId, messageId: messageId,
+                guideId: try args.requiredString("guideId"),
+                placeIds: try args.requiredStringArray("placeIds"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .placesDelete:
+            return .placesDelete(
+                helperId: helperId, messageId: messageId,
+                placeId: try args.requiredString("placeId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
         }
     }
 }
@@ -272,5 +468,61 @@ private struct ToolArguments {
         if let double = value.doubleValue, double == double.rounded() { return Int(double) }
         if let string = value.stringValue, let int = Int(string) { return int }
         throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a whole number")
+    }
+
+    func requiredBool(_ name: String) throws -> Bool {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        if let bool = value.boolValue { return bool }
+        // Tolerate the string spellings some clients send for booleans.
+        if let string = value.stringValue {
+            if string == "true" { return true }
+            if string == "false" { return false }
+        }
+        throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "true or false")
+    }
+
+    func requiredStringArray(_ name: String) throws -> [String] {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard case .array(let items) = value else {
+            throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a list of ids")
+        }
+        return try items.map { item in
+            guard let string = item.stringValue, !string.isEmpty else {
+                throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a list of ids")
+            }
+            return string
+        }
+    }
+
+    private func doubleField(_ object: [String: Value], _ key: String) -> Double? {
+        guard let value = object[key], value != .null else { return nil }
+        if let double = value.doubleValue { return double }
+        if let int = value.intValue { return Double(int) }
+        return nil
+    }
+
+    func optionalNewPlaces(_ name: String) throws -> [WireNewPlace]? {
+        guard let value = values[name], value != .null else { return nil }
+        guard case .array(let items) = value else {
+            throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a list of places")
+        }
+        return try items.map { item in
+            guard case .object(let object) = item,
+                  let address = object["address"]?.stringValue,
+                  !address.isEmpty
+            else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name,
+                    expected: "a list of places, each with at least an address")
+            }
+            return WireNewPlace(
+                address: address,
+                latitude: doubleField(object, "latitude"),
+                longitude: doubleField(object, "longitude"))
+        }
     }
 }

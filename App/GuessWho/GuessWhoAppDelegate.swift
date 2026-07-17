@@ -333,6 +333,24 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             children: children
         )
         builder.insertChild(menu, atEndOfMenu: .help)
+
+        #if targetEnvironment(macCatalyst)
+        // "Recently Deleted" (File menu) — the recovery surface for items an
+        // assistant deleted (plans/cli-mcp.md Phase 2: a user-reachable
+        // undo is the prerequisite for enabling agent writes). Catalyst-only,
+        // like the assistant channel itself.
+        let recentlyDeleted = UIMenu(
+            title: "",
+            options: .displayInline,
+            children: [
+                UICommand(
+                    title: "Recently Deleted…",
+                    action: #selector(recentlyDeletedMenuAction)
+                )
+            ]
+        )
+        builder.insertChild(recentlyDeleted, atEndOfMenu: .file)
+        #endif
     }
 
     // These run on the main thread (UIKit delivers menu actions there) and the
@@ -349,6 +367,11 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     #if targetEnvironment(macCatalyst)
     @objc private func openResourcesFolderMenuAction() {
         DebugMenuActions.openResourcesFolder()
+    }
+
+    @objc private func recentlyDeletedMenuAction() {
+        RecentlyDeletedPresenter.present(
+            service: mcpHostController.makeRecentlyDeletedService())
     }
     #endif
 }

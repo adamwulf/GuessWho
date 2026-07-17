@@ -29,6 +29,32 @@ public protocol MCPContactSource: AnyObject {
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]
     func members(ofGroup groupLocalID: String) async -> [Contact]
+
+    // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
+    // the UI uses (INV-2), so the change-watcher, iCloud push, and UI
+    // observation all fire. Deletes are soft-deletes at the engine level.
+    @discardableResult
+    func addNote(for id: ContactID, body: String, createdAt: Date) async throws -> UUID
+    func editNote(for id: ContactID, id noteID: UUID, newBody: String, createdAt: Date?) async throws
+    func deleteNote(for id: ContactID, id noteID: UUID) async throws
+    @discardableResult
+    func upsertField(for id: ContactID, field: String, value: JSONValue, type: SidecarFieldType) async throws -> UUID
+    /// By-id value write; un-deletes a tombstoned field (the Recently
+    /// Deleted restore path rides this).
+    func editField(for id: ContactID, id fieldID: UUID, value: String) async throws
+    func deleteField(for id: ContactID, id fieldID: UUID) async throws
+    @discardableResult
+    func addLink(from a: ContactID, to b: ContactID, note: String) async throws -> Link
+    func setLinkNote(id linkID: UUID, note: String) throws
+    func removeLink(id linkID: UUID) throws
+    @discardableResult
+    func toggleFavorite(_ id: ContactID) async throws -> Bool
+
+    // Tombstone-inclusive reads for the write-side audit (post-write
+    // `modifiedAt`) and the Recently Deleted surface. Never wired to a tool.
+    func allNotes(for id: ContactID) -> [ContactNote]
+    func allFields(for id: ContactID) -> [SidecarField]
+    func link(id linkID: UUID) -> Link?
 }
 
 extension ContactsRepository: MCPContactSource {
@@ -49,6 +75,17 @@ public protocol MCPEventSource: AnyObject {
     /// its own (reads never create one), or nil if it no longer exists.
     func eventKitEvent(eventKitID: String) -> Event?
     func eventTags(forEventUUID uuid: String) -> [EventTag]
+
+    // Tag writes (plans/cli-mcp.md Phase 2). The dispatcher only calls
+    // these for events that already HAVE a GuessWho record — a write to an
+    // un-adopted event answers the typed Option B error and mints nothing.
+    @discardableResult
+    func addEventTag(text: String, forEventUUID uuid: String) throws -> UUID
+    func editEventTag(id: UUID, text: String, forEventUUID uuid: String) throws
+    func deleteEventTag(id: UUID, forEventUUID uuid: String) throws
+    /// The raw tag cells INCLUDING tombstones (with their `modifiedAt`
+    /// stamps), for the audit trail and the Recently Deleted surface.
+    func allEventTagFields(forEventUUID uuid: String) -> [SidecarField]
 }
 
 @MainActor
@@ -56,6 +93,15 @@ public protocol MCPGuideSource: AnyObject {
     func allGuides() async -> [MapsGuide]
     func allPlaces() async -> [MapsPlace]
     func places(inGuide guideID: UUID) async -> [MapsPlace]
+
+    // Guide/place writes (plans/cli-mcp.md Phase 2).
+    @discardableResult
+    func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID
+    func deleteGuide(uuid: String) throws
+    /// Best-effort by design: mirrors the app's own reorder path, which
+    /// treats a failed order write as non-fatal.
+    func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID])
+    func deletePlace(uuid: String) throws
 }
 
 /// Master toggles + system-permission state, read live per call — the

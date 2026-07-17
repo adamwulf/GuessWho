@@ -27,6 +27,17 @@ public enum WireResponse: Codable, Sendable {
     case guidePage(helperId: String, messageId: String, page: WirePage<WireGuide>)
     case guide(helperId: String, messageId: String, guide: WireGuide)
     case placePage(helperId: String, messageId: String, page: WirePage<WirePlace>)
+
+    // Write-tool results (plans/cli-mcp.md Phase 2): a write that creates or
+    // updates a record echoes the record back (the same allowlisted DTO the
+    // read tools use — the write-echo surface the INV-3 tests scan); one with
+    // no natural payload (deletes, reorders, favorite flips) answers with a
+    // plain fixed acknowledgement text.
+    case note(helperId: String, messageId: String, note: WireNote)
+    case customField(helperId: String, messageId: String, field: WireCustomField)
+    case linkedContact(helperId: String, messageId: String, link: WireLinkedContact)
+    case tag(helperId: String, messageId: String, tag: WireTag)
+    case acknowledged(helperId: String, messageId: String, message: String)
 }
 
 extension WireResponse: MCPResponseProtocol {
@@ -46,7 +57,12 @@ extension WireResponse: MCPResponseProtocol {
              .tagPage(let helperId, _, _),
              .guidePage(let helperId, _, _),
              .guide(let helperId, _, _),
-             .placePage(let helperId, _, _):
+             .placePage(let helperId, _, _),
+             .note(let helperId, _, _),
+             .customField(let helperId, _, _),
+             .linkedContact(let helperId, _, _),
+             .tag(let helperId, _, _),
+             .acknowledged(let helperId, _, _):
             return helperId
         }
     }
@@ -67,8 +83,62 @@ extension WireResponse: MCPResponseProtocol {
              .tagPage(_, let messageId, _),
              .guidePage(_, let messageId, _),
              .guide(_, let messageId, _),
-             .placePage(_, let messageId, _):
+             .placePage(_, let messageId, _),
+             .note(_, let messageId, _),
+             .customField(_, let messageId, _),
+             .linkedContact(_, let messageId, _),
+             .tag(_, let messageId, _),
+             .acknowledged(_, let messageId, _):
             return messageId
+        }
+    }
+
+    /// The same response re-addressed to a different (helperId, messageId)
+    /// pair. The idempotency replay path needs this: a retried write returns
+    /// the ORIGINAL call's payload, but the relay matches responses by the
+    /// RETRY's message id, so the envelope must be restamped.
+    public func readdressed(helperId: String, messageId: String) -> WireResponse {
+        switch self {
+        case .ready:
+            return .ready(helperId: helperId, messageId: messageId)
+        case .error(_, _, let code, let message):
+            return .error(helperId: helperId, messageId: messageId, code: code, message: message)
+        case .toolList(_, _, let tools, let status):
+            return .toolList(helperId: helperId, messageId: messageId, tools: tools, status: status)
+        case .contactPage(_, _, let page):
+            return .contactPage(helperId: helperId, messageId: messageId, page: page)
+        case .contact(_, _, let contact):
+            return .contact(helperId: helperId, messageId: messageId, contact: contact)
+        case .notePage(_, _, let page):
+            return .notePage(helperId: helperId, messageId: messageId, page: page)
+        case .customFieldPage(_, _, let page):
+            return .customFieldPage(helperId: helperId, messageId: messageId, page: page)
+        case .linkedContactPage(_, _, let page):
+            return .linkedContactPage(helperId: helperId, messageId: messageId, page: page)
+        case .groupPage(_, _, let page):
+            return .groupPage(helperId: helperId, messageId: messageId, page: page)
+        case .eventPage(_, _, let page):
+            return .eventPage(helperId: helperId, messageId: messageId, page: page)
+        case .event(_, _, let event):
+            return .event(helperId: helperId, messageId: messageId, event: event)
+        case .tagPage(_, _, let page):
+            return .tagPage(helperId: helperId, messageId: messageId, page: page)
+        case .guidePage(_, _, let page):
+            return .guidePage(helperId: helperId, messageId: messageId, page: page)
+        case .guide(_, _, let guide):
+            return .guide(helperId: helperId, messageId: messageId, guide: guide)
+        case .placePage(_, _, let page):
+            return .placePage(helperId: helperId, messageId: messageId, page: page)
+        case .note(_, _, let note):
+            return .note(helperId: helperId, messageId: messageId, note: note)
+        case .customField(_, _, let field):
+            return .customField(helperId: helperId, messageId: messageId, field: field)
+        case .linkedContact(_, _, let link):
+            return .linkedContact(helperId: helperId, messageId: messageId, link: link)
+        case .tag(_, _, let tag):
+            return .tag(helperId: helperId, messageId: messageId, tag: tag)
+        case .acknowledged(_, _, let message):
+            return .acknowledged(helperId: helperId, messageId: messageId, message: message)
         }
     }
 
@@ -114,6 +184,16 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(guide)
         case .placePage(_, _, let page):
             return Self.jsonResult(page)
+        case .note(_, _, let note):
+            return Self.jsonResult(note)
+        case .customField(_, _, let field):
+            return Self.jsonResult(field)
+        case .linkedContact(_, _, let link):
+            return Self.jsonResult(link)
+        case .tag(_, _, let tag):
+            return Self.jsonResult(tag)
+        case .acknowledged(_, _, let message):
+            return MCP.CallTool.Result(content: [.text(message)], isError: false)
         }
     }
 

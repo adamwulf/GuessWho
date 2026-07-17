@@ -437,6 +437,16 @@ final class SyncService {
         try sync.deleteTag(at: SidecarKey(kind: .event, id: uuid), id: id)
     }
 
+    /// The raw tag CELLS on the event — including soft-deleted tombstones,
+    /// with their `modifiedAt` stamps. For the agent audit trail and the
+    /// Recently Deleted surface (a tombstone's preserved text is the restore
+    /// payload; its stamp is the restore guard). UI reads want `eventTags`.
+    func allEventTagFields(forEventUUID uuid: String) -> [SidecarField] {
+        guard let sync else { return [] }
+        let raw = (try? sync.fields(at: SidecarKey(kind: .event, id: uuid))) ?? []
+        return raw.filter { $0.field == GuessWhoSync.eventTagFieldName && $0.type == .note }
+    }
+
     // MARK: - Link-sheet backing reads
 
     /// Every sidecar-backed event (manual + linked), projected via Option C.

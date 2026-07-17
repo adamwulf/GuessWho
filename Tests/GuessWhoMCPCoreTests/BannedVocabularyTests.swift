@@ -35,6 +35,8 @@ final class BannedVocabularyTests: XCTestCase {
         "GuessWho didn't answer",
         "GuessWho is busy",
         "while GuessWho is open",
+        "in the GuessWho app",
+        "GuessWho's storage",
         "guesswho_status",
     ]
 
@@ -71,11 +73,17 @@ final class BannedVocabularyTests: XCTestCase {
         for string in WireErrorMessage.allFixedStrings {
             assertClean(string, context: "error/status string")
         }
+        for string in WireAckMessage.allFixedStrings {
+            assertClean(string, context: "write acknowledgement string")
+        }
     }
 
     func testPreferencesStringsArePlainLanguage() {
         for string in PreferencesStrings.allFixedStrings {
             assertClean(string, context: "preferences string")
+        }
+        for string in RecentlyDeletedStrings.allFixedStrings {
+            assertClean(string, context: "recently-deleted string")
         }
     }
 

@@ -2,9 +2,9 @@ import Foundation
 import EasyMacMCP
 import MCP
 
-/// The read-tool inventory for v1 (plans/cli-mcp.md Phase 1) — the single
+/// The tool inventory for v1 (plans/cli-mcp.md Phases 1–2) — the single
 /// source of truth for tool names, agent-facing descriptions, parameter
-/// schemas, permission domain, and per-tool timeouts.
+/// schemas, permission domain, write classification, and per-tool timeouts.
 ///
 /// Naming: tool names use underscores (`contacts_search`), not the dotted
 /// names the plan sketches (`contacts.search`) — MCP clients and the
@@ -34,6 +34,26 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case guidesGet = "guides_get"
     case placesList = "places_list"
 
+    // Write tools (plans/cli-mcp.md Phase 2). All mutate GuessWho's OWN
+    // data only — never system contact/calendar content — and every one is
+    // rejected per-call while the origin's read-only toggle is on.
+    case contactsAddNote = "contacts_add_note"
+    case contactsEditNote = "contacts_edit_note"
+    case contactsDeleteNote = "contacts_delete_note"
+    case contactsSetCustomField = "contacts_set_custom_field"
+    case contactsDeleteCustomField = "contacts_delete_custom_field"
+    case contactsAddLinkedContact = "contacts_add_linked_contact"
+    case contactsAddLinkedOrganization = "contacts_add_linked_organization"
+    case contactsRemoveLinkedContact = "contacts_remove_linked_contact"
+    case contactsSetFavorite = "contacts_set_favorite"
+    case eventsAddTag = "events_add_tag"
+    case eventsEditTag = "events_edit_tag"
+    case eventsDeleteTag = "events_delete_tag"
+    case guidesCreate = "guides_create"
+    case guidesDelete = "guides_delete"
+    case guidesReorderPlaces = "guides_reorder_places"
+    case placesDelete = "places_delete"
+
     /// Which system permission this tool's data depends on. Tools whose
     /// domain permission has not been granted are hidden from `listTools`
     /// AND rejected per-call (hiding is UX, the per-call gate is the
@@ -50,12 +70,41 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsSearch, .contactsGet, .contactsListNotes,
              .contactsListCustomFields, .contactsListLinkedContacts,
              .contactsListLinkedOrganizations, .contactsListFavorites,
-             .contactsListGroups, .groupsListMembers:
+             .contactsListGroups, .groupsListMembers,
+             .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
+             .contactsSetCustomField, .contactsDeleteCustomField,
+             .contactsAddLinkedContact, .contactsAddLinkedOrganization,
+             .contactsRemoveLinkedContact, .contactsSetFavorite:
             return .contacts
-        case .eventsList, .eventsGet, .eventsListTags:
+        case .eventsList, .eventsGet, .eventsListTags,
+             .eventsAddTag, .eventsEditTag, .eventsDeleteTag:
             return .events
-        case .guidesList, .guidesGet, .placesList:
+        case .guidesList, .guidesGet, .placesList,
+             .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             return .none
+        }
+    }
+
+    /// Whether this tool mutates data. Write tools are hidden from
+    /// `listTools` while the origin's read-only toggle is on AND rejected
+    /// per-call by the same gate (consent = the toggle, granted once in the
+    /// app's settings; writes are OFF by default — plans/cli-mcp.md Phase 2).
+    public var isWrite: Bool {
+        switch self {
+        case .contactsSearch, .contactsGet, .contactsListNotes,
+             .contactsListCustomFields, .contactsListLinkedContacts,
+             .contactsListLinkedOrganizations, .contactsListFavorites,
+             .contactsListGroups, .groupsListMembers,
+             .eventsList, .eventsGet, .eventsListTags,
+             .guidesList, .guidesGet, .placesList:
+            return false
+        case .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
+             .contactsSetCustomField, .contactsDeleteCustomField,
+             .contactsAddLinkedContact, .contactsAddLinkedOrganization,
+             .contactsRemoveLinkedContact, .contactsSetFavorite,
+             .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
+             .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
+            return true
         }
     }
 
@@ -75,6 +124,10 @@ public enum MCPTool: String, CaseIterable, Sendable {
         "Maximum number of items to return in one page (default 50, max 200)."
     private static let cursorDoc =
         "Opaque paging cursor from a previous page's nextCursor. Omit for the first page."
+    private static let idempotencyDoc =
+        "Optional: a unique string of your choosing that identifies this one change. If the call is retried with the same value, the change is applied only once."
+    private static let eventIdDoc =
+        "An event id returned by events_list."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [
@@ -199,6 +252,181 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List saved places, optionally within one guide. Each place has a name, address, and map coordinates when known.",
                 inputSchema: Self.schema(props))
+
+        // MARK: Write tools
+
+        case .contactsAddNote:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Add a dated note about a contact. Returns the new note.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "body": Self.string("The note's text."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "body"]))
+        case .contactsEditNote:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Replace the text of one of the user's notes about a contact. Returns the updated note.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "noteId": Self.string("A note id returned by contacts_list_notes."),
+                    "body": Self.string("The note's new text."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "noteId", "body"]))
+        case .contactsDeleteNote:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete one of the user's notes about a contact. The user can restore a recently deleted note from the app.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "noteId": Self.string("A note id returned by contacts_list_notes."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "noteId"]))
+        case .contactsSetCustomField:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Add or update a named custom field on a contact. If a field with that name exists, its value is replaced; otherwise a new field is created. Returns the field.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "name": Self.string("The field's name, e.g. \"Coffee order\". Some names are reserved for the app's own use and are rejected."),
+                    "type": Self.string("The field's type: \"text\", \"multilineNote\", \"date\", or \"checkbox\". Defaults to \"text\"."),
+                    "value": Self.string("The field's value: text for text fields, an ISO 8601 date for date fields, \"true\" or \"false\" for checkboxes."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "name", "value"]))
+        case .contactsDeleteCustomField:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a custom field from a contact. The user can restore a recently deleted field from the app.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "fieldId": Self.string("A field id returned by contacts_list_custom_fields."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "fieldId"]))
+        case .contactsAddLinkedContact:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Add a person to a contact's Linked Contacts, with an optional note about the connection. Returns the new row.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "personId": Self.string("The id of the person to connect (from contacts_search). Must be a person, not an organization."),
+                    "note": Self.string("Optional: a short note about the connection, e.g. \"College roommate\"."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "personId"]))
+        case .contactsAddLinkedOrganization:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Add an organization to a contact's Linked Organizations, with an optional note about the connection. Returns the new row.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "organizationId": Self.string("The id of the organization to connect (from contacts_search). Must be an organization, not a person."),
+                    "note": Self.string("Optional: a short note about the connection, e.g. \"Board seat\"."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "organizationId"]))
+        case .contactsRemoveLinkedContact:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Remove a row from a contact's Linked Contacts or Linked Organizations. The user can restore a recently removed row from the app.",
+                inputSchema: Self.schema([
+                    "linkId": Self.string("A row id returned by contacts_list_linked_contacts or contacts_list_linked_organizations."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["linkId"]))
+        case .contactsSetFavorite:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Mark a contact as a favorite, or remove it from favorites.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "favorite": [
+                        "type": "boolean",
+                        "description": .string("true to mark as a favorite, false to remove from favorites."),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "favorite"]))
+        case .eventsAddTag:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Put a tag on an event. Returns the new tag. Some events must be opened once in the GuessWho app before they can be tagged; the error message will say so.",
+                inputSchema: Self.schema([
+                    "eventId": Self.string(Self.eventIdDoc),
+                    "text": Self.string("The tag's text, e.g. \"fundraiser\"."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["eventId", "text"]))
+        case .eventsEditTag:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Replace the text of a tag on an event. Returns the updated tag.",
+                inputSchema: Self.schema([
+                    "eventId": Self.string(Self.eventIdDoc),
+                    "tagId": Self.string("A tag id returned by events_list_tags."),
+                    "text": Self.string("The tag's new text."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["eventId", "tagId", "text"]))
+        case .eventsDeleteTag:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a tag from an event. The user can restore a recently deleted tag from the app.",
+                inputSchema: Self.schema([
+                    "eventId": Self.string(Self.eventIdDoc),
+                    "tagId": Self.string("A tag id returned by events_list_tags."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["eventId", "tagId"]))
+        case .guidesCreate:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Create a new place guide, optionally with an initial list of places. Returns the new guide.",
+                inputSchema: Self.schema([
+                    "name": Self.string("The guide's name, e.g. \"Coffee Crawl\"."),
+                    "places": [
+                        "type": "array",
+                        "description": .string("Optional: the guide's initial places, in order."),
+                        "items": .object([
+                            "type": "object",
+                            "properties": .object([
+                                "address": Self.string("The place's street address."),
+                                "latitude": [
+                                    "type": "number",
+                                    "description": .string("Optional: the place's latitude."),
+                                ],
+                                "longitude": [
+                                    "type": "number",
+                                    "description": .string("Optional: the place's longitude."),
+                                ],
+                            ]),
+                            "required": .array([.string("address")]),
+                        ]),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["name"]))
+        case .guidesDelete:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a place guide and the places in it.",
+                inputSchema: Self.schema([
+                    "guideId": Self.string("A guide id returned by guides_list."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["guideId"]))
+        case .guidesReorderPlaces:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Reorder the places in a guide. Pass every place id in the guide, in the new order.",
+                inputSchema: Self.schema([
+                    "guideId": Self.string("A guide id returned by guides_list."),
+                    "placeIds": [
+                        "type": "array",
+                        "description": .string("Every place id in the guide (from places_list), in the desired order."),
+                        "items": .object(["type": "string"]),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["guideId", "placeIds"]))
+        case .placesDelete:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete one place from a guide.",
+                inputSchema: Self.schema([
+                    "placeId": Self.string("A place id returned by places_list."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["placeId"]))
         }
     }
 }

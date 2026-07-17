@@ -596,7 +596,7 @@ public final class ContactsRepository: NSObject {
     /// (`notes(at:)` selects on `field == "note"`). Centralized here, next to
     /// `previousPhotoFieldName`, so a new internal name gets added in one
     /// place (plans/cli-mcp.md Phase 2 custom-field guardrails).
-    public static let reservedFieldNames: Set<String> = [
+    public nonisolated static let reservedFieldNames: Set<String> = [
         ContactsRepository.previousPhotoFieldName,
         GuessWhoSync.contactNoteFieldName,
         GuessWhoSync.eventTagFieldName,
@@ -606,7 +606,7 @@ public final class ContactsRepository: NSObject {
     /// comparison is case-insensitive on the trimmed name: only the exact
     /// name collides mechanically, but a near-miss ("PreviousPhoto") would
     /// only ever confuse — reject it too.
-    public static func isReservedFieldName(_ name: String) -> Bool {
+    public nonisolated static func isReservedFieldName(_ name: String) -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return reservedFieldNames.contains {
             $0.caseInsensitiveCompare(trimmed) == .orderedSame
