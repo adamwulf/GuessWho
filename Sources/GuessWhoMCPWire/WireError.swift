@@ -188,6 +188,105 @@ public enum PreferencesStrings {
     }
 }
 
+/// User-facing copy for the Preferences install section (the copy-path
+/// primary install + the four-state status — plans/cli-mcp.md Phase 3).
+/// Defined here so the banned-vocabulary test covers every string: plain
+/// language only, never a mechanism word — the user sees "command-line
+/// access" and "link", never the tool that implements it.
+public enum InstallStrings {
+    public static let sectionTitle = "Command-Line Access"
+
+    // Four-state status copy (one per CLISymlinkResolver state).
+    public static let statusNotInstalled = "Install command-line access"
+    public static let statusInstalled = "Command-line access is set up."
+    public static let statusDangling =
+        "The command-line link is broken — reinstall to repair."
+    public static let statusConflict =
+        "Something else is already installed at this location."
+
+    public static let installButton = "Install"
+    public static let reinstallButton = "Reinstall"
+    public static let revealConflictButton = "Show in Finder"
+    public static let copyRemovalButton = "Copy Removal Command"
+    public static let copyPathButton = "Copy Path"
+    public static let copiedConfirmation = "Copied"
+
+    /// Caption over the helper-path row — the PRIMARY install on every
+    /// channel: the user pastes this absolute path into their assistant's
+    /// settings (no generated config, no writing into the client's files).
+    public static let helperPathCaption =
+        "To connect an assistant, copy this location and paste it into the assistant's settings:"
+    /// Caption over the copyable removal command (uninstall is a paste,
+    /// never a hand-typed path).
+    public static let removalCaption =
+        "To remove command-line access, paste this command in Terminal:"
+    /// Shown under the installed status.
+    public static let installedDetail =
+        "You can use the guesswho command in Terminal."
+    /// Stale-location repair hint: the app moved (or was updated in place)
+    /// since the user last copied the path or installed, so a pasted
+    /// absolute path in an assistant's settings no longer resolves.
+    public static let repairHint =
+        "GuessWho has moved since it was set up. Copy the new location and update the assistant's settings, or reinstall below."
+    /// Alert title/body when the embedded command-line tool can't be found
+    /// in the app bundle at all (packaging failure).
+    public static let helperMissing = "The command-line tool couldn't be found."
+    public static let installFailedTitle = "Couldn't Install"
+
+    public static var allFixedStrings: [String] {
+        [
+            sectionTitle, statusNotInstalled, statusInstalled, statusDangling,
+            statusConflict, installButton, reinstallButton, revealConflictButton,
+            copyRemovalButton, copyPathButton, copiedConfirmation,
+            helperPathCaption, removalCaption, installedDetail, repairHint,
+            helperMissing, installFailedTitle,
+        ]
+    }
+}
+
+/// User-facing copy for the Preferences "Agent activity" section — the
+/// device-local audit log rendered as plain rows ("Added a note to Jane
+/// Doe — 3:14 PM"). Row titles are templates; %@ is the record's display
+/// name snapshot from the audit entry.
+public enum AgentActivityStrings {
+    public static let sectionTitle = "Agent Activity"
+    public static let emptyMessage = "No agent activity yet."
+    public static let footer =
+        "Changes that assistants and terminal commands make on this Mac appear here."
+
+    public static let addedNote = "Added a note to %@"
+    public static let editedNote = "Edited a note on %@"
+    public static let deletedNote = "Deleted a note from %@"
+    public static let setCustomField = "Set a custom field on %@"
+    public static let deletedCustomField = "Deleted a custom field from %@"
+    public static let addedConnection = "Added a connection to %@"
+    public static let removedConnection = "Removed a connection from %@"
+    public static let markedFavorite = "Marked %@ as a favorite"
+    public static let clearedFavorite = "Removed %@ from favorites"
+    public static let addedTag = "Added a tag to %@"
+    public static let editedTag = "Edited a tag on %@"
+    public static let deletedTag = "Deleted a tag from %@"
+    public static let createdGuide = "Created the guide %@"
+    public static let deletedGuide = "Deleted the guide %@"
+    public static let reorderedPlaces = "Reordered the places in %@"
+    public static let deletedPlace = "Deleted a place from %@"
+    /// Fallback when the entry's display-name snapshot is empty.
+    public static let unknownSubject = "an item"
+
+    public static var allFixedStrings: [String] {
+        [
+            sectionTitle, emptyMessage, footer,
+            addedNote, editedNote, deletedNote,
+            setCustomField, deletedCustomField,
+            addedConnection, removedConnection,
+            markedFavorite, clearedFavorite,
+            addedTag, editedTag, deletedTag,
+            createdGuide, deletedGuide, reorderedPlaces, deletedPlace,
+            unknownSubject,
+        ]
+    }
+}
+
 /// User-facing copy for the Recently Deleted surface (rendered by the app;
 /// defined here so the banned-vocabulary test covers it — same arrangement
 /// as `PreferencesStrings`). Named "Recently Deleted" after Apple's own
