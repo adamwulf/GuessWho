@@ -526,6 +526,28 @@ final class SyncService {
         return try sync.importGuide(from: snapshot, sourceURL: sourceURL)
     }
 
+    /// Store a decoded snapshot as a brand-new guide, unconditionally — no
+    /// source-URL or name de-duplication. Backs the "Import as New" choice when
+    /// the import UI detects a same-named guide and the user wants a second copy.
+    @discardableResult
+    func createGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.createGuide(from: snapshot, sourceURL: sourceURL)
+    }
+
+    /// Live guides whose display name matches `name` (case/whitespace
+    /// insensitive), oldest-created first. The import UI uses this to detect a
+    /// name collision and offer "Import as New" vs. "Update Guide".
+    func guides(matchingName name: String) async -> [MapsGuide] {
+        guard let sync else { return [] }
+        do {
+            return try await sync.guides(matchingName: name)
+        } catch {
+            lastError = "guide name lookup failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
     /// Apply a newly fetched snapshot to an existing guide in place. Returns
     /// false if the guide was deleted while the fetch was in flight.
     @discardableResult

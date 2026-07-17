@@ -200,23 +200,35 @@ final class GuidesListViewController: UIViewController {
         }
         activityIndicator.startAnimating()
         Task { @MainActor in
-            defer { self.updateEmptyState() }
-            do {
-                let guideID = try await GuideImporter.importGuide(
-                    from: url,
-                    service: service,
-                    repository: repository
-                )
-                // Open the fresh guide so the user lands on its places.
-                if let guide = self.repository.guides.first(where: { $0.id == guideID }) {
-                    self.didSelectGuide(guide)
+            // The collision flow may present its own alert (and then store
+            // asynchronously), so stop the spinner once the fetch/decide step
+            // has run — the store branches manage their own completion.
+            await GuideImporter.importGuideResolvingNameCollision(
+                from: url,
+                service: service,
+                repository: repository,
+                presenter: self,
+                onImported: { [weak self] guideID in
+                    guard let self else { return }
+                    self.updateEmptyState()
+                    // Open the guide (new or updated) so the user lands on it.
+                    if let guide = self.repository.guides.first(where: { $0.id == guideID }) {
+                        self.didSelectGuide(guide)
+                    }
+                },
+                onFailure: { [weak self] error in
+                    guard let self else { return }
+                    self.updateEmptyState()
+                    Self.log.error("import failed: \(error.localizedDescription)")
+                    self.presentImportFailure(
+                        message: "The guide couldn't be loaded. Check the link and your internet connection, then try again."
+                    )
                 }
-            } catch {
-                Self.log.error("import failed: \(error.localizedDescription)")
-                self.presentImportFailure(
-                    message: "The guide couldn't be loaded. Check the link and your internet connection, then try again."
-                )
-            }
+            )
+            // The interactive branch may still be waiting on the user's alert
+            // choice; either way the fetch/decide step is done, so drop the
+            // spinner now. onImported/onFailure repaint the empty state again.
+            self.updateEmptyState()
         }
     }
 

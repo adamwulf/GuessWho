@@ -1366,17 +1366,25 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
         Task { @MainActor in
-            do {
-                let guideID = try await GuideImporter.importGuide(
-                    from: shareURL,
-                    service: appDelegate.service,
-                    repository: appDelegate.guidesRepository
-                )
-                self.showGuidesSection(revealing: guideID, appDelegate: appDelegate)
-            } catch {
-                Self.guidesLog.error("guide import failed: \(error.localizedDescription)")
-                self.presentGuideImportFailureAlert()
+            // Land the Guides section first so the collision alert (if any) has a
+            // stable presenter and the user sees where the import is going.
+            guard let presenter = self.topmostPresenter() else {
+                Self.guidesLog.error("guide wake: NO presenter available")
+                return
             }
+            await GuideImporter.importGuideResolvingNameCollision(
+                from: shareURL,
+                service: appDelegate.service,
+                repository: appDelegate.guidesRepository,
+                presenter: presenter,
+                onImported: { [weak self] guideID in
+                    self?.showGuidesSection(revealing: guideID, appDelegate: appDelegate)
+                },
+                onFailure: { [weak self] error in
+                    Self.guidesLog.error("guide import failed: \(error.localizedDescription)")
+                    self?.presentGuideImportFailureAlert()
+                }
+            )
         }
     }
 
