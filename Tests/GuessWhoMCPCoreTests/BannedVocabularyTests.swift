@@ -20,6 +20,10 @@ final class BannedVocabularyTests: XCTestCase {
         // Implementation vocabulary.
         "app group", "fifo", "named pipe", "pipe", "relay", "mach-o",
         "helperid", "stalehandle", "handle",
+        // Phase 3 install/undelete surfaces (plans/cli-mcp.md): the user
+        // sees "command-line access" and "Recently Deleted", never the
+        // mechanism underneath.
+        "symlink", "tombstone",
     ]
 
     /// Product-name phrases the strings legitimately use. Scanning strips
@@ -38,6 +42,9 @@ final class BannedVocabularyTests: XCTestCase {
         "in the GuessWho app",
         "GuessWho's storage",
         "guesswho_status",
+        // Phase 3 install-section copy.
+        "GuessWho has moved",
+        "the guesswho command",
     ]
 
     private func assertClean(_ text: String, context: String) {
@@ -84,6 +91,12 @@ final class BannedVocabularyTests: XCTestCase {
         }
         for string in RecentlyDeletedStrings.allFixedStrings {
             assertClean(string, context: "recently-deleted string")
+        }
+        for string in InstallStrings.allFixedStrings {
+            assertClean(string, context: "install string")
+        }
+        for string in AgentActivityStrings.allFixedStrings {
+            assertClean(string, context: "agent-activity string")
         }
     }
 
