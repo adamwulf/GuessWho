@@ -1,8 +1,8 @@
 import Foundation
 
-/// A `Link` connects two entities (contact or event) with a free-text note.
+/// A `Link` connects two entities (contact, event, or place) with a free-text note.
 /// Same shape works for person↔person, person↔event, person↔organization,
-/// org↔event, event↔event. Stored as one §5.2 sidecar envelope at
+/// org↔event, event↔event, and place↔contact/event. Stored as one §5.2 sidecar envelope at
 /// `Documents/links/<uuid>.json`. Per Core Semantics: one envelope write
 /// per mutation, generic §5.3 LWW per cell, `deletedAt` is the only
 /// delete mechanism.

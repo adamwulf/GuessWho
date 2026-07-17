@@ -998,6 +998,14 @@ public final class ContactsRepository: NSObject {
     /// boundary; the contact endpoint UUID stays inside the package.
     public func linkedContact(of link: Link, forEventUUID eventUUID: String) -> Contact? {
         let endpoint = SidecarKey(kind: .event, id: eventUUID)
+        return linkedContact(of: link, at: endpoint)
+    }
+
+    /// The far CONTACT endpoint of `link`, relative to any non-contact
+    /// sidecar endpoint (currently an event or place). This keeps the bare
+    /// GuessWho contact UUID inside the package while allowing generic entity
+    /// detail pages to resolve their linked contact.
+    public func linkedContact(of link: Link, at endpoint: SidecarKey) -> Contact? {
         guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
         let other = Self.otherEndpoint(of: link, from: endpoint)
         return other.kind == .contact ? contact(guessWhoID: other.id) : nil
@@ -1319,6 +1327,23 @@ public final class ContactsRepository: NSObject {
         let link = try sync.addLink(
             from: SidecarKey(kind: .contact, id: guessWhoID),
             to: SidecarKey(kind: .event, id: eventUUID),
+            note: note
+        )
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        return link
+    }
+
+    /// Create a durable contact↔place link. As with `addEventLink`, the
+    /// CONTACT endpoint resolves-or-mints internally while the already-stored
+    /// PLACE endpoint is addressed by its sidecar UUID.
+    @discardableResult
+    public func addPlaceLink(for id: ContactID, placeUUID: String, note: String) async throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let link = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: guessWhoID),
+            to: SidecarKey(kind: .place, id: placeUUID),
             note: note
         )
         await refreshCacheIfMinted(minted, localID: id.localID)

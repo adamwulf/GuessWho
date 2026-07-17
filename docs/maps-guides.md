@@ -150,6 +150,12 @@ to fire on row tap now lives on this button), plus three best-effort
 * **Contacts** / **Organizations** — records whose structured postal street
   line appears inside the place's address, partitioned by `ContactType`.
 
+The place detail also has the same bottom **Link Contact**, **Link Org**, and
+**Link Event** actions as the other entity detail pages. These create explicit
+durable links (separate from the address-derived matches above); linked rows
+appear in their own sections, preserve the optional link note, navigate to the
+linked detail, and can be removed with the standard list delete gesture.
+
 All three reuse the **street-line token matcher** (`EventLocationMatcher`,
 GuessWhoSync) that already backs the contact detail's "Recent Events"
 section: a needle must appear as a contiguous run of ≥2 words inside the

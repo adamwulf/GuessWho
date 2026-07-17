@@ -24,6 +24,21 @@ struct EventLinkSheet: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
     let mode: Mode
+    /// Event sidecar UUIDs that cannot be picked. Event detail uses this to
+    /// prevent a link from an event back to itself; contact/place callers use
+    /// the default empty set.
+    let excludingEventUUIDs: Set<String>
+    let excludingEventKitIDs: Set<String>
+
+    init(
+        mode: Mode,
+        excludingEventUUIDs: Set<String> = [],
+        excludingEventKitIDs: Set<String> = []
+    ) {
+        self.mode = mode
+        self.excludingEventUUIDs = Set(excludingEventUUIDs.map { $0.lowercased() })
+        self.excludingEventKitIDs = excludingEventKitIDs
+    }
 
     @State private var search: String = ""
     /// The event pool, grouped by start-of-day. Every load path merges here:
@@ -387,6 +402,7 @@ struct EventLinkSheet: View {
         mergeIntoLoadedDays(sidecarEvents, sidecarBacked: true)
         if case .link = mode {
             recentlyLinked = await service.recentlyLinkedEvents(limit: 5)
+                .filter { !isExcluded($0) }
         }
     }
 
@@ -472,6 +488,7 @@ struct EventLinkSheet: View {
     private var visibleEvents: [Event] {
         guard !isSearching else { return filteredEvents }
         return loadedDays.values.flatMap { $0 }.filter { event in
+            guard !isExcluded(event) else { return false }
             if sidecarEventKeys.contains(dedupKey(for: event)) { return true }
             return event.startDate >= loadedBackwardThrough && event.startDate <= loadedForwardThrough
         }
@@ -483,10 +500,19 @@ struct EventLinkSheet: View {
         guard !trimmed.isEmpty else { return all }
         let needle = trimmed.lowercased()
         return all.filter { event in
+            guard !isExcluded(event) else { return false }
             if event.title.lowercased().contains(needle) { return true }
             if let location = event.location, location.lowercased().contains(needle) { return true }
             return false
         }
+    }
+
+    private func isExcluded(_ event: Event) -> Bool {
+        if excludingEventUUIDs.contains(event.id.uuidString.lowercased()) {
+            return true
+        }
+        guard let eventKitID = event.eventKitID else { return false }
+        return excludingEventKitIDs.contains(eventKitID)
     }
 
     /// Group events by `Calendar.startOfDay`, sorted ascending by day; events
