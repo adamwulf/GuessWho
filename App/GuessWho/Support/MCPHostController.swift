@@ -1,6 +1,7 @@
 #if targetEnvironment(macCatalyst)
 
 import Foundation
+import UIKit
 import GuessWhoLogging
 import GuessWhoSync
 import GuessWhoMCPCore
@@ -75,15 +76,17 @@ final class MCPHostController: NSObject {
 
     // MARK: - Lifecycle
 
-    /// Call from `didFinishLaunching`: installs toggle observers and aligns
-    /// the channel with the current toggle state.
+    /// Call from `didFinishLaunching`: migrates the legacy boolean toggles
+    /// onto the tri-state keys, installs access-mode observers, and aligns
+    /// the channel with the current state.
     func bootstrap() {
         if let defaults = groupDefaults {
+            MCPToggleKeys.migrateLegacyTogglesIfNeeded(in: defaults)
             defaults.addObserver(
-                self, forKeyPath: MCPToggleKeys.isMCPEnabled,
+                self, forKeyPath: MCPToggleKeys.mcpAccessMode,
                 options: [.new], context: Self.kvoContext)
             defaults.addObserver(
-                self, forKeyPath: MCPToggleKeys.isCLIEnabled,
+                self, forKeyPath: MCPToggleKeys.cliAccessMode,
                 options: [.new], context: Self.kvoContext)
             observerInstalled = true
         } else {
@@ -100,8 +103,8 @@ final class MCPHostController: NSObject {
     func shutdown() {
         isShuttingDown = true
         if observerInstalled, let defaults = groupDefaults {
-            defaults.removeObserver(self, forKeyPath: MCPToggleKeys.isMCPEnabled, context: Self.kvoContext)
-            defaults.removeObserver(self, forKeyPath: MCPToggleKeys.isCLIEnabled, context: Self.kvoContext)
+            defaults.removeObserver(self, forKeyPath: MCPToggleKeys.mcpAccessMode, context: Self.kvoContext)
+            defaults.removeObserver(self, forKeyPath: MCPToggleKeys.cliAccessMode, context: Self.kvoContext)
             observerInstalled = false
         }
         Task { @MainActor [weak self] in
@@ -127,8 +130,10 @@ final class MCPHostController: NSObject {
     private func applyDesiredState() async {
         guard !isShuttingDown else { return }
         let defaults = groupDefaults
-        let desired = (defaults?.bool(forKey: MCPToggleKeys.isMCPEnabled) ?? false)
-            || (defaults?.bool(forKey: MCPToggleKeys.isCLIEnabled) ?? false)
+        let desired = defaults.map { defaults in
+            MCPToggleKeys.accessMode(forKey: MCPToggleKeys.mcpAccessMode, in: defaults).allowsReads
+                || MCPToggleKeys.accessMode(forKey: MCPToggleKeys.cliAccessMode, in: defaults).allowsReads
+        } ?? false
         switch (desired, state) {
         case (true, .stopped):
             await start()
@@ -154,11 +159,18 @@ final class MCPHostController: NSObject {
         let gates = MCPGates(service: service, defaults: UserDefaults(suiteName: groupID))
         let dispatcher = ToolDispatcher(
             contacts: repository, events: service, guides: service, gates: gates,
+            confirmations: MCPConfirmationPresenter(),
             audit: auditLog)
         let newHost = MCPPipeHost(
             container: container,
             handler: { request in await dispatcher.handle(request) },
             logger: nil)
+        // Confirmation-gated writes answer out of band: the handler returns
+        // nil immediately and the dispatcher sends the user's decision
+        // later through this seam, correlated by helperId+messageId.
+        await dispatcher.setDeferredResponder { [weak newHost] response in
+            await newHost?.deliver(response)
+        }
         do {
             try await newHost.startListening()
         } catch {
@@ -192,9 +204,10 @@ final class MCPHostController: NSObject {
     }
 }
 
-/// Live gate state for the dispatch core: master toggles from the shared
-/// container defaults (read per call, so a Preferences flip applies
-/// immediately) + the app's real permission state.
+/// Live gate state for the dispatch core: the per-surface tri-state access
+/// modes from the shared container defaults (read per call, so a
+/// Preferences change applies immediately) + the app's real permission
+/// state. Absent/garbled keys read as `.off` — the shipping default.
 @MainActor
 final class MCPGates: MCPGateSource {
     private let service: SyncService
@@ -205,10 +218,12 @@ final class MCPGates: MCPGateSource {
         self.defaults = defaults
     }
 
-    var isMCPEnabled: Bool { defaults?.bool(forKey: MCPToggleKeys.isMCPEnabled) ?? false }
-    var isCLIEnabled: Bool { defaults?.bool(forKey: MCPToggleKeys.isCLIEnabled) ?? false }
-    var isMCPReadOnly: Bool { defaults?.bool(forKey: MCPToggleKeys.isMCPReadOnly) ?? true }
-    var isCLIReadOnly: Bool { defaults?.bool(forKey: MCPToggleKeys.isCLIReadOnly) ?? true }
+    var mcpAccess: MCPAccessMode {
+        defaults.map { MCPToggleKeys.accessMode(forKey: MCPToggleKeys.mcpAccessMode, in: $0) } ?? .off
+    }
+    var cliAccess: MCPAccessMode {
+        defaults.map { MCPToggleKeys.accessMode(forKey: MCPToggleKeys.cliAccessMode, in: $0) } ?? .off
+    }
     var contactsAuthorized: Bool { service.contactsAuthorization == .authorized }
     var eventsAuthorized: Bool { service.eventsAuthorization == .authorized }
 }
@@ -219,5 +234,55 @@ final class MCPGates: MCPGateSource {
 /// injected).
 extension SyncService: MCPEventSource {}
 extension SyncService: MCPGuideSource {}
+
+/// Presents the contacts_delete confirmation (plans/cli-mcp.md Revision
+/// 2): a standard alert on the frontmost ACTIVE scene naming the specific
+/// contact. Completion-handler based, so the dispatcher's awaiting task
+/// never blocks the main run loop. Returns nil when nothing can present —
+/// the dispatcher then refuses the write; a delete must never proceed
+/// without the dialog actually having been seen.
+@MainActor
+final class MCPConfirmationPresenter: MCPConfirmationSource {
+    private static let log = GuessWhoLog.logger("app.mcp-confirmation")
+
+    func confirmContactDelete(named contactName: String) async -> Bool? {
+        guard let presenter = Self.foregroundTopViewController() else {
+            Self.log.notice("delete confirmation: no foreground scene to present on")
+            return nil
+        }
+        return await withCheckedContinuation { continuation in
+            let alert = UIAlertController(
+                title: ConfirmationStrings.deleteContactTitle,
+                message: String(format: ConfirmationStrings.deleteContactMessage, contactName),
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(
+                title: ConfirmationStrings.cancelButton, style: .cancel
+            ) { _ in
+                continuation.resume(returning: false)
+            })
+            alert.addAction(UIAlertAction(
+                title: ConfirmationStrings.deleteButton, style: .destructive
+            ) { _ in
+                continuation.resume(returning: true)
+            })
+            presenter.present(alert, animated: true)
+        }
+    }
+
+    /// The topmost view controller of a foreground-ACTIVE scene only — a
+    /// backgrounded window must not "show" a dialog nobody sees.
+    private static func foregroundTopViewController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        guard let root = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+            ?? scene?.windows.first?.rootViewController else { return nil }
+        var top = root
+        while let presented = top.presentedViewController {
+            top = presented
+        }
+        return top
+    }
+}
 
 #endif

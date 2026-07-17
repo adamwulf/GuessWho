@@ -28,14 +28,10 @@ struct MCPPreferencesView: View {
     let auditLog: MCPAuditLog
     let recentlyDeleted: RecentlyDeletedService
 
-    @AppStorage(MCPToggleKeys.isMCPEnabled, store: MCPPreferencesStore.group)
-    private var isMCPEnabled = false
-    @AppStorage(MCPToggleKeys.isMCPReadOnly, store: MCPPreferencesStore.group)
-    private var isMCPReadOnly = true
-    @AppStorage(MCPToggleKeys.isCLIEnabled, store: MCPPreferencesStore.group)
-    private var isCLIEnabled = false
-    @AppStorage(MCPToggleKeys.isCLIReadOnly, store: MCPPreferencesStore.group)
-    private var isCLIReadOnly = true
+    @AppStorage(MCPToggleKeys.mcpAccessMode, store: MCPPreferencesStore.group)
+    private var mcpAccess: MCPAccessMode = .off
+    @AppStorage(MCPToggleKeys.cliAccessMode, store: MCPPreferencesStore.group)
+    private var cliAccess: MCPAccessMode = .off
     @AppStorage(AppSettings.Key.debugModeEnabled)
     private var debugModeEnabled = AppSettings.Default.debugModeEnabled
 
@@ -77,25 +73,50 @@ struct MCPPreferencesView: View {
         }
     }
 
-    // MARK: - Toggles
+    // MARK: - Access modes (one tri-state per surface, Allume-style)
 
     private var assistantSection: some View {
         Section {
-            Toggle(PreferencesStrings.mcpToggleTitle, isOn: $isMCPEnabled)
-            Toggle(PreferencesStrings.mcpReadOnlyTitle, isOn: $isMCPReadOnly)
-                .disabled(!isMCPEnabled)
+            accessModePicker(selection: $mcpAccess)
+        } header: {
+            Text(PreferencesStrings.mcpSectionTitle)
         } footer: {
-            Text(PreferencesStrings.mcpToggleFooter)
+            Text(Self.mcpDescription(for: mcpAccess))
         }
     }
 
     private var terminalSection: some View {
         Section {
-            Toggle(PreferencesStrings.cliToggleTitle, isOn: $isCLIEnabled)
-            Toggle(PreferencesStrings.cliReadOnlyTitle, isOn: $isCLIReadOnly)
-                .disabled(!isCLIEnabled)
+            accessModePicker(selection: $cliAccess)
+        } header: {
+            Text(PreferencesStrings.cliSectionTitle)
         } footer: {
-            Text(PreferencesStrings.cliToggleFooter + "\n\n" + PreferencesStrings.readOnlyFooter)
+            Text(Self.cliDescription(for: cliAccess))
+        }
+    }
+
+    private func accessModePicker(selection: Binding<MCPAccessMode>) -> some View {
+        Picker(PreferencesStrings.accessModeLabel, selection: selection) {
+            Text(PreferencesStrings.accessModeOff).tag(MCPAccessMode.off)
+            Text(PreferencesStrings.accessModeReadOnly).tag(MCPAccessMode.readOnly)
+            Text(PreferencesStrings.accessModeReadWrite).tag(MCPAccessMode.readWrite)
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private static func mcpDescription(for mode: MCPAccessMode) -> String {
+        switch mode {
+        case .off: return PreferencesStrings.mcpOffDescription
+        case .readOnly: return PreferencesStrings.mcpReadOnlyDescription
+        case .readWrite: return PreferencesStrings.mcpReadWriteDescription
+        }
+    }
+
+    private static func cliDescription(for mode: MCPAccessMode) -> String {
+        switch mode {
+        case .off: return PreferencesStrings.cliOffDescription
+        case .readOnly: return PreferencesStrings.cliReadOnlyDescription
+        case .readWrite: return PreferencesStrings.cliReadWriteDescription
         }
     }
 
