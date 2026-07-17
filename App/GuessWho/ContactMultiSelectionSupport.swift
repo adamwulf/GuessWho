@@ -11,23 +11,12 @@ enum ContactMultiSelectionSupport {
         // Command-click extends/reduces the selection, matching Mail/Finder.
         tableView.allowsMultipleSelection = true
         #else
-        // Touch platforms enter the table's explicit Select mode. Normal taps
+        // No nav-bar Select affordance on iPhone: multi-select isn't a promoted
+        // feature there. A two-finger pan still enters the table's editing
+        // selection, and a trackpad/keyboard can extend it, but normal taps
         // retain the established push-one-detail behavior.
         tableView.allowsMultipleSelectionDuringEditing = true
         #endif
-    }
-
-    static func selectionButton(action: @escaping @MainActor () -> Void) -> UIBarButtonItem? {
-        #if targetEnvironment(macCatalyst)
-        nil
-        #else
-        UIBarButtonItem(title: "Select", primaryAction: UIAction { _ in action() })
-        #endif
-    }
-
-    static func updateSelectionButton(_ item: UIBarButtonItem?, isEditing: Bool) {
-        item?.title = isEditing ? "Done" : "Select"
-        item?.accessibilityLabel = isEditing ? "Finish Selecting Contacts" : "Select Contacts"
     }
 
     static func selectedIDs(

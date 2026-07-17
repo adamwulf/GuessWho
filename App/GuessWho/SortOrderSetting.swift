@@ -75,7 +75,9 @@ extension UIViewController {
         return UIMenu(title: "Filter", children: actions)
     }
 
-    /// Textual nav-bar Filter button wrapping `makeLinkFilterMenu`.
+    /// Nav-bar Filter button wrapping `makeLinkFilterMenu`. The
+    /// `line.3.horizontal.decrease` glyph reads as "filter" and sits alongside
+    /// the sort button's `arrow.up.arrow.down`.
     @MainActor
     func makeLinkFilterBarButtonItem(
         current: LinkFilter,
@@ -83,8 +85,8 @@ extension UIViewController {
         onSelect: @escaping (LinkFilter) -> Void
     ) -> UIBarButtonItem {
         let item = UIBarButtonItem(
-            title: "Filter",
-            image: nil,
+            title: nil,
+            image: UIImage(systemName: "line.3.horizontal.decrease"),
             primaryAction: nil,
             menu: makeLinkFilterMenu(current: current, allTitle: allTitle, onSelect: onSelect)
         )
@@ -119,14 +121,14 @@ extension UIViewController {
     }
 
     /// A nav-bar pull-down button wrapping `makeSortMenu`. The
-    /// `line.3.horizontal.decrease.circle` glyph reads as "sort/filter" and
-    /// matches Apple's own list-sort affordances. Each list installs this as
-    /// its `rightBarButtonItem` and refreshes `.menu` in its reload observer so
-    /// the checkmark tracks the global order.
+    /// `arrow.up.arrow.down` glyph reads as "sort" and matches Apple's own
+    /// list-sort affordances. Each list installs this as its
+    /// `rightBarButtonItem` and refreshes `.menu` in its reload observer so the
+    /// checkmark tracks the global order.
     @MainActor
     func makeSortBarButtonItem(repository: ContactsRepository) -> UIBarButtonItem {
         UIBarButtonItem(
-            image: UIImage(systemName: "line.3.horizontal.decrease.circle"),
+            image: UIImage(systemName: "arrow.up.arrow.down"),
             menu: makeSortMenu(repository: repository)
         )
     }
