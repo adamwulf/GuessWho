@@ -11,8 +11,9 @@ public struct MapsGuide: Hashable, Sendable, Codable {
     /// The guide's name as it appeared in the share link (e.g. "Berlin").
     public var name: String
 
-    /// The share URL the guide was imported from, kept so a future re-import /
-    /// refresh flow can re-fetch the same guide. Display-optional.
+    /// The original share URL the guide was imported from. Refresh re-fetches
+    /// it, and a later import with the exact same pre-redirect URL updates this
+    /// guide instead of creating a duplicate. Display-optional.
     public var sourceURL: String?
 
     /// When the guide was imported, derived from the earliest cell `createdAt`

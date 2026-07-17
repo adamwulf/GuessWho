@@ -96,6 +96,49 @@ struct GuideSidecarTests {
 
     // MARK: - Refresh
 
+    @Test func importGuideExactSourceURLRefreshesInsteadOfDuplicating() throws {
+        let (sync, _) = makeOrchestrator()
+        let sourceURL = "https://maps.apple/ug/abc"
+        let originalID = try sync.importGuide(
+            from: sampleSnapshot,
+            sourceURL: sourceURL
+        )
+        let original = try #require(
+            try sync.guide(at: SidecarKey(kind: .guide, id: originalID.uuidString))
+        )
+
+        let refreshedSnapshot = MapsGuideURL.Snapshot(
+            name: "Berlin Updated",
+            entries: [MapsGuideURL.Entry(mapsPlaceID: "ID09B4D36386DC9DA")]
+        )
+        let importedID = try sync.importGuide(
+            from: refreshedSnapshot,
+            sourceURL: sourceURL
+        )
+
+        #expect(importedID == originalID)
+        let guides = try sync.allGuides()
+        #expect(guides.count == 1)
+        #expect(guides.first?.name == "Berlin Updated")
+        #expect(guides.first?.createdAt == original.createdAt)
+        #expect(try sync.places(inGuide: originalID).count == 1)
+    }
+
+    @Test func importGuideSourceURLMatchIsExact() throws {
+        let (sync, _) = makeOrchestrator()
+        let firstID = try sync.importGuide(
+            from: sampleSnapshot,
+            sourceURL: "https://maps.apple/ug/abc"
+        )
+        let secondID = try sync.importGuide(
+            from: sampleSnapshot,
+            sourceURL: "https://maps.apple/ug/abc/"
+        )
+
+        #expect(secondID != firstID)
+        #expect(try sync.allGuides().count == 2)
+    }
+
     @Test func refreshGuideReconcilesSnapshotInPlace() throws {
         let (sync, _) = makeOrchestrator()
         let sourceURL = "https://maps.apple/ug/abc"

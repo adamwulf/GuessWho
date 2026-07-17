@@ -16,9 +16,11 @@ enum GuideImporter {
 
     /// Import the guide behind `url`. Throws when the link can't be fetched,
     /// isn't a guide link, or storage is unavailable. Returns the new guide's
-    /// UUID after the repository has reloaded (so callers can navigate to it);
-    /// place resolution continues in the background and reloads again as
-    /// details land.
+    /// UUID after the repository has reloaded (so callers can navigate to it).
+    /// When the original, pre-redirect URL exactly matches a stored source URL,
+    /// storage refreshes that guide in place and returns its existing UUID
+    /// rather than creating a duplicate. Place resolution continues in the
+    /// background and reloads again as details land.
     @discardableResult
     static func importGuide(
         from url: URL,

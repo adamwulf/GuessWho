@@ -21,6 +21,33 @@ extension GuessWhoSync {
 
     // MARK: - Lifecycle
 
+    /// Import a decoded guide snapshot, refreshing an existing guide when its
+    /// stored source URL exactly matches the user-provided URL. The comparison
+    /// deliberately uses the original pre-redirect string with no URL
+    /// normalization: only an unambiguous exact match is eligible for upsert.
+    /// Different share URLs still create distinct guides because the observed
+    /// payload carries no stable guide-level identifier.
+    @discardableResult
+    public func importGuide(
+        from snapshot: MapsGuideURL.Snapshot,
+        sourceURL: String?
+    ) throws -> UUID {
+        if let sourceURL,
+           !sourceURL.isEmpty,
+           let existing = try guide(matchingSourceURL: sourceURL)
+        {
+            let key = SidecarKey(kind: .guide, id: existing.id.uuidString)
+            if try refreshGuide(
+                at: key,
+                from: snapshot,
+                sourceURL: sourceURL
+            ) {
+                return existing.id
+            }
+        }
+        return try createGuide(from: snapshot, sourceURL: sourceURL)
+    }
+
     /// Create a guide (plus one place sidecar per entry) from a decoded share
     /// link. Mints the guide UUID and a place UUID per entry; entry order is
     /// preserved via each place's `orderCache` cell. Returns the guide UUID.
@@ -363,6 +390,15 @@ extension GuessWhoSync {
         return decodeGuide(envelope: envelope, key: key)
     }
 
+    /// The canonical live guide whose stored source URL exactly equals
+    /// `sourceURL`, or nil. Oldest-created wins if legacy data already contains
+    /// duplicates; UUID is the deterministic fallback when timestamps tie.
+    public func guide(matchingSourceURL sourceURL: String) throws -> MapsGuide? {
+        try allGuides()
+            .filter { $0.sourceURL == sourceURL }
+            .min(by: Self.prefersGuideForExactURLMatch)
+    }
+
     /// Every live guide. O(N) over guide sidecars; unordered — display
     /// ordering is the caller's choice.
     public func allGuides() throws -> [MapsGuide] {
@@ -527,6 +563,19 @@ extension GuessWhoSync {
             }
         }
         return earliest
+    }
+
+    private static func prefersGuideForExactURLMatch(_ lhs: MapsGuide, _ rhs: MapsGuide) -> Bool {
+        switch (lhs.createdAt, rhs.createdAt) {
+        case let (left?, right?) where left != right:
+            return left < right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
     }
 }
 

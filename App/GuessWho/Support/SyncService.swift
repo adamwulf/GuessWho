@@ -487,13 +487,15 @@ final class SyncService {
 
     // MARK: - Guides (imported Apple Maps guides)
 
-    /// Store a decoded guide share link as a guide + its places. Returns the
-    /// new guide's UUID. Pure storage — fetching/decoding the URL is
-    /// `GuideImporter`'s job, and MapKit resolution runs afterwards.
+    /// Store a decoded guide share link as a guide + its places. An exact
+    /// match on the original source URL refreshes that existing guide instead
+    /// of creating a duplicate. Returns the created or refreshed guide UUID.
+    /// Fetching/decoding the URL is `GuideImporter`'s job, and MapKit
+    /// resolution runs afterwards.
     @discardableResult
     func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
-        return try sync.createGuide(from: snapshot, sourceURL: sourceURL)
+        return try sync.importGuide(from: snapshot, sourceURL: sourceURL)
     }
 
     /// Apply a newly fetched snapshot to an existing guide in place. Returns
