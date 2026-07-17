@@ -513,6 +513,10 @@ private final class PlaceCell: UITableViewCell {
     private let nameLabel = UILabel()
     private let addressLabel = UILabel()
     private let linkCountLabel = UILabel()
+    // Spacing between the text stack and the link-count label; collapsed to 0
+    // when the label is hidden so a linkless row reclaims the full width up to
+    // the trailing margin (this cell has no star; see ContactCell rationale).
+    private var textToLinkCountSpacing: NSLayoutConstraint?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -531,6 +535,7 @@ private final class PlaceCell: UITableViewCell {
         addressLabel.isHidden = false
         linkCountLabel.text = nil
         linkCountLabel.isHidden = true
+        textToLinkCountSpacing?.constant = 0
         showSpinner(false)
     }
 
@@ -587,6 +592,9 @@ private final class PlaceCell: UITableViewCell {
         contentView.addSubview(textStack)
         contentView.addSubview(linkCountLabel)
 
+        let textToLinkCount = textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: 0)
+        textToLinkCountSpacing = textToLinkCount
+
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -599,7 +607,7 @@ private final class PlaceCell: UITableViewCell {
             linkCountLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: -8),
+            textToLinkCount,
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
@@ -616,12 +624,16 @@ private final class PlaceCell: UITableViewCell {
 
     func configure(with place: MapsPlace, status: GuidePlacesListViewController.PlaceRowStatus, linkCount: Int) {
         // Reset every configure so a recycled cell never shows a stale count.
+        // The spacing constraint flips with visibility so a hidden label
+        // collapses flush and the text reclaims the full width (see property).
         if linkCount > 0 {
             linkCountLabel.text = linkCount == 1 ? "1 link" : "\(linkCount) links"
             linkCountLabel.isHidden = false
+            textToLinkCountSpacing?.constant = -8
         } else {
             linkCountLabel.text = nil
             linkCountLabel.isHidden = true
+            textToLinkCountSpacing?.constant = 0
         }
         switch status {
         case .resolved:

@@ -511,6 +511,12 @@ private final class ContactCell: UITableViewCell {
     private let subtitleLabel = UILabel()
     private let linkCountLabel = UILabel()
     private let starView = UIImageView()
+    // Spacing between the text stack and the link-count label. A hidden
+    // (empty, zero-width) label still holds its -8 spacer, which would stack
+    // with the label's own -8 trailing spacer and steal ~8pt from the text on
+    // every linkless row; collapsing this to 0 when hidden makes such rows
+    // reclaim the full width up to the star exactly as before this feature.
+    private var textToLinkCountSpacing: NSLayoutConstraint?
     private var representedID: ContactID?
     private var photoTask: Task<Void, Never>?
 
@@ -531,6 +537,7 @@ private final class ContactCell: UITableViewCell {
         iconView.image = nil
         linkCountLabel.text = nil
         linkCountLabel.isHidden = true
+        textToLinkCountSpacing?.constant = 0
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -597,6 +604,9 @@ private final class ContactCell: UITableViewCell {
         contentView.addSubview(linkCountLabel)
         contentView.addSubview(starView)
 
+        let textToLinkCount = textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: 0)
+        textToLinkCountSpacing = textToLinkCount
+
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -607,7 +617,7 @@ private final class ContactCell: UITableViewCell {
             linkCountLabel.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: -8),
+            textToLinkCount,
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
@@ -635,12 +645,16 @@ private final class ContactCell: UITableViewCell {
         // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
         // Reset every configure so a recycled cell never shows a stale count.
+        // The spacing constraint flips with visibility so a hidden label
+        // collapses flush and the text reclaims the full width (see property).
         if linkCount > 0 {
             linkCountLabel.text = linkCount == 1 ? "1 link" : "\(linkCount) links"
             linkCountLabel.isHidden = false
+            textToLinkCountSpacing?.constant = -8
         } else {
             linkCountLabel.text = nil
             linkCountLabel.isHidden = true
+            textToLinkCountSpacing?.constant = 0
         }
         starView.isHidden = !isFavorite
     }

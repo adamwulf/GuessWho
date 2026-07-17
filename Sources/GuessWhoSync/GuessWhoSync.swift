@@ -551,6 +551,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// Creates a link between two entities. Writes one envelope and
     /// returns the minted Link. Never dedups — multiple links between
     /// the same endpoints are allowed.
+    /// Note: a same-key (self) link would be counted twice by `linkCounts(ofKind:)` — once per endpoint.
     @discardableResult
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link {
         let id = UUID()

@@ -442,6 +442,10 @@ private final class OrganizationCell: UITableViewCell {
     private let nameLabel = UILabel()
     private let linkCountLabel = UILabel()
     private let starView = UIImageView()
+    // Spacing between the name and the link-count label; collapsed to 0 when
+    // the label is hidden so a linkless row reclaims the full width up to the
+    // star (see ContactsListViewController's ContactCell for the rationale).
+    private var textToLinkCountSpacing: NSLayoutConstraint?
     private var representedID: ContactID?
     private var photoTask: Task<Void, Never>?
 
@@ -462,6 +466,7 @@ private final class OrganizationCell: UITableViewCell {
         iconView.image = nil
         linkCountLabel.text = nil
         linkCountLabel.isHidden = true
+        textToLinkCountSpacing?.constant = 0
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -516,6 +521,9 @@ private final class OrganizationCell: UITableViewCell {
         contentView.addSubview(linkCountLabel)
         contentView.addSubview(starView)
 
+        let textToLinkCount = nameLabel.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: 0)
+        textToLinkCountSpacing = textToLinkCount
+
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -526,7 +534,7 @@ private final class OrganizationCell: UITableViewCell {
             linkCountLabel.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            nameLabel.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: -8),
+            textToLinkCount,
             nameLabel.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             nameLabel.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
@@ -551,12 +559,16 @@ private final class OrganizationCell: UITableViewCell {
         }
         nameLabel.attributedText = Self.nameAttributedString(for: contact)
         // Reset every configure so a recycled cell never shows a stale count.
+        // The spacing constraint flips with visibility so a hidden label
+        // collapses flush and the name reclaims the full width (see property).
         if linkCount > 0 {
             linkCountLabel.text = linkCount == 1 ? "1 link" : "\(linkCount) links"
             linkCountLabel.isHidden = false
+            textToLinkCountSpacing?.constant = -8
         } else {
             linkCountLabel.text = nil
             linkCountLabel.isHidden = true
+            textToLinkCountSpacing?.constant = 0
         }
         starView.isHidden = !isFavorite
     }
