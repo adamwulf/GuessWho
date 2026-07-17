@@ -493,9 +493,20 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
   )) || [];
   const phones = safe(() => {
     const raw = text(contact) || "";
-    // Rice currently renders North-American numbers as 713-348-6136. Also
-    // accept parentheses, dots, spaces, and an optional +country prefix.
-    const matches = raw.match(/(?:\+?\d{1,3}[ .-]?)?(?:\(\d{3}\)|\d{3})[ .-]\d{3}[ .-]\d{4}\b/g) || [];
+    // Rice renders North-American numbers as 713-348-6136. Accept parentheses,
+    // dots, and an optional +country prefix too.
+    //
+    // The area-code group MUST be punctuated — "(713)", "713-", or "713." — and
+    // never a bare "713 ". A plain-space-separated 3-3-4 digit run is textually
+    // indistinguishable from ordinary prose ("managed 100 250 5000 budgets",
+    // a headline's "10 200 3000"-style figures), and the address block carries
+    // office/title text alongside the number. Requiring phone punctuation on the
+    // area code keeps every format Rice actually emits while refusing to promote
+    // a stray numeric triple to a phone. `(?<!\d)`/`(?!\d)` also stop a match
+    // from slicing a 3-3-4 window out of a longer digit run.
+    const matches = raw.match(
+      /(?<!\d)(?:\+\d{1,3}[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[.-])\d{3}[ .-]?\d{4}(?!\d)/g
+    ) || [];
     return unique(matches, (v) => v.replace(/\D/g, ""));
   }) || [];
   const websites = safe(() => unique(
