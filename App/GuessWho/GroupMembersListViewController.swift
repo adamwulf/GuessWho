@@ -41,7 +41,6 @@ final class GroupMembersListViewController: UIViewController {
     /// equivalent of the contact/event detail screen's favorite toolbar button
     /// (a group has no detail screen of its own; its member list stands in).
     private var favoriteBarButton: UIBarButtonItem!
-    private var selectionBarButtonItem: UIBarButtonItem?
 
     private var sectionLetters: [String] = []
 
@@ -146,29 +145,12 @@ final class GroupMembersListViewController: UIViewController {
             action: #selector(toggleGroupFavorite)
         )
         // rightBarButtonItems places index 0 rightmost, so [sort, star] reads
-        // "star | sort" left-to-right — star nearest the title, matching the
-        // "star before Edit" order in the contact detail toolbar.
-        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
-            self?.toggleSelectionMode()
-        }
-        selectionBarButtonItem = selectionItem
+        // "star | sort" left-to-right — star nearest the title.
         navigationItem.rightBarButtonItems = [
             makeSortBarButtonItem(repository: repository),
             favoriteBarButton,
-        ] + [selectionItem].compactMap { $0 }
+        ]
         updateFavoriteButton()
-    }
-
-    private func toggleSelectionMode() {
-        if tableView.isEditing {
-            let contacts = selectedContacts()
-            tableView.setEditing(false, animated: true)
-            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
-            notifySelectionChanged(contacts)
-        } else {
-            tableView.setEditing(true, animated: true)
-            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
-        }
     }
 
     private func selectedIDs() -> [ContactID] {

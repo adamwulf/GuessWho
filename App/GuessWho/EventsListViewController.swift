@@ -251,8 +251,8 @@ final class EventsListViewController: UIViewController {
 
         sortButton = makeEventSortBarButtonItem(repository: repository)
         filterButton = UIBarButtonItem(
-            title: "Filter",
-            image: nil,
+            title: nil,
+            image: UIImage(systemName: "line.3.horizontal.decrease"),
             primaryAction: nil,
             menu: makeEventFilterMenu(repository: repository)
         )
@@ -293,9 +293,9 @@ final class EventsListViewController: UIViewController {
     private func updateNavigationButtons() {
         let debugEnabled = UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled)
         // Right bar items render right-to-left: the first array element is the
-        // rightmost. Keep "+" rightmost (as before), then the new textual
-        // Filter control, then the established sort glyph. Export Logs remains
-        // leftmost when debug mode is enabled.
+        // rightmost. Keep "+" rightmost (as before), then the Filter glyph,
+        // then the sort glyph. Export Logs remains leftmost when debug mode is
+        // enabled.
         navigationItem.rightBarButtonItems = debugEnabled
             ? [addButton, filterButton, sortButton, exportLogsButton]
             : [addButton, filterButton, sortButton]

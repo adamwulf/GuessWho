@@ -150,27 +150,10 @@ final class DepartmentMembersListViewController: UIViewController {
         editItem.accessibilityLabel = "Rename Department"
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
-            self?.toggleSelectionMode()
-        }
-        selectionBarButtonItem = selectionItem
-        navigationItem.rightBarButtonItems = [editItem, sortItem] + [selectionItem].compactMap { $0 }
+        navigationItem.rightBarButtonItems = [editItem, sortItem]
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
-    private var selectionBarButtonItem: UIBarButtonItem?
-
-    private func toggleSelectionMode() {
-        if tableView.isEditing {
-            let contacts = selectedContacts()
-            tableView.setEditing(false, animated: true)
-            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
-            notifySelectionChanged(contacts)
-        } else {
-            tableView.setEditing(true, animated: true)
-            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
-        }
-    }
 
     private func selectedIDs() -> [ContactID] {
         ContactMultiSelectionSupport.selectedIDs(

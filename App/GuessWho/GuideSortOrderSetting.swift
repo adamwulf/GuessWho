@@ -84,7 +84,7 @@ extension UIViewController {
     @MainActor
     func makeGuideSortBarButtonItem(repository: GuidesRepository) -> UIBarButtonItem {
         UIBarButtonItem(
-            image: UIImage(systemName: "line.3.horizontal.decrease.circle"),
+            image: UIImage(systemName: "arrow.up.arrow.down"),
             menu: makeGuideSortMenu(repository: repository)
         )
     }

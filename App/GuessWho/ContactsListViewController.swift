@@ -172,31 +172,11 @@ final class ContactsListViewController: UIViewController {
             repository?.peopleFilter = filter
         }
         filterBarButtonItem = filterItem
-        let selectionItem = ContactMultiSelectionSupport.selectionButton { [weak self] in
-            self?.toggleSelectionMode()
-        }
-        selectionBarButtonItem = selectionItem
-        navigationItem.rightBarButtonItems = [addItem, filterItem, sortItem] + [selectionItem].compactMap { $0 }
+        navigationItem.rightBarButtonItems = [addItem, filterItem, sortItem]
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
     private var filterBarButtonItem: UIBarButtonItem?
-    private var selectionBarButtonItem: UIBarButtonItem?
-
-    private func toggleSelectionMode() {
-        if tableView.isEditing {
-            // UIKit may clear editing selections as editing ends. Snapshot the
-            // contacts first so Done always presents the selection the user
-            // just made.
-            let contacts = selectedContacts()
-            tableView.setEditing(false, animated: true)
-            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: false)
-            notifySelectionChanged(contacts)
-        } else {
-            tableView.setEditing(true, animated: true)
-            ContactMultiSelectionSupport.updateSelectionButton(selectionBarButtonItem, isEditing: true)
-        }
-    }
 
     private func selectedContacts() -> [Contact] {
         ContactMultiSelectionSupport.selectedContacts(
