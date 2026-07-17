@@ -12,25 +12,21 @@ import GuessWhoMCPWire
 ///
 /// Catalyst-only, like the channel itself (INV-5): the backing activity log
 /// is device-local, and only the Mac host records agent writes.
+///
+/// A pushed destination: Phase 3 moved the entry point from the File menu
+/// into the Settings sheet (a Preferences row), so this view lives inside
+/// the sheet's NavigationStack rather than wrapping its own.
 struct RecentlyDeletedView: View {
     let service: RecentlyDeletedService
 
     @State private var items: [RecentlyDeletedItem] = []
     @State private var loaded = false
     @State private var failedRestoreItemID: String?
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle(RecentlyDeletedStrings.title)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
-                    }
-                }
-                .task { await reload() }
-        }
+        content
+            .navigationTitle(RecentlyDeletedStrings.title)
+            .task { await reload() }
     }
 
     @ViewBuilder
@@ -94,35 +90,6 @@ struct RecentlyDeletedView: View {
         } else {
             failedRestoreItemID = item.id
         }
-    }
-}
-
-/// Self-presenting entry point for the File-menu command — same pattern as
-/// `DebugMenuActions`: resolve the frontmost view controller directly so
-/// presentation never depends on responder-chain focus.
-@MainActor
-enum RecentlyDeletedPresenter {
-    static func present(service: RecentlyDeletedService) {
-        guard let presenter = topViewController() else { return }
-        let host = UIHostingController(rootView: RecentlyDeletedView(service: service))
-        host.modalPresentationStyle = .formSheet
-        presenter.present(host, animated: true)
-    }
-
-    private static func topViewController() -> UIViewController? {
-        let scene = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }
-            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-
-        guard let root = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
-            ?? scene?.windows.first?.rootViewController else { return nil }
-
-        var top = root
-        while let presented = top.presentedViewController {
-            top = presented
-        }
-        return top
     }
 }
 
