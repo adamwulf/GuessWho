@@ -60,6 +60,103 @@ struct EventLocationMatcherTests {
     }
 }
 
+@Suite("EventLocationMatcher.isPhysicalLocation")
+struct EventLocationPhysicalTests {
+    @Test
+    func nilOrEmptyIsNotPhysical() {
+        #expect(!EventLocationMatcher.isPhysicalLocation(nil))
+        #expect(!EventLocationMatcher.isPhysicalLocation(""))
+        #expect(!EventLocationMatcher.isPhysicalLocation("   \n  "))
+    }
+
+    @Test
+    func streetAddressIsPhysical() {
+        #expect(EventLocationMatcher.isPhysicalLocation("1 Infinite Loop, Cupertino, CA 95014"))
+        #expect(EventLocationMatcher.isPhysicalLocation("500 Terry A Francois Blvd, San Francisco"))
+    }
+
+    @Test
+    func venueNameIsPhysical() {
+        #expect(EventLocationMatcher.isPhysicalLocation("Conference Room B"))
+        #expect(EventLocationMatcher.isPhysicalLocation("Blue Bottle Coffee"))
+        // Trailing/leading whitespace doesn't change the classification.
+        #expect(EventLocationMatcher.isPhysicalLocation("  Conference Room B  "))
+    }
+
+    @Test
+    func httpAndHttpsURLsAreNotPhysical() {
+        #expect(!EventLocationMatcher.isPhysicalLocation("https://zoom.us/j/1234567890"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("http://example.com/room"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("HTTPS://ZOOM.US/J/1234567890"))
+    }
+
+    @Test
+    func customSchemeLinksAreNotPhysical() {
+        // Custom join schemes ("zoommtg://") must read as links too.
+        #expect(!EventLocationMatcher.isPhysicalLocation("zoommtg://zoom.us/join?confno=123"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("msteams://l/meetup-join/xyz"))
+    }
+
+    @Test
+    func bareVideoCallHostsAreNotPhysical() {
+        // Calendars often store a scheme-less join link.
+        #expect(!EventLocationMatcher.isPhysicalLocation("meet.google.com/abc-defg-hij"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("teams.microsoft.com/l/meetup-join/xyz"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("zoom.us/j/1234567890"))
+    }
+
+    @Test
+    func bareWebAddressIsNotPhysical() {
+        #expect(!EventLocationMatcher.isPhysicalLocation("example.com"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("my-org.example.co.uk/meeting"))
+    }
+
+    @Test
+    func addressWithNumbersAndDotsStaysPhysical() {
+        // A street address has spaces and no letter-only TLD after a lone dot,
+        // so it must NOT be mistaken for a bare web address.
+        #expect(EventLocationMatcher.isPhysicalLocation("Room 2.1, Building 4"))
+        #expect(EventLocationMatcher.isPhysicalLocation("Apt. 3B, 21 Main St."))
+        // A URL sitting inside a longer address-like string with a scheme is
+        // still a link (scheme wins).
+        #expect(!EventLocationMatcher.isPhysicalLocation("https://maps.example.com/place"))
+    }
+
+    @Test
+    func embeddedURLInProseIsNotPhysical() {
+        // A "scheme://" URL anywhere in the text reads as a link, even embedded
+        // in prose — a real street address never contains "://".
+        #expect(!EventLocationMatcher.isPhysicalLocation("Come to https://example.com/party"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("Join here: https://zoom.us/j/999 or call in"))
+    }
+
+    @Test
+    func schemeOnlyURIsAreNotPhysical() {
+        // geo: is Apple's own maps scheme; mailto:/tel:/sms: are the other
+        // scheme-only forms that can land in a location field.
+        #expect(!EventLocationMatcher.isPhysicalLocation("geo:37.331,-122.031"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("mailto:team@example.com"))
+        #expect(!EventLocationMatcher.isPhysicalLocation("tel:+15551234567"))
+    }
+
+    @Test
+    func colonInProseStaysPhysical() {
+        // A scheme-only prefix matches only a single-token string. Plain text
+        // with a space after the colon is a place, not a link.
+        #expect(EventLocationMatcher.isPhysicalLocation("Standup: Room 4"))
+        #expect(EventLocationMatcher.isPhysicalLocation("Meet at 12:30 in the lobby"))
+    }
+
+    @Test
+    func hostTokenEmbeddedInLongerLabelStaysPhysical() {
+        // Boundary-anchored host matching: a real place whose name merely
+        // embeds a video-call host token must NOT be filtered out. "zoom.us"
+        // is preceded by a letter in "myzoom.us.club", so it is not the host.
+        #expect(EventLocationMatcher.isPhysicalLocation("MyZoom.us.club Lounge"))
+        #expect(EventLocationMatcher.isPhysicalLocation("anyskype.com.br cafe"))
+    }
+}
+
 @Suite("EventsWithLocation")
 struct EventsWithLocationTests {
     private func event(
