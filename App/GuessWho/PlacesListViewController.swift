@@ -169,9 +169,11 @@ final class PlacesListViewController: UIViewController {
         ) { [weak repository] filter in
             repository?.placeFilter = filter
         }
-        // The first item is the trailing (top-right) item: Filter, then Sort —
-        // the per-guide places list's order, minus its Refresh button.
-        navigationItem.rightBarButtonItems = [filterButton, sortButton]
+        // Right bar items render right-to-left (index 0 is rightmost): the
+        // sort glyph trailing with the filter glyph on the left, so
+        // left-to-right the user reads filter, sort — the same relative order
+        // as every other list (which put their add/refresh button after sort).
+        navigationItem.rightBarButtonItems = [sortButton, filterButton]
     }
 
     private func refreshFilterMenu() {
