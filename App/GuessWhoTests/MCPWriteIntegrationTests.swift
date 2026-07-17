@@ -182,6 +182,9 @@ private final class INV2LiveEventSource: MCPEventSource {
     func allEventTagFields(forEventUUID uuid: String) -> [SidecarField] {
         service.allEventTagFields(forEventUUID: uuid)
     }
+    func eventUUID(forEventKitID eventKitID: String) async -> UUID? {
+        await service.eventUUID(forEventKitID: eventKitID)
+    }
 }
 
 @MainActor
@@ -206,10 +209,8 @@ private final class INV2LiveGuideSource: MCPGuideSource {
 
 @MainActor
 private final class INV2Gates: MCPGateSource {
-    var isMCPEnabled = true
-    var isCLIEnabled = true
-    var isMCPReadOnly = false
-    var isCLIReadOnly = false
+    var mcpAccess: MCPAccessMode = .readWrite
+    var cliAccess: MCPAccessMode = .readWrite
     var contactsAuthorized = true
     var eventsAuthorized = true
 }
