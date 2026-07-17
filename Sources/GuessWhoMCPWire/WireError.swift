@@ -32,9 +32,9 @@ public enum WireErrorMessage {
     public static let disabled =
         "That capability is turned off in GuessWho's settings."
     public static let permissionDeniedContacts =
-        "GuessWho doesn't have access to Contacts yet. Ask the user to grant Contacts access to GuessWho."
+        "GuessWho doesn't have access to Contacts yet. Ask the user to grant Contacts access in System Settings, then try again."
     public static let permissionDeniedEvents =
-        "GuessWho doesn't have access to the user's calendars yet. Ask the user to grant calendar access to GuessWho."
+        "GuessWho doesn't have access to the user's calendars yet. Ask the user to grant calendar access in System Settings, then try again."
     public static let readOnly =
         "Editing is turned off. The user can enable it in GuessWho's settings."
     public static let tooLarge =
@@ -68,6 +68,30 @@ public enum WireErrorMessage {
             readOnly, tooLarge, staleReference, staleReferenceGeneric, busy,
             notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide, noHostStatus,
             hostNotReady, timedOut,
+        ]
+    }
+}
+
+/// User-facing copy for the settings toggles (rendered by the app's
+/// Preferences in Phase 3; defined here so the banned-vocabulary test
+/// covers them from day one). Plain language only — the user thinks in
+/// assistants, contacts, and events, never in transport mechanics.
+public enum PreferencesStrings {
+    public static let mcpToggleTitle = "AI assistant access"
+    public static let mcpToggleFooter =
+        "Let AI assistants you connect (like Claude) look up your contacts, events, and guides while GuessWho is open."
+    public static let cliToggleTitle = "Terminal access"
+    public static let cliToggleFooter =
+        "Let terminal commands look up your contacts, events, and guides while GuessWho is open."
+    public static let mcpReadOnlyTitle = "Read-only for AI assistants"
+    public static let cliReadOnlyTitle = "Read-only for terminal commands"
+    public static let readOnlyFooter =
+        "When read-only is on, lookups work but nothing can be added, changed, or deleted."
+
+    public static var allFixedStrings: [String] {
+        [
+            mcpToggleTitle, mcpToggleFooter, cliToggleTitle, cliToggleFooter,
+            mcpReadOnlyTitle, cliReadOnlyTitle, readOnlyFooter,
         ]
     }
 }

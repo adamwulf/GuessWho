@@ -4,42 +4,61 @@ import EasyMacMCP
 import GuessWhoMCPWire
 import Logging
 
-/// A FIFO line reader that enforces a per-line size cap DURING assembly.
+/// A FIFO line reader built on `DispatchSourceRead`, enforcing a per-line
+/// size cap DURING assembly.
 ///
-/// Mirrors EasyMacMCP's `ReadPipe` (same keepalive-FD, wake-sentinel, and
-/// close-ordering contract — see that type's docs for the dispatch_io
-/// rationale) with two deliberate differences:
+/// ## Why not `FileHandle.bytes` (the inherited ReadPipe's engine)
 ///
-/// * **Cap before reassembly.** `ReadPipe` hands the FD to
-///   `AsyncLineSequence`, which will happily buffer a 500MB "line". This
-///   reader assembles lines byte-by-byte and flips into discard mode the
-///   moment a line crosses `maxLineBytes`, so an oversize request costs
-///   O(cap) memory, not O(payload) (plans/cli-mcp.md request-size cap).
-///   Discarded lines are counted and logged; they can't be answered
-///   (their message id was never parsed), so the sender times out — the
-///   documented cost of sending something enormous.
-/// * **Soft limit for the announce channel.** When `softLimitBytes` is
-///   set, any line above it logs loudly (and debug-asserts): the shared
-///   announce FIFO is only interleave-safe for writes ≤ PIPE_BUF (512
-///   bytes on Darwin), so a fat control message is a design regression
-///   even when it happens to parse (Guard 1).
+/// Empirically (see `ReadPipeDeliveryTests`), `FileHandle.AsyncBytes`
+/// stops delivering wakeups once a process holds roughly THREE
+/// concurrently-parked FIFO reads — bytes sit unread in the FIFO while
+/// `next()` never resumes. The inherited design never hits this (its host
+/// parks exactly ONE reader — the shared central pipe — and each helper
+/// process parks one), but OUR topology parks 1 announce + N per-helper
+/// request readers in the app, so the app would wedge as soon as a second
+/// helper connected. An event-driven read source scales to any N: nothing
+/// parks; the kernel signals readability and the consumer drains
+/// non-blocking.
 ///
-/// Conforms to `PipeReadable`, so `HostRequestPipe` drives it unchanged.
+/// ## Contract (mirrors the inherited ReadPipe where it matters)
+///
+/// * A keepalive `O_WRONLY` FD on the same FIFO keeps the kernel writer
+///   count positive, so external writers detaching never EOFs the reader.
+/// * `readLine()` returns the next non-empty line, `nil` only after
+///   `close()`, and throws `CancellationError` when its task is cancelled
+///   (cancellation also wakes a parked wait — no sentinel required,
+///   though `signalReaderWake()` remains for the shared shutdown
+///   sequence).
+/// * Single consumer: one `readLine()` loop per pipe (both callers — the
+///   request readers and the response router — honor this).
+///
+/// ## Caps
+///
+/// * `maxLineBytes` — a line that exceeds this flips the reader into
+///   discard mode until the next newline: the flood streams to the floor
+///   at O(cap) memory, is counted + logged, and (unparseable, so
+///   unanswerable) times out sender-side.
+/// * `softLimitBytes` — for the announce channel: any line above it logs
+///   loudly and debug-asserts, because the shared announce FIFO is only
+///   interleave-safe for writes ≤ PIPE_BUF (512 bytes on Darwin; Guard 1).
 public actor CappedLineReadPipe: PipeReadable {
     private let fileURL: URL
     private let maxLineBytes: Int
     private let softLimitBytes: Int?
     private let logger: Logger?
 
-    private var fileHandle: FileHandle?
-    /// Persistent byte iterator — held across `readLine()` calls so the
-    /// underlying `AsyncBytes` chunk buffer survives (a fresh iterator per
-    /// call would silently drop buffered bytes).
-    private var byteIterator: FileHandle.AsyncBytes.AsyncIterator?
-    /// Self-pipe keepalive writer FD; see `ReadPipe` for why EOF must never
-    /// be delivered on external-writer churn.
-    private var keepaliveWriterFD: Int32?
-    private var lineBuffer: [UInt8] = []
+    private var readerFD: Int32 = -1
+    private var keepaliveWriterFD: Int32 = -1
+    private var source: DispatchSourceRead?
+    private let readableSignal = PipeSignal()
+    private var isOpen = false
+    private var sawEOF = false
+
+    /// Bytes drained from the FD but not yet consumed into lines.
+    private var pendingBytes: [UInt8] = []
+    /// Length of the trailing partial (un-terminated) line, tracked
+    /// incrementally so the cap check is O(1) per byte.
+    private var partialLineLength = 0
     private var isDiscardingOversizeLine = false
     public private(set) var droppedLineCount = 0
 
@@ -71,124 +90,218 @@ public actor CappedLineReadPipe: PipeReadable {
     }
 
     deinit {
-        // Mirrors ReadPipe.deinit: by the time deinit can run, every reader
-        // Task has exited via the documented cancel → wake → await → close
-        // sequence, so plain FD cleanup is safe here.
-        if let fd = keepaliveWriterFD { Darwin.close(fd) }
-        try? fileHandle?.close()
+        // By deinit, every consumer task has exited (the documented
+        // cancel → wake → await → close sequence), so plain cleanup is
+        // safe. Cancelling the source is what closes the reader FD via
+        // its cancel handler; if the source never existed, close directly.
+        if let source {
+            source.cancel()
+        } else if readerFD >= 0 {
+            Darwin.close(readerFD)
+        }
+        if keepaliveWriterFD >= 0 {
+            Darwin.close(keepaliveWriterFD)
+        }
     }
 
     public func open() async throws {
-        guard fileHandle == nil && keepaliveWriterFD == nil else {
-            throw ReadPipeError.pipeAlreadyOpen
-        }
+        guard !isOpen else { throw ReadPipeError.pipeAlreadyOpen }
         let path = fileURL.path
         guard FileManager.default.fileExists(atPath: path) else {
             throw ReadPipeError.pipeDoesNotExist
         }
         guard Self.isFIFO(path) else { throw ReadPipeError.notAPipe }
 
-        let readerFD = Darwin.open(path, O_RDONLY | O_NONBLOCK, 0)
-        guard readerFD != -1 else {
+        // O_NONBLOCK stays SET on the reader: all reads are drains driven
+        // by the source's readability events, never parked read(2) calls.
+        let fd = Darwin.open(path, O_RDONLY | O_NONBLOCK, 0)
+        guard fd != -1 else {
             throw ReadPipeError.openFailed(String(cString: strerror(errno)))
         }
-        let flags = fcntl(readerFD, F_GETFL)
-        if flags != -1 {
-            _ = fcntl(readerFD, F_SETFL, flags & ~O_NONBLOCK)
-        }
 
-        // Keepalive writer FD (never written except by signalReaderWake):
-        // keeps the kernel writer count positive so external writers
-        // detaching never EOFs the reader into a busy-spin.
         let keepaliveFD = Darwin.open(path, O_WRONLY | O_NONBLOCK, 0)
         guard keepaliveFD != -1 else {
             let message = String(cString: strerror(errno))
-            Darwin.close(readerFD)
+            Darwin.close(fd)
             throw ReadPipeError.keepaliveOpenFailed(message)
         }
 
-        let handle = FileHandle(fileDescriptor: readerFD, closeOnDealloc: true)
-        fileHandle = handle
-        byteIterator = handle.bytes.makeAsyncIterator()
+        readerFD = fd
         keepaliveWriterFD = keepaliveFD
+
+        let queue = DispatchQueue(label: "com.milestonemade.guesswho.mcp.pipe-read")
+        let readSource = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        let signal = readableSignal
+        readSource.setEventHandler {
+            signal.signal()
+        }
+        readSource.setCancelHandler {
+            Darwin.close(fd)
+            signal.signal() // wake any final waiter so it can observe close
+        }
+        readSource.resume()
+        source = readSource
+        isOpen = true
     }
 
-    /// Next non-empty line, or nil when the pipe has been closed by us.
-    /// Oversize lines are discarded in-stream (logged + counted) and never
-    /// returned. Rethrows `CancellationError` unwrapped — the documented
-    /// reader-shutdown signal.
     public func readLine() async throws -> String? {
-        guard fileHandle != nil, var iterator = byteIterator else {
-            throw ReadPipeError.pipeNotOpened
-        }
-        defer { byteIterator = iterator }
-
         while true {
             if Task.isCancelled { throw CancellationError() }
-            let byte: UInt8?
-            do {
-                byte = try await iterator.next()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                throw ReadPipeError.readError(error)
+            if let line = extractLine() {
+                if line.isEmpty { continue } // sentinel / keepalive noise
+                return line
             }
-            guard let byte else { return nil }
+            guard isOpen else { return nil }
+            if sawEOF { return nil }
+            if drainAvailable() == 0 {
+                await readableSignal.wait()
+            }
+        }
+    }
 
-            if byte == 0x0A { // \n — line boundary
-                if isDiscardingOversizeLine {
+    /// Wake a consumer parked in `readLine()` so it can observe
+    /// cancellation — kept for the shared shutdown sequence, though task
+    /// cancellation alone also wakes the wait.
+    public nonisolated func signalReaderWake() {
+        readableSignal.signal()
+    }
+
+    /// Close the pipe. Callers must have cancelled + awaited their reader
+    /// task first (same contract as the inherited ReadPipe). Cancelling
+    /// the dispatch source closes the reader FD via its cancel handler.
+    public func close() async {
+        guard isOpen else { return }
+        isOpen = false
+        if let source {
+            source.cancel()
+            self.source = nil
+        } else if readerFD >= 0 {
+            Darwin.close(readerFD)
+        }
+        readerFD = -1
+        if keepaliveWriterFD >= 0 {
+            Darwin.close(keepaliveWriterFD)
+            keepaliveWriterFD = -1
+        }
+        readableSignal.signal()
+    }
+
+    // MARK: - Draining & line assembly
+
+    /// Drain whatever the FIFO holds right now (non-blocking) into the
+    /// pending buffer, applying the oversize cap as bytes stream through.
+    /// Returns the number of bytes consumed from the FD.
+    private func drainAvailable() -> Int {
+        guard readerFD >= 0 else { return 0 }
+        var total = 0
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let count = read(readerFD, &chunk, chunk.count)
+            if count > 0 {
+                total += count
+                ingest(chunk[0..<count])
+                if count < chunk.count { break }
+            } else if count == 0 {
+                // True EOF is impossible while the keepalive holds the
+                // writer count up; if it happens, the FDs are gone.
+                sawEOF = true
+                break
+            } else {
+                let code = errno
+                if code == EINTR { continue }
+                // EAGAIN/EWOULDBLOCK: drained dry.
+                break
+            }
+        }
+        return total
+    }
+
+    /// Feed drained bytes through the cap/discard state machine into the
+    /// line buffer.
+    private func ingest(_ bytes: ArraySlice<UInt8>) {
+        for byte in bytes {
+            if isDiscardingOversizeLine {
+                if byte == 0x0A {
                     isDiscardingOversizeLine = false
                     droppedLineCount += 1
                     logger?.error("CAPPED_READ_PIPE: dropped line over \(maxLineBytes) bytes (total dropped: \(droppedLineCount))")
-                    continue
                 }
-                if lineBuffer.isEmpty { continue } // wake sentinel / keepalive noise
-                if lineBuffer.last == 0x0D { lineBuffer.removeLast() } // \r\n
-                if let soft = softLimitBytes, lineBuffer.count > soft {
-                    logger?.error("CAPPED_READ_PIPE: control line of \(lineBuffer.count) bytes exceeds the \(soft)-byte announce budget — control messages must stay tiny")
-                    assertionFailure("Announce-channel message exceeded PIPE_BUF-safe budget")
-                }
-                let line = String(decoding: lineBuffer, as: UTF8.self)
-                lineBuffer.removeAll(keepingCapacity: true)
-                return line
+                continue
             }
-
-            if isDiscardingOversizeLine { continue }
-            lineBuffer.append(byte)
-            if lineBuffer.count > maxLineBytes {
-                // Flip to discard mode WITHOUT buffering the rest: the
-                // memory already spent is released now, the remainder of
-                // the line streams straight to the floor.
-                lineBuffer.removeAll(keepingCapacity: false)
+            if byte == 0x0A {
+                pendingBytes.append(byte)
+                partialLineLength = 0
+                continue
+            }
+            pendingBytes.append(byte)
+            partialLineLength += 1
+            if partialLineLength > maxLineBytes {
+                // Roll back the partial line and discard the remainder of
+                // the flood as it streams.
+                pendingBytes.removeLast(partialLineLength)
+                partialLineLength = 0
                 isDiscardingOversizeLine = true
             }
         }
     }
 
-    /// See `ReadPipe.signalReaderWake()` — one sentinel newline through the
-    /// keepalive FD so a cancelled consumer parked in `readLine()` gets
-    /// scheduler time to observe cancellation.
-    public func signalReaderWake() {
-        guard let fd = keepaliveWriterFD else { return }
-        var sentinel: UInt8 = 0x0A
-        _ = Darwin.write(fd, &sentinel, 1)
-    }
-
-    /// See `ReadPipe.close()` — callers MUST cancel + wake + await their
-    /// reader Task first or this deadlocks against dispatch_io.
-    public func close() async {
-        byteIterator = nil
-        if let fd = keepaliveWriterFD {
-            Darwin.close(fd)
-            keepaliveWriterFD = nil
+    /// Pop the next complete line (may be empty for bare newlines);
+    /// nil when no full line is buffered.
+    private func extractLine() -> String? {
+        guard let newlineIndex = pendingBytes.firstIndex(of: 0x0A) else { return nil }
+        var lineBytes = Array(pendingBytes[..<newlineIndex])
+        pendingBytes.removeSubrange(...newlineIndex)
+        if lineBytes.last == 0x0D { lineBytes.removeLast() }
+        if let soft = softLimitBytes, lineBytes.count > soft {
+            logger?.error("CAPPED_READ_PIPE: control line of \(lineBytes.count) bytes exceeds the \(soft)-byte announce budget — control messages must stay tiny")
+            assertionFailure("Announce-channel message exceeded PIPE_BUF-safe budget")
         }
-        try? fileHandle?.close()
-        fileHandle = nil
+        return String(decoding: lineBytes, as: UTF8.self)
     }
 
     private static func isFIFO(_ path: String) -> Bool {
         var status = stat()
         guard stat(path, &status) == 0 else { return false }
         return (status.st_mode & S_IFMT) == S_IFIFO
+    }
+}
+
+/// Bridges dispatch-queue readiness events to a single awaiting
+/// consumer. Lock-guarded (the event handler runs on a dispatch queue,
+/// outside any actor); supports cancellation by resuming the waiter, whose
+/// loop then observes `Task.isCancelled`.
+final class PipeSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var pendingSignal = false
+
+    func signal() {
+        lock.lock()
+        if let waiting = waiter {
+            waiter = nil
+            lock.unlock()
+            waiting.resume()
+        } else {
+            pendingSignal = true
+            lock.unlock()
+        }
+    }
+
+    func wait() async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if pendingSignal || Task.isCancelled {
+                    pendingSignal = false
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            signal()
+        }
     }
 }

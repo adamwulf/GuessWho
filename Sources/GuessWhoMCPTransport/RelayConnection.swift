@@ -43,15 +43,14 @@ public enum RelayConnectionError: Error, CustomStringConvertible {
 /// before retrying once. That same path is what makes the app's launch
 /// sweep safe for helpers that outlive an app restart.
 public actor RelayConnection {
-    public let helperId: String
+    public nonisolated let helperId: String
     private let container: URL
     private let logger: Logger?
     private let readyTimeout: TimeInterval
 
-    private var announcePipe: HelperRequestPipe?
-    private var requestPipe: HelperRequestPipe?
-    private var responsePipe: HelperResponsePipe?
-    private var responseManager: ResponseManager<WireResponse>?
+    private var announcePipe: ChunkedWritePipe?
+    private var requestPipe: ChunkedWritePipe?
+    private var responseRouter: RelayResponseRouter?
     private var isConnected = false
     private var pingTask: Task<Void, Never>?
     /// Keep-fresh interval for the app-side liveness clock; well under the
@@ -102,14 +101,12 @@ public actor RelayConnection {
             // Response pipe FIRST: our reader must exist before the app
             // tries to open its writer during initialize handling.
             let responseURL = WireEnvironment.responsePipePath(container: container, helperId: helperId)
-            let response = try HelperResponsePipe(url: responseURL, logger: logger)
-            let manager = ResponseManager<WireResponse>(responsePipe: response, logger: logger)
-            try await manager.startReading()
-            responsePipe = response
-            responseManager = manager
+            let router = try RelayResponseRouter(url: responseURL, logger: logger)
+            try await router.startReading()
+            responseRouter = router
 
             let announceURL = WireEnvironment.announcePipePath(container: container)
-            let announce = try HelperRequestPipe(url: announceURL, logger: logger)
+            let announce = try ChunkedWritePipe(url: announceURL, logger: logger)
             try await announce.open()
             announcePipe = announce
         } catch {
@@ -122,7 +119,7 @@ public actor RelayConnection {
         // after `ready` does the request pipe exist host-side (Guard 2).
         let messageId = UUID().uuidString
         do {
-            try await announcePipe?.sendRequest(
+            try await announcePipe?.send(
                 WireRequest.initialize(helperId: helperId, messageId: messageId))
         } catch {
             await closePipes()
@@ -130,7 +127,7 @@ public actor RelayConnection {
         }
 
         do {
-            _ = try await responseManager?.waitForResponse(
+            _ = try await responseRouter?.waitForResponse(
                 helperId: helperId, messageId: messageId, timeout: readyTimeout)
         } catch {
             await closePipes()
@@ -141,7 +138,7 @@ public actor RelayConnection {
 
         do {
             let requestURL = WireEnvironment.requestPipePath(container: container, helperId: helperId)
-            let request = try HelperRequestPipe(url: requestURL, logger: logger)
+            let request = try ChunkedWritePipe(url: requestURL, logger: logger)
             try await request.open()
             requestPipe = request
         } catch {
@@ -159,18 +156,17 @@ public actor RelayConnection {
         pingTask = nil
         if isConnected {
             // Best-effort: a dead host can't read this, and that's fine.
-            try? await announcePipe?.sendRequest(WireRequest.deinitialize(helperId: helperId))
+            try? await announcePipe?.send(WireRequest.deinitialize(helperId: helperId))
         }
         await closePipes()
         isConnected = false
     }
 
     private func closePipes() async {
-        if let manager = responseManager {
-            await manager.stopReading() // awaited: cancel → wake → await → close
+        if let router = responseRouter {
+            await router.stopReading() // awaited: cancel → wake → await → close
         }
-        responseManager = nil
-        responsePipe = nil
+        responseRouter = nil
         if let request = requestPipe {
             await request.close()
         }
@@ -196,7 +192,7 @@ public actor RelayConnection {
         }
 
         do {
-            try await pipe.sendRequest(request)
+            try await pipe.send(request)
         } catch {
             logger?.info("RELAY: request write failed (\(error)); attempting reconnect")
             await closePipes()
@@ -205,20 +201,20 @@ public actor RelayConnection {
                 throw RelayConnectionError.hostNotReady
             }
             do {
-                try await retryPipe.sendRequest(request)
+                try await retryPipe.send(request)
             } catch {
                 await closePipes()
                 throw RelayConnectionError.transport(error)
             }
         }
 
-        // Re-read the manager AFTER any reconnect — it is rebuilt with the
+        // Re-read the router AFTER any reconnect — it is rebuilt with the
         // pipes.
-        guard let manager = responseManager else {
+        guard let router = responseRouter else {
             throw RelayConnectionError.hostNotReady
         }
         do {
-            return try await manager.waitForResponse(
+            return try await router.waitForResponse(
                 helperId: helperId, messageId: request.messageId, timeout: timeout)
         } catch let error as ResponseError where error == .timeout {
             throw RelayConnectionError.timedOut
