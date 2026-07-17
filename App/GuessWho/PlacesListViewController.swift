@@ -90,6 +90,10 @@ final class PlacesListViewController: UIViewController {
             await repository.reload()
             hasLoaded = true
             applySnapshot(animated: true)
+            // Re-kick the retry walk now that guides are actually loaded: on a
+            // cold start viewWillAppear fires before this reload lands, so its
+            // walk can see zero guides and exit without retrying anything.
+            kickResolutionRetries()
         }
     }
 
@@ -301,7 +305,9 @@ final class PlacesListViewController: UIViewController {
 
 extension PlacesListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
+        // No immediate deselect: on an expanded split view the highlighted row
+        // is the pointer to the open detail pane (the People/Events pattern);
+        // the viewWillAppear helper clears it for the collapsed/push cases.
         guard let placeID = dataSource.itemIdentifier(for: indexPath),
               let place = placesByID[placeID] else { return }
         didSelectPlace?(place)
