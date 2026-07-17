@@ -496,6 +496,22 @@ final class SyncService {
         return try sync.createGuide(from: snapshot, sourceURL: sourceURL)
     }
 
+    /// Apply a newly fetched snapshot to an existing guide in place. Returns
+    /// false if the guide was deleted while the fetch was in flight.
+    @discardableResult
+    func refreshGuide(
+        uuid: String,
+        from snapshot: MapsGuideURL.Snapshot,
+        sourceURL: String?
+    ) throws -> Bool {
+        guard let sync else { throw SidecarUnavailableError() }
+        return try sync.refreshGuide(
+            at: SidecarKey(kind: .guide, id: uuid),
+            from: snapshot,
+            sourceURL: sourceURL
+        )
+    }
+
     /// Every live guide. `async`: the walk covers every guide sidecar, so it
     /// rides the engine's background-hop overload.
     func allGuides() async -> [MapsGuide] {

@@ -44,6 +44,60 @@ enum GuideImporter {
         }
         return guideID
     }
+
+    /// Re-fetch an imported guide's saved source URL and reconcile the new
+    /// snapshot into that same guide UUID. Returns the decoded snapshot so the
+    /// visible controller can update its title immediately; place resolution
+    /// continues in the background just like a first import.
+    static func refreshGuide(
+        _ guide: MapsGuide,
+        service: SyncService,
+        repository: GuidesRepository
+    ) async throws -> MapsGuideURL.Snapshot {
+        guard let rawURL = guide.sourceURL,
+              let url = URL(string: rawURL)
+        else { throw GuideRefreshError.missingSourceURL }
+
+        log.notice("refresh: fetching guide link", [
+            "guideID": guide.id.uuidString,
+            "host": url.host ?? "-"
+        ])
+        let snapshot = try await MapsGuideURL.fetchSnapshot(from: url)
+        let updated = try service.refreshGuide(
+            uuid: guide.id.uuidString,
+            from: snapshot,
+            sourceURL: rawURL
+        )
+        guard updated else { throw GuideRefreshError.guideNoLongerExists }
+
+        log.notice("refresh: updated guide", [
+            "guideID": guide.id.uuidString,
+            "name": snapshot.name,
+            "entries": snapshot.entries.count
+        ])
+        await repository.reload()
+
+        Task {
+            await GuidePlaceResolver.resolvePlaces(
+                inGuide: guide.id, service: service, repository: repository
+            )
+        }
+        return snapshot
+    }
+}
+
+enum GuideRefreshError: LocalizedError {
+    case missingSourceURL
+    case guideNoLongerExists
+
+    var errorDescription: String? {
+        switch self {
+        case .missingSourceURL:
+            return "This guide does not have its original Apple Maps link."
+        case .guideNoLongerExists:
+            return "This guide was removed before it could be refreshed."
+        }
+    }
 }
 
 /// Resolves imported place IDs into display fields via MapKit's place-ID
@@ -83,6 +137,11 @@ enum GuidePlaceResolver {
     /// and the list controller's on-open retry both call `resolvePlaces`.
     private static var inFlightGuides: Set<UUID> = []
 
+    /// A refresh can add entries while an older resolution pass is still
+    /// walking its captured snapshot. Coalesce that overlap into one follow-up
+    /// pass so newly added place IDs do not wait until the guide is reopened.
+    private static var requestedReruns: Set<UUID> = []
+
     /// The place currently being looked up, or nil when no pass is active.
     /// Read by the places list to render its per-row status (a spinner on this
     /// row, "waiting" on the other unresolved rows). Changes post
@@ -114,11 +173,21 @@ enum GuidePlaceResolver {
         // `await`, or two callers (import + on-open retry) could both pass the
         // guard before either inserts and run duplicate passes. Everything up to
         // here is synchronous on the main actor, so this is race-free.
-        guard !inFlightGuides.contains(guideID) else { return }
+        guard !inFlightGuides.contains(guideID) else {
+            requestedReruns.insert(guideID)
+            return
+        }
         inFlightGuides.insert(guideID)
         defer {
             inFlightGuides.remove(guideID)
             setResolving(nil)
+            if requestedReruns.remove(guideID) != nil {
+                Task {
+                    await resolvePlaces(
+                        inGuide: guideID, service: service, repository: repository
+                    )
+                }
+            }
         }
 
         let places = await service.places(inGuide: guideID)

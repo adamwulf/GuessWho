@@ -61,6 +61,74 @@ extension GuessWhoSync {
         return guideID
     }
 
+    /// Replace an existing guide's imported snapshot while keeping the
+    /// guide's local UUID and any unchanged places' local UUIDs. The fetched
+    /// guide is authoritative for its name, membership, and entry order:
+    /// entries no longer present are soft-deleted and new entries are minted.
+    ///
+    /// Unchanged place-ID entries retain their resolved MapKit fields. Address
+    /// entries are matched by normalized address (or coordinate when they have
+    /// no address), so a coordinate correction can update the existing place
+    /// instead of creating a visually duplicate row. Duplicate entries are
+    /// matched one-for-one in their existing order.
+    ///
+    /// Returns false when `key` does not name a live guide, which can happen if
+    /// the guide is deleted while its network refresh is in flight.
+    @discardableResult
+    public func refreshGuide(
+        at key: SidecarKey,
+        from snapshot: MapsGuideURL.Snapshot,
+        sourceURL: String?
+    ) throws -> Bool {
+        guard key.kind == .guide,
+              let guideID = UUID(uuidString: key.id),
+              try guide(at: key) != nil
+        else { return false }
+
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.guideNameCacheKey,
+            fieldName: Self.guideNameCacheKey,
+            type: .note,
+            value: .string(snapshot.name),
+            softDelete: false
+        )
+        if let sourceURL, !sourceURL.isEmpty {
+            try writeWellKnownCell(
+                at: key,
+                cellKey: Self.guideSourceURLCellKey,
+                fieldName: Self.guideSourceURLCellKey,
+                type: .note,
+                value: .string(sourceURL),
+                softDelete: false
+            )
+        }
+
+        let existingPlaces = try places(inGuide: guideID)
+        var available: [GuideEntryIdentity: [MapsPlace]] = [:]
+        for place in existingPlaces {
+            available[GuideEntryIdentity(place: place), default: []].append(place)
+        }
+
+        var retainedIDs: Set<UUID> = []
+        for (index, entry) in snapshot.entries.enumerated() {
+            let identity = GuideEntryIdentity(entry: entry)
+            if var candidates = available[identity], !candidates.isEmpty {
+                let place = candidates.removeFirst()
+                available[identity] = candidates
+                retainedIDs.insert(place.id)
+                try refreshPlace(place, from: entry, sortOrder: index)
+            } else {
+                _ = try createPlace(entry: entry, guideID: guideID, sortOrder: index)
+            }
+        }
+
+        for place in existingPlaces where !retainedIDs.contains(place.id) {
+            try deletePlace(at: SidecarKey(kind: .place, id: place.id.uuidString))
+        }
+        return true
+    }
+
     /// Mint one place sidecar for `entry` inside `guideID` at `sortOrder`.
     @discardableResult
     func createPlace(entry: MapsGuideURL.Entry, guideID: UUID, sortOrder: Int) throws -> UUID {
@@ -91,6 +159,44 @@ extension GuessWhoSync {
             try write(Self.placeLongitudeCellKey, .string(String(longitude)))
         }
         return placeID
+    }
+
+    /// Update the snapshot-owned cells of a retained place. For place-ID
+    /// entries this deliberately leaves name/address/coordinate/resolvedAt
+    /// alone: those are MapKit resolution results, not fields in the guide
+    /// payload. Address entries refresh their inline address and coordinate.
+    private func refreshPlace(
+        _ place: MapsPlace,
+        from entry: MapsGuideURL.Entry,
+        sortOrder: Int
+    ) throws {
+        let key = SidecarKey(kind: .place, id: place.id.uuidString)
+
+        func write(_ cellKey: String, _ value: JSONValue) throws {
+            try writeWellKnownCell(
+                at: key,
+                cellKey: cellKey,
+                fieldName: cellKey,
+                type: .note,
+                value: value,
+                softDelete: false
+            )
+        }
+
+        if place.sortOrder != sortOrder {
+            try write(Self.placeSortOrderCellKey, .string(String(sortOrder)))
+        }
+        guard entry.mapsPlaceID == nil else { return }
+        if let address = entry.address, !address.isEmpty, address != place.address {
+            try write(Self.placeAddressCacheKey, .string(address))
+        }
+        if let latitude = entry.latitude,
+           let longitude = entry.longitude,
+           latitude != place.latitude || longitude != place.longitude
+        {
+            try write(Self.placeLatitudeCellKey, .string(String(latitude)))
+            try write(Self.placeLongitudeCellKey, .string(String(longitude)))
+        }
     }
 
     /// Fill a place's display fields from a MapKit place-ID resolution and
@@ -392,5 +498,48 @@ extension GuessWhoSync {
             }
         }
         return earliest
+    }
+}
+
+/// The strongest identity available inside an Apple Maps guide payload. The
+/// payload has no observed guide-level identifier; place-ID entries do carry a
+/// durable MapKit identifier, while address entries only carry address and
+/// coordinate data.
+private enum GuideEntryIdentity: Hashable {
+    case placeID(String)
+    case address(String)
+    case coordinate(latitudeBits: UInt64, longitudeBits: UInt64)
+
+    init(entry: MapsGuideURL.Entry) {
+        if let mapsPlaceID = entry.mapsPlaceID, !mapsPlaceID.isEmpty {
+            self = .placeID(mapsPlaceID.uppercased())
+        } else if let address = Self.normalizedAddress(entry.address), !address.isEmpty {
+            self = .address(address)
+        } else {
+            self = .coordinate(
+                latitudeBits: (entry.latitude ?? 0).bitPattern,
+                longitudeBits: (entry.longitude ?? 0).bitPattern
+            )
+        }
+    }
+
+    init(place: MapsPlace) {
+        if let mapsPlaceID = place.mapsPlaceID, !mapsPlaceID.isEmpty {
+            self = .placeID(mapsPlaceID.uppercased())
+        } else if let address = Self.normalizedAddress(place.address), !address.isEmpty {
+            self = .address(address)
+        } else {
+            self = .coordinate(
+                latitudeBits: (place.latitude ?? 0).bitPattern,
+                longitudeBits: (place.longitude ?? 0).bitPattern
+            )
+        }
+    }
+
+    private static func normalizedAddress(_ address: String?) -> String? {
+        address?
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .lowercased()
     }
 }

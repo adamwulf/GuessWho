@@ -94,6 +94,91 @@ struct GuideSidecarTests {
         #expect(try sync.allPlaces().count == 4)
     }
 
+    // MARK: - Refresh
+
+    @Test func refreshGuideReconcilesSnapshotInPlace() throws {
+        let (sync, _) = makeOrchestrator()
+        let sourceURL = "https://maps.apple/ug/abc"
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: sourceURL)
+        let originalGuide = try #require(
+            try sync.guide(at: SidecarKey(kind: .guide, id: guideID.uuidString))
+        )
+        let originalPlaces = try sync.places(inGuide: guideID)
+        let retainedAddress = originalPlaces[1]
+        let retainedPlaceID = originalPlaces[0]
+        let removedPlaceID = originalPlaces[2]
+
+        // Resolution data belongs to the retained local place and must survive
+        // a guide refresh whose payload still contains the same Maps place ID.
+        try sync.markPlaceResolved(
+            at: SidecarKey(kind: .place, id: retainedPlaceID.id.uuidString),
+            name: "nhow",
+            address: "Stralauer Allee 3, Berlin",
+            latitude: 52.5012787,
+            longitude: 13.4507933
+        )
+        let viewedAt = Date(timeIntervalSinceReferenceDate: 12_345)
+        try sync.stampGuideViewed(
+            at: SidecarKey(kind: .guide, id: guideID.uuidString),
+            now: viewedAt
+        )
+
+        let refreshed = MapsGuideURL.Snapshot(
+            name: "Berlin Favorites",
+            entries: [
+                MapsGuideURL.Entry(
+                    address: "Samariterstraße 31, Friedrichshain, 10247 Berlin, Germany",
+                    latitude: 52.517,
+                    longitude: 13.4652
+                ),
+                MapsGuideURL.Entry(mapsPlaceID: "INEWPLACE"),
+                MapsGuideURL.Entry(mapsPlaceID: "ID09B4D36386DC9DA"),
+            ]
+        )
+
+        let didRefresh = try sync.refreshGuide(
+            at: SidecarKey(kind: .guide, id: guideID.uuidString),
+            from: refreshed,
+            sourceURL: sourceURL
+        )
+        #expect(didRefresh)
+
+        let guide = try #require(
+            try sync.guide(at: SidecarKey(kind: .guide, id: guideID.uuidString))
+        )
+        #expect(guide.id == guideID)
+        #expect(guide.name == "Berlin Favorites")
+        #expect(guide.sourceURL == sourceURL)
+        #expect(guide.createdAt == originalGuide.createdAt)
+        #expect(guide.lastViewedAt != nil)
+        #expect(abs(guide.lastViewedAt!.timeIntervalSinceReferenceDate - viewedAt.timeIntervalSinceReferenceDate) < 1)
+
+        let places = try sync.places(inGuide: guideID)
+        #expect(places.count == 3)
+        #expect(places.map(\.sortOrder) == [0, 1, 2])
+        #expect(places[0].id == retainedAddress.id)
+        #expect(places[0].latitude == 52.517)
+        #expect(places[1].mapsPlaceID == "INEWPLACE")
+        #expect(places[1].needsResolution)
+        #expect(places[2].id == retainedPlaceID.id)
+        #expect(places[2].name == "nhow")
+        #expect(!places[2].needsResolution)
+        #expect(!places.contains { $0.id == removedPlaceID.id })
+    }
+
+    @Test func refreshGuideDoesNotMintAMissingGuide() throws {
+        let (sync, _) = makeOrchestrator()
+        let didRefresh = try sync.refreshGuide(
+            at: SidecarKey(kind: .guide, id: UUID().uuidString),
+            from: sampleSnapshot,
+            sourceURL: "https://maps.apple/ug/abc"
+        )
+
+        #expect(!didRefresh)
+        #expect(try sync.allGuides().isEmpty)
+        #expect(try sync.allPlaces().isEmpty)
+    }
+
     // MARK: - Resolution
 
     @Test func markPlaceResolvedFillsFieldsAndStopsNeedingResolution() throws {
