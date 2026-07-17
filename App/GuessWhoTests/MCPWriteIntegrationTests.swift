@@ -119,7 +119,7 @@ struct MCPWriteIntegrationTests {
         let service = makeService(root: root)
         let repository = service.makeContactsRepository()
         let gates = INV2Gates()
-        gates.isMCPReadOnly = true
+        gates.mcpAccess = .readOnly
         let dispatcher = ToolDispatcher(
             contacts: repository,
             events: INV2LiveEventSource(service: service),
@@ -145,7 +145,7 @@ struct MCPWriteIntegrationTests {
         let write = await dispatcher.handle(.eventsAddTag(
             helperId: helper, messageId: "ro-write",
             eventId: event.id, text: "should not land", idempotencyToken: nil))
-        #expect(write.errorPayload?.code == .readOnly)
+        #expect(write?.errorPayload?.code == .readOnly)
         #expect(service.eventTags(forEventUUID: eventUUID.uuidString.lowercased()).isEmpty)
     }
 }
