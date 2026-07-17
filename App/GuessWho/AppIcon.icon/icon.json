@@ -68,6 +68,43 @@
         "enabled" : true,
         "value" : 0.5
       }
+    },
+    {
+      "hidden" : true,
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:0.49510,0.83893,0.88313,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.19222,0.53214,0.57585,1.00000"
+              }
+            }
+          ],
+          "image-name" : "inside 2.svg",
+          "name" : "inside 2",
+          "position" : {
+            "scale" : 5.68,
+            "translation-in-points" : [
+              23.755690439537148,
+              -39.164676042268866
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
     }
   ],
   "supported-platforms" : {
