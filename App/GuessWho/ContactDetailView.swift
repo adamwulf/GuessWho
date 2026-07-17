@@ -2916,6 +2916,18 @@ private struct TappableInfoRow: View {
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
+                    // Web (http/https) rows also get an explicit "Open in Safari"
+                    // that FORCES Safari via the `x-safari-https://` scheme,
+                    // bypassing any app (e.g. LinkedIn) that would otherwise claim
+                    // the link through Universal Links. Only http(s) rows qualify;
+                    // tel:/mailto:/calshow: targets have no `safariURL`.
+                    if let safariURL {
+                        Button {
+                            openURL(safariURL)
+                        } label: {
+                            Label("Open in Safari", systemImage: "safari")
+                        }
+                    }
                 }
         } else {
             // No URL to open: fall back to a plain, selectable label/value with
@@ -2984,6 +2996,25 @@ private struct TappableInfoRow: View {
     private func copy() {
         UIPasteboard.general.string = value
         onInteract()
+    }
+
+    /// The row's target rewritten to the `x-safari-https://` scheme so it opens
+    /// in Safari even when another app (e.g. LinkedIn) claims the link via a
+    /// Universal Link. Only http/https rows qualify; `nil` for tel:/mailto:/
+    /// calshow: targets (nothing to hand to Safari), which suppresses the
+    /// "Open in Safari" menu item on those rows.
+    private var safariURL: URL? {
+        guard let url, let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+        // Drop the leading scheme from the already-valid URL and prepend
+        // `x-safari-https://`. `url` is display-normalized to https upstream, so
+        // an http row still forces the secure Safari load.
+        let absolute = url.absoluteString
+        let schemeless = absolute.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression)
+            .map { String(absolute[$0.upperBound...]) } ?? absolute
+        return URL(string: "x-safari-https://\(schemeless)")
     }
 }
 
