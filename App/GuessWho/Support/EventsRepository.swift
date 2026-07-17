@@ -16,12 +16,14 @@ enum EventListFilter: CaseIterable, Sendable {
     case showAll
     case linked
     case hasAttendees
+    case physicalLocation
 
     var title: String {
         switch self {
         case .showAll: "All Events"
         case .linked: "Linked"
         case .hasAttendees: "Has Attendees"
+        case .physicalLocation: "Physical Location"
         }
     }
 }
@@ -142,7 +144,7 @@ final class EventsRepository: NSObject {
         switch requestedFilter {
         case .linked:
             fetched = await service.allLinkedEvents()
-        case .showAll, .hasAttendees:
+        case .showAll, .hasAttendees, .physicalLocation:
             fetched = await service.fetchEventsRange(from: windowStart, to: windowEnd)
         }
 
@@ -185,6 +187,10 @@ final class EventsRepository: NSObject {
             candidates = events
         case .hasAttendees:
             candidates = events.filter { !$0.attendees.isEmpty }
+        case .physicalLocation:
+            // Keep only events whose location names a real place: non-empty and
+            // not a web/video-call link (Zoom/Meet/http(s) URLs are dropped).
+            candidates = events.filter { EventLocationMatcher.isPhysicalLocation($0.location) }
         }
 
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -489,6 +489,8 @@ final class EventsListViewController: UIViewController {
                 emptyLabel.text = "No Linked Events"
             case .hasAttendees:
                 emptyLabel.text = "No Events with Attendees"
+            case .physicalLocation:
+                emptyLabel.text = "No Events with a Physical Location"
             }
         }
     }
