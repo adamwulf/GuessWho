@@ -26,7 +26,8 @@ final class ReadPipeDeliveryTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        signal(SIGPIPE, SIG_IGN)
+        // No process-wide SIGPIPE disposition (matching the app host):
+        // dead-peer safety comes from ChunkedWritePipe's F_SETNOSIGPIPE.
         fifoURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("delivery-test-\(UUID().uuidString).fifo")
     }

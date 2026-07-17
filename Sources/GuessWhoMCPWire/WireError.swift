@@ -13,6 +13,11 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     case permissionDenied
     case readOnly
     case tooLarge
+    /// RESERVED for Phase 2 writes (e.g. "delete the note named X" where
+    /// no such note exists). Phase 1's read tools deliberately answer
+    /// every unresolvable id with `staleHandle` — an id the registry
+    /// doesn't know is indistinguishable from one a restart invalidated,
+    /// and "search again" is the right guidance for both.
     case notFound
     case staleHandle
     case invalidParams
@@ -45,6 +50,10 @@ public enum WireErrorMessage {
         "That id is out of date. Run the matching list tool again to get a current one, then retry."
     public static let busy =
         "Too many requests at once. Wait a moment and try again."
+    // The notFound* strings pair with the reserved `notFound` code above:
+    // unused by Phase 1's reads (which answer `staleHandle` uniformly),
+    // wired up by Phase 2's write tools. Kept under the banned-vocabulary
+    // test from day one.
     public static let notFoundContact = "No matching contact was found."
     public static let notFoundEvent = "No matching event was found."
     public static let notFoundGroup = "No matching group was found."

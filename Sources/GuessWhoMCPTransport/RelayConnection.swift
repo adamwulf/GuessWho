@@ -106,7 +106,12 @@ public actor RelayConnection {
             responseRouter = router
 
             let announceURL = WireEnvironment.announcePipePath(container: container)
-            let announce = try ChunkedWritePipe(url: announceURL, logger: logger)
+            // Guard 1, writer side: control frames on the shared announce
+            // channel must stay ≤ PIPE_BUF (atomic) — asserted at write.
+            let announce = try ChunkedWritePipe(
+                url: announceURL,
+                softLimitBytes: WireEnvironment.darwinPipeBuf,
+                logger: logger)
             try await announce.open()
             announcePipe = announce
         } catch {

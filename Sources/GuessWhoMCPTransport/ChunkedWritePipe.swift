@@ -36,6 +36,12 @@ public actor ChunkedWritePipe: PipeWritable {
 
     private let fileURL: URL
     private let logger: Logger?
+    /// When set, any single message larger than this logs loudly and
+    /// debug-asserts BEFORE it is written. Set to PIPE_BUF on the shared
+    /// announce channel (Guard 1): a control frame above the atomic-write
+    /// ceiling would silently re-arm the interleaving bug the per-helper
+    /// pipes exist to prevent.
+    private let softLimitBytes: Int?
     private var fd: Int32 = -1
     private var source: DispatchSourceWrite?
     private let writableSignal = PipeSignal()
@@ -44,9 +50,10 @@ public actor ChunkedWritePipe: PipeWritable {
     /// across the writability awaits.
     private var lastWrite: Task<Void, Error>?
 
-    public init(url: URL, logger: Logger? = nil) throws {
+    public init(url: URL, softLimitBytes: Int? = nil, logger: Logger? = nil) throws {
         guard url.isFileURL else { throw WritePipeError.invalidURL }
         self.fileURL = url
+        self.softLimitBytes = softLimitBytes
         self.logger = logger
 
         let path = url.path
@@ -93,6 +100,12 @@ public actor ChunkedWritePipe: PipeWritable {
         guard opened != -1 else {
             throw WritePipeError.openFailed(String(cString: strerror(errno)))
         }
+        // Per-FD SIGPIPE suppression: a write(2) to a FIFO whose reader died
+        // must return EPIPE (the reconnect/teardown cue), never deliver
+        // SIGPIPE. This writer runs in the APP as well as the relay, and the
+        // app sets no process-wide signal disposition — without this, a
+        // helper dying between responses would terminate GuessWho itself.
+        _ = fcntl(opened, F_SETNOSIGPIPE, 1)
         fd = opened
 
         let queue = DispatchQueue(label: "com.milestonemade.guesswho.mcp.pipe-write")
@@ -113,6 +126,10 @@ public actor ChunkedWritePipe: PipeWritable {
     }
 
     public func write(_ data: Data) async throws {
+        if let soft = softLimitBytes, data.count > soft {
+            logger?.error("CHUNKED_WRITE_PIPE: control frame of \(data.count) bytes exceeds the \(soft)-byte announce budget — control messages must stay tiny")
+            assertionFailure("Announce-channel message exceeded PIPE_BUF-safe budget")
+        }
         let previous = lastWrite
         let task = Task {
             _ = try? await previous?.value
@@ -171,8 +188,9 @@ public actor ChunkedWritePipe: PipeWritable {
             case EINTR:
                 continue
             default:
-                // EPIPE lands here (SIGPIPE is ignored process-wide by the
-                // relay): the read end is gone — the reconnect path's cue.
+                // EPIPE lands here (the FD carries F_SETNOSIGPIPE, so no
+                // signal is delivered in host OR relay): the read end is
+                // gone — the reconnect/teardown path's cue.
                 throw WritePipeError.writeError(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO))
             }
         }

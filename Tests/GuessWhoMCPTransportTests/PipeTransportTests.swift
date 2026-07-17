@@ -27,9 +27,11 @@ final class PipeTransportTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // EPIPE must surface as a thrown write error, not kill the test
-        // process — same posture the relay takes at startup.
-        signal(SIGPIPE, SIG_IGN)
+        // Deliberately NO process-wide SIGPIPE disposition here: the app
+        // host sets none either, so these tests must survive dead-peer
+        // writes purely through ChunkedWritePipe's per-FD F_SETNOSIGPIPE
+        // (the host-restart test writes into a swept FIFO — if the per-FD
+        // guard regressed, SIGPIPE would kill this test process).
         container = FileManager.default.temporaryDirectory
             .appendingPathComponent("guesswho-mcp-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
