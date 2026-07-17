@@ -225,6 +225,7 @@ etc. are GuessWho's own per-contact dated notes, not the Apple note.
 | Dispatch core (per-tool handlers, mappers, id scheme, audit log, Recently Deleted service, symlink resolver) | `Sources/GuessWhoMCPCore/` |
 | FIFO transport (host + relay ends, reconnect, reaping) | `Sources/GuessWhoMCPTransport/` |
 | Relay entry point | `App/guesswho-cli/` |
+| Relay build + embed (own xcodeproj; the app's "Build and Embed guesswho-cli" Run Script nested-builds it into an isolated derived-data path, copies the binary to `Contents/MacOS`, and codesigns it with the expanded App Group — the Muse pattern that keeps the Catalyst app and the native-macOS helper out of one xcodebuild invocation, which otherwise fails `archive` with "Multiple commands produce …/UninstalledProducts/macosx/…") | `App/guesswho-cli.xcodeproj` + the Run Script in `App/GuessWho.xcodeproj` |
 | App host + gates + delete-confirmation presenter | `App/GuessWho/Support/MCPHostController.swift` |
 | Helper locator (the ONE place the path is derived) | `App/GuessWho/Support/CLIHelper.swift` |
 | Settings sheet (toggles, install, activity, Recently Deleted) | `App/GuessWho/MCPPreferencesView.swift` |

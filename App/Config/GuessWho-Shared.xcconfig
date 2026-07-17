@@ -44,10 +44,11 @@ SUPPORTED_PLATFORMS = iphoneos iphonesimulator macosx
 IPHONEOS_DEPLOYMENT_TARGET = 17.0
 MACOSX_DEPLOYMENT_TARGET = 14.0
 
-// The "Embed CLI Frameworks" phase copies the helper's macOS package
-// frameworks into Contents/Frameworks/CLI and re-signs them; the user
-// script sandbox denies those writes even with the destination declared
-// as an output (declared outputs are not treated as writable prefixes for
+// The "Build and Embed guesswho-cli" phase runs a nested xcodebuild of the
+// sibling guesswho-cli.xcodeproj, then copies + codesigns the helper inside
+// the built .app (Contents/MacOS, Contents/Frameworks/CLI); the user script
+// sandbox denies those writes even with the destinations declared as
+// outputs (declared outputs are not treated as writable prefixes for
 // directory trees). App target only — every other target keeps the
 // project-level YES.
 ENABLE_USER_SCRIPT_SANDBOXING = NO

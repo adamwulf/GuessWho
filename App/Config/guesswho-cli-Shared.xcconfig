@@ -24,17 +24,17 @@ SUPPORTED_PLATFORMS = macosx
 // declares a macOS 15 floor; override the project-level 14.0.
 MACOSX_DEPLOYMENT_TARGET = 15.0
 
-// Xcode 26 builds package products consumed by multiple project targets
-// (swift-log's Logging, via GuessWhoSync + GuessWhoLogging + this helper)
-// as shared dynamic "…_PackageProduct" frameworks. The app embeds the
-// CATALYST variants at Contents/Frameworks — a native macOS Mach-O cannot
-// load those ("incompatible platform"), so the app target's "Embed CLI
-// Frameworks" script phase copies the helper's macOS-platform package
-// frameworks to Contents/Frameworks/CLI and this rpath points there.
-// dyld resolves @executable_path through the /usr/local/bin symlink to
-// the real binary location, so the symlinked `guesswho` invocation works
-// too. Without this the shipped helper dies at dyld ("Library not
-// loaded: @rpath/Logging…").
+// The helper builds in its own isolated xcodebuild invocation (the app
+// target's "Build and Embed guesswho-cli" Run Script → guesswho-cli.xcodeproj),
+// where the single-target planner links every package product statically —
+// the binary is self-contained today. This rpath stays as the landing spot
+// for the defensive leg of that script: if Xcode ever links a package
+// product as a shared dynamic "…_PackageProduct" framework again, the script
+// copies the macOS-built variants to Contents/Frameworks/CLI (the app's own
+// Contents/Frameworks holds CATALYST variants a native macOS Mach-O cannot
+// load). dyld resolves @executable_path through the /usr/local/bin symlink
+// to the real binary location, so the symlinked `guesswho` invocation works
+// too.
 LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks/CLI
 
 SWIFT_VERSION = 6.0
@@ -43,7 +43,11 @@ SWIFT_VERSION = 6.0
 // posture: hardened runtime, no Xcode-injected base entitlements (the
 // per-config .entitlements file is the complete, explicit list), and
 // build-setting expansion inside the entitlements file so the per-channel
-// App Group var resolves at signing time.
+// App Group var resolves at signing time. NOTE: the shipping embed path does
+// NOT sign here — the app's "Build and Embed guesswho-cli" Run Script builds
+// this project with CODE_SIGNING_ALLOWED=NO and signs the embedded copy
+// itself (sed-expanding $(GUESSWHO_CLI_APP_GROUP) into the entitlements);
+// these settings apply when building/signing this project standalone.
 DEVELOPMENT_TEAM = T68Z94627S
 CODE_SIGN_STYLE = Automatic
 ENABLE_HARDENED_RUNTIME = YES
@@ -61,6 +65,9 @@ GENERATE_INFOPLIST_FILE = NO
 INFOPLIST_FILE = guesswho-cli/Info.plist
 CREATE_INFOPLIST_SECTION_IN_BINARY = YES
 
-// The tool ships INSIDE GuessWho.app (Copy Files → Contents/MacOS); it must
-// not also land in an archive's Products root as a standalone product.
+// The tool ships INSIDE GuessWho.app: the app target's "Build and Embed
+// guesswho-cli" Run Script nested-builds this project (passing
+// SKIP_INSTALL=NO on its `build` action, where it has no effect) and copies
+// the binary to Contents/MacOS. Keep YES here so a standalone archive of
+// this project never lands the tool in a Products root.
 SKIP_INSTALL = YES
