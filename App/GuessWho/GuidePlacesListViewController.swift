@@ -6,7 +6,7 @@ import GuessWhoSync
 /// as the MapKit resolution pass lands details; tapping a place opens it in
 /// Apple Maps.
 final class GuidePlacesListViewController: UIViewController {
-    private let guide: MapsGuide
+    private var guide: MapsGuide
     private let repository: GuidesRepository
     private let service: SyncService
 
@@ -30,6 +30,8 @@ final class GuidePlacesListViewController: UIViewController {
     /// The sort pull-down button. Its menu is rebuilt in the reload observer so
     /// the checkmark tracks the repository's live place order.
     private var sortButton: UIBarButtonItem!
+    private var refreshButton: UIBarButtonItem!
+    private var isRefreshing = false
 
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
@@ -66,7 +68,7 @@ final class GuidePlacesListViewController: UIViewController {
         configureTableView()
         configureEmptyState()
         configureDataSource()
-        configureSortButton()
+        configureNavigationButtons()
         observeRepositoryReloads()
 
         applySnapshot(animated: false)
@@ -150,9 +152,57 @@ final class GuidePlacesListViewController: UIViewController {
         dataSource.defaultRowAnimation = .fade
     }
 
-    private func configureSortButton() {
+    private func configureNavigationButtons() {
         sortButton = makePlaceSortBarButtonItem(repository: repository)
-        navigationItem.rightBarButtonItem = sortButton
+        refreshButton = UIBarButtonItem(
+            barButtonSystemItem: .refresh,
+            target: self,
+            action: #selector(refreshGuide)
+        )
+        refreshButton.accessibilityLabel = "Refresh Guide"
+        refreshButton.isEnabled = guide.sourceURL != nil
+        // The first item is the trailing (top-right) item; keep the sort menu
+        // beside it so both existing and new actions remain available.
+        navigationItem.rightBarButtonItems = [refreshButton, sortButton]
+    }
+
+    @objc
+    private func refreshGuide() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        refreshButton.isEnabled = false
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await GuideImporter.refreshGuide(
+                    self.guide,
+                    service: self.service,
+                    repository: self.repository
+                )
+                self.guide.name = snapshot.name
+                let name = snapshot.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.title = name.isEmpty ? "Guide" : name
+            } catch is CancellationError {
+                // A cancelled navigation task needs no user-facing error.
+            } catch {
+                self.service.recordError("refresh guide failed: \(error.localizedDescription)")
+                self.presentRefreshError(error)
+            }
+            self.isRefreshing = false
+            self.refreshButton.isEnabled = self.guide.sourceURL != nil
+        }
+    }
+
+    private func presentRefreshError(_ error: Error) {
+        guard viewIfLoaded?.window != nil else { return }
+        let alert = UIAlertController(
+            title: "Couldn’t Refresh Guide",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     // MARK: - Snapshot wiring

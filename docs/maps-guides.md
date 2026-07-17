@@ -59,12 +59,19 @@ Two entry shapes exist:
    decodes the `user` payload with a minimal protobuf reader. Pure decode
    paths are unit-tested against a real Berlin guide payload
    (`MapsGuideURLTests`).
-2. **Store** — `GuessWhoSync.createGuide(from:sourceURL:)` mints a guide
-   sidecar (`guides/<uuid>.json`, kind `.guide`) plus one place sidecar per
-   entry (`places/<uuid>.json`, kind `.place`). Places carry a `guideID`
-   cell pointing at their guide and an `orderCache` cell preserving the
-   shared order. Same envelope/cell format as events; syncs through the
-   same iCloud root.
+2. **Store** — `GuessWhoSync.importGuide(from:sourceURL:)` first looks for a
+   guide whose stored source URL exactly equals the original, pre-redirect
+   input URL. An exact match refreshes that guide in place; otherwise
+   `createGuide(from:sourceURL:)` mints a guide sidecar
+   (`guides/<uuid>.json`, kind `.guide`) plus one place sidecar per entry
+   (`places/<uuid>.json`, kind `.place`). Places carry a `guideID` cell
+   pointing at their guide and an `orderCache` cell preserving the shared
+   order. Same envelope/cell format as events; syncs through the same iCloud
+   root. Refresh uses `refreshGuide(at:from:sourceURL:)`: unchanged entries
+   retain their local UUIDs (and resolved MapKit details), new entries are
+   minted, removed entries are soft-deleted, retained entries keep their
+   user-defined relative order, and newly discovered entries append in their
+   fetched order.
 3. **Resolve** — `GuidePlaceResolver` (app target) turns each place-ID
    entry into name/address/coordinate via the public
    `MKMapItemRequest(mapItemIdentifier:)` API (iOS 18+/macCatalyst 18+;
@@ -77,9 +84,10 @@ Two entry shapes exist:
    end, and publishes the place it is currently looking up
    (`resolvingPlaceID` + `.guideResolutionActivePlaceDidChange`) so the list
    shows a per-row spinner / "waiting" state. A per-guide in-flight guard
-   coalesces the import-path pass and the list's on-open retry so they never
-   run duplicate passes (which would double the request rate). Failed lookups
-   stay unresolved and retry the next time the guide opens.
+   coalesces overlapping passes so they never double the request rate. If a
+   refresh adds places during an active pass, one follow-up pass handles the
+   new entries. Failed lookups stay unresolved and retry the next time the
+   guide opens.
 
 ## Entry points
 
@@ -91,7 +99,12 @@ Two entry shapes exist:
   the extension parses and stores nothing.)
 * **"+" on the Guides list (both platforms)** — paste the share link into
   a small alert; pre-filled from the pasteboard when it already holds a
-  guide link.
+  guide link. Importing the exact same original URL again refreshes and opens
+  the existing guide rather than creating a duplicate.
+* **Refresh on an open guide (both platforms)** — the top-right refresh
+  button re-fetches the saved `sourceURL`, reconciles the fetched snapshot
+  into the existing guide, reloads the visible rows, and resolves newly
+  added place IDs. Legacy guides without a source URL show it disabled.
 
 ## UI shape
 
@@ -229,9 +242,13 @@ contact-geocode store (option 1) rather than geocoding live per place.
 
 ## Known limitations
 
-* A guide import is a one-shot snapshot; edits to the guide in Apple Maps
-  after sharing are not tracked. The source link is kept on the guide
-  (`sourceURL` cell) so a future re-import/refresh flow can reuse it.
+* Imports de-duplicate only on an exact match of the original input URL. The
+  observed protobuf has no guide-level identifier; its `muid` values identify
+  places, not the guide. Two different share URLs can therefore still create
+  duplicate guides even when their decoded snapshots happen to represent the
+  same Apple Maps guide.
+* Refresh is user-initiated, not automatic. Apple Maps edits appear only
+  after the top-right refresh action re-fetches the saved source link.
 * Place-ID resolution needs iOS 18 / macOS 15 (MapKit place-ID API).
   On older OSes place-ID entries stay as "Loading place details…" rows;
   address entries are unaffected.

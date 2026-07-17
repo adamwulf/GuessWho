@@ -21,6 +21,33 @@ extension GuessWhoSync {
 
     // MARK: - Lifecycle
 
+    /// Import a decoded guide snapshot, refreshing an existing guide when its
+    /// stored source URL exactly matches the user-provided URL. The comparison
+    /// deliberately uses the original pre-redirect string with no URL
+    /// normalization: only an unambiguous exact match is eligible for upsert.
+    /// Different share URLs still create distinct guides because the observed
+    /// payload carries no stable guide-level identifier.
+    @discardableResult
+    public func importGuide(
+        from snapshot: MapsGuideURL.Snapshot,
+        sourceURL: String?
+    ) throws -> UUID {
+        if let sourceURL,
+           !sourceURL.isEmpty,
+           let existing = try guide(matchingSourceURL: sourceURL)
+        {
+            let key = SidecarKey(kind: .guide, id: existing.id.uuidString)
+            if try refreshGuide(
+                at: key,
+                from: snapshot,
+                sourceURL: sourceURL
+            ) {
+                return existing.id
+            }
+        }
+        return try createGuide(from: snapshot, sourceURL: sourceURL)
+    }
+
     /// Create a guide (plus one place sidecar per entry) from a decoded share
     /// link. Mints the guide UUID and a place UUID per entry; entry order is
     /// preserved via each place's `orderCache` cell. Returns the guide UUID.
@@ -61,6 +88,94 @@ extension GuessWhoSync {
         return guideID
     }
 
+    /// Replace an existing guide's imported snapshot while keeping the
+    /// guide's local UUID and any unchanged places' local UUIDs. The fetched
+    /// guide is authoritative for its name and membership: entries no longer
+    /// present are soft-deleted and new entries are minted. Existing places
+    /// keep their user-defined relative order; newly discovered entries append
+    /// at the end in their order from the fetched snapshot.
+    ///
+    /// Unchanged place-ID entries retain their resolved MapKit fields. Address
+    /// entries are matched by normalized address (or coordinate when they have
+    /// no address), so a coordinate correction can update the existing place
+    /// instead of creating a visually duplicate row. Duplicate entries are
+    /// matched one-for-one in their existing order.
+    ///
+    /// Returns false when `key` does not name a live guide, which can happen if
+    /// the guide is deleted while its network refresh is in flight.
+    @discardableResult
+    public func refreshGuide(
+        at key: SidecarKey,
+        from snapshot: MapsGuideURL.Snapshot,
+        sourceURL: String?
+    ) throws -> Bool {
+        guard key.kind == .guide,
+              let guideID = UUID(uuidString: key.id),
+              try guide(at: key) != nil
+        else { return false }
+
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.guideNameCacheKey,
+            fieldName: Self.guideNameCacheKey,
+            type: .note,
+            value: .string(snapshot.name),
+            softDelete: false
+        )
+        if let sourceURL, !sourceURL.isEmpty {
+            try writeWellKnownCell(
+                at: key,
+                cellKey: Self.guideSourceURLCellKey,
+                fieldName: Self.guideSourceURLCellKey,
+                type: .note,
+                value: .string(sourceURL),
+                softDelete: false
+            )
+        }
+
+        let existingPlaces = try places(inGuide: guideID)
+        var available: [GuideEntryIdentity: [MapsPlace]] = [:]
+        for place in existingPlaces {
+            available[GuideEntryIdentity(place: place), default: []].append(place)
+        }
+
+        var retainedIDs: Set<UUID> = []
+        var newEntries: [MapsGuideURL.Entry] = []
+        for entry in snapshot.entries {
+            let identity = GuideEntryIdentity(entry: entry)
+            if var candidates = available[identity], !candidates.isEmpty {
+                let place = candidates.removeFirst()
+                available[identity] = candidates
+                retainedIDs.insert(place.id)
+                try refreshPlace(place, from: entry)
+            } else {
+                newEntries.append(entry)
+            }
+        }
+
+        for place in existingPlaces where !retainedIDs.contains(place.id) {
+            try deletePlace(at: SidecarKey(kind: .place, id: place.id.uuidString))
+        }
+
+        // `existingPlaces` is already in the locally persisted guide order.
+        // Compact surviving rows without changing their relative order, then
+        // append newly fetched entries so refresh never discards a user drag.
+        var nextSortOrder = 0
+        for place in existingPlaces where retainedIDs.contains(place.id) {
+            try updatePlaceSortOrder(place, to: nextSortOrder)
+            nextSortOrder += 1
+        }
+        for entry in newEntries {
+            _ = try createPlace(
+                entry: entry,
+                guideID: guideID,
+                sortOrder: nextSortOrder
+            )
+            nextSortOrder += 1
+        }
+        return true
+    }
+
     /// Mint one place sidecar for `entry` inside `guideID` at `sortOrder`.
     @discardableResult
     func createPlace(entry: MapsGuideURL.Entry, guideID: UUID, sortOrder: Int) throws -> UUID {
@@ -91,6 +206,53 @@ extension GuessWhoSync {
             try write(Self.placeLongitudeCellKey, .string(String(longitude)))
         }
         return placeID
+    }
+
+    /// Update the snapshot-owned cells of a retained place. For place-ID
+    /// entries this deliberately leaves name/address/coordinate/resolvedAt
+    /// alone: those are MapKit resolution results, not fields in the guide
+    /// payload. Address entries refresh their inline address and coordinate.
+    private func refreshPlace(
+        _ place: MapsPlace,
+        from entry: MapsGuideURL.Entry
+    ) throws {
+        let key = SidecarKey(kind: .place, id: place.id.uuidString)
+
+        func write(_ cellKey: String, _ value: JSONValue) throws {
+            try writeWellKnownCell(
+                at: key,
+                cellKey: cellKey,
+                fieldName: cellKey,
+                type: .note,
+                value: value,
+                softDelete: false
+            )
+        }
+
+        guard entry.mapsPlaceID == nil else { return }
+        if let address = entry.address, !address.isEmpty, address != place.address {
+            try write(Self.placeAddressCacheKey, .string(address))
+        }
+        if let latitude = entry.latitude,
+           let longitude = entry.longitude,
+           latitude != place.latitude || longitude != place.longitude
+        {
+            try write(Self.placeLatitudeCellKey, .string(String(latitude)))
+            try write(Self.placeLongitudeCellKey, .string(String(longitude)))
+        }
+    }
+
+    private func updatePlaceSortOrder(_ place: MapsPlace, to sortOrder: Int) throws {
+        guard place.sortOrder != sortOrder else { return }
+        let key = SidecarKey(kind: .place, id: place.id.uuidString)
+        try writeWellKnownCell(
+            at: key,
+            cellKey: Self.placeSortOrderCellKey,
+            fieldName: Self.placeSortOrderCellKey,
+            type: .note,
+            value: .string(String(sortOrder)),
+            softDelete: false
+        )
     }
 
     /// Fill a place's display fields from a MapKit place-ID resolution and
@@ -226,6 +388,15 @@ extension GuessWhoSync {
     public func guide(at key: SidecarKey) throws -> MapsGuide? {
         guard let envelope = try sidecars.read(key) else { return nil }
         return decodeGuide(envelope: envelope, key: key)
+    }
+
+    /// The canonical live guide whose stored source URL exactly equals
+    /// `sourceURL`, or nil. Oldest-created wins if legacy data already contains
+    /// duplicates; UUID is the deterministic fallback when timestamps tie.
+    public func guide(matchingSourceURL sourceURL: String) throws -> MapsGuide? {
+        try allGuides()
+            .filter { $0.sourceURL == sourceURL }
+            .min(by: Self.prefersGuideForExactURLMatch)
     }
 
     /// Every live guide. O(N) over guide sidecars; unordered — display
@@ -392,5 +563,61 @@ extension GuessWhoSync {
             }
         }
         return earliest
+    }
+
+    private static func prefersGuideForExactURLMatch(_ lhs: MapsGuide, _ rhs: MapsGuide) -> Bool {
+        switch (lhs.createdAt, rhs.createdAt) {
+        case let (left?, right?) where left != right:
+            return left < right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+}
+
+/// The strongest identity available inside an Apple Maps guide payload. The
+/// payload has no observed guide-level identifier; place-ID entries do carry a
+/// durable MapKit identifier, while address entries only carry address and
+/// coordinate data.
+private enum GuideEntryIdentity: Hashable {
+    case placeID(String)
+    case address(String)
+    case coordinate(latitudeBits: UInt64, longitudeBits: UInt64)
+
+    init(entry: MapsGuideURL.Entry) {
+        if let mapsPlaceID = entry.mapsPlaceID, !mapsPlaceID.isEmpty {
+            self = .placeID(mapsPlaceID.uppercased())
+        } else if let address = Self.normalizedAddress(entry.address), !address.isEmpty {
+            self = .address(address)
+        } else {
+            self = .coordinate(
+                latitudeBits: (entry.latitude ?? 0).bitPattern,
+                longitudeBits: (entry.longitude ?? 0).bitPattern
+            )
+        }
+    }
+
+    init(place: MapsPlace) {
+        if let mapsPlaceID = place.mapsPlaceID, !mapsPlaceID.isEmpty {
+            self = .placeID(mapsPlaceID.uppercased())
+        } else if let address = Self.normalizedAddress(place.address), !address.isEmpty {
+            self = .address(address)
+        } else {
+            self = .coordinate(
+                latitudeBits: (place.latitude ?? 0).bitPattern,
+                longitudeBits: (place.longitude ?? 0).bitPattern
+            )
+        }
+    }
+
+    private static func normalizedAddress(_ address: String?) -> String? {
+        address?
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .lowercased()
     }
 }
