@@ -551,6 +551,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// Creates a link between two entities. Writes one envelope and
     /// returns the minted Link. Never dedups — multiple links between
     /// the same endpoints are allowed.
+    /// Note: a same-key (self) link would be counted twice by `linkCounts(ofKind:)` — once per endpoint.
     @discardableResult
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link {
         let id = UUID()
@@ -711,6 +712,43 @@ public final class GuessWhoSync: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result = try self.linkedEndpoints(ofKind: kind)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// For every distinct endpoint of `kind`, the number of live
+    /// (non-soft-deleted) links that endpoint participates in. Bulk form for
+    /// list badges: one O(N links) pass tallies all counts, mirroring
+    /// `linkedEndpoints(ofKind:)` but counting rather than collecting presence.
+    /// Counts ALL links touching the endpoint regardless of the far endpoint's
+    /// kind, consistent with the Linked filter.
+    public func linkCounts(ofKind kind: SidecarKind) throws -> [SidecarKey: Int] {
+        var result: [SidecarKey: Int] = [:]
+        for key in try sidecars.allKeys() where key.kind == .link {
+            guard let envelope = try sidecars.read(key),
+                  let link = Link(from: envelope),
+                  link.deletedAt == nil else { continue }
+            if link.endpointA.kind == kind {
+                result[link.endpointA, default: 0] += 1
+            }
+            if link.endpointB.kind == kind {
+                result[link.endpointB, default: 0] += 1
+            }
+        }
+        return result
+    }
+
+    /// Async overload of `linkCounts(ofKind:)`; the complete link scan
+    /// runs on a background queue so a list reload never blocks its actor.
+    public func linkCounts(ofKind kind: SidecarKind) async throws -> [SidecarKey: Int] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.linkCounts(ofKind: kind)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)

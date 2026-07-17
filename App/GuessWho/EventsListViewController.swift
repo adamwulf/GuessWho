@@ -200,7 +200,8 @@ final class EventsListViewController: UIViewController {
             guard let self, let event = self.eventsByID[itemID] else { return cell }
             (cell as? EventCell)?.configure(
                 with: event,
-                isFavorite: self.favoritesStore.isFavorite(kind: .event, id: event.id.uuidString)
+                isFavorite: self.favoritesStore.isFavorite(kind: .event, id: event.id.uuidString),
+                linkCount: self.repository.linkCount(for: event)
             )
             return cell
         }
@@ -685,10 +686,15 @@ private final class EventCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let dateLabel = UILabel()
+    private let linkCountLabel = UILabel()
     private let starView = UIImageView()
     private let calendarSwatch = UIView()
     private let calendarLabel = UILabel()
     private let calendarRow = UIStackView()
+    // Spacing between the text stack and the link-count label; collapsed to 0
+    // when the label is hidden so a linkless row reclaims the full width up to
+    // the star (see ContactsListViewController's ContactCell for rationale).
+    private var textToLinkCountSpacing: NSLayoutConstraint?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -748,6 +754,17 @@ private final class EventCell: UITableViewCell {
         calendarRow.addArrangedSubview(calendarSwatch)
         calendarRow.addArrangedSubview(calendarLabel)
 
+        // Trailing "N links" caption, shown only when the event has at least
+        // one link (hidden otherwise, so a linkless row looks unchanged).
+        linkCountLabel.font = .preferredFont(forTextStyle: .caption1)
+        linkCountLabel.textColor = .secondaryLabel
+        linkCountLabel.adjustsFontForContentSizeCategory = true
+        linkCountLabel.numberOfLines = 1
+        linkCountLabel.isHidden = true
+        linkCountLabel.setContentHuggingPriority(.required, for: .horizontal)
+        linkCountLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        linkCountLabel.translatesAutoresizingMaskIntoConstraints = false
+
         // Trailing favorite star. The image stays installed and only
         // `isHidden` toggles, so the star's intrinsic size keeps the layout
         // deterministic and every row reserves the same text width (see
@@ -769,7 +786,11 @@ private final class EventCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
+        contentView.addSubview(linkCountLabel)
         contentView.addSubview(starView)
+
+        let textToLinkCount = textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: 0)
+        textToLinkCountSpacing = textToLinkCount
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -780,18 +801,33 @@ private final class EventCell: UITableViewCell {
             calendarSwatch.heightAnchor.constraint(equalToConstant: 10),
             starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            linkCountLabel.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
+            linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
+            textToLinkCount,
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
     }
 
-    func configure(with event: Event, isFavorite: Bool) {
+    func configure(with event: Event, isFavorite: Bool, linkCount: Int) {
         iconView.image = UIImage(systemName: "calendar")
         titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
         dateLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
         starView.isHidden = !isFavorite
+
+        // Reset every configure so a recycled cell never shows a stale count.
+        // The spacing constraint flips with visibility so a hidden label
+        // collapses flush and the text reclaims the full width (see property).
+        if linkCount > 0 {
+            linkCountLabel.text = linkCount == 1 ? "1 link" : "\(linkCount) links"
+            linkCountLabel.isHidden = false
+            textToLinkCountSpacing?.constant = -8
+        } else {
+            linkCountLabel.text = nil
+            linkCountLabel.isHidden = true
+            textToLinkCountSpacing?.constant = 0
+        }
 
         // Third line appears only for calendar-sourced events that carry a
         // calendar name; manual events stay two-line. Both branches fully

@@ -34,6 +34,12 @@ final class EventsRepository: NSObject {
     private(set) var events: [Event] = []
     private(set) var isLoading: Bool = false
 
+    /// Per-event link COUNT keyed by lowercased event UUID string. Powers the
+    /// "N links" list badge; refreshed in `reload()` (the single funnel for
+    /// every reload path). An event with no entry has zero links and shows no
+    /// badge. Purely derived read-model state.
+    private var linkCountsByID: [String: Int] = [:]
+
     var searchText: String = ""
 
     /// The active Events-tab filter. A change clears the prior filter's
@@ -145,6 +151,9 @@ final class EventsRepository: NSObject {
         // that selection has already started its own reload from `didSet`.
         guard requestedFilter == filter else { return }
         events = sortOrder.sorted(fetched)
+        // Refresh the per-event link counts before posting so the snapshot the
+        // list applies already sees them (one bulk scan, not a per-row read).
+        linkCountsByID = await service.linkCountsByEndpointID(ofKind: .event)
         // Flip BEFORE posting so synchronous observers see the
         // post-load state. See ContactsRepository.reload() for the full
         // rationale.
@@ -186,5 +195,13 @@ final class EventsRepository: NSObject {
                 || (e.location ?? "").lowercased().contains(needle)
                 || (e.eventKitNotes ?? "").lowercased().contains(needle)
         }
+    }
+
+    /// Number of live links touching `event` (any far-endpoint kind), for the
+    /// "N links" list badge. Zero for an event with no links; callers hide the
+    /// badge on zero. Keyed by the lowercased event UUID, matching how the
+    /// sidecar stores an event endpoint id.
+    func linkCount(for event: Event) -> Int {
+        linkCountsByID[event.id.uuidString.lowercased()] ?? 0
     }
 }

@@ -151,6 +151,57 @@ struct LinkTests {
         #expect(asynchronous == Set([contactA]))
     }
 
+    @Test
+    func linkCountsTalliesLiveLinksPerEndpoint() throws {
+        let (sync, _) = makeOrchestrator()
+        // contactA: three live links (two contact-contact + one event). contactB
+        // shares one of those. A soft-deleted link on both must not count.
+        _ = try sync.addLink(from: contactA, to: contactB, note: "")
+        _ = try sync.addLink(from: contactA, to: contactB, note: "duplicate pair")
+        _ = try sync.addLink(from: contactA, to: eventX, note: "")
+        let removed = try sync.addLink(from: contactB, to: eventX, note: "removed")
+        try sync.removeLink(id: removed.id)
+
+        let counts = try sync.linkCounts(ofKind: .contact)
+        // A contact-contact link is counted for BOTH of its endpoints.
+        #expect(counts[contactA] == 3)
+        #expect(counts[contactB] == 2)
+        // The soft-deleted link is excluded, so eventX only sees the one live link.
+        #expect(try sync.linkCounts(ofKind: .event)[eventX] == 1)
+        // An endpoint with 0 links is simply absent from the tally.
+        let place = SidecarKey(kind: .place, id: "44444444-4444-4444-4444-444444444444")
+        #expect(counts[place] == nil)
+        #expect(try sync.linkCounts(ofKind: .place).isEmpty)
+    }
+
+    @Test
+    func linkCountsAsyncReturnsRequestedKind() async throws {
+        let (sync, _) = makeOrchestrator()
+        _ = try sync.addLink(from: contactA, to: contactB, note: "")
+
+        let asynchronous = try await sync.linkCounts(ofKind: .contact)
+        #expect(asynchronous == [contactA: 1, contactB: 1])
+    }
+
+    @Test
+    func linkCountKeysMatchLinkedEndpoints() throws {
+        // The "N links" badge counts endpoints, the Linked filter lists them —
+        // both must agree, so the keyset of the counts (count ≥ 1) has to equal
+        // the linked-endpoints set for every kind. A soft-deleted link is
+        // excluded from both scans and must not desync them.
+        let (sync, _) = makeOrchestrator()
+        let place = SidecarKey(kind: .place, id: "44444444-4444-4444-4444-444444444444")
+        _ = try sync.addLink(from: contactA, to: contactB, note: "")
+        _ = try sync.addLink(from: contactA, to: eventX, note: "")
+        _ = try sync.addLink(from: contactB, to: place, note: "")
+        let removed = try sync.addLink(from: contactB, to: eventX, note: "removed")
+        try sync.removeLink(id: removed.id)
+
+        for k in [SidecarKind.contact, .event] {
+            #expect(Set(try sync.linkCounts(ofKind: k).keys) == (try sync.linkedEndpoints(ofKind: k)))
+        }
+    }
+
     // MARK: - Cross-kind endpoints
 
     @Test
