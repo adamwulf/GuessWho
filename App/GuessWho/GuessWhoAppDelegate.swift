@@ -36,6 +36,18 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// network-server entitlement are only wired for the Catalyst build.
     /// Owned here (not by a scene) so one listener serves the whole process.
     private var chromeHandoffReceiver: LinkedInLocalhostReceiver?
+
+    /// Phase 0 diagnostic hook for the embedded relay CLI (plans/cli-mcp.md):
+    /// a FIFO in the shared CLI App Group container that `guesswho-cli probe`
+    /// writes its "connected" line into. Follows the debug-mode Settings
+    /// toggle at RUNTIME (ships in Release — Phase 0 verifies on exported
+    /// builds, so this is deliberately not `#if DEBUG`). Catalyst-only per
+    /// INV-5. Owned here so one listener serves the whole process.
+    private let cliProbeListener = CLIProbeListener()
+    /// Re-evaluates the probe listener when debug mode flips while the app is
+    /// open (same UserDefaults-observer pattern the events list uses for its
+    /// Export Logs button).
+    private nonisolated(unsafe) var cliProbeDebugModeObserver: NSObjectProtocol?
     #endif
 
     /// App-process lifecycle breadcrumbs. Routes through swift-log so it lands in
@@ -165,10 +177,37 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
 
         #if targetEnvironment(macCatalyst)
         startChromeHandoffReceiver()
+
+        // Start (or later stop) the CLI diagnostic FIFO with the debug-mode
+        // toggle. Evaluated once at launch, then re-evaluated whenever
+        // UserDefaults changes so flipping the toggle takes effect live.
+        cliProbeDebugModeObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateCLIProbeListener()
+            }
+        }
+        updateCLIProbeListener()
         #endif
 
         return true
     }
+
+    #if targetEnvironment(macCatalyst)
+    /// Aligns the CLI diagnostic listener with the debug-mode toggle. Start
+    /// and stop are both idempotent, so re-evaluating on every defaults
+    /// change is safe.
+    private func updateCLIProbeListener() {
+        if UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled) {
+            cliProbeListener.start()
+        } else {
+            cliProbeListener.stop()
+        }
+    }
+    #endif
 
     #if targetEnvironment(macCatalyst)
     /// Starts the Chrome/Brave handoff listener. Payloads hop to the main

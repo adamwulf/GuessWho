@@ -4,6 +4,11 @@
 // same production identifiers so local builds exercise production capabilities.
 
 #include "GuessWho-Shared.xcconfig"
+// The CLI/MCP App Group derivation (GUESSWHO_CLI_APP_GROUP) — shared with the
+// guesswho-cli helper target so app + helper always agree per channel (INV-4
+// in plans/cli-mcp.md). Referenced by GuessWho-MacCatalyst.entitlements and
+// the GuessWhoCLIAppGroup Info.plist key.
+#include "CLIAppGroup-Release.xcconfig"
 
 // Bundle id
 PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
