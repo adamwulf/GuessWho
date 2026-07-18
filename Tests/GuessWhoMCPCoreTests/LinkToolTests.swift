@@ -481,6 +481,131 @@ final class LinkToolTests: XCTestCase {
         }
     }
 
+    // MARK: - Mint-during-link (contact↔event / contact↔place)
+
+    /// links_create from a NEVER-reconciled contact to an event: the write
+    /// mints the contact's identity (deterministically, so the pre-mint
+    /// wire id IS the minted id), and the link lands in the real store
+    /// keyed on that minted identity — visible from both endpoints.
+    func testEventLinkFromUnreconciledContactMintsDeterministically() async {
+        let fixture = await linkFixture()
+        guard let fresh = await contactID(fixture, query: "fresh", name: "Fresh Face"),
+              let gala = await eventID(fixture, title: "Museum Gala")
+        else { return XCTFail("missing fixture records") }
+        let preMint = await MainActor.run {
+            fixture.contacts.contacts.first { $0.displayName == "Fresh Face" }?
+                .contactID.restorationToken.guessWhoID
+        }
+        XCTAssertNil(preMint, "Fresh Face must start unreconciled")
+
+        guard case .link(_, _, let echo)? = await create(
+            fixture, fromId: fresh, fromKind: "person", toId: gala, toKind: "event",
+            note: "First outing")
+        else { return XCTFail("create failed") }
+
+        // The mint happened, and it minted the SAME id the wire handed out
+        // before the write (Rev2's deterministic mint).
+        let (minted, mintCount) = await MainActor.run {
+            (fixture.contacts.contacts.first { $0.displayName == "Fresh Face" }?
+                .contactID.restorationToken.guessWhoID,
+             fixture.contacts.mintCount)
+        }
+        XCTAssertEqual(minted, fresh, "the pre-mint wire id is the minted id")
+        XCTAssertEqual(mintCount, 1)
+
+        // The REAL envelope is keyed on the minted identity — the post-mint
+        // verify's whole point: the link is reachable from the card, not
+        // stranded on a never-stamped key.
+        let stored = (try? fixture.linkEngine.link(id: UUID(uuidString: echo.id)!)) ?? nil
+        XCTAssertEqual(
+            Set([stored?.endpointA, stored?.endpointB].compactMap { $0 }),
+            Set([SidecarKey(kind: .contact, id: fresh), SidecarKey(kind: .event, id: gala)]))
+
+        guard let fromFresh = await list(fixture, id: fresh, kind: "person"),
+              let fromGala = await list(fixture, id: gala, kind: "event")
+        else { return XCTFail("links_list failed") }
+        XCTAssertEqual(fromFresh.map(\.id), [echo.id])
+        XCTAssertEqual(fromFresh.first?.otherId, gala)
+        XCTAssertEqual(fromGala.map(\.id), [echo.id])
+        XCTAssertEqual(fromGala.first?.otherId, fresh, "the far id is the now-minted contact id")
+        XCTAssertEqual(fromGala.first?.kind, "person")
+    }
+
+    /// The place twin of the mint-during-link path.
+    func testPlaceLinkFromUnreconciledContactMintsDeterministically() async {
+        let fixture = await linkFixture()
+        guard let fresh = await contactID(fixture, query: "fresh", name: "Fresh Face"),
+              let place = await placeID(fixture)
+        else { return XCTFail("missing fixture records") }
+
+        guard case .link(_, _, let echo)? = await create(
+            fixture, fromId: fresh, fromKind: "person", toId: place, toKind: "place")
+        else { return XCTFail("create failed") }
+
+        let minted = await MainActor.run {
+            fixture.contacts.contacts.first { $0.displayName == "Fresh Face" }?
+                .contactID.restorationToken.guessWhoID
+        }
+        XCTAssertEqual(minted, fresh)
+
+        let stored = (try? fixture.linkEngine.link(id: UUID(uuidString: echo.id)!)) ?? nil
+        XCTAssertEqual(
+            Set([stored?.endpointA, stored?.endpointB].compactMap { $0 }),
+            Set([SidecarKey(kind: .contact, id: fresh), SidecarKey(kind: .place, id: place)]))
+
+        guard let fromFresh = await list(fixture, id: fresh, kind: "person"),
+              let fromPlace = await list(fixture, id: place, kind: "place")
+        else { return XCTFail("links_list failed") }
+        XCTAssertEqual(fromFresh.map(\.id), [echo.id])
+        XCTAssertEqual(fromFresh.first?.kind, "place")
+        XCTAssertEqual(fromPlace.map(\.id), [echo.id])
+        XCTAssertEqual(fromPlace.first?.otherId, fresh)
+    }
+
+    /// The losing-mint race on the single-contact path: a concurrent
+    /// first-writer's mint wins the card while our link write lands on the
+    /// losing identity. addContactRecordLink's post-mint verify must catch
+    /// it, remove the stale link from the REAL store, and retry onto the
+    /// card's canonical identity — no half-orphan survives.
+    func testLosingMintDuringEventLinkRetriesOntoCanonicalIdentity() async {
+        let fixture = await linkFixture()
+        guard let fresh = await contactID(fixture, query: "fresh", name: "Fresh Face"),
+              let gala = await eventID(fixture, title: "Museum Gala")
+        else { return XCTFail("missing fixture records") }
+        await MainActor.run { fixture.contacts.simulateLosingMintOnce = true }
+
+        guard case .link(_, _, let echo)? = await create(
+            fixture, fromId: fresh, fromKind: "person", toId: gala, toKind: "event")
+        else { return XCTFail("create failed") }
+
+        // The card carries the WINNING (other writer's) identity, not the
+        // deterministic preview our first attempt keyed on.
+        let winning = await MainActor.run {
+            fixture.contacts.contacts.first { $0.displayName == "Fresh Face" }?
+                .contactID.restorationToken.guessWhoID
+        }
+        guard let winning else { return XCTFail("the race must leave a minted identity") }
+        XCTAssertNotEqual(winning, fresh, "the simulated race stamps a different identity")
+
+        // Exactly ONE live link in the real store, keyed on the canonical
+        // identity — the losing-key link was removed, not stranded.
+        let liveContactEndpoints = (try? await fixture.linkEngine.linkedEndpoints(ofKind: .contact)) ?? []
+        XCTAssertEqual(liveContactEndpoints, [SidecarKey(kind: .contact, id: winning)])
+        let stored = (try? fixture.linkEngine.link(id: UUID(uuidString: echo.id)!)) ?? nil
+        XCTAssertEqual(
+            Set([stored?.endpointA, stored?.endpointB].compactMap { $0 }),
+            Set([SidecarKey(kind: .contact, id: winning), SidecarKey(kind: .event, id: gala)]))
+
+        // The agent's original (deterministic) wire id STILL resolves — the
+        // derivation matches the card — and lists the retried link.
+        guard let fromFresh = await list(fixture, id: fresh, kind: "person"),
+              let fromGala = await list(fixture, id: gala, kind: "event")
+        else { return XCTFail("links_list failed") }
+        XCTAssertEqual(fromFresh.map(\.id), [echo.id])
+        XCTAssertEqual(fromGala.map(\.id), [echo.id])
+        XCTAssertEqual(fromGala.first?.otherId, winning)
+    }
+
     // MARK: - Write gating, budget, idempotency
 
     func testLinksCreateRejectedUnderReadOnlyWhileListStaysAvailable() async {
