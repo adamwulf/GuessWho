@@ -448,39 +448,7 @@ final class WriteToolTests: XCTestCase {
         }
     }
 
-    // MARK: - Linked contacts / favorites / guides
-
-    func testAddLinkedContactEnforcesKindAndEchoesRow() async {
-        let fixture = await writableFixture()
-        guard let jane = await janeHandle(fixture),
-              let fresh = await contactHandle(fixture, query: "fresh", name: "Fresh Face"),
-              let organization = await contactHandle(fixture, query: "doe", name: "Doe Industries")
-        else { return XCTFail("missing fixtures") }
-
-        // Wrong kind → pointed to the right tool.
-        let wrongKind = await fixture.dispatcher.handle(.contactsAddLinkedContact(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, personId: organization, note: nil, idempotencyToken: nil))
-        expectError(wrongKind, code: .invalidParams)
-
-        let added = await fixture.dispatcher.handle(.contactsAddLinkedContact(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, personId: fresh, note: "Old colleague", idempotencyToken: nil))
-        guard case .linkedContact(_, _, let row) = added else {
-            return XCTFail("expected linked-contact echo, got \(added)")
-        }
-        XCTAssertEqual(row.kind, "person")
-        XCTAssertEqual(row.note, "Old colleague")
-        XCTAssertEqual(row.contact.name, "Fresh Face")
-
-        let removed = await fixture.dispatcher.handle(.contactsRemoveLinkedContact(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            linkId: row.id, idempotencyToken: nil))
-        guard case .acknowledged(_, _, let message) = removed else {
-            return XCTFail("expected acknowledgement, got \(removed)")
-        }
-        XCTAssertEqual(message, WireAckMessage.linkRemoved)
-    }
+    // MARK: - Favorites / guides
 
     func testSetFavoriteIsIdempotentAndMintsNothingOnClearOfUntouchedContact() async {
         let fixture = await writableFixture()

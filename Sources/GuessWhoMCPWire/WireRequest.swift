@@ -27,8 +27,6 @@ public enum WireRequest: Codable, Sendable {
     case contactsGet(helperId: String, messageId: String, contactId: String)
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
-    case contactsListLinkedContacts(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
-    case contactsListLinkedOrganizations(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListFavorites(helperId: String, messageId: String, limit: Int?, cursor: String?)
     case contactsListGroups(helperId: String, messageId: String, limit: Int?, cursor: String?)
     case groupsListMembers(helperId: String, messageId: String, groupId: String, limit: Int?, cursor: String?)
@@ -76,9 +74,6 @@ public enum WireRequest: Codable, Sendable {
     case contactsDeleteNote(helperId: String, messageId: String, contactId: String, noteId: String, idempotencyToken: String?)
     case contactsSetCustomField(helperId: String, messageId: String, contactId: String, name: String, type: String?, value: String, idempotencyToken: String?)
     case contactsDeleteCustomField(helperId: String, messageId: String, contactId: String, fieldId: String, idempotencyToken: String?)
-    case contactsAddLinkedContact(helperId: String, messageId: String, contactId: String, personId: String, note: String?, idempotencyToken: String?)
-    case contactsAddLinkedOrganization(helperId: String, messageId: String, contactId: String, organizationId: String, note: String?, idempotencyToken: String?)
-    case contactsRemoveLinkedContact(helperId: String, messageId: String, linkId: String, idempotencyToken: String?)
     case contactsSetFavorite(helperId: String, messageId: String, contactId: String, favorite: Bool, idempotencyToken: String?)
     case eventsAddTag(helperId: String, messageId: String, eventId: String, text: String, idempotencyToken: String?)
     case eventsEditTag(helperId: String, messageId: String, eventId: String, tagId: String, text: String, idempotencyToken: String?)
@@ -99,8 +94,6 @@ public enum WireRequest: Codable, Sendable {
         case .contactsGet: return .contactsGet
         case .contactsListNotes: return .contactsListNotes
         case .contactsListCustomFields: return .contactsListCustomFields
-        case .contactsListLinkedContacts: return .contactsListLinkedContacts
-        case .contactsListLinkedOrganizations: return .contactsListLinkedOrganizations
         case .contactsListFavorites: return .contactsListFavorites
         case .contactsListGroups: return .contactsListGroups
         case .groupsListMembers: return .groupsListMembers
@@ -134,9 +127,6 @@ public enum WireRequest: Codable, Sendable {
         case .contactsDeleteNote: return .contactsDeleteNote
         case .contactsSetCustomField: return .contactsSetCustomField
         case .contactsDeleteCustomField: return .contactsDeleteCustomField
-        case .contactsAddLinkedContact: return .contactsAddLinkedContact
-        case .contactsAddLinkedOrganization: return .contactsAddLinkedOrganization
-        case .contactsRemoveLinkedContact: return .contactsRemoveLinkedContact
         case .contactsSetFavorite: return .contactsSetFavorite
         case .eventsAddTag: return .eventsAddTag
         case .eventsEditTag: return .eventsEditTag
@@ -178,9 +168,6 @@ public enum WireRequest: Codable, Sendable {
              .contactsDeleteNote(_, _, _, _, let token),
              .contactsSetCustomField(_, _, _, _, _, _, let token),
              .contactsDeleteCustomField(_, _, _, _, let token),
-             .contactsAddLinkedContact(_, _, _, _, _, let token),
-             .contactsAddLinkedOrganization(_, _, _, _, _, let token),
-             .contactsRemoveLinkedContact(_, _, _, let token),
              .contactsSetFavorite(_, _, _, _, let token),
              .eventsAddTag(_, _, _, _, let token),
              .eventsEditTag(_, _, _, _, _, let token),
@@ -210,8 +197,6 @@ extension WireRequest: MCPRequestProtocol {
              .contactsGet(let helperId, _, _),
              .contactsListNotes(let helperId, _, _, _, _),
              .contactsListCustomFields(let helperId, _, _, _, _),
-             .contactsListLinkedContacts(let helperId, _, _, _, _),
-             .contactsListLinkedOrganizations(let helperId, _, _, _, _),
              .contactsListFavorites(let helperId, _, _, _),
              .contactsListGroups(let helperId, _, _, _),
              .groupsListMembers(let helperId, _, _, _, _),
@@ -244,9 +229,6 @@ extension WireRequest: MCPRequestProtocol {
              .contactsDeleteNote(let helperId, _, _, _, _),
              .contactsSetCustomField(let helperId, _, _, _, _, _, _),
              .contactsDeleteCustomField(let helperId, _, _, _, _),
-             .contactsAddLinkedContact(let helperId, _, _, _, _, _),
-             .contactsAddLinkedOrganization(let helperId, _, _, _, _, _),
-             .contactsRemoveLinkedContact(let helperId, _, _, _),
              .contactsSetFavorite(let helperId, _, _, _, _),
              .eventsAddTag(let helperId, _, _, _, _),
              .eventsEditTag(let helperId, _, _, _, _, _),
@@ -272,8 +254,6 @@ extension WireRequest: MCPRequestProtocol {
              .contactsGet(_, let messageId, _),
              .contactsListNotes(_, let messageId, _, _, _),
              .contactsListCustomFields(_, let messageId, _, _, _),
-             .contactsListLinkedContacts(_, let messageId, _, _, _),
-             .contactsListLinkedOrganizations(_, let messageId, _, _, _),
              .contactsListFavorites(_, let messageId, _, _),
              .contactsListGroups(_, let messageId, _, _),
              .groupsListMembers(_, let messageId, _, _, _),
@@ -306,9 +286,6 @@ extension WireRequest: MCPRequestProtocol {
              .contactsDeleteNote(_, let messageId, _, _, _),
              .contactsSetCustomField(_, let messageId, _, _, _, _, _),
              .contactsDeleteCustomField(_, let messageId, _, _, _),
-             .contactsAddLinkedContact(_, let messageId, _, _, _, _),
-             .contactsAddLinkedOrganization(_, let messageId, _, _, _, _),
-             .contactsRemoveLinkedContact(_, let messageId, _, _),
              .contactsSetFavorite(_, let messageId, _, _, _),
              .eventsAddTag(_, let messageId, _, _, _),
              .eventsEditTag(_, let messageId, _, _, _, _),
@@ -379,16 +356,6 @@ extension WireRequest: MCPRequestProtocol {
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .contactsListCustomFields:
             return .contactsListCustomFields(
-                helperId: helperId, messageId: messageId,
-                contactId: try args.requiredString("contactId"),
-                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
-        case .contactsListLinkedContacts:
-            return .contactsListLinkedContacts(
-                helperId: helperId, messageId: messageId,
-                contactId: try args.requiredString("contactId"),
-                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
-        case .contactsListLinkedOrganizations:
-            return .contactsListLinkedOrganizations(
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
@@ -578,25 +545,6 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 fieldId: try args.requiredString("fieldId"),
-                idempotencyToken: try args.optionalString("idempotencyToken"))
-        case .contactsAddLinkedContact:
-            return .contactsAddLinkedContact(
-                helperId: helperId, messageId: messageId,
-                contactId: try args.requiredString("contactId"),
-                personId: try args.requiredString("personId"),
-                note: try args.optionalString("note"),
-                idempotencyToken: try args.optionalString("idempotencyToken"))
-        case .contactsAddLinkedOrganization:
-            return .contactsAddLinkedOrganization(
-                helperId: helperId, messageId: messageId,
-                contactId: try args.requiredString("contactId"),
-                organizationId: try args.requiredString("organizationId"),
-                note: try args.optionalString("note"),
-                idempotencyToken: try args.optionalString("idempotencyToken"))
-        case .contactsRemoveLinkedContact:
-            return .contactsRemoveLinkedContact(
-                helperId: helperId, messageId: messageId,
-                linkId: try args.requiredString("linkId"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsSetFavorite:
             return .contactsSetFavorite(

@@ -75,17 +75,19 @@ final class WriteEchoSecurityTests: XCTestCase {
                 contactId: jane, fieldId: field.id, idempotencyToken: nil))
         }
 
-        let linked = await run(.contactsAddLinkedContact(
+        let linked = await run(.linksCreate(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, personId: fresh, note: "echo link", idempotencyToken: nil))
-        if case .linkedContact(_, _, let row) = linked {
-            _ = await run(.contactsRemoveLinkedContact(
+            fromId: jane, fromKind: "person", toId: fresh, toKind: "person",
+            note: "echo link", idempotencyToken: nil))
+        if case .link(_, _, let row) = linked {
+            _ = await run(.linksRemove(
                 helperId: helper, messageId: TestMessageID.next(),
                 linkId: row.id, idempotencyToken: nil))
         }
-        _ = await run(.contactsAddLinkedOrganization(
+        _ = await run(.linksCreate(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, organizationId: organization, note: nil, idempotencyToken: nil))
+            fromId: jane, fromKind: "person", toId: organization, toKind: "organization",
+            note: nil, idempotencyToken: nil))
         _ = await run(.contactsSetFavorite(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: fresh, favorite: true, idempotencyToken: nil))
@@ -470,7 +472,11 @@ final class RecentlyDeletedTests: XCTestCase {
         XCTAssertFalse(restored, "a blocked item must not blind-restore")
     }
 
-    func testDeletedTagAndLinkAreRestorable() async {
+    // Link removal + Recently-Deleted restore is covered end-to-end over the
+    // real link engine by LinkToolTests.testRemovedGenericLinkIsRestorableFromRecentlyDeleted
+    // (links_create → links_remove → restore); this test keeps the event-tag
+    // restore leg, which lives only here.
+    func testDeletedTagIsRestorable() async {
         let fixture = await writableFixture()
         let helper = Fixture.helper
 
@@ -493,39 +499,15 @@ final class RecentlyDeletedTests: XCTestCase {
             eventId: gala.id, tagId: fundraiser.id, idempotencyToken: nil))
         guard case .acknowledged = tagDeleted else { return XCTFail("tag delete failed") }
 
-        // Delete the fixture person-link through the dispatcher.
-        let search = await fixture.dispatcher.handle(.contactsSearch(
-            helperId: helper, messageId: TestMessageID.next(),
-            query: "jane", limit: nil, cursor: nil))
-        guard case .contactPage(_, _, let contactPage) = search,
-              let jane = contactPage.items.first(where: { $0.name == "Jane Doe" })?.id
-        else { return XCTFail("no jane") }
-        let linksResponse = await fixture.dispatcher.handle(.contactsListLinkedContacts(
-            helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, limit: nil, cursor: nil))
-        guard case .linkedContactPage(_, _, let linkPage) = linksResponse,
-              let roommate = linkPage.items.first(where: { $0.note == "College roommate" })
-        else { return XCTFail("expected the person link") }
-        let linkRemoved = await fixture.dispatcher.handle(.contactsRemoveLinkedContact(
-            helperId: helper, messageId: TestMessageID.next(),
-            linkId: roommate.id, idempotencyToken: nil))
-        guard case .acknowledged = linkRemoved else { return XCTFail("link remove failed") }
-
         let service = await makeService(fixture)
         let items = await service.items()
         guard let tagItem = items.first(where: { $0.kind == .eventTag }) else {
             return XCTFail("deleted tag should be listed")
         }
-        guard let linkItem = items.first(where: { $0.kind == .linkedContact }) else {
-            return XCTFail("removed link should be listed")
-        }
         XCTAssertTrue(tagItem.canRestore)
-        XCTAssertTrue(linkItem.canRestore)
 
         let tagRestored = await service.restore(tagItem)
-        let linkRestored = await service.restore(linkItem)
         XCTAssertTrue(tagRestored)
-        XCTAssertTrue(linkRestored)
 
         let tagLive = await MainActor.run { () -> Bool in
             let galaUUID = fixture.events.events[0].id.uuidString.lowercased()
@@ -533,12 +515,5 @@ final class RecentlyDeletedTests: XCTestCase {
                 .contains { $0.text == "fundraiser" }
         }
         XCTAssertTrue(tagLive, "the restored tag is live again")
-
-        let linkLive = await MainActor.run { () -> Bool in
-            fixture.contacts.linksByID.values.contains {
-                $0.note == "College roommate" && $0.deletedAt == nil
-            }
-        }
-        XCTAssertTrue(linkLive, "the restored link is live again")
     }
 }

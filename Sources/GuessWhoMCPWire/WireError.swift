@@ -82,8 +82,6 @@ public enum WireErrorMessage {
         "No matching custom field was found on that contact. List the custom fields again to get current ids."
     public static let notFoundTag =
         "No matching tag was found on that event. List the tags again to get current ids."
-    public static let notFoundLink =
-        "No matching connection was found. List the Linked Contacts or Linked Organizations again to get current ids."
     public static let notFoundPlace =
         "No matching place was found. List the places again to get current ids."
     // Write-path messages (plans/cli-mcp.md Phase 2).
@@ -107,10 +105,6 @@ public enum WireErrorMessage {
         "The type argument must be \"text\", \"multilineNote\", \"date\", or \"checkbox\"."
     // Write-path argument errors, centralized here (rather than inline in
     // the dispatcher) so the banned-vocabulary test scans them.
-    public static let linkedKindIsPerson =
-        "That id belongs to a person. Use contacts_add_linked_contact for people."
-    public static let linkedKindIsOrganization =
-        "That id belongs to an organization. Use contacts_add_linked_organization for organizations."
     public static let emptyNameArgument =
         "The name argument must not be empty."
     public static let invalidDateFieldValue =
@@ -237,10 +231,10 @@ public enum WireErrorMessage {
             notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide,
             notFoundGenericID, noHostStatus,
             hostNotReady, timedOut,
-            notFoundNote, notFoundField, notFoundTag, notFoundLink, notFoundPlace,
+            notFoundNote, notFoundField, notFoundTag, notFoundPlace,
             eventNeedsAppFirst, writeFailed, writeBusy, reservedFieldName,
             invalidFieldType,
-            linkedKindIsPerson, linkedKindIsOrganization, emptyNameArgument,
+            emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
             reorderMustCoverEveryPlace,
             contactNeedsAName, invalidKindArgument, invalidTypeArgument,

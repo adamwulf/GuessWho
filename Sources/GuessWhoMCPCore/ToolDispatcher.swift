@@ -191,14 +191,6 @@ public actor ToolDispatcher {
             response = await contactsListCustomFields(
                 helperId: helperId, messageId: messageId,
                 contactId: contactId, limit: limit, cursor: cursor)
-        case .contactsListLinkedContacts(_, _, let contactId, let limit, let cursor):
-            response = await contactsListLinked(
-                helperId: helperId, messageId: messageId,
-                contactId: contactId, kind: "person", limit: limit, cursor: cursor)
-        case .contactsListLinkedOrganizations(_, _, let contactId, let limit, let cursor):
-            response = await contactsListLinked(
-                helperId: helperId, messageId: messageId,
-                contactId: contactId, kind: "organization", limit: limit, cursor: cursor)
         case .contactsListFavorites(_, _, let limit, let cursor):
             response = await contactsListFavorites(
                 helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
@@ -243,8 +235,7 @@ public actor ToolDispatcher {
              .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsAddLinkedContact, .contactsAddLinkedOrganization,
-             .contactsRemoveLinkedContact, .contactsSetFavorite,
+             .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksRemove:
@@ -476,53 +467,6 @@ public actor ToolDispatcher {
                 WireMapping.customField($0, id: $0.id.uuidString.lowercased())
             }
             return .customFieldPage(
-                helperId: helperId, messageId: messageId,
-                page: WirePage(items: items, nextCursor: nextCursor))
-        }
-    }
-
-    /// Shared list for Linked Contacts ("person") / Linked Organizations
-    /// ("organization") — the shipping UI's two sections, partitioned by
-    /// the far endpoint's kind.
-    private func contactsListLinked(
-        helperId: String, messageId: String, contactId: String, kind: String,
-        limit: Int?, cursor: String?
-    ) async -> WireResponse {
-        guard let page = pageBounds(limit: limit, cursor: cursor) else {
-            return invalidCursor(helperId: helperId, messageId: messageId)
-        }
-        switch await resolveContact(contactId) {
-        case .failure(let failure):
-            return failure.response(helperId: helperId, messageId: messageId)
-        case .success(let contact):
-            let id = contact.contactID
-            let wantOrganization = kind == "organization"
-            let links = await contacts.links(for: id)
-            var pairs: [(Link, Contact)] = []
-            for link in links where link.deletedAt == nil {
-                // DELIBERATE divergence from the UI: a link whose far
-                // endpoint doesn't resolve (deleted / not-yet-synced
-                // contact) is DROPPED here, while the detail view buckets
-                // it into "People" as a placeholder row. The placeholder
-                // exists so a human can repair or delete the link; an
-                // agent can't act on a row with no name and no id (there
-                // is no Contact to mint a sealed reference from), and a
-                // partial DTO would break the allowlist shape.
-                guard let other = await MainActor.run(body: { contacts.linkedContact(of: link, for: id) })
-                else { continue }
-                let isOrganization = other.contactType == .organization
-                if isOrganization == wantOrganization {
-                    pairs.append((link, other))
-                }
-            }
-            pairs.sort { $0.0.createdAt < $1.0.createdAt }
-            let (slice, nextCursor) = page.slice(pairs)
-            let items = slice.compactMap { link, other in
-                WireMapping.linkedContact(
-                    link: link, linkID: link.id.uuidString.lowercased(),
-                    other: other, otherID: WireRecordID.contactID(for: other))
-            }
-            return .linkedContactPage(
                 helperId: helperId, messageId: messageId,
                 page: WirePage(items: items, nextCursor: nextCursor))
         }
@@ -833,17 +777,6 @@ public actor ToolDispatcher {
         case .contactsDeleteCustomField(_, _, let contactId, let fieldId, _):
             return await contactsDeleteCustomField(
                 helperId: helperId, messageId: messageId, contactId: contactId, fieldId: fieldId)
-        case .contactsAddLinkedContact(_, _, let contactId, let personId, let note, _):
-            return await contactsAddLink(
-                helperId: helperId, messageId: messageId,
-                contactId: contactId, otherId: personId, note: note, wantOrganization: false)
-        case .contactsAddLinkedOrganization(_, _, let contactId, let organizationId, let note, _):
-            return await contactsAddLink(
-                helperId: helperId, messageId: messageId,
-                contactId: contactId, otherId: organizationId, note: note, wantOrganization: true)
-        case .contactsRemoveLinkedContact(_, _, let linkId, _):
-            return await contactsRemoveLink(
-                helperId: helperId, messageId: messageId, linkId: linkId)
         case .contactsSetFavorite(_, _, let contactId, let favorite, _):
             return await contactsSetFavorite(
                 helperId: helperId, messageId: messageId, contactId: contactId, favorite: favorite)
@@ -1131,59 +1064,8 @@ public actor ToolDispatcher {
         }
     }
 
-    /// Shared implementation for contacts_add_linked_contact ("person") and
-    /// contacts_add_linked_organization ("organization") — one engine write,
-    /// gated on the far endpoint's kind matching the tool.
-    private func contactsAddLink(
-        helperId: String, messageId: String, contactId: String, otherId: String,
-        note: String?, wantOrganization: Bool
-    ) async -> WireResponse {
-        let near: Contact
-        switch await resolveContactForWrite(contactId) {
-        case .failure(let failure):
-            return failure.response(helperId: helperId, messageId: messageId)
-        case .success(let contact):
-            near = contact
-        }
-        let far: Contact
-        switch await resolveContactForWrite(otherId) {
-        case .failure(let failure):
-            return failure.response(helperId: helperId, messageId: messageId)
-        case .success(let contact):
-            far = contact
-        }
-        let farIsOrganization = far.contactType == .organization
-        guard farIsOrganization == wantOrganization else {
-            let message = wantOrganization
-                ? WireErrorMessage.linkedKindIsPerson
-                : WireErrorMessage.linkedKindIsOrganization
-            return .error(
-                helperId: helperId, messageId: messageId,
-                code: .invalidParams, message: message)
-        }
-
-        do {
-            let (effectiveNear, effectiveFar, link) = try await addContactContactLink(
-                near: near, far: far, note: note)
-            guard let dto = WireMapping.linkedContact(
-                link: link, linkID: link.id.uuidString.lowercased(),
-                other: effectiveFar, otherID: WireRecordID.contactID(for: effectiveFar))
-            else {
-                return writeFailure(helperId: helperId, messageId: messageId)
-            }
-            await recordAudit(
-                .addLinkedContact, kind: .contact, contact: effectiveNear,
-                instanceID: link.id, postModifiedAt: link.modifiedAt,
-                priorValue: nil, newValue: note)
-            return .linkedContact(helperId: helperId, messageId: messageId, link: dto)
-        } catch {
-            return writeFailure(error, helperId: helperId, messageId: messageId)
-        }
-    }
-
-    /// The locked contact↔contact link write shared by
-    /// contacts_add_linked_contact / contacts_add_linked_organization and
-    /// links_create: resolve both endpoints under their per-localID write
+    /// The locked contact↔contact link write shared by links_create:
+    /// resolve both endpoints under their per-localID write
     /// locks, write the link through the identity-minting repository funnel,
     /// and verify-with-one-retry when a concurrent first-writer's mint won
     /// (removing the stale link so no half-orphan survives). Returns the
@@ -1235,53 +1117,6 @@ public actor ToolDispatcher {
             }
             let final = try await resolveBoth()
             return (final.0, final.1, link)
-        }
-    }
-
-    private func contactsRemoveLink(
-        helperId: String, messageId: String, linkId: String
-    ) async -> WireResponse {
-        guard let linkUUID = WireRecordID.recordUUID(linkId) else {
-            return .error(
-                helperId: helperId, messageId: messageId,
-                code: .notFound, message: WireErrorMessage.notFoundLink)
-        }
-        let existing = await MainActor.run { contacts.link(id: linkUUID) }
-        guard let existing, existing.deletedAt == nil else {
-            return .error(
-                helperId: helperId, messageId: messageId,
-                code: .notFound, message: WireErrorMessage.notFoundLink)
-        }
-        do {
-            try await MainActor.run { try contacts.removeLink(id: linkUUID) }
-            let tombstone = await MainActor.run { contacts.link(id: linkUUID) }
-            // Best-effort display name from either contact endpoint, for
-            // the audit row.
-            let endpointA = existing.endpointA
-            let endpointB = existing.endpointB
-            let subjectName = await MainActor.run { () -> String? in
-                let all = contacts.allContacts
-                func name(_ endpoint: SidecarKey) -> String? {
-                    guard endpoint.kind == .contact else { return nil }
-                    return all.first {
-                        $0.contactID.restorationToken.guessWhoID == endpoint.id
-                    }?.displayName
-                }
-                return name(endpointA) ?? name(endpointB)
-            }
-            await audit?.record(MCPAuditEntry(
-                at: Date(), action: .removeLinkedContact, subjectKind: .link,
-                subjectID: linkUUID.uuidString.lowercased(),
-                subjectName: subjectName ?? "",
-                instanceID: linkUUID.uuidString.lowercased(),
-                postModifiedAt: tombstone?.modifiedAt,
-                priorValue: existing.note.isEmpty ? nil : existing.note,
-                newValue: nil))
-            return .acknowledged(
-                helperId: helperId, messageId: messageId,
-                message: WireAckMessage.linkRemoved)
-        } catch {
-            return writeFailure(error, helperId: helperId, messageId: messageId)
         }
     }
 
@@ -2715,8 +2550,8 @@ public actor ToolDispatcher {
             try await MainActor.run { try links.removeLink(id: linkUUID) }
             let tombstone = await MainActor.run { links.link(id: linkUUID) }
             let subjectName = await linkSubjectName(existing)
-            // Same entry shape as contactsRemoveLink, so the Recently
-            // Deleted restore path covers these rows too.
+            // A .removeLinkedContact / .link audit entry, so the Recently
+            // Deleted restore path covers these rows.
             await audit?.record(MCPAuditEntry(
                 at: Date(), action: .removeLinkedContact, subjectKind: .link,
                 subjectID: linkUUID.uuidString.lowercased(),

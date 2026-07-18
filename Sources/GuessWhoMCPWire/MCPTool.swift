@@ -23,8 +23,6 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsGet = "contacts_get"
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
-    case contactsListLinkedContacts = "contacts_list_linked_contacts"
-    case contactsListLinkedOrganizations = "contacts_list_linked_organizations"
     case contactsListFavorites = "contacts_list_favorites"
     case contactsListGroups = "contacts_list_groups"
     case groupsListMembers = "groups_list_members"
@@ -73,9 +71,6 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsDeleteNote = "contacts_delete_note"
     case contactsSetCustomField = "contacts_set_custom_field"
     case contactsDeleteCustomField = "contacts_delete_custom_field"
-    case contactsAddLinkedContact = "contacts_add_linked_contact"
-    case contactsAddLinkedOrganization = "contacts_add_linked_organization"
-    case contactsRemoveLinkedContact = "contacts_remove_linked_contact"
     case contactsSetFavorite = "contacts_set_favorite"
     case eventsAddTag = "events_add_tag"
     case eventsEditTag = "events_edit_tag"
@@ -85,9 +80,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case guidesReorderPlaces = "guides_reorder_places"
     case placesDelete = "places_delete"
     // Generic connections between records (contacts, events, places) — the
-    // same kind pairs the app's detail views can create. links_create /
-    // links_remove are writes; links_list generalizes the two
-    // contacts_list_linked_* reads (which remain, unchanged).
+    // same kind pairs the app's detail views can create, and the single
+    // linking surface: links_create / links_remove are writes, links_list
+    // the read.
     case linksCreate = "links_create"
     case linksRemove = "links_remove"
 
@@ -105,8 +100,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     public var permissionDomain: PermissionDomain {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
-             .contactsListCustomFields, .contactsListLinkedContacts,
-             .contactsListLinkedOrganizations, .contactsListFavorites,
+             .contactsListCustomFields, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
              .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddPhone, .contactsRemovePhone, .contactsEditPhone,
@@ -116,8 +110,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsAddLinkedContact, .contactsAddLinkedOrganization,
-             .contactsRemoveLinkedContact, .contactsSetFavorite:
+             .contactsSetFavorite:
             return .contacts
         case .eventsList, .eventsGet, .eventsListTags,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag:
@@ -141,8 +134,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     public var isWrite: Bool {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
-             .contactsListCustomFields, .contactsListLinkedContacts,
-             .contactsListLinkedOrganizations, .contactsListFavorites,
+             .contactsListCustomFields, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
              .eventsList, .eventsGet, .eventsListTags,
              .guidesList, .guidesGet, .placesList, .linksList:
@@ -155,8 +147,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsAddLinkedContact, .contactsAddLinkedOrganization,
-             .contactsRemoveLinkedContact, .contactsSetFavorite,
+             .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksRemove:
@@ -434,20 +425,6 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List the custom fields the user has added to a contact (text, dates, and checkboxes).",
                 inputSchema: Self.schema(props, required: ["contactId"]))
-        case .contactsListLinkedContacts:
-            var props = Self.pagingProperties
-            props["contactId"] = Self.string(Self.contactIdDoc)
-            return ToolMetadata(
-                name: rawValue,
-                description: "List a contact's Linked Contacts — the people the user has connected to this contact, with an optional note about each connection.",
-                inputSchema: Self.schema(props, required: ["contactId"]))
-        case .contactsListLinkedOrganizations:
-            var props = Self.pagingProperties
-            props["contactId"] = Self.string(Self.contactIdDoc)
-            return ToolMetadata(
-                name: rawValue,
-                description: "List a contact's Linked Organizations — the organizations the user has connected to this contact, with an optional note about each connection.",
-                inputSchema: Self.schema(props, required: ["contactId"]))
         case .contactsListFavorites:
             return ToolMetadata(
                 name: rawValue,
@@ -663,34 +640,6 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     "fieldId": Self.string("A field id returned by contacts_list_custom_fields."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["contactId", "fieldId"]))
-        case .contactsAddLinkedContact:
-            return ToolMetadata(
-                name: rawValue,
-                description: "Add a person to a contact's Linked Contacts, with an optional note about the connection. Returns the new row.",
-                inputSchema: Self.schema([
-                    "contactId": Self.string(Self.contactIdDoc),
-                    "personId": Self.string("The id of the person to connect (from contacts_search). Must be a person, not an organization."),
-                    "note": Self.string("Optional: a short note about the connection, e.g. \"College roommate\"."),
-                    "idempotencyToken": Self.string(Self.idempotencyDoc),
-                ], required: ["contactId", "personId"]))
-        case .contactsAddLinkedOrganization:
-            return ToolMetadata(
-                name: rawValue,
-                description: "Add an organization to a contact's Linked Organizations, with an optional note about the connection. Returns the new row.",
-                inputSchema: Self.schema([
-                    "contactId": Self.string(Self.contactIdDoc),
-                    "organizationId": Self.string("The id of the organization to connect (from contacts_search). Must be an organization, not a person."),
-                    "note": Self.string("Optional: a short note about the connection, e.g. \"Board seat\"."),
-                    "idempotencyToken": Self.string(Self.idempotencyDoc),
-                ], required: ["contactId", "organizationId"]))
-        case .contactsRemoveLinkedContact:
-            return ToolMetadata(
-                name: rawValue,
-                description: "Remove a row from a contact's Linked Contacts or Linked Organizations. The user can restore a recently removed row from the app.",
-                inputSchema: Self.schema([
-                    "linkId": Self.string("A row id returned by contacts_list_linked_contacts or contacts_list_linked_organizations."),
-                    "idempotencyToken": Self.string(Self.idempotencyDoc),
-                ], required: ["linkId"]))
         case .contactsSetFavorite:
             return ToolMetadata(
                 name: rawValue,

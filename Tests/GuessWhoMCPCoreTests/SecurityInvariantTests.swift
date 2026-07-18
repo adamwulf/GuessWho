@@ -61,12 +61,11 @@ final class SecurityInvariantTests: XCTestCase {
             _ = await run(.contactsListCustomFields(
                 helperId: helper, messageId: TestMessageID.next(),
                 contactId: id, limit: nil, cursor: nil))
-            _ = await run(.contactsListLinkedContacts(
-                helperId: helper, messageId: TestMessageID.next(),
-                contactId: id, limit: nil, cursor: nil))
-            _ = await run(.contactsListLinkedOrganizations(
-                helperId: helper, messageId: TestMessageID.next(),
-                contactId: id, limit: nil, cursor: nil))
+            for kind in ["person", "organization"] {
+                _ = await run(.linksList(
+                    helperId: helper, messageId: TestMessageID.next(),
+                    id: id, kind: kind, limit: nil, cursor: nil))
+            }
         }
 
         _ = await run(.contactsListFavorites(
