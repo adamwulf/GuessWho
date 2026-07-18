@@ -232,8 +232,9 @@ struct MCPWriteIntegrationTests {
     }
 
     /// Single-entry list edits (Phase 7), hosted: contacts_add_value /
-    /// edit / remove with field phone against the LIVE `ContactsRepository` — the
-    /// production `editableContact` → mutate-one-entry → `saveContact` →
+    /// edit / remove with field phone against the LIVE
+    /// `ContactsRepository` — the production `editableContact` →
+    /// mutate-one-entry → `saveContact` →
     /// `refreshContact` funnel over its real cached read-model, with the
     /// stub record book standing in ONLY at the TCC boundary. Asserts one
     /// entry changes and nothing else does (the Apple note and the

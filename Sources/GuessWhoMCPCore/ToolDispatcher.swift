@@ -1631,9 +1631,9 @@ public actor ToolDispatcher {
     /// The shared handler behind contacts_add_value, contacts_edit_value,
     /// and contacts_remove_value: resolve, fetch the CURRENT card through
     /// the editor's own editable path, match the one entry by exact value
-    /// against that fresh card, mutate exactly that entry, and save through the same
-    /// funnel contacts_update uses. 0 matches → typed notFound; more than
-    /// one → typed ambiguous; neither changes anything.
+    /// against that fresh card, mutate exactly that entry, and save through
+    /// the same funnel contacts_update uses. 0 matches → typed notFound;
+    /// more than one → typed ambiguous; neither changes anything.
     private func contactsEditListItem(
         helperId: String, messageId: String, contactId: String,
         field: ContactListField, operation: ListItemOperation
