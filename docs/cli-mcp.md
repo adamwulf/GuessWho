@@ -133,7 +133,7 @@ descriptions, schemas, permission domain, read/write class, timeouts — is
 `guides_get`, `places_list`, `links_list`. (Plus `guesswho_status`,
 served by the relay itself when the app is unreachable / to re-check.)
 
-**Write (21):** the GuessWho-data writes — `contacts_add_note`,
+**Write (36):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_add_linked_contact`,
 `contacts_add_linked_organization`, `contacts_remove_linked_contact`,
@@ -141,9 +141,13 @@ served by the relay itself when the app is unreachable / to re-check.)
 `events_delete_tag`, `guides_create`, `guides_delete`,
 `guides_reorder_places`, `places_delete`, `links_create`, `links_remove`
 — plus, since Revision 2, full Contact Store parity with the app's own
-editor: **`contacts_create`**, **`contacts_update`** (PATCH semantics:
-only passed fields change; list fields replace as whole lists), and
-**`contacts_delete`**.
+editor: **`contacts_create`**, **`contacts_update`** (**scalars-only**
+PATCH since Phase 7: only passed single-value fields change; every
+multi-value list is rejected toward the single-entry tools below), and
+**`contacts_delete`** — plus, since Phase 7, the **single-entry list
+edits**: `contacts_add_phone` / `contacts_remove_phone` /
+`contacts_edit_phone`, and the same add/remove/edit trio for `email`,
+`url`, `related_name`, and `date` (15 tools).
 
 ### Listing the whole book (`contacts_list`)
 
@@ -160,6 +164,67 @@ duplicates while the contact set is unchanged. Contacts changing
 between pages is best-effort, like every list read; the standard
 `limit` (default 50, max 200) and the response-size cap with the typed
 too-large error apply.
+
+### Single-entry list edits (`contacts_add_/edit_/remove_*`, Phase 7)
+
+A contact's multi-value lists change **one entry per call** — a
+whole-list replacement is how a model bulk-edits a card believing it
+edited one item, so `contacts_update` is **scalars-only** (names,
+phonetics, nickname, organization, department, job title, birthday) and
+a list-shaped update argument is rejected with a typed `invalidParams`
+pointing at the dedicated tools, never silently dropped. The rejection
+is structural too: the update request's field set
+(`WireContactScalarFields`) has no list members at all, the same trick
+that keeps the Apple note unwritable. `contacts_create` still accepts
+the full initial set including lists — a brand-new card has no existing
+entries a whole-list write could clobber, so one-shot creation stays
+safe.
+
+Five lists get the trio — **phone numbers, email addresses, web
+addresses, related names, dates** — because each entry's identity is one
+scalar plus a label, so an exact value match can name a single entry and
+the edit signature (`currentValue`, `newValue`, `newLabel?`) can express
+every change. Semantics (all match-based; `LabeledValue` has no id):
+
+- `contacts_add_<list>(contactId, value, label?)` appends ONE entry;
+  everything else on the card is untouched.
+- `contacts_remove_<list>(contactId, value)` removes the single entry
+  whose value **exactly** matches.
+- `contacts_edit_<list>(contactId, currentValue, newValue, newLabel?)`
+  replaces the matched entry's value (and label, when given) **in
+  place** — remove-then-add-the-replacement in one atomic save.
+- **0 matches → typed `notFound`** ("no <list entry> with that value —
+  read the contact and pass one verbatim"). **More than one exact match
+  → the typed `ambiguous` code**: duplicate values are indistinguishable
+  by value, so the wire never guesses which one the caller meant.
+  Neither case changes anything.
+- Dates match **canonically**: the needle re-renders through the shared
+  calendar-date form, so `--12-25` matches a stored month/day pair
+  regardless of spelling, and a year-qualified date never matches a
+  year-less one. An unparseable date answers `invalidParams`, not a
+  misleading `notFound`.
+- Web addresses match over the **user-visible** list only, so the
+  internal identity URL is structurally unmatchable; mutations ride the
+  editor's own URL merge (identity slots survive verbatim), and a
+  reserved-form value is rejected on add/edit exactly like create's
+  whole-list check.
+
+Every tool is an ordinary contact-record write: read-write gated per
+call, budgeted, idempotency-token deduped, per-contact single-flight,
+routed through the same `editableContact`/`saveContact` funnel the app's
+editor and `contacts_update` use (the Apple note rides through
+byte-identical), failures mapped by `saveErrorCategory`, audited as
+edit-contact rows, echoing the updated full card.
+
+**Deferred (follow-up):** postal addresses, social profiles, and instant
+messages have **no single-entry tools yet** and are **not editable via
+`contacts_update` either** (its rejection names them create-only). Their
+entry identity spans several subfields (street+city+…, service+username
++url), so a single-value exact match can't name one entry and the
+`(newValue, newLabel)` edit signature can't express their changes —
+forcing the match-based pattern onto them would be a broken design. They
+can only be provided at `contacts_create` until they get their own
+design pass.
 
 ### Generic connections (`links_*`)
 
