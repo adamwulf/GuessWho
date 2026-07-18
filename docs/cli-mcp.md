@@ -125,13 +125,13 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-**Read (16):** `contacts_search`, `contacts_get`, `contacts_list_notes`,
-`contacts_list_custom_fields`, `contacts_list_linked_contacts`,
-`contacts_list_linked_organizations`, `contacts_list_favorites`,
-`contacts_list_groups`, `groups_list_members`, `events_list`,
-`events_get`, `events_list_tags`, `guides_list`, `guides_get`,
-`places_list`, `links_list`. (Plus `guesswho_status`, served by the relay
-itself when the app is unreachable / to re-check.)
+**Read (17):** `contacts_search`, `contacts_list`, `contacts_get`,
+`contacts_list_notes`, `contacts_list_custom_fields`,
+`contacts_list_linked_contacts`, `contacts_list_linked_organizations`,
+`contacts_list_favorites`, `contacts_list_groups`, `groups_list_members`,
+`events_list`, `events_get`, `events_list_tags`, `guides_list`,
+`guides_get`, `places_list`, `links_list`. (Plus `guesswho_status`,
+served by the relay itself when the app is unreachable / to re-check.)
 
 **Write (21):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
@@ -144,6 +144,22 @@ itself when the app is unreachable / to re-check.)
 editor: **`contacts_create`**, **`contacts_update`** (PATCH semantics:
 only passed fields change; list fields replace as whole lists), and
 **`contacts_delete`**.
+
+### Listing the whole book (`contacts_list`)
+
+`contacts_search` requires a 2+ character needle (the main-actor search
+bound), so `contacts_list(type?, limit?, cursor?)` is the enumeration
+read: every contact, or only people / only organizations via the
+optional `type` filter (plain values `"person"` / `"organization"`).
+Rows are the same summary DTO `contacts_search` returns (same no-mint id
+derivation, same four exclusions), ordered by a fixed (lowercased
+display name, id) sort — deterministic, total (the unique id breaks
+name ties), and independent of the app's user-configurable sort — so
+the opaque offset cursor pages one stable sequence with no skips or
+duplicates while the contact set is unchanged. Contacts changing
+between pages is best-effort, like every list read; the standard
+`limit` (default 50, max 200) and the response-size cap with the typed
+too-large error apply.
 
 ### Generic connections (`links_*`)
 

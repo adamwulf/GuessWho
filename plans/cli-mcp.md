@@ -304,6 +304,19 @@ The security posture rests on decisions that must be *stated*, not silently assu
 
 ---
 
+## Phase 6 — `contacts_list` (paginated whole-book enumeration) ✅ IMPLEMENTED (2026-07-18)
+
+**✅ IMPLEMENTED 2026-07-18** per Adam's directive: `contacts_search`'s 2-character minimum needle (the main-actor DoS bound above) left NO way to enumerate ALL contacts — `contacts_list` is the bounded read that does.
+
+- **Schema:** optional `type` filter with the plain values `person` / `organization` (omit = both), plus the shared `limit` (default 50, max 200) + opaque `cursor` pagination and the same 256KB typed-`tooLarge` response cap as every list read. Read tool, contacts permission domain, gated read-only+ per call (off rejects; read-only and read-write allow) — hidden from `listTools` and rejected per call without Contacts permission, like the other contact reads.
+- **Ordering / cursor semantics:** a fixed (lowercased display name, wire id) sort — deterministic and TOTAL (the unique id breaks name ties), independent of both the repository's user-configurable UI sort and the cached array's incidental order — under the standard opaque offset cursor. The same contact set pages with no skips or duplicates across calls and across source reorders; mutation between pages is best-effort, matching the other list reads. No search budget: plain enumeration does none of `contacts_search`'s per-contact text matching (same stance as `contacts_list_favorites`).
+- **DTO / id:** the same note-less `WireContactSummary` rows `contacts_search` returns, via the shared `WireMapping.summary`; ids ride the same no-mint `WireRecordID` derivation (the minted GuessWho UUID, else the deterministic pre-mint preview). The four Rev2 exclusions hold; reads never mint.
+- **Tests:** `ContactsListToolTests` (12) drive real `Contact` values through the production mapping/pagination/id path — order + kinds + durable ids, the type filter, typed invalid-type/invalid-cursor, no-skip/no-duplicate paging, order stability across calls AND source reorders, cursor resume after a mid-walk reorder, the tied-name id tiebreak, the typed `tooLarge` cap, reads-never-mint, the gates, and the exclusion sentinels (only the contact BOOK is the fake `allContacts` source — TCC). The `SecurityInvariantTests` whole-surface sentinel sweep now includes `contacts_list` (all filter shapes + its error output), and a hosted `GuessWhoTests` test lists through the LIVE `ContactsRepository` read-model (stub store only at the TCC boundary, real `reload()`), asserting order, filter, cursor paging, the identity-URL-derived id, and Apple-note absence. Banned-vocabulary coverage is automatic via `MCPTool.allCases`.
+
+**Verified:** `swift test` fully green (775 swift-testing + 150 XCTest, 0 failures); hosted `GuessWhoTests` TEST SUCCEEDED (14 tests); Catalyst + iPhone-17-simulator builds green. No dependency changes (both `Package.resolved` files untouched).
+
+---
+
 ## Design notes carried from the planning session
 - **Constants:** no second code-gen (EssentialMCP's BuildSettings.swift + assume-unchanged is a per-clone team papercut). Fold pipe/app-group/bundle-id constants into GuessWho's **existing xcconfig** pipeline → Info.plist → `Bundle.main.object(forInfoDictionaryKey:)`. App-group id **per-channel-derived** from ONE shared build var referenced by both targets (NOT a hardcoded string — it differs App Store vs Setapp; INV-4). Muse expands it via `CODE_SIGN_ENTITLEMENTS_CONTENTS_TRANSFORMATION = expand-build-settings`.
 - **PIPE_BUF (512B on Darwin, not 64KB) → RESOLVED: per-helper request pipe + central announce channel for discovery** (see Phase 1 transport change). One writer per data pipe dissolves the atomicity ceiling entirely; the tiny control messages ride a shared announce channel and stay under 512B. Keeps newline-JSON framing.
