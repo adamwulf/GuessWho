@@ -206,7 +206,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
     // matched by exact value, never a whole-list replacement. The
     // descriptions spell out the 0-match / many-match behavior so a model
     // knows an unmatched or ambiguous call changed nothing.
-    private static let listFieldValues = ["phone", "email", "url", "related_name", "date"]
+    private static var listFieldValues: [String] {
+        WireContactListField.allCases.map(\.rawValue)
+    }
     private static let listFieldDoc =
         "Which contact-card list to change: phone, email, url, related_name, or date."
     private static let listValueDoc =

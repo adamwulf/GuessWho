@@ -1412,13 +1412,19 @@ public actor ToolDispatcher {
         case phone, email, url, relatedName, date
 
         init?(wireField: String) {
+            guard let wireField = WireContactListField(rawValue: wireField) else {
+                return nil
+            }
+            self.init(wireField: wireField)
+        }
+
+        private init(wireField: WireContactListField) {
             switch wireField {
-            case "phone": self = .phone
-            case "email": self = .email
-            case "url": self = .url
-            case "related_name": self = .relatedName
-            case "date": self = .date
-            default: return nil
+            case .phone: self = .phone
+            case .email: self = .email
+            case .url: self = .url
+            case .relatedName: self = .relatedName
+            case .date: self = .date
             }
         }
 

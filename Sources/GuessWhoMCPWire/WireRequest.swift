@@ -2,6 +2,16 @@ import Foundation
 import EasyMacMCP
 import MCP
 
+/// The single source of truth for contact-list field tokens on the wire.
+/// Declaration order is also the JSON-Schema enum order exposed to clients.
+public enum WireContactListField: String, CaseIterable, Sendable {
+    case phone
+    case email
+    case url
+    case relatedName = "related_name"
+    case date
+}
+
 /// Requests sent from a relay helper to the app. One newline-terminated
 /// JSON line per request, serialized ONLY through `JSONEncoder` (the
 /// framing-injection invariant: a value containing `\n`/`\r` stays one
@@ -535,13 +545,13 @@ private struct ToolArguments {
         guard let value = values["field"], value != .null else {
             throw WireRequestError.missingArgument(tool: toolName, name: "field")
         }
-        guard let field = value.stringValue,
-              ["phone", "email", "url", "related_name", "date"].contains(field)
+        guard let value = value.stringValue,
+              let field = WireContactListField(rawValue: value)
         else {
             throw WireRequestError.unsupportedArgument(
                 message: WireErrorMessage.invalidContactListField)
         }
-        return field
+        return field.rawValue
     }
 
     func optionalString(_ name: String) throws -> String? {

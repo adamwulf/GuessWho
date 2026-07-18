@@ -146,7 +146,7 @@ public enum WireErrorMessage {
     // is scalars-only: a whole-list argument is rejected LOUDLY toward the
     // dedicated one-entry-at-a-time tools, never silently ignored.
     public static let invalidContactListField =
-        "The field argument must be one of: phone, email, url, related_name, date."
+        "The field argument must be one of: \(WireContactListField.allCases.map(\.rawValue).joined(separator: ", "))."
     /// contacts_update carried one of the single-entry-editable lists.
     public static let listArgumentNotAccepted =
         "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use contacts_add_value, contacts_edit_value, or contacts_remove_value with field phone, email, url, related_name, or date."
