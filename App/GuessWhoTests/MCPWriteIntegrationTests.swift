@@ -54,6 +54,7 @@ struct MCPWriteIntegrationTests {
             contacts: repository,
             events: INV2LiveEventSource(service: service),
             guides: INV2LiveGuideSource(service: service),
+            links: service,
             gates: gates,
             audit: audit)
 
@@ -124,6 +125,7 @@ struct MCPWriteIntegrationTests {
             contacts: repository,
             events: INV2LiveEventSource(service: service),
             guides: INV2LiveGuideSource(service: service),
+            links: service,
             gates: gates)
 
         let eventUUID = try service.createManualEvent(
