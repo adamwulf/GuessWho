@@ -44,6 +44,15 @@ final class SecurityInvariantTests: XCTestCase {
         }
         XCTAssertFalse(contactIDs.isEmpty, "fixture searches should find contacts")
 
+        for type in [nil, "person", "organization"] {
+            let response = await run(.contactsList(
+                helperId: helper, messageId: TestMessageID.next(),
+                type: type, limit: nil, cursor: nil))
+            if case .contactPage(_, _, let page) = response {
+                contactIDs.append(contentsOf: page.items.map(\.id))
+            }
+        }
+
         for id in Set(contactIDs) {
             _ = await run(.contactsGet(helperId: helper, messageId: TestMessageID.next(), contactId: id))
             _ = await run(.contactsListNotes(
@@ -110,6 +119,9 @@ final class SecurityInvariantTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(), contactId: "not-a-real-id"))
         _ = await run(.contactsSearch(
             helperId: helper, messageId: TestMessageID.next(), query: "x", limit: nil, cursor: nil))
+        _ = await run(.contactsList(
+            helperId: helper, messageId: TestMessageID.next(),
+            type: "bogus-type", limit: nil, cursor: nil))
         _ = await run(.eventsList(
             helperId: helper, messageId: TestMessageID.next(),
             startDate: "garbage", endDate: "2025-12-01T00:00:00Z", limit: nil, cursor: nil))
