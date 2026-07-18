@@ -27,14 +27,18 @@ struct MCPWriteIntegrationTests {
         return dir
     }
 
-    private func makeService(root: URL, contacts: [Contact] = []) -> SyncService {
+    private func makeService(root: URL, store: INV2StubContactStore) -> SyncService {
         SyncService(
-            contactsAdapter: INV2StubContactStore(contacts: contacts),
+            contactsAdapter: store,
             eventsAdapter: INV2StubEventStore(),
             sidecarLocation: .iCloud(root),
             deviceID: "test-device",
             contactCursorURL: root.appendingPathComponent("test-cursor")
         )
+    }
+
+    private func makeService(root: URL, contacts: [Contact] = []) -> SyncService {
+        makeService(root: root, store: INV2StubContactStore(contacts: contacts))
     }
 
     @Test
@@ -226,6 +230,106 @@ struct MCPWriteIntegrationTests {
         #expect(seen.count == 3)
         #expect(Set(seen).count == 3)
     }
+
+    /// Single-entry list edits (Phase 7), hosted: contacts_add_phone /
+    /// edit / remove against the LIVE `ContactsRepository` — the
+    /// production `editableContact` → mutate-one-entry → `saveContact` →
+    /// `refreshContact` funnel over its real cached read-model, with the
+    /// stub record book standing in ONLY at the TCC boundary. Asserts one
+    /// entry changes and nothing else does (the Apple note and the
+    /// identity URL ride through byte-identical), the repository's own
+    /// read-model reflects the write with no reload, and the 0-match /
+    /// duplicate-value cases answer typed errors without changing
+    /// anything.
+    @Test
+    func singleEntryPhoneEditsRideTheLiveRepositoryEditablePath() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let reconciledID = "7c1e5a2b-9d3f-4b6a-8e70-1a2b3c4d5e6f"
+        let jane = Contact(
+            givenName: "Live", familyName: "Jane",
+            note: "hosted-apple-note-sentinel",
+            phoneNumbers: [LabeledValue(label: "mobile", value: "+1 555 0100")],
+            urlAddresses: [LabeledValue(label: "", value: "guesswho://contact/\(reconciledID)")])
+        let store = INV2StubContactStore(contacts: [jane])
+        let service = makeService(root: root, store: store)
+        let repository = service.makeContactsRepository()
+        await repository.reload()
+
+        let dispatcher = ToolDispatcher(
+            contacts: repository,
+            events: INV2LiveEventSource(service: service),
+            guides: INV2LiveGuideSource(service: service),
+            links: service,
+            gates: INV2Gates())
+        let helper = RequestOrigin.mcp.makeHelperId()
+
+        // Add appends ONE entry.
+        let added = await dispatcher.handle(.contactsAddPhone(
+            helperId: helper, messageId: "phone-add",
+            contactId: reconciledID, value: "+1 555 0200", label: "work",
+            idempotencyToken: nil))
+        guard case .contact(_, _, let addedCard) = added else {
+            Issue.record("expected the updated card; got \(String(describing: added))")
+            return
+        }
+        #expect(addedCard.phoneNumbers.map(\.value) == ["+1 555 0100", "+1 555 0200"])
+
+        // Visible through the repository's own cached read-model — the
+        // same projection the UI renders — with no reload.
+        #expect(
+            repository.allContacts.first?.phoneNumbers.map(\.value)
+                == ["+1 555 0100", "+1 555 0200"])
+
+        // The stored record changed exactly one list; the Apple note and
+        // the identity URL rode through byte-identical.
+        let stored = await store.storedContacts().first
+        #expect(stored?.phoneNumbers.map(\.value) == ["+1 555 0100", "+1 555 0200"])
+        #expect(stored?.note == "hosted-apple-note-sentinel")
+        #expect(stored?.urlAddresses.map(\.value) == ["guesswho://contact/\(reconciledID)"])
+
+        // The echo leaks neither the note nor the identity URL form.
+        let encoded = String(
+            decoding: try JSONEncoder().encode(addedCard), as: UTF8.self)
+        #expect(!encoded.contains("hosted-apple-note-sentinel"))
+        #expect(!encoded.contains("guesswho://"))
+
+        // Duplicate exact values: typed ambiguous, nothing changed.
+        let duplicated = await dispatcher.handle(.contactsAddPhone(
+            helperId: helper, messageId: "phone-dupe",
+            contactId: reconciledID, value: "+1 555 0200", label: "home",
+            idempotencyToken: nil))
+        guard case .contact = duplicated else {
+            Issue.record("expected the duplicate add to succeed")
+            return
+        }
+        let ambiguous = await dispatcher.handle(.contactsRemovePhone(
+            helperId: helper, messageId: "phone-ambiguous",
+            contactId: reconciledID, value: "+1 555 0200", idempotencyToken: nil))
+        #expect(ambiguous?.errorPayload?.code == .ambiguous)
+        #expect(repository.allContacts.first?.phoneNumbers.count == 3)
+
+        // 0 matches: typed notFound, nothing changed.
+        let missing = await dispatcher.handle(.contactsEditPhone(
+            helperId: helper, messageId: "phone-missing",
+            contactId: reconciledID, currentValue: "+1 555 9999",
+            newValue: "+1 555 9998", newLabel: nil, idempotencyToken: nil))
+        #expect(missing?.errorPayload?.code == .notFound)
+        #expect(repository.allContacts.first?.phoneNumbers.count == 3)
+
+        // An unambiguous exact match removes exactly that entry.
+        let removed = await dispatcher.handle(.contactsRemovePhone(
+            helperId: helper, messageId: "phone-remove",
+            contactId: reconciledID, value: "+1 555 0100", idempotencyToken: nil))
+        guard case .contact(_, _, let finalCard) = removed else {
+            Issue.record("expected the updated card; got \(String(describing: removed))")
+            return
+        }
+        #expect(finalCard.phoneNumbers.map(\.value) == ["+1 555 0200", "+1 555 0200"])
+        let finalStored = await store.storedContacts().first
+        #expect(finalStored?.note == "hosted-apple-note-sentinel")
+    }
 }
 
 // MARK: - Live-source adapters
@@ -300,18 +404,32 @@ private func inv2Unused(function: String = #function) -> Never {
 }
 
 private actor INV2StubContactStore: ContactStoreProtocol {
-    /// The book `fetchAll` serves — the repository's `reload()` builds its
-    /// real read-model from this, so a test can exercise the production
-    /// contact cache without the system Contacts store.
-    private let contacts: [Contact]
+    /// The record book — the ONLY thing faked (the TCC boundary where the
+    /// CNContactStore adapter would sit). `fetchAll` feeds the repository's
+    /// real `reload()`; `fetch(localID:)`/`save` feed its real
+    /// `editableContact`/`saveContact`/`refreshContact` write path.
+    private var contacts: [Contact]
 
     init(contacts: [Contact] = []) {
         self.contacts = contacts
     }
 
+    /// The stored records, for asserting what a save actually wrote.
+    func storedContacts() -> [Contact] { contacts }
+
     func fetchAll() async throws -> [Contact] { contacts }
-    func fetch(localID: String) async throws -> Contact? { nil }
-    func save(_ contact: Contact) async throws { inv2Unused() }
+    // Every record the public initializer can seed carries the same
+    // (empty) local identifier — the real one is package-scoped — so a
+    // by-id lookup is well-defined only for a single-record book. The
+    // write test uses exactly one record; the multi-record read tests
+    // never reach these (nil preserves their old stub behavior).
+    func fetch(localID: String) async throws -> Contact? {
+        contacts.count == 1 ? contacts[0] : nil
+    }
+    func save(_ contact: Contact) async throws {
+        guard contacts.count == 1 else { inv2Unused() }
+        contacts[0] = contact
+    }
     func delete(localID: String) async throws { inv2Unused() }
     func create(_ contact: Contact) async throws -> Contact { inv2Unused() }
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus { .notDetermined }

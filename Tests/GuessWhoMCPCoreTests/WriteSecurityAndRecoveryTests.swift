@@ -9,7 +9,10 @@ import GuessWhoMCPWire
 final class WriteEchoSecurityTests: XCTestCase {
 
     private func writableFixture() async -> Fixture {
-        let fixture = await Fixture.make()
+        // A raised write budget: the sweep exercises EVERY write tool in
+        // one window, and a budget rejection would silently skip a tool's
+        // echo from the scan.
+        let fixture = await Fixture.make(writeLimitPerWindow: 200)
         await MainActor.run {
             fixture.gates.mcpAccess = .readWrite
             fixture.gates.cliAccess = .readWrite
@@ -86,6 +89,76 @@ final class WriteEchoSecurityTests: XCTestCase {
         _ = await run(.contactsSetFavorite(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: fresh, favorite: true, idempotencyToken: nil))
+
+        // Single-entry list edits (Phase 7): add/edit/remove per list,
+        // plus the 0-match and ambiguous error outputs — all scanned.
+        _ = await run(.contactsAddPhone(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "+1 555 0900", label: "work", idempotencyToken: nil))
+        _ = await run(.contactsEditPhone(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, currentValue: "+1 555 0900",
+            newValue: "+1 555 0901", newLabel: "work", idempotencyToken: nil))
+        _ = await run(.contactsRemovePhone(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "+1 555 0901", idempotencyToken: nil))
+        _ = await run(.contactsAddEmail(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "echo@doe.example", label: nil, idempotencyToken: nil))
+        _ = await run(.contactsEditEmail(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, currentValue: "echo@doe.example",
+            newValue: "echo2@doe.example", newLabel: nil, idempotencyToken: nil))
+        _ = await run(.contactsRemoveEmail(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "echo2@doe.example", idempotencyToken: nil))
+        _ = await run(.contactsAddURL(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "https://echo.example", label: nil, idempotencyToken: nil))
+        _ = await run(.contactsEditURL(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, currentValue: "https://echo.example",
+            newValue: "https://echo2.example", newLabel: nil, idempotencyToken: nil))
+        _ = await run(.contactsRemoveURL(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "https://echo2.example", idempotencyToken: nil))
+        _ = await run(.contactsAddRelatedName(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "Echo Relative", label: "cousin", idempotencyToken: nil))
+        _ = await run(.contactsEditRelatedName(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, currentValue: "Echo Relative",
+            newValue: "Echo B. Relative", newLabel: nil, idempotencyToken: nil))
+        _ = await run(.contactsRemoveRelatedName(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "Echo B. Relative", idempotencyToken: nil))
+        _ = await run(.contactsAddDate(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "--06-01", label: "echo day", idempotencyToken: nil))
+        _ = await run(.contactsEditDate(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, currentValue: "--06-01",
+            newValue: "--06-02", newLabel: nil, idempotencyToken: nil))
+        _ = await run(.contactsRemoveDate(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "--06-02", idempotencyToken: nil))
+        // Error outputs: a 0-match, an ambiguous match, a reserved URL.
+        _ = await run(.contactsRemovePhone(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "+1 555 9999", idempotencyToken: nil))
+        _ = await run(.contactsAddEmail(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "dupe@doe.example", label: "a", idempotencyToken: nil))
+        _ = await run(.contactsAddEmail(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "dupe@doe.example", label: "b", idempotencyToken: nil))
+        _ = await run(.contactsRemoveEmail(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "dupe@doe.example", idempotencyToken: nil))
+        _ = await run(.contactsAddURL(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "guesswho://contact/\(Sentinels.guessWhoUUID)",
+            label: nil, idempotencyToken: nil))
 
         // Contact-record writes (Revision 2): create, patch, failed save,
         // and a user-confirmed delete — echo and error outputs all scanned.
