@@ -231,8 +231,8 @@ struct MCPWriteIntegrationTests {
         #expect(Set(seen).count == 3)
     }
 
-    /// Single-entry list edits (Phase 7), hosted: contacts_add_phone /
-    /// edit / remove against the LIVE `ContactsRepository` — the
+    /// Single-entry list edits (Phase 7), hosted: contacts_add_value /
+    /// edit / remove with field phone against the LIVE `ContactsRepository` — the
     /// production `editableContact` → mutate-one-entry → `saveContact` →
     /// `refreshContact` funnel over its real cached read-model, with the
     /// stub record book standing in ONLY at the TCC boundary. Asserts one
@@ -266,9 +266,9 @@ struct MCPWriteIntegrationTests {
         let helper = RequestOrigin.mcp.makeHelperId()
 
         // Add appends ONE entry.
-        let added = await dispatcher.handle(.contactsAddPhone(
+        let added = await dispatcher.handle(.contactsAddValue(
             helperId: helper, messageId: "phone-add",
-            contactId: reconciledID, value: "+1 555 0200", label: "work",
+            contactId: reconciledID, field: "phone", value: "+1 555 0200", label: "work",
             idempotencyToken: nil))
         guard case .contact(_, _, let addedCard) = added else {
             Issue.record("expected the updated card; got \(String(describing: added))")
@@ -296,32 +296,32 @@ struct MCPWriteIntegrationTests {
         #expect(!encoded.contains("guesswho://"))
 
         // Duplicate exact values: typed ambiguous, nothing changed.
-        let duplicated = await dispatcher.handle(.contactsAddPhone(
+        let duplicated = await dispatcher.handle(.contactsAddValue(
             helperId: helper, messageId: "phone-dupe",
-            contactId: reconciledID, value: "+1 555 0200", label: "home",
+            contactId: reconciledID, field: "phone", value: "+1 555 0200", label: "home",
             idempotencyToken: nil))
         guard case .contact = duplicated else {
             Issue.record("expected the duplicate add to succeed")
             return
         }
-        let ambiguous = await dispatcher.handle(.contactsRemovePhone(
+        let ambiguous = await dispatcher.handle(.contactsRemoveValue(
             helperId: helper, messageId: "phone-ambiguous",
-            contactId: reconciledID, value: "+1 555 0200", idempotencyToken: nil))
+            contactId: reconciledID, field: "phone", value: "+1 555 0200", idempotencyToken: nil))
         #expect(ambiguous?.errorPayload?.code == .ambiguous)
         #expect(repository.allContacts.first?.phoneNumbers.count == 3)
 
         // 0 matches: typed notFound, nothing changed.
-        let missing = await dispatcher.handle(.contactsEditPhone(
+        let missing = await dispatcher.handle(.contactsEditValue(
             helperId: helper, messageId: "phone-missing",
-            contactId: reconciledID, currentValue: "+1 555 9999",
+            contactId: reconciledID, field: "phone", currentValue: "+1 555 9999",
             newValue: "+1 555 9998", newLabel: nil, idempotencyToken: nil))
         #expect(missing?.errorPayload?.code == .notFound)
         #expect(repository.allContacts.first?.phoneNumbers.count == 3)
 
         // An unambiguous exact match removes exactly that entry.
-        let removed = await dispatcher.handle(.contactsRemovePhone(
+        let removed = await dispatcher.handle(.contactsRemoveValue(
             helperId: helper, messageId: "phone-remove",
-            contactId: reconciledID, value: "+1 555 0100", idempotencyToken: nil))
+            contactId: reconciledID, field: "phone", value: "+1 555 0100", idempotencyToken: nil))
         guard case .contact(_, _, let finalCard) = removed else {
             Issue.record("expected the updated card; got \(String(describing: removed))")
             return

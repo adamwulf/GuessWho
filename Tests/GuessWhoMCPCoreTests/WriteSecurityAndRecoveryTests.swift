@@ -94,72 +94,72 @@ final class WriteEchoSecurityTests: XCTestCase {
 
         // Single-entry list edits (Phase 7): add/edit/remove per list,
         // plus the 0-match and ambiguous error outputs — all scanned.
-        _ = await run(.contactsAddPhone(
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "+1 555 0900", label: "work", idempotencyToken: nil))
-        _ = await run(.contactsEditPhone(
+            contactId: jane, field: "phone", value: "+1 555 0900", label: "work", idempotencyToken: nil))
+        _ = await run(.contactsEditValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, currentValue: "+1 555 0900",
+            contactId: jane, field: "phone", currentValue: "+1 555 0900",
             newValue: "+1 555 0901", newLabel: "work", idempotencyToken: nil))
-        _ = await run(.contactsRemovePhone(
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "+1 555 0901", idempotencyToken: nil))
-        _ = await run(.contactsAddEmail(
+            contactId: jane, field: "phone", value: "+1 555 0901", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "echo@doe.example", label: nil, idempotencyToken: nil))
-        _ = await run(.contactsEditEmail(
+            contactId: jane, field: "email", value: "echo@doe.example", label: nil, idempotencyToken: nil))
+        _ = await run(.contactsEditValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, currentValue: "echo@doe.example",
+            contactId: jane, field: "email", currentValue: "echo@doe.example",
             newValue: "echo2@doe.example", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveEmail(
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "echo2@doe.example", idempotencyToken: nil))
-        _ = await run(.contactsAddURL(
+            contactId: jane, field: "email", value: "echo2@doe.example", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "https://echo.example", label: nil, idempotencyToken: nil))
-        _ = await run(.contactsEditURL(
+            contactId: jane, field: "url", value: "https://echo.example", label: nil, idempotencyToken: nil))
+        _ = await run(.contactsEditValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, currentValue: "https://echo.example",
+            contactId: jane, field: "url", currentValue: "https://echo.example",
             newValue: "https://echo2.example", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveURL(
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "https://echo2.example", idempotencyToken: nil))
-        _ = await run(.contactsAddRelatedName(
+            contactId: jane, field: "url", value: "https://echo2.example", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "Echo Relative", label: "cousin", idempotencyToken: nil))
-        _ = await run(.contactsEditRelatedName(
+            contactId: jane, field: "related_name", value: "Echo Relative", label: "cousin", idempotencyToken: nil))
+        _ = await run(.contactsEditValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, currentValue: "Echo Relative",
+            contactId: jane, field: "related_name", currentValue: "Echo Relative",
             newValue: "Echo B. Relative", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveRelatedName(
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "Echo B. Relative", idempotencyToken: nil))
-        _ = await run(.contactsAddDate(
+            contactId: jane, field: "related_name", value: "Echo B. Relative", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "--06-01", label: "echo day", idempotencyToken: nil))
-        _ = await run(.contactsEditDate(
+            contactId: jane, field: "date", value: "--06-01", label: "echo day", idempotencyToken: nil))
+        _ = await run(.contactsEditValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, currentValue: "--06-01",
+            contactId: jane, field: "date", currentValue: "--06-01",
             newValue: "--06-02", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveDate(
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "--06-02", idempotencyToken: nil))
+            contactId: jane, field: "date", value: "--06-02", idempotencyToken: nil))
         // Error outputs: a 0-match, an ambiguous match, a reserved URL.
-        _ = await run(.contactsRemovePhone(
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "+1 555 9999", idempotencyToken: nil))
-        _ = await run(.contactsAddEmail(
+            contactId: jane, field: "phone", value: "+1 555 9999", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "dupe@doe.example", label: "a", idempotencyToken: nil))
-        _ = await run(.contactsAddEmail(
+            contactId: jane, field: "email", value: "dupe@doe.example", label: "a", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "dupe@doe.example", label: "b", idempotencyToken: nil))
-        _ = await run(.contactsRemoveEmail(
+            contactId: jane, field: "email", value: "dupe@doe.example", label: "b", idempotencyToken: nil))
+        _ = await run(.contactsRemoveValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "dupe@doe.example", idempotencyToken: nil))
-        _ = await run(.contactsAddURL(
+            contactId: jane, field: "email", value: "dupe@doe.example", idempotencyToken: nil))
+        _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
-            contactId: jane, value: "guesswho://contact/\(Sentinels.guessWhoUUID)",
+            contactId: jane, field: "url", value: "guesswho://contact/\(Sentinels.guessWhoUUID)",
             label: nil, idempotencyToken: nil))
 
         // Contact-record writes (Revision 2): create, patch, failed save,

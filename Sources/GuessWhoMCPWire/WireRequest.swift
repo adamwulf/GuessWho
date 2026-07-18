@@ -54,21 +54,9 @@ public enum WireRequest: Codable, Sendable {
     // Single-entry list edits (plans/cli-mcp.md Phase 7): one entry per
     // call, matched by exact value — 0 matches answers notFound, more
     // than one answers ambiguous, and nothing changes on either.
-    case contactsAddPhone(helperId: String, messageId: String, contactId: String, value: String, label: String?, idempotencyToken: String?)
-    case contactsRemovePhone(helperId: String, messageId: String, contactId: String, value: String, idempotencyToken: String?)
-    case contactsEditPhone(helperId: String, messageId: String, contactId: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
-    case contactsAddEmail(helperId: String, messageId: String, contactId: String, value: String, label: String?, idempotencyToken: String?)
-    case contactsRemoveEmail(helperId: String, messageId: String, contactId: String, value: String, idempotencyToken: String?)
-    case contactsEditEmail(helperId: String, messageId: String, contactId: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
-    case contactsAddURL(helperId: String, messageId: String, contactId: String, value: String, label: String?, idempotencyToken: String?)
-    case contactsRemoveURL(helperId: String, messageId: String, contactId: String, value: String, idempotencyToken: String?)
-    case contactsEditURL(helperId: String, messageId: String, contactId: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
-    case contactsAddRelatedName(helperId: String, messageId: String, contactId: String, value: String, label: String?, idempotencyToken: String?)
-    case contactsRemoveRelatedName(helperId: String, messageId: String, contactId: String, value: String, idempotencyToken: String?)
-    case contactsEditRelatedName(helperId: String, messageId: String, contactId: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
-    case contactsAddDate(helperId: String, messageId: String, contactId: String, value: String, label: String?, idempotencyToken: String?)
-    case contactsRemoveDate(helperId: String, messageId: String, contactId: String, value: String, idempotencyToken: String?)
-    case contactsEditDate(helperId: String, messageId: String, contactId: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
+    case contactsAddValue(helperId: String, messageId: String, contactId: String, field: String, value: String, label: String?, idempotencyToken: String?)
+    case contactsRemoveValue(helperId: String, messageId: String, contactId: String, field: String, value: String, idempotencyToken: String?)
+    case contactsEditValue(helperId: String, messageId: String, contactId: String, field: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
     case contactsAddNote(helperId: String, messageId: String, contactId: String, body: String, idempotencyToken: String?)
     case contactsEditNote(helperId: String, messageId: String, contactId: String, noteId: String, body: String, idempotencyToken: String?)
     case contactsDeleteNote(helperId: String, messageId: String, contactId: String, noteId: String, idempotencyToken: String?)
@@ -107,21 +95,9 @@ public enum WireRequest: Codable, Sendable {
         case .contactsCreate: return .contactsCreate
         case .contactsUpdate: return .contactsUpdate
         case .contactsDelete: return .contactsDelete
-        case .contactsAddPhone: return .contactsAddPhone
-        case .contactsRemovePhone: return .contactsRemovePhone
-        case .contactsEditPhone: return .contactsEditPhone
-        case .contactsAddEmail: return .contactsAddEmail
-        case .contactsRemoveEmail: return .contactsRemoveEmail
-        case .contactsEditEmail: return .contactsEditEmail
-        case .contactsAddURL: return .contactsAddURL
-        case .contactsRemoveURL: return .contactsRemoveURL
-        case .contactsEditURL: return .contactsEditURL
-        case .contactsAddRelatedName: return .contactsAddRelatedName
-        case .contactsRemoveRelatedName: return .contactsRemoveRelatedName
-        case .contactsEditRelatedName: return .contactsEditRelatedName
-        case .contactsAddDate: return .contactsAddDate
-        case .contactsRemoveDate: return .contactsRemoveDate
-        case .contactsEditDate: return .contactsEditDate
+        case .contactsAddValue: return .contactsAddValue
+        case .contactsRemoveValue: return .contactsRemoveValue
+        case .contactsEditValue: return .contactsEditValue
         case .contactsAddNote: return .contactsAddNote
         case .contactsEditNote: return .contactsEditNote
         case .contactsDeleteNote: return .contactsDeleteNote
@@ -148,21 +124,9 @@ public enum WireRequest: Codable, Sendable {
         case .contactsCreate(_, _, _, _, let token),
              .contactsUpdate(_, _, _, _, let token),
              .contactsDelete(_, _, _, let token),
-             .contactsAddPhone(_, _, _, _, _, let token),
-             .contactsRemovePhone(_, _, _, _, let token),
-             .contactsEditPhone(_, _, _, _, _, _, let token),
-             .contactsAddEmail(_, _, _, _, _, let token),
-             .contactsRemoveEmail(_, _, _, _, let token),
-             .contactsEditEmail(_, _, _, _, _, _, let token),
-             .contactsAddURL(_, _, _, _, _, let token),
-             .contactsRemoveURL(_, _, _, _, let token),
-             .contactsEditURL(_, _, _, _, _, _, let token),
-             .contactsAddRelatedName(_, _, _, _, _, let token),
-             .contactsRemoveRelatedName(_, _, _, _, let token),
-             .contactsEditRelatedName(_, _, _, _, _, _, let token),
-             .contactsAddDate(_, _, _, _, _, let token),
-             .contactsRemoveDate(_, _, _, _, let token),
-             .contactsEditDate(_, _, _, _, _, _, let token),
+             .contactsAddValue(_, _, _, _, _, _, let token),
+             .contactsRemoveValue(_, _, _, _, _, let token),
+             .contactsEditValue(_, _, _, _, _, _, _, let token),
              .contactsAddNote(_, _, _, _, let token),
              .contactsEditNote(_, _, _, _, _, let token),
              .contactsDeleteNote(_, _, _, _, let token),
@@ -209,21 +173,9 @@ extension WireRequest: MCPRequestProtocol {
              .contactsCreate(let helperId, _, _, _, _),
              .contactsUpdate(let helperId, _, _, _, _),
              .contactsDelete(let helperId, _, _, _),
-             .contactsAddPhone(let helperId, _, _, _, _, _),
-             .contactsRemovePhone(let helperId, _, _, _, _),
-             .contactsEditPhone(let helperId, _, _, _, _, _, _),
-             .contactsAddEmail(let helperId, _, _, _, _, _),
-             .contactsRemoveEmail(let helperId, _, _, _, _),
-             .contactsEditEmail(let helperId, _, _, _, _, _, _),
-             .contactsAddURL(let helperId, _, _, _, _, _),
-             .contactsRemoveURL(let helperId, _, _, _, _),
-             .contactsEditURL(let helperId, _, _, _, _, _, _),
-             .contactsAddRelatedName(let helperId, _, _, _, _, _),
-             .contactsRemoveRelatedName(let helperId, _, _, _, _),
-             .contactsEditRelatedName(let helperId, _, _, _, _, _, _),
-             .contactsAddDate(let helperId, _, _, _, _, _),
-             .contactsRemoveDate(let helperId, _, _, _, _),
-             .contactsEditDate(let helperId, _, _, _, _, _, _),
+             .contactsAddValue(let helperId, _, _, _, _, _, _),
+             .contactsRemoveValue(let helperId, _, _, _, _, _),
+             .contactsEditValue(let helperId, _, _, _, _, _, _, _),
              .contactsAddNote(let helperId, _, _, _, _),
              .contactsEditNote(let helperId, _, _, _, _, _),
              .contactsDeleteNote(let helperId, _, _, _, _),
@@ -266,21 +218,9 @@ extension WireRequest: MCPRequestProtocol {
              .contactsCreate(_, let messageId, _, _, _),
              .contactsUpdate(_, let messageId, _, _, _),
              .contactsDelete(_, let messageId, _, _),
-             .contactsAddPhone(_, let messageId, _, _, _, _),
-             .contactsRemovePhone(_, let messageId, _, _, _),
-             .contactsEditPhone(_, let messageId, _, _, _, _, _),
-             .contactsAddEmail(_, let messageId, _, _, _, _),
-             .contactsRemoveEmail(_, let messageId, _, _, _),
-             .contactsEditEmail(_, let messageId, _, _, _, _, _),
-             .contactsAddURL(_, let messageId, _, _, _, _),
-             .contactsRemoveURL(_, let messageId, _, _, _),
-             .contactsEditURL(_, let messageId, _, _, _, _, _),
-             .contactsAddRelatedName(_, let messageId, _, _, _, _),
-             .contactsRemoveRelatedName(_, let messageId, _, _, _),
-             .contactsEditRelatedName(_, let messageId, _, _, _, _, _),
-             .contactsAddDate(_, let messageId, _, _, _, _),
-             .contactsRemoveDate(_, let messageId, _, _, _),
-             .contactsEditDate(_, let messageId, _, _, _, _, _),
+             .contactsAddValue(_, let messageId, _, _, _, _, _),
+             .contactsRemoveValue(_, let messageId, _, _, _, _),
+             .contactsEditValue(_, let messageId, _, _, _, _, _, _),
              .contactsAddNote(_, let messageId, _, _, _),
              .contactsEditNote(_, let messageId, _, _, _, _),
              .contactsDeleteNote(_, let messageId, _, _, _),
@@ -419,95 +359,30 @@ extension WireRequest: MCPRequestProtocol {
                 contactId: try args.requiredString("contactId"),
                 fields: try args.contactScalarFields(),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
-        case .contactsAddPhone, .contactsAddEmail, .contactsAddURL,
-             .contactsAddRelatedName, .contactsAddDate:
-            let contactId = try args.requiredString("contactId")
-            let value = try args.requiredString("value")
-            let label = try args.optionalString("label")
-            let token = try args.optionalString("idempotencyToken")
-            switch tool {
-            case .contactsAddPhone:
-                return .contactsAddPhone(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, label: label, idempotencyToken: token)
-            case .contactsAddEmail:
-                return .contactsAddEmail(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, label: label, idempotencyToken: token)
-            case .contactsAddURL:
-                return .contactsAddURL(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, label: label, idempotencyToken: token)
-            case .contactsAddRelatedName:
-                return .contactsAddRelatedName(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, label: label, idempotencyToken: token)
-            default:
-                return .contactsAddDate(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, label: label, idempotencyToken: token)
-            }
-        case .contactsRemovePhone, .contactsRemoveEmail, .contactsRemoveURL,
-             .contactsRemoveRelatedName, .contactsRemoveDate:
-            let contactId = try args.requiredString("contactId")
-            let value = try args.requiredString("value")
-            let token = try args.optionalString("idempotencyToken")
-            switch tool {
-            case .contactsRemovePhone:
-                return .contactsRemovePhone(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, idempotencyToken: token)
-            case .contactsRemoveEmail:
-                return .contactsRemoveEmail(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, idempotencyToken: token)
-            case .contactsRemoveURL:
-                return .contactsRemoveURL(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, idempotencyToken: token)
-            case .contactsRemoveRelatedName:
-                return .contactsRemoveRelatedName(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, idempotencyToken: token)
-            default:
-                return .contactsRemoveDate(
-                    helperId: helperId, messageId: messageId,
-                    contactId: contactId, value: value, idempotencyToken: token)
-            }
-        case .contactsEditPhone, .contactsEditEmail, .contactsEditURL,
-             .contactsEditRelatedName, .contactsEditDate:
-            let contactId = try args.requiredString("contactId")
-            let currentValue = try args.requiredString("currentValue")
-            let newValue = try args.requiredString("newValue")
-            let newLabel = try args.optionalString("newLabel")
-            let token = try args.optionalString("idempotencyToken")
-            switch tool {
-            case .contactsEditPhone:
-                return .contactsEditPhone(
-                    helperId: helperId, messageId: messageId, contactId: contactId,
-                    currentValue: currentValue, newValue: newValue, newLabel: newLabel,
-                    idempotencyToken: token)
-            case .contactsEditEmail:
-                return .contactsEditEmail(
-                    helperId: helperId, messageId: messageId, contactId: contactId,
-                    currentValue: currentValue, newValue: newValue, newLabel: newLabel,
-                    idempotencyToken: token)
-            case .contactsEditURL:
-                return .contactsEditURL(
-                    helperId: helperId, messageId: messageId, contactId: contactId,
-                    currentValue: currentValue, newValue: newValue, newLabel: newLabel,
-                    idempotencyToken: token)
-            case .contactsEditRelatedName:
-                return .contactsEditRelatedName(
-                    helperId: helperId, messageId: messageId, contactId: contactId,
-                    currentValue: currentValue, newValue: newValue, newLabel: newLabel,
-                    idempotencyToken: token)
-            default:
-                return .contactsEditDate(
-                    helperId: helperId, messageId: messageId, contactId: contactId,
-                    currentValue: currentValue, newValue: newValue, newLabel: newLabel,
-                    idempotencyToken: token)
-            }
+        case .contactsAddValue:
+            return .contactsAddValue(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                field: try args.requiredContactListField(),
+                value: try args.requiredString("value"),
+                label: try args.optionalString("label"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsRemoveValue:
+            return .contactsRemoveValue(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                field: try args.requiredContactListField(),
+                value: try args.requiredString("value"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditValue:
+            return .contactsEditValue(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                field: try args.requiredContactListField(),
+                currentValue: try args.requiredString("currentValue"),
+                newValue: try args.requiredString("newValue"),
+                newLabel: try args.optionalString("newLabel"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsDelete:
             return .contactsDelete(
                 helperId: helperId, messageId: messageId,
@@ -654,6 +529,19 @@ private struct ToolArguments {
             throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a non-empty string")
         }
         return string
+    }
+
+    func requiredContactListField() throws -> String {
+        guard let value = values["field"], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: "field")
+        }
+        guard let field = value.stringValue,
+              ["phone", "email", "url", "related_name", "date"].contains(field)
+        else {
+            throw WireRequestError.unsupportedArgument(
+                message: WireErrorMessage.invalidContactListField)
+        }
+        return field
     }
 
     func optionalString(_ name: String) throws -> String? {

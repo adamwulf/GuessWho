@@ -230,8 +230,8 @@ public struct WireContact: Codable, Sendable {
 ///
 /// Deliberately ABSENT — every multi-value list. A whole-list replacement
 /// is how an assistant bulk-edits a card believing it edited one entry, so
-/// list fields change ONE entry at a time through the dedicated
-/// contacts_add_* / contacts_edit_* / contacts_remove_* tools; this struct
+/// list fields change ONE entry at a time through contacts_add_value,
+/// contacts_edit_value, or contacts_remove_value; this struct
 /// having no list members makes an update-side bulk edit structurally
 /// impossible, the same way the missing note member keeps the Apple note
 /// unwritable. The other update exclusions carry over: no note field, no

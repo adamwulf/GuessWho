@@ -35,7 +35,7 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     /// unavailable, save failure). The message carries the re-read-before-
     /// retry guidance so a timeout-then-retry doesn't duplicate the write.
     case writeFailed
-    /// A match-based single-entry edit (contacts_edit_phone and family)
+    /// A match-based single-entry edit (contacts_edit_value)
     /// found MORE THAN ONE entry with the given value, so applying it
     /// would guess which one the caller meant. Additive like `busy`:
     /// `invalidParams` would tell the agent its arguments are malformed
@@ -145,9 +145,11 @@ public enum WireErrorMessage {
     // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
     // is scalars-only: a whole-list argument is rejected LOUDLY toward the
     // dedicated one-entry-at-a-time tools, never silently ignored.
+    public static let invalidContactListField =
+        "The field argument must be one of: phone, email, url, related_name, date."
     /// contacts_update carried one of the single-entry-editable lists.
     public static let listArgumentNotAccepted =
-        "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use the matching one-entry tool: contacts_add_phone, contacts_edit_phone, contacts_remove_phone, and the email, url, related_name, and date versions of the same."
+        "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use contacts_add_value, contacts_edit_value, or contacts_remove_value with field phone, email, url, related_name, or date."
     /// contacts_update carried a list that has no single-entry tools yet
     /// (postal addresses, social profiles, instant messages).
     public static let createOnlyListArgumentNotAccepted =

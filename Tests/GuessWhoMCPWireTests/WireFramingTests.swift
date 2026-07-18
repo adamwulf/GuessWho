@@ -130,6 +130,34 @@ final class WireRequestCreateTests: XCTestCase {
         }
     }
 
+    func testToolInventoryCountAndReadWriteSplit() {
+        XCTAssertEqual(MCPTool.allCases.count, 36)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 15)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 21)
+    }
+
+    func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {
+        let expectedFields = ["phone", "email", "url", "related_name", "date"]
+        for tool in [MCPTool.contactsAddValue, .contactsRemoveValue, .contactsEditValue] {
+            guard case .object(let schema) = tool.metadata.inputSchema,
+                  case .object(let properties) = schema["properties"],
+                  case .object(let field) = properties["field"],
+                  case .array(let values) = field["enum"]
+            else {
+                return XCTFail("\(tool.rawValue) must expose a real field enum")
+            }
+            XCTAssertEqual(values.compactMap(\.stringValue), expectedFields)
+            for (name, property) in properties {
+                guard case .object(let propertySchema) = property else {
+                    return XCTFail("\(tool.rawValue).\(name) schema is not an object")
+                }
+                XCTAssertNotEqual(
+                    propertySchema["type"]?.stringValue, "array",
+                    "\(tool.rawValue).\(name) must remain a single value")
+            }
+        }
+    }
+
     // MARK: - contacts_update is scalars-only (Phase 7)
 
     private func expectUnsupported(
@@ -208,62 +236,96 @@ final class WireRequestCreateTests: XCTestCase {
 
     // MARK: - Single-entry list tool parsing
 
-    func testAddPhoneParsesAndRequiresValue() throws {
+    func testAddValueParsesAndRequiresFieldAndValue() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsAddPhone.rawValue, [
+            parameters: params(MCPTool.contactsAddValue.rawValue, [
                 "contactId": "some-contact-id",
+                "field": "phone",
                 "value": "+1 555 0100",
                 "label": "work",
             ]))
-        guard case .contactsAddPhone(_, _, let contactId, let value, let label, _) = request else {
+        guard case .contactsAddValue(
+            _, _, let contactId, let field, let value, let label, _
+        ) = request else {
             return XCTFail("wrong case")
         }
         XCTAssertEqual(contactId, "some-contact-id")
+        XCTAssertEqual(field, "phone")
         XCTAssertEqual(value, "+1 555 0100")
         XCTAssertEqual(label, "work")
 
         XCTAssertThrowsError(try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsAddPhone.rawValue, [
+            parameters: params(MCPTool.contactsAddValue.rawValue, [
                 "contactId": "some-contact-id",
+                "field": "phone",
+            ])))
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddValue.rawValue, [
+                "contactId": "some-contact-id",
+                "value": "+1 555 0100",
             ])))
     }
 
-    func testEditEmailParsesAndRequiresNewValue() throws {
+    func testEditValueParsesAndRequiresNewValue() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsEditEmail.rawValue, [
+            parameters: params(MCPTool.contactsEditValue.rawValue, [
                 "contactId": "some-contact-id",
+                "field": "email",
                 "currentValue": "old@example.com",
                 "newValue": "new@example.com",
             ]))
-        guard case .contactsEditEmail(_, _, _, let current, let newValue, let newLabel, _) = request
+        guard case .contactsEditValue(
+            _, _, _, let field, let current, let newValue, let newLabel, _
+        ) = request
         else {
             return XCTFail("wrong case")
         }
+        XCTAssertEqual(field, "email")
         XCTAssertEqual(current, "old@example.com")
         XCTAssertEqual(newValue, "new@example.com")
         XCTAssertNil(newLabel)
 
         XCTAssertThrowsError(try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsEditEmail.rawValue, [
+            parameters: params(MCPTool.contactsEditValue.rawValue, [
                 "contactId": "some-contact-id",
+                "field": "email",
                 "currentValue": "old@example.com",
             ])))
     }
 
-    func testRemoveDateParses() throws {
+    func testRemoveValueParses() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsRemoveDate.rawValue, [
+            parameters: params(MCPTool.contactsRemoveValue.rawValue, [
                 "contactId": "some-contact-id",
+                "field": "date",
                 "value": "--12-25",
             ]))
-        guard case .contactsRemoveDate(_, _, _, let value, _) = request else {
+        guard case .contactsRemoveValue(_, _, _, let field, let value, _) = request else {
             return XCTFail("wrong case")
         }
+        XCTAssertEqual(field, "date")
         XCTAssertEqual(value, "--12-25")
+    }
+
+    func testInvalidListFieldNamesAllValidValues() {
+        for invalidField in ["birthday", "postal", ""] {
+            XCTAssertThrowsError(try WireRequest.create(
+                helperId: "h", messageId: "m",
+                parameters: params(MCPTool.contactsAddValue.rawValue, [
+                    "contactId": "some-contact-id",
+                    "field": .string(invalidField),
+                    "value": "--12-25",
+                ]))) { error in
+                XCTAssertEqual(
+                    String(describing: error),
+                    WireErrorMessage.invalidContactListField)
+            }
+        }
     }
 }

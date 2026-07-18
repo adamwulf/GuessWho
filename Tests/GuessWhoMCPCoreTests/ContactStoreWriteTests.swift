@@ -192,15 +192,15 @@ final class ContactStoreWriteTests: XCTestCase {
         guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
         let reserved = "guesswho://contact/11111111-2222-4333-8444-555555555555"
 
-        let add = await fixture.dispatcher.handle(.contactsAddURL(
+        let add = await fixture.dispatcher.handle(.contactsAddValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, value: reserved, label: nil, idempotencyToken: nil))
+            contactId: jane, field: "url", value: reserved, label: nil, idempotencyToken: nil))
         expectError(add, code: .invalidParams)
         XCTAssertEqual(add?.errorPayload?.message, WireErrorMessage.reservedWebAddress)
 
-        let edit = await fixture.dispatcher.handle(.contactsEditURL(
+        let edit = await fixture.dispatcher.handle(.contactsEditValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, currentValue: "https://janedoe.example",
+            contactId: jane, field: "url", currentValue: "https://janedoe.example",
             newValue: reserved, newLabel: nil, idempotencyToken: nil))
         expectError(edit, code: .invalidParams)
         XCTAssertEqual(edit?.errorPayload?.message, WireErrorMessage.reservedWebAddress)

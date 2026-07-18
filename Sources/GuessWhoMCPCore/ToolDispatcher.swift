@@ -228,11 +228,7 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
         case .contactsCreate, .contactsUpdate, .contactsDelete,
-             .contactsAddPhone, .contactsRemovePhone, .contactsEditPhone,
-             .contactsAddEmail, .contactsRemoveEmail, .contactsEditEmail,
-             .contactsAddURL, .contactsRemoveURL, .contactsEditURL,
-             .contactsAddRelatedName, .contactsRemoveRelatedName, .contactsEditRelatedName,
-             .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
+             .contactsAddValue, .contactsRemoveValue, .contactsEditValue,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
@@ -695,70 +691,30 @@ public actor ToolDispatcher {
         case .contactsUpdate(_, _, let contactId, let fields, _):
             return await contactsUpdate(
                 helperId: helperId, messageId: messageId, contactId: contactId, fields: fields)
-        case .contactsAddPhone(_, _, let contactId, let value, let label, _):
+        case .contactsAddValue(_, _, let contactId, let wireField, let value, let label, _):
+            guard let field = ContactListField(wireField: wireField) else {
+                return invalidContactListField(helperId: helperId, messageId: messageId)
+            }
             return await contactsEditListItem(
                 helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .phone, operation: .add(value: value, label: label))
-        case .contactsRemovePhone(_, _, let contactId, let value, _):
+                field: field, operation: .add(value: value, label: label))
+        case .contactsRemoveValue(_, _, let contactId, let wireField, let value, _):
+            guard let field = ContactListField(wireField: wireField) else {
+                return invalidContactListField(helperId: helperId, messageId: messageId)
+            }
             return await contactsEditListItem(
                 helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .phone, operation: .remove(value: value))
-        case .contactsEditPhone(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
+                field: field, operation: .remove(value: value))
+        case .contactsEditValue(
+            _, _, let contactId, let wireField,
+            let currentValue, let newValue, let newLabel, _
+        ):
+            guard let field = ContactListField(wireField: wireField) else {
+                return invalidContactListField(helperId: helperId, messageId: messageId)
+            }
             return await contactsEditListItem(
                 helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .phone,
-                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
-        case .contactsAddEmail(_, _, let contactId, let value, let label, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .email, operation: .add(value: value, label: label))
-        case .contactsRemoveEmail(_, _, let contactId, let value, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .email, operation: .remove(value: value))
-        case .contactsEditEmail(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .email,
-                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
-        case .contactsAddURL(_, _, let contactId, let value, let label, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .url, operation: .add(value: value, label: label))
-        case .contactsRemoveURL(_, _, let contactId, let value, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .url, operation: .remove(value: value))
-        case .contactsEditURL(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .url,
-                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
-        case .contactsAddRelatedName(_, _, let contactId, let value, let label, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .relatedName, operation: .add(value: value, label: label))
-        case .contactsRemoveRelatedName(_, _, let contactId, let value, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .relatedName, operation: .remove(value: value))
-        case .contactsEditRelatedName(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .relatedName,
-                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
-        case .contactsAddDate(_, _, let contactId, let value, let label, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .date, operation: .add(value: value, label: label))
-        case .contactsRemoveDate(_, _, let contactId, let value, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .date, operation: .remove(value: value))
-        case .contactsEditDate(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
-            return await contactsEditListItem(
-                helperId: helperId, messageId: messageId, contactId: contactId,
-                field: .date,
+                field: field,
                 operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
         case .contactsAddNote(_, _, let contactId, let body, _):
             return await contactsAddNote(
@@ -1455,6 +1411,17 @@ public actor ToolDispatcher {
     private enum ContactListField {
         case phone, email, url, relatedName, date
 
+        init?(wireField: String) {
+            switch wireField {
+            case "phone": self = .phone
+            case "email": self = .email
+            case "url": self = .url
+            case "related_name": self = .relatedName
+            case "date": self = .date
+            default: return nil
+            }
+        }
+
         /// The audit/display name — the same list name the create schema
         /// uses.
         var fieldName: String {
@@ -1486,6 +1453,14 @@ public actor ToolDispatcher {
             case .date: return WireErrorMessage.ambiguousDateValue
             }
         }
+    }
+
+    private func invalidContactListField(
+        helperId: String, messageId: String
+    ) -> WireResponse {
+        .error(
+            helperId: helperId, messageId: messageId,
+            code: .invalidParams, message: WireErrorMessage.invalidContactListField)
     }
 
     /// One single-entry list operation, pre-validated by
@@ -1653,10 +1628,10 @@ public actor ToolDispatcher {
         }
     }
 
-    /// The shared handler behind every contacts_add_/edit_/remove_ list
-    /// tool: resolve, fetch the CURRENT card through the editor's own
-    /// editable path, match the one entry by exact value against that
-    /// fresh card, mutate exactly that entry, and save through the same
+    /// The shared handler behind contacts_add_value, contacts_edit_value,
+    /// and contacts_remove_value: resolve, fetch the CURRENT card through
+    /// the editor's own editable path, match the one entry by exact value
+    /// against that fresh card, mutate exactly that entry, and save through the same
     /// funnel contacts_update uses. 0 matches → typed notFound; more than
     /// one → typed ambiguous; neither changes anything.
     private func contactsEditListItem(
