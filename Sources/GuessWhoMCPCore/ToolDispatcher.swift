@@ -236,6 +236,11 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
         case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsAddPhone, .contactsRemovePhone, .contactsEditPhone,
+             .contactsAddEmail, .contactsRemoveEmail, .contactsEditEmail,
+             .contactsAddURL, .contactsRemoveURL, .contactsEditURL,
+             .contactsAddRelatedName, .contactsRemoveRelatedName, .contactsEditRelatedName,
+             .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
@@ -746,6 +751,71 @@ public actor ToolDispatcher {
         case .contactsUpdate(_, _, let contactId, let fields, _):
             return await contactsUpdate(
                 helperId: helperId, messageId: messageId, contactId: contactId, fields: fields)
+        case .contactsAddPhone(_, _, let contactId, let value, let label, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .phone, operation: .add(value: value, label: label))
+        case .contactsRemovePhone(_, _, let contactId, let value, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .phone, operation: .remove(value: value))
+        case .contactsEditPhone(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .phone,
+                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
+        case .contactsAddEmail(_, _, let contactId, let value, let label, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .email, operation: .add(value: value, label: label))
+        case .contactsRemoveEmail(_, _, let contactId, let value, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .email, operation: .remove(value: value))
+        case .contactsEditEmail(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .email,
+                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
+        case .contactsAddURL(_, _, let contactId, let value, let label, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .url, operation: .add(value: value, label: label))
+        case .contactsRemoveURL(_, _, let contactId, let value, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .url, operation: .remove(value: value))
+        case .contactsEditURL(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .url,
+                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
+        case .contactsAddRelatedName(_, _, let contactId, let value, let label, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .relatedName, operation: .add(value: value, label: label))
+        case .contactsRemoveRelatedName(_, _, let contactId, let value, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .relatedName, operation: .remove(value: value))
+        case .contactsEditRelatedName(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .relatedName,
+                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
+        case .contactsAddDate(_, _, let contactId, let value, let label, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .date, operation: .add(value: value, label: label))
+        case .contactsRemoveDate(_, _, let contactId, let value, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .date, operation: .remove(value: value))
+        case .contactsEditDate(_, _, let contactId, let currentValue, let newValue, let newLabel, _):
+            return await contactsEditListItem(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                field: .date,
+                operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
         case .contactsAddNote(_, _, let contactId, let body, _):
             return await contactsAddNote(
                 helperId: helperId, messageId: messageId, contactId: contactId, body: body)
@@ -1323,14 +1393,13 @@ public actor ToolDispatcher {
         return DateComponents(year: year, month: month, day: day)
     }
 
-    /// Apply the supplied fields onto `contact` — every field EXCEPT the
-    /// URL list, which each caller handles (create sets it; update merges
-    /// through `ContactEditModel.mergeURLAddresses` so the carried-through
-    /// internal URLs survive). By construction there is no path to
-    /// `Contact.note` (the DTO has no such member) and none to the
-    /// contact's identity. Returns a message for an unparseable value.
-    private static func applyFields(
-        _ fields: WireContactFields, to contact: inout Contact
+    /// Apply the supplied single-value fields onto `contact` — the whole
+    /// contacts_update surface, and the scalar half of contacts_create. By
+    /// construction there is no path to `Contact.note` (the DTO has no such
+    /// member) and none to the contact's identity. Returns a message for an
+    /// unparseable value.
+    private static func applyScalarFields(
+        _ fields: WireContactScalarFields, to contact: inout Contact
     ) -> String? {
         if let value = fields.namePrefix { contact.namePrefix = value }
         if let value = fields.givenName { contact.givenName = value }
@@ -1346,6 +1415,30 @@ public actor ToolDispatcher {
         if let value = fields.phoneticOrganization { contact.phoneticOrganizationName = value }
         if let value = fields.department { contact.departmentName = value }
         if let value = fields.jobTitle { contact.jobTitle = value }
+        if let value = fields.birthday {
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                contact.birthday = nil
+            } else if let components = parseCalendarDate(value) {
+                contact.birthday = components
+            } else {
+                return WireErrorMessage.invalidCalendarDateValue
+            }
+        }
+        return nil
+    }
+
+    /// Apply the full contacts_create field set onto `contact` — the
+    /// scalars plus every list EXCEPT the URL list, which the caller sets
+    /// (create takes it whole after the reserved-address check). Lists are
+    /// safe to take whole here: a blank seed has no existing entries a
+    /// replacement could clobber. Returns a message for an unparseable
+    /// value.
+    private static func applyFields(
+        _ fields: WireContactFields, to contact: inout Contact
+    ) -> String? {
+        if let problem = applyScalarFields(fields.scalarFields, to: &contact) {
+            return problem
+        }
         if let values = fields.phoneNumbers {
             contact.phoneNumbers = values.map { LabeledValue(label: $0.label ?? "", value: $0.value) }
         }
@@ -1365,15 +1458,6 @@ public actor ToolDispatcher {
                         postalCode: address.postalCode,
                         country: address.country,
                         isoCountryCode: address.isoCountryCode ?? ""))
-            }
-        }
-        if let value = fields.birthday {
-            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                contact.birthday = nil
-            } else if let components = parseCalendarDate(value) {
-                contact.birthday = components
-            } else {
-                return WireErrorMessage.invalidCalendarDateValue
             }
         }
         if let values = fields.dates {
@@ -1470,17 +1554,12 @@ public actor ToolDispatcher {
     }
 
     private func contactsUpdate(
-        helperId: String, messageId: String, contactId: String, fields: WireContactFields
+        helperId: String, messageId: String, contactId: String, fields: WireContactScalarFields
     ) async -> WireResponse {
         guard !fields.isEmpty else {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: WireErrorMessage.updateNeedsAField)
-        }
-        guard !Self.containsReservedURL(fields.urlAddresses) else {
-            return .error(
-                helperId: helperId, messageId: messageId,
-                code: .invalidParams, message: WireErrorMessage.reservedWebAddress)
         }
         switch await resolveContactForWrite(contactId) {
         case .failure(let failure):
@@ -1492,7 +1571,9 @@ public actor ToolDispatcher {
                     // Fresh fetch through the SAME editable path the app's
                     // editor uses — it carries every field, including ones
                     // the wire never sees (the Apple note rides through
-                    // UNTOUCHED; the identity URLs are re-merged below).
+                    // UNTOUCHED, and the scalar patch can't reach any list,
+                    // so the URL slots — identity URL included — survive
+                    // verbatim).
                     guard let editable = try await contacts.editableContact(id: contact.contactID)
                     else {
                         return .error(
@@ -1500,18 +1581,10 @@ public actor ToolDispatcher {
                             code: .notFound, message: WireErrorMessage.notFoundContact)
                     }
                     var edited = editable
-                    if let problem = Self.applyFields(fields, to: &edited) {
+                    if let problem = Self.applyScalarFields(fields, to: &edited) {
                         return .error(
                             helperId: helperId, messageId: messageId,
                             code: .invalidParams, message: problem)
-                    }
-                    if let urls = fields.urlAddresses {
-                        // The editor's own merge: the wire list replaces the
-                        // user-visible addresses; internal identity URLs keep
-                        // their slots verbatim.
-                        edited.urlAddresses = ContactEditModel.mergeURLAddresses(
-                            original: editable.urlAddresses,
-                            visible: urls.map { LabeledValue(label: $0.label ?? "", value: $0.value) })
                     }
                     try await contacts.saveContact(edited, for: contact.contactID)
                     let fresh = await MainActor.run {
@@ -1532,6 +1605,316 @@ public actor ToolDispatcher {
                 return contactSaveFailure(error, helperId: helperId, messageId: messageId)
             }
         }
+    }
+
+    // MARK: - Single-entry list edits (plans/cli-mcp.md Phase 7)
+
+    /// The contact-card lists editable one entry at a time — each is a
+    /// list whose entry identity is ONE scalar plus a label, so an exact
+    /// value match can name a single entry and the edit signature
+    /// (newValue + newLabel) can express every change. Postal addresses,
+    /// social profiles, and instant messages are deliberately absent:
+    /// their identity spans several subfields (street+city…,
+    /// service+username), so a single-value match can't name one entry —
+    /// they stay create-only on the wire until they get their own design.
+    private enum ContactListField {
+        case phone, email, url, relatedName, date
+
+        /// The audit/display name — the same list name the create schema
+        /// uses.
+        var fieldName: String {
+            switch self {
+            case .phone: return "phoneNumbers"
+            case .email: return "emailAddresses"
+            case .url: return "urlAddresses"
+            case .relatedName: return "relatedNames"
+            case .date: return "dates"
+            }
+        }
+
+        var notFoundMessage: String {
+            switch self {
+            case .phone: return WireErrorMessage.noPhoneWithThatValue
+            case .email: return WireErrorMessage.noEmailWithThatValue
+            case .url: return WireErrorMessage.noURLWithThatValue
+            case .relatedName: return WireErrorMessage.noRelatedNameWithThatValue
+            case .date: return WireErrorMessage.noDateWithThatValue
+            }
+        }
+
+        var ambiguousMessage: String {
+            switch self {
+            case .phone: return WireErrorMessage.ambiguousPhoneValue
+            case .email: return WireErrorMessage.ambiguousEmailValue
+            case .url: return WireErrorMessage.ambiguousURLValue
+            case .relatedName: return WireErrorMessage.ambiguousRelatedNameValue
+            case .date: return WireErrorMessage.ambiguousDateValue
+            }
+        }
+    }
+
+    /// One single-entry list operation, pre-validated by
+    /// `listOperationProblem` before any resolve or lock.
+    private enum ListItemOperation {
+        case add(value: String, label: String?)
+        case remove(value: String)
+        case edit(currentValue: String, newValue: String, newLabel: String?)
+    }
+
+    /// nil when `value` is acceptable as a NEW entry for `field`; else the
+    /// typed invalidParams message. The reserved-address check keeps an
+    /// agent from planting the app's internal URL form one entry at a time
+    /// (the same guard contacts_create applies to the whole list).
+    private static func newListValueProblem(
+        _ value: String, field: ContactListField
+    ) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return WireErrorMessage.emptyValueArgument }
+        switch field {
+        case .url where trimmed.lowercased().hasPrefix(SidecarKey.guessWhoContactURLPrefix):
+            return WireErrorMessage.reservedWebAddress
+        case .date where parseCalendarDate(value) == nil:
+            return WireErrorMessage.invalidCalendarDateValue
+        default:
+            return nil
+        }
+    }
+
+    /// nil when `value` can be used to MATCH an entry of `field`. An
+    /// unparseable date is a spelling problem, not a missing entry, so it
+    /// answers invalidParams rather than a misleading notFound.
+    private static func matchListValueProblem(
+        _ value: String, field: ContactListField
+    ) -> String? {
+        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return WireErrorMessage.emptyValueArgument
+        }
+        if field == .date, parseCalendarDate(value) == nil {
+            return WireErrorMessage.invalidCalendarDateValue
+        }
+        return nil
+    }
+
+    private static func listOperationProblem(
+        _ operation: ListItemOperation, field: ContactListField
+    ) -> String? {
+        switch operation {
+        case .add(let value, _):
+            return newListValueProblem(value, field: field)
+        case .remove(let value):
+            return matchListValueProblem(value, field: field)
+        case .edit(let currentValue, let newValue, _):
+            return matchListValueProblem(currentValue, field: field)
+                ?? newListValueProblem(newValue, field: field)
+        }
+    }
+
+    /// The needle in the same canonical form `matchValues` renders: dates
+    /// re-render through the shared calendar-date form so "--03-14" and a
+    /// stored month/day pair compare equal regardless of spelling; every
+    /// other field matches the stored value verbatim.
+    private static func canonicalMatchValue(
+        _ value: String, field: ContactListField
+    ) -> String {
+        guard field == .date,
+              let components = parseCalendarDate(value),
+              let rendered = WireMapping.calendarDate(components)
+        else { return value }
+        return rendered
+    }
+
+    /// The list being matched, one string per entry, index-aligned with
+    /// the underlying storage. URLs use the USER-VISIBLE list only — the
+    /// internal identity URL is structurally unmatchable, so no remove or
+    /// edit can ever name it. An unrenderable date maps to "" (a needle is
+    /// never empty, so it can't match).
+    private static func matchValues(
+        _ field: ContactListField, in contact: Contact
+    ) -> [String] {
+        switch field {
+        case .phone: return contact.phoneNumbers.map(\.value)
+        case .email: return contact.emailAddresses.map(\.value)
+        case .url: return contact.userVisibleURLAddresses.map(\.value)
+        case .relatedName: return contact.contactRelations.map(\.value.name)
+        case .date: return contact.dates.map { WireMapping.calendarDate($0.value) ?? "" }
+        }
+    }
+
+    /// Replace the contact's visible URL list through the editor's own
+    /// merge, so the internal identity URLs keep their slots verbatim —
+    /// the same path contacts_update's whole-list replace used to ride.
+    private static func setVisibleURLs(_ visible: [LabeledValue], on contact: inout Contact) {
+        contact.urlAddresses = ContactEditModel.mergeURLAddresses(
+            original: contact.urlAddresses, visible: visible)
+    }
+
+    private static func appendListItem(
+        _ field: ContactListField, to contact: inout Contact, value: String, label: String?
+    ) {
+        let label = label ?? ""
+        switch field {
+        case .phone:
+            contact.phoneNumbers.append(LabeledValue(label: label, value: value))
+        case .email:
+            contact.emailAddresses.append(LabeledValue(label: label, value: value))
+        case .url:
+            var visible = contact.userVisibleURLAddresses
+            visible.append(LabeledValue(label: label, value: value))
+            setVisibleURLs(visible, on: &contact)
+        case .relatedName:
+            contact.contactRelations.append(
+                LabeledContactRelation(label: label, value: ContactRelation(name: value)))
+        case .date:
+            guard let components = parseCalendarDate(value) else { return }
+            contact.dates.append(LabeledDate(label: label, value: components))
+        }
+    }
+
+    /// Replace the entry at `index` in place — position and, when no new
+    /// label is given, the existing label both survive.
+    private static func replaceListItem(
+        _ field: ContactListField, in contact: inout Contact,
+        at index: Int, newValue: String, newLabel: String?
+    ) {
+        switch field {
+        case .phone:
+            let old = contact.phoneNumbers[index]
+            contact.phoneNumbers[index] = LabeledValue(label: newLabel ?? old.label, value: newValue)
+        case .email:
+            let old = contact.emailAddresses[index]
+            contact.emailAddresses[index] = LabeledValue(label: newLabel ?? old.label, value: newValue)
+        case .url:
+            var visible = contact.userVisibleURLAddresses
+            let old = visible[index]
+            visible[index] = LabeledValue(label: newLabel ?? old.label, value: newValue)
+            setVisibleURLs(visible, on: &contact)
+        case .relatedName:
+            let old = contact.contactRelations[index]
+            contact.contactRelations[index] = LabeledContactRelation(
+                label: newLabel ?? old.label, value: ContactRelation(name: newValue))
+        case .date:
+            guard let components = parseCalendarDate(newValue) else { return }
+            let old = contact.dates[index]
+            contact.dates[index] = LabeledDate(label: newLabel ?? old.label, value: components)
+        }
+    }
+
+    private static func removeListItem(
+        _ field: ContactListField, from contact: inout Contact, at index: Int
+    ) {
+        switch field {
+        case .phone:
+            contact.phoneNumbers.remove(at: index)
+        case .email:
+            contact.emailAddresses.remove(at: index)
+        case .url:
+            var visible = contact.userVisibleURLAddresses
+            visible.remove(at: index)
+            setVisibleURLs(visible, on: &contact)
+        case .relatedName:
+            contact.contactRelations.remove(at: index)
+        case .date:
+            contact.dates.remove(at: index)
+        }
+    }
+
+    /// The shared handler behind every contacts_add_/edit_/remove_ list
+    /// tool: resolve, fetch the CURRENT card through the editor's own
+    /// editable path, match the one entry by exact value against that
+    /// fresh card, mutate exactly that entry, and save through the same
+    /// funnel contacts_update uses. 0 matches → typed notFound; more than
+    /// one → typed ambiguous; neither changes anything.
+    private func contactsEditListItem(
+        helperId: String, messageId: String, contactId: String,
+        field: ContactListField, operation: ListItemOperation
+    ) async -> WireResponse {
+        if let problem = Self.listOperationProblem(operation, field: field) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) { () -> WireResponse in
+                    guard let editable = try await contacts.editableContact(id: contact.contactID)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    var edited = editable
+                    switch operation {
+                    case .add(let value, let label):
+                        Self.appendListItem(field, to: &edited, value: value, label: label)
+                    case .remove(let value):
+                        switch Self.matchIndex(of: value, field: field, in: editable) {
+                        case .failure(let failure):
+                            return failure.response(helperId: helperId, messageId: messageId)
+                        case .success(let index):
+                            Self.removeListItem(field, from: &edited, at: index)
+                        }
+                    case .edit(let currentValue, let newValue, let newLabel):
+                        switch Self.matchIndex(of: currentValue, field: field, in: editable) {
+                        case .failure(let failure):
+                            return failure.response(helperId: helperId, messageId: messageId)
+                        case .success(let index):
+                            Self.replaceListItem(
+                                field, in: &edited,
+                                at: index, newValue: newValue, newLabel: newLabel)
+                        }
+                    }
+                    try await contacts.saveContact(edited, for: contact.contactID)
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? edited
+                    let isFavorite = await MainActor.run { contacts.isFavorite(fresh.contactID) }
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: nil, newValue: field.fieldName)
+                    return .contact(
+                        helperId: helperId, messageId: messageId,
+                        contact: WireMapping.contact(
+                            fresh, id: WireRecordID.contactID(for: fresh), isFavorite: isFavorite))
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    /// A match failure carrying its typed wire answer (mirrors
+    /// `LinkResolveFailure`).
+    private struct ListMatchFailure: Error {
+        let code: WireErrorCode
+        let message: String
+
+        func response(helperId: String, messageId: String) -> WireResponse {
+            .error(helperId: helperId, messageId: messageId, code: code, message: message)
+        }
+    }
+
+    /// The index of the SINGLE entry whose value exactly matches, in the
+    /// index space `matchValues`/the mutators share. NEVER guesses: no
+    /// match and many matches are both typed failures.
+    private static func matchIndex(
+        of value: String, field: ContactListField, in contact: Contact
+    ) -> Result<Int, ListMatchFailure> {
+        let needle = canonicalMatchValue(value, field: field)
+        let matches = matchValues(field, in: contact).enumerated()
+            .filter { $0.element == needle }
+            .map(\.offset)
+        guard let first = matches.first else {
+            return .failure(ListMatchFailure(code: .notFound, message: field.notFoundMessage))
+        }
+        guard matches.count == 1 else {
+            return .failure(ListMatchFailure(code: .ambiguous, message: field.ambiguousMessage))
+        }
+        return .success(first)
     }
 
     // MARK: - Confirmation-gated delete (fire-and-forget)

@@ -46,6 +46,28 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsCreate = "contacts_create"
     case contactsUpdate = "contacts_update"
     case contactsDelete = "contacts_delete"
+    // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
+    // is scalars-only — these are the ONLY way to change a contact's
+    // multi-value lists, one entry per call, matched by exact value so a
+    // model can never bulk-replace a list believing it edited one item.
+    // Postal addresses, social profiles, and instant messages have no
+    // single-entry tools yet (their identity spans several subfields);
+    // they can only be provided at create.
+    case contactsAddPhone = "contacts_add_phone"
+    case contactsRemovePhone = "contacts_remove_phone"
+    case contactsEditPhone = "contacts_edit_phone"
+    case contactsAddEmail = "contacts_add_email"
+    case contactsRemoveEmail = "contacts_remove_email"
+    case contactsEditEmail = "contacts_edit_email"
+    case contactsAddURL = "contacts_add_url"
+    case contactsRemoveURL = "contacts_remove_url"
+    case contactsEditURL = "contacts_edit_url"
+    case contactsAddRelatedName = "contacts_add_related_name"
+    case contactsRemoveRelatedName = "contacts_remove_related_name"
+    case contactsEditRelatedName = "contacts_edit_related_name"
+    case contactsAddDate = "contacts_add_date"
+    case contactsRemoveDate = "contacts_remove_date"
+    case contactsEditDate = "contacts_edit_date"
     case contactsAddNote = "contacts_add_note"
     case contactsEditNote = "contacts_edit_note"
     case contactsDeleteNote = "contacts_delete_note"
@@ -87,6 +109,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsListLinkedOrganizations, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
              .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsAddPhone, .contactsRemovePhone, .contactsEditPhone,
+             .contactsAddEmail, .contactsRemoveEmail, .contactsEditEmail,
+             .contactsAddURL, .contactsRemoveURL, .contactsEditURL,
+             .contactsAddRelatedName, .contactsRemoveRelatedName, .contactsEditRelatedName,
+             .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
@@ -121,6 +148,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .guidesList, .guidesGet, .placesList, .linksList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsAddPhone, .contactsRemovePhone, .contactsEditPhone,
+             .contactsAddEmail, .contactsRemoveEmail, .contactsEditEmail,
+             .contactsAddURL, .contactsRemoveURL, .contactsEditURL,
+             .contactsAddRelatedName, .contactsRemoveRelatedName, .contactsEditRelatedName,
+             .contactsAddDate, .contactsRemoveDate, .contactsEditDate,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
@@ -191,6 +223,54 @@ public enum MCPTool: String, CaseIterable, Sendable {
         ]
     }
 
+    // Shared metadata for the single-entry list tools: one entry per call,
+    // matched by exact value, never a whole-list replacement. The
+    // descriptions spell out the 0-match / many-match behavior so a model
+    // knows an unmatched or ambiguous call changed nothing.
+    private static func listAddMetadata(
+        name: String, noun: String, plural: String,
+        valueDoc: String, labelDoc: String, nounDetail: String = ""
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Add one \(noun)\(nounDetail) to a contact, with an optional label. The contact's existing \(plural) are untouched. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                "value": string(valueDoc),
+                "label": string(labelDoc),
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", "value"]))
+    }
+
+    private static func listRemoveMetadata(
+        name: String, noun: String, valueDoc: String
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Remove one \(noun) from a contact — the single entry whose value exactly matches. If no entry matches, or more than one does, nothing is removed and the result says so. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                "value": string(valueDoc),
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", "value"]))
+    }
+
+    private static func listEditMetadata(
+        name: String, noun: String,
+        currentDoc: String, newValueDoc: String, newLabelDoc: String
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Change one \(noun) on a contact — the single entry whose value exactly matches currentValue is replaced with newValue (and newLabel, if given). If no entry matches, or more than one does, nothing is changed and the result says so. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                "currentValue": string(currentDoc),
+                "newValue": string(newValueDoc),
+                "newLabel": string(newLabelDoc),
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", "currentValue", "newValue"]))
+    }
+
     private static func labeledArray(_ description: String, valueDoc: String) -> Value {
         [
             "type": "array",
@@ -206,11 +286,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
         ]
     }
 
-    /// The editable contact-card field set shared by contacts_create and
-    /// contacts_update. There is deliberately NO note-shaped property here
-    /// (notes ride contacts_add_note), and the contact id is never among
-    /// the editable fields.
-    private static var contactFieldProperties: [String: Value] {
+    /// The single-value contact-card fields — the full contacts_update
+    /// surface, and the scalar half of contacts_create. There is
+    /// deliberately NO note-shaped property here (notes ride
+    /// contacts_add_note), and the contact id is never among the editable
+    /// fields.
+    private static var contactScalarFieldProperties: [String: Value] {
         [
             "namePrefix": string("Name prefix, e.g. \"Dr.\"."),
             "givenName": string("First name."),
@@ -226,6 +307,25 @@ public enum MCPTool: String, CaseIterable, Sendable {
             "phoneticOrganization": string("Phonetic organization name."),
             "department": string("Department within the organization."),
             "jobTitle": string("Job title."),
+            "birthday": string(
+                "Birthday as yyyy-MM-dd, or --MM-dd when the year is unknown. Pass an empty string to clear it."),
+        ]
+    }
+
+    /// The full contact-card field set contacts_create accepts: the
+    /// scalars plus the multi-value lists (safe to take whole here — a new
+    /// card has no existing entries to clobber; after creation, lists
+    /// change one entry at a time through the dedicated tools).
+    private static var contactFieldProperties: [String: Value] {
+        var properties = contactScalarFieldProperties
+        for (name, value) in contactListFieldProperties {
+            properties[name] = value
+        }
+        return properties
+    }
+
+    private static var contactListFieldProperties: [String: Value] {
+        [
             "phoneNumbers": labeledArray(
                 "Phone numbers. Replaces the whole list when passed.",
                 valueDoc: "The phone number."),
@@ -253,8 +353,6 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     ]),
                 ]),
             ],
-            "birthday": string(
-                "Birthday as yyyy-MM-dd, or --MM-dd when the year is unknown. Pass an empty string to clear it."),
             "dates": [
                 "type": "array",
                 "description": .string("Other labeled dates (anniversaries etc.). Replaces the whole list when passed."),
@@ -426,13 +524,89 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 description: "Create a new contact. Provide at least a name or an organization; any of the other contact fields may be included. Returns the new contact's full card, including its id.",
                 inputSchema: Self.schema(props))
         case .contactsUpdate:
-            var props = Self.contactFieldProperties
+            var props = Self.contactScalarFieldProperties
             props["contactId"] = Self.string(Self.contactIdDoc)
             props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
             return ToolMetadata(
                 name: rawValue,
-                description: "Edit a contact's card. Only the fields you pass change: text fields are replaced (pass an empty string to clear one), and list fields like phoneNumbers are replaced as a whole list (pass the complete new list; pass an empty list to clear it). Returns the updated card.",
+                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Phone numbers, email addresses, web addresses, related names, and dates are NOT accepted here — change those one entry at a time with the matching contacts_add_/contacts_edit_/contacts_remove_ tool. Returns the updated card.",
                 inputSchema: Self.schema(props, required: ["contactId"]))
+        case .contactsAddPhone:
+            return Self.listAddMetadata(
+                name: rawValue, noun: "phone number", plural: "phone numbers",
+                valueDoc: "The phone number to add.",
+                labelDoc: "Optional label, e.g. \"mobile\" or \"work\".")
+        case .contactsRemovePhone:
+            return Self.listRemoveMetadata(
+                name: rawValue, noun: "phone number",
+                valueDoc: "The exact phone number to remove, as it appears on the contact's card.")
+        case .contactsEditPhone:
+            return Self.listEditMetadata(
+                name: rawValue, noun: "phone number",
+                currentDoc: "The exact phone number to change, as it appears on the contact's card.",
+                newValueDoc: "The new phone number.",
+                newLabelDoc: "Optional: a new label, e.g. \"mobile\". Omit to keep the current label.")
+        case .contactsAddEmail:
+            return Self.listAddMetadata(
+                name: rawValue, noun: "email address", plural: "email addresses",
+                valueDoc: "The email address to add.",
+                labelDoc: "Optional label, e.g. \"work\" or \"home\".")
+        case .contactsRemoveEmail:
+            return Self.listRemoveMetadata(
+                name: rawValue, noun: "email address",
+                valueDoc: "The exact email address to remove, as it appears on the contact's card.")
+        case .contactsEditEmail:
+            return Self.listEditMetadata(
+                name: rawValue, noun: "email address",
+                currentDoc: "The exact email address to change, as it appears on the contact's card.",
+                newValueDoc: "The new email address.",
+                newLabelDoc: "Optional: a new label, e.g. \"work\". Omit to keep the current label.")
+        case .contactsAddURL:
+            return Self.listAddMetadata(
+                name: rawValue, noun: "web address", plural: "web addresses",
+                valueDoc: "The web address to add.",
+                labelDoc: "Optional label, e.g. \"homepage\".")
+        case .contactsRemoveURL:
+            return Self.listRemoveMetadata(
+                name: rawValue, noun: "web address",
+                valueDoc: "The exact web address to remove, as it appears on the contact's card.")
+        case .contactsEditURL:
+            return Self.listEditMetadata(
+                name: rawValue, noun: "web address",
+                currentDoc: "The exact web address to change, as it appears on the contact's card.",
+                newValueDoc: "The new web address.",
+                newLabelDoc: "Optional: a new label, e.g. \"homepage\". Omit to keep the current label.")
+        case .contactsAddRelatedName:
+            return Self.listAddMetadata(
+                name: rawValue, noun: "related name", plural: "related names",
+                valueDoc: "The related person's name, e.g. \"Ann Doe\".",
+                labelDoc: "Optional label for the relationship, e.g. \"mother\" or \"manager\".")
+        case .contactsRemoveRelatedName:
+            return Self.listRemoveMetadata(
+                name: rawValue, noun: "related name",
+                valueDoc: "The exact related name to remove, as it appears on the contact's card.")
+        case .contactsEditRelatedName:
+            return Self.listEditMetadata(
+                name: rawValue, noun: "related name",
+                currentDoc: "The exact related name to change, as it appears on the contact's card.",
+                newValueDoc: "The new name.",
+                newLabelDoc: "Optional: a new relationship label, e.g. \"mother\". Omit to keep the current label.")
+        case .contactsAddDate:
+            return Self.listAddMetadata(
+                name: rawValue, noun: "date", plural: "dates",
+                valueDoc: "The date to add, as yyyy-MM-dd, or --MM-dd when the year is unknown.",
+                labelDoc: "Optional label, e.g. \"anniversary\".",
+                nounDetail: " (an anniversary or another labeled date — the birthday is a contacts_update field)")
+        case .contactsRemoveDate:
+            return Self.listRemoveMetadata(
+                name: rawValue, noun: "date",
+                valueDoc: "The date to remove, as yyyy-MM-dd, or --MM-dd when the year is unknown.")
+        case .contactsEditDate:
+            return Self.listEditMetadata(
+                name: rawValue, noun: "date",
+                currentDoc: "The date to change, as yyyy-MM-dd, or --MM-dd when the year is unknown.",
+                newValueDoc: "The new date, in the same format.",
+                newLabelDoc: "Optional: a new label, e.g. \"anniversary\". Omit to keep the current label.")
         case .contactsDelete:
             return ToolMetadata(
                 name: rawValue,

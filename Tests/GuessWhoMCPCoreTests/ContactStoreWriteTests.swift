@@ -134,9 +134,8 @@ final class ContactStoreWriteTests: XCTestCase {
             fixture.contacts.contacts.first { $0.displayName == "Jane Doe" }
         }
 
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.jobTitle = "Director"
-        patch.urlAddresses = [WireLabeledValue(label: "portfolio", value: "https://jane.example/work")]
         let response = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, fields: patch, idempotencyToken: nil))
@@ -144,7 +143,6 @@ final class ContactStoreWriteTests: XCTestCase {
             return XCTFail("expected the updated card, got \(String(describing: response))")
         }
         XCTAssertEqual(card.jobTitle, "Director")
-        XCTAssertEqual(card.urlAddresses.map(\.value), ["https://jane.example/work"])
         // Untouched fields survive the patch.
         XCTAssertEqual(card.name, "Jane Doe")
         XCTAssertEqual(card.phoneNumbers.map(\.value), before?.phoneNumbers.map(\.value))
@@ -155,23 +153,21 @@ final class ContactStoreWriteTests: XCTestCase {
         // The Apple note rides through BYTE-IDENTICAL — the wire neither
         // read nor rewrote it.
         XCTAssertEqual(after?.note, Sentinels.appleNote)
-        // The internal identity URL keeps its slot even though the wire
-        // replaced the whole visible URL list.
+        // A scalars-only patch can't reach any list: the whole URL list —
+        // internal identity URL included — survives verbatim.
+        XCTAssertEqual(
+            after?.urlAddresses.map(\.value), before?.urlAddresses.map(\.value))
         XCTAssertEqual(
             after?.urlAddresses.filter { $0.value.hasPrefix("guesswho://") }.map(\.value),
             ["guesswho://contact/\(Sentinels.guessWhoUUID)"])
-        XCTAssertEqual(
-            after?.urlAddresses.filter { !$0.value.hasPrefix("guesswho://") }.map(\.value),
-            ["https://jane.example/work"])
     }
 
     func testUpdateClearsWithEmptyValuesAndRejectsEmptyPatch() async {
         let fixture = await writableFixture()
         guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
 
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.jobTitle = ""
-        patch.emailAddresses = []
         let response = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, fields: patch, idempotencyToken: nil))
@@ -179,33 +175,39 @@ final class ContactStoreWriteTests: XCTestCase {
             return XCTFail("expected the updated card")
         }
         XCTAssertNil(card.jobTitle, "an empty string clears the field")
-        XCTAssertEqual(card.emailAddresses, [], "an empty list clears the list")
 
         let empty = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, fields: WireContactFields(), idempotencyToken: nil))
+            contactId: jane, fields: WireContactScalarFields(), idempotencyToken: nil))
         expectError(empty, code: .invalidParams)
         XCTAssertEqual(empty?.errorPayload?.message, WireErrorMessage.updateNeedsAField)
     }
 
     /// An agent must not be able to plant (or spoof) the app's reserved
-    /// address form through the writable URL list — create or update.
+    /// address form through any writable URL surface — the create list or
+    /// the single-entry web-address tools (update is scalars-only and has
+    /// no URL surface at all).
     func testReservedURLInjectionRejected() async {
         let fixture = await writableFixture()
         guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
-        var patch = WireContactFields()
-        patch.urlAddresses = [
-            WireLabeledValue(label: nil, value: "guesswho://contact/11111111-2222-4333-8444-555555555555"),
-        ]
-        let update = await fixture.dispatcher.handle(.contactsUpdate(
+        let reserved = "guesswho://contact/11111111-2222-4333-8444-555555555555"
+
+        let add = await fixture.dispatcher.handle(.contactsAddURL(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, fields: patch, idempotencyToken: nil))
-        expectError(update, code: .invalidParams)
-        XCTAssertEqual(update?.errorPayload?.message, WireErrorMessage.reservedWebAddress)
+            contactId: jane, value: reserved, label: nil, idempotencyToken: nil))
+        expectError(add, code: .invalidParams)
+        XCTAssertEqual(add?.errorPayload?.message, WireErrorMessage.reservedWebAddress)
+
+        let edit = await fixture.dispatcher.handle(.contactsEditURL(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, currentValue: "https://janedoe.example",
+            newValue: reserved, newLabel: nil, idempotencyToken: nil))
+        expectError(edit, code: .invalidParams)
+        XCTAssertEqual(edit?.errorPayload?.message, WireErrorMessage.reservedWebAddress)
 
         var createFields = WireContactFields()
         createFields.givenName = "Sneaky"
-        createFields.urlAddresses = patch.urlAddresses
+        createFields.urlAddresses = [WireLabeledValue(label: nil, value: reserved)]
         let create = await fixture.dispatcher.handle(.contactsCreate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             kind: nil, fields: createFields, idempotencyToken: nil))
@@ -225,7 +227,7 @@ final class ContactStoreWriteTests: XCTestCase {
     func testUpdateCannotChangeTheContactID() async {
         let fixture = await writableFixture()
         guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.givenName = "Janet"
         let response = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
@@ -247,7 +249,7 @@ final class ContactStoreWriteTests: XCTestCase {
                 domain: "NSCocoaErrorDomain", code: 134092,
                 userInfo: [NSLocalizedDescriptionKey: "The operation couldn't be completed."])
         }
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.jobTitle = "Never lands"
         let response = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
@@ -267,7 +269,7 @@ final class ContactStoreWriteTests: XCTestCase {
             fixture.contacts.nextContactStoreError = NSError(
                 domain: "CNErrorDomain", code: 100, userInfo: [:])
         }
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.jobTitle = "Denied"
         let response = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
@@ -282,7 +284,7 @@ final class ContactStoreWriteTests: XCTestCase {
             fixture.contacts.nextContactStoreError = NSError(
                 domain: "CNErrorDomain", code: 200, userInfo: [:])
         }
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.jobTitle = "Gone"
         let response = await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
@@ -297,13 +299,15 @@ final class ContactStoreWriteTests: XCTestCase {
         guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
         var fields = WireContactFields()
         fields.givenName = "Blocked"
+        var patch = WireContactScalarFields()
+        patch.givenName = "Blocked"
         expectError(await fixture.dispatcher.handle(.contactsCreate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             kind: nil, fields: fields, idempotencyToken: nil)),
             code: .readOnly)
         expectError(await fixture.dispatcher.handle(.contactsUpdate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, fields: fields, idempotencyToken: nil)),
+            contactId: jane, fields: patch, idempotencyToken: nil)),
             code: .readOnly)
         expectError(await fixture.dispatcher.handle(.contactsDelete(
             helperId: Fixture.helper, messageId: TestMessageID.next(),

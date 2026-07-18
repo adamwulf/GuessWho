@@ -96,7 +96,7 @@ final class WriteEchoSecurityTests: XCTestCase {
         let created = await run(.contactsCreate(
             helperId: helper, messageId: TestMessageID.next(),
             kind: "person", fields: createFields, idempotencyToken: nil))
-        var patch = WireContactFields()
+        var patch = WireContactScalarFields()
         patch.jobTitle = "Echo Tester"
         _ = await run(.contactsUpdate(
             helperId: helper, messageId: TestMessageID.next(),

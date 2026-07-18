@@ -223,15 +223,84 @@ public struct WireContact: Codable, Sendable {
     }
 }
 
-/// INPUT-side field set for contacts_create / contacts_update — a PATCH:
+/// INPUT-side field set for contacts_update — the SINGLE-VALUE contact
+/// fields only, a PATCH: only the fields the caller supplied are applied.
+/// `nil` = untouched; an empty string clears a text field (and clears
+/// `birthday`).
+///
+/// Deliberately ABSENT — every multi-value list. A whole-list replacement
+/// is how an assistant bulk-edits a card believing it edited one entry, so
+/// list fields change ONE entry at a time through the dedicated
+/// contacts_add_* / contacts_edit_* / contacts_remove_* tools; this struct
+/// having no list members makes an update-side bulk edit structurally
+/// impossible, the same way the missing note member keeps the Apple note
+/// unwritable. The other update exclusions carry over: no note field, no
+/// contact id, no `kind`.
+public struct WireContactScalarFields: Codable, Sendable, Equatable {
+    public var namePrefix: String?
+    public var givenName: String?
+    public var middleName: String?
+    public var familyName: String?
+    public var previousFamilyName: String?
+    public var nameSuffix: String?
+    public var nickname: String?
+    public var phoneticGivenName: String?
+    public var phoneticMiddleName: String?
+    public var phoneticFamilyName: String?
+    public var organization: String?
+    public var phoneticOrganization: String?
+    public var department: String?
+    public var jobTitle: String?
+    /// "yyyy-MM-dd", "--MM-dd" (no year), or "" to clear.
+    public var birthday: String?
+
+    public init() {}
+
+    /// The names of the fields the caller supplied, for audit summaries.
+    /// Host-side display only.
+    public var providedFieldNames: [String] {
+        var names: [String] = []
+        func note(_ name: String, _ provided: Bool) {
+            if provided { names.append(name) }
+        }
+        note("namePrefix", namePrefix != nil)
+        note("givenName", givenName != nil)
+        note("middleName", middleName != nil)
+        note("familyName", familyName != nil)
+        note("previousFamilyName", previousFamilyName != nil)
+        note("nameSuffix", nameSuffix != nil)
+        note("nickname", nickname != nil)
+        note("phoneticGivenName", phoneticGivenName != nil)
+        note("phoneticMiddleName", phoneticMiddleName != nil)
+        note("phoneticFamilyName", phoneticFamilyName != nil)
+        note("organization", organization != nil)
+        note("phoneticOrganization", phoneticOrganization != nil)
+        note("department", department != nil)
+        note("jobTitle", jobTitle != nil)
+        note("birthday", birthday != nil)
+        return names
+    }
+
+    /// True when no field was supplied at all (an update with nothing to do).
+    public var isEmpty: Bool {
+        providedFieldNames.isEmpty
+    }
+}
+
+/// INPUT-side field set for contacts_create — a PATCH over a blank card:
 /// only the fields the caller supplied are applied. `nil` = untouched; an
 /// empty string clears a text field; an empty array clears a list; the
 /// empty string clears `birthday`.
 ///
+/// Unlike contacts_update, create DOES accept the multi-value lists: a
+/// brand-new card has no existing entries a whole-list write could
+/// clobber, so one-shot initialization is safe (contacts_update is
+/// scalars-only; list edits go through the single-entry tools).
+///
 /// Deliberately ABSENT (the write-direction exclusion set): any note
 /// field (the Apple note is never writable here — GuessWho's own dated
-/// notes are the supported notes surface), the contact id (a lookup key,
-/// never writable), and `kind` on update (fixed at create).
+/// notes are the supported notes surface) and the contact id (a lookup
+/// key, never writable).
 public struct WireContactFields: Codable, Sendable, Equatable {
     public var namePrefix: String?
     public var givenName: String?
@@ -259,6 +328,28 @@ public struct WireContactFields: Codable, Sendable, Equatable {
     public var relatedNames: [WireLabeledValue]?
 
     public init() {}
+
+    /// The single-value subset, so create and update share one scalar
+    /// apply path.
+    public var scalarFields: WireContactScalarFields {
+        var scalars = WireContactScalarFields()
+        scalars.namePrefix = namePrefix
+        scalars.givenName = givenName
+        scalars.middleName = middleName
+        scalars.familyName = familyName
+        scalars.previousFamilyName = previousFamilyName
+        scalars.nameSuffix = nameSuffix
+        scalars.nickname = nickname
+        scalars.phoneticGivenName = phoneticGivenName
+        scalars.phoneticMiddleName = phoneticMiddleName
+        scalars.phoneticFamilyName = phoneticFamilyName
+        scalars.organization = organization
+        scalars.phoneticOrganization = phoneticOrganization
+        scalars.department = department
+        scalars.jobTitle = jobTitle
+        scalars.birthday = birthday
+        return scalars
+    }
 
     /// The names of the fields the caller supplied, for audit summaries
     /// ("Edited the contact — jobTitle, phoneNumbers"). Host-side display

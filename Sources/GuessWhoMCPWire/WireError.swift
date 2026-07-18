@@ -35,6 +35,14 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     /// unavailable, save failure). The message carries the re-read-before-
     /// retry guidance so a timeout-then-retry doesn't duplicate the write.
     case writeFailed
+    /// A match-based single-entry edit (contacts_edit_phone and family)
+    /// found MORE THAN ONE entry with the given value, so applying it
+    /// would guess which one the caller meant. Additive like `busy`:
+    /// `invalidParams` would tell the agent its arguments are malformed
+    /// (they aren't), and `notFound` would tell it to search again (the
+    /// entries exist — that's the problem). Nothing is ever changed on an
+    /// ambiguous match.
+    case ambiguous
 }
 
 /// Standard agent-actionable messages, verbatim from the plan's drafts.
@@ -140,6 +148,42 @@ public enum WireErrorMessage {
     /// description could echo contact data into an error string.
     public static let contactFieldRejected =
         "The system rejected one of the field values. Check the values and try again."
+    // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
+    // is scalars-only: a whole-list argument is rejected LOUDLY toward the
+    // dedicated one-entry-at-a-time tools, never silently ignored.
+    /// contacts_update carried one of the single-entry-editable lists.
+    public static let listArgumentNotAccepted =
+        "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use the matching one-entry tool: contacts_add_phone, contacts_edit_phone, contacts_remove_phone, and the email, url, related_name, and date versions of the same."
+    /// contacts_update carried a list that has no single-entry tools yet
+    /// (postal addresses, social profiles, instant messages).
+    public static let createOnlyListArgumentNotAccepted =
+        "contacts_update can't change postal addresses, social profiles, or instant messages. Those can currently only be provided when creating a contact with contacts_create."
+    public static let emptyValueArgument =
+        "The value argument must not be empty."
+    // Match-based single-entry edits: the 0-match answers per list.
+    public static let noPhoneWithThatValue =
+        "No phone number with that exact value was found on that contact. Read the contact to see its current phone numbers, then pass one of them verbatim."
+    public static let noEmailWithThatValue =
+        "No email address with that exact value was found on that contact. Read the contact to see its current email addresses, then pass one of them verbatim."
+    public static let noURLWithThatValue =
+        "No web address with that exact value was found on that contact. Read the contact to see its current web addresses, then pass one of them verbatim."
+    public static let noRelatedNameWithThatValue =
+        "No related name with that exact value was found on that contact. Read the contact to see its current related names, then pass one of them verbatim."
+    public static let noDateWithThatValue =
+        "No date with that value was found on that contact. Read the contact to see its current dates, then pass one of them."
+    // Match-based single-entry edits: the more-than-one-match answers. The
+    // duplicate entries are indistinguishable by value, so the wire never
+    // guesses — the user resolves it in the app.
+    public static let ambiguousPhoneValue =
+        "That contact has more than one phone number with that exact value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousEmailValue =
+        "That contact has more than one email address with that exact value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousURLValue =
+        "That contact has more than one web address with that exact value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousRelatedNameValue =
+        "That contact has more than one related name with that exact value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousDateValue =
+        "That contact has more than one date with that value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
     /// Confirmation-gated writes: nothing on screen to present the
     /// confirmation on.
     public static let confirmationUnavailable =
@@ -203,6 +247,12 @@ public enum WireErrorMessage {
             updateNeedsAField,
             invalidCalendarDateValue,
             reservedWebAddress, contactNoteNotAccepted,
+            listArgumentNotAccepted, createOnlyListArgumentNotAccepted,
+            emptyValueArgument,
+            noPhoneWithThatValue, noEmailWithThatValue, noURLWithThatValue,
+            noRelatedNameWithThatValue, noDateWithThatValue,
+            ambiguousPhoneValue, ambiguousEmailValue, ambiguousURLValue,
+            ambiguousRelatedNameValue, ambiguousDateValue,
             contactFieldRejected, confirmationUnavailable, confirmationExpired,
             confirmationAlreadyPending,
             invalidLinkKindArgument, linkKindMismatch, linkPairUnsupported,
