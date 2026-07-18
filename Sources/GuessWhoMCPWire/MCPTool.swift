@@ -19,6 +19,7 @@ import MCP
 /// criteria.
 public enum MCPTool: String, CaseIterable, Sendable {
     case contactsSearch = "contacts_search"
+    case contactsList = "contacts_list"
     case contactsGet = "contacts_get"
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
@@ -81,7 +82,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
 
     public var permissionDomain: PermissionDomain {
         switch self {
-        case .contactsSearch, .contactsGet, .contactsListNotes,
+        case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
              .contactsListCustomFields, .contactsListLinkedContacts,
              .contactsListLinkedOrganizations, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
@@ -112,7 +113,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     /// app's settings; writes are OFF by default — plans/cli-mcp.md Phase 2).
     public var isWrite: Bool {
         switch self {
-        case .contactsSearch, .contactsGet, .contactsListNotes,
+        case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
              .contactsListCustomFields, .contactsListLinkedContacts,
              .contactsListLinkedOrganizations, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
@@ -308,6 +309,14 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "Search the user's contacts. Returns a page of matching contacts, each with an id usable with the other contacts tools.",
                 inputSchema: Self.schema(props, required: ["query"]))
+        case .contactsList:
+            var props = Self.pagingProperties
+            props["type"] = Self.string(
+                "Optional: \"person\" or \"organization\" to list only that kind of contact. Omit to list both.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "List all the user's contacts, ordered by name — optionally only people or only organizations. Returns a page of contacts, each with an id usable with the other contacts tools; pass nextCursor back to get the next page.",
+                inputSchema: Self.schema(props))
         case .contactsGet:
             return ToolMetadata(
                 name: rawValue,

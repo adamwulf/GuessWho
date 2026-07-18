@@ -23,6 +23,7 @@ public enum WireRequest: Codable, Sendable {
     case listTools(helperId: String, messageId: String)
 
     case contactsSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
+    case contactsList(helperId: String, messageId: String, type: String?, limit: Int?, cursor: String?)
     case contactsGet(helperId: String, messageId: String, contactId: String)
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
@@ -73,6 +74,7 @@ public enum WireRequest: Codable, Sendable {
         switch self {
         case .initialize, .deinitialize, .ping, .listTools: return nil
         case .contactsSearch: return .contactsSearch
+        case .contactsList: return .contactsList
         case .contactsGet: return .contactsGet
         case .contactsListNotes: return .contactsListNotes
         case .contactsListCustomFields: return .contactsListCustomFields
@@ -153,6 +155,7 @@ extension WireRequest: MCPRequestProtocol {
              .ping(let helperId, _),
              .listTools(let helperId, _),
              .contactsSearch(let helperId, _, _, _, _),
+             .contactsList(let helperId, _, _, _, _),
              .contactsGet(let helperId, _, _),
              .contactsListNotes(let helperId, _, _, _, _),
              .contactsListCustomFields(let helperId, _, _, _, _),
@@ -199,6 +202,7 @@ extension WireRequest: MCPRequestProtocol {
              .ping(_, let messageId),
              .listTools(_, let messageId),
              .contactsSearch(_, let messageId, _, _, _),
+             .contactsList(_, let messageId, _, _, _),
              .contactsGet(_, let messageId, _),
              .contactsListNotes(_, let messageId, _, _, _),
              .contactsListCustomFields(_, let messageId, _, _, _),
@@ -277,6 +281,11 @@ extension WireRequest: MCPRequestProtocol {
             return .contactsSearch(
                 helperId: helperId, messageId: messageId,
                 query: try args.requiredString("query"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .contactsList:
+            return .contactsList(
+                helperId: helperId, messageId: messageId,
+                type: try args.optionalString("type"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .contactsGet:
             return .contactsGet(

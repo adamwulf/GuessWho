@@ -176,6 +176,10 @@ public actor ToolDispatcher {
             response = await contactsSearch(
                 helperId: helperId, messageId: messageId,
                 query: query, limit: limit, cursor: cursor)
+        case .contactsList(_, _, let type, let limit, let cursor):
+            response = await contactsList(
+                helperId: helperId, messageId: messageId,
+                type: type, limit: limit, cursor: cursor)
         case .contactsGet(_, _, let contactId):
             response = await contactsGet(
                 helperId: helperId, messageId: messageId, contactId: contactId)
@@ -355,6 +359,54 @@ public actor ToolDispatcher {
         }
         let (slice, nextCursor) = page.slice(matching)
         let items = slice.map { WireMapping.summary($0, id: WireRecordID.contactID(for: $0)) }
+        return .contactPage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    /// The whole-book enumeration (contacts_search requires a 2+ character
+    /// needle, so this is the only way to list EVERY contact). The order is
+    /// a fixed (lowercased display name, wire id) sort — deterministic,
+    /// total (the unique id breaks name ties), and independent of both the
+    /// repository's user-configurable UI sort and the cached array's
+    /// incidental order — so the offset cursor pages one stable sequence
+    /// with no skips or duplicates while the contact set is unchanged.
+    /// Plain enumeration of the cached book: none of contacts_search's
+    /// per-contact text matching, so it takes no search budget (same
+    /// stance as contacts_list_favorites). Ids come from the same no-mint
+    /// derivation every read uses.
+    private func contactsList(
+        helperId: String, messageId: String, type: String?, limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        let wanted: ContactType?
+        switch type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case nil: wanted = nil
+        case "person": wanted = .person
+        case "organization": wanted = .organization
+        default:
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidTypeArgument)
+        }
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        let matching = await MainActor.run { () -> [Contact] in
+            guard let wanted else { return contacts.allContacts }
+            return contacts.allContacts.filter { $0.contactType == wanted }
+        }
+        // Sort OFF the main actor; ids are derived once and reused for both
+        // the sort tiebreak and the DTO.
+        let ordered = matching
+            .map { (contact: $0, id: WireRecordID.contactID(for: $0)) }
+            .sorted { a, b in
+                let nameA = a.contact.displayName.lowercased()
+                let nameB = b.contact.displayName.lowercased()
+                if nameA != nameB { return nameA < nameB }
+                return a.id < b.id
+            }
+        let (slice, nextCursor) = page.slice(ordered)
+        let items = slice.map { WireMapping.summary($0.contact, id: $0.id) }
         return .contactPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))

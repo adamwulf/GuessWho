@@ -118,6 +118,10 @@ public enum WireErrorMessage {
         "Provide at least a name or an organization for the contact."
     public static let invalidKindArgument =
         "The kind argument must be \"person\" or \"organization\"."
+    /// contacts_list's kind filter took something other than its two plain
+    /// values.
+    public static let invalidTypeArgument =
+        "The type argument must be \"person\" or \"organization\". Omit it to list both."
     public static let updateNeedsAField =
         "Pass at least one field to change."
     public static let invalidCalendarDateValue =
@@ -195,7 +199,8 @@ public enum WireErrorMessage {
             linkedKindIsPerson, linkedKindIsOrganization, emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
             reorderMustCoverEveryPlace,
-            contactNeedsAName, invalidKindArgument, updateNeedsAField,
+            contactNeedsAName, invalidKindArgument, invalidTypeArgument,
+            updateNeedsAField,
             invalidCalendarDateValue,
             reservedWebAddress, contactNoteNotAccepted,
             contactFieldRejected, confirmationUnavailable, confirmationExpired,
