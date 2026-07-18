@@ -166,18 +166,6 @@ enum WireMapping {
             modifiedAt: timestamp(field.modifiedAt))
     }
 
-    static func linkedContact(
-        link: Link, linkID: String, other: Contact, otherID: String
-    ) -> WireLinkedContact? {
-        guard link.deletedAt == nil else { return nil }
-        return WireLinkedContact(
-            id: linkID,
-            kind: kind(other),
-            contact: summary(other, id: otherID),
-            note: blankToNil(link.note),
-            createdAt: timestamp(link.createdAt))
-    }
-
     /// One generic connection row (links_list / links_create), described
     /// from the near record's side: `otherKind`/`otherID` are the FAR
     /// endpoint's wire kind and id, pre-resolved by the dispatcher.

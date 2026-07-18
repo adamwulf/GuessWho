@@ -19,7 +19,6 @@ public enum WireResponse: Codable, Sendable {
     case contact(helperId: String, messageId: String, contact: WireContact)
     case notePage(helperId: String, messageId: String, page: WirePage<WireNote>)
     case customFieldPage(helperId: String, messageId: String, page: WirePage<WireCustomField>)
-    case linkedContactPage(helperId: String, messageId: String, page: WirePage<WireLinkedContact>)
     case groupPage(helperId: String, messageId: String, page: WirePage<WireGroup>)
     case eventPage(helperId: String, messageId: String, page: WirePage<WireEventSummary>)
     case event(helperId: String, messageId: String, event: WireEvent)
@@ -36,7 +35,6 @@ public enum WireResponse: Codable, Sendable {
     // plain fixed acknowledgement text.
     case note(helperId: String, messageId: String, note: WireNote)
     case customField(helperId: String, messageId: String, field: WireCustomField)
-    case linkedContact(helperId: String, messageId: String, link: WireLinkedContact)
     case link(helperId: String, messageId: String, link: WireLink)
     case tag(helperId: String, messageId: String, tag: WireTag)
     case acknowledged(helperId: String, messageId: String, message: String)
@@ -52,7 +50,6 @@ extension WireResponse: MCPResponseProtocol {
              .contact(let helperId, _, _),
              .notePage(let helperId, _, _),
              .customFieldPage(let helperId, _, _),
-             .linkedContactPage(let helperId, _, _),
              .groupPage(let helperId, _, _),
              .eventPage(let helperId, _, _),
              .event(let helperId, _, _),
@@ -63,7 +60,6 @@ extension WireResponse: MCPResponseProtocol {
              .linkPage(let helperId, _, _),
              .note(let helperId, _, _),
              .customField(let helperId, _, _),
-             .linkedContact(let helperId, _, _),
              .link(let helperId, _, _),
              .tag(let helperId, _, _),
              .acknowledged(let helperId, _, _):
@@ -80,7 +76,6 @@ extension WireResponse: MCPResponseProtocol {
              .contact(_, let messageId, _),
              .notePage(_, let messageId, _),
              .customFieldPage(_, let messageId, _),
-             .linkedContactPage(_, let messageId, _),
              .groupPage(_, let messageId, _),
              .eventPage(_, let messageId, _),
              .event(_, let messageId, _),
@@ -91,7 +86,6 @@ extension WireResponse: MCPResponseProtocol {
              .linkPage(_, let messageId, _),
              .note(_, let messageId, _),
              .customField(_, let messageId, _),
-             .linkedContact(_, let messageId, _),
              .link(_, let messageId, _),
              .tag(_, let messageId, _),
              .acknowledged(_, let messageId, _):
@@ -119,8 +113,6 @@ extension WireResponse: MCPResponseProtocol {
             return .notePage(helperId: helperId, messageId: messageId, page: page)
         case .customFieldPage(_, _, let page):
             return .customFieldPage(helperId: helperId, messageId: messageId, page: page)
-        case .linkedContactPage(_, _, let page):
-            return .linkedContactPage(helperId: helperId, messageId: messageId, page: page)
         case .groupPage(_, _, let page):
             return .groupPage(helperId: helperId, messageId: messageId, page: page)
         case .eventPage(_, _, let page):
@@ -141,8 +133,6 @@ extension WireResponse: MCPResponseProtocol {
             return .note(helperId: helperId, messageId: messageId, note: note)
         case .customField(_, _, let field):
             return .customField(helperId: helperId, messageId: messageId, field: field)
-        case .linkedContact(_, _, let link):
-            return .linkedContact(helperId: helperId, messageId: messageId, link: link)
         case .link(_, _, let link):
             return .link(helperId: helperId, messageId: messageId, link: link)
         case .tag(_, _, let tag):
@@ -178,8 +168,6 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(page)
         case .customFieldPage(_, _, let page):
             return Self.jsonResult(page)
-        case .linkedContactPage(_, _, let page):
-            return Self.jsonResult(page)
         case .groupPage(_, _, let page):
             return Self.jsonResult(page)
         case .eventPage(_, _, let page):
@@ -200,8 +188,6 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(note)
         case .customField(_, _, let field):
             return Self.jsonResult(field)
-        case .linkedContact(_, _, let link):
-            return Self.jsonResult(link)
         case .link(_, _, let link):
             return Self.jsonResult(link)
         case .tag(_, _, let tag):

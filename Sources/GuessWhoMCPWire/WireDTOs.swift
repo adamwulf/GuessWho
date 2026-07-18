@@ -433,25 +433,6 @@ public struct WireCustomField: Codable, Sendable {
     }
 }
 
-/// One Linked Contact / Linked Organization row: the connection, its note,
-/// and the far contact carrying its own contact id.
-public struct WireLinkedContact: Codable, Sendable {
-    public let id: String
-    /// "person" or "organization".
-    public let kind: String
-    public let contact: WireContactSummary
-    public let note: String?
-    public let createdAt: String
-
-    public init(id: String, kind: String, contact: WireContactSummary, note: String?, createdAt: String) {
-        self.id = id
-        self.kind = kind
-        self.contact = contact
-        self.note = note
-        self.createdAt = createdAt
-    }
-}
-
 /// One generic connection row (links_list / links_create), seen from the
 /// record it was listed on: `kind`/`otherId` describe the record at the
 /// FAR end, readable with the matching read tool (contacts_get,
