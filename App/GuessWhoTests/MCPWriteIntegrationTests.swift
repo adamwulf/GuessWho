@@ -27,9 +27,9 @@ struct MCPWriteIntegrationTests {
         return dir
     }
 
-    private func makeService(root: URL) -> SyncService {
+    private func makeService(root: URL, contacts: [Contact] = []) -> SyncService {
         SyncService(
-            contactsAdapter: INV2StubContactStore(),
+            contactsAdapter: INV2StubContactStore(contacts: contacts),
             eventsAdapter: INV2StubEventStore(),
             sidecarLocation: .iCloud(root),
             deviceID: "test-device",
@@ -150,6 +150,82 @@ struct MCPWriteIntegrationTests {
         #expect(write?.errorPayload?.code == .readOnly)
         #expect(service.eventTags(forEventUUID: eventUUID.uuidString.lowercased()).isEmpty)
     }
+
+    /// contacts_list, hosted: the whole-book enumeration against the LIVE
+    /// `ContactsRepository` — the production `reload()` + cached read-model
+    /// the UI renders, with the stub contact store standing in ONLY at the
+    /// TCC boundary where the CNContactStore adapter would sit. Asserts the
+    /// stable name order, the kind filter, cursor paging with no skips or
+    /// duplicates, the identity-URL-derived wire id, and that the Apple
+    /// note never rides a list row.
+    @Test
+    func contactsListPagesTheLiveRepositoryReadModel() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let reconciledID = "3f2a9d64-1c5b-4e8a-9f70-2b6d8c1e4a55"
+        let jane = Contact(
+            givenName: "Live", familyName: "Jane",
+            note: "hosted-apple-note-sentinel",
+            urlAddresses: [LabeledValue(label: "", value: "guesswho://contact/\(reconciledID)")])
+        let bob = Contact(givenName: "Live", familyName: "Bob")
+        let org = Contact(contactType: .organization, organizationName: "Live Org")
+
+        let service = makeService(root: root, contacts: [jane, bob, org])
+        let repository = service.makeContactsRepository()
+        await repository.reload()
+
+        let dispatcher = ToolDispatcher(
+            contacts: repository,
+            events: INV2LiveEventSource(service: service),
+            guides: INV2LiveGuideSource(service: service),
+            links: service,
+            gates: INV2Gates())
+
+        let helper = RequestOrigin.mcp.makeHelperId()
+        let all = await dispatcher.handle(.contactsList(
+            helperId: helper, messageId: "list-all", type: nil, limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let page) = all else {
+            Issue.record("expected a contact page; got \(String(describing: all))")
+            return
+        }
+        #expect(page.items.map(\.name) == ["Live Bob", "Live Jane", "Live Org"])
+        #expect(page.items.map(\.kind) == ["person", "person", "organization"])
+        #expect(page.items.first(where: { $0.name == "Live Jane" })?.id == reconciledID)
+        let encoded = String(decoding: try JSONEncoder().encode(page), as: UTF8.self)
+        #expect(!encoded.contains("hosted-apple-note-sentinel"))
+        #expect(!encoded.contains("guesswho://"))
+
+        let organizations = await dispatcher.handle(.contactsList(
+            helperId: helper, messageId: "list-orgs",
+            type: "organization", limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let orgPage) = organizations else {
+            Issue.record("expected a contact page; got \(String(describing: organizations))")
+            return
+        }
+        #expect(orgPage.items.map(\.name) == ["Live Org"])
+
+        // Cursor paging over the live read-model: two pages, every contact
+        // exactly once.
+        var seen: [String] = []
+        var cursor: String?
+        var pages = 0
+        repeat {
+            let response = await dispatcher.handle(.contactsList(
+                helperId: helper, messageId: "list-page-\(pages)",
+                type: nil, limit: 2, cursor: cursor))
+            guard case .contactPage(_, _, let slice) = response else {
+                Issue.record("expected a contact page; got \(String(describing: response))")
+                return
+            }
+            seen.append(contentsOf: slice.items.map(\.id))
+            cursor = slice.nextCursor
+            pages += 1
+        } while cursor != nil && pages < 5
+        #expect(pages == 2)
+        #expect(seen.count == 3)
+        #expect(Set(seen).count == 3)
+    }
 }
 
 // MARK: - Live-source adapters
@@ -224,7 +300,16 @@ private func inv2Unused(function: String = #function) -> Never {
 }
 
 private actor INV2StubContactStore: ContactStoreProtocol {
-    func fetchAll() async throws -> [Contact] { [] }
+    /// The book `fetchAll` serves — the repository's `reload()` builds its
+    /// real read-model from this, so a test can exercise the production
+    /// contact cache without the system Contacts store.
+    private let contacts: [Contact]
+
+    init(contacts: [Contact] = []) {
+        self.contacts = contacts
+    }
+
+    func fetchAll() async throws -> [Contact] { contacts }
     func fetch(localID: String) async throws -> Contact? { nil }
     func save(_ contact: Contact) async throws { inv2Unused() }
     func delete(localID: String) async throws { inv2Unused() }
