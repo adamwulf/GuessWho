@@ -125,24 +125,53 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-**Read (15):** `contacts_search`, `contacts_get`, `contacts_list_notes`,
+**Read (16):** `contacts_search`, `contacts_get`, `contacts_list_notes`,
 `contacts_list_custom_fields`, `contacts_list_linked_contacts`,
 `contacts_list_linked_organizations`, `contacts_list_favorites`,
 `contacts_list_groups`, `groups_list_members`, `events_list`,
 `events_get`, `events_list_tags`, `guides_list`, `guides_get`,
-`places_list`. (Plus `guesswho_status`, served by the relay itself when
-the app is unreachable / to re-check.)
+`places_list`, `links_list`. (Plus `guesswho_status`, served by the relay
+itself when the app is unreachable / to re-check.)
 
-**Write (19):** the GuessWho-data writes — `contacts_add_note`,
+**Write (21):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_add_linked_contact`,
 `contacts_add_linked_organization`, `contacts_remove_linked_contact`,
 `contacts_set_favorite`, `events_add_tag`, `events_edit_tag`,
 `events_delete_tag`, `guides_create`, `guides_delete`,
-`guides_reorder_places`, `places_delete` — plus, since Revision 2, full
-Contact Store parity with the app's own editor: **`contacts_create`**,
-**`contacts_update`** (PATCH semantics: only passed fields change; list
-fields replace as whole lists), and **`contacts_delete`**.
+`guides_reorder_places`, `places_delete`, `links_create`, `links_remove`
+— plus, since Revision 2, full Contact Store parity with the app's own
+editor: **`contacts_create`**, **`contacts_update`** (PATCH semantics:
+only passed fields change; list fields replace as whole lists), and
+**`contacts_delete`**.
+
+### Generic connections (`links_*`)
+
+`links_list(id, kind)`, `links_create(fromId, fromKind, toId, toKind,
+note?)`, and `links_remove(linkId)` expose the SAME connection surface the
+app's detail views have, over the kind-agnostic engine primitive
+(`addLink(from:to:note:)` / `links(at:)` / `removeLink(id:)` behind
+`MCPLinkSource`, conformed by `SyncService`). Kinds on the wire are
+`person`, `organization`, `event`, and `place`; each id is that kind's
+ordinary wire id. Supported pairs mirror the app exactly:
+contact↔contact, contact↔event, contact↔place, event↔event, and
+event↔place. `place`+`place` is the one combination with no app
+affordance and answers a typed `invalidParams`; guides aren't a
+connection kind at all. Contact-involved creates route through the
+identity-minting repository funnels (`addLink` / `addEventLink` /
+`addPlaceLink`) with the same single-flight + post-mint-verify
+protections as the `contacts_add_linked_*` tools; a system-calendar-only
+event follows the tag rule (typed `requiresAppAction`, nothing minted).
+Each `links_list` entry carries the connection's own id plus the FAR
+endpoint's kind and id, so the agent can read the far record with the
+matching read tool; rows whose far record no longer resolves are dropped.
+`links_remove` soft-deletes and lands in Recently Deleted like the other
+GuessWho-data deletes. The static permission domain is none (connection
+storage is GuessWho's own); the dispatcher re-gates each call on the
+system permission of every endpoint kind it references. The older
+`contacts_add_linked_contact` / `contacts_add_linked_organization` /
+`contacts_remove_linked_contact` / `contacts_list_linked_*` tools are
+unchanged for backward compatibility.
 
 Contact-record writes route through the SAME repository entry points the
 app's contact editor uses (`editableContact`/`saveContact`/
