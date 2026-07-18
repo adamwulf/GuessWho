@@ -132,6 +132,33 @@ final class MultiValueEditToolTests: XCTestCase {
         XCTAssertEqual(after?.note, Sentinels.appleNote)
     }
 
+    /// The symmetric round trip: a tool-added entry, removed by its exact
+    /// value, leaves the list exactly as it started — the original entry
+    /// untouched down to its label.
+    func testAddThenRemoveEmailRestoresTheOriginalList() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
+        let before = await storedJane(fixture)
+
+        let added = await fixture.dispatcher.handle(.contactsAddEmail(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "jane@temp.example", label: "temp", idempotencyToken: nil))
+        guard let addedCard = expectCard(added) else { return }
+        XCTAssertEqual(
+            addedCard.emailAddresses.map(\.value), ["jane@doe.example", "jane@temp.example"])
+
+        let removed = await fixture.dispatcher.handle(.contactsRemoveEmail(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, value: "jane@temp.example", idempotencyToken: nil))
+        guard let removedCard = expectCard(removed) else { return }
+        XCTAssertEqual(removedCard.emailAddresses.map(\.value), ["jane@doe.example"])
+
+        let after = await storedJane(fixture)
+        XCTAssertEqual(after?.emailAddresses.map(\.value), before?.emailAddresses.map(\.value))
+        XCTAssertEqual(after?.emailAddresses.map(\.label), before?.emailAddresses.map(\.label))
+        XCTAssertEqual(after?.note, Sentinels.appleNote)
+    }
+
     // MARK: - Edit replaces value (and label) in place
 
     func testEditEmailReplacesValueAndLabelInPlace() async {
@@ -488,6 +515,44 @@ final class MultiValueEditToolTests: XCTestCase {
         XCTAssertEqual(
             after?.emailAddresses.filter { $0.value == "jane@once.example" }.count, 1,
             "a retried add must not append the entry twice")
+    }
+
+    /// Concurrent single-entry edits to the SAME contact's SAME list are a
+    /// read-modify-write race: two writers that both read the pre-edit
+    /// card would each save a list missing the other's entry, silently
+    /// losing one. The per-localID single-flight the list-edit path holds
+    /// (the same withWriteKeysLocked every contact write uses) serializes
+    /// the whole editableContact→mutate→saveContact sequence, so EVERY
+    /// concurrent add must land. Regression guard: this fails (flakily,
+    /// by losing entries) if the list-edit path ever stops taking the
+    /// lock.
+    func testConcurrentAddsToTheSameListAreSerializedAndLoseNothing() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
+
+        let values = ["+1 555 1001", "+1 555 1002", "+1 555 1003", "+1 555 1004"]
+        let responses = await withTaskGroup(of: WireResponse?.self) { group in
+            for value in values {
+                group.addTask {
+                    await fixture.dispatcher.handle(.contactsAddPhone(
+                        helperId: Fixture.helper, messageId: TestMessageID.next(),
+                        contactId: jane, value: value, label: nil, idempotencyToken: nil))
+                }
+            }
+            var collected: [WireResponse?] = []
+            for await response in group { collected.append(response) }
+            return collected
+        }
+        for response in responses {
+            XCTAssertNotNil(expectCard(response), "every concurrent add must report success")
+        }
+
+        let after = await storedJane(fixture)
+        XCTAssertEqual(after?.phoneNumbers.count, 5, "a lost entry means the write ran unserialized")
+        XCTAssertEqual(
+            Set(after?.phoneNumbers.map(\.value) ?? []),
+            Set(["+1 (555) 010-7788"] + values))
+        XCTAssertEqual(after?.note, Sentinels.appleNote)
     }
 
     func testListEditsCountAgainstTheWriteBudget() async {
