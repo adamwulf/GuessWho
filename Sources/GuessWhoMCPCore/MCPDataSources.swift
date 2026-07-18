@@ -48,6 +48,14 @@ public protocol MCPContactSource: AnyObject {
     func deleteField(for id: ContactID, id fieldID: UUID) async throws
     @discardableResult
     func addLink(from a: ContactID, to b: ContactID, note: String) async throws -> Link
+    // Contact↔event / contact↔place connections (links_create) — the SAME
+    // repository funnels the app's detail views use, so the contact
+    // endpoint resolves-or-mints its canonical identity before the link is
+    // written. The far endpoint is addressed by its own record UUID.
+    @discardableResult
+    func addEventLink(for id: ContactID, eventUUID: String, note: String) async throws -> Link
+    @discardableResult
+    func addPlaceLink(for id: ContactID, placeUUID: String, note: String) async throws -> Link
     func setLinkNote(id linkID: UUID, note: String) throws
     func removeLink(id linkID: UUID) throws
     @discardableResult
@@ -108,6 +116,25 @@ public protocol MCPEventSource: AnyObject {
     /// (`e-`) wire id keep resolving after the user opens the event in the
     /// app.
     func eventUUID(forEventKitID eventKitID: String) async -> UUID?
+}
+
+/// The generic connection surface (links_list / links_create /
+/// links_remove): the KIND-AGNOSTIC engine primitive the app's own detail
+/// views funnel into for non-contact endpoints (event↔event, event↔place).
+/// Contact endpoints do NOT ride this for writes — they go through the
+/// `MCPContactSource` funnels above so an unreconciled contact
+/// resolves-or-mints its canonical identity first.
+@MainActor
+public protocol MCPLinkSource: AnyObject {
+    /// Every LIVE connection touching `endpoint` (soft-deleted ones are
+    /// excluded at the source).
+    func links(at endpoint: SidecarKey) async -> [Link]
+    /// One connection by its own id, INCLUDING soft-deleted ones — the
+    /// remove path's prior-state read; callers check `deletedAt`.
+    func link(id: UUID) -> Link?
+    @discardableResult
+    func addLink(from: SidecarKey, to: SidecarKey, note: String) throws -> Link
+    func removeLink(id: UUID) throws
 }
 
 /// Human-in-the-loop confirmation for uniquely destructive agent writes

@@ -20,6 +20,11 @@ public actor ToolDispatcher {
     private let contacts: MCPContactSource
     private let events: MCPEventSource
     private let guides: MCPGuideSource
+    /// The kind-agnostic connection primitive (links_* tools). Contact
+    /// endpoints still WRITE through `contacts` (resolve-or-mint); this is
+    /// the list/lookup surface plus the write path for pairs with no
+    /// contact endpoint (event↔event, event↔place).
+    private let links: MCPLinkSource
     private let gates: MCPGateSource
     /// Presents human-in-the-loop confirmations (contacts_delete). nil =
     /// no way to confirm, so confirmation-gated writes answer the typed
@@ -97,6 +102,7 @@ public actor ToolDispatcher {
         contacts: MCPContactSource,
         events: MCPEventSource,
         guides: MCPGuideSource,
+        links: MCPLinkSource,
         gates: MCPGateSource,
         confirmations: MCPConfirmationSource? = nil,
         audit: MCPAuditLog? = nil,
@@ -110,6 +116,7 @@ public actor ToolDispatcher {
         self.contacts = contacts
         self.events = events
         self.guides = guides
+        self.links = links
         self.gates = gates
         self.confirmations = confirmations
         self.audit = audit
@@ -216,6 +223,10 @@ public actor ToolDispatcher {
             response = await placesList(
                 helperId: helperId, messageId: messageId,
                 guideId: guideId, limit: limit, cursor: cursor)
+        case .linksList(_, _, let id, let kind, let limit, let cursor):
+            response = await linksList(
+                helperId: helperId, messageId: messageId,
+                id: id, kind: kind, limit: limit, cursor: cursor)
         case .initialize, .deinitialize, .ping, .listTools:
             response = .error(
                 helperId: helperId, messageId: messageId,
@@ -226,7 +237,8 @@ public actor ToolDispatcher {
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
              .contactsRemoveLinkedContact, .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
-             .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
+             .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
+             .linksCreate, .linksRemove:
             // Unreachable: every write case dispatched through handleWrite
             // (or the confirmation-gated delete path) above. Kept explicit
             // so a new write case that forgets its isWrite classification
@@ -733,6 +745,12 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId, guideId: guideId, placeIds: placeIds)
         case .placesDelete(_, _, let placeId, _):
             return await placesDelete(helperId: helperId, messageId: messageId, placeId: placeId)
+        case .linksCreate(_, _, let fromId, let fromKind, let toId, let toKind, let note, _):
+            return await linksCreate(
+                helperId: helperId, messageId: messageId,
+                fromId: fromId, fromKind: fromKind, toId: toId, toKind: toKind, note: note)
+        case .linksRemove(_, _, let linkId, _):
+            return await linksRemove(helperId: helperId, messageId: messageId, linkId: linkId)
         default:
             return .error(
                 helperId: helperId, messageId: messageId,
@@ -1022,52 +1040,9 @@ public actor ToolDispatcher {
                 code: .invalidParams, message: message)
         }
 
-        let nearToken = near.contactID.restorationToken
-        let farToken = far.contactID.restorationToken
         do {
-            let (effectiveNear, effectiveFar, link) = try await withWriteKeysLocked(
-                [nearToken.localID, farToken.localID]
-            ) { () -> (Contact, Contact, Link) in
-                func resolveBoth() async throws -> (Contact, Contact) {
-                    guard
-                        let currentNear = await MainActor.run(body: { contacts.contact(restorationToken: nearToken) }),
-                        let currentFar = await MainActor.run(body: { contacts.contact(restorationToken: farToken) })
-                    else { throw WriteProblem.stale }
-                    return (currentNear, currentFar)
-                }
-                func linkVisible(_ pair: (Contact, Contact), _ link: Link) async -> Bool {
-                    let nearMintedBefore = pair.0.contactID.restorationToken.guessWhoID == nil
-                    let farMintedBefore = pair.1.contactID.restorationToken.guessWhoID == nil
-                    guard let (freshNear, freshFar) = try? await resolveBoth() else { return false }
-                    if nearMintedBefore {
-                        let seen = await contacts.links(for: freshNear.contactID).contains { $0.id == link.id }
-                        if !seen { return false }
-                    }
-                    if farMintedBefore {
-                        let seen = await contacts.links(for: freshFar.contactID).contains { $0.id == link.id }
-                        if !seen { return false }
-                    }
-                    return true
-                }
-
-                var pair = try await resolveBoth()
-                var link = try await contacts.addLink(
-                    from: pair.0.contactID, to: pair.1.contactID, note: note ?? "")
-                if await !linkVisible(pair, link) {
-                    // A concurrent first-writer's mint won on one endpoint:
-                    // the link is keyed on a losing identity. Remove it and
-                    // retry once against the now-canonical identities — no
-                    // half-orphaned link is left behind.
-                    let staleLinkID = link.id
-                    try? await MainActor.run { try contacts.removeLink(id: staleLinkID) }
-                    pair = try await resolveBoth()
-                    link = try await contacts.addLink(
-                        from: pair.0.contactID, to: pair.1.contactID, note: note ?? "")
-                    guard await linkVisible(pair, link) else { throw WriteProblem.verifyFailed }
-                }
-                let final = try await resolveBoth()
-                return (final.0, final.1, link)
-            }
+            let (effectiveNear, effectiveFar, link) = try await addContactContactLink(
+                near: near, far: far, note: note)
             guard let dto = WireMapping.linkedContact(
                 link: link, linkID: link.id.uuidString.lowercased(),
                 other: effectiveFar, otherID: WireRecordID.contactID(for: effectiveFar))
@@ -1081,6 +1056,63 @@ public actor ToolDispatcher {
             return .linkedContact(helperId: helperId, messageId: messageId, link: dto)
         } catch {
             return writeFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    /// The locked contact↔contact link write shared by
+    /// contacts_add_linked_contact / contacts_add_linked_organization and
+    /// links_create: resolve both endpoints under their per-localID write
+    /// locks, write the link through the identity-minting repository funnel,
+    /// and verify-with-one-retry when a concurrent first-writer's mint won
+    /// (removing the stale link so no half-orphan survives). Returns the
+    /// post-write contacts and the link.
+    private func addContactContactLink(
+        near: Contact, far: Contact, note: String?
+    ) async throws -> (Contact, Contact, Link) {
+        let nearToken = near.contactID.restorationToken
+        let farToken = far.contactID.restorationToken
+        return try await withWriteKeysLocked(
+            [nearToken.localID, farToken.localID]
+        ) { () -> (Contact, Contact, Link) in
+            func resolveBoth() async throws -> (Contact, Contact) {
+                guard
+                    let currentNear = await MainActor.run(body: { contacts.contact(restorationToken: nearToken) }),
+                    let currentFar = await MainActor.run(body: { contacts.contact(restorationToken: farToken) })
+                else { throw WriteProblem.stale }
+                return (currentNear, currentFar)
+            }
+            func linkVisible(_ pair: (Contact, Contact), _ link: Link) async -> Bool {
+                let nearMintedBefore = pair.0.contactID.restorationToken.guessWhoID == nil
+                let farMintedBefore = pair.1.contactID.restorationToken.guessWhoID == nil
+                guard let (freshNear, freshFar) = try? await resolveBoth() else { return false }
+                if nearMintedBefore {
+                    let seen = await contacts.links(for: freshNear.contactID).contains { $0.id == link.id }
+                    if !seen { return false }
+                }
+                if farMintedBefore {
+                    let seen = await contacts.links(for: freshFar.contactID).contains { $0.id == link.id }
+                    if !seen { return false }
+                }
+                return true
+            }
+
+            var pair = try await resolveBoth()
+            var link = try await contacts.addLink(
+                from: pair.0.contactID, to: pair.1.contactID, note: note ?? "")
+            if await !linkVisible(pair, link) {
+                // A concurrent first-writer's mint won on one endpoint:
+                // the link is keyed on a losing identity. Remove it and
+                // retry once against the now-canonical identities — no
+                // half-orphaned link is left behind.
+                let staleLinkID = link.id
+                try? await MainActor.run { try contacts.removeLink(id: staleLinkID) }
+                pair = try await resolveBoth()
+                link = try await contacts.addLink(
+                    from: pair.0.contactID, to: pair.1.contactID, note: note ?? "")
+                guard await linkVisible(pair, link) else { throw WriteProblem.verifyFailed }
+            }
+            let final = try await resolveBoth()
+            return (final.0, final.1, link)
         }
     }
 
@@ -1830,6 +1862,465 @@ public actor ToolDispatcher {
         } catch {
             return writeFailure(error, helperId: helperId, messageId: messageId)
         }
+    }
+
+    // MARK: - Links tools (generic connections)
+
+    /// The wire's endpoint-kind vocabulary for links_*. "person" and
+    /// "organization" are both CONTACT endpoints (the same distinction the
+    /// linked-contact tools enforce); events and places ride their own
+    /// record UUIDs.
+    private enum LinkKind: String {
+        case person, organization, event, place
+
+        init?(argument: String) {
+            self.init(rawValue: argument.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+
+        var isContact: Bool { self == .person || self == .organization }
+    }
+
+    /// A resolved links_create endpoint.
+    private enum LinkWriteEndpoint {
+        case contact(Contact)
+        case event(Event)
+        case place(MapsPlace)
+    }
+
+    /// A links_create endpoint that didn't resolve, carrying its typed
+    /// wire answer.
+    private struct LinkResolveFailure: Error {
+        let code: WireErrorCode
+        let message: String
+
+        func response(helperId: String, messageId: String) -> WireResponse {
+            .error(helperId: helperId, messageId: messageId, code: code, message: message)
+        }
+    }
+
+    /// The links_* per-kind system-permission gate. The tools' static
+    /// domain is `.none` (connection storage is GuessWho's own), so each
+    /// call re-checks the domains its endpoint kinds actually touch — the
+    /// same enforcement stance as gateCheck.
+    private func linkKindGate(
+        _ kinds: [LinkKind], helperId: String, messageId: String
+    ) async -> WireResponse? {
+        let needsContacts = kinds.contains { $0.isContact }
+        let needsEvents = kinds.contains(.event)
+        guard needsContacts || needsEvents else { return nil }
+        let (contactsOK, eventsOK) = await MainActor.run {
+            (gates.contactsAuthorized, gates.eventsAuthorized)
+        }
+        if needsContacts && !contactsOK {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied, message: WireErrorMessage.permissionDeniedContacts)
+        }
+        if needsEvents && !eventsOK {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied, message: WireErrorMessage.permissionDeniedEvents)
+        }
+        return nil
+    }
+
+    /// The wire (kind, id) pair for a resolved links_create endpoint. A
+    /// contact's wire id is stable across the mint boundary (deterministic
+    /// mint), so the pre-write resolution is safe to echo.
+    private func linkWireDescriptor(_ endpoint: LinkWriteEndpoint) -> (kind: String, id: String) {
+        switch endpoint {
+        case .contact(let contact):
+            return (
+                contact.contactType == .organization ? "organization" : "person",
+                WireRecordID.contactID(for: contact))
+        case .event(let event):
+            return ("event", WireRecordID.eventID(for: event))
+        case .place(let place):
+            return ("place", place.id.uuidString.lowercased())
+        }
+    }
+
+    private func linksList(
+        helperId: String, messageId: String, id: String, kind: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        guard let parsedKind = LinkKind(argument: kind) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidLinkKindArgument)
+        }
+        if let gateError = await linkKindGate([parsedKind], helperId: helperId, messageId: messageId) {
+            return gateError
+        }
+
+        func emptyPage() -> WireResponse {
+            .linkPage(
+                helperId: helperId, messageId: messageId,
+                page: WirePage(items: [], nextCursor: nil))
+        }
+
+        let endpoint: SidecarKey
+        switch parsedKind {
+        case .person, .organization:
+            switch await resolveContact(id) {
+            case .failure(let failure):
+                return failure.response(helperId: helperId, messageId: messageId)
+            case .success(let contact):
+                // A contact with no minted identity can hold no connections
+                // yet — an empty page, not an error. (The list is permissive
+                // about person vs organization: both resolve in the contact
+                // id space, matching contacts_get.)
+                guard let guessWhoID = contact.contactID.restorationToken.guessWhoID else {
+                    return emptyPage()
+                }
+                endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+            }
+        case .event:
+            switch await resolveEvent(id) {
+            case .failure(let failure):
+                return failure.response(helperId: helperId, messageId: messageId)
+            case .success(let event):
+                // A system-calendar-only row has no GuessWho record, so it
+                // can hold no connections (reads never mint) — empty page.
+                guard !WireRecordID.isSystemOnlyEvent(event) else { return emptyPage() }
+                endpoint = SidecarKey.forEvent(event)
+            }
+        case .place:
+            guard let uuid = WireRecordID.recordUUID(id),
+                  let place = await guides.allPlaces().first(where: { $0.id == uuid })
+            else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundPlace)
+            }
+            endpoint = SidecarKey(kind: .place, id: place.id.uuidString)
+        }
+
+        let fetched = await links.links(at: endpoint)
+        var rows: [(link: Link, farKind: String, farID: String)] = []
+        for link in fetched where link.deletedAt == nil {
+            let far = link.endpointA == endpoint ? link.endpointB : link.endpointA
+            // Same DELIBERATE divergence as the linked-contact list: a link
+            // whose far endpoint doesn't resolve to a live record is
+            // DROPPED — an agent can't act on a row with no id to read.
+            guard let resolved = await resolveFarEndpoint(far) else { continue }
+            rows.append((link, resolved.kind, resolved.id))
+        }
+        rows.sort { $0.link.createdAt < $1.link.createdAt }
+        let (slice, nextCursor) = page.slice(rows)
+        let items = slice.compactMap {
+            WireMapping.link($0.link, otherKind: $0.farKind, otherID: $0.farID)
+        }
+        return .linkPage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    /// The wire (kind, id) of a link's far endpoint, or nil when it no
+    /// longer resolves to a live record.
+    private func resolveFarEndpoint(_ endpoint: SidecarKey) async -> (kind: String, id: String)? {
+        switch endpoint.kind {
+        case .contact:
+            let contact = await MainActor.run { () -> Contact? in
+                contacts.allContacts.first {
+                    $0.contactID.restorationToken.guessWhoID == endpoint.id
+                }
+            }
+            guard let contact else { return nil }
+            return (
+                contact.contactType == .organization ? "organization" : "person",
+                WireRecordID.contactID(for: contact))
+        case .event:
+            guard let event = await MainActor.run(body: { events.event(uuid: endpoint.id) })
+            else { return nil }
+            return ("event", WireRecordID.eventID(for: event))
+        case .place:
+            guard let place = await guides.allPlaces().first(where: {
+                $0.id.uuidString.lowercased() == endpoint.id
+            }) else { return nil }
+            return ("place", place.id.uuidString.lowercased())
+        case .link, .guide:
+            return nil
+        }
+    }
+
+    private func linksCreate(
+        helperId: String, messageId: String,
+        fromId: String, fromKind: String, toId: String, toKind: String, note: String?
+    ) async -> WireResponse {
+        guard let from = LinkKind(argument: fromKind), let to = LinkKind(argument: toKind) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidLinkKindArgument)
+        }
+        // The one kind pair with no app affordance. Every other combination
+        // of person/organization/event/place matches a shipping detail-view
+        // action (guides have none, so "guide" isn't a kind here at all).
+        if from == .place && to == .place {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.linkPairUnsupported)
+        }
+        if let gateError = await linkKindGate([from, to], helperId: helperId, messageId: messageId) {
+            return gateError
+        }
+
+        let fromEndpoint: LinkWriteEndpoint
+        switch await resolveLinkWriteEndpoint(id: fromId, kind: from) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let endpoint):
+            fromEndpoint = endpoint
+        }
+        let toEndpoint: LinkWriteEndpoint
+        switch await resolveLinkWriteEndpoint(id: toId, kind: to) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let endpoint):
+            toEndpoint = endpoint
+        }
+
+        // Self-connection guard (the app's pickers exclude the current
+        // record). Two ids can name one card, so compare resolved records.
+        if case .contact(let a) = fromEndpoint, case .contact(let b) = toEndpoint,
+           a.contactID.restorationToken.localID == b.contactID.restorationToken.localID {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.linkSelfNotAllowed)
+        }
+        if case .event(let a) = fromEndpoint, case .event(let b) = toEndpoint, a.id == b.id {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.linkSelfNotAllowed)
+        }
+
+        do {
+            let link: Link
+            switch (fromEndpoint, toEndpoint) {
+            case (.contact(let near), .contact(let far)):
+                let (_, _, written) = try await addContactContactLink(near: near, far: far, note: note)
+                link = written
+            case (.contact(let contact), .event(let event)),
+                 (.event(let event), .contact(let contact)):
+                link = try await addContactRecordLink(contact: contact) { id in
+                    try await contacts.addEventLink(
+                        for: id, eventUUID: Self.eventUUIDString(event), note: note ?? "")
+                }
+            case (.contact(let contact), .place(let place)),
+                 (.place(let place), .contact(let contact)):
+                link = try await addContactRecordLink(contact: contact) { id in
+                    try await contacts.addPlaceLink(
+                        for: id, placeUUID: place.id.uuidString, note: note ?? "")
+                }
+            case (.event(let a), .event(let b)):
+                link = try await MainActor.run {
+                    try links.addLink(
+                        from: SidecarKey(kind: .event, id: Self.eventUUIDString(a)),
+                        to: SidecarKey(kind: .event, id: Self.eventUUIDString(b)),
+                        note: note ?? "")
+                }
+            case (.event(let event), .place(let place)),
+                 (.place(let place), .event(let event)):
+                link = try await MainActor.run {
+                    try links.addLink(
+                        from: SidecarKey(kind: .event, id: Self.eventUUIDString(event)),
+                        to: SidecarKey(kind: .place, id: place.id.uuidString),
+                        note: note ?? "")
+                }
+            case (.place, .place):
+                // Unreachable: rejected before resolution. Kept explicit for
+                // exhaustiveness.
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .invalidParams, message: WireErrorMessage.linkPairUnsupported)
+            }
+            await recordLinkCreateAudit(from: fromEndpoint, link: link, note: note)
+            let far = linkWireDescriptor(toEndpoint)
+            guard let dto = WireMapping.link(link, otherKind: far.kind, otherID: far.id) else {
+                return writeFailure(helperId: helperId, messageId: messageId)
+            }
+            return .link(helperId: helperId, messageId: messageId, link: dto)
+        } catch {
+            return writeFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    /// Resolve one links_create endpoint. Contact ids must match their
+    /// declared person/organization kind (the linked-contact tools' rule);
+    /// an event id that resolves only to a system calendar event answers
+    /// the typed Option B error and MINTS NOTHING (the same
+    /// writes-do-not-adopt rule as event tags).
+    private func resolveLinkWriteEndpoint(
+        id: String, kind: LinkKind
+    ) async -> Result<LinkWriteEndpoint, LinkResolveFailure> {
+        switch kind {
+        case .person, .organization:
+            switch await resolveContactForWrite(id) {
+            case .failure:
+                return .failure(LinkResolveFailure(
+                    code: .notFound, message: WireErrorMessage.notFoundContact))
+            case .success(let contact):
+                let isOrganization = contact.contactType == .organization
+                guard isOrganization == (kind == .organization) else {
+                    return .failure(LinkResolveFailure(
+                        code: .invalidParams, message: WireErrorMessage.linkKindMismatch))
+                }
+                return .success(.contact(contact))
+            }
+        case .event:
+            switch await resolveEventForWrite(id) {
+            case .adopted(let event):
+                return .success(.event(event))
+            case .unadopted:
+                return .failure(LinkResolveFailure(
+                    code: .requiresAppAction, message: WireErrorMessage.eventNeedsAppFirstToConnect))
+            case .stale:
+                return .failure(LinkResolveFailure(
+                    code: .notFound, message: WireErrorMessage.notFoundEvent))
+            }
+        case .place:
+            guard let uuid = WireRecordID.recordUUID(id),
+                  let place = await guides.allPlaces().first(where: { $0.id == uuid })
+            else {
+                return .failure(LinkResolveFailure(
+                    code: .notFound, message: WireErrorMessage.notFoundPlace))
+            }
+            return .success(.place(place))
+        }
+    }
+
+    /// The locked single-contact link write for contact↔event and
+    /// contact↔place pairs — the one-endpoint sibling of
+    /// addContactContactLink, with the same mint protections: `write` runs
+    /// the identity-minting repository funnel; when this was a first write
+    /// (which mints), the link is verified reachable at the card's settled
+    /// key, retrying once (removing the stale link) if a concurrent
+    /// first-writer's mint won.
+    private func addContactRecordLink(
+        contact: Contact,
+        write: (ContactID) async throws -> Link
+    ) async throws -> Link {
+        let token = contact.contactID.restorationToken
+        return try await withWriteKeysLocked([token.localID]) { () -> Link in
+            func resolve() async throws -> Contact {
+                guard let current = await MainActor.run(body: { contacts.contact(restorationToken: token) })
+                else { throw WriteProblem.stale }
+                return current
+            }
+            func linkVisible(_ before: Contact, _ link: Link) async -> Bool {
+                guard before.contactID.restorationToken.guessWhoID == nil else { return true }
+                guard let fresh = try? await resolve(),
+                      let guessWhoID = fresh.contactID.restorationToken.guessWhoID
+                else { return false }
+                let key = SidecarKey(kind: .contact, id: guessWhoID)
+                return await links.links(at: key).contains { $0.id == link.id }
+            }
+
+            var current = try await resolve()
+            var link = try await write(current.contactID)
+            if await !linkVisible(current, link) {
+                let staleLinkID = link.id
+                try? await MainActor.run { try links.removeLink(id: staleLinkID) }
+                current = try await resolve()
+                link = try await write(current.contactID)
+                guard await linkVisible(current, link) else { throw WriteProblem.verifyFailed }
+            }
+            return link
+        }
+    }
+
+    /// Audit entry for links_create; the subject is the FROM record.
+    /// Contact subjects re-resolve so a mid-write mint's canonical identity
+    /// is what lands in the log.
+    private func recordLinkCreateAudit(
+        from endpoint: LinkWriteEndpoint, link: Link, note: String?
+    ) async {
+        switch endpoint {
+        case .contact(let contact):
+            let effective = await MainActor.run {
+                contacts.contact(restorationToken: contact.contactID.restorationToken)
+            }
+            await recordAudit(
+                .addLinkedContact, kind: .contact, contact: effective ?? contact,
+                instanceID: link.id, postModifiedAt: link.modifiedAt,
+                priorValue: nil, newValue: note)
+        case .event(let event):
+            await recordAudit(
+                .addLinkedContact, kind: .event,
+                subjectID: Self.eventUUIDString(event), subjectName: event.title,
+                instanceID: link.id, postModifiedAt: link.modifiedAt,
+                priorValue: nil, newValue: note)
+        case .place(let place):
+            await recordAudit(
+                .addLinkedContact, kind: .place,
+                subjectID: place.id.uuidString.lowercased(), subjectName: place.name,
+                instanceID: link.id, postModifiedAt: link.modifiedAt,
+                priorValue: nil, newValue: note)
+        }
+    }
+
+    private func linksRemove(
+        helperId: String, messageId: String, linkId: String
+    ) async -> WireResponse {
+        guard let linkUUID = WireRecordID.recordUUID(linkId) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundConnection)
+        }
+        let existing = await MainActor.run { links.link(id: linkUUID) }
+        guard let existing, existing.deletedAt == nil else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundConnection)
+        }
+        do {
+            try await MainActor.run { try links.removeLink(id: linkUUID) }
+            let tombstone = await MainActor.run { links.link(id: linkUUID) }
+            let subjectName = await linkSubjectName(existing)
+            // Same entry shape as contactsRemoveLink, so the Recently
+            // Deleted restore path covers these rows too.
+            await audit?.record(MCPAuditEntry(
+                at: Date(), action: .removeLinkedContact, subjectKind: .link,
+                subjectID: linkUUID.uuidString.lowercased(),
+                subjectName: subjectName ?? "",
+                instanceID: linkUUID.uuidString.lowercased(),
+                postModifiedAt: tombstone?.modifiedAt,
+                priorValue: existing.note.isEmpty ? nil : existing.note,
+                newValue: nil))
+            return .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.linkRemoved)
+        } catch {
+            return writeFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    /// Best-effort display name for a connection's audit row, from either
+    /// endpoint (a contact's display name, an event title, a place name).
+    private func linkSubjectName(_ link: Link) async -> String? {
+        func name(_ endpoint: SidecarKey) async -> String? {
+            switch endpoint.kind {
+            case .contact:
+                return await MainActor.run {
+                    contacts.allContacts.first {
+                        $0.contactID.restorationToken.guessWhoID == endpoint.id
+                    }?.displayName
+                }
+            case .event:
+                return await MainActor.run { events.event(uuid: endpoint.id)?.title }
+            case .place:
+                return await guides.allPlaces().first {
+                    $0.id.uuidString.lowercased() == endpoint.id
+                }?.name
+            case .link, .guide:
+                return nil
+            }
+        }
+        if let nearName = await name(link.endpointA) { return nearName }
+        return await name(link.endpointB)
     }
 
     // MARK: - Write helpers

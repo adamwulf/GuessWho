@@ -260,7 +260,7 @@ final class DispatcherBehaviorTests: XCTestCase {
         let fixture = await Fixture.make()
         let limited = ToolDispatcher(
             contacts: fixture.contacts, events: fixture.events,
-            guides: fixture.guides, gates: fixture.gates,
+            guides: fixture.guides, links: fixture.links, gates: fixture.gates,
             searchLimitPerWindow: 2, searchWindowSeconds: 60)
 
         let helperA = RequestOrigin.mcp.makeHelperId()

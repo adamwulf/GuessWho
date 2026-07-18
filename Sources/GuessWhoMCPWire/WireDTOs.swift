@@ -361,6 +361,30 @@ public struct WireLinkedContact: Codable, Sendable {
     }
 }
 
+/// One generic connection row (links_list / links_create), seen from the
+/// record it was listed on: `kind`/`otherId` describe the record at the
+/// FAR end, readable with the matching read tool (contacts_get,
+/// events_get, places_list). `id` is the connection's own id — the one
+/// links_remove takes.
+public struct WireLink: Codable, Sendable {
+    public let id: String
+    /// The other record's kind: "person", "organization", "event", or
+    /// "place".
+    public let kind: String
+    /// The other record's id, in that kind's own id space.
+    public let otherId: String
+    public let note: String?
+    public let createdAt: String
+
+    public init(id: String, kind: String, otherId: String, note: String?, createdAt: String) {
+        self.id = id
+        self.kind = kind
+        self.otherId = otherId
+        self.note = note
+        self.createdAt = createdAt
+    }
+}
+
 /// A contact group.
 public struct WireGroup: Codable, Sendable {
     public let id: String

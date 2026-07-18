@@ -155,7 +155,10 @@ let package = Package(
         ),
         .testTarget(
             name: "GuessWhoMCPCoreTests",
-            dependencies: ["GuessWhoMCPCore", "GuessWhoMCPWire", "GuessWhoSync"]
+            // GuessWhoSyncTesting supplies the in-memory contact/event store
+            // conformers the link tests use to run a REAL GuessWhoSync over a
+            // REAL temp-directory FileSystemSidecarStore (no TCC needed).
+            dependencies: ["GuessWhoMCPCore", "GuessWhoMCPWire", "GuessWhoSync", "GuessWhoSyncTesting"]
         ),
         .testTarget(
             name: "GuessWhoMCPTransportTests",

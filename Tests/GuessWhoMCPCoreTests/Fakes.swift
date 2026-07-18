@@ -1,5 +1,6 @@
 import Foundation
 import GuessWhoSync
+import GuessWhoSyncTesting
 import GuessWhoMCPCore
 import GuessWhoMCPWire
 
@@ -41,6 +42,15 @@ final class FakeContactSource: MCPContactSource {
     var linksByID: [UUID: Link] = [:]
     var linkedContactsByLinkID: [UUID: Contact] = [:]
     var favoriteEffectiveIDs: Set<String> = []
+
+    /// When set, EVERY link method routes through this REAL engine (over a
+    /// real temp-directory store) instead of the in-memory maps — the link
+    /// tests' production pathway. The contact BOOK stays fake (a real
+    /// ContactsRepository needs the system Contacts store + TCC, which
+    /// headless `swift test` can't have); the identity resolve-or-mint
+    /// simulation in `effectiveWriteID` still applies, mirroring how the
+    /// real repository funnels resolve-or-mint before the engine write.
+    var linkEngine: GuessWhoSync?
 
     /// When true, every write throws like the engine's `.unavailable`
     /// storage state.
@@ -137,6 +147,20 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func links(for id: ContactID) async -> [Link] {
+        if let engine = linkEngine {
+            // Mirrors ContactsRepository.links(for:): unreconciled contacts
+            // hold no links; live contact↔contact links only.
+            guard let guessWhoID = id.restorationToken.guessWhoID else { return [] }
+            let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+            let all = (try? await engine.links(at: endpoint)) ?? []
+            return all
+                .filter { link in
+                    guard link.deletedAt == nil else { return false }
+                    let far = link.endpointA == endpoint ? link.endpointB : link.endpointA
+                    return far.kind == .contact
+                }
+                .sorted { $0.createdAt < $1.createdAt }
+        }
         let effective = effectiveID(id)
         return linksByID.values
             .filter { link in
@@ -147,11 +171,23 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func linkedContact(of link: Link, for id: ContactID) -> Contact? {
-        linkedContactsByLinkID[link.id]
+        if linkEngine != nil {
+            // Real resolution shape: the far endpoint's GuessWho UUID looked
+            // up in the (fake) book.
+            guard let guessWhoID = id.restorationToken.guessWhoID else { return nil }
+            let mine = SidecarKey(kind: .contact, id: guessWhoID)
+            let far = link.endpointA == mine ? link.endpointB : link.endpointA
+            guard far.kind == .contact else { return nil }
+            return contacts.first { $0.contactID.restorationToken.guessWhoID == far.id }
+        }
+        return linkedContactsByLinkID[link.id]
     }
 
     func link(id linkID: UUID) -> Link? {
-        linksByID[linkID]
+        if let engine = linkEngine {
+            return (try? engine.link(id: linkID)) ?? nil
+        }
+        return linksByID[linkID]
     }
 
     func isFavorite(_ id: ContactID) -> Bool {
@@ -270,6 +306,12 @@ final class FakeContactSource: MCPContactSource {
     func addLink(from a: ContactID, to b: ContactID, note: String) async throws -> Link {
         let aKey = try await effectiveWriteID(a)
         let bKey = try await effectiveWriteID(b)
+        if let engine = linkEngine {
+            return try engine.addLink(
+                from: SidecarKey(kind: .contact, id: aKey),
+                to: SidecarKey(kind: .contact, id: bKey),
+                note: note)
+        }
         let now = Date()
         let link = Link(
             id: UUID(),
@@ -284,8 +326,50 @@ final class FakeContactSource: MCPContactSource {
         return link
     }
 
+    func addEventLink(for id: ContactID, eventUUID: String, note: String) async throws -> Link {
+        let key = try await effectiveWriteID(id)
+        if let engine = linkEngine {
+            return try engine.addLink(
+                from: SidecarKey(kind: .contact, id: key),
+                to: SidecarKey(kind: .event, id: eventUUID),
+                note: note)
+        }
+        let now = Date()
+        let link = Link(
+            id: UUID(),
+            endpointA: SidecarKey(kind: .contact, id: key),
+            endpointB: SidecarKey(kind: .event, id: eventUUID),
+            note: note, createdAt: now, modifiedAt: now,
+            modifiedBy: Sentinels.deviceID)
+        linksByID[link.id] = link
+        return link
+    }
+
+    func addPlaceLink(for id: ContactID, placeUUID: String, note: String) async throws -> Link {
+        let key = try await effectiveWriteID(id)
+        if let engine = linkEngine {
+            return try engine.addLink(
+                from: SidecarKey(kind: .contact, id: key),
+                to: SidecarKey(kind: .place, id: placeUUID),
+                note: note)
+        }
+        let now = Date()
+        let link = Link(
+            id: UUID(),
+            endpointA: SidecarKey(kind: .contact, id: key),
+            endpointB: SidecarKey(kind: .place, id: placeUUID),
+            note: note, createdAt: now, modifiedAt: now,
+            modifiedBy: Sentinels.deviceID)
+        linksByID[link.id] = link
+        return link
+    }
+
     func setLinkNote(id linkID: UUID, note: String) throws {
         if unavailable { throw SidecarUnavailableError() }
+        if let engine = linkEngine {
+            try engine.setLinkNote(id: linkID, note: note)
+            return
+        }
         guard var link = linksByID[linkID] else { return }
         link.note = note
         link.modifiedAt = Date()
@@ -295,6 +379,10 @@ final class FakeContactSource: MCPContactSource {
 
     func removeLink(id linkID: UUID) throws {
         if unavailable { throw SidecarUnavailableError() }
+        if let engine = linkEngine {
+            try engine.removeLink(id: linkID)
+            return
+        }
         guard var link = linksByID[linkID], link.deletedAt == nil else { return }
         let now = Date()
         link.deletedAt = now
@@ -549,6 +637,34 @@ final class FakeGuideSource: MCPGuideSource {
     }
 }
 
+/// The dispatcher's link source over a REAL `GuessWhoSync` — the same thin
+/// adapter shape as the app's `SyncService` conformance, so the links_*
+/// tools exercise the production engine + on-disk store, not a fake.
+@MainActor
+final class EngineLinkSource: MCPLinkSource {
+    let engine: GuessWhoSync
+
+    nonisolated init(engine: GuessWhoSync) {
+        self.engine = engine
+    }
+
+    func links(at endpoint: SidecarKey) async -> [Link] {
+        ((try? await engine.links(at: endpoint)) ?? []).filter { $0.deletedAt == nil }
+    }
+
+    func link(id: UUID) -> Link? {
+        (try? engine.link(id: id)) ?? nil
+    }
+
+    func addLink(from: SidecarKey, to: SidecarKey, note: String) throws -> Link {
+        try engine.addLink(from: from, to: to, note: note)
+    }
+
+    func removeLink(id: UUID) throws {
+        try engine.removeLink(id: id)
+    }
+}
+
 @MainActor
 final class FakeGateSource: MCPGateSource {
     /// Read-only by default — the fixture's stand-in for a user who has
@@ -570,6 +686,14 @@ struct Fixture {
     let contacts: FakeContactSource
     let events: FakeEventSource
     let guides: FakeGuideSource
+    /// REAL link storage: a production `GuessWhoSync` over a real
+    /// temp-directory `FileSystemSidecarStore`. The links_* tests set
+    /// `contacts.linkEngine = linkEngine` so the whole link surface — old
+    /// linked-contact tools included — runs against it; the default
+    /// fixture leaves the fake contact source's canned in-memory links in
+    /// place for the pre-existing read-tool tests.
+    let links: EngineLinkSource
+    let linkEngine: GuessWhoSync
     let gates: FakeGateSource
     let confirmations: FakeConfirmationSource
     let audit: MCPAuditLog
@@ -625,6 +749,19 @@ struct Fixture {
         return MCPAuditLog(fileURL: url)
     }
 
+    /// A REAL engine over a REAL on-disk store in a unique temp directory —
+    /// the production link-write/read path, no TCC needed.
+    static func makeLinkEngine() -> GuessWhoSync {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mcp-link-store-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: FileSystemSidecarStore(root: root),
+            deviceID: Sentinels.deviceID)
+    }
+
     @MainActor
     static func make(
         writeLimitPerWindow: Int = 30,
@@ -633,6 +770,8 @@ struct Fixture {
         let contacts = FakeContactSource()
         let events = FakeEventSource()
         let guides = FakeGuideSource()
+        let linkEngine = makeLinkEngine()
+        let links = EngineLinkSource(engine: linkEngine)
         let gates = FakeGateSource()
         let confirmations = FakeConfirmationSource()
         let audit = makeAuditLog()
@@ -731,14 +870,15 @@ struct Fixture {
         ]
 
         let dispatcher = ToolDispatcher(
-            contacts: contacts, events: events, guides: guides, gates: gates,
+            contacts: contacts, events: events, guides: guides, links: links, gates: gates,
             confirmations: confirmations,
             audit: audit,
             writeLimitPerWindow: writeLimitPerWindow,
             writeWindowSeconds: writeWindowSeconds)
         return Fixture(
             dispatcher: dispatcher, contacts: contacts, events: events,
-            guides: guides, gates: gates, confirmations: confirmations, audit: audit)
+            guides: guides, links: links, linkEngine: linkEngine, gates: gates,
+            confirmations: confirmations, audit: audit)
     }
 }
 

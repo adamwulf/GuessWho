@@ -408,7 +408,7 @@ final class ContactStoreWriteTests: XCTestCase {
         let probe = DeferredResponseProbe()
         let dispatcher = ToolDispatcher(
             contacts: fixture.contacts, events: fixture.events,
-            guides: fixture.guides, gates: fixture.gates,
+            guides: fixture.guides, links: fixture.links, gates: fixture.gates,
             confirmations: gate, audit: fixture.audit,
             now: { clock.now })
         await dispatcher.setDeferredResponder { response in
@@ -459,7 +459,7 @@ final class ContactStoreWriteTests: XCTestCase {
         let probe = DeferredResponseProbe()
         let dispatcher = ToolDispatcher(
             contacts: fixture.contacts, events: fixture.events,
-            guides: fixture.guides, gates: fixture.gates,
+            guides: fixture.guides, links: fixture.links, gates: fixture.gates,
             confirmations: gate, audit: nil,
             now: { clock.now })
         await dispatcher.setDeferredResponder { response in
@@ -494,7 +494,7 @@ final class ContactStoreWriteTests: XCTestCase {
         let gate = SlowConfirmationSource()
         let dispatcher = ToolDispatcher(
             contacts: fixture.contacts, events: fixture.events,
-            guides: fixture.guides, gates: fixture.gates,
+            guides: fixture.guides, links: fixture.links, gates: fixture.gates,
             confirmations: gate, audit: nil)
         await dispatcher.setDeferredResponder { response in
             await probe.record(response)

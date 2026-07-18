@@ -148,6 +148,27 @@ public enum WireErrorMessage {
     /// A second confirmation-gated request while one is already on screen.
     public static let confirmationAlreadyPending =
         "Another change is already waiting for the user's confirmation. Wait for that answer, then try again."
+    // Generic-connection (links_*) argument errors. Same arrangement as the
+    // other write-path messages: fixed strings, centralized here so the
+    // banned-vocabulary test scans them.
+    public static let invalidLinkKindArgument =
+        "Each kind argument must be \"person\", \"organization\", \"event\", or \"place\"."
+    /// An id that resolves, but not to a record of the kind declared for it
+    /// (e.g. fromKind "organization" with a person's id).
+    public static let linkKindMismatch =
+        "One of the ids doesn't belong to a record of the kind given for it. Check fromKind and toKind against the ids and try again."
+    /// The one kind pair with no way to connect in the app.
+    public static let linkPairUnsupported =
+        "Two places can't be connected to each other. Connect a place to a person, an organization, or an event."
+    public static let linkSelfNotAllowed =
+        "A record can't be connected to itself. Pass two different records."
+    /// The event-side Option B rule, in connection form: the wire never
+    /// sets an event up on its own (see eventNeedsAppFirst).
+    public static let eventNeedsAppFirstToConnect =
+        "That event can't be connected yet. Ask the user to open the event once in the GuessWho app, then try again."
+    /// links_remove with an id that isn't a live connection.
+    public static let notFoundConnection =
+        "No matching connection was found for that id. Run links_list again to get current ids."
     /// Shown in place of a tool list when the app isn't reachable. Worded as
     /// a pass-through instruction so the agent relays "open the app," not
     /// "there are no tools."
@@ -179,6 +200,8 @@ public enum WireErrorMessage {
             reservedWebAddress, contactNoteNotAccepted,
             contactFieldRejected, confirmationUnavailable, confirmationExpired,
             confirmationAlreadyPending,
+            invalidLinkKindArgument, linkKindMismatch, linkPairUnsupported,
+            linkSelfNotAllowed, eventNeedsAppFirstToConnect, notFoundConnection,
         ]
     }
 }

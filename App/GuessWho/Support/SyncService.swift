@@ -879,6 +879,14 @@ final class SyncService {
         try sync.removeLink(id: id)
     }
 
+    /// A single link by its own id, INCLUDING soft-deleted ones (callers
+    /// check `deletedAt`). Nil when storage is unavailable or no such link
+    /// exists.
+    func link(id: UUID) -> Link? {
+        guard let sync else { return nil }
+        return (try? sync.link(id: id)) ?? nil
+    }
+
     static func otherEndpoint(of link: Link, from endpoint: SidecarKey) -> SidecarKey {
         link.endpointA == endpoint ? link.endpointB : link.endpointA
     }

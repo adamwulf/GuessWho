@@ -37,6 +37,7 @@ public enum WireRequest: Codable, Sendable {
     case guidesList(helperId: String, messageId: String, limit: Int?, cursor: String?)
     case guidesGet(helperId: String, messageId: String, guideId: String)
     case placesList(helperId: String, messageId: String, guideId: String?, limit: Int?, cursor: String?)
+    case linksList(helperId: String, messageId: String, id: String, kind: String, limit: Int?, cursor: String?)
 
     // Write tools (plans/cli-mcp.md Phase 2). Every write carries an
     // optional client-supplied `idempotencyToken`: the app dedups a retried
@@ -64,6 +65,8 @@ public enum WireRequest: Codable, Sendable {
     case guidesDelete(helperId: String, messageId: String, guideId: String, idempotencyToken: String?)
     case guidesReorderPlaces(helperId: String, messageId: String, guideId: String, placeIds: [String], idempotencyToken: String?)
     case placesDelete(helperId: String, messageId: String, placeId: String, idempotencyToken: String?)
+    case linksCreate(helperId: String, messageId: String, fromId: String, fromKind: String, toId: String, toKind: String, note: String?, idempotencyToken: String?)
+    case linksRemove(helperId: String, messageId: String, linkId: String, idempotencyToken: String?)
 
     /// The tool identity for tool-call cases; nil for control messages.
     public var tool: MCPTool? {
@@ -84,6 +87,7 @@ public enum WireRequest: Codable, Sendable {
         case .guidesList: return .guidesList
         case .guidesGet: return .guidesGet
         case .placesList: return .placesList
+        case .linksList: return .linksList
         case .contactsCreate: return .contactsCreate
         case .contactsUpdate: return .contactsUpdate
         case .contactsDelete: return .contactsDelete
@@ -103,6 +107,8 @@ public enum WireRequest: Codable, Sendable {
         case .guidesDelete: return .guidesDelete
         case .guidesReorderPlaces: return .guidesReorderPlaces
         case .placesDelete: return .placesDelete
+        case .linksCreate: return .linksCreate
+        case .linksRemove: return .linksRemove
         }
     }
 
@@ -129,7 +135,9 @@ public enum WireRequest: Codable, Sendable {
              .guidesCreate(_, _, _, _, let token),
              .guidesDelete(_, _, _, let token),
              .guidesReorderPlaces(_, _, _, _, let token),
-             .placesDelete(_, _, _, let token):
+             .placesDelete(_, _, _, let token),
+             .linksCreate(_, _, _, _, _, _, _, let token),
+             .linksRemove(_, _, _, let token):
             return token
         default:
             return nil
@@ -177,7 +185,10 @@ extension WireRequest: MCPRequestProtocol {
              .guidesCreate(let helperId, _, _, _, _),
              .guidesDelete(let helperId, _, _, _),
              .guidesReorderPlaces(let helperId, _, _, _, _),
-             .placesDelete(let helperId, _, _, _):
+             .placesDelete(let helperId, _, _, _),
+             .linksList(let helperId, _, _, _, _, _),
+             .linksCreate(let helperId, _, _, _, _, _, _, _),
+             .linksRemove(let helperId, _, _, _):
             return helperId
         }
     }
@@ -220,7 +231,10 @@ extension WireRequest: MCPRequestProtocol {
              .guidesCreate(_, let messageId, _, _, _),
              .guidesDelete(_, let messageId, _, _),
              .guidesReorderPlaces(_, let messageId, _, _, _),
-             .placesDelete(_, let messageId, _, _):
+             .placesDelete(_, let messageId, _, _),
+             .linksList(_, let messageId, _, _, _, _),
+             .linksCreate(_, let messageId, _, _, _, _, _, _),
+             .linksRemove(_, let messageId, _, _):
             return messageId
         case .deinitialize(let helperId):
             return "deinit_\(helperId)"
@@ -328,6 +342,12 @@ extension WireRequest: MCPRequestProtocol {
             return .placesList(
                 helperId: helperId, messageId: messageId,
                 guideId: try args.optionalString("guideId"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .linksList:
+            return .linksList(
+                helperId: helperId, messageId: messageId,
+                id: try args.requiredString("id"),
+                kind: try args.requiredString("kind"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
 
         case .contactsCreate:
@@ -445,6 +465,20 @@ extension WireRequest: MCPRequestProtocol {
             return .placesDelete(
                 helperId: helperId, messageId: messageId,
                 placeId: try args.requiredString("placeId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .linksCreate:
+            return .linksCreate(
+                helperId: helperId, messageId: messageId,
+                fromId: try args.requiredString("fromId"),
+                fromKind: try args.requiredString("fromKind"),
+                toId: try args.requiredString("toId"),
+                toKind: try args.requiredString("toKind"),
+                note: try args.optionalString("note"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .linksRemove:
+            return .linksRemove(
+                helperId: helperId, messageId: messageId,
+                linkId: try args.requiredString("linkId"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         }
     }

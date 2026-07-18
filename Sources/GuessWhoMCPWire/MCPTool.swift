@@ -33,6 +33,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case guidesList = "guides_list"
     case guidesGet = "guides_get"
     case placesList = "places_list"
+    case linksList = "links_list"
 
     // Write tools. The Phase 2 set mutates GuessWho's OWN data (notes,
     // fields, links, favorites, tags, guides); Revision 2 adds full
@@ -60,6 +61,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case guidesDelete = "guides_delete"
     case guidesReorderPlaces = "guides_reorder_places"
     case placesDelete = "places_delete"
+    // Generic connections between records (contacts, events, places) — the
+    // same kind pairs the app's detail views can create. links_create /
+    // links_remove are writes; links_list generalizes the two
+    // contacts_list_linked_* reads (which remain, unchanged).
+    case linksCreate = "links_create"
+    case linksRemove = "links_remove"
 
     /// Which system permission this tool's data depends on. Tools whose
     /// domain permission has not been granted are hidden from `listTools`
@@ -90,6 +97,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .guidesList, .guidesGet, .placesList,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             return .none
+        case .linksList, .linksCreate, .linksRemove:
+            // Connection storage is GuessWho's own; no single system
+            // permission covers a tool whose endpoints span kinds. The
+            // dispatcher additionally gates per call on each referenced
+            // endpoint kind's system permission (contacts / events).
+            return .none
         }
     }
 
@@ -104,7 +117,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsListLinkedOrganizations, .contactsListFavorites,
              .contactsListGroups, .groupsListMembers,
              .eventsList, .eventsGet, .eventsListTags,
-             .guidesList, .guidesGet, .placesList:
+             .guidesList, .guidesGet, .placesList, .linksList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
@@ -112,7 +125,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsAddLinkedContact, .contactsAddLinkedOrganization,
              .contactsRemoveLinkedContact, .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
-             .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
+             .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
+             .linksCreate, .linksRemove:
             return true
         }
     }
@@ -147,6 +161,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
         "Optional: a unique string of your choosing that identifies this one change. If the call is retried with the same value, the change is applied only once."
     private static let eventIdDoc =
         "An event id returned by events_list."
+    private static let linkKindDoc =
+        "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [
@@ -379,6 +395,15 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List saved places, optionally within one guide. Each place has a name, address, and map coordinates when known.",
                 inputSchema: Self.schema(props))
+        case .linksList:
+            var props = Self.pagingProperties
+            props["id"] = Self.string(
+                "The record whose connections to list — a contact id, an event id from events_list, or a place id from places_list.")
+            props["kind"] = Self.string(Self.linkKindDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List every connection on a record — the people, organizations, events, and places the user has connected to it, each with an optional note. Each entry carries the other record's id and kind, usable with the matching read tool.",
+                inputSchema: Self.schema(props, required: ["id", "kind"]))
 
         // MARK: Write tools
 
@@ -579,6 +604,29 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     "placeId": Self.string("A place id returned by places_list."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["placeId"]))
+        case .linksCreate:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Connect two records, with an optional note about the connection. People, organizations, events, and places can be connected in any combination except place with place. Returns the new connection, described from the first record's side.",
+                inputSchema: Self.schema([
+                    "fromId": Self.string(
+                        "The first record's id — a contact id, an event id from events_list, or a place id from places_list."),
+                    "fromKind": Self.string(Self.linkKindDoc),
+                    "toId": Self.string(
+                        "The second record's id — a contact id, an event id from events_list, or a place id from places_list."),
+                    "toKind": Self.string(Self.linkKindDoc),
+                    "note": Self.string(
+                        "Optional: a short note about the connection, e.g. \"Met at this cafe\"."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["fromId", "fromKind", "toId", "toKind"]))
+        case .linksRemove:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Remove a connection between two records. The user can restore a recently removed connection from the app.",
+                inputSchema: Self.schema([
+                    "linkId": Self.string("A connection id returned by links_list or links_create."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["linkId"]))
         }
     }
 }

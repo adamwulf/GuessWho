@@ -178,6 +178,19 @@ enum WireMapping {
             createdAt: timestamp(link.createdAt))
     }
 
+    /// One generic connection row (links_list / links_create), described
+    /// from the near record's side: `otherKind`/`otherID` are the FAR
+    /// endpoint's wire kind and id, pre-resolved by the dispatcher.
+    static func link(_ link: Link, otherKind: String, otherID: String) -> WireLink? {
+        guard link.deletedAt == nil else { return nil }
+        return WireLink(
+            id: link.id.uuidString.lowercased(),
+            kind: otherKind,
+            otherId: otherID,
+            note: blankToNil(link.note),
+            createdAt: timestamp(link.createdAt))
+    }
+
     static func group(_ group: ContactGroup, id: String) -> WireGroup {
         WireGroup(id: id, name: group.name)
     }

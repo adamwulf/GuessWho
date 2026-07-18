@@ -27,6 +27,7 @@ public enum WireResponse: Codable, Sendable {
     case guidePage(helperId: String, messageId: String, page: WirePage<WireGuide>)
     case guide(helperId: String, messageId: String, guide: WireGuide)
     case placePage(helperId: String, messageId: String, page: WirePage<WirePlace>)
+    case linkPage(helperId: String, messageId: String, page: WirePage<WireLink>)
 
     // Write-tool results (plans/cli-mcp.md Phase 2): a write that creates or
     // updates a record echoes the record back (the same allowlisted DTO the
@@ -36,6 +37,7 @@ public enum WireResponse: Codable, Sendable {
     case note(helperId: String, messageId: String, note: WireNote)
     case customField(helperId: String, messageId: String, field: WireCustomField)
     case linkedContact(helperId: String, messageId: String, link: WireLinkedContact)
+    case link(helperId: String, messageId: String, link: WireLink)
     case tag(helperId: String, messageId: String, tag: WireTag)
     case acknowledged(helperId: String, messageId: String, message: String)
 }
@@ -58,9 +60,11 @@ extension WireResponse: MCPResponseProtocol {
              .guidePage(let helperId, _, _),
              .guide(let helperId, _, _),
              .placePage(let helperId, _, _),
+             .linkPage(let helperId, _, _),
              .note(let helperId, _, _),
              .customField(let helperId, _, _),
              .linkedContact(let helperId, _, _),
+             .link(let helperId, _, _),
              .tag(let helperId, _, _),
              .acknowledged(let helperId, _, _):
             return helperId
@@ -84,9 +88,11 @@ extension WireResponse: MCPResponseProtocol {
              .guidePage(_, let messageId, _),
              .guide(_, let messageId, _),
              .placePage(_, let messageId, _),
+             .linkPage(_, let messageId, _),
              .note(_, let messageId, _),
              .customField(_, let messageId, _),
              .linkedContact(_, let messageId, _),
+             .link(_, let messageId, _),
              .tag(_, let messageId, _),
              .acknowledged(_, let messageId, _):
             return messageId
@@ -129,12 +135,16 @@ extension WireResponse: MCPResponseProtocol {
             return .guide(helperId: helperId, messageId: messageId, guide: guide)
         case .placePage(_, _, let page):
             return .placePage(helperId: helperId, messageId: messageId, page: page)
+        case .linkPage(_, _, let page):
+            return .linkPage(helperId: helperId, messageId: messageId, page: page)
         case .note(_, _, let note):
             return .note(helperId: helperId, messageId: messageId, note: note)
         case .customField(_, _, let field):
             return .customField(helperId: helperId, messageId: messageId, field: field)
         case .linkedContact(_, _, let link):
             return .linkedContact(helperId: helperId, messageId: messageId, link: link)
+        case .link(_, _, let link):
+            return .link(helperId: helperId, messageId: messageId, link: link)
         case .tag(_, _, let tag):
             return .tag(helperId: helperId, messageId: messageId, tag: tag)
         case .acknowledged(_, _, let message):
@@ -184,11 +194,15 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(guide)
         case .placePage(_, _, let page):
             return Self.jsonResult(page)
+        case .linkPage(_, _, let page):
+            return Self.jsonResult(page)
         case .note(_, _, let note):
             return Self.jsonResult(note)
         case .customField(_, _, let field):
             return Self.jsonResult(field)
         case .linkedContact(_, _, let link):
+            return Self.jsonResult(link)
+        case .link(_, _, let link):
             return Self.jsonResult(link)
         case .tag(_, _, let tag):
             return Self.jsonResult(tag)
