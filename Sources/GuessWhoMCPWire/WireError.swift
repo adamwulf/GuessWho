@@ -74,8 +74,6 @@ public enum WireErrorMessage {
         "No matching group was found for that id. Run contacts_list_groups again to get current ids."
     public static let notFoundGuide =
         "No matching guide was found for that id. Run guides_list again to get current ids."
-    public static let notFoundGenericID =
-        "Nothing was found for that id. Run the matching search or list tool again to get current ids, then retry."
     public static let notFoundNote =
         "No matching note was found on that contact. List the notes again to get current ids."
     public static let notFoundField =
@@ -231,7 +229,7 @@ public enum WireErrorMessage {
             notRunning, disabled, permissionDeniedContacts, permissionDeniedEvents,
             readOnly, tooLarge, busy,
             notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide,
-            notFoundGenericID, noHostStatus,
+            noHostStatus,
             hostNotReady, timedOut,
             notFoundNote, notFoundField, notFoundTag, notFoundPlace,
             eventNeedsAppFirst, writeFailed, writeBusy, reservedFieldName,

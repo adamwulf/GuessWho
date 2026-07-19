@@ -51,7 +51,11 @@ enum WireMapping {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func kind(_ contact: Contact) -> String {
+    /// The wire's contact-kind string. One source of truth for the value
+    /// that must match `WireContactSummary.kind`'s documented set — the
+    /// summary/contact mappers here and the two links_* dispatcher sites
+    /// (linkWireDescriptor, resolveFarEndpoint) all go through this.
+    static func kind(_ contact: Contact) -> String {
         contact.contactType == .organization ? "organization" : "person"
     }
 

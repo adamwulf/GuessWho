@@ -25,7 +25,6 @@ public protocol MCPContactSource: AnyObject {
     func notes(for id: ContactID) -> [ContactNote]
     func fields(for id: ContactID) -> [SidecarField]
     func links(for id: ContactID) async -> [Link]
-    func linkedContact(of link: Link, for id: ContactID) -> Contact?
     func isFavorite(_ id: ContactID) -> Bool
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]

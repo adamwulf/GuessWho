@@ -2166,7 +2166,7 @@ public actor ToolDispatcher {
         switch endpoint {
         case .contact(let contact):
             return (
-                contact.contactType == .organization ? "organization" : "person",
+                WireMapping.kind(contact),
                 WireRecordID.contactID(for: contact))
         case .event(let event):
             return ("event", WireRecordID.eventID(for: event))
@@ -2266,7 +2266,7 @@ public actor ToolDispatcher {
             }
             guard let contact else { return nil }
             return (
-                contact.contactType == .organization ? "organization" : "person",
+                WireMapping.kind(contact),
                 WireRecordID.contactID(for: contact))
         case .event:
             guard let event = await MainActor.run(body: { events.event(uuid: endpoint.id) })

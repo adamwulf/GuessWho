@@ -40,7 +40,6 @@ final class FakeContactSource: MCPContactSource {
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
-    var linkedContactsByLinkID: [UUID: Contact] = [:]
     var favoriteEffectiveIDs: Set<String> = []
 
     /// When set, EVERY link method routes through this REAL engine (over a
@@ -168,19 +167,6 @@ final class FakeContactSource: MCPContactSource {
                     && (link.endpointA.id == effective || link.endpointB.id == effective)
             }
             .sorted { $0.createdAt < $1.createdAt }
-    }
-
-    func linkedContact(of link: Link, for id: ContactID) -> Contact? {
-        if linkEngine != nil {
-            // Real resolution shape: the far endpoint's GuessWho UUID looked
-            // up in the (fake) book.
-            guard let guessWhoID = id.restorationToken.guessWhoID else { return nil }
-            let mine = SidecarKey(kind: .contact, id: guessWhoID)
-            let far = link.endpointA == mine ? link.endpointB : link.endpointA
-            guard far.kind == .contact else { return nil }
-            return contacts.first { $0.contactID.restorationToken.guessWhoID == far.id }
-        }
-        return linkedContactsByLinkID[link.id]
     }
 
     func link(id linkID: UUID) -> Link? {
@@ -320,9 +306,6 @@ final class FakeContactSource: MCPContactSource {
             note: note, createdAt: now, modifiedAt: now,
             modifiedBy: Sentinels.deviceID)
         linksByID[link.id] = link
-        if let far = contacts.first(where: { $0.contactID.restorationToken.guessWhoID == bKey }) {
-            linkedContactsByLinkID[link.id] = far
-        }
         return link
     }
 
@@ -826,8 +809,6 @@ struct Fixture {
             modifiedBy: Sentinels.deviceID)
         contacts.linksByID[personLink.id] = personLink
         contacts.linksByID[organizationLink.id] = organizationLink
-        contacts.linkedContactsByLinkID[personLink.id] = fresh
-        contacts.linkedContactsByLinkID[organizationLink.id] = organization
         contacts.favoriteEffectiveIDs = [janeKey]
         contacts.groups = [ContactGroup(localID: "CNGroup-LOCAL-1", name: "Museum Friends")]
         contacts.membersByGroup["CNGroup-LOCAL-1"] = [jane]
