@@ -162,7 +162,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     private static let eventIdDoc =
         "An event id returned by events_list."
     private static let linkKindDoc =
-        "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to."
+        "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [
@@ -540,7 +540,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 inputSchema: Self.schema([
                     "contactId": Self.string(Self.contactIdDoc),
                     "name": Self.string("The field's name, e.g. \"Coffee order\". Some names are reserved for the app's own use and are rejected."),
-                    "type": Self.string("The field's type: \"text\", \"multilineNote\", \"date\", or \"checkbox\". Defaults to \"text\"."),
+                    "type": Self.stringEnum(
+                        ["text", "multilineNote", "date", "checkbox"],
+                        description: "The field's type. \"text\" is a single line; \"multilineNote\" is a longer note. Defaults to \"text\"."),
                     "value": Self.string("The field's value: text for text fields, an ISO 8601 date for date fields, \"true\" or \"false\" for checkboxes."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["contactId", "name", "value"]))

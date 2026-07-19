@@ -419,7 +419,7 @@ public struct WireNote: Codable, Sendable {
 public struct WireCustomField: Codable, Sendable {
     public let id: String
     public let name: String
-    /// "note", "multilineNote", "date", or "checkbox".
+    /// "text", "multilineNote", "date", or "checkbox".
     public let type: String
     public let value: String
     public let modifiedAt: String

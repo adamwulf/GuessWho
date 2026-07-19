@@ -222,6 +222,37 @@ final class WriteToolTests: XCTestCase {
         expectError(badDate, code: .invalidParams)
     }
 
+    func testTextFieldTypeRoundTripsAsText() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeHandle(fixture) else { return XCTFail("no jane") }
+
+        // Write type "text" — the single-line free-text field.
+        let write = await fixture.dispatcher.handle(.contactsSetCustomField(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, name: "Favorite tea", type: "text",
+            value: "Genmaicha", idempotencyToken: nil))
+        guard case .customField(_, _, let written) = write else {
+            return XCTFail("expected field echo, got \(write)")
+        }
+        // The write echo must read back "text", not the engine's internal
+        // "note" spelling — otherwise a read-modify-write would flip the type.
+        XCTAssertEqual(written.type, "text")
+        XCTAssertEqual(written.value, "Genmaicha")
+
+        // And a fresh read of the same field over the read tool agrees.
+        let read = await fixture.dispatcher.handle(.contactsListCustomFields(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, limit: nil, cursor: nil))
+        guard case .customFieldPage(_, _, let page) = read else {
+            return XCTFail("expected custom-field page, got \(read)")
+        }
+        guard let readBack = page.items.first(where: { $0.name == "Favorite tea" }) else {
+            return XCTFail("wrote a field but it wasn't read back")
+        }
+        XCTAssertEqual(readBack.type, "text", "write \"text\" must read back \"text\"")
+        XCTAssertEqual(readBack.value, "Genmaicha")
+    }
+
     // MARK: - Event-tag Option B
 
     func testTagWriteOnUnadoptedEventReturnsTypedErrorAndMintsNothing() async {

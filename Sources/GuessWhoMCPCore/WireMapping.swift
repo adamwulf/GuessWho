@@ -161,9 +161,22 @@ enum WireMapping {
         return WireCustomField(
             id: id,
             name: field.field,
-            type: field.type.rawValue,
+            type: wireFieldType(field.type),
             value: value,
             modifiedAt: timestamp(field.modifiedAt))
+    }
+
+    /// Engine field type → the wire's `type` string. The engine's single-line
+    /// text case is `.note` internally, but the wire spells it `"text"` so a
+    /// round-trip (write `"text"` → read `"text"`) holds and the wire never
+    /// borrows the word "note" for a type name (the Apple contact note is a
+    /// different, never-crossed thing). Other cases pass through unchanged.
+    /// `.blob` never reaches here — attachment fields are filtered above.
+    private static func wireFieldType(_ type: SidecarFieldType) -> String {
+        switch type {
+        case .note: return "text"
+        case .multilineNote, .date, .checkbox, .blob: return type.rawValue
+        }
     }
 
     /// One generic connection row (links_list / links_create), described
