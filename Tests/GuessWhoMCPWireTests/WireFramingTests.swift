@@ -366,4 +366,98 @@ final class WireRequestCreateTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Derived scalar-field views (keypath single-sourcing)
+
+    /// providedFieldNames feeds audit summaries; its ORDER is a wire-visible
+    /// contract, so lock the exact sequence the keypath table must emit.
+    func testScalarFieldsProvidedNamesOrderIsStable() {
+        var fields = WireContactScalarFields()
+        fields.namePrefix = "Dr."
+        fields.givenName = "Ada"
+        fields.middleName = "M"
+        fields.familyName = "Lovelace"
+        fields.previousFamilyName = "Byron"
+        fields.nameSuffix = "Jr."
+        fields.nickname = "Ada"
+        fields.phoneticGivenName = "AY-dah"
+        fields.phoneticMiddleName = "em"
+        fields.phoneticFamilyName = "LUV-lace"
+        fields.organization = "Analytical Engines"
+        fields.phoneticOrganization = "an-uh-LIT-i-kal"
+        fields.department = "R&D"
+        fields.jobTitle = "Countess"
+        fields.birthday = "1815-12-10"
+        XCTAssertEqual(fields.providedFieldNames, [
+            "namePrefix", "givenName", "middleName", "familyName",
+            "previousFamilyName", "nameSuffix", "nickname",
+            "phoneticGivenName", "phoneticMiddleName", "phoneticFamilyName",
+            "organization", "phoneticOrganization", "department", "jobTitle",
+            "birthday",
+        ])
+        XCTAssertFalse(fields.isEmpty)
+        XCTAssertTrue(WireContactScalarFields().isEmpty)
+    }
+
+    /// The full contacts_create field set INTERLEAVES its list fields — note
+    /// that `birthday` lands AFTER the first list block, not with the other
+    /// scalars. This exact order is what audit summaries render.
+    func testContactFieldsProvidedNamesOrderIsStable() {
+        var fields = WireContactFields()
+        fields.namePrefix = "Dr."
+        fields.givenName = "Ada"
+        fields.middleName = "M"
+        fields.familyName = "Lovelace"
+        fields.previousFamilyName = "Byron"
+        fields.nameSuffix = "Jr."
+        fields.nickname = "Ada"
+        fields.phoneticGivenName = "AY-dah"
+        fields.phoneticMiddleName = "em"
+        fields.phoneticFamilyName = "LUV-lace"
+        fields.organization = "Analytical Engines"
+        fields.phoneticOrganization = "an-uh-LIT-i-kal"
+        fields.department = "R&D"
+        fields.jobTitle = "Countess"
+        fields.phoneNumbers = [WireLabeledValue(label: nil, value: "555")]
+        fields.emailAddresses = [WireLabeledValue(label: nil, value: "a@x.example")]
+        fields.postalAddresses = []
+        fields.urlAddresses = [WireLabeledValue(label: nil, value: "https://x.example")]
+        fields.birthday = "1815-12-10"
+        fields.dates = []
+        fields.socialProfiles = []
+        fields.instantMessages = []
+        fields.relatedNames = [WireLabeledValue(label: nil, value: "Charles Babbage")]
+        XCTAssertEqual(fields.providedFieldNames, [
+            "namePrefix", "givenName", "middleName", "familyName",
+            "previousFamilyName", "nameSuffix", "nickname",
+            "phoneticGivenName", "phoneticMiddleName", "phoneticFamilyName",
+            "organization", "phoneticOrganization", "department", "jobTitle",
+            "phoneNumbers", "emailAddresses", "postalAddresses", "urlAddresses",
+            "birthday",
+            "dates", "socialProfiles", "instantMessages", "relatedNames",
+        ])
+        XCTAssertFalse(fields.isEmpty)
+        XCTAssertTrue(WireContactFields().isEmpty)
+    }
+
+    /// scalarFields must carry every scalar through unchanged and drop the
+    /// list fields — the shared create/update apply path depends on it.
+    func testContactFieldsScalarSubsetCopiesEveryScalar() {
+        var fields = WireContactFields()
+        fields.givenName = "Ada"
+        fields.familyName = "Lovelace"
+        fields.jobTitle = "Countess"
+        fields.birthday = "1815-12-10"
+        fields.phoneNumbers = [WireLabeledValue(label: nil, value: "555")]
+        let scalars = fields.scalarFields
+        XCTAssertEqual(scalars.givenName, "Ada")
+        XCTAssertEqual(scalars.familyName, "Lovelace")
+        XCTAssertEqual(scalars.jobTitle, "Countess")
+        XCTAssertEqual(scalars.birthday, "1815-12-10")
+        // The scalar subset carries no list fields, so its provided-names
+        // list is exactly the scalars that were set.
+        XCTAssertEqual(scalars.providedFieldNames, [
+            "givenName", "familyName", "jobTitle", "birthday",
+        ])
+    }
 }
