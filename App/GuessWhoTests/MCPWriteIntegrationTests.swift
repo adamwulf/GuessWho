@@ -188,7 +188,7 @@ struct MCPWriteIntegrationTests {
 
         let helper = RequestOrigin.mcp.makeHelperId()
         let all = await dispatcher.handle(.contactsList(
-            helperId: helper, messageId: "list-all", type: nil, limit: nil, cursor: nil))
+            helperId: helper, messageId: "list-all", kind: nil, limit: nil, cursor: nil))
         guard case .contactPage(_, _, let page) = all else {
             Issue.record("expected a contact page; got \(String(describing: all))")
             return
@@ -305,7 +305,7 @@ struct MCPWriteIntegrationTests {
             Issue.record("expected the duplicate add to succeed")
             return
         }
-        let ambiguous = await dispatcher.handle(.contactsRemoveValue(
+        let ambiguous = await dispatcher.handle(.contactsDeleteValue(
             helperId: helper, messageId: "phone-ambiguous",
             contactId: reconciledID, field: "phone", value: "+1 555 0200", idempotencyToken: nil))
         #expect(ambiguous?.errorPayload?.code == .ambiguous)
@@ -320,7 +320,7 @@ struct MCPWriteIntegrationTests {
         #expect(repository.allContacts.first?.phoneNumbers.count == 3)
 
         // An unambiguous exact match removes exactly that entry.
-        let removed = await dispatcher.handle(.contactsRemoveValue(
+        let removed = await dispatcher.handle(.contactsDeleteValue(
             helperId: helper, messageId: "phone-remove",
             contactId: reconciledID, field: "phone", value: "+1 555 0100", idempotencyToken: nil))
         guard case .contact(_, _, let finalCard) = removed else {

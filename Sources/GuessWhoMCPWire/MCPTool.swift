@@ -50,7 +50,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     // single-entry tools yet (their identity spans several subfields);
     // they can only be provided at create.
     case contactsAddValue = "contacts_add_value"
-    case contactsRemoveValue = "contacts_remove_value"
+    case contactsDeleteValue = "contacts_delete_value"
     case contactsEditValue = "contacts_edit_value"
     case contactsAddNote = "contacts_add_note"
     case contactsEditNote = "contacts_edit_note"
@@ -67,10 +67,10 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case placesDelete = "places_delete"
     // Generic connections between records (contacts, events, places) — the
     // same kind pairs the app's detail views can create, and the single
-    // linking surface: links_create / links_remove are writes, links_list
+    // linking surface: links_create / links_delete are writes, links_list
     // the read.
     case linksCreate = "links_create"
-    case linksRemove = "links_remove"
+    case linksDelete = "links_delete"
 
     /// Which system permission this tool's data depends on. Tools whose
     /// domain permission has not been granted are hidden from `listTools`
@@ -88,7 +88,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
              .contactsCreate, .contactsUpdate, .contactsDelete,
-             .contactsAddValue, .contactsRemoveValue, .contactsEditValue,
+             .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite:
@@ -99,7 +99,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .guidesList, .guidesGet, .placesList,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             return .none
-        case .linksList, .linksCreate, .linksRemove:
+        case .linksList, .linksCreate, .linksDelete:
             // Connection storage is GuessWho's own; no single system
             // permission covers a tool whose endpoints span kinds. The
             // dispatcher additionally gates per call on each referenced
@@ -120,13 +120,13 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .guidesList, .guidesGet, .placesList, .linksList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
-             .contactsAddValue, .contactsRemoveValue, .contactsEditValue,
+             .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
-             .linksCreate, .linksRemove:
+             .linksCreate, .linksDelete:
             return true
         }
     }
@@ -389,7 +389,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 inputSchema: Self.schema(props, required: ["query"]))
         case .contactsList:
             var props = Self.pagingProperties
-            props["type"] = Self.string(
+            props["kind"] = Self.string(
                 "Optional: \"person\" or \"organization\" to list only that kind of contact. Omit to list both.")
             props["favoritesOnly"] = [
                 "type": "boolean",
@@ -489,11 +489,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
             props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
             return ToolMetadata(
                 name: rawValue,
-                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Phone numbers, email addresses, web addresses, related names, and dates are NOT accepted here — change those one entry at a time with contacts_add_value, contacts_edit_value, or contacts_remove_value and the matching field value. Returns the updated card.",
+                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Phone numbers, email addresses, web addresses, related names, and dates are NOT accepted here — change those one entry at a time with contacts_add_value, contacts_edit_value, or contacts_delete_value and the matching field value. Returns the updated card.",
                 inputSchema: Self.schema(props, required: ["contactId"]))
         case .contactsAddValue:
             return Self.listAddMetadata(name: rawValue)
-        case .contactsRemoveValue:
+        case .contactsDeleteValue:
             return Self.listRemoveMetadata(name: rawValue)
         case .contactsEditValue:
             return Self.listEditMetadata(name: rawValue)
@@ -666,7 +666,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
                         "Optional: a short note about the connection, e.g. \"Met at this cafe\"."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["fromId", "fromKind", "toId", "toKind"]))
-        case .linksRemove:
+        case .linksDelete:
             return ToolMetadata(
                 name: rawValue,
                 description: "Remove a connection between two records. The user can restore a recently removed connection from the app.",

@@ -141,31 +141,31 @@ the GROUPS themselves and is the source of `groupId` values.
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
-`guides_reorder_places`, `places_delete`, `links_create`, `links_remove`
+`guides_reorder_places`, `places_delete`, `links_create`, `links_delete`
 — plus, since Revision 2, full Contact Store parity with the app's own
 editor: **`contacts_create`**, **`contacts_update`** (**scalars-only**
 PATCH since Phase 7: only passed single-value fields change; every
 multi-value list is rejected toward the single-entry tools below), and
 **`contacts_delete`** — plus the three **single-entry list edit** verbs:
-`contacts_add_value`, `contacts_remove_value`, and `contacts_edit_value`.
+`contacts_add_value`, `contacts_delete_value`, and `contacts_edit_value`.
 Each requires a real JSON-Schema `field` enum whose value is exactly one
 of `phone`, `email`, `url`, `related_name`, or `date`.
 
 ### Listing the whole book (`contacts_list`)
 
 `contacts_search` requires a 2+ character needle (the main-actor search
-bound), so `contacts_list(type?, favoritesOnly?, groupId?, limit?,
+bound), so `contacts_list(kind?, favoritesOnly?, groupId?, limit?,
 cursor?)` is the enumeration read: every contact, narrowed by up to three
 optional filters that **AND-compose** (intersect):
 
-- `type` — plain values `"person"` / `"organization"`; omit for both.
+- `kind` — plain values `"person"` / `"organization"`; omit for both.
 - `favoritesOnly` — `true` returns only contacts the user has marked
   favorite; `false`/omitted filters on nothing.
 - `groupId` — only members of that group; the id comes from
   `contacts_list_groups`. A `groupId` that resolves to no group is a
   typed `notFound` (never a silently empty page).
 
-The three combine, so `favoritesOnly` + `groupId` + `type` together lists
+The three combine, so `favoritesOnly` + `groupId` + `kind` together lists
 the favorites in that group of that kind — a capability the retired
 standalone favorites / group-members tools could not express. Rows are the
 same summary DTO `contacts_search` returns (same no-mint id derivation,
@@ -178,7 +178,7 @@ this one sort. Contacts changing between pages is best-effort, like every
 list read; the standard `limit` (default 50, max 200) and the
 response-size cap with the typed too-large error apply.
 
-### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_remove_value`, Phase 7)
+### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_delete_value`, Phase 7)
 
 A contact's multi-value lists change **one entry per call** — a
 whole-list replacement is how a model bulk-edits a card believing it
@@ -202,7 +202,7 @@ again server-side. Semantics (all match-based; `LabeledValue` has no id):
 
 - `contacts_add_value(contactId, field, value, label?)` appends ONE
   entry; everything else on the card is untouched.
-- `contacts_remove_value(contactId, field, value)` removes the single
+- `contacts_delete_value(contactId, field, value)` removes the single
   entry whose value **exactly** matches.
 - `contacts_edit_value(contactId, field, currentValue, newValue,
   newLabel?)` replaces the matched entry's value (and label, when given)
@@ -243,7 +243,7 @@ design pass.
 ### Generic connections (`links_*`)
 
 `links_list(id, kind)`, `links_create(fromId, fromKind, toId, toKind,
-note?)`, and `links_remove(linkId)` expose the SAME connection surface the
+note?)`, and `links_delete(linkId)` expose the SAME connection surface the
 app's detail views have, over the kind-agnostic engine primitive
 (`addLink(from:to:note:)` / `links(at:)` / `removeLink(id:)` behind
 `MCPLinkSource`, conformed by `SyncService`). Kinds on the wire are
@@ -259,7 +259,7 @@ system-calendar-only event follows the tag rule (typed
 `requiresAppAction`, nothing minted). Each `links_list` entry carries the
 connection's own id plus the FAR endpoint's kind and id, so the agent can
 read the far record with the matching read tool; rows whose far record no
-longer resolves are dropped. `links_remove` soft-deletes and lands in
+longer resolves are dropped. `links_delete` soft-deletes and lands in
 Recently Deleted like the other GuessWho-data deletes. The static
 permission domain is none (connection storage is GuessWho's own); the
 dispatcher re-gates each call on the system permission of every endpoint

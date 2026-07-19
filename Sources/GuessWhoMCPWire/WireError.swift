@@ -118,10 +118,11 @@ public enum WireErrorMessage {
         "Provide at least a name or an organization for the contact."
     public static let invalidKindArgument =
         "The kind argument must be \"person\" or \"organization\"."
-    /// contacts_list's kind filter took something other than its two plain
-    /// values.
-    public static let invalidTypeArgument =
-        "The type argument must be \"person\" or \"organization\". Omit it to list both."
+    /// contacts_list's optional kind filter took something other than its
+    /// two plain values (distinct from the create-side error above: the
+    /// filter may be omitted).
+    public static let invalidKindFilterArgument =
+        "The kind argument must be \"person\" or \"organization\". Omit it to list both."
     public static let updateNeedsAField =
         "Pass at least one field to change."
     public static let invalidCalendarDateValue =
@@ -147,7 +148,7 @@ public enum WireErrorMessage {
         "The field argument must be one of: \(WireContactListField.allCases.map(\.rawValue).joined(separator: ", "))."
     /// contacts_update carried one of the single-entry-editable lists.
     public static let listArgumentNotAccepted =
-        "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use contacts_add_value, contacts_edit_value, or contacts_remove_value with field phone, email, url, related_name, or date."
+        "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use contacts_add_value, contacts_edit_value, or contacts_delete_value with field phone, email, url, related_name, or date."
     /// contacts_update carried a list that has no single-entry tools yet
     /// (postal addresses, social profiles, instant messages).
     public static let createOnlyListArgumentNotAccepted =
@@ -208,7 +209,7 @@ public enum WireErrorMessage {
     /// sets an event up on its own (see eventNeedsAppFirst).
     public static let eventNeedsAppFirstToConnect =
         "That event can't be connected yet. Ask the user to open the event once in the GuessWho app, then try again."
-    /// links_remove with an id that isn't a live connection.
+    /// links_delete with an id that isn't a live connection.
     public static let notFoundConnection =
         "No matching connection was found for that id. Run links_list again to get current ids."
     /// Shown in place of a tool list when the app isn't reachable. Worded as
@@ -237,7 +238,7 @@ public enum WireErrorMessage {
             emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
             reorderMustCoverEveryPlace,
-            contactNeedsAName, invalidKindArgument, invalidTypeArgument,
+            contactNeedsAName, invalidKindArgument, invalidKindFilterArgument,
             updateNeedsAField,
             invalidCalendarDateValue,
             reservedWebAddress, contactNoteNotAccepted,

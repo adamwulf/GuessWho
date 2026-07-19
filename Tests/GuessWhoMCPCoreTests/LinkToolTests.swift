@@ -3,7 +3,7 @@ import GuessWhoSync
 import GuessWhoMCPCore
 import GuessWhoMCPWire
 
-/// The generic connection tools (links_list / links_create / links_remove)
+/// The generic connection tools (links_list / links_create / links_delete)
 /// against REAL link storage: every test here sets
 /// `contacts.linkEngine = fixture.linkEngine`, so link envelopes are
 /// written by the production `GuessWhoSync.addLink` into a real
@@ -354,7 +354,7 @@ final class LinkToolTests: XCTestCase {
             note: "Venue")
         else { return XCTFail("create failed") }
 
-        let removed = await fixture.dispatcher.handle(.linksRemove(
+        let removed = await fixture.dispatcher.handle(.linksDelete(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             linkId: echo.id, idempotencyToken: nil))
         guard case .acknowledged(_, _, let message) = removed else {
@@ -375,7 +375,7 @@ final class LinkToolTests: XCTestCase {
         XCTAssertEqual(tombstone?.note, "Venue")
 
         // A second remove finds no live connection.
-        let again = await fixture.dispatcher.handle(.linksRemove(
+        let again = await fixture.dispatcher.handle(.linksDelete(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             linkId: echo.id, idempotencyToken: nil))
         expectError(again, code: .notFound, message: WireErrorMessage.notFoundConnection)
@@ -390,7 +390,7 @@ final class LinkToolTests: XCTestCase {
             fixture, fromId: gala, fromKind: "event", toId: place, toKind: "place",
             note: "Venue")
         else { return XCTFail("create failed") }
-        _ = await fixture.dispatcher.handle(.linksRemove(
+        _ = await fixture.dispatcher.handle(.linksDelete(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             linkId: echo.id, idempotencyToken: nil))
 
@@ -412,7 +412,7 @@ final class LinkToolTests: XCTestCase {
 
     func testRemoveUnknownConnectionIsNotFound() async {
         let fixture = await linkFixture()
-        let response = await fixture.dispatcher.handle(.linksRemove(
+        let response = await fixture.dispatcher.handle(.linksDelete(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             linkId: UUID().uuidString.lowercased(), idempotencyToken: nil))
         expectError(response, code: .notFound, message: WireErrorMessage.notFoundConnection)
@@ -630,7 +630,7 @@ final class LinkToolTests: XCTestCase {
         let names = Set(tools.map(\.name))
         XCTAssertTrue(names.contains(MCPTool.linksList.rawValue))
         XCTAssertFalse(names.contains(MCPTool.linksCreate.rawValue))
-        XCTAssertFalse(names.contains(MCPTool.linksRemove.rawValue))
+        XCTAssertFalse(names.contains(MCPTool.linksDelete.rawValue))
     }
 
     func testRetriedCreateWithSameTokenDoesNotDuplicate() async {

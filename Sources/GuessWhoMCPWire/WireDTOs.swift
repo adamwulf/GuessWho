@@ -231,7 +231,7 @@ public struct WireContact: Codable, Sendable {
 /// Deliberately ABSENT — every multi-value list. A whole-list replacement
 /// is how an assistant bulk-edits a card believing it edited one entry, so
 /// list fields change ONE entry at a time through contacts_add_value,
-/// contacts_edit_value, or contacts_remove_value; this struct
+/// contacts_edit_value, or contacts_delete_value; this struct
 /// having no list members makes an update-side bulk edit structurally
 /// impossible, the same way the missing note member keeps the Apple note
 /// unwritable. The other update exclusions carry over: no note field, no
@@ -437,7 +437,7 @@ public struct WireCustomField: Codable, Sendable {
 /// record it was listed on: `kind`/`otherId` describe the record at the
 /// FAR end, readable with the matching read tool (contacts_get,
 /// events_get, places_list). `id` is the connection's own id — the one
-/// links_remove takes.
+/// links_delete takes.
 public struct WireLink: Codable, Sendable {
     public let id: String
     /// The other record's kind: "person", "organization", "event", or

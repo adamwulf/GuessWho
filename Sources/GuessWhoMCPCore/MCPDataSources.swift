@@ -118,7 +118,7 @@ public protocol MCPEventSource: AnyObject {
 }
 
 /// The generic connection surface (links_list / links_create /
-/// links_remove): the KIND-AGNOSTIC engine primitive the app's own detail
+/// links_delete): the KIND-AGNOSTIC engine primitive the app's own detail
 /// views funnel into for non-contact endpoints (event↔event, event↔place).
 /// Contact endpoints do NOT ride this for writes — they go through the
 /// `MCPContactSource` funnels above so an unreconciled contact

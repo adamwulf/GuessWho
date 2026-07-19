@@ -44,10 +44,10 @@ final class SecurityInvariantTests: XCTestCase {
         }
         XCTAssertFalse(contactIDs.isEmpty, "fixture searches should find contacts")
 
-        for type in [nil, "person", "organization"] {
+        for kind in [nil, "person", "organization"] {
             let response = await run(.contactsList(
                 helperId: helper, messageId: TestMessageID.next(),
-                type: type, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
+                kind: kind, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
             if case .contactPage(_, _, let page) = response {
                 contactIDs.append(contentsOf: page.items.map(\.id))
             }
@@ -70,7 +70,7 @@ final class SecurityInvariantTests: XCTestCase {
 
         _ = await run(.contactsList(
             helperId: helper, messageId: TestMessageID.next(),
-            type: nil, favoritesOnly: true, groupId: nil, limit: nil, cursor: nil))
+            kind: nil, favoritesOnly: true, groupId: nil, limit: nil, cursor: nil))
         let groupsResponse = await run(.contactsListGroups(
             helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         if case .groupPage(_, _, let page) = groupsResponse {
@@ -79,7 +79,7 @@ final class SecurityInvariantTests: XCTestCase {
         for id in groupIDs {
             _ = await run(.contactsList(
                 helperId: helper, messageId: TestMessageID.next(),
-                type: nil, favoritesOnly: nil, groupId: id, limit: nil, cursor: nil))
+                kind: nil, favoritesOnly: nil, groupId: id, limit: nil, cursor: nil))
         }
 
         let eventsResponse = await run(.eventsList(
@@ -121,7 +121,7 @@ final class SecurityInvariantTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(), query: "x", limit: nil, cursor: nil))
         _ = await run(.contactsList(
             helperId: helper, messageId: TestMessageID.next(),
-            type: "bogus-type", favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
+            kind: "bogus-type", favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
         _ = await run(.eventsList(
             helperId: helper, messageId: TestMessageID.next(),
             startDate: "garbage", endDate: "2025-12-01T00:00:00Z", limit: nil, cursor: nil))

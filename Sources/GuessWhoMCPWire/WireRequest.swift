@@ -33,7 +33,7 @@ public enum WireRequest: Codable, Sendable {
     case listTools(helperId: String, messageId: String)
 
     case contactsSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
-    case contactsList(helperId: String, messageId: String, type: String?, favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?)
+    case contactsList(helperId: String, messageId: String, kind: String?, favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?)
     case contactsGet(helperId: String, messageId: String, contactId: String)
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
@@ -63,7 +63,7 @@ public enum WireRequest: Codable, Sendable {
     // call, matched by exact value — 0 matches answers notFound, more
     // than one answers ambiguous, and nothing changes on either.
     case contactsAddValue(helperId: String, messageId: String, contactId: String, field: String, value: String, label: String?, idempotencyToken: String?)
-    case contactsRemoveValue(helperId: String, messageId: String, contactId: String, field: String, value: String, idempotencyToken: String?)
+    case contactsDeleteValue(helperId: String, messageId: String, contactId: String, field: String, value: String, idempotencyToken: String?)
     case contactsEditValue(helperId: String, messageId: String, contactId: String, field: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
     case contactsAddNote(helperId: String, messageId: String, contactId: String, body: String, idempotencyToken: String?)
     case contactsEditNote(helperId: String, messageId: String, contactId: String, noteId: String, body: String, idempotencyToken: String?)
@@ -79,7 +79,7 @@ public enum WireRequest: Codable, Sendable {
     case guidesReorderPlaces(helperId: String, messageId: String, guideId: String, placeIds: [String], idempotencyToken: String?)
     case placesDelete(helperId: String, messageId: String, placeId: String, idempotencyToken: String?)
     case linksCreate(helperId: String, messageId: String, fromId: String, fromKind: String, toId: String, toKind: String, note: String?, idempotencyToken: String?)
-    case linksRemove(helperId: String, messageId: String, linkId: String, idempotencyToken: String?)
+    case linksDelete(helperId: String, messageId: String, linkId: String, idempotencyToken: String?)
 
     /// The tool identity for tool-call cases; nil for control messages.
     public var tool: MCPTool? {
@@ -102,7 +102,7 @@ public enum WireRequest: Codable, Sendable {
         case .contactsUpdate: return .contactsUpdate
         case .contactsDelete: return .contactsDelete
         case .contactsAddValue: return .contactsAddValue
-        case .contactsRemoveValue: return .contactsRemoveValue
+        case .contactsDeleteValue: return .contactsDeleteValue
         case .contactsEditValue: return .contactsEditValue
         case .contactsAddNote: return .contactsAddNote
         case .contactsEditNote: return .contactsEditNote
@@ -118,7 +118,7 @@ public enum WireRequest: Codable, Sendable {
         case .guidesReorderPlaces: return .guidesReorderPlaces
         case .placesDelete: return .placesDelete
         case .linksCreate: return .linksCreate
-        case .linksRemove: return .linksRemove
+        case .linksDelete: return .linksDelete
         }
     }
 
@@ -131,7 +131,7 @@ public enum WireRequest: Codable, Sendable {
              .contactsUpdate(_, _, _, _, let token),
              .contactsDelete(_, _, _, let token),
              .contactsAddValue(_, _, _, _, _, _, let token),
-             .contactsRemoveValue(_, _, _, _, _, let token),
+             .contactsDeleteValue(_, _, _, _, _, let token),
              .contactsEditValue(_, _, _, _, _, _, _, let token),
              .contactsAddNote(_, _, _, _, let token),
              .contactsEditNote(_, _, _, _, _, let token),
@@ -147,7 +147,7 @@ public enum WireRequest: Codable, Sendable {
              .guidesReorderPlaces(_, _, _, _, let token),
              .placesDelete(_, _, _, let token),
              .linksCreate(_, _, _, _, _, _, _, let token),
-             .linksRemove(_, _, _, let token):
+             .linksDelete(_, _, _, let token):
             return token
         default:
             return nil
@@ -178,7 +178,7 @@ extension WireRequest: MCPRequestProtocol {
              .contactsUpdate(let helperId, _, _, _, _),
              .contactsDelete(let helperId, _, _, _),
              .contactsAddValue(let helperId, _, _, _, _, _, _),
-             .contactsRemoveValue(let helperId, _, _, _, _, _),
+             .contactsDeleteValue(let helperId, _, _, _, _, _),
              .contactsEditValue(let helperId, _, _, _, _, _, _, _),
              .contactsAddNote(let helperId, _, _, _, _),
              .contactsEditNote(let helperId, _, _, _, _, _),
@@ -195,7 +195,7 @@ extension WireRequest: MCPRequestProtocol {
              .placesDelete(let helperId, _, _, _),
              .linksList(let helperId, _, _, _, _, _),
              .linksCreate(let helperId, _, _, _, _, _, _, _),
-             .linksRemove(let helperId, _, _, _):
+             .linksDelete(let helperId, _, _, _):
             return helperId
         }
     }
@@ -221,7 +221,7 @@ extension WireRequest: MCPRequestProtocol {
              .contactsUpdate(_, let messageId, _, _, _),
              .contactsDelete(_, let messageId, _, _),
              .contactsAddValue(_, let messageId, _, _, _, _, _),
-             .contactsRemoveValue(_, let messageId, _, _, _, _),
+             .contactsDeleteValue(_, let messageId, _, _, _, _),
              .contactsEditValue(_, let messageId, _, _, _, _, _, _),
              .contactsAddNote(_, let messageId, _, _, _),
              .contactsEditNote(_, let messageId, _, _, _, _),
@@ -238,7 +238,7 @@ extension WireRequest: MCPRequestProtocol {
              .placesDelete(_, let messageId, _, _),
              .linksList(_, let messageId, _, _, _, _),
              .linksCreate(_, let messageId, _, _, _, _, _, _),
-             .linksRemove(_, let messageId, _, _):
+             .linksDelete(_, let messageId, _, _):
             return messageId
         case .deinitialize(let helperId):
             return "deinit_\(helperId)"
@@ -285,7 +285,7 @@ extension WireRequest: MCPRequestProtocol {
         case .contactsList:
             return .contactsList(
                 helperId: helperId, messageId: messageId,
-                type: try args.optionalString("type"),
+                kind: try args.optionalString("kind"),
                 favoritesOnly: try args.optionalBool("favoritesOnly"),
                 groupId: try args.optionalString("groupId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
@@ -362,8 +362,8 @@ extension WireRequest: MCPRequestProtocol {
                 value: try args.requiredString("value"),
                 label: try args.optionalString("label"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
-        case .contactsRemoveValue:
-            return .contactsRemoveValue(
+        case .contactsDeleteValue:
+            return .contactsDeleteValue(
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 field: try args.requiredContactListField(),
@@ -472,8 +472,8 @@ extension WireRequest: MCPRequestProtocol {
                 toKind: try args.requiredString("toKind"),
                 note: try args.optionalString("note"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
-        case .linksRemove:
-            return .linksRemove(
+        case .linksDelete:
+            return .linksDelete(
                 helperId: helperId, messageId: messageId,
                 linkId: try args.requiredString("linkId"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))

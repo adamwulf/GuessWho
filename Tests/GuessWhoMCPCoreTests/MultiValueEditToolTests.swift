@@ -122,7 +122,7 @@ final class MultiValueEditToolTests: XCTestCase {
             $0.phoneNumbers.append(LabeledValue(label: "work", value: "+1 555 0300"))
         }
 
-        let response = await fixture.dispatcher.handle(.contactsRemoveValue(
+        let response = await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "+1 (555) 010-7788", idempotencyToken: nil))
         guard let card = expectCard(response) else { return }
@@ -147,7 +147,7 @@ final class MultiValueEditToolTests: XCTestCase {
         XCTAssertEqual(
             addedCard.emailAddresses.map(\.value), ["jane@doe.example", "jane@temp.example"])
 
-        let removed = await fixture.dispatcher.handle(.contactsRemoveValue(
+        let removed = await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", value: "jane@temp.example", idempotencyToken: nil))
         guard let removedCard = expectCard(removed) else { return }
@@ -203,7 +203,7 @@ final class MultiValueEditToolTests: XCTestCase {
         }
         let before = await storedJane(fixture)
 
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "+1 555 9999", idempotencyToken: nil)),
             code: .notFound, message: WireErrorMessage.noPhoneWithThatValue)
@@ -212,17 +212,17 @@ final class MultiValueEditToolTests: XCTestCase {
             contactId: jane, field: "email", currentValue: "nobody@nowhere.example",
             newValue: "still@nowhere.example", newLabel: nil, idempotencyToken: nil)),
             code: .notFound, message: WireErrorMessage.noEmailWithThatValue)
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "url", value: "https://nope.example", idempotencyToken: nil)),
             code: .notFound, message: WireErrorMessage.noURLWithThatValue)
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "related_name", value: "Nobody Doe", idempotencyToken: nil)),
             code: .notFound, message: WireErrorMessage.noRelatedNameWithThatValue)
         // A year-qualified date does NOT match a stored year-less date —
         // they are different values, so this is a 0-match.
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "date", value: "1990-12-25", idempotencyToken: nil)),
             code: .notFound, message: WireErrorMessage.noDateWithThatValue)
@@ -258,7 +258,7 @@ final class MultiValueEditToolTests: XCTestCase {
         }
         let before = await storedJane(fixture)
 
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "+1 (555) 010-7788", idempotencyToken: nil)),
             code: .ambiguous, message: WireErrorMessage.ambiguousPhoneValue)
@@ -267,7 +267,7 @@ final class MultiValueEditToolTests: XCTestCase {
             contactId: jane, field: "email", currentValue: "jane@doe.example",
             newValue: "other@doe.example", newLabel: nil, idempotencyToken: nil)),
             code: .ambiguous, message: WireErrorMessage.ambiguousEmailValue)
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "url", value: "https://janedoe.example", idempotencyToken: nil)),
             code: .ambiguous, message: WireErrorMessage.ambiguousURLValue)
@@ -278,7 +278,7 @@ final class MultiValueEditToolTests: XCTestCase {
             code: .ambiguous, message: WireErrorMessage.ambiguousRelatedNameValue)
         // The two stored spellings render to the same canonical date, so
         // any spelling of the needle hits both.
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "date", value: "--12-25", idempotencyToken: nil)),
             code: .ambiguous, message: WireErrorMessage.ambiguousDateValue)
@@ -318,7 +318,7 @@ final class MultiValueEditToolTests: XCTestCase {
             ["https://jane.example/work", "https://blog.janedoe.example"])
         XCTAssertEqual(editedCard.urlAddresses.first?.label, "portfolio")
 
-        let removed = await fixture.dispatcher.handle(.contactsRemoveValue(
+        let removed = await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "url", value: "https://jane.example/work", idempotencyToken: nil))
         guard let removedCard = expectCard(removed) else { return }
@@ -327,7 +327,7 @@ final class MultiValueEditToolTests: XCTestCase {
         // The identity URL is structurally unmatchable: naming it exactly
         // is a 0-match (it isn't on the visible card), and after every
         // operation above it still holds its slot verbatim.
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "url", value: identity, idempotencyToken: nil)),
             code: .notFound, message: WireErrorMessage.noURLWithThatValue)
@@ -373,7 +373,7 @@ final class MultiValueEditToolTests: XCTestCase {
         XCTAssertEqual(card3.dates.map(\.date), ["--12-25", "1991-04-02"])
         XCTAssertEqual(card3.dates.last?.label, "anniversary", "no newLabel keeps the label")
 
-        let removed = await fixture.dispatcher.handle(.contactsRemoveValue(
+        let removed = await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "date", value: "--12-25", idempotencyToken: nil))
         guard let card4 = expectCard(removed) else { return }
@@ -394,7 +394,7 @@ final class MultiValueEditToolTests: XCTestCase {
             code: .invalidParams, message: WireErrorMessage.invalidCalendarDateValue)
         // An unparseable MATCH value is a spelling problem, not a missing
         // entry — invalidParams, never a misleading notFound.
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "date", value: "christmas", idempotencyToken: nil)),
             code: .invalidParams, message: WireErrorMessage.invalidCalendarDateValue)
@@ -421,7 +421,7 @@ final class MultiValueEditToolTests: XCTestCase {
         XCTAssertEqual(card2.relatedNames.map(\.value), ["Ann B. Doe"])
         XCTAssertEqual(card2.relatedNames.first?.label, "mother")
 
-        let removed = await fixture.dispatcher.handle(.contactsRemoveValue(
+        let removed = await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "related_name", value: "Ann B. Doe", idempotencyToken: nil))
         guard let card3 = expectCard(removed) else { return }
@@ -437,7 +437,7 @@ final class MultiValueEditToolTests: XCTestCase {
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "   ", label: nil, idempotencyToken: nil)),
             code: .invalidParams, message: WireErrorMessage.emptyValueArgument)
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", value: " ", idempotencyToken: nil)),
             code: .invalidParams, message: WireErrorMessage.emptyValueArgument)
@@ -480,7 +480,7 @@ final class MultiValueEditToolTests: XCTestCase {
             .listTools(helperId: Fixture.helper, messageId: "m"))
         guard case .toolList(_, _, let tools, _) = list else { return XCTFail("expected toolList") }
         let names = Set(tools.map(\.name))
-        for tool in [MCPTool.contactsAddValue, .contactsRemoveValue, .contactsEditValue] {
+        for tool in [MCPTool.contactsAddValue, .contactsDeleteValue, .contactsEditValue] {
             XCTAssertFalse(names.contains(tool.rawValue), "\(tool.rawValue) visible under read-only")
         }
 
@@ -489,7 +489,7 @@ final class MultiValueEditToolTests: XCTestCase {
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "+1 555 0500", label: nil, idempotencyToken: nil)),
             code: .readOnly)
-        expectError(await fixture.dispatcher.handle(.contactsRemoveValue(
+        expectError(await fixture.dispatcher.handle(.contactsDeleteValue(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", value: "jane@doe.example", idempotencyToken: nil)),
             code: .readOnly)
@@ -504,7 +504,7 @@ final class MultiValueEditToolTests: XCTestCase {
             .listTools(helperId: Fixture.helper, messageId: "m"))
         guard case .toolList(_, _, let tools, _) = list else { return XCTFail("expected toolList") }
         let names = Set(tools.map(\.name))
-        for tool in [MCPTool.contactsAddValue, .contactsRemoveValue, .contactsEditValue] {
+        for tool in [MCPTool.contactsAddValue, .contactsDeleteValue, .contactsEditValue] {
             XCTAssertTrue(names.contains(tool.rawValue), "\(tool.rawValue) missing under read-write")
         }
     }

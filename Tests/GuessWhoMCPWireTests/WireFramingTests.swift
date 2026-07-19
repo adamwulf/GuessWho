@@ -118,12 +118,12 @@ final class WireRequestCreateTests: XCTestCase {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
             parameters: params(MCPTool.contactsList.rawValue, [
-                "type": "person", "favoritesOnly": true, "groupId": "g-1",
+                "kind": "person", "favoritesOnly": true, "groupId": "g-1",
             ]))
-        guard case .contactsList(_, _, let type, let favoritesOnly, let groupId, _, _) = request else {
+        guard case .contactsList(_, _, let kind, let favoritesOnly, let groupId, _, _) = request else {
             return XCTFail("wrong case")
         }
-        XCTAssertEqual(type, "person")
+        XCTAssertEqual(kind, "person")
         XCTAssertEqual(favoritesOnly, true)
         XCTAssertEqual(groupId, "g-1")
     }
@@ -134,10 +134,10 @@ final class WireRequestCreateTests: XCTestCase {
         let bare = try WireRequest.create(
             helperId: "h", messageId: "m",
             parameters: params(MCPTool.contactsList.rawValue))
-        guard case .contactsList(_, _, let type, let favoritesOnly, let groupId, _, _) = bare else {
+        guard case .contactsList(_, _, let kind, let favoritesOnly, let groupId, _, _) = bare else {
             return XCTFail("wrong case")
         }
-        XCTAssertNil(type)
+        XCTAssertNil(kind)
         XCTAssertNil(favoritesOnly)
         XCTAssertNil(groupId)
 
@@ -176,7 +176,7 @@ final class WireRequestCreateTests: XCTestCase {
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {
         let expectedFields = ["phone", "email", "url", "related_name", "date"]
-        for tool in [MCPTool.contactsAddValue, .contactsRemoveValue, .contactsEditValue] {
+        for tool in [MCPTool.contactsAddValue, .contactsDeleteValue, .contactsEditValue] {
             guard case .object(let schema) = tool.metadata.inputSchema,
                   case .object(let properties) = schema["properties"],
                   case .object(let field) = properties["field"],
@@ -336,15 +336,15 @@ final class WireRequestCreateTests: XCTestCase {
             ])))
     }
 
-    func testRemoveValueParses() throws {
+    func testDeleteValueParses() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsRemoveValue.rawValue, [
+            parameters: params(MCPTool.contactsDeleteValue.rawValue, [
                 "contactId": "some-contact-id",
                 "field": "date",
                 "value": "--12-25",
             ]))
-        guard case .contactsRemoveValue(_, _, _, let field, let value, _) = request else {
+        guard case .contactsDeleteValue(_, _, _, let field, let value, _) = request else {
             return XCTFail("wrong case")
         }
         XCTAssertEqual(field, "date")
