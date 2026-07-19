@@ -500,7 +500,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsDelete:
             return ToolMetadata(
                 name: rawValue,
-                description: "Delete a contact entirely. The user must approve a confirmation in the GuessWho app before anything happens, so this can take a while; if they decline, the result says so and nothing is changed. This also removes the notes, custom fields, tags, and connections saved for this contact.",
+                description: "Delete a contact entirely. The user must approve a confirmation in the GuessWho app before anything happens, so this can take a while; if they decline, the result says so and nothing is changed. The notes, custom fields, tags, and connections saved for this contact go away with it — they're no longer available once the contact is deleted.",
                 inputSchema: Self.schema([
                     "contactId": Self.string(Self.contactIdDoc),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
