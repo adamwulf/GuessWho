@@ -114,6 +114,42 @@ final class WireRequestCreateTests: XCTestCase {
         XCTAssertNil(cursor)
     }
 
+    func testContactsListParsesOptionalFavoritesAndGroupFilters() throws {
+        let request = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsList.rawValue, [
+                "type": "person", "favoritesOnly": true, "groupId": "g-1",
+            ]))
+        guard case .contactsList(_, _, let type, let favoritesOnly, let groupId, _, _) = request else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(type, "person")
+        XCTAssertEqual(favoritesOnly, true)
+        XCTAssertEqual(groupId, "g-1")
+    }
+
+    /// Absent filters decode to nil (no filtering on that axis), and the
+    /// string spelling some clients send for booleans is tolerated.
+    func testContactsListFiltersDefaultNilAndTolerateStringBool() throws {
+        let bare = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsList.rawValue))
+        guard case .contactsList(_, _, let type, let favoritesOnly, let groupId, _, _) = bare else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertNil(type)
+        XCTAssertNil(favoritesOnly)
+        XCTAssertNil(groupId)
+
+        let stringBool = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsList.rawValue, ["favoritesOnly": "true"]))
+        guard case .contactsList(_, _, _, let parsed, _, _, _) = stringBool else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(parsed, true)
+    }
+
     func testNonIntegerLimitRejected() {
         XCTAssertThrowsError(try WireRequest.create(
             helperId: "h", messageId: "m",
@@ -131,8 +167,10 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        XCTAssertEqual(MCPTool.allCases.count, 36)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 15)
+        // 34 total after change #3 folded the standalone favorites and
+        // group-members reads into contacts_list filters (reads 15 → 13).
+        XCTAssertEqual(MCPTool.allCases.count, 34)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 13)
         XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 21)
     }
 

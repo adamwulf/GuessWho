@@ -176,10 +176,11 @@ public actor ToolDispatcher {
             response = await contactsSearch(
                 helperId: helperId, messageId: messageId,
                 query: query, limit: limit, cursor: cursor)
-        case .contactsList(_, _, let type, let limit, let cursor):
+        case .contactsList(_, _, let type, let favoritesOnly, let groupId, let limit, let cursor):
             response = await contactsList(
                 helperId: helperId, messageId: messageId,
-                type: type, limit: limit, cursor: cursor)
+                type: type, favoritesOnly: favoritesOnly, groupId: groupId,
+                limit: limit, cursor: cursor)
         case .contactsGet(_, _, let contactId):
             response = await contactsGet(
                 helperId: helperId, messageId: messageId, contactId: contactId)
@@ -191,16 +192,9 @@ public actor ToolDispatcher {
             response = await contactsListCustomFields(
                 helperId: helperId, messageId: messageId,
                 contactId: contactId, limit: limit, cursor: cursor)
-        case .contactsListFavorites(_, _, let limit, let cursor):
-            response = await contactsListFavorites(
-                helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
         case .contactsListGroups(_, _, let limit, let cursor):
             response = await contactsListGroups(
                 helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
-        case .groupsListMembers(_, _, let groupId, let limit, let cursor):
-            response = await groupsListMembers(
-                helperId: helperId, messageId: messageId,
-                groupId: groupId, limit: limit, cursor: cursor)
         case .eventsList(_, _, let startDate, let endDate, let limit, let cursor):
             response = await eventsList(
                 helperId: helperId, messageId: messageId,
@@ -364,11 +358,18 @@ public actor ToolDispatcher {
     /// incidental order — so the offset cursor pages one stable sequence
     /// with no skips or duplicates while the contact set is unchanged.
     /// Plain enumeration of the cached book: none of contacts_search's
-    /// per-contact text matching, so it takes no search budget (same
-    /// stance as contacts_list_favorites). Ids come from the same no-mint
-    /// derivation every read uses.
+    /// per-contact text matching, so it takes no search budget. Ids come
+    /// from the same no-mint derivation every read uses.
+    ///
+    /// The optional `favoritesOnly` and `groupId` filters intersect with
+    /// `type` (all three AND-compose): the base set is one group's members
+    /// when `groupId` is present (a group id that resolves to nothing is a
+    /// typed notFound, never a silently empty page), otherwise the whole
+    /// book, and `type`/`favoritesOnly` narrow it. Every result — favorites
+    /// included — runs through the one deterministic sort below.
     private func contactsList(
-        helperId: String, messageId: String, type: String?, limit: Int?, cursor: String?
+        helperId: String, messageId: String, type: String?,
+        favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?
     ) async -> WireResponse {
         let wanted: ContactType?
         switch type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
@@ -383,9 +384,28 @@ public actor ToolDispatcher {
         guard let page = pageBounds(limit: limit, cursor: cursor) else {
             return invalidCursor(helperId: helperId, messageId: messageId)
         }
+        // Base set: one group's members (resolved via the same no-mint
+        // group lookup + notFound the group-members filter has always used)
+        // or the whole book. Then type + favorites narrow it in place, so
+        // the filters intersect.
+        let baseSet: [Contact]
+        if let groupId {
+            let groups = await contacts.fetchGroups()
+            guard let group = WireRecordID.group(for: groupId, in: groups) else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundGroup)
+            }
+            baseSet = await contacts.members(ofGroup: group.localID)
+        } else {
+            baseSet = await MainActor.run { contacts.allContacts }
+        }
         let matching = await MainActor.run { () -> [Contact] in
-            guard let wanted else { return contacts.allContacts }
-            return contacts.allContacts.filter { $0.contactType == wanted }
+            baseSet.filter { contact in
+                if let wanted, contact.contactType != wanted { return false }
+                if favoritesOnly == true, !contacts.isFavorite(contact.contactID) { return false }
+                return true
+            }
         }
         // Sort OFF the main actor; ids are derived once and reused for both
         // the sort tiebreak and the DTO.
@@ -468,22 +488,6 @@ public actor ToolDispatcher {
         }
     }
 
-    private func contactsListFavorites(
-        helperId: String, messageId: String, limit: Int?, cursor: String?
-    ) async -> WireResponse {
-        guard let page = pageBounds(limit: limit, cursor: cursor) else {
-            return invalidCursor(helperId: helperId, messageId: messageId)
-        }
-        let favorites = await MainActor.run { () -> [Contact] in
-            contacts.allContacts.filter { contacts.isFavorite($0.contactID) }
-        }
-        let (slice, nextCursor) = page.slice(favorites)
-        let items = slice.map { WireMapping.summary($0, id: WireRecordID.contactID(for: $0)) }
-        return .contactPage(
-            helperId: helperId, messageId: messageId,
-            page: WirePage(items: items, nextCursor: nextCursor))
-    }
-
     private func contactsListGroups(
         helperId: String, messageId: String, limit: Int?, cursor: String?
     ) async -> WireResponse {
@@ -494,26 +498,6 @@ public actor ToolDispatcher {
         let (slice, nextCursor) = page.slice(groups)
         let items = slice.map { WireMapping.group($0, id: WireRecordID.groupID(for: $0)) }
         return .groupPage(
-            helperId: helperId, messageId: messageId,
-            page: WirePage(items: items, nextCursor: nextCursor))
-    }
-
-    private func groupsListMembers(
-        helperId: String, messageId: String, groupId: String, limit: Int?, cursor: String?
-    ) async -> WireResponse {
-        guard let page = pageBounds(limit: limit, cursor: cursor) else {
-            return invalidCursor(helperId: helperId, messageId: messageId)
-        }
-        let groups = await contacts.fetchGroups()
-        guard let group = WireRecordID.group(for: groupId, in: groups) else {
-            return .error(
-                helperId: helperId, messageId: messageId,
-                code: .notFound, message: WireErrorMessage.notFoundGroup)
-        }
-        let members = await contacts.members(ofGroup: group.localID)
-        let (slice, nextCursor) = page.slice(members)
-        let items = slice.map { WireMapping.summary($0, id: WireRecordID.contactID(for: $0)) }
-        return .contactPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
     }

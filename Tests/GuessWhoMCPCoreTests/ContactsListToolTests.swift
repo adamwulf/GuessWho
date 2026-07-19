@@ -27,11 +27,13 @@ final class ContactsListToolTests: XCTestCase {
     }
 
     private func listPage(
-        _ fixture: Fixture, type: String? = nil, limit: Int? = nil, cursor: String? = nil
+        _ fixture: Fixture, type: String? = nil, favoritesOnly: Bool? = nil,
+        groupId: String? = nil, limit: Int? = nil, cursor: String? = nil
     ) async -> WirePage<WireContactSummary>? {
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            type: type, limit: limit, cursor: cursor))
+            type: type, favoritesOnly: favoritesOnly, groupId: groupId,
+            limit: limit, cursor: cursor))
         guard case .contactPage(_, _, let page) = response else {
             XCTFail("expected a contact page; got \(String(describing: response))")
             return nil
@@ -41,13 +43,17 @@ final class ContactsListToolTests: XCTestCase {
 
     /// Every id in cursor order for the given filter — a full paged walk.
     private func fullWalk(
-        _ fixture: Fixture, type: String? = nil, limit: Int? = nil
+        _ fixture: Fixture, type: String? = nil, favoritesOnly: Bool? = nil,
+        groupId: String? = nil, limit: Int? = nil
     ) async -> [String] {
         var ids: [String] = []
         var cursor: String?
         var pages = 0
         repeat {
-            guard let page = await listPage(fixture, type: type, limit: limit, cursor: cursor) else {
+            guard let page = await listPage(
+                fixture, type: type, favoritesOnly: favoritesOnly,
+                groupId: groupId, limit: limit, cursor: cursor)
+            else {
                 return ids
             }
             ids.append(contentsOf: page.items.map(\.id))
@@ -100,7 +106,7 @@ final class ContactsListToolTests: XCTestCase {
         let fixture = await Fixture.make()
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: "company", limit: nil, cursor: nil))
+            type: "company", favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
         expectError(response, code: .invalidParams)
         XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.invalidTypeArgument)
     }
@@ -223,7 +229,7 @@ final class ContactsListToolTests: XCTestCase {
         let fixture = await Fixture.make()
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: nil, limit: nil, cursor: "made-up"))
+            type: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: "made-up"))
         expectError(response, code: .invalidParams)
     }
 
@@ -243,7 +249,7 @@ final class ContactsListToolTests: XCTestCase {
         }
         let oversize = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: nil, limit: 200, cursor: nil))
+            type: nil, favoritesOnly: nil, groupId: nil, limit: 200, cursor: nil))
         expectError(oversize, code: .tooLarge)
 
         guard let small = await listPage(fixture, limit: 5) else { return }
@@ -265,7 +271,7 @@ final class ContactsListToolTests: XCTestCase {
         await MainActor.run { fixture.gates.contactsAuthorized = false }
         expectError(await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m1",
-            type: nil, limit: nil, cursor: nil)),
+            type: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)),
             code: .permissionDenied)
         let list = await fixture.dispatcher.handle(
             .listTools(helperId: Fixture.helper, messageId: "m2"))
@@ -281,7 +287,7 @@ final class ContactsListToolTests: XCTestCase {
         }
         expectError(await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m3",
-            type: nil, limit: nil, cursor: nil)),
+            type: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)),
             code: .disabled)
     }
 
@@ -296,7 +302,7 @@ final class ContactsListToolTests: XCTestCase {
         for type in [nil, "person", "organization", "bogus-type"] {
             if let response = await fixture.dispatcher.handle(.contactsList(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
-                type: type, limit: nil, cursor: nil)) {
+                type: type, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)) {
                 responses.append(response)
             }
         }
@@ -310,5 +316,128 @@ final class ContactsListToolTests: XCTestCase {
         XCTAssertTrue(
             output.contains(Sentinels.guessWhoUUID),
             "the GuessWho UUID IS the contact id and should appear as one")
+    }
+
+    // MARK: - Favorites filter (folded from the retired favorites tool)
+
+    /// The single wire id of the fixture's one group ("Museum Friends"), as
+    /// an agent would obtain it from contacts_list_groups.
+    private func onlyGroupID(_ fixture: Fixture) async -> String? {
+        let response = await fixture.dispatcher.handle(.contactsListGroups(
+            helperId: Fixture.helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
+        guard case .groupPage(_, _, let page) = response else {
+            XCTFail("expected a group page; got \(String(describing: response))")
+            return nil
+        }
+        return page.items.first?.id
+    }
+
+    /// favoritesOnly:true returns only the favorites; false and omitted both
+    /// return every contact. The default fixture favorites exactly Jane Doe.
+    func testFavoritesOnlyFiltersToFavorites() async {
+        let fixture = await Fixture.make()
+
+        guard let favorites = await listPage(fixture, favoritesOnly: true) else { return }
+        XCTAssertEqual(favorites.items.map(\.name), ["Jane Doe"],
+                       "favoritesOnly:true returns only the marked favorite")
+        XCTAssertEqual(favorites.items.first?.id, Sentinels.guessWhoUUID)
+
+        guard let unfilteredFalse = await listPage(fixture, favoritesOnly: false) else { return }
+        XCTAssertEqual(unfilteredFalse.items.map(\.name),
+                       ["Doe Industries", "Fresh Face", "Jane Doe"],
+                       "favoritesOnly:false lists everyone, same as omitting it")
+        guard let unfilteredNil = await listPage(fixture, favoritesOnly: nil) else { return }
+        XCTAssertEqual(unfilteredFalse.items.map(\.id), unfilteredNil.items.map(\.id))
+    }
+
+    /// The folded favorites path inherits the deterministic (name, id) sort
+    /// the standalone favorites read never had — favorites page in stable
+    /// order regardless of the source array's order, tie-broken by id.
+    func testFavoritesPathIsDeterministicallySorted() async {
+        let fixture = await Fixture.make()
+        let expected = await MainActor.run { () -> [String] in
+            let book = (0..<8).map { index in
+                Contact(
+                    localID: "ABPerson-LOCAL-FAV-\(index)",
+                    givenName: "Alex", familyName: "Same")
+            }
+            fixture.contacts.contacts = book
+            // Every one of them is a favorite (effectiveID == localID pre-mint).
+            fixture.contacts.favoriteEffectiveIDs = Set(book.map(\.contactID.restorationToken.localID))
+            return book.map(\.deterministicGuessWhoID).sorted()
+        }
+        let first = await fullWalk(fixture, favoritesOnly: true, limit: 3)
+        await MainActor.run { fixture.contacts.contacts.reverse() }
+        let second = await fullWalk(fixture, favoritesOnly: true, limit: 3)
+        XCTAssertEqual(first, expected, "tied names order by id, independent of source order")
+        XCTAssertEqual(first, second, "the favorites paged order is stable across source reorder")
+    }
+
+    // MARK: - Group filter (folded from the retired group-members tool)
+
+    /// groupId returns only that group's members. The fixture's one group
+    /// holds exactly Jane Doe.
+    func testGroupIdFiltersToGroupMembers() async {
+        let fixture = await Fixture.make()
+        guard let groupID = await onlyGroupID(fixture) else { return }
+        guard let page = await listPage(fixture, groupId: groupID) else { return }
+        XCTAssertEqual(page.items.map(\.name), ["Jane Doe"],
+                       "only the group's member is returned")
+        XCTAssertEqual(page.items.first?.id, Sentinels.guessWhoUUID)
+    }
+
+    /// A groupId that resolves to no group is a typed notFound — never a
+    /// silently empty page (the behavior the retired group-members tool had).
+    func testUnknownGroupIdIsNotFoundNotEmpty() async {
+        let fixture = await Fixture.make()
+        let response = await fixture.dispatcher.handle(.contactsList(
+            helperId: Fixture.helper, messageId: "m",
+            type: nil, favoritesOnly: nil, groupId: "group-that-does-not-exist",
+            limit: nil, cursor: nil))
+        expectError(response, code: .notFound)
+        XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.notFoundGroup)
+    }
+
+    // MARK: - AND-composition (the capability gain over the retired tools)
+
+    /// favoritesOnly + type intersect: only favorites of that kind survive.
+    func testFavoritesAndTypeCompose() async {
+        let fixture = await Fixture.make()
+        // Add a favorite organization alongside the favorite person (Jane).
+        await MainActor.run {
+            let org = Contact(
+                localID: "ABPerson-LOCAL-FAV-ORG",
+                contactType: .organization,
+                organizationName: "Favored Org")
+            fixture.contacts.contacts.append(org)
+            fixture.contacts.favoriteEffectiveIDs.insert(org.contactID.restorationToken.localID)
+        }
+        // favorites ∩ person = just Jane; favorites ∩ organization = just the org.
+        guard let favPeople = await listPage(fixture, type: "person", favoritesOnly: true) else { return }
+        XCTAssertEqual(favPeople.items.map(\.name), ["Jane Doe"])
+        guard let favOrgs = await listPage(fixture, type: "organization", favoritesOnly: true) else { return }
+        XCTAssertEqual(favOrgs.items.map(\.name), ["Favored Org"])
+    }
+
+    /// groupId + favoritesOnly intersect: a group member that is not a
+    /// favorite is filtered out even though it is in the group.
+    func testGroupIdAndFavoritesCompose() async {
+        let fixture = await Fixture.make()
+        let groupID = await onlyGroupID(fixture)
+        guard let groupID else { return }
+
+        // The default group holds only Jane, who IS a favorite: group ∩
+        // favorites = Jane.
+        guard let both = await listPage(fixture, favoritesOnly: true, groupId: groupID) else { return }
+        XCTAssertEqual(both.items.map(\.name), ["Jane Doe"])
+
+        // Drop Jane from favorites: the same group+favorites query now
+        // intersects to nothing, while the plain group query still finds her.
+        await MainActor.run { fixture.contacts.favoriteEffectiveIDs = [] }
+        guard let none = await listPage(fixture, favoritesOnly: true, groupId: groupID) else { return }
+        XCTAssertTrue(none.items.isEmpty, "a non-favorite group member is filtered by favoritesOnly")
+        guard let groupOnly = await listPage(fixture, groupId: groupID) else { return }
+        XCTAssertEqual(groupOnly.items.map(\.name), ["Jane Doe"],
+                       "the plain group filter still returns the member")
     }
 }

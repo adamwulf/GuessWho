@@ -47,7 +47,7 @@ final class SecurityInvariantTests: XCTestCase {
         for type in [nil, "person", "organization"] {
             let response = await run(.contactsList(
                 helperId: helper, messageId: TestMessageID.next(),
-                type: type, limit: nil, cursor: nil))
+                type: type, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
             if case .contactPage(_, _, let page) = response {
                 contactIDs.append(contentsOf: page.items.map(\.id))
             }
@@ -68,17 +68,18 @@ final class SecurityInvariantTests: XCTestCase {
             }
         }
 
-        _ = await run(.contactsListFavorites(
-            helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
+        _ = await run(.contactsList(
+            helperId: helper, messageId: TestMessageID.next(),
+            type: nil, favoritesOnly: true, groupId: nil, limit: nil, cursor: nil))
         let groupsResponse = await run(.contactsListGroups(
             helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         if case .groupPage(_, _, let page) = groupsResponse {
             groupIDs = page.items.map(\.id)
         }
         for id in groupIDs {
-            _ = await run(.groupsListMembers(
+            _ = await run(.contactsList(
                 helperId: helper, messageId: TestMessageID.next(),
-                groupId: id, limit: nil, cursor: nil))
+                type: nil, favoritesOnly: nil, groupId: id, limit: nil, cursor: nil))
         }
 
         let eventsResponse = await run(.eventsList(
@@ -120,7 +121,7 @@ final class SecurityInvariantTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(), query: "x", limit: nil, cursor: nil))
         _ = await run(.contactsList(
             helperId: helper, messageId: TestMessageID.next(),
-            type: "bogus-type", limit: nil, cursor: nil))
+            type: "bogus-type", favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
         _ = await run(.eventsList(
             helperId: helper, messageId: TestMessageID.next(),
             startDate: "garbage", endDate: "2025-12-01T00:00:00Z", limit: nil, cursor: nil))

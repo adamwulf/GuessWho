@@ -23,9 +23,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsGet = "contacts_get"
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
-    case contactsListFavorites = "contacts_list_favorites"
     case contactsListGroups = "contacts_list_groups"
-    case groupsListMembers = "groups_list_members"
     case eventsList = "events_list"
     case eventsGet = "events_get"
     case eventsListTags = "events_list_tags"
@@ -88,8 +86,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     public var permissionDomain: PermissionDomain {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
-             .contactsListCustomFields, .contactsListFavorites,
-             .contactsListGroups, .groupsListMembers,
+             .contactsListCustomFields, .contactsListGroups,
              .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddValue, .contactsRemoveValue, .contactsEditValue,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
@@ -118,8 +115,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     public var isWrite: Bool {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
-             .contactsListCustomFields, .contactsListFavorites,
-             .contactsListGroups, .groupsListMembers,
+             .contactsListCustomFields, .contactsListGroups,
              .eventsList, .eventsGet, .eventsListTags,
              .guidesList, .guidesGet, .placesList, .linksList:
             return false
@@ -395,9 +391,15 @@ public enum MCPTool: String, CaseIterable, Sendable {
             var props = Self.pagingProperties
             props["type"] = Self.string(
                 "Optional: \"person\" or \"organization\" to list only that kind of contact. Omit to list both.")
+            props["favoritesOnly"] = [
+                "type": "boolean",
+                "description": .string("Only contacts the user has marked favorite."),
+            ]
+            props["groupId"] = Self.string(
+                "Only members of this group; pass an id from contacts_list_groups.")
             return ToolMetadata(
                 name: rawValue,
-                description: "List all the user's contacts, ordered by name — optionally only people or only organizations. Returns a page of contacts, each with an id usable with the other contacts tools; pass nextCursor back to get the next page.",
+                description: "List all the user's contacts, ordered by name — optionally only people or only organizations, only favorites, or only one group's members (the filters combine). Returns a page of contacts, each with an id usable with the other contacts tools; pass nextCursor back to get the next page.",
                 inputSchema: Self.schema(props))
         case .contactsGet:
             return ToolMetadata(
@@ -418,23 +420,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List the custom fields the user has added to a contact (text, dates, and checkboxes).",
                 inputSchema: Self.schema(props, required: ["contactId"]))
-        case .contactsListFavorites:
-            return ToolMetadata(
-                name: rawValue,
-                description: "List the contacts the user has marked as favorites.",
-                inputSchema: Self.schema(Self.pagingProperties))
         case .contactsListGroups:
             return ToolMetadata(
                 name: rawValue,
                 description: "List the user's contact groups.",
                 inputSchema: Self.schema(Self.pagingProperties))
-        case .groupsListMembers:
-            var props = Self.pagingProperties
-            props["groupId"] = Self.string("A group id returned by contacts_list_groups.")
-            return ToolMetadata(
-                name: rawValue,
-                description: "List the contacts in a group.",
-                inputSchema: Self.schema(props, required: ["groupId"]))
         case .eventsList:
             var props = Self.pagingProperties
             props["startDate"] = Self.string("Start of the date window, ISO 8601 (for example 2026-07-01T00:00:00Z).")

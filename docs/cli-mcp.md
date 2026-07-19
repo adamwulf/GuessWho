@@ -125,14 +125,17 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **36 tools total: 15 read and 21 write**.
+There are **34 tools total: 13 read and 21 write**.
 
-**Read (15):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (13):** `contacts_search`, `contacts_list`, `contacts_get`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
-`contacts_list_favorites`, `contacts_list_groups`, `groups_list_members`,
-`events_list`, `events_get`, `events_list_tags`, `guides_list`,
-`guides_get`, `places_list`, `links_list`. (Plus `guesswho_status`,
-served by the relay itself when the app is unreachable / to re-check.)
+`contacts_list_groups`, `events_list`, `events_get`, `events_list_tags`,
+`guides_list`, `guides_get`, `places_list`, `links_list`. (Plus
+`guesswho_status`, served by the relay itself when the app is unreachable
+/ to re-check.) Favorites and group-membership are no longer their own
+tools — they fold into `contacts_list` as the optional `favoritesOnly`
+and `groupId` filters (see below). `contacts_list_groups` stays: it lists
+the GROUPS themselves and is the source of `groupId` values.
 
 **Write (21):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
@@ -151,18 +154,29 @@ of `phone`, `email`, `url`, `related_name`, or `date`.
 ### Listing the whole book (`contacts_list`)
 
 `contacts_search` requires a 2+ character needle (the main-actor search
-bound), so `contacts_list(type?, limit?, cursor?)` is the enumeration
-read: every contact, or only people / only organizations via the
-optional `type` filter (plain values `"person"` / `"organization"`).
-Rows are the same summary DTO `contacts_search` returns (same no-mint id
-derivation, same four exclusions), ordered by a fixed (lowercased
-display name, id) sort — deterministic, total (the unique id breaks
-name ties), and independent of the app's user-configurable sort — so
-the opaque offset cursor pages one stable sequence with no skips or
-duplicates while the contact set is unchanged. Contacts changing
-between pages is best-effort, like every list read; the standard
-`limit` (default 50, max 200) and the response-size cap with the typed
-too-large error apply.
+bound), so `contacts_list(type?, favoritesOnly?, groupId?, limit?,
+cursor?)` is the enumeration read: every contact, narrowed by up to three
+optional filters that **AND-compose** (intersect):
+
+- `type` — plain values `"person"` / `"organization"`; omit for both.
+- `favoritesOnly` — `true` returns only contacts the user has marked
+  favorite; `false`/omitted filters on nothing.
+- `groupId` — only members of that group; the id comes from
+  `contacts_list_groups`. A `groupId` that resolves to no group is a
+  typed `notFound` (never a silently empty page).
+
+The three combine, so `favoritesOnly` + `groupId` + `type` together lists
+the favorites in that group of that kind — a capability the retired
+standalone favorites / group-members tools could not express. Rows are the
+same summary DTO `contacts_search` returns (same no-mint id derivation,
+same four exclusions), ordered by a fixed (lowercased display name, id)
+sort — deterministic, total (the unique id breaks name ties), and
+independent of the app's user-configurable sort — so the opaque offset
+cursor pages one stable sequence with no skips or duplicates while the
+contact set is unchanged. Every result — favorites included — runs through
+this one sort. Contacts changing between pages is best-effort, like every
+list read; the standard `limit` (default 50, max 200) and the
+response-size cap with the typed too-large error apply.
 
 ### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_remove_value`, Phase 7)
 

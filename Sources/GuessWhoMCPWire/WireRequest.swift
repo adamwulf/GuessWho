@@ -33,13 +33,11 @@ public enum WireRequest: Codable, Sendable {
     case listTools(helperId: String, messageId: String)
 
     case contactsSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
-    case contactsList(helperId: String, messageId: String, type: String?, limit: Int?, cursor: String?)
+    case contactsList(helperId: String, messageId: String, type: String?, favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?)
     case contactsGet(helperId: String, messageId: String, contactId: String)
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
-    case contactsListFavorites(helperId: String, messageId: String, limit: Int?, cursor: String?)
     case contactsListGroups(helperId: String, messageId: String, limit: Int?, cursor: String?)
-    case groupsListMembers(helperId: String, messageId: String, groupId: String, limit: Int?, cursor: String?)
     case eventsList(helperId: String, messageId: String, startDate: String, endDate: String, limit: Int?, cursor: String?)
     case eventsGet(helperId: String, messageId: String, eventId: String)
     case eventsListTags(helperId: String, messageId: String, eventId: String, limit: Int?, cursor: String?)
@@ -92,9 +90,7 @@ public enum WireRequest: Codable, Sendable {
         case .contactsGet: return .contactsGet
         case .contactsListNotes: return .contactsListNotes
         case .contactsListCustomFields: return .contactsListCustomFields
-        case .contactsListFavorites: return .contactsListFavorites
         case .contactsListGroups: return .contactsListGroups
-        case .groupsListMembers: return .groupsListMembers
         case .eventsList: return .eventsList
         case .eventsGet: return .eventsGet
         case .eventsListTags: return .eventsListTags
@@ -167,13 +163,11 @@ extension WireRequest: MCPRequestProtocol {
              .ping(let helperId, _),
              .listTools(let helperId, _),
              .contactsSearch(let helperId, _, _, _, _),
-             .contactsList(let helperId, _, _, _, _),
+             .contactsList(let helperId, _, _, _, _, _, _),
              .contactsGet(let helperId, _, _),
              .contactsListNotes(let helperId, _, _, _, _),
              .contactsListCustomFields(let helperId, _, _, _, _),
-             .contactsListFavorites(let helperId, _, _, _),
              .contactsListGroups(let helperId, _, _, _),
-             .groupsListMembers(let helperId, _, _, _, _),
              .eventsList(let helperId, _, _, _, _, _),
              .eventsGet(let helperId, _, _),
              .eventsListTags(let helperId, _, _, _, _),
@@ -212,13 +206,11 @@ extension WireRequest: MCPRequestProtocol {
              .ping(_, let messageId),
              .listTools(_, let messageId),
              .contactsSearch(_, let messageId, _, _, _),
-             .contactsList(_, let messageId, _, _, _),
+             .contactsList(_, let messageId, _, _, _, _, _),
              .contactsGet(_, let messageId, _),
              .contactsListNotes(_, let messageId, _, _, _),
              .contactsListCustomFields(_, let messageId, _, _, _),
-             .contactsListFavorites(_, let messageId, _, _),
              .contactsListGroups(_, let messageId, _, _),
-             .groupsListMembers(_, let messageId, _, _, _),
              .eventsList(_, let messageId, _, _, _, _),
              .eventsGet(_, let messageId, _),
              .eventsListTags(_, let messageId, _, _, _),
@@ -294,6 +286,8 @@ extension WireRequest: MCPRequestProtocol {
             return .contactsList(
                 helperId: helperId, messageId: messageId,
                 type: try args.optionalString("type"),
+                favoritesOnly: try args.optionalBool("favoritesOnly"),
+                groupId: try args.optionalString("groupId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .contactsGet:
             return .contactsGet(
@@ -309,18 +303,9 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
-        case .contactsListFavorites:
-            return .contactsListFavorites(
-                helperId: helperId, messageId: messageId,
-                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .contactsListGroups:
             return .contactsListGroups(
                 helperId: helperId, messageId: messageId,
-                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
-        case .groupsListMembers:
-            return .groupsListMembers(
-                helperId: helperId, messageId: messageId,
-                groupId: try args.requiredString("groupId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .eventsList:
             return .eventsList(
@@ -574,6 +559,17 @@ private struct ToolArguments {
         guard let value = values[name], value != .null else {
             throw WireRequestError.missingArgument(tool: toolName, name: name)
         }
+        if let bool = value.boolValue { return bool }
+        // Tolerate the string spellings some clients send for booleans.
+        if let string = value.stringValue {
+            if string == "true" { return true }
+            if string == "false" { return false }
+        }
+        throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "true or false")
+    }
+
+    func optionalBool(_ name: String) throws -> Bool? {
+        guard let value = values[name], value != .null else { return nil }
         if let bool = value.boolValue { return bool }
         // Tolerate the string spellings some clients send for booleans.
         if let string = value.stringValue {
