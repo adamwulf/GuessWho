@@ -152,7 +152,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     /// vocabulary. Ids are opaque per-session strings minted by the app; the
     /// agent gets them from search/list results and hands them back.
     private static let contactIdDoc =
-        "A contact id returned by contacts_search or another contacts tool. Ids can go out of date; if a call reports that, search again for a fresh one."
+        "A contact id — from contacts_search, contacts_list, or the otherId of a links_list row whose kind is person or organization. Ids can go out of date; if a call reports that, search again for a fresh one."
     private static let limitDoc =
         "Maximum number of items to return in one page (default 50, max 200)."
     private static let cursorDoc =
@@ -160,7 +160,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     private static let idempotencyDoc =
         "Optional: a unique string of your choosing that identifies this one change. If the call is retried with the same value, the change is applied only once."
     private static let eventIdDoc =
-        "An event id returned by events_list."
+        "An event id — from events_list, or the otherId of a links_list row whose kind is event."
     private static let linkKindDoc =
         "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
 
@@ -500,7 +500,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsDelete:
             return ToolMetadata(
                 name: rawValue,
-                description: "Delete a contact entirely. The user must approve a confirmation in the GuessWho app before anything happens, so this can take a while; if they decline, the result says so and nothing is changed.",
+                description: "Delete a contact entirely. The user must approve a confirmation in the GuessWho app before anything happens, so this can take a while; if they decline, the result says so and nothing is changed. This also removes the notes, custom fields, tags, and connections saved for this contact.",
                 inputSchema: Self.schema([
                     "contactId": Self.string(Self.contactIdDoc),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
