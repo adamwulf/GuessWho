@@ -386,6 +386,42 @@ final class ContactsListToolTests: XCTestCase {
         XCTAssertEqual(page.items.first?.id, Sentinels.guessWhoUUID)
     }
 
+    /// A valid group that happens to have NO members returns an empty page —
+    /// explicitly NOT a notFound. This pins the empty-valid-group vs
+    /// bad-group distinction so a future regression can't collapse the two:
+    /// the id resolves to a real group, so the members lookup runs and
+    /// yields nothing, which is a legitimate (empty) result, not an error.
+    func testValidGroupWithNoMembersReturnsEmptyPageNotNotFound() async {
+        let fixture = await Fixture.make()
+        // A real, resolvable group with no membership entry — the fake's
+        // members(ofGroup:) returns [] for a group absent from membersByGroup.
+        await MainActor.run {
+            fixture.contacts.groups.append(
+                ContactGroup(localID: "CNGroup-LOCAL-EMPTY", name: "Empty Group"))
+        }
+        // Take the empty group's wire id the way an agent would: from
+        // contacts_list_groups, by name.
+        let groupsResponse = await fixture.dispatcher.handle(.contactsListGroups(
+            helperId: Fixture.helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
+        guard case .groupPage(_, _, let groups) = groupsResponse,
+              let emptyGroupID = groups.items.first(where: { $0.name == "Empty Group" })?.id
+        else {
+            return XCTFail("expected the empty group in contacts_list_groups; got \(String(describing: groupsResponse))")
+        }
+
+        let response = await fixture.dispatcher.handle(.contactsList(
+            helperId: Fixture.helper, messageId: "m",
+            type: nil, favoritesOnly: nil, groupId: emptyGroupID, limit: nil, cursor: nil))
+        // A valid-but-empty group is a contactPage, never an error.
+        XCTAssertNil(response?.errorPayload,
+                     "an empty valid group must not be a notFound / error")
+        guard case .contactPage(_, _, let page) = response else {
+            return XCTFail("expected an empty contact page; got \(String(describing: response))")
+        }
+        XCTAssertTrue(page.items.isEmpty, "the group has no members")
+        XCTAssertNil(page.nextCursor, "an empty page has no next cursor")
+    }
+
     /// A groupId that resolves to no group is a typed notFound — never a
     /// silently empty page (the behavior the retired group-members tool had).
     func testUnknownGroupIdIsNotFoundNotEmpty() async {
