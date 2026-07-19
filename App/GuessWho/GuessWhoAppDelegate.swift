@@ -28,6 +28,13 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// every reload path.
     let guidesRepository: GuidesRepository
     let contactPhotoLoader: ContactPhotoLoader
+    #if targetEnvironment(macCatalyst)
+    /// App-side end of the CLI/MCP channel (plans/cli-mcp.md). Lazy so it
+    /// only materializes on `bootstrap()` in `didFinishLaunching`; Catalyst
+    /// only (INV-5 — iOS has no host to serve).
+    private(set) lazy var mcpHostController = MCPHostController(
+        service: service, repository: contactsRepository)
+    #endif
 
     #if targetEnvironment(macCatalyst)
     /// Loopback listener for the Chrome/Brave extension's LinkedIn handoff
@@ -36,6 +43,18 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// network-server entitlement are only wired for the Catalyst build.
     /// Owned here (not by a scene) so one listener serves the whole process.
     private var chromeHandoffReceiver: LinkedInLocalhostReceiver?
+
+    /// Phase 0 diagnostic hook for the embedded relay CLI (plans/cli-mcp.md):
+    /// a FIFO in the shared CLI App Group container that `guesswho-cli probe`
+    /// writes its "connected" line into. Follows the debug-mode Settings
+    /// toggle at RUNTIME (ships in Release — Phase 0 verifies on exported
+    /// builds, so this is deliberately not `#if DEBUG`). Catalyst-only per
+    /// INV-5. Owned here so one listener serves the whole process.
+    private let cliProbeListener = CLIProbeListener()
+    /// Re-evaluates the probe listener when debug mode flips while the app is
+    /// open (same UserDefaults-observer pattern the events list uses for its
+    /// Export Logs button).
+    private nonisolated(unsafe) var cliProbeDebugModeObserver: NSObjectProtocol?
     #endif
 
     /// App-process lifecycle breadcrumbs. Routes through swift-log so it lands in
@@ -165,10 +184,48 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
 
         #if targetEnvironment(macCatalyst)
         startChromeHandoffReceiver()
+
+        // Start (or later stop) the CLI diagnostic FIFO with the debug-mode
+        // toggle. Evaluated once at launch, then re-evaluated whenever
+        // UserDefaults changes so flipping the toggle takes effect live.
+        cliProbeDebugModeObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateCLIProbeListener()
+            }
+        }
+        updateCLIProbeListener()
+
+        // App-side end of the CLI/MCP channel: observes the master toggles
+        // and runs the channel only while one is on (plans/cli-mcp.md
+        // Phase 1). Injects the live service + repository (INV-2b).
+        mcpHostController.bootstrap()
+
+        // Phase 3 launch check: confirm the embedded helper resolves, and
+        // breadcrumb when the app's location changed since the user last
+        // copied/installed the helper path (their client configs are then
+        // stale — the Settings sheet shows the plain repair hint).
+        CLIInstallModel.verifyHelperAtLaunch()
         #endif
 
         return true
     }
+
+    #if targetEnvironment(macCatalyst)
+    /// Aligns the CLI diagnostic listener with the debug-mode toggle. Start
+    /// and stop are both idempotent, so re-evaluating on every defaults
+    /// change is safe.
+    private func updateCLIProbeListener() {
+        if UserDefaults.standard.bool(forKey: AppSettings.Key.debugModeEnabled) {
+            cliProbeListener.start()
+        } else {
+            cliProbeListener.stop()
+        }
+    }
+    #endif
 
     #if targetEnvironment(macCatalyst)
     /// Starts the Chrome/Brave handoff listener. Payloads hop to the main
@@ -230,6 +287,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// log.
     func applicationWillTerminate(_ application: UIApplication) {
         Self.lifecycleLog.notice("app willTerminate")
+        #if targetEnvironment(macCatalyst)
+        mcpHostController.shutdown()
+        #endif
     }
 
     // MARK: - Help menu (developer-facing debug actions)
@@ -279,6 +339,29 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             children: children
         )
         builder.insertChild(menu, atEndOfMenu: .help)
+
+        #if targetEnvironment(macCatalyst)
+        // Settings… (⌘,) — the in-app Settings sheet (plans/cli-mcp.md
+        // Phase 3): the CLI/MCP toggles, command-line install, agent
+        // activity, Recently Deleted, and the Debug Mode toggle. Replaces
+        // the system-provided preferences item (which auto-renders
+        // Settings.bundle — that bundle stays for iOS, and its one control,
+        // Debug Mode, lives in the sheet too so Catalyst loses nothing).
+        // Phase 2's File-menu "Recently Deleted…" entry moved into the
+        // sheet as a Preferences row.
+        let settings = UIKeyCommand(
+            title: "Settings…",
+            action: #selector(settingsMenuAction),
+            input: ",",
+            modifierFlags: .command
+        )
+        builder.replace(menu: .preferences, with: UIMenu(
+            title: "",
+            identifier: .preferences,
+            options: .displayInline,
+            children: [settings]
+        ))
+        #endif
     }
 
     // These run on the main thread (UIKit delivers menu actions there) and the
@@ -295,6 +378,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     #if targetEnvironment(macCatalyst)
     @objc private func openResourcesFolderMenuAction() {
         DebugMenuActions.openResourcesFolder()
+    }
+
+    @objc private func settingsMenuAction() {
+        MCPPreferencesPresenter.present()
     }
     #endif
 }

@@ -1,0 +1,73 @@
+// guesswho-cli-Shared.xcconfig
+// Config-invariant settings for the guesswho-cli helper target — the
+// command-line relay embedded at GuessWho.app/Contents/MacOS/guesswho-cli
+// (plans/cli-mcp.md, Phase 0). Mirrors Muse's shipping muse-mcp-server
+// posture (verified from its source): a NATIVE macOS Mach-O (not Catalyst),
+// sandboxed, hardened runtime, signed with entitlements whose App Group
+// expands from the shared per-channel build var.
+
+#include "SharedVersion.xcconfig"
+
+// PRODUCT_NAME is guesswho-cli, NOT guesswho: the app's own executable is
+// GuessWho.app/Contents/MacOS/GuessWho, and default APFS is case-INsensitive,
+// so a helper named `guesswho` would be the SAME directory entry — the embed
+// would clobber the app binary and Bundle.main.url(forAuxiliaryExecutable:)
+// would resolve to the app. The user-facing `guesswho` command arrives later
+// via the /usr/local/bin symlink (plan Phase 3).
+PRODUCT_NAME = guesswho-cli
+
+// Native macOS tool. Overrides the project-level SDKROOT = iphoneos.
+SDKROOT = macosx
+SUPPORTED_PLATFORMS = macosx
+
+// The transport stack (GuessWhoMCPWire/GuessWhoMCPTransport → mcp-template)
+// declares a macOS 15 floor; override the project-level 14.0.
+MACOSX_DEPLOYMENT_TARGET = 15.0
+
+// The helper builds in its own isolated xcodebuild invocation (the app
+// target's "Build and Embed guesswho-cli" Run Script → guesswho-cli.xcodeproj),
+// where the single-target planner links every package product statically —
+// the binary is self-contained today. This rpath stays as the landing spot
+// for the defensive leg of that script: if Xcode ever links a package
+// product as a shared dynamic "…_PackageProduct" framework again, the script
+// copies the macOS-built variants to Contents/Frameworks/CLI (the app's own
+// Contents/Frameworks holds CATALYST variants a native macOS Mach-O cannot
+// load). dyld resolves @executable_path through the /usr/local/bin symlink
+// to the real binary location, so the symlinked `guesswho` invocation works
+// too.
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks/CLI
+
+SWIFT_VERSION = 6.0
+
+// Signing — matches the app's automatic-signing setup, plus the Muse helper
+// posture: hardened runtime, no Xcode-injected base entitlements (the
+// per-config .entitlements file is the complete, explicit list), and
+// build-setting expansion inside the entitlements file so the per-channel
+// App Group var resolves at signing time. NOTE: the shipping embed path does
+// NOT sign here — the app's "Build and Embed guesswho-cli" Run Script builds
+// this project with CODE_SIGNING_ALLOWED=NO and signs the embedded copy
+// itself (sed-expanding $(GUESSWHO_CLI_APP_GROUP) into the entitlements);
+// these settings apply when building/signing this project standalone.
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+ENABLE_HARDENED_RUNTIME = YES
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
+CODE_SIGN_ENTITLEMENTS_CONTENTS_TRANSFORMATION = expand-build-settings
+OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)
+REGISTER_APP_GROUPS = YES
+
+// A real Info.plist (not a generated one) embedded into the binary's
+// __TEXT,__info_plist section, so the bare Mach-O can read
+// GuessWhoCLIAppGroup via Bundle.main at runtime — the same
+// xcconfig → Info.plist → Bundle.main pipeline the app uses (and the plan's
+// stated alternative to Muse/EssentialMCP's generated-BuildSettings.swift).
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = guesswho-cli/Info.plist
+CREATE_INFOPLIST_SECTION_IN_BINARY = YES
+
+// The tool ships INSIDE GuessWho.app: the app target's "Build and Embed
+// guesswho-cli" Run Script nested-builds this project (passing
+// SKIP_INSTALL=NO on its `build` action, where it has no effect) and copies
+// the binary to Contents/MacOS. Keep YES here so a standalone archive of
+// this project never lands the tool in a Products root.
+SKIP_INSTALL = YES

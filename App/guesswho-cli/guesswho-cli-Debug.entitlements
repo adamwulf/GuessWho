@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mirrors Muse's shipping helper entitlements (4 keys, verbatim
+	     structure), with the App Group adapted to GuessWho's TeamID-form
+	     derivation: $(GUESSWHO_CLI_APP_GROUP) expands at signing time
+	     (CODE_SIGN_ENTITLEMENTS_CONTENTS_TRANSFORMATION = expand-build-settings)
+	     from the ONE shared per-channel var in Config/CLIAppGroup-*.xcconfig
+	     (INV-4 — never hardcode the group). -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(GUESSWHO_CLI_APP_GROUP)</string>
+	</array>
+	<!-- Debug-attach only. This key exists ONLY in this Debug file; the
+	     Release entitlements omit it — do NOT ship get-task-allow. -->
+	<key>com.apple.security.get-task-allow</key>
+	<true/>
+</dict>
+</plist>

@@ -35,4 +35,24 @@ public protocol AppKitPlugin: NSObjectProtocol {
         allowsMultiple: Bool,
         completion: @escaping ([URL]) -> Void
     )
+
+    /// Creates the `/usr/local/bin` symlink for the embedded command-line
+    /// helper behind the system admin-authorization panel (the Muse-proven
+    /// mechanism: `NSWorkspace.requestAuthorization(to: .createSymbolicLink)`
+    /// + `FileManager(authorization:)` — a runtime auth API, no bespoke
+    /// entitlement). AppKit-side because both APIs are AppKit/macOS-only.
+    ///
+    /// - Parameters:
+    ///   - targetPath: the bundle's helper binary (the symlink destination).
+    ///   - symlinkPath: where the link goes (e.g. `/usr/local/bin/guesswho`).
+    ///   - completion: called on the MAIN thread; nil on success, else the
+    ///     failure (including the user cancelling the auth panel —
+    ///     `NSOSStatusErrorDomain -60006` or `NSCocoaErrorDomain
+    ///     NSUserCancelledError`, which callers should treat as a quiet
+    ///     no-op, not an error alert).
+    func installCommandLine(
+        targetPath: String,
+        symlinkPath: String,
+        completion: @escaping (NSError?) -> Void
+    )
 }

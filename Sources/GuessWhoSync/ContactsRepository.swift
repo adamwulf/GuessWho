@@ -588,6 +588,31 @@ public final class ContactsRepository: NSObject {
     /// capture.
     static let previousPhotoFieldName = "previousPhoto"
 
+    /// Field NAMES that external writers (the CLI/MCP write tools, imports)
+    /// must never create or replace via the upsert-by-name path. The upsert
+    /// REPLACES an existing same-name field of a different type, so a caller
+    /// writing a field named "previousPhoto" would clobber the photo-restore
+    /// snapshot, and one named "note" would overwrite a user note in place
+    /// (`notes(at:)` selects on `field == "note"`). Centralized here, next to
+    /// `previousPhotoFieldName`, so a new internal name gets added in one
+    /// place (plans/cli-mcp.md Phase 2 custom-field guardrails).
+    public nonisolated static let reservedFieldNames: Set<String> = [
+        ContactsRepository.previousPhotoFieldName,
+        GuessWhoSync.contactNoteFieldName,
+        GuessWhoSync.eventTagFieldName,
+    ]
+
+    /// Whether `name` collides with a reserved internal field name. The
+    /// comparison is case-insensitive on the trimmed name: only the exact
+    /// name collides mechanically, but a near-miss ("PreviousPhoto") would
+    /// only ever confuse — reject it too.
+    public nonisolated static func isReservedFieldName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reservedFieldNames.contains {
+            $0.caseInsensitiveCompare(trimmed) == .orderedSame
+        }
+    }
+
     /// Best-effort MIME sniff for the snapshot pointer's `contentType`. CN
     /// usually hands back JPEG, sometimes PNG; anything else is recorded as a
     /// generic octet-stream (the bytes are stored faithfully regardless).
@@ -953,6 +978,53 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// ALL notes on the contact identified by `id` — INCLUDING soft-deleted
+    /// tombstones (`deletedAt` set). For inspection/recovery surfaces (the
+    /// Recently Deleted screen, the agent audit trail) where the tombstones
+    /// are the point; ordinary UI reads want `notes(for:)`. Returns `[]` when
+    /// the contact is unreconciled or the engine is unavailable; a read NEVER
+    /// reconciles. Mirrors `GuessWhoSync.allNotes(at:)`.
+    public func allNotes(for id: ContactID) -> [ContactNote] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        do {
+            return try sync.allNotes(at: SidecarKey(kind: .contact, id: guessWhoID))
+        } catch {
+            lastError = "all-notes read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// ALL sidecar fields on the contact identified by `id` — INCLUDING
+    /// soft-deleted tombstones and `.blob` infrastructure fields. For
+    /// inspection/recovery surfaces only (the Recently Deleted screen needs a
+    /// deleted field's preserved value and its `modifiedAt` for the restore
+    /// guard); the user-visible custom-fields read is `fields(for:)`. Returns
+    /// `[]` when the contact is unreconciled or the engine is unavailable.
+    public func allFields(for id: ContactID) -> [SidecarField] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        do {
+            return try sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))
+        } catch {
+            lastError = "all-fields read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// A single link by its own UUID, INCLUDING a soft-deleted one (callers
+    /// inspect `deletedAt`). For recovery surfaces (a deleted link's preserved
+    /// note is the restore payload); the per-contact list reads above filter
+    /// tombstones. Returns nil when the link doesn't exist or the engine is
+    /// unavailable. Mirrors `GuessWhoSync.link(id:)`.
+    public func link(id linkID: UUID) -> Link? {
+        guard let sync else { return nil }
+        do {
+            return try sync.link(id: linkID)
+        } catch {
+            lastError = "link read failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Live contact↔contact links on the contact identified by `id`. Excludes
     /// soft-deleted links and links whose FAR endpoint is not a contact (those
     /// are event links — see `eventLinks(for:)`). Returns `[]` when the contact
@@ -1239,6 +1311,20 @@ public final class ContactsRepository: NSObject {
         value: String,
         type: SidecarFieldType = .note
     ) async throws -> UUID {
+        try await upsertField(for: id, field: field, value: JSONValue.string(value), type: type)
+    }
+
+    /// `JSONValue` overload of `upsertField(for:field:value:type:)` for the
+    /// non-string payload types (`.checkbox` carries a JSON bool). The String
+    /// overload above delegates here; the engine's `validate(value:against:)`
+    /// still enforces the payload/type pairing.
+    @discardableResult
+    public func upsertField(
+        for id: ContactID,
+        field: String,
+        value: JSONValue,
+        type: SidecarFieldType
+    ) async throws -> UUID {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
@@ -1250,14 +1336,14 @@ public final class ContactsRepository: NSObject {
         let fieldID: UUID
         if let existing, existing.type == type {
             // Same type — update in place.
-            try sync.setField(at: key, id: existing.id, field: field, value: .string(value))
+            try sync.setField(at: key, id: existing.id, field: field, value: value)
             fieldID = existing.id
         } else {
             // Different type (or new) — replace: soft-delete the old, create new.
             if let existing {
                 try sync.deleteField(at: key, id: existing.id)
             }
-            fieldID = try sync.addField(at: key, field: field, type: type, value: .string(value))
+            fieldID = try sync.addField(at: key, field: field, type: type, value: value)
         }
         await refreshCacheIfMinted(minted, localID: id.localID)
         return fieldID
@@ -1267,6 +1353,16 @@ public final class ContactsRepository: NSObject {
     /// `id` is the CONTACT, `fieldID` the field. Silent no-op if the field is
     /// gone. Throws `SidecarUnavailableError` if no engine.
     public func editField(for id: ContactID, id fieldID: UUID, value: String) async throws {
+        try await editField(for: id, id: fieldID, value: JSONValue.string(value))
+    }
+
+    /// `JSONValue` overload of `editField(for:id:value:)` for non-string
+    /// payload types (a `.checkbox` field's value is a JSON bool). The
+    /// Recently Deleted restore rides this with the tombstone's own
+    /// preserved value, so any field type restores verbatim; the engine
+    /// still validates the payload against the cell's immutable type. The
+    /// String overload above delegates here.
+    public func editField(for id: ContactID, id fieldID: UUID, value: JSONValue) async throws {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
@@ -1274,7 +1370,7 @@ public final class ContactsRepository: NSObject {
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let name = ((try? sync.fields(at: key)) ?? []).first { $0.id == fieldID }?.field
         if let name {
-            try sync.setField(at: key, id: fieldID, field: name, value: .string(value))
+            try sync.setField(at: key, id: fieldID, field: name, value: value)
         }
         await refreshCacheIfMinted(minted, localID: id.localID)
     }

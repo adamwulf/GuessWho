@@ -195,6 +195,15 @@ final class SyncService {
         }
     }
 
+    /// Snapshot of a system calendar event by its EventKit identifier —
+    /// read-only, mints nothing. Used by the CLI/MCP read path to resolve
+    /// events the user can see but that have no GuessWho record yet
+    /// (reads never adopt; see plans/cli-mcp.md).
+    func eventKitEvent(eventKitID: String) -> Event? {
+        guard eventsAuthorization == .authorized else { return nil }
+        return (try? eventsAdapter.fetch(eventKitID: eventKitID)) ?? nil
+    }
+
     // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or
     // nil. `async`: the lookup walks every event sidecar, so it rides the
     // engine's background-hop overload.
@@ -426,6 +435,16 @@ final class SyncService {
     func deleteEventTag(id: UUID, forEventUUID uuid: String) throws {
         guard let sync else { throw SidecarUnavailableError() }
         try sync.deleteTag(at: SidecarKey(kind: .event, id: uuid), id: id)
+    }
+
+    /// The raw tag CELLS on the event — including soft-deleted tombstones,
+    /// with their `modifiedAt` stamps. For the agent audit trail and the
+    /// Recently Deleted surface (a tombstone's preserved text is the restore
+    /// payload; its stamp is the restore guard). UI reads want `eventTags`.
+    func allEventTagFields(forEventUUID uuid: String) -> [SidecarField] {
+        guard let sync else { return [] }
+        let raw = (try? sync.fields(at: SidecarKey(kind: .event, id: uuid))) ?? []
+        return raw.filter { $0.field == GuessWhoSync.eventTagFieldName && $0.type == .note }
     }
 
     // MARK: - Link-sheet backing reads
@@ -858,6 +877,14 @@ final class SyncService {
     func removeLink(id: UUID) throws {
         guard let sync else { throw SidecarUnavailableError() }
         try sync.removeLink(id: id)
+    }
+
+    /// A single link by its own id, INCLUDING soft-deleted ones (callers
+    /// check `deletedAt`). Nil when storage is unavailable or no such link
+    /// exists.
+    func link(id: UUID) -> Link? {
+        guard let sync else { return nil }
+        return (try? sync.link(id: id)) ?? nil
     }
 
     static func otherEndpoint(of link: Link, from endpoint: SidecarKey) -> SidecarKey {

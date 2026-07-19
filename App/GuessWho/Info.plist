@@ -16,6 +16,8 @@
 	<string>$(PRODUCT_NAME)</string>
 	<key>GuessWhoAppGroup</key>
 	<string>$(GUESSWHO_APP_GROUP)</string>
+	<key>GuessWhoCLIAppGroup</key>
+	<string>$(GUESSWHO_CLI_APP_GROUP)</string>
 	<key>GuessWhoiCloudContainer</key>
 	<string>$(GUESSWHO_ICLOUD_CONTAINER)</string>
 	<key>GuessWhoLinkedInURLScheme</key>
@@ -50,7 +52,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>GuessWho shows your upcoming events so you can link them to contacts.</string>
 	<key>NSContactsUsageDescription</key>
-	<string>GuessWho lets you read and edit the Notes on your contacts, just like the Contacts app. Your notes stay on your device, in your own iCloud, and are never sent to any server.</string>
+	<string>GuessWho lets you read and edit the Notes on your contacts, just like the Contacts app. If you turn on assistant or terminal access in GuessWho’s settings, tools you set up on this Mac can look up your contacts through GuessWho. Everything stays on your device, in your own iCloud, and is never sent to any server.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

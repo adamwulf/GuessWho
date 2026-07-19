@@ -836,6 +836,21 @@ sees it.
    phase may add async serialization, or wire a periodic orphan sweep, if it ever
    proves measurable; not now.)
 
+   ⚠️ 2026-07-17 UPDATE — MCP IS A NEW SURFACE THE "Catalyst multi-window only"
+   RATIONALE DID NOT ANTICIPATE (plans/cli-mcp.md Phase 2). An MCP agent and the
+   UI (or two agent helpers) are now two independent, unattended first-writers on
+   ONE device, and the bulk-enrich-never-reconciled-contacts use case is exactly
+   the trigger population — so the race stopped being a practical non-event for
+   agent writes, and a single-device orphan there is a SILENT successful-write
+   loss, not harmless. The engine's accept-double-mint decision above is
+   UNCHANGED; the mitigation lives HOST-SIDE in the MCP dispatch core
+   (`GuessWhoMCPCore.ToolDispatcher`): a per-`localID` single-flight serializes
+   agent writes around resolve-or-mint (agent writes are rate-limited, so strict
+   serialization is free), plus a post-mint verify that re-reads the written
+   instance under the card's now-current identity and retries once if the mint
+   lost (the losing-mint case leaves the OTHER writer's URL on the card). Only
+   the pre-existing UI-vs-UI window remains accepted.
+
 3. **Reads do NOT reconcile; writes DO.** READS — `notes(for:)` / `links(for:)` /
    `isFavorite(_:)` — return empty/false when `id.guessWhoID` is nil (an
    unreconciled contact has no sidecar yet, nothing to read). WRITES —

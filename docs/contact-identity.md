@@ -314,8 +314,16 @@ same per-contact algorithm, dispatching on the number of *distinct, valid*
 `guesswho://contact/…` URLs the contact carries: [^reconcile]
 
 - **Case A — zero valid IDs.** Strip any malformed `guesswho://` URLs, mint a
-  fresh UUID, write it as a new URL, save. (Adopt-on-first-write: the first time
-  the user attaches GuessWho data to a contact, it gets an ID.) [^caseA]
+  UUID, write it as a new URL, save. (Adopt-on-first-write: the first time
+  the user attaches GuessWho data to a contact, it gets an ID.) Since the
+  CLI/MCP Revision 2 (2026-07-17) the minted UUID is **deterministic** —
+  `Contact.deterministicGuessWhoID`, SHA-256 over `localID` + the normalized
+  display name, formatted as an RFC 4122 UUID — so the agent interface can
+  hand out the same value for a never-written contact as a *preview* of what
+  it will mint to, and the id survives the mint unchanged. Two devices still
+  mint different UUIDs for the same logical contact (localIDs are
+  device-local), exactly as with random minting; Case D converges them.
+  [^caseA]
 - **Case B — exactly one valid ID, no malformed siblings.** No-op. [^reconcile]
 - **Case C — one valid ID plus malformed siblings.** Keep the valid one, remove
   the malformed URLs, save. [^caseC]
