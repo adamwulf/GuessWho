@@ -188,7 +188,8 @@ struct MCPWriteIntegrationTests {
 
         let helper = RequestOrigin.mcp.makeHelperId()
         let all = await dispatcher.handle(.contactsList(
-            helperId: helper, messageId: "list-all", kind: nil, limit: nil, cursor: nil))
+            helperId: helper, messageId: "list-all", kind: nil,
+            favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
         guard case .contactPage(_, _, let page) = all else {
             Issue.record("expected a contact page; got \(String(describing: all))")
             return
@@ -202,7 +203,8 @@ struct MCPWriteIntegrationTests {
 
         let organizations = await dispatcher.handle(.contactsList(
             helperId: helper, messageId: "list-orgs",
-            type: "organization", limit: nil, cursor: nil))
+            kind: "organization", favoritesOnly: nil, groupId: nil,
+            limit: nil, cursor: nil))
         guard case .contactPage(_, _, let orgPage) = organizations else {
             Issue.record("expected a contact page; got \(String(describing: organizations))")
             return
@@ -217,7 +219,7 @@ struct MCPWriteIntegrationTests {
         repeat {
             let response = await dispatcher.handle(.contactsList(
                 helperId: helper, messageId: "list-page-\(pages)",
-                type: nil, limit: 2, cursor: cursor))
+                kind: nil, favoritesOnly: nil, groupId: nil, limit: 2, cursor: cursor))
             guard case .contactPage(_, _, let slice) = response else {
                 Issue.record("expected a contact page; got \(String(describing: response))")
                 return
