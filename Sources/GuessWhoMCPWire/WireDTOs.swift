@@ -231,7 +231,7 @@ public struct WireContact: Codable, Sendable {
 /// Deliberately ABSENT — every multi-value list. A whole-list replacement
 /// is how an assistant bulk-edits a card believing it edited one entry, so
 /// list fields change ONE entry at a time through contacts_add_value,
-/// contacts_edit_value, or contacts_remove_value; this struct
+/// contacts_edit_value, or contacts_delete_value; this struct
 /// having no list members makes an update-side bulk edit structurally
 /// impossible, the same way the missing note member keeps the Apple note
 /// unwritable. The other update exclusions carry over: no note field, no
@@ -256,29 +256,34 @@ public struct WireContactScalarFields: Codable, Sendable, Equatable {
 
     public init() {}
 
+    /// (wire field name, key path) for every scalar field, in DECLARATION
+    /// order. The single source for the scalar field-name list that feeds
+    /// `providedFieldNames` (and, through it, the audit summaries). The order
+    /// is load-bearing — it must stay identical to the hand-rolled list this
+    /// replaced so audit strings are byte-for-byte unchanged. `WireContactFields`
+    /// reuses these same key paths for its scalar half (see `scalarFields`).
+    static let scalarKeyPaths: [(name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)] = [
+        ("namePrefix", \.namePrefix),
+        ("givenName", \.givenName),
+        ("middleName", \.middleName),
+        ("familyName", \.familyName),
+        ("previousFamilyName", \.previousFamilyName),
+        ("nameSuffix", \.nameSuffix),
+        ("nickname", \.nickname),
+        ("phoneticGivenName", \.phoneticGivenName),
+        ("phoneticMiddleName", \.phoneticMiddleName),
+        ("phoneticFamilyName", \.phoneticFamilyName),
+        ("organization", \.organization),
+        ("phoneticOrganization", \.phoneticOrganization),
+        ("department", \.department),
+        ("jobTitle", \.jobTitle),
+        ("birthday", \.birthday),
+    ]
+
     /// The names of the fields the caller supplied, for audit summaries.
     /// Host-side display only.
     public var providedFieldNames: [String] {
-        var names: [String] = []
-        func note(_ name: String, _ provided: Bool) {
-            if provided { names.append(name) }
-        }
-        note("namePrefix", namePrefix != nil)
-        note("givenName", givenName != nil)
-        note("middleName", middleName != nil)
-        note("familyName", familyName != nil)
-        note("previousFamilyName", previousFamilyName != nil)
-        note("nameSuffix", nameSuffix != nil)
-        note("nickname", nickname != nil)
-        note("phoneticGivenName", phoneticGivenName != nil)
-        note("phoneticMiddleName", phoneticMiddleName != nil)
-        note("phoneticFamilyName", phoneticFamilyName != nil)
-        note("organization", organization != nil)
-        note("phoneticOrganization", phoneticOrganization != nil)
-        note("department", department != nil)
-        note("jobTitle", jobTitle != nil)
-        note("birthday", birthday != nil)
-        return names
+        Self.scalarKeyPaths.filter { self[keyPath: $0.keyPath] != nil }.map(\.name)
     }
 
     /// True when no field was supplied at all (an update with nothing to do).
@@ -329,72 +334,72 @@ public struct WireContactFields: Codable, Sendable, Equatable {
 
     public init() {}
 
+    /// This struct's scalar key paths, in the SAME order as
+    /// `WireContactScalarFields.scalarKeyPaths`, so the two zip position-for-
+    /// position when copying into the scalar subset.
+    private static let scalarReadKeyPaths: [KeyPath<WireContactFields, String?>] = [
+        \.namePrefix, \.givenName, \.middleName, \.familyName,
+        \.previousFamilyName, \.nameSuffix, \.nickname,
+        \.phoneticGivenName, \.phoneticMiddleName, \.phoneticFamilyName,
+        \.organization, \.phoneticOrganization, \.department, \.jobTitle,
+        \.birthday,
+    ]
+
     /// The single-value subset, so create and update share one scalar
     /// apply path.
     public var scalarFields: WireContactScalarFields {
         var scalars = WireContactScalarFields()
-        scalars.namePrefix = namePrefix
-        scalars.givenName = givenName
-        scalars.middleName = middleName
-        scalars.familyName = familyName
-        scalars.previousFamilyName = previousFamilyName
-        scalars.nameSuffix = nameSuffix
-        scalars.nickname = nickname
-        scalars.phoneticGivenName = phoneticGivenName
-        scalars.phoneticMiddleName = phoneticMiddleName
-        scalars.phoneticFamilyName = phoneticFamilyName
-        scalars.organization = organization
-        scalars.phoneticOrganization = phoneticOrganization
-        scalars.department = department
-        scalars.jobTitle = jobTitle
-        scalars.birthday = birthday
+        for (dest, source) in zip(WireContactScalarFields.scalarKeyPaths, Self.scalarReadKeyPaths) {
+            scalars[keyPath: dest.keyPath] = self[keyPath: source]
+        }
         return scalars
+    }
+
+    /// (wire field name, whether the caller supplied it) for EVERY field —
+    /// scalars and lists — in the exact order they appear on the wire. Scalar
+    /// entries reuse `WireContactScalarFields.scalarKeyPaths` (one source for
+    /// the scalar names); the list entries interleave at their real positions
+    /// (`birthday` lands AFTER the first list block, not with the other
+    /// scalars). Order is load-bearing: `providedFieldNames` feeds audit
+    /// summaries and must stay byte-identical to the hand-rolled list.
+    private var orderedFieldChecks: [(name: String, provided: Bool)] {
+        // Scalar name -> whether self supplied it, sourced from the shared
+        // scalar name list zipped with this struct's own read key paths.
+        let scalarProvided = Dictionary(uniqueKeysWithValues:
+            zip(WireContactScalarFields.scalarKeyPaths, Self.scalarReadKeyPaths).map {
+                ($0.name, self[keyPath: $1] != nil)
+            })
+        func scalar(_ name: String) -> (name: String, provided: Bool) {
+            (name, scalarProvided[name]!)
+        }
+        return [
+            scalar("namePrefix"), scalar("givenName"), scalar("middleName"),
+            scalar("familyName"), scalar("previousFamilyName"), scalar("nameSuffix"),
+            scalar("nickname"), scalar("phoneticGivenName"), scalar("phoneticMiddleName"),
+            scalar("phoneticFamilyName"), scalar("organization"),
+            scalar("phoneticOrganization"), scalar("department"), scalar("jobTitle"),
+            ("phoneNumbers", phoneNumbers != nil),
+            ("emailAddresses", emailAddresses != nil),
+            ("postalAddresses", postalAddresses != nil),
+            ("urlAddresses", urlAddresses != nil),
+            scalar("birthday"),
+            ("dates", dates != nil),
+            ("socialProfiles", socialProfiles != nil),
+            ("instantMessages", instantMessages != nil),
+            ("relatedNames", relatedNames != nil),
+        ]
     }
 
     /// The names of the fields the caller supplied, for audit summaries
     /// ("Edited the contact — jobTitle, phoneNumbers"). Host-side display
     /// only.
     public var providedFieldNames: [String] {
-        var names: [String] = []
-        func note(_ name: String, _ provided: Bool) {
-            if provided { names.append(name) }
-        }
-        note("namePrefix", namePrefix != nil)
-        note("givenName", givenName != nil)
-        note("middleName", middleName != nil)
-        note("familyName", familyName != nil)
-        note("previousFamilyName", previousFamilyName != nil)
-        note("nameSuffix", nameSuffix != nil)
-        note("nickname", nickname != nil)
-        note("phoneticGivenName", phoneticGivenName != nil)
-        note("phoneticMiddleName", phoneticMiddleName != nil)
-        note("phoneticFamilyName", phoneticFamilyName != nil)
-        note("organization", organization != nil)
-        note("phoneticOrganization", phoneticOrganization != nil)
-        note("department", department != nil)
-        note("jobTitle", jobTitle != nil)
-        note("phoneNumbers", phoneNumbers != nil)
-        note("emailAddresses", emailAddresses != nil)
-        note("postalAddresses", postalAddresses != nil)
-        note("urlAddresses", urlAddresses != nil)
-        note("birthday", birthday != nil)
-        note("dates", dates != nil)
-        note("socialProfiles", socialProfiles != nil)
-        note("instantMessages", instantMessages != nil)
-        note("relatedNames", relatedNames != nil)
-        return names
+        orderedFieldChecks.filter(\.provided).map(\.name)
     }
 
     /// True when no field was supplied at all (an update with nothing to do).
     public var isEmpty: Bool {
-        namePrefix == nil && givenName == nil && middleName == nil
-            && familyName == nil && previousFamilyName == nil && nameSuffix == nil
-            && nickname == nil && phoneticGivenName == nil && phoneticMiddleName == nil
-            && phoneticFamilyName == nil && organization == nil
-            && phoneticOrganization == nil && department == nil && jobTitle == nil
-            && phoneNumbers == nil && emailAddresses == nil && postalAddresses == nil
-            && urlAddresses == nil && birthday == nil && dates == nil
-            && socialProfiles == nil && instantMessages == nil && relatedNames == nil
+        providedFieldNames.isEmpty
     }
 }
 
@@ -419,7 +424,7 @@ public struct WireNote: Codable, Sendable {
 public struct WireCustomField: Codable, Sendable {
     public let id: String
     public let name: String
-    /// "note", "multilineNote", "date", or "checkbox".
+    /// "text", "multilineNote", "date", or "checkbox".
     public let type: String
     public let value: String
     public let modifiedAt: String
@@ -437,7 +442,7 @@ public struct WireCustomField: Codable, Sendable {
 /// record it was listed on: `kind`/`otherId` describe the record at the
 /// FAR end, readable with the matching read tool (contacts_get,
 /// events_get, places_list). `id` is the connection's own id — the one
-/// links_remove takes.
+/// links_delete takes.
 public struct WireLink: Codable, Sendable {
     public let id: String
     /// The other record's kind: "person", "organization", "event", or

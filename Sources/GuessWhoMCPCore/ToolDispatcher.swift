@@ -176,10 +176,10 @@ public actor ToolDispatcher {
             response = await contactsSearch(
                 helperId: helperId, messageId: messageId,
                 query: query, limit: limit, cursor: cursor)
-        case .contactsList(_, _, let type, let favoritesOnly, let groupId, let limit, let cursor):
+        case .contactsList(_, _, let kind, let favoritesOnly, let groupId, let limit, let cursor):
             response = await contactsList(
                 helperId: helperId, messageId: messageId,
-                type: type, favoritesOnly: favoritesOnly, groupId: groupId,
+                kind: kind, favoritesOnly: favoritesOnly, groupId: groupId,
                 limit: limit, cursor: cursor)
         case .contactsGet(_, _, let contactId):
             response = await contactsGet(
@@ -222,13 +222,13 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
         case .contactsCreate, .contactsUpdate, .contactsDelete,
-             .contactsAddValue, .contactsRemoveValue, .contactsEditValue,
+             .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
-             .linksCreate, .linksRemove:
+             .linksCreate, .linksDelete:
             // Unreachable: every write case dispatched through handleWrite
             // (or the confirmation-gated delete path) above. Kept explicit
             // so a new write case that forgets its isWrite classification
@@ -362,31 +362,31 @@ public actor ToolDispatcher {
     /// from the same no-mint derivation every read uses.
     ///
     /// The optional `favoritesOnly` and `groupId` filters intersect with
-    /// `type` (all three AND-compose): the base set is one group's members
+    /// `kind` (all three AND-compose): the base set is one group's members
     /// when `groupId` is present (a group id that resolves to nothing is a
     /// typed notFound, never a silently empty page), otherwise the whole
-    /// book, and `type`/`favoritesOnly` narrow it. Every result — favorites
+    /// book, and `kind`/`favoritesOnly` narrow it. Every result — favorites
     /// included — runs through the one deterministic sort below.
     private func contactsList(
-        helperId: String, messageId: String, type: String?,
+        helperId: String, messageId: String, kind: String?,
         favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?
     ) async -> WireResponse {
         let wanted: ContactType?
-        switch type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case nil: wanted = nil
         case "person": wanted = .person
         case "organization": wanted = .organization
         default:
             return .error(
                 helperId: helperId, messageId: messageId,
-                code: .invalidParams, message: WireErrorMessage.invalidTypeArgument)
+                code: .invalidParams, message: WireErrorMessage.invalidKindFilterArgument)
         }
         guard let page = pageBounds(limit: limit, cursor: cursor) else {
             return invalidCursor(helperId: helperId, messageId: messageId)
         }
         // Base set: one group's members (resolved via the same no-mint
         // group lookup + notFound the group-members filter has always used)
-        // or the whole book. Then type + favorites narrow it in place, so
+        // or the whole book. Then kind + favorites narrow it in place, so
         // the filters intersect.
         let baseSet: [Contact]
         if let groupId {
@@ -682,7 +682,7 @@ public actor ToolDispatcher {
             return await contactsEditListItem(
                 helperId: helperId, messageId: messageId, contactId: contactId,
                 field: field, operation: .add(value: value, label: label))
-        case .contactsRemoveValue(_, _, let contactId, let wireField, let value, _):
+        case .contactsDeleteValue(_, _, let contactId, let wireField, let value, _):
             guard let field = ContactListField(wireField: wireField) else {
                 return invalidContactListField(helperId: helperId, messageId: messageId)
             }
@@ -744,7 +744,7 @@ public actor ToolDispatcher {
             return await linksCreate(
                 helperId: helperId, messageId: messageId,
                 fromId: fromId, fromKind: fromKind, toId: toId, toKind: toKind, note: note)
-        case .linksRemove(_, _, let linkId, _):
+        case .linksDelete(_, _, let linkId, _):
             return await linksRemove(helperId: helperId, messageId: messageId, linkId: linkId)
         default:
             return .error(
@@ -1619,7 +1619,7 @@ public actor ToolDispatcher {
     }
 
     /// The shared handler behind contacts_add_value, contacts_edit_value,
-    /// and contacts_remove_value: resolve, fetch the CURRENT card through
+    /// and contacts_delete_value: resolve, fetch the CURRENT card through
     /// the editor's own editable path, match the one entry by exact value
     /// against that fresh card, mutate exactly that entry, and save through
     /// the same funnel contacts_update uses. 0 matches → typed notFound;
@@ -2166,7 +2166,7 @@ public actor ToolDispatcher {
         switch endpoint {
         case .contact(let contact):
             return (
-                contact.contactType == .organization ? "organization" : "person",
+                WireMapping.kind(contact),
                 WireRecordID.contactID(for: contact))
         case .event(let event):
             return ("event", WireRecordID.eventID(for: event))
@@ -2266,7 +2266,7 @@ public actor ToolDispatcher {
             }
             guard let contact else { return nil }
             return (
-                contact.contactType == .organization ? "organization" : "person",
+                WireMapping.kind(contact),
                 WireRecordID.contactID(for: contact))
         case .event:
             guard let event = await MainActor.run(body: { events.event(uuid: endpoint.id) })

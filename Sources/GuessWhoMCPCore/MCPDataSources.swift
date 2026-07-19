@@ -25,7 +25,6 @@ public protocol MCPContactSource: AnyObject {
     func notes(for id: ContactID) -> [ContactNote]
     func fields(for id: ContactID) -> [SidecarField]
     func links(for id: ContactID) async -> [Link]
-    func linkedContact(of link: Link, for id: ContactID) -> Contact?
     func isFavorite(_ id: ContactID) -> Bool
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]
@@ -119,7 +118,7 @@ public protocol MCPEventSource: AnyObject {
 }
 
 /// The generic connection surface (links_list / links_create /
-/// links_remove): the KIND-AGNOSTIC engine primitive the app's own detail
+/// links_delete): the KIND-AGNOSTIC engine primitive the app's own detail
 /// views funnel into for non-contact endpoints (event↔event, event↔place).
 /// Contact endpoints do NOT ride this for writes — they go through the
 /// `MCPContactSource` funnels above so an unreconciled contact

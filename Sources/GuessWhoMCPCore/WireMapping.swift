@@ -51,7 +51,11 @@ enum WireMapping {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func kind(_ contact: Contact) -> String {
+    /// The wire's contact-kind string. One source of truth for the value
+    /// that must match `WireContactSummary.kind`'s documented set — the
+    /// summary/contact mappers here and the two links_* dispatcher sites
+    /// (linkWireDescriptor, resolveFarEndpoint) all go through this.
+    static func kind(_ contact: Contact) -> String {
         contact.contactType == .organization ? "organization" : "person"
     }
 
@@ -161,9 +165,22 @@ enum WireMapping {
         return WireCustomField(
             id: id,
             name: field.field,
-            type: field.type.rawValue,
+            type: wireFieldType(field.type),
             value: value,
             modifiedAt: timestamp(field.modifiedAt))
+    }
+
+    /// Engine field type → the wire's `type` string. The engine's single-line
+    /// text case is `.note` internally, but the wire spells it `"text"` so a
+    /// round-trip (write `"text"` → read `"text"`) holds and the wire never
+    /// borrows the word "note" for a type name (the Apple contact note is a
+    /// different, never-crossed thing). Other cases pass through unchanged.
+    /// `.blob` never reaches here — attachment fields are filtered above.
+    private static func wireFieldType(_ type: SidecarFieldType) -> String {
+        switch type {
+        case .note: return "text"
+        case .multilineNote, .date, .checkbox, .blob: return type.rawValue
+        }
     }
 
     /// One generic connection row (links_list / links_create), described

@@ -118,12 +118,12 @@ final class WireRequestCreateTests: XCTestCase {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
             parameters: params(MCPTool.contactsList.rawValue, [
-                "type": "person", "favoritesOnly": true, "groupId": "g-1",
+                "kind": "person", "favoritesOnly": true, "groupId": "g-1",
             ]))
-        guard case .contactsList(_, _, let type, let favoritesOnly, let groupId, _, _) = request else {
+        guard case .contactsList(_, _, let kind, let favoritesOnly, let groupId, _, _) = request else {
             return XCTFail("wrong case")
         }
-        XCTAssertEqual(type, "person")
+        XCTAssertEqual(kind, "person")
         XCTAssertEqual(favoritesOnly, true)
         XCTAssertEqual(groupId, "g-1")
     }
@@ -134,10 +134,10 @@ final class WireRequestCreateTests: XCTestCase {
         let bare = try WireRequest.create(
             helperId: "h", messageId: "m",
             parameters: params(MCPTool.contactsList.rawValue))
-        guard case .contactsList(_, _, let type, let favoritesOnly, let groupId, _, _) = bare else {
+        guard case .contactsList(_, _, let kind, let favoritesOnly, let groupId, _, _) = bare else {
             return XCTFail("wrong case")
         }
-        XCTAssertNil(type)
+        XCTAssertNil(kind)
         XCTAssertNil(favoritesOnly)
         XCTAssertNil(groupId)
 
@@ -176,7 +176,7 @@ final class WireRequestCreateTests: XCTestCase {
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {
         let expectedFields = ["phone", "email", "url", "related_name", "date"]
-        for tool in [MCPTool.contactsAddValue, .contactsRemoveValue, .contactsEditValue] {
+        for tool in [MCPTool.contactsAddValue, .contactsDeleteValue, .contactsEditValue] {
             guard case .object(let schema) = tool.metadata.inputSchema,
                   case .object(let properties) = schema["properties"],
                   case .object(let field) = properties["field"],
@@ -336,15 +336,15 @@ final class WireRequestCreateTests: XCTestCase {
             ])))
     }
 
-    func testRemoveValueParses() throws {
+    func testDeleteValueParses() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
-            parameters: params(MCPTool.contactsRemoveValue.rawValue, [
+            parameters: params(MCPTool.contactsDeleteValue.rawValue, [
                 "contactId": "some-contact-id",
                 "field": "date",
                 "value": "--12-25",
             ]))
-        guard case .contactsRemoveValue(_, _, _, let field, let value, _) = request else {
+        guard case .contactsDeleteValue(_, _, _, let field, let value, _) = request else {
             return XCTFail("wrong case")
         }
         XCTAssertEqual(field, "date")
@@ -365,5 +365,99 @@ final class WireRequestCreateTests: XCTestCase {
                     WireErrorMessage.invalidContactListField)
             }
         }
+    }
+
+    // MARK: - Derived scalar-field views (keypath single-sourcing)
+
+    /// providedFieldNames feeds audit summaries; its ORDER is a wire-visible
+    /// contract, so lock the exact sequence the keypath table must emit.
+    func testScalarFieldsProvidedNamesOrderIsStable() {
+        var fields = WireContactScalarFields()
+        fields.namePrefix = "Dr."
+        fields.givenName = "Ada"
+        fields.middleName = "M"
+        fields.familyName = "Lovelace"
+        fields.previousFamilyName = "Byron"
+        fields.nameSuffix = "Jr."
+        fields.nickname = "Ada"
+        fields.phoneticGivenName = "AY-dah"
+        fields.phoneticMiddleName = "em"
+        fields.phoneticFamilyName = "LUV-lace"
+        fields.organization = "Analytical Engines"
+        fields.phoneticOrganization = "an-uh-LIT-i-kal"
+        fields.department = "R&D"
+        fields.jobTitle = "Countess"
+        fields.birthday = "1815-12-10"
+        XCTAssertEqual(fields.providedFieldNames, [
+            "namePrefix", "givenName", "middleName", "familyName",
+            "previousFamilyName", "nameSuffix", "nickname",
+            "phoneticGivenName", "phoneticMiddleName", "phoneticFamilyName",
+            "organization", "phoneticOrganization", "department", "jobTitle",
+            "birthday",
+        ])
+        XCTAssertFalse(fields.isEmpty)
+        XCTAssertTrue(WireContactScalarFields().isEmpty)
+    }
+
+    /// The full contacts_create field set INTERLEAVES its list fields — note
+    /// that `birthday` lands AFTER the first list block, not with the other
+    /// scalars. This exact order is what audit summaries render.
+    func testContactFieldsProvidedNamesOrderIsStable() {
+        var fields = WireContactFields()
+        fields.namePrefix = "Dr."
+        fields.givenName = "Ada"
+        fields.middleName = "M"
+        fields.familyName = "Lovelace"
+        fields.previousFamilyName = "Byron"
+        fields.nameSuffix = "Jr."
+        fields.nickname = "Ada"
+        fields.phoneticGivenName = "AY-dah"
+        fields.phoneticMiddleName = "em"
+        fields.phoneticFamilyName = "LUV-lace"
+        fields.organization = "Analytical Engines"
+        fields.phoneticOrganization = "an-uh-LIT-i-kal"
+        fields.department = "R&D"
+        fields.jobTitle = "Countess"
+        fields.phoneNumbers = [WireLabeledValue(label: nil, value: "555")]
+        fields.emailAddresses = [WireLabeledValue(label: nil, value: "a@x.example")]
+        fields.postalAddresses = []
+        fields.urlAddresses = [WireLabeledValue(label: nil, value: "https://x.example")]
+        fields.birthday = "1815-12-10"
+        fields.dates = []
+        fields.socialProfiles = []
+        fields.instantMessages = []
+        fields.relatedNames = [WireLabeledValue(label: nil, value: "Charles Babbage")]
+        XCTAssertEqual(fields.providedFieldNames, [
+            "namePrefix", "givenName", "middleName", "familyName",
+            "previousFamilyName", "nameSuffix", "nickname",
+            "phoneticGivenName", "phoneticMiddleName", "phoneticFamilyName",
+            "organization", "phoneticOrganization", "department", "jobTitle",
+            "phoneNumbers", "emailAddresses", "postalAddresses", "urlAddresses",
+            "birthday",
+            "dates", "socialProfiles", "instantMessages", "relatedNames",
+        ])
+        XCTAssertFalse(fields.isEmpty)
+        XCTAssertTrue(WireContactFields().isEmpty)
+    }
+
+    /// scalarFields must carry every scalar through unchanged and drop the
+    /// list fields — the shared create/update apply path depends on it.
+    func testContactFieldsScalarSubsetCopiesEveryScalar() {
+        var fields = WireContactFields()
+        fields.givenName = "Ada"
+        fields.familyName = "Lovelace"
+        fields.jobTitle = "Countess"
+        fields.birthday = "1815-12-10"
+        fields.phoneNumbers = [WireLabeledValue(label: nil, value: "555")]
+        let scalars = fields.scalarFields
+        XCTAssertEqual(scalars.givenName, "Ada")
+        XCTAssertEqual(scalars.familyName, "Lovelace")
+        XCTAssertEqual(scalars.jobTitle, "Countess")
+        XCTAssertEqual(scalars.birthday, "1815-12-10")
+        // The scalar subset carries no list fields, so its provided-names
+        // list is exactly the scalars that were set.
+        XCTAssertEqual(scalars.providedFieldNames, [
+            "givenName", "familyName", "jobTitle", "birthday",
+        ])
     }
 }

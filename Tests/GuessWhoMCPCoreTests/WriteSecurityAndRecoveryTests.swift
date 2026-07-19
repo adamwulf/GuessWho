@@ -80,7 +80,7 @@ final class WriteEchoSecurityTests: XCTestCase {
             fromId: jane, fromKind: "person", toId: fresh, toKind: "person",
             note: "echo link", idempotencyToken: nil))
         if case .link(_, _, let row) = linked {
-            _ = await run(.linksRemove(
+            _ = await run(.linksDelete(
                 helperId: helper, messageId: TestMessageID.next(),
                 linkId: row.id, idempotencyToken: nil))
         }
@@ -101,7 +101,7 @@ final class WriteEchoSecurityTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", currentValue: "+1 555 0900",
             newValue: "+1 555 0901", newLabel: "work", idempotencyToken: nil))
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "+1 555 0901", idempotencyToken: nil))
         _ = await run(.contactsAddValue(
@@ -111,7 +111,7 @@ final class WriteEchoSecurityTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", currentValue: "echo@doe.example",
             newValue: "echo2@doe.example", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", value: "echo2@doe.example", idempotencyToken: nil))
         _ = await run(.contactsAddValue(
@@ -121,7 +121,7 @@ final class WriteEchoSecurityTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "url", currentValue: "https://echo.example",
             newValue: "https://echo2.example", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "url", value: "https://echo2.example", idempotencyToken: nil))
         _ = await run(.contactsAddValue(
@@ -131,7 +131,7 @@ final class WriteEchoSecurityTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "related_name", currentValue: "Echo Relative",
             newValue: "Echo B. Relative", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "related_name", value: "Echo B. Relative", idempotencyToken: nil))
         _ = await run(.contactsAddValue(
@@ -141,11 +141,11 @@ final class WriteEchoSecurityTests: XCTestCase {
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "date", currentValue: "--06-01",
             newValue: "--06-02", newLabel: nil, idempotencyToken: nil))
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "date", value: "--06-02", idempotencyToken: nil))
         // Error outputs: a 0-match, an ambiguous match, a reserved URL.
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "phone", value: "+1 555 9999", idempotencyToken: nil))
         _ = await run(.contactsAddValue(
@@ -154,7 +154,7 @@ final class WriteEchoSecurityTests: XCTestCase {
         _ = await run(.contactsAddValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", value: "dupe@doe.example", label: "b", idempotencyToken: nil))
-        _ = await run(.contactsRemoveValue(
+        _ = await run(.contactsDeleteValue(
             helperId: helper, messageId: TestMessageID.next(),
             contactId: jane, field: "email", value: "dupe@doe.example", idempotencyToken: nil))
         _ = await run(.contactsAddValue(
@@ -474,7 +474,7 @@ final class RecentlyDeletedTests: XCTestCase {
 
     // Link removal + Recently-Deleted restore is covered end-to-end over the
     // real link engine by LinkToolTests.testRemovedGenericLinkIsRestorableFromRecentlyDeleted
-    // (links_create → links_remove → restore); this test keeps the event-tag
+    // (links_create → links_delete → restore); this test keeps the event-tag
     // restore leg, which lives only here.
     func testDeletedTagIsRestorable() async {
         let fixture = await writableFixture()

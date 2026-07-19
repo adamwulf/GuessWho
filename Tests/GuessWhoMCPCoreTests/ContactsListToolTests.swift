@@ -27,12 +27,12 @@ final class ContactsListToolTests: XCTestCase {
     }
 
     private func listPage(
-        _ fixture: Fixture, type: String? = nil, favoritesOnly: Bool? = nil,
+        _ fixture: Fixture, kind: String? = nil, favoritesOnly: Bool? = nil,
         groupId: String? = nil, limit: Int? = nil, cursor: String? = nil
     ) async -> WirePage<WireContactSummary>? {
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            type: type, favoritesOnly: favoritesOnly, groupId: groupId,
+            kind: kind, favoritesOnly: favoritesOnly, groupId: groupId,
             limit: limit, cursor: cursor))
         guard case .contactPage(_, _, let page) = response else {
             XCTFail("expected a contact page; got \(String(describing: response))")
@@ -43,7 +43,7 @@ final class ContactsListToolTests: XCTestCase {
 
     /// Every id in cursor order for the given filter — a full paged walk.
     private func fullWalk(
-        _ fixture: Fixture, type: String? = nil, favoritesOnly: Bool? = nil,
+        _ fixture: Fixture, kind: String? = nil, favoritesOnly: Bool? = nil,
         groupId: String? = nil, limit: Int? = nil
     ) async -> [String] {
         var ids: [String] = []
@@ -51,7 +51,7 @@ final class ContactsListToolTests: XCTestCase {
         var pages = 0
         repeat {
             guard let page = await listPage(
-                fixture, type: type, favoritesOnly: favoritesOnly,
+                fixture, kind: kind, favoritesOnly: favoritesOnly,
                 groupId: groupId, limit: limit, cursor: cursor)
             else {
                 return ids
@@ -90,25 +90,25 @@ final class ContactsListToolTests: XCTestCase {
             "a never-written contact lists under its deterministic pre-mint id")
     }
 
-    func testTypeFilterSelectsOnlyThatKind() async {
+    func testKindFilterSelectsOnlyThatKind() async {
         let fixture = await Fixture.make()
-        guard let people = await listPage(fixture, type: "person") else { return }
+        guard let people = await listPage(fixture, kind: "person") else { return }
         XCTAssertEqual(people.items.map(\.name), ["Fresh Face", "Jane Doe"])
         XCTAssertTrue(people.items.allSatisfy { $0.kind == "person" })
 
         // Tolerant argument parsing, same stance as the links kind values.
-        guard let organizations = await listPage(fixture, type: " Organization ") else { return }
+        guard let organizations = await listPage(fixture, kind: " Organization ") else { return }
         XCTAssertEqual(organizations.items.map(\.name), ["Doe Industries"])
         XCTAssertTrue(organizations.items.allSatisfy { $0.kind == "organization" })
     }
 
-    func testInvalidTypeArgumentRejected() async {
+    func testInvalidKindArgumentRejected() async {
         let fixture = await Fixture.make()
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: "company", favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
+            kind: "company", favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
         expectError(response, code: .invalidParams)
-        XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.invalidTypeArgument)
+        XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.invalidKindFilterArgument)
     }
 
     /// Reads never mint: listing the whole book — filters included — leaves
@@ -116,8 +116,8 @@ final class ContactsListToolTests: XCTestCase {
     func testListNeverMints() async {
         let fixture = await Fixture.make()
         _ = await fullWalk(fixture)
-        _ = await fullWalk(fixture, type: "person")
-        _ = await fullWalk(fixture, type: "organization")
+        _ = await fullWalk(fixture, kind: "person")
+        _ = await fullWalk(fixture, kind: "organization")
         let (mintCount, identityURLCount) = await MainActor.run {
             (
                 fixture.contacts.mintCount,
@@ -229,7 +229,7 @@ final class ContactsListToolTests: XCTestCase {
         let fixture = await Fixture.make()
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: "made-up"))
+            kind: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: "made-up"))
         expectError(response, code: .invalidParams)
     }
 
@@ -249,7 +249,7 @@ final class ContactsListToolTests: XCTestCase {
         }
         let oversize = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: nil, favoritesOnly: nil, groupId: nil, limit: 200, cursor: nil))
+            kind: nil, favoritesOnly: nil, groupId: nil, limit: 200, cursor: nil))
         expectError(oversize, code: .tooLarge)
 
         guard let small = await listPage(fixture, limit: 5) else { return }
@@ -271,7 +271,7 @@ final class ContactsListToolTests: XCTestCase {
         await MainActor.run { fixture.gates.contactsAuthorized = false }
         expectError(await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m1",
-            type: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)),
+            kind: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)),
             code: .permissionDenied)
         let list = await fixture.dispatcher.handle(
             .listTools(helperId: Fixture.helper, messageId: "m2"))
@@ -287,7 +287,7 @@ final class ContactsListToolTests: XCTestCase {
         }
         expectError(await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m3",
-            type: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)),
+            kind: nil, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)),
             code: .disabled)
     }
 
@@ -299,10 +299,10 @@ final class ContactsListToolTests: XCTestCase {
     func testExclusionSentinelsAbsentFromListOutput() async {
         let fixture = await Fixture.make()
         var responses: [WireResponse] = []
-        for type in [nil, "person", "organization", "bogus-type"] {
+        for kind in [nil, "person", "organization", "bogus-type"] {
             if let response = await fixture.dispatcher.handle(.contactsList(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
-                type: type, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)) {
+                kind: kind, favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil)) {
                 responses.append(response)
             }
         }
@@ -411,7 +411,7 @@ final class ContactsListToolTests: XCTestCase {
 
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: nil, favoritesOnly: nil, groupId: emptyGroupID, limit: nil, cursor: nil))
+            kind: nil, favoritesOnly: nil, groupId: emptyGroupID, limit: nil, cursor: nil))
         // A valid-but-empty group is a contactPage, never an error.
         XCTAssertNil(response?.errorPayload,
                      "an empty valid group must not be a notFound / error")
@@ -428,7 +428,7 @@ final class ContactsListToolTests: XCTestCase {
         let fixture = await Fixture.make()
         let response = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "m",
-            type: nil, favoritesOnly: nil, groupId: "group-that-does-not-exist",
+            kind: nil, favoritesOnly: nil, groupId: "group-that-does-not-exist",
             limit: nil, cursor: nil))
         expectError(response, code: .notFound)
         XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.notFoundGroup)
@@ -436,8 +436,8 @@ final class ContactsListToolTests: XCTestCase {
 
     // MARK: - AND-composition (the capability gain over the retired tools)
 
-    /// favoritesOnly + type intersect: only favorites of that kind survive.
-    func testFavoritesAndTypeCompose() async {
+    /// favoritesOnly + kind intersect: only favorites of that kind survive.
+    func testFavoritesAndKindCompose() async {
         let fixture = await Fixture.make()
         // Add a favorite organization alongside the favorite person (Jane).
         await MainActor.run {
@@ -449,9 +449,9 @@ final class ContactsListToolTests: XCTestCase {
             fixture.contacts.favoriteEffectiveIDs.insert(org.contactID.restorationToken.localID)
         }
         // favorites ∩ person = just Jane; favorites ∩ organization = just the org.
-        guard let favPeople = await listPage(fixture, type: "person", favoritesOnly: true) else { return }
+        guard let favPeople = await listPage(fixture, kind: "person", favoritesOnly: true) else { return }
         XCTAssertEqual(favPeople.items.map(\.name), ["Jane Doe"])
-        guard let favOrgs = await listPage(fixture, type: "organization", favoritesOnly: true) else { return }
+        guard let favOrgs = await listPage(fixture, kind: "organization", favoritesOnly: true) else { return }
         XCTAssertEqual(favOrgs.items.map(\.name), ["Favored Org"])
     }
 
