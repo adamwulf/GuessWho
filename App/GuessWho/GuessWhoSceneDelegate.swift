@@ -1793,20 +1793,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             onDone: { [weak self] in
                 // The editor dismisses itself on the statement right after
                 // `onDone`, so hop off this turn before touching the presenter.
-                // Every applyLinkedIn failure that reaches a CONTACTS or SIDECAR
-                // write is then behind a real suspension, which outlasts the
-                // dismissal by far — `presentLinkedInApplyFailureAlert` chains
-                // off the tail of the animation.
+                // Every applyLinkedIn failure that reaches the contacts store or
+                // a sidecar write is then behind a real suspension — reads
+                // included, since the store is an actor and its fetches go
+                // through a work queue — which outlasts the dismissal by far;
+                // `presentLinkedInApplyFailureAlert` chains off the tail of the
+                // animation.
                 //
                 // The one exception, and the reason this is a strong preference
                 // rather than a guarantee: applyLinkedIn's `editableContact`
                 // miss throws `contactNotFound` from a synchronous cache lookup,
                 // no suspension at all, so that alert still rides on `dismiss()`
                 // having started the UIKit dismissal — and may be dropped if it
-                // hasn't. It needs the record to vanish between the create and
-                // this line; the failure is on `handoffLog` either way.
+                // hasn't. It needs the new record to be absent from the cache:
+                // either it vanished after the create, or it never landed
+                // (`createContact`'s refresh swallows a throwing/nil re-read).
+                // The failure is on `handoffLog` either way.
                 Task { @MainActor in
-                    guard let contactID = created.id else { return }
+                    guard let contactID = created.id else {
+                        // Unreachable — `onDone` only fires after `save` set
+                        // this. Logged rather than silently returned, like
+                        // every other dead end on the handoff timeline.
+                        Self.handoffLog.error("new-contact: saved with no identity — extras not attached")
+                        return
+                    }
                     let failure = await Self.attachLinkedInExtras(
                         profile: profile, to: contactID, repo: repo
                     )

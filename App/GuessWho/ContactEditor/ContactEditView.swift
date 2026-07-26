@@ -12,8 +12,10 @@ import GuessWhoSync
 /// LabelOptions, LabeledTextSection, PlatformKeyboardType) live next to
 /// this file.
 ///
-/// `onDone` fires after a successful save. The caller is responsible for
-/// reconcile + repository reload.
+/// `onDone` fires after a successful save. On the default save path the
+/// caller is responsible for reconcile + repository reload; a caller that
+/// supplies its own `save:` owns whatever that path needs instead (the
+/// LinkedIn import's `createContact` refreshes the record itself).
 struct ContactEditView: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss

@@ -14,6 +14,12 @@ public enum ContactStoreError: Error, Sendable {
 /// 0.)", which leaks the module and type name into an alert. The `localID` is
 /// deliberately absent: it's an internal token (see `docs/contact-identity.md`)
 /// and belongs in the log line, not in front of the user.
+///
+/// These strings are product copy, not diagnostics — reword them as
+/// deliberately as any other user-facing label. Deliberately NOT folded into
+/// `ContactEditModel.SaveErrorCategory.recordDoesNotExist`, whose "deleted on
+/// another device" wording asserts a cause `contactNotFound` doesn't prove: a
+/// cache miss is equally a record that never landed.
 extension ContactStoreError: LocalizedError {
     public var errorDescription: String? {
         switch self {
