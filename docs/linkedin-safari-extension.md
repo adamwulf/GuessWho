@@ -443,7 +443,8 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
    delegate posts the app-layer `.linkedInImportDidSave` notification so an open
    `ContactDetailView` reloads (the package never posts app notifications).
 
-Both formerly-future pieces of this flow shipped 2026-07-02:
+Both formerly-future pieces of this flow shipped 2026-07-02 (the no-match half
+was reshaped from create-then-edit into the sheet below on 2026-07-26):
 
 - **No match → pre-filled new-contact sheet.** When `matchLinkedIn` returns
   nothing, the scene delegate presents `ContactEditView` as a form sheet over
@@ -462,7 +463,12 @@ Both formerly-future pieces of this flow shipped 2026-07-02:
 
   The People list's "+" button is deliberately a different shape: it creates
   the blank record first and opens `ContactDetailView` already in edit mode
-  (`startsInEditMode`), where the new-contact form IS the edit form.
+  (`startsInEditMode`), where the new-contact form IS the edit form. **Don't
+  "unify" these two.** They differ because the trigger differs: "+" is the
+  user asking for a new contact right now, with the app already on the People
+  list, so landing in the detail column is where they were headed anyway. An
+  import arrives unannounced from the browser, over whatever the user was
+  reading — so it asks in a dialog and gives the screen back.
 - **Photo write path.** `.photo` routes through
   `ContactsRepository.setContactPhoto` inside `applyLinkedIn`: replacing an
   existing photo first snapshots the replaced bytes into the single-slot

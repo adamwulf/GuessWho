@@ -14,8 +14,14 @@ import Foundation
 public struct SidecarUnavailableError: Error, LocalizedError {
     public init() {}
 
+    /// `LocalizedError` means this string is user-facing by contract — an
+    /// alert that renders `localizedDescription` (the LinkedIn import's
+    /// apply-failure alert does) shows it verbatim. So it must stay in plain
+    /// language: no "sidecar," no "GuessWho" as a noun for our records. The
+    /// wording matches `SidecarLocationBanner`'s "Storage is unavailable." so
+    /// the two surfaces name the same condition the same way.
     public var errorDescription: String? {
-        "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+        "Storage is unavailable. Notes and tags can’t be read or saved right now."
     }
 }
 

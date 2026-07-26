@@ -1709,23 +1709,50 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             onCancel: { [weak self] in self?.dismissPresented() }
         )
 
-        let hosting = UIHostingController(rootView: confirm)
+        presentHandoffSheet(
+            confirm,
+            // Wider sheet so the two columns (esp. About / multi-line values) have room.
+            size: CGSize(width: 840, height: 660),
+            phase: "diff",
+            what: "confirm sheet",
+            metadata: ["contact": contact.displayName, "rows": rows.count]
+        )
+    }
+
+    /// Hosts one of the LinkedIn handoff's SwiftUI dialogs — the matched-contact
+    /// confirm sheet or the no-match new-contact form — as a form sheet over
+    /// whatever is on screen, and logs whether it actually got shown.
+    ///
+    /// Presents from the topmost VC. With no presenter (window not yet key, or a
+    /// teardown race) the sheet would silently never appear — log that instead.
+    /// The presenter resolves BEFORE the "presenting" line so a failure reads as
+    /// a clean "NO presenter available", not "presenting" followed by a
+    /// contradiction.
+    ///
+    /// - Parameters:
+    ///   - phase: the handoff-timeline tag the surrounding lines already use
+    ///     (`"diff"`, `"new-contact"`), so one grep still walks the whole import.
+    ///   - isModal: pass `true` for a dialog that owns its own exits (the
+    ///     editor's Cancel runs a discard confirmation), so a swipe-down /
+    ///     Escape can't bypass them. The confirm sheet holds nothing but
+    ///     checkbox state, so it stays interactively dismissible.
+    private func presentHandoffSheet(
+        _ view: some View,
+        size: CGSize,
+        phase: String,
+        what: String,
+        isModal: Bool = false,
+        metadata: [String: CustomStringConvertible] = [:]
+    ) {
+        let hosting = UIHostingController(rootView: view)
         hosting.modalPresentationStyle = .formSheet
-        // Wider sheet so the two columns (esp. About / multi-line values) have room.
-        hosting.preferredContentSize = CGSize(width: 840, height: 660)
-        // Present from the topmost VC. With no presenter (window not yet key, or
-        // a teardown race) the sheet would silently never appear — log that
-        // instead. Resolve the presenter BEFORE the "presenting" line so a
-        // failure reads as a clean "NO presenter available", not "presenting"
-        // followed by a contradiction.
+        hosting.preferredContentSize = size
+        hosting.isModalInPresentation = isModal
         guard let presenter = topmostPresenter() else {
-            Self.handoffLog.error("diff: NO presenter available — confirm sheet not shown")
+            Self.handoffLog.error("\(phase): NO presenter available — \(what) not shown")
             return
         }
-        Self.handoffLog.notice("diff: presenting confirm sheet", [
-            "contact": contact.displayName,
-            "rows": rows.count
-        ])
+        Self.handoffLog.notice("\(phase): presenting \(what)", metadata)
         presenter.present(hosting, animated: true)
     }
 
@@ -1744,11 +1771,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func presentLinkedInNewContact(profile: LinkedInProfile, appDelegate: GuessWhoAppDelegate) {
         let repo = appDelegate.contactsRepository
         let seed = LinkedInContactSeed.contact(from: profile)
-        // The extras run inside the save closure (they need the just-created
-        // identity), but their failure alert must wait until the editor sheet
-        // is off screen — presenting it while the sheet is still up would tear
-        // the alert down along with the sheet. Park it here for `onDone`.
-        let extrasFailure = LinkedInExtrasFailure()
+        // Save runs in two acts, split at the dismissal: the card is created
+        // INSIDE the editor's save (so a failure there is still the editor's
+        // own error to report), while the extras — and any alert they raise —
+        // wait until the sheet is gone. That's the order the matched-contact
+        // confirm sheet already uses; presenting an alert into a sheet that is
+        // on its way out is silently dropped. The box carries the new identity
+        // across the two acts.
+        let created = CreatedContactIDBox()
 
         let editor = ContactEditView(
             newContactSeed: seed,
@@ -1756,37 +1786,48 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 // Throwing leaves the sheet open behind the editor's own
                 // "Couldn't save" alert, with the user's work intact — the
                 // right reading, since nothing was created.
-                let created = try await repo.createContact(edited)
-                Self.handoffLog.notice("new-contact: created", ["name": created.displayName])
-                extrasFailure.error = await Self.attachLinkedInExtras(
-                    profile: profile, to: created.contactID, repo: repo
-                )
+                let contact = try await repo.createContact(edited)
+                Self.handoffLog.notice("new-contact: created", ["name": contact.displayName])
+                created.id = contact.contactID
             },
             onDone: { [weak self] in
-                NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
-                guard let error = extrasFailure.error else { return }
-                // Deferred to the next main-actor turn so the editor's own
-                // `dismiss()` (the statement right after `onDone`) has started:
-                // `presentLinkedInApplyFailureAlert` then resolves a presenter
-                // that outlives the sheet and chains off the dismissal.
+                // The editor dismisses itself on the statement right after
+                // `onDone`, so hop off this turn before touching the presenter:
+                // by the time `applyLinkedIn` has awaited its sidecar writes,
+                // the sheet is gone (and `presentLinkedInApplyFailureAlert`
+                // chains off the dismissal if it is still animating).
                 Task { @MainActor in
-                    self?.presentLinkedInApplyFailureAlert(error: error)
+                    guard let contactID = created.id else { return }
+                    let failure = await Self.attachLinkedInExtras(
+                        profile: profile, to: contactID, repo: repo
+                    )
+                    // Posted once, after every write lands — including a
+                    // partial apply that then threw, which an open card should
+                    // re-read either way.
+                    NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+                    if let failure {
+                        self?.presentLinkedInApplyFailureAlert(error: failure)
+                    }
                 }
             }
         )
         .environment(appDelegate.service)
 
-        let hosting = UIHostingController(rootView: editor)
-        hosting.modalPresentationStyle = .formSheet
-        // Match the editor's Catalyst ideal frame (560×720) so the sheet opens
-        // at a usable size instead of the formSheet default.
-        hosting.preferredContentSize = CGSize(width: 560, height: 720)
-        guard let presenter = topmostPresenter() else {
-            Self.handoffLog.error("new-contact: NO presenter available — editor not shown")
-            return
-        }
-        Self.handoffLog.notice("new-contact: presenting pre-filled editor", ["name": seed.displayName])
-        presenter.present(hosting, animated: true)
+        presentHandoffSheet(
+            editor,
+            // Match the editor's Catalyst ideal frame (560×720) so the sheet
+            // opens at a usable size instead of the formSheet default.
+            size: CGSize(width: 560, height: 720),
+            phase: "new-contact",
+            what: "pre-filled editor",
+            // The editor owns its own exits (Cancel runs the discard
+            // confirmation, Save writes the card), so a swipe-down / Escape
+            // must not bypass them — it would drop typed edits with no
+            // confirmation, or tear the sheet away mid-save while
+            // `createContact` still completes underneath.
+            isModal: true,
+            metadata: ["name": seed.displayName]
+        )
     }
 
     /// Attaches the LinkedIn-only extras the new-contact form has no rows for
@@ -2085,12 +2126,13 @@ extension GuessWhoSceneDelegate: UINavigationControllerDelegate {
     }
 }
 
-/// One-slot box carrying a failed LinkedIn extras write from the new-contact
-/// editor's save closure to its `onDone` — the two run at different moments
-/// (Save, then just before the sheet dismisses), so the value can't simply be
-/// returned. Main-actor use only: both closures run on the editor's save path.
-private final class LinkedInExtrasFailure {
-    var error: Error?
+/// One-slot box carrying the identity of the contact the LinkedIn new-contact
+/// editor just created, from its save closure to its `onDone` — the two run at
+/// different moments (the save itself, then the dismissal), so the value can't
+/// simply be returned.
+@MainActor
+private final class CreatedContactIDBox {
+    var id: ContactID?
 }
 
 /// Reference box so a value-type `RestorationState.Selection` can ride along as

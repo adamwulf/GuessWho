@@ -18,7 +18,11 @@ struct ContactEditView: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
 
-    let onDone: () -> Void
+    /// Fires on the main actor after a successful save, before the sheet
+    /// dismisses. Stated rather than inferred: callers hand it main-actor work
+    /// (posting notifications, presenting UIKit alerts), so the isolation is
+    /// part of the contract, not an accident of `View`'s.
+    let onDone: @MainActor () -> Void
 
     /// Caller-owned save. `nil` (the default) writes the edited contact
     /// through `SyncService.saveContact`, which takes the adapter's
@@ -42,7 +46,7 @@ struct ContactEditView: View {
     init(
         newContactSeed seed: Contact,
         save: (@MainActor (Contact) async throws -> Void)? = nil,
-        onDone: @escaping () -> Void
+        onDone: @escaping @MainActor () -> Void
     ) {
         self.save = save
         self.onDone = onDone
@@ -151,6 +155,11 @@ struct ContactEditView: View {
     }
 
     private func performSave() async {
+        // `.disabled(isSaving)` only stops the NEXT tap once SwiftUI has
+        // re-rendered; two activations landing in the same turn would otherwise
+        // run this twice — and on the brand-new-contact path that means two
+        // saved records, not one wasted write.
+        guard !isSaving else { return }
         isSaving = true
         defer { isSaving = false }
         do {
