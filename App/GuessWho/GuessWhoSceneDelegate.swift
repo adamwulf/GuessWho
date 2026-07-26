@@ -1796,9 +1796,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 // Every applyLinkedIn failure that reaches the contacts store or
                 // a sidecar write is then behind a real suspension — reads
                 // included, since the store is an actor and its fetches go
-                // through a work queue — which outlasts the dismissal by far;
-                // `presentLinkedInApplyFailureAlert` chains off the tail of the
-                // animation.
+                // through a work queue. What that buys is ORDERING, not time:
+                // the main actor is released after `dismiss()` was already
+                // called, so the dismissal has STARTED before any alert can
+                // exist. It is NOT longer than the animation (a store round trip
+                // can finish in tens of ms, well inside it), which is exactly why
+                // `topmostPresenter`'s `isBeingDismissed` skip and
+                // `presentAfterAnyDismissal` are load-bearing here — don't
+                // mistake either for belt-and-braces and delete it.
                 //
                 // The one exception, and the reason this is a strong preference
                 // rather than a guarantee: applyLinkedIn's `editableContact`
