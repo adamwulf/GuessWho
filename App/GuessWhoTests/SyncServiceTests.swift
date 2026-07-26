@@ -303,10 +303,13 @@ struct SyncServiceTests {
         }
         // Exact description pin on top of the type: the string is the
         // user-facing storage-unavailable copy, so a reword should be a
-        // conscious choice.
+        // conscious choice. Reworded 2026-07-26 — the old copy ("Sidecar
+        // storage is unavailable. Cannot read or write GuessWho data.") put
+        // internal vocabulary in front of the user, which CLAUDE.md forbids,
+        // and `LocalizedError` means alerts render it verbatim.
         #expect(
             toggleError?.localizedDescription
-                == "Sidecar storage is unavailable. Cannot read or write GuessWho data."
+                == "Storage is unavailable. Changes can’t be saved right now."
         )
         #expect(throws: SidecarUnavailableError.self) {
             _ = try service.createManualEvent(

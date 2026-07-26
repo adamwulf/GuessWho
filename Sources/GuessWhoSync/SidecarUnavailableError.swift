@@ -18,10 +18,18 @@ public struct SidecarUnavailableError: Error, LocalizedError {
     /// alert that renders `localizedDescription` (the LinkedIn import's
     /// apply-failure alert does) shows it verbatim. So it must stay in plain
     /// language: no "sidecar," no "GuessWho" as a noun for our records. The
-    /// wording matches `SidecarLocationBanner`'s "Storage is unavailable." so
-    /// the two surfaces name the same condition the same way.
+    /// first sentence matches `SidecarLocationBanner`'s "Storage is
+    /// unavailable." so the two surfaces name the same condition the same way.
+    ///
+    /// Deliberately generic about WHAT couldn't be saved: every throw site is a
+    /// write, but they span notes, tags, favorites, links, events, and guide
+    /// refreshes, so naming any subset would read as wrong under the other
+    /// surfaces' titles (e.g. "Couldn't Refresh Guide").
+    ///
+    /// `App/GuessWhoTests/SyncServiceTests` pins this string exactly, so a
+    /// reword stays a conscious choice — update the pin with it.
     public var errorDescription: String? {
-        "Storage is unavailable. Notes and tags can’t be read or saved right now."
+        "Storage is unavailable. Changes can’t be saved right now."
     }
 }
 

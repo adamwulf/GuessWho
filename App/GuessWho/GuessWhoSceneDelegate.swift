@@ -1792,10 +1792,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             },
             onDone: { [weak self] in
                 // The editor dismisses itself on the statement right after
-                // `onDone`, so hop off this turn before touching the presenter:
-                // by the time `applyLinkedIn` has awaited its sidecar writes,
-                // the sheet is gone (and `presentLinkedInApplyFailureAlert`
-                // chains off the dismissal if it is still animating).
+                // `onDone`, so hop off this turn before touching the presenter.
+                // Every applyLinkedIn failure that reaches a CONTACTS or SIDECAR
+                // write is then behind a real suspension, which outlasts the
+                // dismissal by far — `presentLinkedInApplyFailureAlert` chains
+                // off the tail of the animation.
+                //
+                // The one exception, and the reason this is a strong preference
+                // rather than a guarantee: applyLinkedIn's `editableContact`
+                // miss throws `contactNotFound` from a synchronous cache lookup,
+                // no suspension at all, so that alert still rides on `dismiss()`
+                // having started the UIKit dismissal — and may be dropped if it
+                // hasn't. It needs the record to vanish between the create and
+                // this line; the failure is on `handoffLog` either way.
                 Task { @MainActor in
                     guard let contactID = created.id else { return }
                     let failure = await Self.attachLinkedInExtras(

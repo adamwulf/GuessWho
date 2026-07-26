@@ -452,14 +452,17 @@ was reshaped from create-then-edit into the sheet below on 2026-07-26):
   (PersonNameComponents name split, job title/org, deduped emails/websites,
   and the LinkedIn username slug as a social profile) — the same dialog shape
   as the matched-contact confirm sheet, so an import never yanks the detail
-  column away from the record the user is reading. The editor's caller-owned
-  `save:` closure runs `ContactsRepository.createContact` (a create failure
+  column away from the record the user is reading. Cancel creates nothing.
+
+  Save runs in two acts, split at the dismissal. The editor's caller-owned
+  `save:` closure runs `ContactsRepository.createContact` — a create failure
   throws back into the editor's own "Couldn't save" alert, leaving the sheet
-  and the user's edits intact), then attaches the extras a CN card can't hold
-  — headline/about/location/department and the photo — through
-  `applyLinkedIn`. Cancel creates nothing. Saving does NOT navigate: like the
-  confirm sheet, it posts `.linkedInImportDidSave` and leaves the user where
-  they were.
+  and the user's edits intact — and parks the new `ContactID`. Then `onDone`
+  applies the extras a CN card can't hold (headline/about/location/department
+  and the photo) through `applyLinkedIn`, *after* the sheet is on its way out,
+  so those writes and any failure alert don't land behind a dying sheet. Saving
+  does NOT navigate: like the confirm sheet, it posts `.linkedInImportDidSave`
+  and leaves the user where they were.
 
   The People list's "+" button is deliberately a different shape: it creates
   the blank record first and opens `ContactDetailView` already in edit mode
