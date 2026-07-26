@@ -445,17 +445,24 @@ contact. `GuessWhoSceneDelegate.handleLinkedInHandoff(urlContexts:entry:)` does:
 
 Both formerly-future pieces of this flow shipped 2026-07-02:
 
-- **No match → create-then-edit.** When `matchLinkedIn` returns nothing, the
-  scene delegate CREATES the contact immediately via
-  `ContactsRepository.createContact` seeded by the package's
-  `LinkedInContactSeed` (PersonNameComponents name split, job title/org,
-  deduped emails/websites, and the LinkedIn username slug as a social
-  profile), attaches the extras a CN card can't hold — headline/about/
-  location and the photo — through `applyLinkedIn`, then opens the standard
-  `ContactDetailView` in the detail column already in edit mode
-  (`startsInEditMode`). Same create-then-edit shape as the People list's "+"
-  button; there is no separate new-contact form, and deleting the card is the
-  undo.
+- **No match → pre-filled new-contact sheet.** When `matchLinkedIn` returns
+  nothing, the scene delegate presents `ContactEditView` as a form sheet over
+  whatever is on screen, seeded by the package's `LinkedInContactSeed`
+  (PersonNameComponents name split, job title/org, deduped emails/websites,
+  and the LinkedIn username slug as a social profile) — the same dialog shape
+  as the matched-contact confirm sheet, so an import never yanks the detail
+  column away from the record the user is reading. The editor's caller-owned
+  `save:` closure runs `ContactsRepository.createContact` (a create failure
+  throws back into the editor's own "Couldn't save" alert, leaving the sheet
+  and the user's edits intact), then attaches the extras a CN card can't hold
+  — headline/about/location/department and the photo — through
+  `applyLinkedIn`. Cancel creates nothing. Saving does NOT navigate: like the
+  confirm sheet, it posts `.linkedInImportDidSave` and leaves the user where
+  they were.
+
+  The People list's "+" button is deliberately a different shape: it creates
+  the blank record first and opens `ContactDetailView` already in edit mode
+  (`startsInEditMode`), where the new-contact form IS the edit form.
 - **Photo write path.** `.photo` routes through
   `ContactsRepository.setContactPhoto` inside `applyLinkedIn`: replacing an
   existing photo first snapshots the replaced bytes into the single-slot

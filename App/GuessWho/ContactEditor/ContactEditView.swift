@@ -4,8 +4,9 @@ import GuessWhoSync
 
 /// SwiftUI sheet editor for creating a brand-new Contact. The
 /// existing-contact edit flow lives inline in `ContactDetailView`; this
-/// sheet only runs the new-contact path (e.g. "Add Contact" from an
-/// EventKit attendee), where there's no detail view to flip into yet.
+/// sheet only runs the new-contact path — "Add Contact" from an EventKit
+/// attendee, and the LinkedIn import's no-match case — where there's no
+/// detail view to flip into yet.
 ///
 /// Row implementations live under `Rows/`. Shared utilities (LabelPicker,
 /// LabelOptions, LabeledTextSection, PlatformKeyboardType) live next to
@@ -19,6 +20,16 @@ struct ContactEditView: View {
 
     let onDone: () -> Void
 
+    /// Caller-owned save. `nil` (the default) writes the edited contact
+    /// through `SyncService.saveContact`, which takes the adapter's
+    /// brand-new-record branch because a new-contact seed carries an empty
+    /// `localID`. A caller that needs the CREATED record back supplies this
+    /// instead — the LinkedIn import saves through
+    /// `ContactsRepository.createContact` so it can attach the extras this
+    /// form has no rows for. Throwing from it surfaces in the editor's own
+    /// "Couldn't save" alert and leaves the sheet open on the user's work.
+    private let save: (@MainActor (Contact) async throws -> Void)?
+
     @State private var model: ContactEditModel
     @State private var saveError: ContactEditModel.SaveErrorCategory?
     @State private var showDiscardConfirm = false
@@ -28,7 +39,12 @@ struct ContactEditView: View {
     /// whatever the caller already knows (e.g. attendee name + email).
     /// The model starts dirty so Save is enabled immediately and the user
     /// doesn't have to mutate a field to enable it.
-    init(newContactSeed seed: Contact, onDone: @escaping () -> Void) {
+    init(
+        newContactSeed seed: Contact,
+        save: (@MainActor (Contact) async throws -> Void)? = nil,
+        onDone: @escaping () -> Void
+    ) {
+        self.save = save
         self.onDone = onDone
         _model = State(initialValue: ContactEditModel(newContactSeed: seed))
     }
@@ -138,7 +154,11 @@ struct ContactEditView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            try await service.saveContact(model.edited)
+            if let save {
+                try await save(model.edited)
+            } else {
+                try await service.saveContact(model.edited)
+            }
             onDone()
             dismiss()
         } catch {

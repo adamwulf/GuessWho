@@ -85,7 +85,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // selected. Catalyst restores here (the split is the root and ready);
         // the iPhone shell restores inside `makeIPhoneTabs`, pushing onto the
         // target tab's nav BEFORE the permission gate swaps the tabs on screen
-        // (`activeTabNavigationController()` is still nil at this point).
+        // (the tab bar controller isn't reachable from the root at this point).
         // Section-only restores need nothing more.
         #if targetEnvironment(macCatalyst)
         if let restored, let selection = restored.selection {
@@ -1628,12 +1628,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             "match: \(matches.count) contact(s) for \(profile.fullName ?? "?") (url=\(profile.contactInfo?.profileUrl ?? "-"))"
         )
 
-        // No match: CREATE the contact from the profile and open it in the
-        // detail column already editing — same create-then-edit shape as the
-        // "+" add-contact flow (no sheet, no separate new-contact form).
+        // No match: present the new-contact form pre-filled from the profile,
+        // as a sheet over whatever is on screen — same dialog shape as the
+        // matched-contact confirm sheet below. Nothing is created until Save.
         guard let matchID = matches.first, let contact = repo.contact(id: matchID) else {
-            Self.handoffLog.notice("match: none — creating contact from profile")
-            createLinkedInContact(profile: profile, appDelegate: appDelegate)
+            Self.handoffLog.notice("match: none — presenting pre-filled new-contact form")
+            presentLinkedInNewContact(profile: profile, appDelegate: appDelegate)
             return
         }
 
@@ -1729,74 +1729,104 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         presenter.present(hosting, animated: true)
     }
 
-    /// No-match half of the LinkedIn import: CREATE the contact immediately
-    /// from the parsed profile (the `LinkedInContactSeed` card fields), attach
-    /// the extras a CN card can't hold (headline/about/location sidecar
-    /// fields, photo), then open the standard detail view in the detail column
-    /// already in edit mode — the same create-then-edit shape as the "+"
-    /// add-contact flow, not a sheet. The user reviews/fixes the imported
-    /// values in place; deleting the card is the undo.
-    private func createLinkedInContact(profile: LinkedInProfile, appDelegate: GuessWhoAppDelegate) {
+    /// No-match half of the LinkedIn import: present the app's standard
+    /// new-contact form (`ContactEditView`) pre-filled from the parsed profile
+    /// (the `LinkedInContactSeed` card fields), as a sheet over whatever the
+    /// user is currently looking at — the same dialog shape as the
+    /// matched-contact confirm sheet, so an import never yanks the detail
+    /// column away from the record on screen. Save creates the card and
+    /// attaches the extras a CN card can't hold (headline/about/location/
+    /// department sidecar fields, photo); Cancel creates nothing.
+    ///
+    /// The in-app "+" add-contact flow is deliberately NOT this shape: it
+    /// still creates the record first and opens the detail view already
+    /// editing (`createNewContact`).
+    private func presentLinkedInNewContact(profile: LinkedInProfile, appDelegate: GuessWhoAppDelegate) {
         let repo = appDelegate.contactsRepository
-        Task { @MainActor in
-            var created: Contact
-            do {
-                created = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
+        let seed = LinkedInContactSeed.contact(from: profile)
+        // The extras run inside the save closure (they need the just-created
+        // identity), but their failure alert must wait until the editor sheet
+        // is off screen — presenting it while the sheet is still up would tear
+        // the alert down along with the sheet. Park it here for `onDone`.
+        let extrasFailure = LinkedInExtrasFailure()
+
+        let editor = ContactEditView(
+            newContactSeed: seed,
+            save: { edited in
+                // Throwing leaves the sheet open behind the editor's own
+                // "Couldn't save" alert, with the user's work intact — the
+                // right reading, since nothing was created.
+                let created = try await repo.createContact(edited)
                 Self.handoffLog.notice("new-contact: created", ["name": created.displayName])
-            } catch {
-                Self.handoffLog.error("new-contact: create failed: \(error.localizedDescription)")
-                return
-            }
-
-            // One applyLinkedIn call attaches everything the card fields can't
-            // carry — it skips empty per-field values and an
-            // unchanged/undecodable photo itself; the any-content check just
-            // avoids a pointless CNContact re-save when the profile carries no
-            // extras. Best-effort: a failure here still shows the created card.
-            do {
-                var extras: Set<LinkedInField> = []
-                let hasSidecarContent = [profile.headline, profile.about, profile.location]
-                    .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
-                if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
-                if profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                    extras.insert(.department)
+                extrasFailure.error = await Self.attachLinkedInExtras(
+                    profile: profile, to: created.contactID, repo: repo
+                )
+            },
+            onDone: { [weak self] in
+                NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+                guard let error = extrasFailure.error else { return }
+                // Deferred to the next main-actor turn so the editor's own
+                // `dismiss()` (the statement right after `onDone`) has started:
+                // `presentLinkedInApplyFailureAlert` then resolves a presenter
+                // that outlives the sheet and chains off the dismissal.
+                Task { @MainActor in
+                    self?.presentLinkedInApplyFailureAlert(error: error)
                 }
-                // Presence check only — applyLinkedIn itself skips an
-                // undecodable/unchanged photo, so don't base64-decode the
-                // full payload here just to test emptiness.
-                if profile.photo != nil { extras.insert(.photo) }
-                if !extras.isEmpty {
-                    // Reassign: applyLinkedIn's sidecar writes mint the GuessWho
-                    // ID, and the returned contact carries the post-mint identity
-                    // the detail view should root on.
-                    created = try await repo.applyLinkedIn(profile: profile, to: created.contactID, fields: extras)
-                    Self.handoffLog.notice(
-                        "new-contact: attached \(extras.map(\.rawValue).sorted().joined(separator: ","))"
-                    )
-                }
-            } catch {
-                Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
-                // The card itself was created; tell the user the extras
-                // (photo/headline/about/location) didn't make it on.
-                self.presentLinkedInApplyFailureAlert(error: error)
             }
+        )
+        .environment(appDelegate.service)
 
-            NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
-            // Open the freshly-created card in edit mode, using each shell's
-            // own detail-presentation path. Catalyst REPLACES the secondary
-            // column; the iPhone/iPad tab shell PUSHES onto the active tab's
-            // nav stack. `showContactDetail` only exists under the Catalyst
-            // `#if`, so the branch is required to keep the iOS target building.
-            #if targetEnvironment(macCatalyst)
-            self.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
-            #else
-            self.pushContactDetail(
-                id: created.contactID,
-                on: self.activeTabNavigationController(),
-                appDelegate: appDelegate,
-                startsInEditMode: true
+        let hosting = UIHostingController(rootView: editor)
+        hosting.modalPresentationStyle = .formSheet
+        // Match the editor's Catalyst ideal frame (560×720) so the sheet opens
+        // at a usable size instead of the formSheet default.
+        hosting.preferredContentSize = CGSize(width: 560, height: 720)
+        guard let presenter = topmostPresenter() else {
+            Self.handoffLog.error("new-contact: NO presenter available — editor not shown")
+            return
+        }
+        Self.handoffLog.notice("new-contact: presenting pre-filled editor", ["name": seed.displayName])
+        presenter.present(hosting, animated: true)
+    }
+
+    /// Attaches the LinkedIn-only extras the new-contact form has no rows for
+    /// — the headline/about/location/department sidecar fields and the profile
+    /// photo — to the card the user just saved.
+    ///
+    /// One `applyLinkedIn` call carries everything: it skips empty per-field
+    /// values and an unchanged/undecodable photo itself, so the any-content
+    /// check below only avoids a pointless CNContact re-save when the profile
+    /// carries no extras at all. Best-effort — the card itself is already
+    /// saved, so a failure is RETURNED (not thrown) for the caller to surface
+    /// as its own alert rather than as "couldn't save the contact".
+    @MainActor
+    private static func attachLinkedInExtras(
+        profile: LinkedInProfile,
+        to contactID: ContactID,
+        repo: ContactsRepository
+    ) async -> Error? {
+        var extras: Set<LinkedInField> = []
+        let hasSidecarContent = [profile.headline, profile.about, profile.location]
+            .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+        if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
+        if profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            extras.insert(.department)
+        }
+        // Presence check only — applyLinkedIn itself skips an
+        // undecodable/unchanged photo, so don't base64-decode the full payload
+        // here just to test emptiness.
+        if profile.photo != nil { extras.insert(.photo) }
+        guard !extras.isEmpty else { return nil }
+
+        do {
+            _ = try await repo.applyLinkedIn(profile: profile, to: contactID, fields: extras)
+            Self.handoffLog.notice(
+                "new-contact: attached \(extras.map(\.rawValue).sorted().joined(separator: ","))"
             )
-            #endif
+            return nil
+        } catch {
+            Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
+            return error
         }
     }
 
@@ -1976,21 +2006,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 #if !targetEnvironment(macCatalyst)
 extension GuessWhoSceneDelegate: UITabBarControllerDelegate {
-    /// The active tab's navigation stack in the iPhone/iPad tab shell, so a
-    /// programmatic open (e.g. the LinkedIn new-contact flow) can PUSH detail
-    /// the same way list selection does. The scene root is a
-    /// `PermissionGateViewController` that hosts the `UITabBarController` as a
-    /// CHILD once Contacts access is authorized, so we walk the VC tree to find
-    /// it rather than assuming a fixed root type. Returns nil before the gate
-    /// installs the tabs (access not yet granted); `pushContactDetail`
-    /// tolerates a nil nav and no-ops, so the open is simply skipped when
-    /// there's nowhere to push.
-    private func activeTabNavigationController() -> UINavigationController? {
-        guard let root = window?.rootViewController else { return nil }
-        guard let tabs = Self.firstTabBarController(in: root) else { return nil }
-        return tabs.selectedViewController as? UINavigationController
-    }
-
     /// Depth-first search for the first `UITabBarController` reachable from
     /// `viewController`, following both presented and child view controllers.
     private static func firstTabBarController(in viewController: UIViewController) -> UITabBarController? {
@@ -2068,6 +2083,14 @@ extension GuessWhoSceneDelegate: UINavigationControllerDelegate {
     ) {
         syncSelectionToTop(viewController)
     }
+}
+
+/// One-slot box carrying a failed LinkedIn extras write from the new-contact
+/// editor's save closure to its `onDone` — the two run at different moments
+/// (Save, then just before the sheet dismisses), so the value can't simply be
+/// returned. Main-actor use only: both closures run on the editor's save path.
+private final class LinkedInExtrasFailure {
+    var error: Error?
 }
 
 /// Reference box so a value-type `RestorationState.Selection` can ride along as
