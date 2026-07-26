@@ -4,20 +4,37 @@ import GuessWhoSync
 
 /// SwiftUI sheet editor for creating a brand-new Contact. The
 /// existing-contact edit flow lives inline in `ContactDetailView`; this
-/// sheet only runs the new-contact path (e.g. "Add Contact" from an
-/// EventKit attendee), where there's no detail view to flip into yet.
+/// sheet only runs the new-contact path — "Add Contact" from an EventKit
+/// attendee, and the LinkedIn import's no-match case — where there's no
+/// detail view to flip into yet.
 ///
 /// Row implementations live under `Rows/`. Shared utilities (LabelPicker,
 /// LabelOptions, LabeledTextSection, PlatformKeyboardType) live next to
 /// this file.
 ///
-/// `onDone` fires after a successful save. The caller is responsible for
-/// reconcile + repository reload.
+/// `onDone` fires after a successful save. On the default save path the
+/// caller is responsible for reconcile + repository reload; a caller that
+/// supplies its own `save:` owns whatever that path needs instead (the
+/// LinkedIn import's `createContact` refreshes the record itself).
 struct ContactEditView: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
 
-    let onDone: () -> Void
+    /// Fires on the main actor after a successful save, before the sheet
+    /// dismisses. Stated rather than inferred: callers hand it main-actor work
+    /// (posting notifications, presenting UIKit alerts), so the isolation is
+    /// part of the contract, not an accident of `View`'s.
+    let onDone: @MainActor () -> Void
+
+    /// Caller-owned save. `nil` (the default) writes the edited contact
+    /// through `SyncService.saveContact`, which takes the adapter's
+    /// brand-new-record branch because a new-contact seed carries an empty
+    /// `localID`. A caller that needs the CREATED record back supplies this
+    /// instead — the LinkedIn import saves through
+    /// `ContactsRepository.createContact` so it can attach the extras this
+    /// form has no rows for. Throwing from it surfaces in the editor's own
+    /// "Couldn't save" alert and leaves the sheet open on the user's work.
+    private let save: (@MainActor (Contact) async throws -> Void)?
 
     @State private var model: ContactEditModel
     @State private var saveError: ContactEditModel.SaveErrorCategory?
@@ -28,7 +45,12 @@ struct ContactEditView: View {
     /// whatever the caller already knows (e.g. attendee name + email).
     /// The model starts dirty so Save is enabled immediately and the user
     /// doesn't have to mutate a field to enable it.
-    init(newContactSeed seed: Contact, onDone: @escaping () -> Void) {
+    init(
+        newContactSeed seed: Contact,
+        save: (@MainActor (Contact) async throws -> Void)? = nil,
+        onDone: @escaping @MainActor () -> Void
+    ) {
+        self.save = save
         self.onDone = onDone
         _model = State(initialValue: ContactEditModel(newContactSeed: seed))
     }
@@ -135,10 +157,19 @@ struct ContactEditView: View {
     }
 
     private func performSave() async {
+        // `.disabled(isSaving)` only stops the NEXT tap once SwiftUI has
+        // re-rendered; two activations landing in the same turn would otherwise
+        // run this twice — and on the brand-new-contact path that means two
+        // saved records, not one wasted write.
+        guard !isSaving else { return }
         isSaving = true
         defer { isSaving = false }
         do {
-            try await service.saveContact(model.edited)
+            if let save {
+                try await save(model.edited)
+            } else {
+                try await service.saveContact(model.edited)
+            }
             onDone()
             dismiss()
         } catch {

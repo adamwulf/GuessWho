@@ -2,9 +2,9 @@ import Foundation
 
 /// Builds the pre-filled `Contact` seed the app hands to its new-contact
 /// editor when a LinkedIn import matches no existing contact. The seed's
-/// `localID` is empty, so the editor's normal Save path takes the adapter's
-/// brand-new-contact branch — the import reuses the standard new-contact
-/// editor rather than growing its own form.
+/// `localID` is empty, so saving it takes the store's brand-new-record
+/// branch — the import reuses the standard new-contact editor rather than
+/// growing its own form.
 ///
 /// Lives in `GuessWhoSync` (not the app target) for the same reason as
 /// `ContactEditModel`: the profile→Contact mapping is pure data logic, so it
@@ -12,9 +12,9 @@ import Foundation
 ///
 /// Only CNContact-representable fields go in the seed. The LinkedIn-only
 /// extras (headline / about / location sidecar fields, and the photo) have no
-/// editor row; the app attaches them AFTER the user saves, keyed on
-/// re-matching the saved contact (see the scene delegate's
-/// `finishLinkedInNewContact`).
+/// editor row; the app attaches them AFTER the user saves, keyed on the
+/// identity `createContact` returns (see the scene delegate's
+/// `presentLinkedInNewContact`).
 public enum LinkedInContactSeed {
     public static func contact(from profile: LinkedInProfile) -> Contact {
         // Run the display name through Foundation's PersonNameComponents parse
