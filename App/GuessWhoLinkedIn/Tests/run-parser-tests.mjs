@@ -71,6 +71,27 @@ equal(fixtureBatch.profiles[0].ama.length, 2, "AMA values");
 equal(fixtureBatch.profiles[1].title, "Director of Photography", "title-like role");
 equal(fixtureBatch.profiles[1].photo.byteLength, 4, "inline photo byte count");
 
+// Foundation's JSONSerialization(.prettyPrinted), used by the Safari handoff,
+// escapes slashes and spaces property colons. This exact byte count was
+// independently produced by JSONSerialization for the same envelope.
+const foundationSizingFixture = {
+  source: "tls",
+  sourceUrl: tlsURL,
+  profiles: [{
+    fullName: "Slash / Colon:",
+    photo: {
+      dataURL: "data:image/png;base64,A/B",
+      contentType: "image/png",
+      byteLength: 2,
+    },
+  }],
+};
+equal(
+  tlsHandoffEnvelopeByteSize(foundationSizingFixture),
+  366,
+  "Foundation pretty-printed envelope byte compatibility"
+);
+
 const linkedIn = extractProfile(documentFor(`
   <main><section><h1>Ada Lovelace</h1><p>Engineer at Analytical Engines</p><p>London, England</p></section></main>
 `, "https://www.linkedin.com/in/ada-lovelace/"));

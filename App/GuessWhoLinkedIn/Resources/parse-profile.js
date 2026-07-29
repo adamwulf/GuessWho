@@ -691,13 +691,22 @@ function compactTLSPhotoForHandoff(profile) {
 const GW_TLS_HANDOFF_MAX_BYTES = 8 * 1024 * 1024;
 
 function tlsHandoffEnvelopeByteSize(batch) {
-  // Safari's native handler parks this exact envelope using pretty-printed
-  // JSON. Measure UTF-8 bytes, not JavaScript UTF-16 code units.
-  const json = JSON.stringify({ payload: batch, stampedBy: "extension" }, null, 2);
-  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(json).byteLength;
-  if (typeof Blob !== "undefined") return new Blob([json]).size;
+  // Safari's native handler parks this envelope with Foundation
+  // JSONSerialization(.prettyPrinted), whose output differs from
+  // JSON.stringify(..., null, 2) in two size-relevant ways:
+  //   • Foundation escapes every "/" as "\/".
+  //   • Foundation writes a space before each property colon (`"key" :`).
+  // Mirror both transformations before measuring UTF-8 bytes. (A `":`
+  // sequence inside an escaped string would only make this conservatively
+  // over-count by one byte; it can never under-count the native file.)
+  const browserJSON = JSON.stringify({ payload: batch, stampedBy: "extension" }, null, 2);
+  const foundationJSON = browserJSON.replace(/\//g, "\\/").replace(/":/g, '" :');
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(foundationJSON).byteLength;
+  }
+  if (typeof Blob !== "undefined") return new Blob([foundationJSON]).size;
   // Old-engine fallback; encodeURIComponent exposes the UTF-8 byte stream.
-  return unescape(encodeURIComponent(json)).length;
+  return unescape(encodeURIComponent(foundationJSON)).length;
 }
 
 // Enforce the app's handoff-file cap BEFORE transport. The current saved roster
