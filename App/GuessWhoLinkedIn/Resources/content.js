@@ -1,4 +1,4 @@
-// Content script (runs in linkedin.com/in/* tabs).
+// Content script (runs on supported LinkedIn, Rice, and TLS people pages).
 //
 // Answers the popup's probe with the parsed profile. The parser lives in the
 // sibling `parse-profile.js`, injected alongside this file (both share the page
@@ -259,6 +259,16 @@ function minimalProbe() {
   const source = location.hostname === "profiles.rice.edu"
     ? "rice"
     : (location.hostname === "tls26-s2-people.netlify.app" ? "tls" : "linkedin");
+  if (source === "tls") {
+    // TLS is always a batch wire format. Returning a legacy single-profile
+    // fallback here would decode as one blank TLS person in the app.
+    return {
+      source,
+      sourceUrl: location.href,
+      profiles: [],
+      _fallback: true,
+    };
+  }
   return {
     source,
     sourceUrl: location.href,
@@ -277,6 +287,8 @@ function minimalProbe() {
 // no "Nw" descriptors.
 function largestPhotoURL(photoSrcset) {
   if (!photoSrcset) return null;
+  const inline = photoSrcset.trim().match(/^(data:[^\s]+)(?:\s+\d+[wx])?$/i);
+  if (inline) return inline[1];
   const entries = photoSrcset.split(",").map((s) => s.trim()).filter(Boolean);
   let best = null;
   let bestW = -1;
@@ -586,12 +598,13 @@ async function probe(probeId) {
   // TLS renders one complete people roster with no lazy sections or overlay.
   // Parse the ordered batch once, then attach each photo independently. A
   // missing/broken image never prevents the remaining people from importing.
-  if (
-    location.hostname === "tls26-s2-people.netlify.app" &&
-    typeof extractTLSProfiles === "function"
-  ) {
+  if (location.hostname === "tls26-s2-people.netlify.app") {
     let batch;
-    try { batch = extractTLSProfiles() || minimalProbe(); }
+    try {
+      batch = typeof extractTLSProfiles === "function"
+        ? (extractTLSProfiles() || minimalProbe())
+        : minimalProbe();
+    }
     catch (e) {
       console.log("[GuessWho] extractTLSProfiles threw:", e);
       batch = minimalProbe();
@@ -612,6 +625,18 @@ async function probe(probeId) {
           profile.photoError = "caller-threw: " + (e && e.message ? e.message : String(e));
         }
       }));
+    }
+    // Measure the actual pretty-printed native envelope against the app's 8 MB
+    // read cap. The current roster keeps every photo; future oversized rosters
+    // deterministically lose their largest photos (not people) until they fit.
+    const budget = typeof fitTLSBatchToHandoffCap === "function"
+      ? fitTLSBatchToHandoffCap(batch)
+      : { byteSize: null, droppedPhotoIndexes: [] };
+    if (budget.droppedPhotoIndexes.length) {
+      console.log("[GuessWho] TLS payload cap omitted photos:", {
+        byteSize: budget.byteSize,
+        profileIndexes: budget.droppedPhotoIndexes,
+      });
     }
     const forLog = Object.assign({}, batch, {
       profiles: Array.isArray(batch.profiles)

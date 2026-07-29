@@ -688,6 +688,49 @@ function compactTLSPhotoForHandoff(profile) {
   return profile;
 }
 
+const GW_TLS_HANDOFF_MAX_BYTES = 8 * 1024 * 1024;
+
+function tlsHandoffEnvelopeByteSize(batch) {
+  // Safari's native handler parks this exact envelope using pretty-printed
+  // JSON. Measure UTF-8 bytes, not JavaScript UTF-16 code units.
+  const json = JSON.stringify({ payload: batch, stampedBy: "extension" }, null, 2);
+  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(json).byteLength;
+  if (typeof Blob !== "undefined") return new Blob([json]).size;
+  // Old-engine fallback; encodeURIComponent exposes the UTF-8 byte stream.
+  return unescape(encodeURIComponent(json)).length;
+}
+
+// Enforce the app's handoff-file cap BEFORE transport. The current saved roster
+// fits with all photos, but a future larger roster must not be parked and then
+// silently discarded. If necessary, omit the largest photos first (stable
+// index tie-break) while preserving every profile and its page order.
+function fitTLSBatchToHandoffCap(batch, maxBytes = GW_TLS_HANDOFF_MAX_BYTES) {
+  let byteSize = tlsHandoffEnvelopeByteSize(batch);
+  const droppedPhotoIndexes = [];
+  if (byteSize <= maxBytes) return { byteSize, droppedPhotoIndexes };
+
+  const candidates = ((batch && batch.profiles) || [])
+    .map((profile, index) => ({
+      profile,
+      index,
+      byteLength: Number(profile && profile.photo && profile.photo.byteLength)
+        || String(profile && profile.photo && profile.photo.dataURL || "").length,
+    }))
+    .filter((candidate) => candidate.profile && candidate.profile.photo)
+    .sort((a, b) => b.byteLength - a.byteLength || a.index - b.index);
+
+  for (const candidate of candidates) {
+    delete candidate.profile.photo;
+    delete candidate.profile.photoSrcset;
+    candidate.profile.photoError = "payload-cap";
+    droppedPhotoIndexes.push(candidate.index);
+    byteSize = tlsHandoffEnvelopeByteSize(batch);
+    if (byteSize <= maxBytes) return { byteSize, droppedPhotoIndexes };
+  }
+
+  throw new RangeError(`TLS handoff is ${byteSize} bytes after omitting all photos (cap ${maxBytes})`);
+}
+
 // --- Experience --------------------------------------------------------------
 //
 // Anchor on the "Experience" <h2> landmark, then climb (bounded) to the first
@@ -1138,7 +1181,7 @@ function profileReadiness(result) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     extractProfile, extractRiceProfile, extractTLSProfiles, extractExperience, extractContactInfo,
-    compactTLSPhotoForHandoff, profileReadiness, findInPageContactSection,
-    gwContactFieldsFrom, gwPhotoAssetID,
+    compactTLSPhotoForHandoff, fitTLSBatchToHandoffCap, tlsHandoffEnvelopeByteSize,
+    profileReadiness, findInPageContactSection, gwContactFieldsFrom, gwPhotoAssetID,
   };
 }

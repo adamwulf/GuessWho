@@ -1,18 +1,19 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 
-const domModulePath = process.argv[2];
-if (!domModulePath) {
-  throw new Error("usage: node run-parser-tests.mjs <DOM-module> [saved-TLS-page]");
-}
-const { parseHTML } = await import(domModulePath);
+const { parseHTML } = await import("linkedom");
 const require = createRequire(import.meta.url);
+const parserModule = require("../Resources/parse-profile.js");
 const {
   compactTLSPhotoForHandoff,
+  extractContactInfo,
   extractProfile,
   extractRiceProfile,
   extractTLSProfiles,
-} = require("../Resources/parse-profile.js");
+  fitTLSBatchToHandoffCap,
+  profileReadiness,
+  tlsHandoffEnvelopeByteSize,
+} = parserModule;
 
 const tlsURL = "https://tls26-s2-people.netlify.app/";
 const handoffCapBytes = 8 * 1024 * 1024;
@@ -24,6 +25,12 @@ function documentFor(html, url = tlsURL) {
     configurable: true,
     value: new URL(url),
   });
+  if (!document.images) {
+    Object.defineProperty(document, "images", {
+      configurable: true,
+      get() { return document.querySelectorAll("img"); },
+    });
+  }
   return document;
 }
 
@@ -82,9 +89,219 @@ const rice = extractRiceProfile(documentFor(`
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
 
-const result = { passed: true, assertions };
-const savedPage = process.argv[3];
-if (savedPage && fs.existsSync(savedPage)) {
+// A standard, dependency-local 45-person DOM always checks record count,
+// order, optional photos, title/role mapping, and envelope sizing.
+const generatedCards = Array.from({ length: 45 }, (_, index) => {
+  const name = index === 0 ? "Adam Wulf" : (index === 44 ? "Ying Ma" : `Person ${index}`);
+  const nameHTML = index === 4
+    ? 'Anthony<span class="goesby">“Tony”</span> Santa Ana<span class="pron">he/him</span>'
+    : name;
+  const role = index === 7
+    ? "K-12 Teacher"
+    : (index === 8 ? "Program Manager & Wellness Captain" : "Faculty, Higher Ed");
+  const avatar = index === 5
+    ? '<div class="avatar">A</div>'
+    : '<div class="avatar"><img src="data:image/png;base64,AQIDBA=="></div>';
+  return `
+    <div class="pcard">
+      ${avatar}
+      <div class="pname">${nameHTML}</div>
+      <div class="prole">${role}</div>
+      <div class="pmeta">
+        <div class="mrow"><span>✎</span><span>Department ${index}</span></div>
+        <div class="mrow"><span>🏛</span><span>Organization ${index}</span></div>
+        <div class="mrow"><span>📍</span><span>Location ${index}</span></div>
+      </div>
+      <div class="ama"><ul><li>Topic ${index}</li></ul></div>
+    </div>`;
+}).join("");
+const generatedBatch = extractTLSProfiles(documentFor(generatedCards));
+equal(generatedBatch.profiles.length, 45, "generated record count");
+equal(generatedBatch.profiles[0].fullName, "Adam Wulf", "generated first record");
+equal(generatedBatch.profiles[4].fullName, "Anthony Santa Ana", "generated nested-label name");
+equal(generatedBatch.profiles[4].nickname, "Tony", "generated nickname");
+equal(generatedBatch.profiles[7].role, "K-12 Teacher", "generated role category");
+equal("title" in generatedBatch.profiles[7], false, "generated role stays role");
+equal(generatedBatch.profiles[8].title, "Program Manager & Wellness Captain", "generated title");
+equal(generatedBatch.profiles[44].fullName, "Ying Ma", "generated last record");
+equal(generatedBatch.profiles.filter((profile) => profile.photo).length, 44, "generated photo count");
+for (const profile of generatedBatch.profiles) compactTLSPhotoForHandoff(profile);
+const generatedBudget = fitTLSBatchToHandoffCap(generatedBatch);
+equal(generatedBudget.droppedPhotoIndexes.length, 0, "generated payload keeps every photo");
+equal(
+  generatedBudget.byteSize,
+  tlsHandoffEnvelopeByteSize(generatedBatch),
+  "generated envelope byte measurement"
+);
+equal(generatedBudget.byteSize < handoffCapBytes, true, "generated payload fits handoff cap");
+
+const oversized = {
+  source: "tls",
+  sourceUrl: tlsURL,
+  profiles: [3000, 2000, 500].map((length, index) => ({
+    fullName: `Oversized ${index}`,
+    photo: {
+      dataURL: "data:image/png;base64," + "A".repeat(length),
+      contentType: "image/png",
+      byteLength: length,
+    },
+  })),
+};
+const oversizedBudget = fitTLSBatchToHandoffCap(oversized, 4000);
+equal(JSON.stringify(oversizedBudget.droppedPhotoIndexes), "[0]", "largest photo drops first");
+equal(oversized.profiles[0].photoError, "payload-cap", "cap omission is reported per profile");
+equal(oversized.profiles.length, 3, "cap fitting preserves profile order/count");
+
+// Load content.js with extension/browser and photo-fetch stubs, then drive its
+// real message listener. This covers TLS routing, mixed photo outcomes,
+// fallback batch shape, runtime cap enforcement, and Rice/LinkedIn routing.
+let contentListener = null;
+globalThis.browser = {
+  runtime: {
+    onMessage: { addListener(listener) { contentListener = listener; } },
+    sendMessage() { return Promise.resolve({}); },
+  },
+};
+Object.assign(globalThis, parserModule);
+globalThis.FileReader = class {
+  readAsDataURL(blob) {
+    blob.arrayBuffer().then((buffer) => {
+      this.result = `data:${blob.type || "application/octet-stream"};base64,${Buffer.from(buffer).toString("base64")}`;
+      this.onload();
+    }, (error) => {
+      this.error = error;
+      this.onerror();
+    });
+  }
+};
+globalThis.fetch = async (url) => {
+  if (String(url).startsWith("data:image/png;base64,")) {
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
+  }
+  if (String(url).includes("good.jpg")) {
+    return new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "content-type": "image/jpeg" },
+    });
+  }
+  return new Response("", { status: 404 });
+};
+const contentDocument = documentFor(`
+  <div class="pcard"><div class="avatar"><img src="data:image/png;base64,AQIDBA=="></div><div class="pname">Inline</div></div>
+  <div class="pcard"><div class="avatar"><img src="https://photos.example/good.jpg"></div><div class="pname">Fetched</div></div>
+  <div class="pcard"><div class="avatar"><img src="https://photos.example/missing.jpg"></div><div class="pname">Missing</div></div>
+`);
+globalThis.document = contentDocument;
+globalThis.location = contentDocument.location;
+globalThis.window = contentDocument.defaultView || {};
+globalThis.window.scrollTo = () => {};
+globalThis.getComputedStyle = () => ({ overflowY: "visible" });
+require("../Resources/content.js");
+equal(typeof contentListener, "function", "content listener registered");
+
+async function sendProbe(probeId) {
+  return await new Promise((resolve, reject) => {
+    const keepOpen = contentListener(
+      { type: "guesswho.probe", probeId },
+      {},
+      resolve
+    );
+    if (keepOpen !== true) reject(new Error("probe message channel did not stay open"));
+  });
+}
+
+const mixedPhotos = await sendProbe("mixed-photos");
+equal(mixedPhotos.source, "tls", "content routes TLS source");
+equal(
+  mixedPhotos.profiles.map((profile) => profile.fullName).join(","),
+  "Inline,Fetched,Missing",
+  "parallel photo work preserves page order"
+);
+equal(mixedPhotos.profiles[0].photo.byteLength, 4, "content keeps inline photo");
+equal(mixedPhotos.profiles[1].photo.byteLength, 3, "content attaches fetched photo");
+equal(mixedPhotos.profiles[2].photoError, "http-404", "one failed photo is isolated");
+
+globalThis.extractTLSProfiles = () => { throw new Error("fixture parser failure"); };
+const fallback = await sendProbe("tls-fallback");
+equal(fallback.source, "tls", "TLS fallback source");
+equal(Array.isArray(fallback.profiles), true, "TLS fallback remains batch-shaped");
+equal(fallback.profiles.length, 0, "TLS fallback cannot create a blank person");
+
+globalThis.extractTLSProfiles = () => ({
+  source: "tls",
+  sourceUrl: tlsURL,
+  profiles: [0, 1].map((index) => ({
+    fullName: `Capped ${index}`,
+    photo: {
+      dataURL: "data:image/png;base64," + "A".repeat(1200),
+      contentType: "image/png",
+      byteLength: 900,
+    },
+    photoSrcset: "data:image/png;base64," + "A".repeat(1200),
+  })),
+});
+globalThis.fitTLSBatchToHandoffCap = (batch) => fitTLSBatchToHandoffCap(batch, 1800);
+const capped = await sendProbe("tls-cap");
+equal(capped.profiles.length, 2, "content cap preserves people");
+equal(capped.profiles[0].photoError, "payload-cap", "content enforces cap");
+equal(!!capped.profiles[1].photo, true, "content keeps photos that fit");
+
+globalThis.fitTLSBatchToHandoffCap = fitTLSBatchToHandoffCap;
+globalThis.extractTLSProfiles = extractTLSProfiles;
+const riceContentDocument = documentFor(`
+  <article class="article--bio">
+    <h1 class="article__author-name profile">Grace Hopper</h1>
+    <div class="article__author-role profile">Professor</div>
+    <div class="article__image"><img src="data:image/png;base64,AQIDBA=="></div>
+  </article>
+`, "https://profiles.rice.edu/faculty/grace-hopper");
+globalThis.document = riceContentDocument;
+globalThis.location = riceContentDocument.location;
+const riceProbe = await sendProbe("rice-route");
+equal(riceProbe.source, "rice", "content routes Rice source");
+equal(riceProbe.fullName, "Grace Hopper", "Rice content result remains single-profile");
+equal("profiles" in riceProbe, false, "Rice content result is not a batch");
+
+globalThis.extractProfile = () => ({
+  source: "linkedin",
+  sourceUrl: "https://www.linkedin.com/in/ada-lovelace/",
+  fullName: "Ada Lovelace",
+  about: "Computing pioneer",
+  experience: [{ title: "Engineer", isCurrent: true }],
+  hasContactInfoLink: false,
+  photoSrcset: "data:image/png;base64,AQIDBA==",
+});
+globalThis.profileReadiness = profileReadiness;
+globalThis.extractContactInfo = extractContactInfo;
+const linkedInContentDocument = documentFor(
+  "<main><h1>Ada Lovelace</h1></main>",
+  "https://www.linkedin.com/in/ada-lovelace/"
+);
+globalThis.document = linkedInContentDocument;
+globalThis.location = linkedInContentDocument.location;
+globalThis.window = linkedInContentDocument.defaultView || {};
+globalThis.window.scrollTo = () => {};
+const linkedInProbe = await sendProbe("linkedin-route");
+equal(linkedInProbe.source, "linkedin", "content routes LinkedIn source");
+equal(linkedInProbe.fullName, "Ada Lovelace", "LinkedIn content result remains single-profile");
+equal(linkedInProbe.readiness.ready, true, "LinkedIn readiness path remains active");
+
+const result = {
+  passed: true,
+  assertions,
+  generatedRecords: generatedBatch.profiles.length,
+  generatedPhotos: generatedBatch.profiles.filter((profile) => profile.photo).length,
+  generatedPayloadBytes: generatedBudget.byteSize,
+  handoffCapBytes,
+};
+const savedPage = process.argv[2];
+if (savedPage && !fs.existsSync(savedPage)) {
+  throw new Error(`saved TLS page is not readable: ${savedPage}`);
+}
+if (savedPage) {
   const batch = extractTLSProfiles(documentFor(fs.readFileSync(savedPage, "utf8")));
   equal(batch.profiles.length, 45, "saved-page record count");
   equal(batch.profiles[0].fullName, "Adam Wulf", "first saved-page record");
@@ -96,22 +313,15 @@ if (savedPage && fs.existsSync(savedPage)) {
   equal(batch.profiles[44].fullName, "Ying Ma", "last saved-page record");
   equal(batch.profiles.filter((profile) => profile.photo).length, 44, "saved-page photo count");
 
-  const handoff = {
-    ...batch,
-    profiles: batch.profiles.map((profile) =>
-      compactTLSPhotoForHandoff({ ...profile })
-    ),
-  };
-  const payloadBytes = Buffer.byteLength(JSON.stringify(handoff), "utf8");
-  if (payloadBytes >= handoffCapBytes) {
-    throw new Error(`payload ${payloadBytes} exceeds ${handoffCapBytes}`);
-  }
+  for (const profile of batch.profiles) compactTLSPhotoForHandoff(profile);
+  const budget = fitTLSBatchToHandoffCap(batch);
+  const payloadBytes = budget.byteSize;
+  equal(budget.droppedPhotoIndexes.length, 0, "saved page keeps every photo");
   Object.assign(result, {
-    records: batch.profiles.length,
-    photos: batch.profiles.filter((profile) => profile.photo).length,
-    payloadBytes,
-    handoffCapBytes,
-    remainingBytes: handoffCapBytes - payloadBytes,
+    savedRecords: batch.profiles.length,
+    savedPhotos: batch.profiles.filter((profile) => profile.photo).length,
+    savedPayloadBytes: payloadBytes,
+    savedRemainingBytes: handoffCapBytes - payloadBytes,
   });
 }
 result.assertions = assertions;

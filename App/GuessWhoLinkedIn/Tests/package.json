@@ -1,0 +1,11 @@
+{
+  "name": "guesswho-browser-parser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun run-parser-tests.mjs"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.12"
+  }
+}
