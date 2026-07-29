@@ -559,6 +559,135 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
   return result;
 }
 
+// --- TLS 2026 Session 2 people roster ---------------------------------------
+//
+// tls26-s2-people.netlify.app renders the entire roster at once using stable,
+// semantic class names. One page therefore produces an ORDERED batch rather
+// than a single profile. Every card and every field is best-effort: a card
+// missing its name or metadata still occupies its original position.
+function extractTLSProfiles(doc = (typeof document !== "undefined" ? document : null)) {
+  if (!doc) return null;
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+  const text = (el) => {
+    if (!el) return null;
+    const raw = typeof el.innerText === "string" ? el.innerText : el.textContent;
+    const normalized = String(raw || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    return normalized || null;
+  };
+  const sourceUrl = safe(() => doc.location.href);
+  const absoluteURL = (raw) => {
+    if (!raw) return null;
+    return safe(() => new URL(raw, sourceUrl || "https://tls26-s2-people.netlify.app/").href);
+  };
+  const absoluteSrcset = (raw) => {
+    if (!raw) return null;
+    // A data URL contains a comma of its own. TLS's saved page uses a bare
+    // data: src, but preserving a data: srcset verbatim keeps that valid comma
+    // from being mistaken for an entry separator.
+    if (/^\s*data:/i.test(raw)) return raw.trim();
+    return raw.split(",").map((entry) => {
+      const parts = entry.trim().split(/\s+/);
+      const url = absoluteURL(parts.shift());
+      return [url, ...parts].filter(Boolean).join(" ");
+    }).filter(Boolean).join(", ") || null;
+  };
+  const withoutInlineLabels = (el) => safe(() => {
+    if (!el) return null;
+    const copy = el.cloneNode(true);
+    for (const label of copy.querySelectorAll(".goesby, .pron")) label.remove();
+    const value = String(copy.textContent || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    return value || null;
+  });
+  const photoFromDataURL = (dataURL) => safe(() => {
+    if (!/^data:/i.test(dataURL || "")) return null;
+    const comma = dataURL.indexOf(",");
+    if (comma < 0) return null;
+    const metadata = dataURL.slice(5, comma);
+    const contentType = (metadata.split(";")[0] || "").trim() || null;
+    let byteLength = null;
+    if (/;base64(?:;|$)/i.test(";" + metadata)) {
+      const encoded = dataURL.slice(comma + 1).replace(/\s/g, "");
+      const padding = (encoded.match(/=+$/) || [""])[0].length;
+      byteLength = Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+    }
+    return { dataURL, contentType, byteLength };
+  });
+  const isRoleCategory = (value) =>
+    /^(air|faculty\s*,\s*higher ed|staff\s*,\s*higher ed|administrator\s*,\s*higher ed|k-12 teacher|k-12 administrator|teaching team)$/i
+      .test(value || "");
+
+  const profiles = [...doc.querySelectorAll(".pcard")].map((card) => {
+    const profile = {};
+    const nameElement = card.querySelector(".pname");
+    const fullName = withoutInlineLabels(nameElement);
+    const nickname = safe(() => {
+      const value = text(nameElement && nameElement.querySelector(".goesby"));
+      return value ? value.replace(/^[“”"'‘’\s]+|[“”"'‘’\s]+$/g, "") || null : null;
+    });
+    const role = text(card.querySelector(".prole"));
+
+    if (fullName) profile.fullName = fullName;
+    if (nickname) profile.nickname = nickname;
+    if (role) {
+      profile.role = role;
+      // `.prole` holds both broad participant categories and a few actual job
+      // titles. Preserve every value as the TLS role; only copy values that are
+      // distinguishably title-like into Contacts' job-title field.
+      if (!isRoleCategory(role)) profile.title = role;
+    }
+
+    for (const row of card.querySelectorAll(".pmeta .mrow")) {
+      const spans = [...row.querySelectorAll("span")];
+      const marker = spans.length ? spans[0] : row;
+      const valueElement = spans.length > 1 ? spans[spans.length - 1] : null;
+      const value = text(valueElement);
+      if (!value) continue;
+      const signal = [
+        text(marker),
+        marker && marker.getAttribute && marker.getAttribute("aria-label"),
+        marker && marker.getAttribute && marker.getAttribute("title"),
+        marker && marker.getAttribute && marker.getAttribute("class"),
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (/✎|✏|🖉|pencil/.test(signal)) profile.department = value;
+      else if (/🏛|bank|institution|organization/.test(signal)) profile.org = value;
+      else if (/📍|pin|location/.test(signal)) profile.location = value;
+    }
+
+    const ama = [...card.querySelectorAll(".ama li")].map(text).filter(Boolean);
+    if (ama.length) profile.ama = ama;
+
+    const image = card.querySelector(".avatar img");
+    if (image) {
+      const rawSrc = image.getAttribute("src") || image.currentSrc || image.src || null;
+      const rawSrcset = image.getAttribute("srcset");
+      const photoSrcset = absoluteSrcset(rawSrcset) || absoluteURL(rawSrc);
+      if (photoSrcset) profile.photoSrcset = photoSrcset;
+      // Saved/exported TLS pages inline the photos. Attach those bytes directly
+      // so content.js need not fetch a data URL merely to turn it back into the
+      // same data URL.
+      const inlineDataURL = /^data:/i.test(rawSrc || "")
+        ? rawSrc
+        : ((rawSrcset || "").match(/^\s*(data:[^\s]+)/i) || [])[1];
+      const photo = photoFromDataURL(inlineDataURL);
+      if (photo) profile.photo = photo;
+    }
+
+    return profile;
+  });
+
+  return { source: "tls", sourceUrl, profiles };
+}
+
+// Once an inline TLS photo has been attached, its data URL would otherwise be
+// serialized twice: as both photo.dataURL and photoSrcset. The native model only
+// consumes `photo`, so remove the duplicate before handoff.
+function compactTLSPhotoForHandoff(profile) {
+  if (profile && profile.photo && /^data:/i.test(profile.photoSrcset || "")) {
+    delete profile.photoSrcset;
+  }
+  return profile;
+}
+
 // --- Experience --------------------------------------------------------------
 //
 // Anchor on the "Experience" <h2> landmark, then climb (bounded) to the first
@@ -1008,7 +1137,8 @@ function profileReadiness(result) {
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    extractProfile, extractRiceProfile, extractExperience, extractContactInfo,
-    profileReadiness, findInPageContactSection, gwContactFieldsFrom, gwPhotoAssetID,
+    extractProfile, extractRiceProfile, extractTLSProfiles, extractExperience, extractContactInfo,
+    compactTLSPhotoForHandoff, profileReadiness, findInPageContactSection,
+    gwContactFieldsFrom, gwPhotoAssetID,
   };
 }

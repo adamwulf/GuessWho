@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GuessWho browser parser tests</title>
+
+<main id="tls-fixture">
+  <div class="pcard">
+    <div class="avatar">
+      <img src="/anthony.jpg"
+           srcset="/anthony-small.jpg 100w, /anthony-large.jpg 800w">
+    </div>
+    <div class="pname">
+      Anthony<span class="goesby">“Tony”</span> Santa Ana
+      <span class="pron">he/him</span>
+    </div>
+    <div class="prole">K-12 Teacher</div>
+    <div class="pmeta">
+      <div class="mrow"><span aria-label="pencil">✎</span><span>Ethnic Studies</span></div>
+      <div class="mrow"><span aria-label="bank">🏛</span><span>San Jose City College</span></div>
+      <div class="mrow"><span aria-label="pin">📍</span><span>San Jose, CA</span></div>
+    </div>
+    <div class="ama"><ul><li>Teaching on a boat</li><li>Cutii art show</li></ul></div>
+  </div>
+  <div class="pcard">
+    <div class="avatar">
+      <img src="data:image/png;base64,AQIDBA==" alt="No name">
+    </div>
+    <div class="prole">Director of Photography</div>
+  </div>
+</main>
+
+<script src="../Resources/parse-profile.js"></script>
+<script>
+  (() => {
+    const failures = [];
+    let assertionCount = 0;
+    const equal = (actual, expected, label) => {
+      assertionCount += 1;
+      if (actual !== expected) {
+        failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+      }
+    };
+    const deepEqual = (actual, expected, label) => {
+      assertionCount += 1;
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+      }
+    };
+
+    try {
+      const batch = extractTLSProfiles(document);
+      equal(batch.source, "tls", "TLS source");
+      equal(batch.sourceUrl, location.href, "TLS source URL");
+      equal(batch.profiles.length, 2, "TLS card count");
+      deepEqual(batch.profiles[0], {
+        fullName: "Anthony Santa Ana",
+        nickname: "Tony",
+        role: "K-12 Teacher",
+        department: "Ethnic Studies",
+        org: "San Jose City College",
+        location: "San Jose, CA",
+        ama: ["Teaching on a boat", "Cutii art show"],
+        photoSrcset:
+          new URL("/anthony-small.jpg", location.href).href + " 100w, " +
+          new URL("/anthony-large.jpg", location.href).href + " 800w",
+      }, "complete TLS profile");
+      equal("title" in batch.profiles[0], false, "role category is not a job title");
+      equal("fullName" in batch.profiles[1], false, "missing name remains absent");
+      equal(batch.profiles[1].role, "Director of Photography", "title-like TLS role");
+      equal(batch.profiles[1].title, "Director of Photography", "distinguishable job title");
+      equal(batch.profiles[1].photoSrcset, "data:image/png;base64,AQIDBA==", "inline photo source");
+      deepEqual(batch.profiles[1].photo, {
+        dataURL: "data:image/png;base64,AQIDBA==",
+        contentType: "image/png",
+        byteLength: 4,
+      }, "inline photo payload");
+      const compactedPhoto = compactTLSPhotoForHandoff({ ...batch.profiles[1] });
+      equal("photoSrcset" in compactedPhoto, false, "inline photo source is compacted for handoff");
+
+      const linkedInDoc = new DOMParser().parseFromString(`
+        <title>Ada Lovelace | LinkedIn</title>
+        <main><section>
+          <h2>Ada Lovelace</h2>
+          <p>Engineer at Analytical Engines</p>
+          <p>London, England</p>
+        </section></main>
+      `, "text/html");
+      const linkedIn = extractProfile(linkedInDoc);
+      equal(linkedIn.source, "linkedin", "LinkedIn source compatibility");
+      equal(linkedIn.fullName, "Ada Lovelace", "LinkedIn name compatibility");
+      equal(linkedIn.title, "Engineer", "LinkedIn title compatibility");
+      equal(linkedIn.org, "Analytical Engines", "LinkedIn org compatibility");
+
+      const riceDoc = new DOMParser().parseFromString(`
+        <article class="article--bio">
+          <h1 class="article__author-name profile">Grace Hopper</h1>
+          <div class="article__author-role profile">Professor</div>
+          <div class="article__author-contact">
+            <div class="article__author-role profile top-border">Computer Science</div>
+          </div>
+        </article>
+      `, "text/html");
+      const rice = extractRiceProfile(riceDoc);
+      equal(rice.source, "rice", "Rice source compatibility");
+      equal(rice.fullName, "Grace Hopper", "Rice name compatibility");
+      equal(rice.title, "Professor", "Rice title compatibility");
+      equal(rice.department, "Computer Science", "Rice department compatibility");
+      equal("profiles" in rice, false, "Rice remains a single profile");
+    } catch (error) {
+      failures.push(error && error.stack ? error.stack : String(error));
+    }
+
+    window.__parserTestResult = {
+      passed: failures.length === 0,
+      assertionCount,
+      failures,
+    };
+    document.body.dataset.testStatus = failures.length === 0 ? "passed" : "failed";
+  })();
+</script>

@@ -98,6 +98,7 @@ function gwRouteShape(pathname) {
   if (/^\/in\/[^/]+\/?$/.test(pathname || "")) return "/in/<redacted>";
   if (/^\/faculty\/[^/]+\/?$/.test(pathname || "")) return "/faculty/<redacted>";
   if (/^\/staff\/[^/]+\/?$/.test(pathname || "")) return "/staff/<redacted>";
+  if (location.hostname === "tls26-s2-people.netlify.app" && /^\/?$/.test(pathname || "")) return "/";
   return "<other>";
 }
 
@@ -255,8 +256,11 @@ function gwSendDiagnostic(probeId, event, detail) {
 
 function minimalProbe() {
   const slug = (location.pathname.match(/\/(?:in|faculty|staff)\/([^/]+)/) || [])[1] || null;
+  const source = location.hostname === "profiles.rice.edu"
+    ? "rice"
+    : (location.hostname === "tls26-s2-people.netlify.app" ? "tls" : "linkedin");
   return {
-    source: location.hostname === "profiles.rice.edu" ? "rice" : "linkedin",
+    source,
     sourceUrl: location.href,
     slug,
     title: document.title || null,
@@ -579,6 +583,53 @@ function emitProgress(probeId, readiness) {
 }
 
 async function probe(probeId) {
+  // TLS renders one complete people roster with no lazy sections or overlay.
+  // Parse the ordered batch once, then attach each photo independently. A
+  // missing/broken image never prevents the remaining people from importing.
+  if (
+    location.hostname === "tls26-s2-people.netlify.app" &&
+    typeof extractTLSProfiles === "function"
+  ) {
+    let batch;
+    try { batch = extractTLSProfiles() || minimalProbe(); }
+    catch (e) {
+      console.log("[GuessWho] extractTLSProfiles threw:", e);
+      batch = minimalProbe();
+    }
+    if (Array.isArray(batch.profiles)) {
+      await Promise.all(batch.profiles.map(async (profile) => {
+        try {
+          if (!profile.photo) {
+            const photo = await fetchPhotoBytes(profile.photoSrcset);
+            if (photo && photo.dataURL) profile.photo = photo;
+            else if (profile.photoSrcset) profile.photoError = (photo && photo.error) || "unknown";
+          }
+          // An inline data URL is already carried by `photo.dataURL`. Keeping
+          // the identical value in photoSrcset would nearly double a roster's
+          // serialized size and can push the handoff past the app's 8 MB cap.
+          compactTLSPhotoForHandoff(profile);
+        } catch (e) {
+          profile.photoError = "caller-threw: " + (e && e.message ? e.message : String(e));
+        }
+      }));
+    }
+    const forLog = Object.assign({}, batch, {
+      profiles: Array.isArray(batch.profiles)
+        ? batch.profiles.map((profile) => Object.assign({}, profile, {
+            photo: profile.photo
+              ? {
+                  contentType: profile.photo.contentType,
+                  byteLength: profile.photo.byteLength,
+                  dataURL: "<" + profile.photo.byteLength + " bytes>",
+                }
+              : null,
+          }))
+        : null,
+    });
+    console.log("[GuessWho] TLS parse result:", JSON.stringify(forLog, null, 2));
+    return batch;
+  }
+
   gwSendDiagnostic(probeId, "probe-start", {
     readyState: document.readyState,
     dom: gwExperienceDOMFingerprint(),
