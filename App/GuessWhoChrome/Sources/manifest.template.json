@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__DISPLAY_NAME__",
   "version": "__VERSION__",
-  "description": "Save a LinkedIn profile to GuessWho, review a before/after diff, and apply the fields you choose.",
+  "description": "Import people from supported profile and roster pages into GuessWho.",
   "key": "__KEY__",
 
   "icons": {
@@ -25,6 +25,7 @@
     "*://*.linkedin.com/*",
     "*://*.licdn.com/*",
     "https://profiles.rice.edu/*",
+    "https://tls26-s2-people.netlify.app/*",
     "http://127.0.0.1/*"
   ],
 
@@ -35,7 +36,7 @@
 
   "content_scripts": [
     {
-      "matches": ["*://*.linkedin.com/in/*", "https://profiles.rice.edu/faculty/*", "https://profiles.rice.edu/staff/*"],
+      "matches": ["*://*.linkedin.com/in/*", "https://profiles.rice.edu/faculty/*", "https://profiles.rice.edu/staff/*", "https://tls26-s2-people.netlify.app/*"],
       "js": ["parse-profile.js", "content.js"]
     }
   ],

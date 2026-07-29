@@ -99,6 +99,25 @@ struct LinkedInContactSeedTests {
         #expect(seed.socialProfiles.isEmpty)
     }
 
+    @Test("TLS profile seeds nickname without treating the roster URL as LinkedIn")
+    func testTLSProfileMapping() {
+        let profile = LinkedInProfile(
+            source: "tls",
+            sourceUrl: "https://tls26-s2-people.netlify.app/",
+            fullName: "Amanda Roberts",
+            nickname: "Mandy",
+            title: "Professor",
+            org: "Stanford University"
+        )
+
+        let seed = LinkedInContactSeed.contact(from: profile)
+        #expect(seed.nickname == "Mandy")
+        #expect(seed.jobTitle == "Professor")
+        #expect(seed.organizationName == "Stanford University")
+        #expect(seed.socialProfiles.isEmpty)
+        #expect(seed.urlAddresses.isEmpty)
+    }
+
     @Test("Whitespace-only full name is treated as missing")
     func testWhitespaceNameLeavesNameFieldsEmpty() {
         let profile = LinkedInProfile(fullName: "   ")

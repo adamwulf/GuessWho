@@ -38,4 +38,50 @@ struct LinkedInProfileDecodeTests {
         """#)
         #expect(profile.contactInfo?.emails == [])
     }
+
+    @Test func tlsFieldsDecode_andIdentifySource() throws {
+        let profile = try decode(#"""
+        {
+          "source": "tls",
+          "fullName": "Amanda Roberts",
+          "nickname": "Mandy",
+          "role": "Faculty, Higher Ed",
+          "ama": ["Higher-ed innovation", "Design research"]
+        }
+        """#)
+        #expect(profile.isTLSProfile)
+        #expect(!profile.isLinkedInProfile)
+        #expect(profile.sourceDisplayName == "TLS")
+        #expect(profile.nickname == "Mandy")
+        #expect(profile.role == "Faculty, Higher Ed")
+        #expect(profile.ama == ["Higher-ed innovation", "Design research"])
+    }
+
+    @Test func browserPayloadDecodesSingleProfileBackwardCompatibly() throws {
+        let payload = try JSONDecoder().decode(
+            BrowserImportPayload.self,
+            from: Data(#"{"fullName":"Ada Lovelace"}"#.utf8)
+        )
+        #expect(payload.profiles.map(\.fullName) == ["Ada Lovelace"])
+    }
+
+    @Test func browserPayloadDecodesOrderedBatch_andInheritsSourceMetadata() throws {
+        let payload = try JSONDecoder().decode(
+            BrowserImportPayload.self,
+            from: Data(#"""
+            {
+              "source": "tls",
+              "sourceUrl": "https://tls26-s2-people.netlify.app/",
+              "profiles": [
+                {"fullName": "First Person"},
+                {"fullName": "Second Person", "sourceUrl": "https://example.com/override"}
+              ]
+            }
+            """#.utf8)
+        )
+        #expect(payload.profiles.map(\.fullName) == ["First Person", "Second Person"])
+        #expect(payload.profiles.allSatisfy { $0.isTLSProfile })
+        #expect(payload.profiles[0].sourceUrl == "https://tls26-s2-people.netlify.app/")
+        #expect(payload.profiles[1].sourceUrl == "https://example.com/override")
+    }
 }

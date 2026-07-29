@@ -173,6 +173,48 @@ struct LinkedInApplyTests {
         #expect(byName["LinkedIn About"] == nil)
     }
 
+    @Test func tlsProfile_appliesNicknameAndDschoolFields() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Amanda"))
+        let tls = LinkedInProfile(
+            source: "tls",
+            sourceUrl: "https://tls26-s2-people.netlify.app/",
+            fullName: "Amanda Roberts",
+            nickname: "Mandy",
+            title: "Professor",
+            org: "Stanford University",
+            location: "Palo Alto, California, United States",
+            department: "Design",
+            role: "Faculty, Higher Ed",
+            ama: ["Designing learning experiences", "Making"],
+            contactInfo: .init()
+        )
+
+        let result = try await repo.applyLinkedIn(
+            profile: tls,
+            to: id,
+            fields: [.name, .nickname, .jobTitle, .organization, .location, .department, .role, .ama]
+        )
+
+        #expect(result.givenName == "Amanda")
+        #expect(result.familyName == "Roberts")
+        #expect(result.nickname == "Mandy")
+        #expect(result.jobTitle == "Professor")
+        #expect(result.organizationName == "Stanford University")
+        #expect(result.socialProfiles.isEmpty)
+
+        let reconciledID = repo.contact(localID: "T")!.contactID
+        let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: reconciledID).map { ($0.field, $0) })
+        #expect(byName[LinkedInProfile.dschoolLocationFieldName]?.value == .string("Palo Alto, California, United States"))
+        #expect(byName[LinkedInProfile.dschoolDepartmentFieldName]?.value == .string("Design"))
+        #expect(byName[LinkedInProfile.dschoolRoleFieldName]?.value == .string("Faculty, Higher Ed"))
+        #expect(byName[LinkedInProfile.dschoolAMAFieldName]?.value == .string(
+            "Designing learning experiences\nMaking"
+        ))
+        #expect(byName[LinkedInProfile.dschoolAMAFieldName]?.type == .multilineNote)
+        #expect(byName["LinkedIn Location"] == nil)
+        #expect(byName["Rice Department"] == nil)
+    }
+
     @Test func headline_storedAsNamedSidecarField_singleLineNote() async throws {
         // A free-form headline (no "<Title> at <Org>" shape) — the raw line is
         // the only carrier of the title/bio, so it must land as its own field.

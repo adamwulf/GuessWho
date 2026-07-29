@@ -8,6 +8,11 @@ import Foundation
 /// All fields are optional/best-effort: the parser returns `null` per field on
 /// failure, and a field below the fold may be absent (lazy rendering).
 public struct LinkedInProfile: Codable, Sendable, Equatable {
+    public static let dschoolAMAFieldName = "dschool ama"
+    public static let dschoolRoleFieldName = "dschool role"
+    public static let dschoolDepartmentFieldName = "dschool department"
+    public static let dschoolLocationFieldName = "dschool location"
+
     /// Contact-info block (behind the "Contact info" overlay on the page).
     public struct ContactInfo: Codable, Sendable, Equatable {
         public var profileUrl: String?
@@ -73,12 +78,15 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     public var sourceUrl: String?
     public var slug: String?
     public var fullName: String?
+    public var nickname: String?
     public var headline: String?
     public var title: String?
     public var org: String?
     public var location: String?
     public var about: String?
     public var department: String?
+    public var role: String?
+    public var ama: [String]?
     public var contactInfo: ContactInfo?
     public var photo: Photo?
 
@@ -87,12 +95,15 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         sourceUrl: String? = nil,
         slug: String? = nil,
         fullName: String? = nil,
+        nickname: String? = nil,
         headline: String? = nil,
         title: String? = nil,
         org: String? = nil,
         location: String? = nil,
         about: String? = nil,
         department: String? = nil,
+        role: String? = nil,
+        ama: [String]? = nil,
         contactInfo: ContactInfo? = nil,
         photo: Photo? = nil
     ) {
@@ -100,12 +111,15 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         self.sourceUrl = sourceUrl
         self.slug = slug
         self.fullName = fullName
+        self.nickname = nickname
         self.headline = headline
         self.title = title
         self.org = org
         self.location = location
         self.about = about
         self.department = department
+        self.role = role
+        self.ama = ama
         self.contactInfo = contactInfo
         self.photo = photo
     }
@@ -116,13 +130,50 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     // that the app doesn't consume yet — the parser already folds the current
     // position into `title`/`org`, so nothing app-side needs the raw array.
     private enum CodingKeys: String, CodingKey {
-        case source, sourceUrl, slug, fullName, headline, title, org, location, about, department
-        case contactInfo, photo
+        case source, sourceUrl, slug, fullName, nickname, headline, title, org, location, about, department
+        case role, ama, contactInfo, photo
     }
 
     public var isRiceProfile: Bool { source?.caseInsensitiveCompare("rice") == .orderedSame }
+    public var isTLSProfile: Bool { source?.caseInsensitiveCompare("tls") == .orderedSame }
+    public var isLinkedInProfile: Bool { !isRiceProfile && !isTLSProfile }
 
-    public var sourceDisplayName: String { isRiceProfile ? "Rice" : "LinkedIn" }
+    public var sourceDisplayName: String {
+        if isRiceProfile { return "Rice" }
+        if isTLSProfile { return "TLS" }
+        return "LinkedIn"
+    }
+}
+
+/// The browser extension handoff can carry one profile (LinkedIn/Rice) or an
+/// ordered roster (TLS). This decoder keeps both wire formats compatible while
+/// presenting one collection to the app.
+public struct BrowserImportPayload: Decodable, Sendable, Equatable {
+    public let profiles: [LinkedInProfile]
+
+    private enum CodingKeys: String, CodingKey {
+        case source, sourceUrl, profiles
+    }
+
+    public init(profiles: [LinkedInProfile]) {
+        self.profiles = profiles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.profiles) {
+            let source = try container.decodeIfPresent(String.self, forKey: .source)
+            let sourceURL = try container.decodeIfPresent(String.self, forKey: .sourceUrl)
+            profiles = try container.decode([LinkedInProfile].self, forKey: .profiles).map { profile in
+                var profile = profile
+                if profile.source == nil { profile.source = source }
+                if profile.sourceUrl == nil { profile.sourceUrl = sourceURL }
+                return profile
+            }
+        } else {
+            profiles = [try LinkedInProfile(from: decoder)]
+        }
+    }
 }
 
 /// The fields a LinkedIn import can apply to a contact. The app maps the user's
@@ -134,9 +185,10 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
 /// replacing an existing photo automatically snapshots the replaced bytes into
 /// the single-slot previous-photo sidecar blob.
 public enum LinkedInField: String, Sendable, CaseIterable {
-    case name, jobTitle, organization
+    case name, nickname, jobTitle, organization
     case emails, phones, websites, linkedInURL
     case headline, location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
     case department
+    case role, ama
     case photo
 }

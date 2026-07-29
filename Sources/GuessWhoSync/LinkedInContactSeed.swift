@@ -50,11 +50,11 @@ public enum LinkedInContactSeed {
         // The `profile.slug` fallback gets the same trim + lowercase
         // normalization `LinkedInURL.slug(from:)` applies, so the seeded
         // username's canonical casing doesn't depend on which source won.
-        let slug = profile.isRiceProfile ? "" : (
+        let slug = profile.isLinkedInProfile ? (
             profileURL.flatMap { LinkedInURL.slug(from: $0) }
                 ?? profile.slug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 ?? ""
-        )
+        ) : ""
         if !slug.isEmpty {
             socialProfiles.append(LabeledSocialProfile(
                 label: "LinkedIn",
@@ -73,6 +73,7 @@ public enum LinkedInContactSeed {
         contact.middleName = parsed?.middleName ?? ""
         contact.familyName = parsed?.familyName ?? ""
         contact.nameSuffix = parsed?.nameSuffix ?? ""
+        contact.nickname = (profile.nickname ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         contact.jobTitle = (profile.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         contact.organizationName = (profile.org ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         // CNContact multi-values — default label (empty -> the adapter passes

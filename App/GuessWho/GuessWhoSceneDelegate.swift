@@ -1607,14 +1607,25 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         // Decode the envelope ({ stampedBy, payload: {...} }) into the
         // package-vended LinkedInProfile, then ask the package to match it.
-        let profile: LinkedInProfile
+        let profiles: [LinkedInProfile]
         do {
             let envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
-            profile = envelope.payload
+            profiles = envelope.profiles
         } catch {
             Self.handoffLog.error("decode: \(error.localizedDescription)")
             return
         }
+        guard !profiles.isEmpty else {
+            Self.handoffLog.error("decode: payload contained no profiles")
+            return
+        }
+
+        if profiles.count > 1 || profiles.first?.isTLSProfile == true {
+            Self.handoffLog.notice("decoded TLS batch", ["profiles": profiles.count])
+            presentTLSBatchImport(profiles: profiles)
+            return
+        }
+        let profile = profiles[0]
 
         // Log the decoded payload (photo elided — its size says enough) so
         // "did field X arrive?" is answerable from app.log alone, without
@@ -1854,6 +1865,130 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
     }
 
+    private func presentTLSBatchImport(profiles: [LinkedInProfile]) {
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        let repo = appDelegate.contactsRepository
+        let candidates = profiles.enumerated().compactMap { offset, profile -> TLSBatchImportCandidate? in
+            guard profile.fullName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+                Self.handoffLog.error("TLS batch: skipping profile with no name", ["index": offset])
+                return nil
+            }
+
+            let matchID = repo.matchLinkedIn(profile: profile).first
+            let contact = matchID.flatMap { repo.contact(id: $0) }
+            let sidecar = matchID.map { Self.existingSidecarFields(repo.fields(for: $0)) } ?? [:]
+            let rows = LinkedInDiff.rows(
+                existing: contact ?? Contact(),
+                incoming: profile,
+                existingSidecar: sidecar
+            )
+            return TLSBatchImportCandidate(
+                id: offset,
+                profile: profile,
+                matchedContactID: matchID,
+                matchedContactName: contact?.displayName,
+                rows: rows,
+                loadExistingPhoto: { [weak repo] in
+                    guard let repo, let matchID else { return nil }
+                    let data = try? await repo.contactPhotoData(for: matchID, kind: .thumbnail)
+                    return data.flatMap { UIImage(data: $0.data) }
+                }
+            )
+        }
+
+        guard !candidates.isEmpty else {
+            Self.handoffLog.error("TLS batch: no named profiles to present")
+            return
+        }
+
+        let view = TLSBatchImportView(
+            candidates: candidates,
+            onImport: { [weak self, weak repo] selections in
+                guard let self, let repo else { return ["The contacts service is unavailable."] }
+                return await self.importTLSSelections(selections, repo: repo)
+            },
+            onCancel: { [weak self] in self?.dismissPresented() },
+            onComplete: { [weak self] in self?.dismissPresented() }
+        )
+
+        presentHandoffSheet(
+            view,
+            size: CGSize(width: 840, height: 700),
+            phase: "tls-batch",
+            what: "roster review sheet",
+            isModal: true,
+            metadata: ["people": candidates.count]
+        )
+    }
+
+    private func importTLSSelections(
+        _ selections: [TLSBatchImportSelection],
+        repo: ContactsRepository
+    ) async -> [String] {
+        var failures: [String] = []
+        for selection in selections {
+            let profile = Self.filteredProfile(selection.profile, to: selection.fields)
+            let fields = Self.packageFields(from: selection.fields)
+            let name = profile.fullName ?? "Unnamed person"
+            do {
+                if let matched = selection.matchedContactID {
+                    _ = try await repo.applyLinkedIn(profile: profile, to: matched, fields: fields)
+                } else {
+                    let contact = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
+                    let extras = fields.intersection(Set<LinkedInField>([
+                        .headline, .location, .about, .department, .role, .ama, .photo,
+                    ]))
+                    if !extras.isEmpty {
+                        _ = try await repo.applyLinkedIn(
+                            profile: profile,
+                            to: contact.contactID,
+                            fields: extras
+                        )
+                    }
+                }
+                Self.handoffLog.notice("TLS batch: imported", ["name": name])
+            } catch {
+                Self.handoffLog.error("TLS batch: \(name) failed: \(error.localizedDescription)")
+                failures.append("\(name): \(error.localizedDescription)")
+            }
+        }
+        NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
+        Self.handoffLog.notice("TLS batch: finished", [
+            "requested": selections.count,
+            "failed": failures.count,
+        ])
+        return failures
+    }
+
+    /// The batch review uses the normal import field toggles, but new contacts
+    /// are initially built from a seed. Clear deselected values before seeding
+    /// so the review choices mean the same thing for creates and updates.
+    private static func filteredProfile(
+        _ profile: LinkedInProfile,
+        to fields: Set<LinkedInDiffRow.Field>
+    ) -> LinkedInProfile {
+        var result = profile
+        if !fields.contains(.name) { result.fullName = nil }
+        if !fields.contains(.nickname) { result.nickname = nil }
+        if !fields.contains(.jobTitle) { result.title = nil }
+        if !fields.contains(.organization) { result.org = nil }
+        if !fields.contains(.headline) { result.headline = nil }
+        if !fields.contains(.location) { result.location = nil }
+        if !fields.contains(.about) { result.about = nil }
+        if !fields.contains(.department) { result.department = nil }
+        if !fields.contains(.role) { result.role = nil }
+        if !fields.contains(.ama) { result.ama = nil }
+        if !fields.contains(.photo) { result.photo = nil }
+        if var contactInfo = result.contactInfo {
+            if !fields.contains(.emails) { contactInfo.emails = [] }
+            if !fields.contains(.phones) { contactInfo.phones = [] }
+            if !fields.contains(.websites) { contactInfo.websites = [] }
+            if !fields.contains(.linkedInURL) { contactInfo.profileUrl = nil }
+            result.contactInfo = contactInfo
+        }
+        return result
+    }
+
     /// Attaches the LinkedIn-only extras the new-contact form has no rows for
     /// — the headline/about/location/department sidecar fields and the profile
     /// photo — to the card the user just saved.
@@ -1876,6 +2011,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
         if profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             extras.insert(.department)
+        }
+        if profile.role?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            extras.insert(.role)
+        }
+        if profile.ama?.contains(where: {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) == true {
+            extras.insert(.ama)
         }
         // Presence check only — applyLinkedIn itself skips an
         // undecodable/unchanged photo, so don't base64-decode the full payload
@@ -1906,6 +2049,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             LinkedInDiff.locationFieldName,
             LinkedInDiff.riceDepartmentFieldName,
             LinkedInDiff.riceBioFieldName,
+            LinkedInProfile.dschoolAMAFieldName,
+            LinkedInProfile.dschoolRoleFieldName,
+            LinkedInProfile.dschoolDepartmentFieldName,
+            LinkedInProfile.dschoolLocationFieldName,
         ]
         var out: [String: String] = [:]
         for field in fields where names.contains(field.field) {
@@ -1921,6 +2068,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         for row in rows {
             switch row {
             case .name: out.insert(.name)
+            case .nickname: out.insert(.nickname)
             case .jobTitle: out.insert(.jobTitle)
             case .organization: out.insert(.organization)
             case .headline: out.insert(.headline)
@@ -1931,6 +2079,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             case .websites: out.insert(.websites)
             case .linkedInURL: out.insert(.linkedInURL)
             case .department: out.insert(.department)
+            case .role: out.insert(.role)
+            case .ama: out.insert(.ama)
             case .photo: out.insert(.photo)
             }
         }
@@ -2016,9 +2166,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// The handoff JSON envelope the extension writes: a `payload` object plus a
-    /// `stampedBy` marker. The payload is the parsed `LinkedInProfile`.
+    /// `stampedBy` marker. LinkedIn/Rice payloads hold one profile directly;
+    /// TLS payloads hold `{ source, sourceUrl, profiles: [...] }`.
     private struct HandoffEnvelope: Decodable {
-        let payload: LinkedInProfile
+        private let payload: BrowserImportPayload
+        var profiles: [LinkedInProfile] { payload.profiles }
     }
 
     /// Reads `pending-handoff.json` from the App Group container, deletes it (so
