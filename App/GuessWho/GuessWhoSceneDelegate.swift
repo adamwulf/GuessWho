@@ -1607,16 +1607,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         // Decode the envelope ({ stampedBy, payload: {...} }) into the
         // package-vended LinkedInProfile, then ask the package to match it.
-        let profiles: [LinkedInProfile]
+        let envelope: HandoffEnvelope
         do {
-            let envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
-            profiles = envelope.profiles
+            envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
         } catch {
             Self.handoffLog.error("decode: \(error.localizedDescription)")
+            presentTLSImportFailureAlert(
+                message: "The browser import could not be read. Reload the page and try again."
+            )
             return
         }
+        let profiles = envelope.profiles
         guard !profiles.isEmpty else {
             Self.handoffLog.error("decode: payload contained no profiles")
+            presentTLSImportFailureAlert(
+                message: envelope.importError
+                    ?? "No people were found on the TLS page. Reload the page and try again."
+            )
             return
         }
 
@@ -1868,6 +1875,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func presentTLSBatchImport(profiles: [LinkedInProfile]) {
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
         let repo = appDelegate.contactsRepository
+        let skippedPersonCount = profiles.filter {
+            $0.fullName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+        }.count
         let candidates = profiles.enumerated().compactMap { offset, profile -> TLSBatchImportCandidate? in
             guard profile.fullName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
                 Self.handoffLog.error("TLS batch: skipping profile with no name", ["index": offset])
@@ -1910,11 +1920,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         guard !candidates.isEmpty else {
             Self.handoffLog.error("TLS batch: no named profiles to present")
+            presentTLSImportFailureAlert(
+                message: skippedPersonCount == 1
+                    ? "The roster entry had no name, so it could not be imported."
+                    : "All \(skippedPersonCount) roster entries were missing names, so none could be imported."
+            )
             return
         }
 
         let view = TLSBatchImportView(
             candidates: candidates,
+            skippedPersonCount: skippedPersonCount,
             onImport: { [weak self, weak repo] selections in
                 guard let self, let repo else { return ["The contacts service is unavailable."] }
                 return await self.importTLSSelections(selections, repo: repo)
@@ -2164,6 +2180,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         topmostPresenter()?.dismiss(animated: true)
     }
 
+    @MainActor
+    private func presentTLSImportFailureAlert(message: String) {
+        let alert = UIAlertController(
+            title: "Couldn’t Import TLS People",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        guard let presenter = topmostPresenter() else {
+            Self.handoffLog.error("TLS import-failed alert: NO presenter available")
+            return
+        }
+        presenter.present(alert, animated: true)
+    }
+
     /// User-facing alert for a failed LinkedIn apply (matched-contact confirm
     /// or new-contact extras). Plain language only — the developer detail is
     /// already in the log; `saveErrorCategory` owns the message wording, same
@@ -2212,6 +2243,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private struct HandoffEnvelope: Decodable {
         private let payload: BrowserImportPayload
         var profiles: [LinkedInProfile] { payload.profiles }
+        var importError: String? { payload.importError }
     }
 
     /// Reads `pending-handoff.json` from the App Group container, deletes it (so

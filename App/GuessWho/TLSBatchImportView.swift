@@ -22,6 +22,7 @@ struct TLSBatchImportSelection {
 /// the arrows and counter make the large roster practical in one sheet.
 struct TLSBatchImportView: View {
     let candidates: [TLSBatchImportCandidate]
+    let skippedPersonCount: Int
     let onImport: ([TLSBatchImportSelection]) async -> [String]
     let onCancel: () -> Void
     let onComplete: () -> Void
@@ -37,11 +38,13 @@ struct TLSBatchImportView: View {
 
     init(
         candidates: [TLSBatchImportCandidate],
+        skippedPersonCount: Int,
         onImport: @escaping ([TLSBatchImportSelection]) async -> [String],
         onCancel: @escaping () -> Void,
         onComplete: @escaping () -> Void
     ) {
         self.candidates = candidates
+        self.skippedPersonCount = skippedPersonCount
         self.onImport = onImport
         self.onCancel = onCancel
         self.onComplete = onComplete
@@ -57,6 +60,9 @@ struct TLSBatchImportView: View {
                 if let candidate = currentCandidate {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
+                            if skippedPersonCount > 0 {
+                                skippedPeopleNotice
+                            }
                             reviewInstructions(candidate)
                             fieldGrid(candidate)
                             navigationControls
@@ -108,6 +114,19 @@ struct TLSBatchImportView: View {
 
     private var currentCandidate: TLSBatchImportCandidate? {
         candidates.indices.contains(index) ? candidates[index] : nil
+    }
+
+    private var skippedPeopleNotice: some View {
+        Label(
+            skippedPersonCount == 1
+                ? "1 roster entry was skipped because it has no name."
+                : "\(skippedPersonCount) roster entries were skipped because they have no names.",
+            systemImage: "exclamationmark.triangle.fill"
+        )
+        .font(.callout)
+        .foregroundStyle(.orange)
+        .padding(.horizontal)
+        .padding(.top, 10)
     }
 
     private var importButtonTitle: String {

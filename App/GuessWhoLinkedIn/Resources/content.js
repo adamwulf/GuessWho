@@ -266,6 +266,7 @@ function minimalProbe() {
       source,
       sourceUrl: location.href,
       profiles: [],
+      importError: "The TLS people page could not be read. Reload the page and try the import again.",
       _fallback: true,
     };
   }

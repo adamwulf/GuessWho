@@ -138,6 +138,10 @@ equal(sanitizedBatch.profiles[4].fullName, "Person 04", "sanitized nested-label 
 equal(sanitizedBatch.profiles[4].nickname, "Four", "sanitized nickname");
 equal(sanitizedBatch.profiles[7].role, "K-12 Teacher", "sanitized role category");
 equal("title" in sanitizedBatch.profiles[7], false, "sanitized role stays role");
+equal(sanitizedBatch.profiles[9].role, "Faculty", "sanitized Faculty role");
+equal("title" in sanitizedBatch.profiles[9], false, "sanitized Faculty stays role-only");
+equal(sanitizedBatch.profiles[13].role, "Higher Ed", "sanitized Higher Ed role");
+equal("title" in sanitizedBatch.profiles[13], false, "sanitized Higher Ed stays role-only");
 equal(
   sanitizedBatch.profiles[8].title,
   "Program Manager & Wellness Captain",
@@ -294,6 +298,7 @@ const fallback = await sendProbe("tls-fallback");
 equal(fallback.source, "tls", "TLS fallback source");
 equal(Array.isArray(fallback.profiles), true, "TLS fallback remains batch-shaped");
 equal(fallback.profiles.length, 0, "TLS fallback cannot create a blank person");
+equal(!!fallback.importError, true, "TLS fallback explains the failure to the app");
 
 globalThis.extractTLSProfiles = () => ({
   source: "tls",

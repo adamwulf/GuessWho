@@ -613,7 +613,7 @@ function extractTLSProfiles(doc = (typeof document !== "undefined" ? document : 
     return { dataURL, contentType, byteLength };
   });
   const isRoleCategory = (value) =>
-    /^(air|faculty\s*,\s*higher ed|staff\s*,\s*higher ed|administrator\s*,\s*higher ed|k-12 teacher|k-12 administrator|teaching team)$/i
+    /^(air|faculty|higher ed|faculty\s*,\s*higher ed|staff\s*,\s*higher ed|administrator\s*,\s*higher ed|k-12 teacher|k-12 administrator|teaching team)$/i
       .test(value || "");
 
   const profiles = [...doc.querySelectorAll(".pcard")].map((card) => {

@@ -84,4 +84,20 @@ struct LinkedInProfileDecodeTests {
         #expect(payload.profiles[0].sourceUrl == "https://tls26-s2-people.netlify.app/")
         #expect(payload.profiles[1].sourceUrl == "https://example.com/override")
     }
+
+    @Test func browserPayloadPreservesVisibleBatchFailure() throws {
+        let payload = try JSONDecoder().decode(
+            BrowserImportPayload.self,
+            from: Data(#"""
+            {
+              "source": "tls",
+              "profiles": [],
+              "importError": "Reload the page and try again."
+            }
+            """#.utf8)
+        )
+
+        #expect(payload.profiles.isEmpty)
+        #expect(payload.importError == "Reload the page and try again.")
+    }
 }

@@ -150,13 +150,15 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
 /// presenting one collection to the app.
 public struct BrowserImportPayload: Decodable, Sendable, Equatable {
     public let profiles: [LinkedInProfile]
+    public let importError: String?
 
     private enum CodingKeys: String, CodingKey {
-        case source, sourceUrl, profiles
+        case source, sourceUrl, profiles, importError
     }
 
-    public init(profiles: [LinkedInProfile]) {
+    public init(profiles: [LinkedInProfile], importError: String? = nil) {
         self.profiles = profiles
+        self.importError = importError
     }
 
     public init(from decoder: Decoder) throws {
@@ -164,6 +166,7 @@ public struct BrowserImportPayload: Decodable, Sendable, Equatable {
         if container.contains(.profiles) {
             let source = try container.decodeIfPresent(String.self, forKey: .source)
             let sourceURL = try container.decodeIfPresent(String.self, forKey: .sourceUrl)
+            importError = try container.decodeIfPresent(String.self, forKey: .importError)
             profiles = try container.decode([LinkedInProfile].self, forKey: .profiles).map { profile in
                 var profile = profile
                 if profile.source == nil { profile.source = source }
@@ -172,6 +175,7 @@ public struct BrowserImportPayload: Decodable, Sendable, Equatable {
             }
         } else {
             profiles = [try LinkedInProfile(from: decoder)]
+            importError = nil
         }
     }
 }
