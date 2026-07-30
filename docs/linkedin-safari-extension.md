@@ -69,7 +69,9 @@ pipeline and shown as updates; unmatched people are shown as new contacts. If
 several contacts share the same last-resort name match, the importer never
 chooses one arbitrarily: it clearly shows that a new contact will be created.
 Roster entries without names are counted in a visible warning instead of being
-silently dropped, and parser/empty-batch failures produce an app alert.
+silently dropped, parser/empty-batch failures produce an app alert, and any
+photos omitted to keep the handoff under its size cap are counted in the review
+sheet.
 Native Contacts fields receive name, nickname, job title, organization, and
 photo. TLS-only values upsert the custom sidecar fields `dschool ama`,
 `dschool role`, `dschool department`, and `dschool location`.

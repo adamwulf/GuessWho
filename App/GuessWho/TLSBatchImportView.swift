@@ -23,6 +23,7 @@ struct TLSBatchImportSelection {
 struct TLSBatchImportView: View {
     let candidates: [TLSBatchImportCandidate]
     let skippedPersonCount: Int
+    let omittedPhotoCount: Int
     let onImport: ([TLSBatchImportSelection]) async -> [String]
     let onCancel: () -> Void
     let onComplete: () -> Void
@@ -39,12 +40,14 @@ struct TLSBatchImportView: View {
     init(
         candidates: [TLSBatchImportCandidate],
         skippedPersonCount: Int,
+        omittedPhotoCount: Int,
         onImport: @escaping ([TLSBatchImportSelection]) async -> [String],
         onCancel: @escaping () -> Void,
         onComplete: @escaping () -> Void
     ) {
         self.candidates = candidates
         self.skippedPersonCount = skippedPersonCount
+        self.omittedPhotoCount = omittedPhotoCount
         self.onImport = onImport
         self.onCancel = onCancel
         self.onComplete = onComplete
@@ -62,6 +65,9 @@ struct TLSBatchImportView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             if skippedPersonCount > 0 {
                                 skippedPeopleNotice
+                            }
+                            if omittedPhotoCount > 0 {
+                                omittedPhotosNotice
                             }
                             reviewInstructions(candidate)
                             fieldGrid(candidate)
@@ -127,6 +133,19 @@ struct TLSBatchImportView: View {
         .foregroundStyle(.orange)
         .padding(.horizontal)
         .padding(.top, 10)
+    }
+
+    private var omittedPhotosNotice: some View {
+        Label(
+            omittedPhotoCount == 1
+                ? "1 photo was omitted because the roster was too large to transfer."
+                : "\(omittedPhotoCount) photos were omitted because the roster was too large to transfer.",
+            systemImage: "photo.badge.exclamationmark"
+        )
+        .font(.callout)
+        .foregroundStyle(.orange)
+        .padding(.horizontal)
+        .padding(.top, skippedPersonCount > 0 ? 0 : 10)
     }
 
     private var importButtonTitle: String {

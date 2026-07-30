@@ -1612,7 +1612,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
         } catch {
             Self.handoffLog.error("decode: \(error.localizedDescription)")
-            presentTLSImportFailureAlert(
+            presentBrowserImportFailureAlert(
                 message: "The browser import could not be read. Reload the page and try again."
             )
             return
@@ -1620,7 +1620,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let profiles = envelope.profiles
         guard !profiles.isEmpty else {
             Self.handoffLog.error("decode: payload contained no profiles")
-            presentTLSImportFailureAlert(
+            presentBrowserImportFailureAlert(
                 message: envelope.importError
                     ?? "No people were found on the TLS page. Reload the page and try again."
             )
@@ -1878,6 +1878,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let skippedPersonCount = profiles.filter {
             $0.fullName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
         }.count
+        let omittedPhotoCount = profiles.filter {
+            $0.photoError?.caseInsensitiveCompare("payload-cap") == .orderedSame
+        }.count
         let candidates = profiles.enumerated().compactMap { offset, profile -> TLSBatchImportCandidate? in
             guard profile.fullName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
                 Self.handoffLog.error("TLS batch: skipping profile with no name", ["index": offset])
@@ -1920,7 +1923,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         guard !candidates.isEmpty else {
             Self.handoffLog.error("TLS batch: no named profiles to present")
-            presentTLSImportFailureAlert(
+            presentBrowserImportFailureAlert(
                 message: skippedPersonCount == 1
                     ? "The roster entry had no name, so it could not be imported."
                     : "All \(skippedPersonCount) roster entries were missing names, so none could be imported."
@@ -1931,6 +1934,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let view = TLSBatchImportView(
             candidates: candidates,
             skippedPersonCount: skippedPersonCount,
+            omittedPhotoCount: omittedPhotoCount,
             onImport: { [weak self, weak repo] selections in
                 guard let self, let repo else { return ["The contacts service is unavailable."] }
                 return await self.importTLSSelections(selections, repo: repo)
@@ -2181,15 +2185,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     @MainActor
-    private func presentTLSImportFailureAlert(message: String) {
+    private func presentBrowserImportFailureAlert(message: String) {
         let alert = UIAlertController(
-            title: "Couldn’t Import TLS People",
+            title: "Couldn’t Complete Import",
             message: message,
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         guard let presenter = topmostPresenter() else {
-            Self.handoffLog.error("TLS import-failed alert: NO presenter available")
+            Self.handoffLog.error("browser import-failed alert: NO presenter available")
             return
         }
         presenter.present(alert, animated: true)

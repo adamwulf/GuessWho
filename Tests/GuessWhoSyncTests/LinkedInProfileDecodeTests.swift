@@ -46,7 +46,8 @@ struct LinkedInProfileDecodeTests {
           "fullName": "Amanda Roberts",
           "nickname": "Mandy",
           "role": "Faculty, Higher Ed",
-          "ama": ["Higher-ed innovation", "Design research"]
+          "ama": ["Higher-ed innovation", "Design research"],
+          "photoError": "payload-cap"
         }
         """#)
         #expect(profile.isTLSProfile)
@@ -55,6 +56,7 @@ struct LinkedInProfileDecodeTests {
         #expect(profile.nickname == "Mandy")
         #expect(profile.role == "Faculty, Higher Ed")
         #expect(profile.ama == ["Higher-ed innovation", "Design research"])
+        #expect(profile.photoError == "payload-cap")
     }
 
     @Test func browserPayloadDecodesSingleProfileBackwardCompatibly() throws {

@@ -89,6 +89,7 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     public var ama: [String]?
     public var contactInfo: ContactInfo?
     public var photo: Photo?
+    public var photoError: String?
 
     public init(
         source: String? = nil,
@@ -105,7 +106,8 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         role: String? = nil,
         ama: [String]? = nil,
         contactInfo: ContactInfo? = nil,
-        photo: Photo? = nil
+        photo: Photo? = nil,
+        photoError: String? = nil
     ) {
         self.source = source
         self.sourceUrl = sourceUrl
@@ -122,16 +124,17 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         self.ama = ama
         self.contactInfo = contactInfo
         self.photo = photo
+        self.photoError = photoError
     }
 
     // Only decode the keys we use; the payload also carries debug fields
-    // (_topCardLines, photoSrcset, photoError) that we ignore, and an
+    // (_topCardLines, photoSrcset) that we ignore, and an
     // `experience` array (structured positions from the Experience section)
     // that the app doesn't consume yet — the parser already folds the current
     // position into `title`/`org`, so nothing app-side needs the raw array.
     private enum CodingKeys: String, CodingKey {
         case source, sourceUrl, slug, fullName, nickname, headline, title, org, location, about, department
-        case role, ama, contactInfo, photo
+        case role, ama, contactInfo, photo, photoError
     }
 
     public var isRiceProfile: Bool { source?.caseInsensitiveCompare("rice") == .orderedSame }
