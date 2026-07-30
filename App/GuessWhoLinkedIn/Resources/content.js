@@ -1,4 +1,4 @@
-// Content script (runs in linkedin.com/in/* tabs).
+// Content script (runs on supported LinkedIn, Rice, and TLS people pages).
 //
 // Answers the popup's probe with the parsed profile. The parser lives in the
 // sibling `parse-profile.js`, injected alongside this file (both share the page
@@ -98,6 +98,7 @@ function gwRouteShape(pathname) {
   if (/^\/in\/[^/]+\/?$/.test(pathname || "")) return "/in/<redacted>";
   if (/^\/faculty\/[^/]+\/?$/.test(pathname || "")) return "/faculty/<redacted>";
   if (/^\/staff\/[^/]+\/?$/.test(pathname || "")) return "/staff/<redacted>";
+  if (location.hostname === "tls26-s2-people.netlify.app" && /^\/?$/.test(pathname || "")) return "/";
   return "<other>";
 }
 
@@ -255,8 +256,22 @@ function gwSendDiagnostic(probeId, event, detail) {
 
 function minimalProbe() {
   const slug = (location.pathname.match(/\/(?:in|faculty|staff)\/([^/]+)/) || [])[1] || null;
+  const source = location.hostname === "profiles.rice.edu"
+    ? "rice"
+    : (location.hostname === "tls26-s2-people.netlify.app" ? "tls" : "linkedin");
+  if (source === "tls") {
+    // TLS is always a batch wire format. Returning a legacy single-profile
+    // fallback here would decode as one blank TLS person in the app.
+    return {
+      source,
+      sourceUrl: location.href,
+      profiles: [],
+      importError: "The TLS people page could not be read. Reload the page and try the import again.",
+      _fallback: true,
+    };
+  }
   return {
-    source: location.hostname === "profiles.rice.edu" ? "rice" : "linkedin",
+    source,
     sourceUrl: location.href,
     slug,
     title: document.title || null,
@@ -273,6 +288,8 @@ function minimalProbe() {
 // no "Nw" descriptors.
 function largestPhotoURL(photoSrcset) {
   if (!photoSrcset) return null;
+  const inline = photoSrcset.trim().match(/^(data:[^\s]+)(?:\s+\d+[wx])?$/i);
+  if (inline) return inline[1];
   const entries = photoSrcset.split(",").map((s) => s.trim()).filter(Boolean);
   let best = null;
   let bestW = -1;
@@ -579,6 +596,66 @@ function emitProgress(probeId, readiness) {
 }
 
 async function probe(probeId) {
+  // TLS renders one complete people roster with no lazy sections or overlay.
+  // Parse the ordered batch once, then attach each photo independently. A
+  // missing/broken image never prevents the remaining people from importing.
+  if (location.hostname === "tls26-s2-people.netlify.app") {
+    let batch;
+    try {
+      batch = typeof extractTLSProfiles === "function"
+        ? (extractTLSProfiles() || minimalProbe())
+        : minimalProbe();
+    }
+    catch (e) {
+      console.log("[GuessWho] extractTLSProfiles threw:", e);
+      batch = minimalProbe();
+    }
+    if (Array.isArray(batch.profiles)) {
+      await Promise.all(batch.profiles.map(async (profile) => {
+        try {
+          if (!profile.photo) {
+            const photo = await fetchPhotoBytes(profile.photoSrcset);
+            if (photo && photo.dataURL) profile.photo = photo;
+            else if (profile.photoSrcset) profile.photoError = (photo && photo.error) || "unknown";
+          }
+          // An inline data URL is already carried by `photo.dataURL`. Keeping
+          // the identical value in photoSrcset would nearly double a roster's
+          // serialized size and can push the handoff past the app's 8 MB cap.
+          compactTLSPhotoForHandoff(profile);
+        } catch (e) {
+          profile.photoError = "caller-threw: " + (e && e.message ? e.message : String(e));
+        }
+      }));
+    }
+    // Measure the actual pretty-printed native envelope against the app's 8 MB
+    // read cap. The current roster keeps every photo; future oversized rosters
+    // deterministically lose their largest photos (not people) until they fit.
+    const budget = typeof fitTLSBatchToHandoffCap === "function"
+      ? fitTLSBatchToHandoffCap(batch)
+      : { byteSize: null, droppedPhotoIndexes: [] };
+    if (budget.droppedPhotoIndexes.length) {
+      console.log("[GuessWho] TLS payload cap omitted photos:", {
+        byteSize: budget.byteSize,
+        profileIndexes: budget.droppedPhotoIndexes,
+      });
+    }
+    const forLog = Object.assign({}, batch, {
+      profiles: Array.isArray(batch.profiles)
+        ? batch.profiles.map((profile) => Object.assign({}, profile, {
+            photo: profile.photo
+              ? {
+                  contentType: profile.photo.contentType,
+                  byteLength: profile.photo.byteLength,
+                  dataURL: "<" + profile.photo.byteLength + " bytes>",
+                }
+              : null,
+          }))
+        : null,
+    });
+    console.log("[GuessWho] TLS parse result:", JSON.stringify(forLog, null, 2));
+    return batch;
+  }
+
   gwSendDiagnostic(probeId, "probe-start", {
     readyState: document.readyState,
     dom: gwExperienceDOMFingerprint(),

@@ -17,8 +17,8 @@ enum LinkedInImport {
 /// which fields the user chose. Each row is independently includable.
 struct LinkedInDiffRow: Identifiable {
     enum Field: String {
-        case name, jobTitle, organization, headline, location, about
-        case emails, phones, websites, linkedInURL, department, photo
+        case name, nickname, jobTitle, organization, headline, location, about
+        case emails, phones, websites, linkedInURL, department, role, ama, photo
     }
 
     let id: Field
@@ -87,6 +87,7 @@ enum LinkedInDiff {
         let existingName = [contact.givenName, contact.familyName]
             .filter { !$0.isEmpty }.joined(separator: " ")
         add(.name, "Name", existingName, profile.fullName)
+        add(.nickname, "Nickname", contact.nickname, profile.nickname)
         add(.jobTitle, "Job title", contact.jobTitle, profile.title)
         add(.organization, "Organization", contact.organizationName, profile.org)
         // Headline / Location / About are sidecar-only (not CNContact fields).
@@ -98,8 +99,21 @@ enum LinkedInDiff {
         // this row is the only carrier of that text when Experience wasn't
         // rendered AND the headline is free-form.
         add(.headline, "Headline", existingSidecar[headlineFieldName], profile.headline)
-        add(.location, "Location", existingSidecar[locationFieldName], profile.location)
-        add(.department, "Department", existingSidecar[riceDepartmentFieldName], profile.department)
+        let locationField = profile.isTLSProfile
+            ? LinkedInProfile.dschoolLocationFieldName
+            : locationFieldName
+        let departmentField = profile.isTLSProfile
+            ? LinkedInProfile.dschoolDepartmentFieldName
+            : riceDepartmentFieldName
+        add(.location, "Location", existingSidecar[locationField], profile.location)
+        add(.department, "Department", existingSidecar[departmentField], profile.department)
+        add(.role, "Role", existingSidecar[LinkedInProfile.dschoolRoleFieldName], profile.role)
+        add(
+            .ama,
+            "Ask me about",
+            existingSidecar[LinkedInProfile.dschoolAMAFieldName],
+            profile.ama?.joined(separator: "\n")
+        )
         let bioFieldName = profile.isRiceProfile ? riceBioFieldName : aboutFieldName
         add(.about, profile.isRiceProfile ? "Bio" : "About", existingSidecar[bioFieldName], profile.about)
 
@@ -157,7 +171,7 @@ enum LinkedInDiff {
         }
 
         // LinkedIn URL: add only if the contact has no LinkedIn social profile yet.
-        if !profile.isRiceProfile, let url = profile.contactInfo?.profileUrl ?? profile.sourceUrl {
+        if profile.isLinkedInProfile, let url = profile.contactInfo?.profileUrl ?? profile.sourceUrl {
             let existingLinkedIn = contact.socialProfiles
                 .first { LinkedInURL.isLinkedIn($0.value.urlString) }?.value.urlString
             let alreadyHas = existingLinkedIn.map { LinkedInURL.sameProfile($0, url) } ?? false

@@ -143,6 +143,17 @@ struct LinkedInMatchTests {
         #expect(hits.count == 1)
     }
 
+    @Test func duplicateNameMatch_returnsEveryCandidate_forCallerToDisambiguate() async {
+        let r = await repo([
+            person(id: "FIRST", given: "Alex", family: "Smith"),
+            person(id: "SECOND", given: "Alex", family: "Smith"),
+        ])
+
+        let hits = r.matchLinkedIn(profile: profile(fullName: "Alex Smith"))
+
+        #expect(hits.count == 2)
+    }
+
     @Test func noMatch_returnsEmpty() async {
         let r = await repo([person(id: "X", given: "Nobody")])
         let hits = r.matchLinkedIn(profile: profile(

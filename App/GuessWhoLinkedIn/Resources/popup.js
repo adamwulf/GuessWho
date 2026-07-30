@@ -70,7 +70,7 @@ function renderProgress(update) {
   // The section count rides the always-spinning activity row's label; the
   // checklist below details which sections are still pending.
   loadingLabelEl.textContent =
-    `Loading profile… ${update.loaded}/${update.total} sections`;
+    `Loading people… ${update.loaded}/${update.total} sections`;
   progressListEl.textContent = "";
   for (const s of update.sections || []) {
     const li = document.createElement("li");
@@ -159,10 +159,11 @@ async function runHandoff() {
   try {
     const tab = await activeTab();
     const supportedProfile = /linkedin\.com\/in\//.test(tab?.url || "") ||
-      /profiles\.rice\.edu\/(faculty|staff)\//.test(tab?.url || "");
+      /profiles\.rice\.edu\/(faculty|staff)\//.test(tab?.url || "") ||
+      /^https:\/\/tls26-s2-people\.netlify\.app(?:\/|$)/.test(tab?.url || "");
     if (!tab || !supportedProfile) {
       log("abort: not a supported profile tab", { url: tab?.url ?? null });
-      show("Open a LinkedIn profile or a Rice faculty/staff profile first.", true);
+      show("Open a LinkedIn profile, a Rice faculty/staff profile, or the TLS people page first.", true);
       return;
     }
     log("active tab", { tabId: tab.id, url: tab.url });

@@ -52,6 +52,30 @@ content script still fetches the image bytes in-page and attaches the same
 fields, the Rice profile URL is added as a website labeled `Rice`, and
 department/bio upsert the named `Rice Department` and `Rice Bio` fields.
 
+The same extension also supports the TLS 2026 Session 2 roster at
+`https://tls26-s2-people.netlify.app/`. Unlike LinkedIn and Rice, one page
+produces a batch payload: `{ source: "tls", sourceUrl, profiles: [...] }`.
+`extractTLSProfiles` walks the rendered `.pcard` elements in page order and
+best-effort extracts each person's name, nickname, photo, school/organization,
+department/discipline, location, role, job title when distinguishable, and
+"Ask me about" values. Missing fields stay absent and one missing/failed photo
+does not fail the roster.
+
+The app presents the roster in one review sheet. Left/right arrows and an
+`N of M` counter page through people; every field is selected by default, and
+the user can turn off individual fields or skip a person before importing the
+included set. Existing contacts are matched through the normal URL/email/name
+pipeline and shown as updates; unmatched people are shown as new contacts. If
+several contacts share the same last-resort name match, the importer never
+chooses one arbitrarily: it clearly shows that a new contact will be created.
+Roster entries without names are counted in a visible warning instead of being
+silently dropped, parser/empty-batch failures produce an app alert, and any
+photos omitted to keep the handoff under its size cap are counted in the review
+sheet.
+Native Contacts fields receive name, nickname, job title, organization, and
+photo. TLS-only values upsert the custom sidecar fields `dschool ama`,
+`dschool role`, `dschool department`, and `dschool location`.
+
 ## The two LinkedIn layouts (desktop vs. mobile)
 
 linkedin.com serves two entirely different DOMs for the same `/in/<slug>` URL,

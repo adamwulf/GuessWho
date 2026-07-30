@@ -1,9 +1,9 @@
 # GuessWho LinkedIn — Chrome / Brave extension
 
 The Chromium port of the LinkedIn Safari Web Extension
-(`App/GuessWhoLinkedIn`). Same job: parse the LinkedIn profile the user is
-viewing and hand it to the GuessWho app, which shows a before/after diff the
-user confirms before anything is saved.
+(`App/GuessWhoLinkedIn`). Same job: parse a supported profile page or the TLS
+people roster the user is viewing and hand it to the GuessWho app, which shows
+a review UI the user confirms before anything is saved.
 
 **This directory is not a second copy of the extension.** The parser
 (`parse-profile.js`), content script, popup, and icons are copied **verbatim**

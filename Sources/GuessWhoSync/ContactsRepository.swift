@@ -664,6 +664,9 @@ public final class ContactsRepository: NSObject {
             edited.givenName = parts.first ?? full
             edited.familyName = parts.count > 1 ? parts[1] : ""
         }
+        if fields.contains(.nickname), let nickname = profile.nickname?.trimmed, !nickname.isEmpty {
+            edited.nickname = nickname
+        }
         if fields.contains(.jobTitle), let v = profile.title?.trimmed, !v.isEmpty {
             edited.jobTitle = v
         }
@@ -753,12 +756,37 @@ public final class ContactsRepository: NSObject {
         }
         if fields.contains(.location), let loc = profile.location?.trimmed, !loc.isEmpty {
             // Location is a single line.
-            _ = try await upsertField(for: id, field: "LinkedIn Location", value: loc, type: .note)
+            let fieldName = profile.isTLSProfile
+                ? LinkedInProfile.dschoolLocationFieldName
+                : "LinkedIn Location"
+            _ = try await upsertField(for: id, field: fieldName, value: loc, type: .note)
         }
         if fields.contains(.department), let department = profile.department?.trimmed, !department.isEmpty {
-            // A person can belong to several Rice units; the parser preserves
-            // those units one per line, so keep the custom field multiline too.
-            _ = try await upsertField(for: id, field: "Rice Department", value: department, type: .multilineNote)
+            // A person can belong to several units; parsers preserve those
+            // units one per line, so keep the custom field multiline too.
+            let fieldName = profile.isTLSProfile
+                ? LinkedInProfile.dschoolDepartmentFieldName
+                : "Rice Department"
+            _ = try await upsertField(for: id, field: fieldName, value: department, type: .multilineNote)
+        }
+        if fields.contains(.role), let role = profile.role?.trimmed, !role.isEmpty {
+            _ = try await upsertField(
+                for: id,
+                field: LinkedInProfile.dschoolRoleFieldName,
+                value: role,
+                type: .note
+            )
+        }
+        if fields.contains(.ama) {
+            let values = (profile.ama ?? []).map(\.trimmed).filter { !$0.isEmpty }
+            if !values.isEmpty {
+                _ = try await upsertField(
+                    for: id,
+                    field: LinkedInProfile.dschoolAMAFieldName,
+                    value: values.joined(separator: "\n"),
+                    type: .multilineNote
+                )
+            }
         }
 
         // Photo: route through the contact-image write path so replacing an
