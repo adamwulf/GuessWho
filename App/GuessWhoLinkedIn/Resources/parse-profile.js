@@ -696,11 +696,13 @@ function tlsHandoffEnvelopeByteSize(batch) {
   // JSON.stringify(..., null, 2) in two size-relevant ways:
   //   • Foundation escapes every "/" as "\/".
   //   • Foundation writes a space before each property colon (`"key" :`).
-  // Mirror both transformations before measuring UTF-8 bytes. (A `":`
-  // sequence inside an escaped string would only make this conservatively
-  // over-count by one byte; it can never under-count the native file.)
+  // Mirror both transformations before measuring UTF-8 bytes. Since pretty
+  // JSON emits every property on its own line, anchor the colon rewrite to a
+  // complete property-key token instead of touching `":` inside string values.
   const browserJSON = JSON.stringify({ payload: batch, stampedBy: "extension" }, null, 2);
-  const foundationJSON = browserJSON.replace(/\//g, "\\/").replace(/":/g, '" :');
+  const foundationJSON = browserJSON
+    .replace(/\//g, "\\/")
+    .replace(/^(\s*"(?:\\.|[^"\\])*"):/gm, "$1 :");
   if (typeof TextEncoder !== "undefined") {
     return new TextEncoder().encode(foundationJSON).byteLength;
   }

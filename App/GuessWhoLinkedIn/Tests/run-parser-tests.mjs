@@ -91,6 +91,21 @@ equal(
   366,
   "Foundation pretty-printed envelope byte compatibility"
 );
+const foundationEscapedValueFixture = {
+  source: "tls",
+  profiles: [{
+    fullName: "line\u2028sep",
+    role: "para\u2029sep",
+    org: 'quote":colon',
+    department: "emoji😀",
+    location: "tab\tline\n",
+  }],
+};
+equal(
+  tlsHandoffEnvelopeByteSize(foundationEscapedValueFixture),
+  285,
+  "Foundation sizing ignores colon-like text inside escaped values"
+);
 
 const linkedIn = extractProfile(documentFor(`
   <main><section><h1>Ada Lovelace</h1><p>Engineer at Analytical Engines</p><p>London, England</p></section></main>
@@ -109,6 +124,35 @@ const rice = extractRiceProfile(documentFor(`
 `, "https://profiles.rice.edu/faculty/grace-hopper"));
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
+
+// The checked-in fixture is a privacy-safe structural derivative of the saved
+// rendered TLS page. Keep it mandatory so a clean checkout always exercises
+// the production phead/pleft/meta/AMA layout and a full 45-card batch.
+const sanitizedFixtureURL = new URL("./fixtures/tls-people-sanitized.html", import.meta.url);
+const sanitizedBatch = extractTLSProfiles(
+  documentFor(fs.readFileSync(sanitizedFixtureURL, "utf8"))
+);
+equal(sanitizedBatch.profiles.length, 45, "sanitized fixture record count");
+equal(sanitizedBatch.profiles[0].fullName, "Person 00", "sanitized first record");
+equal(sanitizedBatch.profiles[4].fullName, "Person 04", "sanitized nested-label name");
+equal(sanitizedBatch.profiles[4].nickname, "Four", "sanitized nickname");
+equal(sanitizedBatch.profiles[7].role, "K-12 Teacher", "sanitized role category");
+equal("title" in sanitizedBatch.profiles[7], false, "sanitized role stays role");
+equal(
+  sanitizedBatch.profiles[8].title,
+  "Program Manager & Wellness Captain",
+  "sanitized title"
+);
+equal(sanitizedBatch.profiles[44].fullName, "Person 44", "sanitized last record");
+equal(
+  sanitizedBatch.profiles.filter((profile) => profile.photo).length,
+  44,
+  "sanitized photo count"
+);
+for (const profile of sanitizedBatch.profiles) compactTLSPhotoForHandoff(profile);
+const sanitizedBudget = fitTLSBatchToHandoffCap(sanitizedBatch);
+equal(sanitizedBudget.droppedPhotoIndexes.length, 0, "sanitized fixture keeps every photo");
+equal(sanitizedBudget.byteSize, 18292, "sanitized Foundation envelope byte size");
 
 // A standard, dependency-local 45-person DOM always checks record count,
 // order, optional photos, title/role mapping, and envelope sizing.
@@ -316,6 +360,9 @@ const result = {
   generatedRecords: generatedBatch.profiles.length,
   generatedPhotos: generatedBatch.profiles.filter((profile) => profile.photo).length,
   generatedPayloadBytes: generatedBudget.byteSize,
+  sanitizedRecords: sanitizedBatch.profiles.length,
+  sanitizedPhotos: sanitizedBatch.profiles.filter((profile) => profile.photo).length,
+  sanitizedPayloadBytes: sanitizedBudget.byteSize,
   handoffCapBytes,
 };
 const savedPage = process.argv[2];
