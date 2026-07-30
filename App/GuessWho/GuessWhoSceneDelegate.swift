@@ -1941,9 +1941,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         var failedCount = 0
         var partialCount = 0
         for selection in selections {
+            // Reporting must use the roster identity, not the filtered payload:
+            // a user may intentionally deselect Name while updating a contact.
+            let name = selection.profile.fullName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unnamed person"
             let profile = Self.filteredProfile(selection.profile, to: selection.fields)
             let fields = Self.packageFields(from: selection.fields)
-            let name = profile.fullName ?? "Unnamed person"
             do {
                 if let matched = selection.matchedContactID {
                     do {

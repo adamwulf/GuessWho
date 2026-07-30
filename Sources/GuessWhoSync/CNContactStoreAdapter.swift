@@ -230,8 +230,25 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             // the save, so it addresses the record just created. Re-read the
             // UNIFIED card (the package's fetch model) so the returned Contact
             // matches what every later fetch sees.
-            let created = try store.unifiedContact(withIdentifier: mutable.identifier, keysToFetch: Self.keys)
-            return Self.toContact(created)
+            do {
+                let created = try store.unifiedContact(withIdentifier: mutable.identifier, keysToFetch: Self.keys)
+                return Self.toContact(created)
+            } catch {
+                // `execute` already committed the new card. A transient unified
+                // re-read failure must not turn that successful create into a
+                // thrown error: callers would reasonably retry and duplicate
+                // the contact. The mutable card has the assigned identifier and
+                // every value we just saved, so it is a safe return value until
+                // the repository's later refresh succeeds.
+                Self.saveLog.warning(
+                    "created contact re-read failed; returning the committed card",
+                    metadata: [
+                        "localID": .string(mutable.identifier),
+                        "error": .string(String(describing: error)),
+                    ]
+                )
+                return Self.toContact(mutable)
+            }
         }
     }
 
