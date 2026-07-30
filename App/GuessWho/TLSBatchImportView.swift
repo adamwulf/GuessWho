@@ -6,6 +6,7 @@ struct TLSBatchImportCandidate: Identifiable {
     let profile: LinkedInProfile
     let matchedContactID: ContactID?
     let matchedContactName: String?
+    let ambiguousMatchCount: Int
     let rows: [LinkedInDiffRow]
     let loadExistingPhoto: () async -> UIImage?
 }
@@ -31,7 +32,7 @@ struct TLSBatchImportView: View {
     @State private var existingPhoto: UIImage?
     @State private var incomingPhoto: UIImage?
     @State private var isImporting = false
-    @State private var failures: [String] = []
+    @State private var importIssues: [String] = []
     @State private var showsFailureAlert = false
 
     init(
@@ -98,10 +99,10 @@ struct TLSBatchImportView: View {
         .task(id: index) {
             await loadPhotos()
         }
-        .alert("Some People Couldn’t Be Imported", isPresented: $showsFailureAlert) {
+        .alert("Import Finished with Issues", isPresented: $showsFailureAlert) {
             Button("Done") { onComplete() }
         } message: {
-            Text(failures.joined(separator: "\n"))
+            Text(importIssues.joined(separator: "\n"))
         }
     }
 
@@ -135,7 +136,7 @@ struct TLSBatchImportView: View {
 
             HStack {
                 Label(
-                    candidate.matchedContactName.map { "Updates \($0)" } ?? "Creates a new contact",
+                    candidateStatus(candidate),
                     systemImage: candidate.matchedContactID == nil
                         ? "person.crop.circle.badge.plus"
                         : "person.crop.circle.badge.checkmark"
@@ -157,6 +158,16 @@ struct TLSBatchImportView: View {
         }
         .padding(.horizontal)
         .padding(.top, 10)
+    }
+
+    private func candidateStatus(_ candidate: TLSBatchImportCandidate) -> String {
+        if let name = candidate.matchedContactName {
+            return "Updates \(name)"
+        }
+        if candidate.ambiguousMatchCount > 1 {
+            return "Creates a new contact — \(candidate.ambiguousMatchCount) existing contacts share this name"
+        }
+        return "Creates a new contact"
     }
 
     private func fieldGrid(_ candidate: TLSBatchImportCandidate) -> some View {
@@ -309,12 +320,12 @@ struct TLSBatchImportView: View {
         guard !selections.isEmpty else { return }
         isImporting = true
         Task {
-            let failed = await onImport(selections)
+            let issues = await onImport(selections)
             isImporting = false
-            if failed.isEmpty {
+            if issues.isEmpty {
                 onComplete()
             } else {
-                failures = failed
+                importIssues = issues
                 showsFailureAlert = true
             }
         }

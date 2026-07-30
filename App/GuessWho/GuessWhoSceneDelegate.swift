@@ -1874,7 +1874,18 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 return nil
             }
 
-            let matchID = repo.matchLinkedIn(profile: profile).first
+            let matches = repo.matchLinkedIn(profile: profile)
+            // TLS carries no durable person identifier, so its last-resort
+            // match is usually the display name. Never update an arbitrary
+            // card when several contacts share that name; create a new card
+            // and explain the ambiguity in the review sheet instead.
+            let matchID = matches.count == 1 ? matches[0] : nil
+            if matches.count > 1 {
+                Self.handoffLog.notice("TLS batch: ambiguous contact match — will create new", [
+                    "name": profile.fullName ?? "?",
+                    "matches": matches.count,
+                ])
+            }
             let contact = matchID.flatMap { repo.contact(id: $0) }
             let sidecar = matchID.map { Self.existingSidecarFields(repo.fields(for: $0)) } ?? [:]
             let rows = LinkedInDiff.rows(
@@ -1887,6 +1898,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 profile: profile,
                 matchedContactID: matchID,
                 matchedContactName: contact?.displayName,
+                ambiguousMatchCount: matches.count,
                 rows: rows,
                 loadExistingPhoto: { [weak repo] in
                     guard let repo, let matchID else { return nil }
@@ -1925,39 +1937,65 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         _ selections: [TLSBatchImportSelection],
         repo: ContactsRepository
     ) async -> [String] {
-        var failures: [String] = []
+        var issues: [String] = []
+        var failedCount = 0
+        var partialCount = 0
         for selection in selections {
             let profile = Self.filteredProfile(selection.profile, to: selection.fields)
             let fields = Self.packageFields(from: selection.fields)
             let name = profile.fullName ?? "Unnamed person"
             do {
                 if let matched = selection.matchedContactID {
-                    _ = try await repo.applyLinkedIn(profile: profile, to: matched, fields: fields)
+                    do {
+                        _ = try await repo.applyLinkedIn(profile: profile, to: matched, fields: fields)
+                    } catch {
+                        partialCount += 1
+                        Self.handoffLog.error(
+                            "TLS batch: \(name) update may be partial: \(error.localizedDescription)"
+                        )
+                        issues.append(
+                            "\(name): The existing contact may be partially updated: \(error.localizedDescription)"
+                        )
+                        continue
+                    }
                 } else {
                     let contact = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
                     let extras = fields.intersection(Set<LinkedInField>([
                         .headline, .location, .about, .department, .role, .ama, .photo,
                     ]))
                     if !extras.isEmpty {
-                        _ = try await repo.applyLinkedIn(
-                            profile: profile,
-                            to: contact.contactID,
-                            fields: extras
-                        )
+                        do {
+                            _ = try await repo.applyLinkedIn(
+                                profile: profile,
+                                to: contact.contactID,
+                                fields: extras
+                            )
+                        } catch {
+                            partialCount += 1
+                            Self.handoffLog.error(
+                                "TLS batch: \(name) contact created but extras failed: \(error.localizedDescription)"
+                            )
+                            issues.append(
+                                "\(name): Contact created, but some custom fields or the photo could not be saved: \(error.localizedDescription)"
+                            )
+                            continue
+                        }
                     }
                 }
                 Self.handoffLog.notice("TLS batch: imported", ["name": name])
             } catch {
+                failedCount += 1
                 Self.handoffLog.error("TLS batch: \(name) failed: \(error.localizedDescription)")
-                failures.append("\(name): \(error.localizedDescription)")
+                issues.append("\(name): Contact was not imported: \(error.localizedDescription)")
             }
         }
         NotificationCenter.default.post(name: .linkedInImportDidSave, object: nil)
         Self.handoffLog.notice("TLS batch: finished", [
             "requested": selections.count,
-            "failed": failures.count,
+            "failed": failedCount,
+            "partial": partialCount,
         ])
-        return failures
+        return issues
     }
 
     /// The batch review uses the normal import field toggles, but new contacts

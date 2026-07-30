@@ -65,7 +65,9 @@ The app presents the roster in one review sheet. Left/right arrows and an
 `N of M` counter page through people; every field is selected by default, and
 the user can turn off individual fields or skip a person before importing the
 included set. Existing contacts are matched through the normal URL/email/name
-pipeline and shown as updates; unmatched people are shown as new contacts.
+pipeline and shown as updates; unmatched people are shown as new contacts. If
+several contacts share the same last-resort name match, the importer never
+chooses one arbitrarily: it clearly shows that a new contact will be created.
 Native Contacts fields receive name, nickname, job title, organization, and
 photo. TLS-only values upsert the custom sidecar fields `dschool ama`,
 `dschool role`, `dschool department`, and `dschool location`.
