@@ -33,6 +33,7 @@ struct TLSBatchImportView: View {
     @State private var selected: [Int: Set<LinkedInDiffRow.Field>]
     @State private var existingPhoto: UIImage?
     @State private var incomingPhoto: UIImage?
+    @State private var photoLoadID = UUID()
     @State private var isImporting = false
     @State private var importIssues: [String] = []
     @State private var showsFailureAlert = false
@@ -341,16 +342,27 @@ struct TLSBatchImportView: View {
         existingPhoto = nil
         incomingPhoto = nil
         guard let candidate = currentCandidate else { return }
+        let loadID = UUID()
+        photoLoadID = loadID
 
         let photoPayload = candidate.profile.photo
-        let incoming = Task.detached(priority: .userInitiated) {
-            photoPayload?.decodedData().flatMap { UIImage(data: $0) }
+        let incoming = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard !Task.isCancelled,
+                  let data = photoPayload?.decodedData(),
+                  !Task.isCancelled else { return nil }
+            return UIImage(data: data)
         }
-        let loadedExisting = await candidate.loadExistingPhoto()
-        let loadedIncoming = await incoming.value
-        guard currentCandidate?.id == candidate.id else { return }
-        existingPhoto = loadedExisting
-        incomingPhoto = loadedIncoming
+        await withTaskCancellationHandler {
+            let loadedExisting = await candidate.loadExistingPhoto()
+            let loadedIncoming = await incoming.value
+            guard !Task.isCancelled,
+                  photoLoadID == loadID,
+                  currentCandidate?.id == candidate.id else { return }
+            existingPhoto = loadedExisting
+            incomingPhoto = loadedIncoming
+        } onCancel: {
+            incoming.cancel()
+        }
     }
 
     private func beginImport() {
