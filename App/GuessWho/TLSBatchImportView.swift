@@ -342,12 +342,12 @@ struct TLSBatchImportView: View {
         incomingPhoto = nil
         guard let candidate = currentCandidate else { return }
 
-        async let existing = candidate.loadExistingPhoto()
         let photoPayload = candidate.profile.photo
-        async let incoming: UIImage? = Task.detached(priority: .userInitiated) {
+        let incoming = Task.detached(priority: .userInitiated) {
             photoPayload?.decodedData().flatMap { UIImage(data: $0) }
-        }.value
-        let (loadedExisting, loadedIncoming) = await (existing, incoming)
+        }
+        let loadedExisting = await candidate.loadExistingPhoto()
+        let loadedIncoming = await incoming.value
         guard currentCandidate?.id == candidate.id else { return }
         existingPhoto = loadedExisting
         incomingPhoto = loadedIncoming
