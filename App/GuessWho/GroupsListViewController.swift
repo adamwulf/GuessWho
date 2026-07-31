@@ -1,5 +1,67 @@
 import UIKit
 import GuessWhoSync
+import GuessWhoLogging
+
+@MainActor
+struct GroupDeletionOperation {
+    let deleteFromContacts: (ContactGroup) async throws -> Void
+    let removeFromFavorites: (ContactGroup) throws -> Void
+
+    /// Returns a cleanup error only after Contacts deletion succeeded. Favorite
+    /// removal is deliberately unconditional and idempotent; no UI cache is
+    /// consulted before touching persistent favorites.
+    func delete(_ group: ContactGroup) async throws -> Error? {
+        try await deleteFromContacts(group)
+        return cleanupFavorite(for: group)
+    }
+
+    func cleanupFavorite(for group: ContactGroup) -> Error? {
+        do {
+            try removeFromFavorites(group)
+            return nil
+        } catch {
+            return error
+        }
+    }
+}
+
+struct GroupMutationErrorPresentation {
+    let message: String
+    let shouldRefreshGroups: Bool
+
+    static func make(
+        error: Error,
+        authorization: StoreAuthorizationStatus
+    ) -> GroupMutationErrorPresentation {
+        if let contactStoreError = error as? ContactStoreError,
+           case .groupNotFound = contactStoreError {
+            return GroupMutationErrorPresentation(
+                message: "This group was already removed. The Groups list has been refreshed.",
+                shouldRefreshGroups: true
+            )
+        }
+
+        switch authorization {
+        case .denied, .restricted:
+            return GroupMutationErrorPresentation(
+                message: "Allow Guess Who to access Contacts in Settings, then try again.",
+                shouldRefreshGroups: false
+            )
+        case .notDetermined, .authorized:
+            return GroupMutationErrorPresentation(
+                message: "Contacts couldn’t complete this change. Please try again.",
+                shouldRefreshGroups: false
+            )
+        }
+    }
+}
+
+enum GroupNameInput {
+    static func normalized(_ value: String?) -> String? {
+        let name = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+}
 
 /// UIKit Groups list. Used by both the Catalyst 3-column shell (as the
 /// supplementary column for `.groups`) and the iPhone tab shell (rooted in
@@ -21,6 +83,8 @@ final class GroupsListViewController: UIViewController {
 
     private let repository: ContactsRepository
     private let favoritesStore: FavoritesListStore
+    private let deletionOperation: GroupDeletionOperation
+    private static let log = GuessWhoLog.logger("app.groups.list")
 
     private enum CellID: String {
         case group
@@ -72,6 +136,14 @@ final class GroupsListViewController: UIViewController {
     init(repository: ContactsRepository, favoritesStore: FavoritesListStore) {
         self.repository = repository
         self.favoritesStore = favoritesStore
+        self.deletionOperation = GroupDeletionOperation(
+            deleteFromContacts: { group in
+                try await repository.deleteGroup(group)
+            },
+            removeFromFavorites: { group in
+                try favoritesStore.remove(kind: .group, id: group.localID)
+            }
+        )
         super.init(nibName: nil, bundle: nil)
         title = "Groups"
     }
@@ -340,7 +412,7 @@ final class GroupsListViewController: UIViewController {
                 do {
                     _ = try await self.repository.createGroup(name: name)
                 } catch {
-                    self.presentMutationError(action: "create", error: error)
+                    await self.presentMutationError(action: "create", error: error)
                 }
             }
         }
@@ -359,7 +431,7 @@ final class GroupsListViewController: UIViewController {
                 do {
                     try await self.repository.renameGroup(group, to: name)
                 } catch {
-                    self.presentMutationError(action: "rename", error: error)
+                    await self.presentMutationError(action: "rename", error: error)
                 }
             }
         }
@@ -375,17 +447,15 @@ final class GroupsListViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            let wasFavorite = self.favoritesStore.isFavorite(kind: .group, id: group.localID)
             Task {
                 guard self.beginGroupMutation() else { return }
                 defer { self.endGroupMutation() }
                 do {
-                    try await self.repository.deleteGroup(group)
-                    if wasFavorite {
-                        self.removeDeletedGroupFavorite(group)
+                    if let cleanupError = try await self.deletionOperation.delete(group) {
+                        self.presentFavoriteCleanupError(cleanupError, for: group)
                     }
                 } catch {
-                    self.presentMutationError(action: "delete", error: error)
+                    await self.presentMutationError(action: "delete", error: error)
                 }
             }
         })
@@ -412,27 +482,34 @@ final class GroupsListViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         let action = UIAlertAction(title: actionTitle, style: .default) { [weak self, weak alert] _ in
             self?.pendingNameAction = nil
-            let name = alert?.textFields?.first?.text?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !name.isEmpty else { return }
+            guard let name = GroupNameInput.normalized(alert?.textFields?.first?.text) else {
+                return
+            }
             completion(name)
         }
-        action.isEnabled = initialName?
-            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        action.isEnabled = GroupNameInput.normalized(initialName) != nil
         pendingNameAction = action
         alert.addAction(action)
         presentAlertWhenReady(alert)
     }
 
     @objc private func groupNameDidChange(_ sender: UITextField) {
-        pendingNameAction?.isEnabled = sender.text?
-            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        pendingNameAction?.isEnabled = GroupNameInput.normalized(sender.text) != nil
     }
 
-    private func presentMutationError(action: String, error _: Error) {
+    private func presentMutationError(action: String, error: Error) async {
+        Self.log.error("couldn't \(action) group: \(error.localizedDescription)")
+        let presentation = GroupMutationErrorPresentation.make(
+            error: error,
+            authorization: await repository.contactsAuthorizationStatus()
+        )
+        if presentation.shouldRefreshGroups {
+            await repository.loadGroups()
+        }
+
         let alert = UIAlertController(
             title: "Couldn’t \(action) group",
-            message: "Guess Who couldn’t update Contacts. Check Contacts access in Settings and try again.",
+            message: presentation.message,
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -453,21 +530,22 @@ final class GroupsListViewController: UIViewController {
         tableView.isUserInteractionEnabled = true
     }
 
-    private func removeDeletedGroupFavorite(_ group: ContactGroup) {
-        do {
-            try favoritesStore.remove(kind: .group, id: group.localID)
-        } catch {
-            let alert = UIAlertController(
-                title: "Group Deleted",
-                message: "The group was deleted, but it couldn’t be removed from Favorites.",
-                preferredStyle: .alert
-            )
-            alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
-            alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
-                self?.removeDeletedGroupFavorite(group)
-            })
-            presentAlertWhenReady(alert)
-        }
+    private func presentFavoriteCleanupError(_ error: Error, for group: ContactGroup) {
+        Self.log.error("couldn't remove deleted group from favorites: \(error.localizedDescription)")
+        let alert = UIAlertController(
+            title: "Group Deleted",
+            message: "The group was deleted, but it couldn’t be removed from Favorites.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+            guard let self,
+                  let retryError = self.deletionOperation.cleanupFavorite(for: group) else {
+                return
+            }
+            self.presentFavoriteCleanupError(retryError, for: group)
+        })
+        presentAlertWhenReady(alert)
     }
 
     /// Alerts can complete their action before UIKit finishes dismissing them.

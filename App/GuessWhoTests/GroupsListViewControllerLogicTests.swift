@@ -1,0 +1,77 @@
+import Foundation
+import Testing
+import GuessWhoSync
+@testable import GuessWho
+
+private struct InjectedGroupUIFailure: Error {}
+
+@MainActor
+@Suite("Groups list mutation logic")
+struct GroupsListViewControllerLogicTests {
+    @Test
+    func deletionAlwaysRemovesPersistentFavoriteWithoutConsultingCache() async throws {
+        let group = ContactGroup(localID: "group-id", name: "Family")
+        var calls: [String] = []
+        let operation = GroupDeletionOperation(
+            deleteFromContacts: { _ in calls.append("delete") },
+            removeFromFavorites: { _ in calls.append("favorite") }
+        )
+
+        let cleanupError = try await operation.delete(group)
+
+        #expect(cleanupError == nil)
+        #expect(calls == ["delete", "favorite"])
+    }
+
+    @Test
+    func favoriteCleanupFailureIsReportedAfterSuccessfulDeletion() async throws {
+        let group = ContactGroup(localID: "group-id", name: "Family")
+        var deleted = false
+        let operation = GroupDeletionOperation(
+            deleteFromContacts: { _ in deleted = true },
+            removeFromFavorites: { _ in throw InjectedGroupUIFailure() }
+        )
+
+        let cleanupError = try await operation.delete(group)
+
+        #expect(deleted)
+        #expect(cleanupError is InjectedGroupUIFailure)
+    }
+
+    @Test(arguments: [StoreAuthorizationStatus.denied, .restricted])
+    func authorizationErrorsDirectUsersToSettings(_ status: StoreAuthorizationStatus) {
+        let presentation = GroupMutationErrorPresentation.make(
+            error: InjectedGroupUIFailure(),
+            authorization: status
+        )
+        #expect(presentation.message.contains("Settings"))
+        #expect(!presentation.shouldRefreshGroups)
+    }
+
+    @Test
+    func missingGroupRefreshesInsteadOfBlamingAuthorization() {
+        let presentation = GroupMutationErrorPresentation.make(
+            error: ContactStoreError.groupNotFound(localID: "gone"),
+            authorization: .denied
+        )
+        #expect(presentation.message.contains("already removed"))
+        #expect(presentation.shouldRefreshGroups)
+    }
+
+    @Test
+    func unknownAuthorizedFailureUsesNeutralRetryGuidance() {
+        let presentation = GroupMutationErrorPresentation.make(
+            error: InjectedGroupUIFailure(),
+            authorization: .authorized
+        )
+        #expect(presentation.message == "Contacts couldn’t complete this change. Please try again.")
+        #expect(!presentation.shouldRefreshGroups)
+    }
+
+    @Test
+    func groupNameValidationTrimsAndRejectsBlankInput() {
+        #expect(GroupNameInput.normalized("  Friends \n") == "Friends")
+        #expect(GroupNameInput.normalized(" \n\t") == nil)
+        #expect(GroupNameInput.normalized(nil) == nil)
+    }
+}

@@ -141,6 +141,26 @@ private actor SuspendingGroupContactStore: ContactStoreProtocol {
 @Suite("ContactsRepository — group memberships")
 struct ContactsRepositoryGroupsTests {
     @Test @MainActor
+    func newerConcurrentLoadWinsOverOlderSnapshot() async throws {
+        let store = SuspendingGroupContactStore()
+        _ = try await store.seedGroup(name: "Family")
+        let repository = ContactsRepository(contacts: store)
+
+        await store.suspendNextGroupFetch()
+        let olderLoad = Task { @MainActor in await repository.loadGroups() }
+        await store.waitUntilGroupFetchIsSuspended()
+
+        _ = try await store.seedGroup(name: "Work")
+        await repository.loadGroups()
+        #expect(repository.groups.map(\.name) == ["Family", "Work"])
+
+        await store.resumeGroupFetch()
+        await olderLoad.value
+
+        #expect(repository.groups.map(\.name) == ["Family", "Work"])
+    }
+
+    @Test @MainActor
     func staleLoadCannotOverwriteACompletedCreate() async throws {
         let store = SuspendingGroupContactStore()
         _ = try await store.seedGroup(name: "Family")
@@ -156,6 +176,23 @@ struct ContactsRepositoryGroupsTests {
         await staleLoad.value
 
         #expect(repository.groups.map(\.name) == ["Family", "Work"])
+    }
+
+    @Test @MainActor
+    func createAfterInitialLoadFailureRecoversFullAuthoritativeCache() async throws {
+        let store = SuspendingGroupContactStore()
+        _ = try await store.seedGroup(name: "Family")
+        let repository = ContactsRepository(contacts: store)
+
+        await store.failNextGroupFetch()
+        await repository.loadGroups()
+        #expect(repository.groups.isEmpty)
+        #expect(repository.groupsError != nil)
+
+        _ = try await repository.createGroup(name: "Work")
+
+        #expect(repository.groups.map(\.name) == ["Family", "Work"])
+        #expect(repository.groupsError == nil)
     }
 
     @Test @MainActor

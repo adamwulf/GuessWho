@@ -42,6 +42,8 @@ public final class ContactsRepository: NSObject {
     // return empty/false, writes throw `SidecarUnavailableError`.
     private let sync: GuessWhoSync?
     private let favorites: FavoritesStore?
+    @ObservationIgnored private let creationTimestampRepairs:
+        ContactCreationTimestampRepairStoring
 
     /// The center this repository observes `.guessWhoContactsDidChange` on AND
     /// the one a write-side refresh would notify. Defaults to `.default` so
@@ -99,6 +101,16 @@ public final class ContactsRepository: NSObject {
     /// this before its store fetch and discards a result that returns after a
     /// mutation, preventing an older snapshot from overwriting the cache.
     @ObservationIgnored private var groupMutationGeneration = 0
+
+    /// Advances when each group load starts. In addition to mutation
+    /// generation, this ensures two overlapping reads obey newest-request-wins:
+    /// an older Contacts snapshot cannot land after a newer load and replace it.
+    @ObservationIgnored private var groupLoadRequestGeneration = 0
+
+    /// True only after a complete group fetch has been published. Mutations can
+    /// update a known-good cache incrementally, but after an initial/most-recent
+    /// fetch failure they must first recover the full authoritative list.
+    @ObservationIgnored private var hasAuthoritativeGroups = false
 
     /// Repository-level mutation queue. `@MainActor` methods are reentrant at
     /// each store `await`, so without this tail a rename and delete can finish
@@ -178,16 +190,33 @@ public final class ContactsRepository: NSObject {
     ///   wiring); tests pass a fresh `NotificationCenter()` per instance so a
     ///   post from one repository's test cannot fire another's observer. See the
     ///   `notificationCenter` property doc for the full root cause.
-    public init(
+    public convenience init(
         contacts: ContactStoreProtocol,
         sync: GuessWhoSync? = nil,
         favorites: FavoritesStore? = nil,
         notificationCenter: NotificationCenter = .default
     ) {
+        self.init(
+            contacts: contacts,
+            sync: sync,
+            favorites: favorites,
+            notificationCenter: notificationCenter,
+            creationTimestampRepairs: UserDefaultsContactCreationTimestampRepairStore()
+        )
+    }
+
+    init(
+        contacts: ContactStoreProtocol,
+        sync: GuessWhoSync? = nil,
+        favorites: FavoritesStore? = nil,
+        notificationCenter: NotificationCenter = .default,
+        creationTimestampRepairs: ContactCreationTimestampRepairStoring
+    ) {
         self.contactsStore = contacts
         self.sync = sync
         self.favorites = favorites
         self.notificationCenter = notificationCenter
+        self.creationTimestampRepairs = creationTimestampRepairs
         super.init()
         notificationCenter.addObserver(
             self,
@@ -213,12 +242,17 @@ public final class ContactsRepository: NSObject {
     /// denied permission or a transient Contacts failure.
     public func reload() async {
         isLoading = true
+        var fetchedContacts = false
         do {
             setContacts(try await contactsStore.fetchAll())
             lastError = nil
+            fetchedContacts = true
         } catch {
             setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
+        }
+        if fetchedContacts {
+            await repairPendingCreationTimestamps()
         }
         await refreshTimestampCache()
         await refreshLinkedContactIDs()
@@ -273,21 +307,31 @@ public final class ContactsRepository: NSObject {
     // the sidecar does not mirror them. Mutations update this cache immediately
     // after the Contacts write succeeds and post the shared reload notification.
 
+    /// The current Contacts permission state, exposed in the package's
+    /// framework-neutral vocabulary so group mutation UI can distinguish an
+    /// authorization failure from an ordinary transient store error.
+    public func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
+        await contactsStore.contactsAuthorizationStatus()
+    }
+
     /// Rebuild the `groups` cache from Contacts, sorted by name. A failed fetch
     /// preserves the last good cache and records the group-specific error.
     /// Posts `.contactsRepositoryDidReload` so the Groups list controller
     /// refreshes through the same notification path the contact lists use.
     public func loadGroups() async {
-        let generation = groupMutationGeneration
+        groupLoadRequestGeneration &+= 1
+        let loadGeneration = groupLoadRequestGeneration
+        let mutationGeneration = groupMutationGeneration
         do {
             let fetched = try await contactsStore.fetchAllGroups()
-            guard generation == groupMutationGeneration else { return }
-            groups = fetched.sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return }
+            groups = sortedGroups(fetched)
             groupsError = nil
+            hasAuthoritativeGroups = true
         } catch {
-            guard generation == groupMutationGeneration else { return }
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return }
             groupsError = error.localizedDescription
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
@@ -302,10 +346,12 @@ public final class ContactsRepository: NSObject {
         try await performSerializedGroupMutation {
             let group = try await self.contactsStore.createGroup(name: name)
             self.groupMutationGeneration &+= 1
-            self.groups.removeAll { $0.localID == group.localID }
-            self.groups.append(group)
-            self.sortGroups()
-            self.postDidReload(contactDataChanged: false)
+            if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
+                self.groups.removeAll { $0.localID == group.localID }
+                self.groups.append(group)
+                self.sortGroups()
+                self.postDidReload(contactDataChanged: false)
+            }
             return group
         }
     }
@@ -315,13 +361,15 @@ public final class ContactsRepository: NSObject {
         try await performSerializedGroupMutation {
             try await self.contactsStore.renameGroup(localID: group.localID, to: name)
             self.groupMutationGeneration &+= 1
-            // A cache miss can mean the group was concurrently removed outside
-            // Guess Who. Never resurrect it based only on the earlier argument.
-            if let index = self.groups.firstIndex(where: { $0.localID == group.localID }) {
-                self.groups[index] = ContactGroup(localID: group.localID, name: name)
+            if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
+                // A cache miss can mean the group was concurrently removed outside
+                // Guess Who. Never resurrect it based only on the earlier argument.
+                if let index = self.groups.firstIndex(where: { $0.localID == group.localID }) {
+                    self.groups[index] = ContactGroup(localID: group.localID, name: name)
+                }
+                self.sortGroups()
+                self.postDidReload(contactDataChanged: false)
             }
-            self.sortGroups()
-            self.postDidReload(contactDataChanged: false)
         }
     }
 
@@ -330,8 +378,45 @@ public final class ContactsRepository: NSObject {
         try await performSerializedGroupMutation {
             try await self.contactsStore.deleteGroup(localID: group.localID)
             self.groupMutationGeneration &+= 1
-            self.groups.removeAll { $0.localID == group.localID }
-            self.postDidReload(contactDataChanged: false)
+            if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
+                self.groups.removeAll { $0.localID == group.localID }
+                self.postDidReload(contactDataChanged: false)
+            }
+        }
+    }
+
+    /// When the cache was never fully loaded, or the last load failed, rebuild
+    /// from Contacts after a successful mutation instead of applying a delta to
+    /// an incomplete/stale array. Returns true when recovery was attempted;
+    /// callers then avoid applying their incremental mutation. A failed recovery
+    /// preserves both the last good cache and the error so Retry remains valid.
+    private func recoverAuthoritativeGroupsAfterMutationIfNeeded() async -> Bool {
+        guard !hasAuthoritativeGroups || groupsError != nil else { return false }
+
+        groupLoadRequestGeneration &+= 1
+        let loadGeneration = groupLoadRequestGeneration
+        let mutationGeneration = groupMutationGeneration
+        do {
+            let fetched = try await contactsStore.fetchAllGroups()
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return true }
+            groups = sortedGroups(fetched)
+            groupsError = nil
+            hasAuthoritativeGroups = true
+            postDidReload(contactDataChanged: false)
+        } catch {
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return true }
+            groupsError = error.localizedDescription
+            lastError = "Groups fetch failed: \(error.localizedDescription)"
+            postDidReload(contactDataChanged: false)
+        }
+        return true
+    }
+
+    private func sortedGroups(_ groups: [ContactGroup]) -> [ContactGroup] {
+        groups.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 
@@ -1367,23 +1452,44 @@ public final class ContactsRepository: NSObject {
     /// sidecar write. Contacts has no creation-date API, so `createdAt` is only
     /// known for contacts Guess Who creates. Best-effort by design: once the
     /// Contacts record exists, a timestamp failure must not make the caller
-    /// retry creation and produce a duplicate card.
+    /// retry creation and produce a duplicate card. The captured instant is
+    /// journaled first so a later repository reload can repair a transient
+    /// reconciliation/sidecar failure without replacing it with a later date.
     private func stampCreationTimestamps(_ id: ContactID, at now: Date) async {
+        creationTimestampRepairs.record(localID: id.localID, createdAt: now)
+        await writeCreationTimestamps(id, at: now)
+    }
+
+    private func writeCreationTimestamps(_ id: ContactID, at createdAt: Date) async {
         guard let sync else { return }
         let minted = id.guessWhoID == nil
         do {
             let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
             let key = SidecarKey(kind: .contact, id: guessWhoID)
-            try sync.stampContactTimestamps([.created, .modified], at: key, now: now)
-            updateTimestampCache(.created, at: key, to: now)
-            updateTimestampCache(.modified, at: key, to: now)
+            try sync.stampContactTimestamps([.created, .modified], at: key, now: createdAt)
+            updateTimestampCache(.created, at: key, to: createdAt)
+            updateTimestampCache(.modified, at: key, to: createdAt)
             await refreshCacheIfMinted(minted, localID: id.localID)
             if !minted { postDidReload(contactDataChanged: false) }
+            creationTimestampRepairs.remove(localID: id.localID)
         } catch {
             Self.saveLog.error("contact timestamp write failed", metadata: [
                 "op": "createContact",
                 "error": .string(error.localizedDescription),
             ])
+        }
+    }
+
+    /// Replays the durable creation journal after a successful Contacts reload.
+    /// A missing contact means the record was deleted, so its repair entry can
+    /// be pruned. Failures remain journaled and retry on the next reload.
+    private func repairPendingCreationTimestamps() async {
+        for repair in creationTimestampRepairs.pendingRepairs() {
+            guard let contact = contact(localID: repair.localID) else {
+                creationTimestampRepairs.remove(localID: repair.localID)
+                continue
+            }
+            await writeCreationTimestamps(contact.contactID, at: repair.createdAt)
         }
     }
 
