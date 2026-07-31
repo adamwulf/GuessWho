@@ -86,9 +86,24 @@ public final class ContactsRepository: NSObject {
 
     /// Contacts.app groups (`CNGroup`), cached for the Groups list. Filled by
     /// `loadGroups()` and updated in place after create/rename/delete; a failed
-    /// fetch leaves an empty array and records `lastError`, exactly like
-    /// `reload()` does for contacts. The sidecar does not mirror groups.
+    /// fetch preserves the last good array and records `groupsError` /
+    /// `lastError`. The sidecar does not mirror groups.
     public private(set) var groups: [ContactGroup] = []
+
+    /// Group-specific load failure for the Groups screen. Kept separate from
+    /// the repository-wide `lastError` so an unrelated contact refresh cannot
+    /// erase or replace the actionable Groups empty state.
+    public private(set) var groupsError: String?
+
+    /// Advances after each successful group mutation. `loadGroups()` captures
+    /// this before its store fetch and discards a result that returns after a
+    /// mutation, preventing an older snapshot from overwriting the cache.
+    @ObservationIgnored private var groupMutationGeneration = 0
+
+    /// Repository-level mutation queue. `@MainActor` methods are reentrant at
+    /// each store `await`, so without this tail a rename and delete can finish
+    /// their cache updates in the opposite order from their Contacts writes.
+    @ObservationIgnored private var groupMutationTail: Task<Void, Never>?
 
     // MARK: - Point-lookup indexes (private; rebuilt from `contacts`)
     //
@@ -259,19 +274,21 @@ public final class ContactsRepository: NSObject {
     // after the Contacts write succeeds and post the shared reload notification.
 
     /// Rebuild the `groups` cache from Contacts, sorted by name. A failed fetch
-    /// leaves an empty cache and records `lastError`, mirroring `reload()`'s
-    /// degrade-gracefully behavior. Posts `.contactsRepositoryDidReload` so the
-    /// Groups list controller refreshes through the same notification path the
-    /// People/Organizations lists use.
+    /// preserves the last good cache and records the group-specific error.
+    /// Posts `.contactsRepositoryDidReload` so the Groups list controller
+    /// refreshes through the same notification path the contact lists use.
     public func loadGroups() async {
+        let generation = groupMutationGeneration
         do {
             let fetched = try await contactsStore.fetchAllGroups()
+            guard generation == groupMutationGeneration else { return }
             groups = fetched.sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-            lastError = nil
+            groupsError = nil
         } catch {
-            groups = []
+            guard generation == groupMutationGeneration else { return }
+            groupsError = error.localizedDescription
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
         // Groups moved; the CONTACT records in the cache are untouched.
@@ -282,40 +299,62 @@ public final class ContactsRepository: NSObject {
     /// Contacts chooses the backing container and issues the group's local id.
     @discardableResult
     public func createGroup(name: String) async throws -> ContactGroup {
-        let group = try await contactsStore.createGroup(name: name)
-        groups.removeAll { $0.localID == group.localID }
-        groups.append(group)
-        sortGroups()
-        postDidReload(contactDataChanged: false)
-        return group
+        try await performSerializedGroupMutation {
+            let group = try await self.contactsStore.createGroup(name: name)
+            self.groupMutationGeneration &+= 1
+            self.groups.removeAll { $0.localID == group.localID }
+            self.groups.append(group)
+            self.sortGroups()
+            self.postDidReload(contactDataChanged: false)
+            return group
+        }
     }
 
     /// Renames a Contacts group while preserving its Contacts-issued identity.
     public func renameGroup(_ group: ContactGroup, to name: String) async throws {
-        try await contactsStore.renameGroup(localID: group.localID, to: name)
-        if let index = groups.firstIndex(where: { $0.localID == group.localID }) {
-            groups[index] = ContactGroup(localID: group.localID, name: name)
-        } else {
-            // The mutation can race the initial Groups load; keep the cache
-            // truthful even if the renamed group was not present in its
-            // pre-mutation snapshot.
-            groups.append(ContactGroup(localID: group.localID, name: name))
+        try await performSerializedGroupMutation {
+            try await self.contactsStore.renameGroup(localID: group.localID, to: name)
+            self.groupMutationGeneration &+= 1
+            // A cache miss can mean the group was concurrently removed outside
+            // Guess Who. Never resurrect it based only on the earlier argument.
+            if let index = self.groups.firstIndex(where: { $0.localID == group.localID }) {
+                self.groups[index] = ContactGroup(localID: group.localID, name: name)
+            }
+            self.sortGroups()
+            self.postDidReload(contactDataChanged: false)
         }
-        sortGroups()
-        postDidReload(contactDataChanged: false)
     }
 
     /// Deletes a Contacts group. Deleting a group does not delete its contacts.
     public func deleteGroup(_ group: ContactGroup) async throws {
-        try await contactsStore.deleteGroup(localID: group.localID)
-        groups.removeAll { $0.localID == group.localID }
-        postDidReload(contactDataChanged: false)
+        try await performSerializedGroupMutation {
+            try await self.contactsStore.deleteGroup(localID: group.localID)
+            self.groupMutationGeneration &+= 1
+            self.groups.removeAll { $0.localID == group.localID }
+            self.postDidReload(contactDataChanged: false)
+        }
     }
 
     private func sortGroups() {
         groups.sort {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    /// Runs one group mutation after every earlier mutation has settled,
+    /// preserving call order across actor-reentrant Contacts store awaits.
+    private func performSerializedGroupMutation<T: Sendable>(
+        _ operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let previous = groupMutationTail
+        let current = Task { @MainActor in
+            await previous?.value
+            return try await operation()
+        }
+        groupMutationTail = Task { @MainActor in
+            _ = try? await current.value
+        }
+        return try await current.value
     }
 
     /// The members of the group identified by `groupLocalID`, as `Contact`s.
@@ -777,6 +816,7 @@ public final class ContactsRepository: NSObject {
 
         try await saveContact(edited, for: id)
 
+        do {
         // Sidecar key/value fields (headline/about/location aren't CNContact
         // fields). UPSERT by name (not append-only notes) so re-importing the
         // same profile updates the value instead of duplicating it. Names are
@@ -840,6 +880,14 @@ public final class ContactsRepository: NSObject {
             if current != incoming {
                 try await setContactPhoto(for: id, imageData: incoming)
             }
+        }
+        } catch {
+            // The Contacts record was already saved. Even when a later custom
+            // field or photo fails, this was a real (partial) import and must
+            // participate in Last Modified ordering before the original error
+            // is rethrown to the caller.
+            await stampModifiedBestEffort(id, operation: "partial profile import")
+            throw error
         }
 
         // Imports are edits even when every selected value already happened to

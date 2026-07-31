@@ -3,6 +3,39 @@ import Testing
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
 
+private final class FailFirstWriteSidecarStore: SidecarStoreProtocol {
+    private let inner = InMemorySidecarStore()
+    private let lock = NSLock()
+    private var shouldFail = true
+
+    func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
+        try inner.read(key)
+    }
+
+    func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
+        lock.lock()
+        let fail = shouldFail
+        shouldFail = false
+        lock.unlock()
+        if fail {
+            throw NSError(
+                domain: "LinkedInApplyTests.FailFirstWrite",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Injected first-write failure"]
+            )
+        }
+        try inner.write(envelope, at: key)
+    }
+
+    func delete(_ key: SidecarKey) throws {
+        try inner.delete(key)
+    }
+
+    func allKeys() throws -> [SidecarKey] {
+        try inner.allKeys()
+    }
+}
+
 @Suite("ContactsRepository.applyLinkedIn")
 @MainActor
 struct LinkedInApplyTests {
@@ -70,6 +103,40 @@ struct LinkedInApplyTests {
         )
         #expect(modified.timeIntervalSince(before) >= -0.01)
         #expect(modified.timeIntervalSince(after) <= 0.01)
+    }
+
+    @Test func partialImportStillStampsLastModifiedBeforeRethrowing() async throws {
+        let person = Contact(localID: "T", givenName: "Ada")
+        let store = InMemoryContactStore(contacts: [person])
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: FailFirstWriteSidecarStore(),
+            deviceID: "device-test"
+        )
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+        let id = try #require(repo.contact(localID: person.localID)?.contactID)
+
+        var didThrow = false
+        do {
+            _ = try await repo.applyLinkedIn(
+                profile: profile(headline: "Teaching design", title: "Instructor"),
+                to: id,
+                fields: [.jobTitle, .headline]
+            )
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        let partiallyUpdated = try #require(repo.contact(localID: person.localID))
+        #expect(partiallyUpdated.jobTitle == "Instructor")
+        let guessWhoID = try #require(ContactID(contact: partiallyUpdated).guessWhoID)
+        let timestamps = try sync.contactTimestamps(
+            at: SidecarKey(kind: .contact, id: guessWhoID)
+        )
+        #expect(timestamps.lastModified != nil)
     }
 
     @Test func unselectedFieldsAreUntouched() async throws {

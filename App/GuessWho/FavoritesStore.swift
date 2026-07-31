@@ -65,6 +65,14 @@ final class FavoritesListStore {
         reload()
     }
 
+    /// Idempotent, throwing removal for cleanup after an entity is deleted.
+    /// Unlike `toggle`, this is safe to retry and lets the caller surface a
+    /// persistence failure instead of silently leaving an unavailable row.
+    func remove(kind: FavoriteKind, id: String) throws {
+        try service.removeFavorite(kind: kind, id: id)
+        reload()
+    }
+
     func toggle(_ id: FavoriteListItem.ID) {
         guard let favorite = items.first(where: { $0.matches(id) }) else { return }
         toggle(kind: favorite.kind, id: favorite.id)
