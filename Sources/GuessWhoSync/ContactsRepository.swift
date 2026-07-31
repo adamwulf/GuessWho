@@ -42,6 +42,8 @@ public final class ContactsRepository: NSObject {
     // return empty/false, writes throw `SidecarUnavailableError`.
     private let sync: GuessWhoSync?
     private let favorites: FavoritesStore?
+    @ObservationIgnored private let creationTimestampRepairs:
+        ContactCreationTimestampRepairStoring
 
     /// The center this repository observes `.guessWhoContactsDidChange` on AND
     /// the one a write-side refresh would notify. Defaults to `.default` so
@@ -85,11 +87,35 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Contacts.app groups (`CNGroup`), cached for the Groups list. Filled by
-    /// `loadGroups()`; a failed fetch leaves an empty array and records
-    /// `lastError`, exactly like `reload()` does for contacts. Groups are
-    /// read-only here — the sidecar does not mirror them and there is no
-    /// membership-mutation path through this repository surface.
+    /// `loadGroups()` and updated in place after create/rename/delete; a failed
+    /// fetch preserves the last good array and records `groupsError` /
+    /// `lastError`. The sidecar does not mirror groups.
     public private(set) var groups: [ContactGroup] = []
+
+    /// Group-specific load failure for the Groups screen. Kept separate from
+    /// the repository-wide `lastError` so an unrelated contact refresh cannot
+    /// erase or replace the actionable Groups empty state.
+    public private(set) var groupsError: String?
+
+    /// Advances after each successful group mutation. `loadGroups()` captures
+    /// this before its store fetch and discards a result that returns after a
+    /// mutation, preventing an older snapshot from overwriting the cache.
+    @ObservationIgnored private var groupMutationGeneration = 0
+
+    /// Advances when each group load starts. In addition to mutation
+    /// generation, this ensures two overlapping reads obey newest-request-wins:
+    /// an older Contacts snapshot cannot land after a newer load and replace it.
+    @ObservationIgnored private var groupLoadRequestGeneration = 0
+
+    /// True only after a complete group fetch has been published. Mutations can
+    /// update a known-good cache incrementally, but after an initial/most-recent
+    /// fetch failure they must first recover the full authoritative list.
+    @ObservationIgnored private var hasAuthoritativeGroups = false
+
+    /// Repository-level mutation queue. `@MainActor` methods are reentrant at
+    /// each store `await`, so without this tail a rename and delete can finish
+    /// their cache updates in the opposite order from their Contacts writes.
+    @ObservationIgnored private var groupMutationTail: Task<Void, Never>?
 
     // MARK: - Point-lookup indexes (private; rebuilt from `contacts`)
     //
@@ -164,16 +190,33 @@ public final class ContactsRepository: NSObject {
     ///   wiring); tests pass a fresh `NotificationCenter()` per instance so a
     ///   post from one repository's test cannot fire another's observer. See the
     ///   `notificationCenter` property doc for the full root cause.
-    public init(
+    public convenience init(
         contacts: ContactStoreProtocol,
         sync: GuessWhoSync? = nil,
         favorites: FavoritesStore? = nil,
         notificationCenter: NotificationCenter = .default
     ) {
+        self.init(
+            contacts: contacts,
+            sync: sync,
+            favorites: favorites,
+            notificationCenter: notificationCenter,
+            creationTimestampRepairs: UserDefaultsContactCreationTimestampRepairStore()
+        )
+    }
+
+    init(
+        contacts: ContactStoreProtocol,
+        sync: GuessWhoSync? = nil,
+        favorites: FavoritesStore? = nil,
+        notificationCenter: NotificationCenter = .default,
+        creationTimestampRepairs: ContactCreationTimestampRepairStoring
+    ) {
         self.contactsStore = contacts
         self.sync = sync
         self.favorites = favorites
         self.notificationCenter = notificationCenter
+        self.creationTimestampRepairs = creationTimestampRepairs
         super.init()
         notificationCenter.addObserver(
             self,
@@ -199,12 +242,17 @@ public final class ContactsRepository: NSObject {
     /// denied permission or a transient Contacts failure.
     public func reload() async {
         isLoading = true
+        var fetchedContacts = false
         do {
             setContacts(try await contactsStore.fetchAll())
             lastError = nil
+            fetchedContacts = true
         } catch {
             setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
+        }
+        if fetchedContacts {
+            await repairPendingCreationTimestamps()
         }
         await refreshTimestampCache()
         await refreshLinkedContactIDs()
@@ -253,31 +301,145 @@ public final class ContactsRepository: NSObject {
         linkCountsByID = Dictionary(uniqueKeysWithValues: counts.map { ($0.key.id, $0.value) })
     }
 
-    // MARK: - Groups (read-only)
+    // MARK: - Groups
     //
     // Groups are Contacts.app groups (`CNGroup`), read directly from the store —
-    // the sidecar does not mirror them. The Groups UI is read-only, so the
-    // repository exposes only a list fetch and a members fetch; the store's
-    // membership-mutation methods are intentionally not surfaced here.
+    // the sidecar does not mirror them. Mutations update this cache immediately
+    // after the Contacts write succeeds and post the shared reload notification.
+
+    /// The current Contacts permission state, exposed in the package's
+    /// framework-neutral vocabulary so group mutation UI can distinguish an
+    /// authorization failure from an ordinary transient store error.
+    public func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
+        await contactsStore.contactsAuthorizationStatus()
+    }
 
     /// Rebuild the `groups` cache from Contacts, sorted by name. A failed fetch
-    /// leaves an empty cache and records `lastError`, mirroring `reload()`'s
-    /// degrade-gracefully behavior. Posts `.contactsRepositoryDidReload` so the
-    /// Groups list controller refreshes through the same notification path the
-    /// People/Organizations lists use.
+    /// preserves the last good cache and records the group-specific error.
+    /// Posts `.contactsRepositoryDidReload` so the Groups list controller
+    /// refreshes through the same notification path the contact lists use.
     public func loadGroups() async {
+        groupLoadRequestGeneration &+= 1
+        let loadGeneration = groupLoadRequestGeneration
+        let mutationGeneration = groupMutationGeneration
         do {
             let fetched = try await contactsStore.fetchAllGroups()
-            groups = fetched.sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-            lastError = nil
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return }
+            groups = sortedGroups(fetched)
+            groupsError = nil
+            hasAuthoritativeGroups = true
         } catch {
-            groups = []
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return }
+            groupsError = error.localizedDescription
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
         // Groups moved; the CONTACT records in the cache are untouched.
         postDidReload(contactDataChanged: false)
+    }
+
+    /// Creates a Contacts group and inserts it into the alphabetized cache.
+    /// Contacts chooses the backing container and issues the group's local id.
+    @discardableResult
+    public func createGroup(name: String) async throws -> ContactGroup {
+        try await performSerializedGroupMutation {
+            let group = try await self.contactsStore.createGroup(name: name)
+            self.groupMutationGeneration &+= 1
+            if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
+                self.groups.removeAll { $0.localID == group.localID }
+                self.groups.append(group)
+                self.sortGroups()
+                self.postDidReload(contactDataChanged: false)
+            }
+            return group
+        }
+    }
+
+    /// Renames a Contacts group while preserving its Contacts-issued identity.
+    public func renameGroup(_ group: ContactGroup, to name: String) async throws {
+        try await performSerializedGroupMutation {
+            try await self.contactsStore.renameGroup(localID: group.localID, to: name)
+            self.groupMutationGeneration &+= 1
+            if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
+                // A cache miss can mean the group was concurrently removed outside
+                // Guess Who. Never resurrect it based only on the earlier argument.
+                if let index = self.groups.firstIndex(where: { $0.localID == group.localID }) {
+                    self.groups[index] = ContactGroup(localID: group.localID, name: name)
+                }
+                self.sortGroups()
+                self.postDidReload(contactDataChanged: false)
+            }
+        }
+    }
+
+    /// Deletes a Contacts group. Deleting a group does not delete its contacts.
+    public func deleteGroup(_ group: ContactGroup) async throws {
+        try await performSerializedGroupMutation {
+            try await self.contactsStore.deleteGroup(localID: group.localID)
+            self.groupMutationGeneration &+= 1
+            if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
+                self.groups.removeAll { $0.localID == group.localID }
+                self.postDidReload(contactDataChanged: false)
+            }
+        }
+    }
+
+    /// When the cache was never fully loaded, or the last load failed, rebuild
+    /// from Contacts after a successful mutation instead of applying a delta to
+    /// an incomplete/stale array. Returns true when recovery was attempted;
+    /// callers then avoid applying their incremental mutation. A failed recovery
+    /// preserves both the last good cache and the error so Retry remains valid.
+    private func recoverAuthoritativeGroupsAfterMutationIfNeeded() async -> Bool {
+        guard !hasAuthoritativeGroups || groupsError != nil else { return false }
+
+        groupLoadRequestGeneration &+= 1
+        let loadGeneration = groupLoadRequestGeneration
+        let mutationGeneration = groupMutationGeneration
+        do {
+            let fetched = try await contactsStore.fetchAllGroups()
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return true }
+            groups = sortedGroups(fetched)
+            groupsError = nil
+            hasAuthoritativeGroups = true
+            postDidReload(contactDataChanged: false)
+        } catch {
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return true }
+            groupsError = error.localizedDescription
+            lastError = "Groups fetch failed: \(error.localizedDescription)"
+            postDidReload(contactDataChanged: false)
+        }
+        return true
+    }
+
+    private func sortedGroups(_ groups: [ContactGroup]) -> [ContactGroup] {
+        groups.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func sortGroups() {
+        groups.sort {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    /// Runs one group mutation after every earlier mutation has settled,
+    /// preserving call order across actor-reentrant Contacts store awaits.
+    private func performSerializedGroupMutation<T: Sendable>(
+        _ operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let previous = groupMutationTail
+        let current = Task { @MainActor in
+            await previous?.value
+            return try await operation()
+        }
+        groupMutationTail = Task { @MainActor in
+            _ = try? await current.value
+        }
+        return try await current.value
     }
 
     /// The members of the group identified by `groupLocalID`, as `Contact`s.
@@ -508,14 +670,16 @@ public final class ContactsRepository: NSObject {
     /// Returns the cached contact, whose `contactID` addresses the new record
     /// for follow-up work: opening the detail view, applying LinkedIn extras.
     /// The single package entry point behind both the app's "+" (blank seed)
-    /// and the LinkedIn no-match import (profile-filled seed). No reconcile —
-    /// creating a card is a CONTACT write, not a sidecar write; the GuessWho
-    /// ID mints on the first sidecar write as usual.
+    /// and the LinkedIn no-match import (profile-filled seed). After the
+    /// Contacts write succeeds, it records `createdAt` and `lastModified` in
+    /// the sidecar. That timestamp write also mints the GuessWho identity.
     public func createContact(_ seed: Contact) async throws -> Contact {
         Self.saveLog.notice("contact save requested", metadata: ["op": "createContact"])
         let created = try await contactsStore.create(seed)
         await refreshContact(localID: created.localID)
-        return contact(localID: created.localID) ?? created
+        let cached = contact(localID: created.localID) ?? created
+        await stampCreationTimestamps(cached.contactID, at: Date())
+        return contact(localID: created.localID) ?? cached
     }
 
     /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
@@ -737,6 +901,7 @@ public final class ContactsRepository: NSObject {
 
         try await saveContact(edited, for: id)
 
+        do {
         // Sidecar key/value fields (headline/about/location aren't CNContact
         // fields). UPSERT by name (not append-only notes) so re-importing the
         // same profile updates the value instead of duplicating it. Names are
@@ -801,6 +966,22 @@ public final class ContactsRepository: NSObject {
                 try await setContactPhoto(for: id, imageData: incoming)
             }
         }
+        } catch {
+            // The Contacts record was already saved. Even when a later custom
+            // field or photo fails, this was a real (partial) import and must
+            // participate in Last Modified ordering before the original error
+            // is rethrown to the caller.
+            await stampModifiedBestEffort(id, operation: "partial profile import")
+            throw error
+        }
+
+        // Imports are edits even when every selected value already happened to
+        // match. Stamp the completion time so batch imports and single-profile
+        // imports appear correctly in the Last Modified order. Timestamp
+        // persistence is best-effort: the Contacts write may already have
+        // succeeded, so a sidecar failure must not report the whole import as
+        // failed and invite a duplicate retry.
+        await stampModifiedBestEffort(id, operation: "profile import")
 
         return contact(id: id) ?? edited
     }
@@ -1267,6 +1448,65 @@ public final class ContactsRepository: NSObject {
         try await stampTimestamp(.viewed, for: id)
     }
 
+    /// Persists the two timestamps intrinsic to creating a record in one
+    /// sidecar write. Contacts has no creation-date API, so `createdAt` is only
+    /// known for contacts Guess Who creates. Best-effort by design: once the
+    /// Contacts record exists, a timestamp failure must not make the caller
+    /// retry creation and produce a duplicate card. The captured instant is
+    /// journaled first so a later repository reload can repair a transient
+    /// reconciliation/sidecar failure without replacing it with a later date.
+    private func stampCreationTimestamps(_ id: ContactID, at now: Date) async {
+        creationTimestampRepairs.record(localID: id.localID, createdAt: now)
+        await writeCreationTimestamps(id, at: now)
+    }
+
+    private func writeCreationTimestamps(_ id: ContactID, at createdAt: Date) async {
+        guard let sync else { return }
+        let minted = id.guessWhoID == nil
+        do {
+            let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+            let key = SidecarKey(kind: .contact, id: guessWhoID)
+            try sync.stampContactTimestamps([.created, .modified], at: key, now: createdAt)
+            updateTimestampCache(.created, at: key, to: createdAt)
+            updateTimestampCache(.modified, at: key, to: createdAt)
+            await refreshCacheIfMinted(minted, localID: id.localID)
+            if !minted { postDidReload(contactDataChanged: false) }
+            creationTimestampRepairs.remove(localID: id.localID)
+        } catch {
+            Self.saveLog.error("contact timestamp write failed", metadata: [
+                "op": "createContact",
+                "error": .string(error.localizedDescription),
+            ])
+        }
+    }
+
+    /// Replays the durable creation journal after a successful Contacts reload.
+    /// A missing contact means the record was deleted, so its repair entry can
+    /// be pruned. Failures remain journaled and retry on the next reload.
+    private func repairPendingCreationTimestamps() async {
+        for repair in creationTimestampRepairs.pendingRepairs() {
+            guard let contact = contact(localID: repair.localID) else {
+                creationTimestampRepairs.remove(localID: repair.localID)
+                continue
+            }
+            await writeCreationTimestamps(contact.contactID, at: repair.createdAt)
+        }
+    }
+
+    /// Best-effort wrapper for edits whose primary Contacts writes have already
+    /// succeeded. Throwing after that point would misrepresent the operation as
+    /// wholly failed and can cause duplicate retries.
+    private func stampModifiedBestEffort(_ id: ContactID, operation: String) async {
+        do {
+            try await stampModified(id)
+        } catch {
+            Self.saveLog.error("contact timestamp write failed", metadata: [
+                "op": .string(operation),
+                "error": .string(error.localizedDescription),
+            ])
+        }
+    }
+
     /// Shared body of the three stamp verbs. Throws `SidecarUnavailableError`
     /// when the engine is unavailable; otherwise resolves-or-mints the GuessWho
     /// UUID (reconciling an unreconciled contact), writes the one timestamp
@@ -1299,6 +1539,7 @@ public final class ContactsRepository: NSObject {
     private func updateTimestampCache(_ which: ContactTimestampKind, at key: SidecarKey, to now: Date) {
         var stamps = contactTimestampsByID[key.id] ?? ContactTimestamps()
         switch which {
+        case .created: stamps.createdAt = now
         case .modified: stamps.lastModified = now
         case .interacted: stamps.lastInteracted = now
         case .viewed: stamps.lastViewed = now
@@ -2072,7 +2313,7 @@ public final class ContactsRepository: NSObject {
             return matched.sorted { lhs, rhs in
                 nameOrdered(lhs, rhs, primaryKey: \.firstNameSortKey)
             }
-        case .lastModified, .lastInteracted, .lastViewed:
+        case .created, .lastModified, .lastInteracted, .lastViewed:
             let kind = sortOrder.timestampKind ?? .modified
             return matched.sorted { lhs, rhs in
                 let lt = timestamp(kind, for: lhs) ?? .distantPast
@@ -2099,6 +2340,7 @@ public final class ContactsRepository: NSObject {
         guard let gw = ContactID(contact: contact).guessWhoID,
               let ts = contactTimestampsByID[gw] else { return nil }
         switch kind {
+        case .created:     return ts.createdAt
         case .modified:    return ts.lastModified
         case .interacted:  return ts.lastInteracted
         case .viewed:      return ts.lastViewed
@@ -2116,7 +2358,7 @@ public final class ContactsRepository: NSObject {
             return lettered(contacts, by: \.firstNameSectionLetter)
         case .lastFirst:
             return lettered(contacts, by: \.sectionLetter)
-        case .lastModified, .lastInteracted, .lastViewed:
+        case .created, .lastModified, .lastInteracted, .lastViewed:
             return timeBucketed(contacts, by: sortOrder.timestampKind ?? .modified, now: now)
         }
     }
@@ -2211,6 +2453,7 @@ extension ContactSortOrder {
     var timestampKind: ContactTimestampKind? {
         switch self {
         case .firstLast, .lastFirst: return nil
+        case .created:               return .created
         case .lastModified:          return .modified
         case .lastInteracted:        return .interacted
         case .lastViewed:            return .viewed

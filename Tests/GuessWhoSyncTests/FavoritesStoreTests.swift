@@ -68,6 +68,21 @@ struct FavoritesStoreTests {
     }
 
     @Test
+    func removeIsIdempotentAndDoesNotToggleAnAbsentFavoriteOn() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        let id = "F00DCAFE-0000-0000-0000-0000000000AB"
+
+        _ = try store.toggle(kind: .group, id: id, now: Date())
+        #expect(try store.remove(kind: .group, id: id))
+        #expect(try store.loadAll().isEmpty)
+
+        #expect(try store.remove(kind: .group, id: id) == false)
+        #expect(try store.loadAll().isEmpty)
+    }
+
+    @Test
     func setAllPreservesOrderAcrossReload() throws {
         let root = makeRoot()
         defer { cleanup(root) }

@@ -1,5 +1,67 @@
 import UIKit
 import GuessWhoSync
+import GuessWhoLogging
+
+@MainActor
+struct GroupDeletionOperation {
+    let deleteFromContacts: (ContactGroup) async throws -> Void
+    let removeFromFavorites: (ContactGroup) throws -> Void
+
+    /// Returns a cleanup error only after Contacts deletion succeeded. Favorite
+    /// removal is deliberately unconditional and idempotent; no UI cache is
+    /// consulted before touching persistent favorites.
+    func delete(_ group: ContactGroup) async throws -> Error? {
+        try await deleteFromContacts(group)
+        return cleanupFavorite(for: group)
+    }
+
+    func cleanupFavorite(for group: ContactGroup) -> Error? {
+        do {
+            try removeFromFavorites(group)
+            return nil
+        } catch {
+            return error
+        }
+    }
+}
+
+struct GroupMutationErrorPresentation {
+    let message: String
+    let shouldRefreshGroups: Bool
+
+    static func make(
+        error: Error,
+        authorization: StoreAuthorizationStatus
+    ) -> GroupMutationErrorPresentation {
+        if let contactStoreError = error as? ContactStoreError,
+           case .groupNotFound = contactStoreError {
+            return GroupMutationErrorPresentation(
+                message: "This group was already removed. The Groups list has been refreshed.",
+                shouldRefreshGroups: true
+            )
+        }
+
+        switch authorization {
+        case .denied, .restricted:
+            return GroupMutationErrorPresentation(
+                message: "Allow Guess Who to access Contacts in Settings, then try again.",
+                shouldRefreshGroups: false
+            )
+        case .notDetermined, .authorized:
+            return GroupMutationErrorPresentation(
+                message: "Contacts couldn’t complete this change. Please try again.",
+                shouldRefreshGroups: false
+            )
+        }
+    }
+}
+
+enum GroupNameInput {
+    static func normalized(_ value: String?) -> String? {
+        let name = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+}
 
 /// UIKit Groups list. Used by both the Catalyst 3-column shell (as the
 /// supplementary column for `.groups`) and the iPhone tab shell (rooted in
@@ -21,6 +83,8 @@ final class GroupsListViewController: UIViewController {
 
     private let repository: ContactsRepository
     private let favoritesStore: FavoritesListStore
+    private let deletionOperation: GroupDeletionOperation
+    private static let log = GuessWhoLog.logger("app.groups.list")
 
     private enum CellID: String {
         case group
@@ -41,8 +105,14 @@ final class GroupsListViewController: UIViewController {
     /// rows that differ. Mirrors `ContactsListViewController.renderedContacts`.
     private var renderedNames: [String: String] = [:]
 
+    private let emptyStateStack = UIStackView()
     private let emptyLabel = UILabel()
+    private let emptyDetailLabel = UILabel()
+    private let retryButton = UIButton(type: .system)
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
+    private weak var pendingNameAction: UIAlertAction?
+    private var pendingAlert: UIAlertController?
+    private var isMutatingGroup = false
 
     /// Flips true once the first `loadGroups()` completes. Drives the
     /// spinner-vs-empty-label choice in `updateEmptyState()` — a LOCAL flag
@@ -66,6 +136,14 @@ final class GroupsListViewController: UIViewController {
     init(repository: ContactsRepository, favoritesStore: FavoritesListStore) {
         self.repository = repository
         self.favoritesStore = favoritesStore
+        self.deletionOperation = GroupDeletionOperation(
+            deleteFromContacts: { group in
+                try await repository.deleteGroup(group)
+            },
+            removeFromFavorites: { group in
+                try favoritesStore.remove(kind: .group, id: group.localID)
+            }
+        )
         super.init(nibName: nil, bundle: nil)
         title = "Groups"
     }
@@ -92,6 +170,11 @@ final class GroupsListViewController: UIViewController {
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .add,
+            target: self,
+            action: #selector(addGroup)
+        )
 
         // Paint whatever the repository already cached, then kick a fresh fetch.
         // Groups are not loaded by the AppDelegate's contact reload, so this VC
@@ -101,16 +184,17 @@ final class GroupsListViewController: UIViewController {
         // spinner until the first fetch settles (repository is @MainActor, so the
         // continuation already resumes on main).
         applySnapshot(animated: false)
-        Task {
-            await repository.loadGroups()
-            hasGroupsLoaded = true
-            applySnapshot(animated: true)
-        }
+        loadGroups(animated: true)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        presentPendingAlertIfPossible()
     }
 
     // MARK: - Table view
@@ -132,26 +216,41 @@ final class GroupsListViewController: UIViewController {
     }
 
     private func configureEmptyState() {
-        emptyLabel.text = "No Groups"
-        emptyLabel.font = .preferredFont(forTextStyle: .body)
-        emptyLabel.textColor = .secondaryLabel
+        emptyStateStack.axis = .vertical
+        emptyStateStack.alignment = .center
+        emptyStateStack.spacing = 10
+        emptyStateStack.isHidden = true
+        emptyStateStack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyStateStack)
+
+        emptyLabel.font = .preferredFont(forTextStyle: .headline)
+        emptyLabel.textColor = .label
         emptyLabel.textAlignment = .center
         emptyLabel.adjustsFontForContentSizeCategory = true
-        emptyLabel.isHidden = true
-        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(emptyLabel)
+        emptyStateStack.addArrangedSubview(emptyLabel)
+
+        emptyDetailLabel.font = .preferredFont(forTextStyle: .body)
+        emptyDetailLabel.textColor = .secondaryLabel
+        emptyDetailLabel.textAlignment = .center
+        emptyDetailLabel.numberOfLines = 0
+        emptyDetailLabel.adjustsFontForContentSizeCategory = true
+        emptyStateStack.addArrangedSubview(emptyDetailLabel)
 
         activityIndicator.hidesWhenStopped = true
-        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(activityIndicator)
+        emptyStateStack.addArrangedSubview(activityIndicator)
+
+        var retryConfiguration = UIButton.Configuration.borderedProminent()
+        retryConfiguration.title = "Retry"
+        retryButton.configuration = retryConfiguration
+        retryButton.addTarget(self, action: #selector(retryLoadGroups), for: .touchUpInside)
+        emptyStateStack.addArrangedSubview(retryButton)
 
         NSLayoutConstraint.activate([
-            emptyLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
-            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
-            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
-            activityIndicator.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            activityIndicator.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+            emptyStateStack.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            emptyStateStack.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+            emptyStateStack.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
+            emptyStateStack.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
+            emptyDetailLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
         ])
     }
 
@@ -259,16 +358,217 @@ final class GroupsListViewController: UIViewController {
 
     private func updateEmptyState() {
         let isEmpty = repository.groups.isEmpty
-        // Show the spinner only while the first fetch is in flight; once it lands
-        // (`hasGroupsLoaded`), an empty group set surfaces the "No Groups" label.
-        // The label text is fixed (set in configureEmptyState) — there is no
-        // search-empty variant here, so it never needs re-assigning.
-        emptyLabel.isHidden = !isEmpty || !hasGroupsLoaded
-        if isEmpty && !hasGroupsLoaded {
+        emptyStateStack.isHidden = !isEmpty
+        guard isEmpty else {
+            activityIndicator.stopAnimating()
+            return
+        }
+
+        if !hasGroupsLoaded {
+            emptyLabel.text = "Loading Groups"
+            emptyDetailLabel.isHidden = true
+            retryButton.isHidden = true
             activityIndicator.startAnimating()
+        } else if repository.groupsError != nil {
+            activityIndicator.stopAnimating()
+            emptyLabel.text = "Couldn’t Load Groups"
+            emptyDetailLabel.text = "Check Contacts access in Settings, then try again."
+            emptyDetailLabel.isHidden = false
+            retryButton.isHidden = false
         } else {
             activityIndicator.stopAnimating()
+            emptyLabel.text = "No Groups"
+            emptyDetailLabel.isHidden = true
+            retryButton.isHidden = true
         }
+    }
+
+    private func loadGroups(animated: Bool) {
+        hasGroupsLoaded = false
+        updateEmptyState()
+        Task {
+            await repository.loadGroups()
+            hasGroupsLoaded = true
+            applySnapshot(animated: animated)
+        }
+    }
+
+    @objc private func retryLoadGroups() {
+        loadGroups(animated: true)
+    }
+
+    // MARK: - Group mutations
+
+    @objc private func addGroup() {
+        presentNameAlert(
+            title: "New Group",
+            actionTitle: "Add",
+            initialName: nil
+        ) { [weak self] name in
+            guard let self else { return }
+            Task {
+                guard self.beginGroupMutation() else { return }
+                defer { self.endGroupMutation() }
+                do {
+                    _ = try await self.repository.createGroup(name: name)
+                } catch {
+                    await self.presentMutationError(action: "create", error: error)
+                }
+            }
+        }
+    }
+
+    private func rename(_ group: ContactGroup) {
+        presentNameAlert(
+            title: "Rename Group",
+            actionTitle: "Rename",
+            initialName: group.name
+        ) { [weak self] name in
+            guard let self, name != group.name else { return }
+            Task {
+                guard self.beginGroupMutation() else { return }
+                defer { self.endGroupMutation() }
+                do {
+                    try await self.repository.renameGroup(group, to: name)
+                } catch {
+                    await self.presentMutationError(action: "rename", error: error)
+                }
+            }
+        }
+    }
+
+    private func confirmDelete(_ group: ContactGroup) {
+        let name = GroupCell.displayName(for: group)
+        let alert = UIAlertController(
+            title: "Delete “\(name)”?",
+            message: "Contacts in this group will not be deleted.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            Task {
+                guard self.beginGroupMutation() else { return }
+                defer { self.endGroupMutation() }
+                do {
+                    if let cleanupError = try await self.deletionOperation.delete(group) {
+                        self.presentFavoriteCleanupError(cleanupError, for: group)
+                    }
+                } catch {
+                    await self.presentMutationError(action: "delete", error: error)
+                }
+            }
+        })
+        presentAlertWhenReady(alert)
+    }
+
+    private func presentNameAlert(
+        title: String,
+        actionTitle: String,
+        initialName: String?,
+        completion: @escaping (String) -> Void
+    ) {
+        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        alert.addTextField { [weak self] textField in
+            textField.placeholder = "Group Name"
+            textField.text = initialName
+            textField.clearButtonMode = .whileEditing
+            textField.addTarget(
+                self,
+                action: #selector(GroupsListViewController.groupNameDidChange(_:)),
+                for: .editingChanged
+            )
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        let action = UIAlertAction(title: actionTitle, style: .default) { [weak self, weak alert] _ in
+            self?.pendingNameAction = nil
+            guard let name = GroupNameInput.normalized(alert?.textFields?.first?.text) else {
+                return
+            }
+            completion(name)
+        }
+        action.isEnabled = GroupNameInput.normalized(initialName) != nil
+        pendingNameAction = action
+        alert.addAction(action)
+        presentAlertWhenReady(alert)
+    }
+
+    @objc private func groupNameDidChange(_ sender: UITextField) {
+        pendingNameAction?.isEnabled = GroupNameInput.normalized(sender.text) != nil
+    }
+
+    private func presentMutationError(action: String, error: Error) async {
+        Self.log.error("couldn't \(action) group: \(error.localizedDescription)")
+        let presentation = GroupMutationErrorPresentation.make(
+            error: error,
+            authorization: await repository.contactsAuthorizationStatus()
+        )
+        if presentation.shouldRefreshGroups {
+            await repository.loadGroups()
+        }
+
+        let alert = UIAlertController(
+            title: "Couldn’t \(action) group",
+            message: presentation.message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        presentAlertWhenReady(alert)
+    }
+
+    private func beginGroupMutation() -> Bool {
+        guard !isMutatingGroup else { return false }
+        isMutatingGroup = true
+        navigationItem.rightBarButtonItem?.isEnabled = false
+        tableView.isUserInteractionEnabled = false
+        return true
+    }
+
+    private func endGroupMutation() {
+        isMutatingGroup = false
+        navigationItem.rightBarButtonItem?.isEnabled = true
+        tableView.isUserInteractionEnabled = true
+    }
+
+    private func presentFavoriteCleanupError(_ error: Error, for group: ContactGroup) {
+        Self.log.error("couldn't remove deleted group from favorites: \(error.localizedDescription)")
+        let alert = UIAlertController(
+            title: "Group Deleted",
+            message: "The group was deleted, but it couldn’t be removed from Favorites.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+            guard let self,
+                  let retryError = self.deletionOperation.cleanupFavorite(for: group) else {
+                return
+            }
+            self.presentFavoriteCleanupError(retryError, for: group)
+        })
+        presentAlertWhenReady(alert)
+    }
+
+    /// Alerts can complete their action before UIKit finishes dismissing them.
+    /// Dismiss any current alert first, then present the queued result only
+    /// while this controller is visible.
+    private func presentAlertWhenReady(_ alert: UIAlertController) {
+        guard isViewLoaded, view.window != nil else {
+            pendingAlert = alert
+            return
+        }
+        if let presented = presentedViewController {
+            presented.dismiss(animated: true) { [weak self] in
+                self?.presentAlertWhenReady(alert)
+            }
+            return
+        }
+        pendingAlert = nil
+        present(alert, animated: true)
+    }
+
+    private func presentPendingAlertIfPossible() {
+        guard let alert = pendingAlert else { return }
+        presentAlertWhenReady(alert)
     }
 }
 
@@ -291,16 +591,63 @@ extension GroupsListViewController: UITableViewDelegate {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return nil }
         let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
-        let action = UIContextualAction(
+        let favoriteAction = UIContextualAction(
             style: .normal,
             title: isFavorited ? "Unfavorite" : "Favorite"
         ) { [weak self] _, _, completion in
             self?.favoritesStore.toggle(kind: .group, id: group.localID)
             completion(true)
         }
-        action.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
-        action.backgroundColor = .systemYellow
-        return UISwipeActionsConfiguration(actions: [action])
+        favoriteAction.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
+        favoriteAction.backgroundColor = .systemYellow
+
+        let deleteAction = UIContextualAction(
+            style: .destructive,
+            title: "Delete"
+        ) { [weak self] _, _, completion in
+            self?.confirmDelete(group)
+            completion(true)
+        }
+        deleteAction.image = UIImage(systemName: "trash")
+
+        return UISwipeActionsConfiguration(actions: [deleteAction, favoriteAction])
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let group = groupsByLocalID[localID] else { return nil }
+        let renameAction = UIContextualAction(style: .normal, title: "Rename") { [weak self] _, _, completion in
+            self?.rename(group)
+            completion(true)
+        }
+        renameAction.image = UIImage(systemName: "pencil")
+        renameAction.backgroundColor = .systemBlue
+        return UISwipeActionsConfiguration(actions: [renameAction])
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let group = groupsByLocalID[localID] else { return nil }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let rename = UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in
+                self?.rename(group)
+            }
+            let delete = UIAction(
+                title: "Delete",
+                image: UIImage(systemName: "trash"),
+                attributes: .destructive
+            ) { _ in
+                self?.confirmDelete(group)
+            }
+            return UIMenu(children: [rename, delete])
+        }
     }
 }
 

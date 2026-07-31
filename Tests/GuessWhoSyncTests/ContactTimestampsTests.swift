@@ -3,7 +3,7 @@ import Testing
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
 
-/// Orchestrator-level coverage for the three per-contact timestamp cells:
+/// Orchestrator-level coverage for the per-contact timestamp cells:
 /// round-trip via `contactTimestamps`/`allContactTimestamps`, and
 /// migration-safety (an envelope with no timestamp cells decodes to all-nil,
 /// and a stamp write preserves every pre-existing cell). The cells are
@@ -25,10 +25,12 @@ struct ContactTimestampsTests {
     @Test
     func stampEachKind_readsBackViaContactTimestamps() throws {
         let (sync, _) = makeOrchestrator()
+        let created = Date(timeIntervalSince1970: 500_000)
         let modified = Date(timeIntervalSince1970: 1_000_000)
         let interacted = Date(timeIntervalSince1970: 2_000_000)
         let viewed = Date(timeIntervalSince1970: 3_000_000)
 
+        try sync.stampContactTimestamp(.created, at: contact, now: created)
         try sync.stampContactTimestamp(.modified, at: contact, now: modified)
         try sync.stampContactTimestamp(.interacted, at: contact, now: interacted)
         try sync.stampContactTimestamp(.viewed, at: contact, now: viewed)
@@ -36,6 +38,7 @@ struct ContactTimestampsTests {
         let ts = try sync.contactTimestamps(at: contact)
         // ISO8601 round-trips at millisecond precision, so compare on the
         // re-parsed string, not raw Double equality.
+        #expect(ts.createdAt == roundTrip(created))
         #expect(ts.lastModified == roundTrip(modified))
         #expect(ts.lastInteracted == roundTrip(interacted))
         #expect(ts.lastViewed == roundTrip(viewed))
@@ -63,9 +66,22 @@ struct ContactTimestampsTests {
         let (sync, _) = makeOrchestrator()
         let ts = try sync.contactTimestamps(at: contact)
         #expect(ts == ContactTimestamps())
+        #expect(ts.createdAt == nil)
         #expect(ts.lastModified == nil)
         #expect(ts.lastInteracted == nil)
         #expect(ts.lastViewed == nil)
+    }
+
+    @Test
+    func stampMultipleTimestamps_writesTheSameInstant() throws {
+        let (sync, _) = makeOrchestrator()
+        let created = Date(timeIntervalSince1970: 1_234_567.89)
+
+        try sync.stampContactTimestamps([.created, .modified], at: contact, now: created)
+
+        let ts = try sync.contactTimestamps(at: contact)
+        #expect(ts.createdAt == roundTrip(created))
+        #expect(ts.lastModified == roundTrip(created))
     }
 
     // MARK: - Migration-safety
@@ -86,7 +102,7 @@ struct ContactTimestampsTests {
     @Test
     func stamp_preservesPreExistingCells_andOtherTimestamps() throws {
         // Seed an envelope with an unrelated cell, then stamp ONE timestamp.
-        // The unrelated cell must survive, and the other two timestamps stay nil.
+        // The unrelated cell must survive, and the other timestamps stay nil.
         let (sync, sidecars) = makeOrchestrator()
         let preCell = SidecarCell(value: .string("preserve me"), modifiedAt: Date(), modifiedBy: "device-A")
         try sidecars.write(SidecarEnvelope(entityID: contact.id, fields: ["pre": preCell]), at: contact)
@@ -104,6 +120,7 @@ struct ContactTimestampsTests {
         // Only the viewed timestamp is populated.
         let ts = try sync.contactTimestamps(at: contact)
         #expect(ts.lastViewed == roundTrip(viewed))
+        #expect(ts.createdAt == nil)
         #expect(ts.lastModified == nil)
         #expect(ts.lastInteracted == nil)
     }

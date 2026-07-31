@@ -102,6 +102,19 @@ public final class FavoritesStore {
         return try loadAll().contains { $0.kind == kind && $0.id == canonical }
     }
 
+    /// Idempotently removes one favorite. Returns whether an item was removed;
+    /// an already-absent item succeeds without rewriting the file.
+    @discardableResult
+    public func remove(kind: FavoriteKind, id: String) throws -> Bool {
+        let canonical = id.lowercased()
+        var items = try loadAll()
+        let originalCount = items.count
+        items.removeAll { $0.kind == kind && $0.id == canonical }
+        guard items.count != originalCount else { return false }
+        try setAll(items)
+        return true
+    }
+
     // MARK: - Coordinator wrappers (hand-rolled; sidecar store's are private)
 
     private func coordinatedRead(at url: URL, _ body: @escaping (URL) -> Void) throws {

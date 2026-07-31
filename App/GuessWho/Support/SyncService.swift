@@ -928,6 +928,13 @@ final class SyncService {
         return try favoritesStore.toggle(kind: kind, id: id, now: Date())
     }
 
+    /// Idempotently removes a favorite. Used when its underlying entity was
+    /// deleted, where toggle would be unsafe to retry after a partial failure.
+    func removeFavorite(kind: FavoriteKind, id: String) throws {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        _ = try favoritesStore.remove(kind: kind, id: id)
+    }
+
     /// Persist a full ordered list. Used by reorder/move and by the swipe-
     /// to-unfavorite path's reorder primitive.
     func setFavoritesOrder(_ items: [Favorite]) throws {
