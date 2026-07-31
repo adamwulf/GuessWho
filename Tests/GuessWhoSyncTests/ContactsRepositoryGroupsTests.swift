@@ -5,6 +5,25 @@ import GuessWhoSyncTesting
 @Suite("ContactsRepository — group memberships")
 struct ContactsRepositoryGroupsTests {
     @Test @MainActor
+    func createRenameDeleteGroupUpdatesStoreAndSortedCache() async throws {
+        let store = InMemoryContactStore()
+        let repository = ContactsRepository(contacts: store)
+
+        let work = try await repository.createGroup(name: "Work")
+        let family = try await repository.createGroup(name: "Family")
+        #expect(repository.groups.map(\.name) == ["Family", "Work"])
+        #expect(try await store.fetchGroup(localID: family.localID)?.name == "Family")
+
+        try await repository.renameGroup(work, to: "Colleagues")
+        #expect(repository.groups.map(\.name) == ["Colleagues", "Family"])
+        #expect(try await store.fetchGroup(localID: work.localID)?.name == "Colleagues")
+
+        try await repository.deleteGroup(family)
+        #expect(repository.groups.map(\.name) == ["Colleagues"])
+        #expect(try await store.fetchGroup(localID: family.localID) == nil)
+    }
+
+    @Test @MainActor
     func groupsContainingReturnsEveryContainingGroupSortedByName() async throws {
         let person = Contact(localID: "person", givenName: "Ada", familyName: "Lovelace")
         let store = InMemoryContactStore(contacts: [person])

@@ -43,6 +43,7 @@ final class GroupsListViewController: UIViewController {
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
+    private weak var pendingNameAction: UIAlertAction?
 
     /// Flips true once the first `loadGroups()` completes. Drives the
     /// spinner-vs-empty-label choice in `updateEmptyState()` — a LOCAL flag
@@ -92,6 +93,11 @@ final class GroupsListViewController: UIViewController {
         configureEmptyState()
         configureDataSource()
         observeRepositoryReloads()
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .add,
+            target: self,
+            action: #selector(addGroup)
+        )
 
         // Paint whatever the repository already cached, then kick a fresh fetch.
         // Groups are not loaded by the AppDelegate's contact reload, so this VC
@@ -270,6 +276,113 @@ final class GroupsListViewController: UIViewController {
             activityIndicator.stopAnimating()
         }
     }
+
+    // MARK: - Group mutations
+
+    @objc private func addGroup() {
+        presentNameAlert(
+            title: "New Group",
+            actionTitle: "Add",
+            initialName: nil
+        ) { [weak self] name in
+            guard let self else { return }
+            Task {
+                do {
+                    _ = try await self.repository.createGroup(name: name)
+                } catch {
+                    self.presentMutationError(action: "create", error: error)
+                }
+            }
+        }
+    }
+
+    private func rename(_ group: ContactGroup) {
+        presentNameAlert(
+            title: "Rename Group",
+            actionTitle: "Rename",
+            initialName: group.name
+        ) { [weak self] name in
+            guard let self, name != group.name else { return }
+            Task {
+                do {
+                    try await self.repository.renameGroup(group, to: name)
+                } catch {
+                    self.presentMutationError(action: "rename", error: error)
+                }
+            }
+        }
+    }
+
+    private func confirmDelete(_ group: ContactGroup) {
+        let name = GroupCell.displayName(for: group)
+        let alert = UIAlertController(
+            title: "Delete “\(name)”?",
+            message: "Contacts in this group will not be deleted.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            Task {
+                do {
+                    try await self.repository.deleteGroup(group)
+                    if self.favoritesStore.isFavorite(kind: .group, id: group.localID) {
+                        self.favoritesStore.toggle(kind: .group, id: group.localID)
+                    }
+                } catch {
+                    self.presentMutationError(action: "delete", error: error)
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func presentNameAlert(
+        title: String,
+        actionTitle: String,
+        initialName: String?,
+        completion: @escaping (String) -> Void
+    ) {
+        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        alert.addTextField { [weak self] textField in
+            textField.placeholder = "Group Name"
+            textField.text = initialName
+            textField.clearButtonMode = .whileEditing
+            textField.addTarget(
+                self,
+                action: #selector(GroupsListViewController.groupNameDidChange(_:)),
+                for: .editingChanged
+            )
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        let action = UIAlertAction(title: actionTitle, style: .default) { [weak self, weak alert] _ in
+            self?.pendingNameAction = nil
+            let name = alert?.textFields?.first?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty else { return }
+            completion(name)
+        }
+        action.isEnabled = initialName?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        pendingNameAction = action
+        alert.addAction(action)
+        present(alert, animated: true)
+    }
+
+    @objc private func groupNameDidChange(_ sender: UITextField) {
+        pendingNameAction?.isEnabled = sender.text?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private func presentMutationError(action: String, error: Error) {
+        let alert = UIAlertController(
+            title: "Couldn’t \(action) group",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
 }
 
 // MARK: - UITableViewDelegate
@@ -291,16 +404,63 @@ extension GroupsListViewController: UITableViewDelegate {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return nil }
         let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
-        let action = UIContextualAction(
+        let favoriteAction = UIContextualAction(
             style: .normal,
             title: isFavorited ? "Unfavorite" : "Favorite"
         ) { [weak self] _, _, completion in
             self?.favoritesStore.toggle(kind: .group, id: group.localID)
             completion(true)
         }
-        action.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
-        action.backgroundColor = .systemYellow
-        return UISwipeActionsConfiguration(actions: [action])
+        favoriteAction.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
+        favoriteAction.backgroundColor = .systemYellow
+
+        let deleteAction = UIContextualAction(
+            style: .destructive,
+            title: "Delete"
+        ) { [weak self] _, _, completion in
+            self?.confirmDelete(group)
+            completion(true)
+        }
+        deleteAction.image = UIImage(systemName: "trash")
+
+        return UISwipeActionsConfiguration(actions: [deleteAction, favoriteAction])
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let group = groupsByLocalID[localID] else { return nil }
+        let renameAction = UIContextualAction(style: .normal, title: "Rename") { [weak self] _, _, completion in
+            self?.rename(group)
+            completion(true)
+        }
+        renameAction.image = UIImage(systemName: "pencil")
+        renameAction.backgroundColor = .systemBlue
+        return UISwipeActionsConfiguration(actions: [renameAction])
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let localID = dataSource.itemIdentifier(for: indexPath),
+              let group = groupsByLocalID[localID] else { return nil }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let rename = UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in
+                self?.rename(group)
+            }
+            let delete = UIAction(
+                title: "Delete",
+                image: UIImage(systemName: "trash"),
+                attributes: .destructive
+            ) { _ in
+                self?.confirmDelete(group)
+            }
+            return UIMenu(children: [rename, delete])
+        }
     }
 }
 

@@ -766,14 +766,28 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// (the envelope-on-demand behavior `addField` uses for a first write).
     /// ADDITIVE and schema-stable: only the one timestamp cell changes.
     public func stampContactTimestamp(_ which: ContactTimestampKind, at key: SidecarKey, now: Date) throws {
+        try stampContactTimestamps([which], at: key, now: now)
+    }
+
+    /// Atomically upserts the requested timestamp cells with the same value.
+    /// Used when creating a contact so `createdAt` and `lastModified` describe
+    /// the same operation and require only one sidecar read/write.
+    public func stampContactTimestamps(
+        _ kinds: [ContactTimestampKind],
+        at key: SidecarKey,
+        now: Date
+    ) throws {
+        guard !kinds.isEmpty else { return }
         try withKeyLocked(key) { ctx in
             let existing = try ctx.read()
             var fields = existing?.fields ?? [:]
-            fields[which.cellKey] = SidecarCell(
-                value: .string(SidecarISO8601.string(from: now)),
-                modifiedAt: now,
-                modifiedBy: deviceID
-            )
+            for kind in kinds {
+                fields[kind.cellKey] = SidecarCell(
+                    value: .string(SidecarISO8601.string(from: now)),
+                    modifiedAt: now,
+                    modifiedBy: deviceID
+                )
+            }
             try ctx.write(
                 SidecarEnvelope(
                     schemaVersion: 1,
@@ -784,8 +798,8 @@ public final class GuessWhoSync: @unchecked Sendable {
         }
     }
 
-    /// Reads the three timestamp cells off the envelope at `key`. Returns
-    /// `ContactTimestamps(nil, nil, nil)` when the envelope is missing or
+    /// Reads the timestamp cells off the envelope at `key`. Returns an
+    /// all-nil `ContactTimestamps` when the envelope is missing or
     /// carries none of the cells — a pure read, never mints.
     public func contactTimestamps(at key: SidecarKey) throws -> ContactTimestamps {
         guard let envelope = try sidecars.read(key) else { return ContactTimestamps() }

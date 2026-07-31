@@ -64,6 +64,43 @@ struct ContactSortOrderTests {
     // MARK: - Time orders
 
     @Test
+    func created_sortsDescending_externalContactGoesLast() async throws {
+        let recentUUID = "a1000000-0000-0000-0000-000000000001"
+        let olderUUID = "a1000000-0000-0000-0000-000000000002"
+        let externalUUID = "a1000000-0000-0000-0000-000000000003"
+        let recent = person(localID: "recent", given: "R", family: "R", uuid: recentUUID)
+        let older = person(localID: "older", given: "O", family: "O", uuid: olderUUID)
+        let external = person(localID: "external", given: "E", family: "E", uuid: externalUUID)
+
+        let sidecars = InMemorySidecarStore()
+        let store = InMemoryContactStore(contacts: [external, older, recent])
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
+            deviceID: "device-test"
+        )
+        try sync.stampContactTimestamp(
+            .created,
+            at: key(recentUUID),
+            now: Date(timeIntervalSince1970: 2_000_000)
+        )
+        try sync.stampContactTimestamp(
+            .created,
+            at: key(olderUUID),
+            now: Date(timeIntervalSince1970: 1_000_000)
+        )
+
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+        repo.sortOrder = .created
+
+        #expect(repo.people.map(\.localID) == ["recent", "older", "external"])
+        #expect(ContactSortOrder.created.title == "Created Date")
+        #expect(ContactSortOrder.created.isTimeOrder)
+    }
+
+    @Test
     func lastViewed_sortsDescending_nilGoesLast() async throws {
         let recentUUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         let olderUUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"

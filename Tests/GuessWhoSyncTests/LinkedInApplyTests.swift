@@ -51,6 +51,27 @@ struct LinkedInApplyTests {
         #expect(result.organizationName == "Rice")
     }
 
+    @Test func importStampsLastModifiedAtCompletion() async throws {
+        let (repo, id, sync) = await setup(Contact(localID: "T", givenName: "Ada"))
+        let before = Date()
+
+        let result = try await repo.applyLinkedIn(
+            profile: profile(title: "Instructor"),
+            to: id,
+            fields: [.jobTitle]
+        )
+
+        let after = Date()
+        let guessWhoID = try #require(ContactID(contact: result).guessWhoID)
+        let modified = try #require(
+            try sync.contactTimestamps(
+                at: SidecarKey(kind: .contact, id: guessWhoID)
+            ).lastModified
+        )
+        #expect(modified.timeIntervalSince(before) >= -0.01)
+        #expect(modified.timeIntervalSince(after) <= 0.01)
+    }
+
     @Test func unselectedFieldsAreUntouched() async throws {
         let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Ada", jobTitle: "Keep"))
         let result = try await repo.applyLinkedIn(

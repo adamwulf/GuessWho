@@ -1,10 +1,13 @@
 import Foundation
 
-/// Which of the three per-contact timestamp cells a stamp write targets.
+/// Which per-contact timestamp cell a stamp write targets.
 /// Each case maps to one fixed cell key on the contact's §5.2 sidecar
 /// envelope (see `ContactTimestamps.<key>`). Public so the orchestrator
 /// caller can name the cell without learning the on-disk string.
 public enum ContactTimestampKind: Sendable {
+    /// The contact was created by Guess Who. Contacts does not expose a
+    /// creation date, so this is present only for records the app creates.
+    case created
     /// The contact's GuessWho data (notes/tags/fields/links) was last edited.
     case modified
     /// The user last interacted with the person/org out in the world (an
@@ -16,6 +19,7 @@ public enum ContactTimestampKind: Sendable {
     /// The fixed cell key this kind writes/reads.
     var cellKey: String {
         switch self {
+        case .created:     return ContactTimestamps.createdAtKey
         case .modified:    return ContactTimestamps.lastModifiedKey
         case .interacted:  return ContactTimestamps.lastInteractedKey
         case .viewed:      return ContactTimestamps.lastViewedKey
@@ -23,7 +27,7 @@ public enum ContactTimestampKind: Sendable {
     }
 }
 
-/// The three per-contact timestamps GuessWho stamps on the contact sidecar.
+/// The per-contact timestamps GuessWho stamps on the contact sidecar.
 ///
 /// Each is stored as its own fixed-key §5.2 cell carrying an ISO8601 string
 /// (`SidecarISO8601`), following the named-cell pattern `Link` uses (fixed
@@ -33,6 +37,9 @@ public enum ContactTimestampKind: Sendable {
 /// targets — every other cell (notes, tags, links, the other timestamps) is
 /// preserved. The schema version is NOT bumped for these cells.
 public struct ContactTimestamps: Sendable, Equatable {
+    /// When Guess Who created the Contacts record, or nil for records created
+    /// elsewhere (Contacts does not expose their creation date).
+    public var createdAt: Date?
     /// When the contact's GuessWho data was last edited, or nil if never
     /// stamped (or the cell is absent/unparseable).
     public var lastModified: Date?
@@ -41,7 +48,13 @@ public struct ContactTimestamps: Sendable, Equatable {
     /// When the user last viewed the contact's detail, or nil.
     public var lastViewed: Date?
 
-    public init(lastModified: Date? = nil, lastInteracted: Date? = nil, lastViewed: Date? = nil) {
+    public init(
+        createdAt: Date? = nil,
+        lastModified: Date? = nil,
+        lastInteracted: Date? = nil,
+        lastViewed: Date? = nil
+    ) {
+        self.createdAt = createdAt
         self.lastModified = lastModified
         self.lastInteracted = lastInteracted
         self.lastViewed = lastViewed
@@ -51,18 +64,20 @@ public struct ContactTimestamps: Sendable, Equatable {
 extension ContactTimestamps {
     // Fixed cell keys on the contact envelope. Stable strings — they are part
     // of the on-disk format and must never change.
+    static let createdAtKey = "createdAt"
     static let lastModifiedKey = "lastModified"
     static let lastInteractedKey = "lastInteracted"
     static let lastViewedKey = "lastViewed"
 
-    /// Decode the three timestamp cells off a contact envelope. TOLERANT, like
+    /// Decode the timestamp cells off a contact envelope. TOLERANT, like
     /// `Link.init(from:)`: an absent cell -> nil; a present cell whose value is
     /// not a parseable ISO8601 string -> nil for THAT field only (it never
-    /// fails the whole decode and never disturbs the other two fields). A
-    /// migration-era envelope carrying none of the three cells therefore yields
-    /// `ContactTimestamps(nil, nil, nil)`.
+    /// fails the whole decode and never disturbs the other fields). A
+    /// migration-era envelope carrying none of the cells therefore yields an
+    /// all-nil `ContactTimestamps`.
     public init(from envelope: SidecarEnvelope) {
         self.init(
+            createdAt: ContactTimestamps.decodeDate(envelope.fields[ContactTimestamps.createdAtKey]),
             lastModified: ContactTimestamps.decodeDate(envelope.fields[ContactTimestamps.lastModifiedKey]),
             lastInteracted: ContactTimestamps.decodeDate(envelope.fields[ContactTimestamps.lastInteractedKey]),
             lastViewed: ContactTimestamps.decodeDate(envelope.fields[ContactTimestamps.lastViewedKey])
