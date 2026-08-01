@@ -572,7 +572,9 @@ struct ContactDetailView: View {
             .accessibilityLabel("Cancel")
         }
         // A single accent checkmark "Done" commits any pending CNContact-model
-        // edits and dismisses; sidecar edits already saved live.
+        // edits and dismisses; sidecar edits already saved live. ⌘S drives the
+        // same button — with a hardware keyboard, Save is where muscle memory
+        // expects it, mirroring Escape → Cancel above.
         ToolbarItem(placement: .confirmationAction) {
             Button {
                 // Commit any in-progress note first (a half-typed new note or an
@@ -595,6 +597,7 @@ struct ContactDetailView: View {
             .buttonBorderShape(.circle)
             .controlSize(.small)
             .disabled(isSavingEdit)
+            .keyboardShortcut("s", modifiers: .command)
             .accessibilityLabel("Done")
         }
     }
@@ -611,6 +614,11 @@ struct ContactDetailView: View {
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.circle)
             .controlSize(.small)
+            // Same ⌘S as the edit-mode Done: an open note editor is still the
+            // user editing this contact, and this is its commit affordance.
+            // Mutually exclusive with `editingToolbarContent`, so the two
+            // shortcuts are never installed at once.
+            .keyboardShortcut("s", modifiers: .command)
             .accessibilityLabel("Done")
         }
     }
