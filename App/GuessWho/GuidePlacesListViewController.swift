@@ -368,12 +368,18 @@ final class GuidePlacesListViewController: UIViewController {
 
 extension GuidePlacesListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
+        // No immediate deselect: on an expanded split view the highlighted row
+        // is the pointer to the place open in the detail pane (the People /
+        // Events pattern, shared with `PlacesListViewController`); the
+        // viewWillAppear helper clears it for the collapsed/push cases.
         guard let placeID = dataSource.itemIdentifier(for: indexPath),
               let place = placesByID[placeID] else { return }
         if let didSelectPlace {
             didSelectPlace(place)
         } else {
+            // Handing off to Apple Maps opens nothing in-app, so no later
+            // navigation return will clear the highlight — drop it here.
+            tableView.deselectRow(at: indexPath, animated: true)
             openInMaps(place)
         }
     }

@@ -145,9 +145,13 @@ struct GuidePlaceDetailView: View {
 
             if name.isEmpty && address.isEmpty {
                 // Place-ID entry still waiting on its MapKit lookup — mirror the
-                // list row's plain-language copy.
+                // list row's plain-language copy. A coordinate-only entry (no
+                // place id, no address — see `MapsGuideURL.decodeEntry`) also
+                // lands here and never resolves, so the map is the only row that
+                // says where it is.
                 Text("Loading place details…")
                     .foregroundStyle(.secondary)
+                mapPreview(place)
             } else if name.isEmpty {
                 // No business name (an address entry, or a lookup that returned
                 // none): the address is the title row, so the map goes beneath it.
