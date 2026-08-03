@@ -333,6 +333,31 @@ struct ContactDetailView: View {
                 await loadHeaderPhoto()
             }
         }
+        // Hoisted into a method for the same reason as `performInitialLoad` —
+        // an inline multi-statement closure blows the body's type-checker budget.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .contactsRepositoryGroupMembershipDidChange),
+            perform: groupMembershipDidChange
+        )
+    }
+
+    /// A group-membership write landed somewhere in the app — most likely the
+    /// contact lists' "Add to Group" menu, possibly on this very card while it
+    /// was open.
+    ///
+    /// The Groups section is read once per load (`groups(containing:)` inside
+    /// `loadContact`) and membership lives only in Contacts: no cached record
+    /// moves when it changes, so `.contactsRepositoryDidReload` never fires for
+    /// it and this section would otherwise stay stale until the card was
+    /// reopened. Re-read only when THIS contact is one of the ones that actually
+    /// moved — the notification names them.
+    private func groupMembershipDidChange(_ notification: Notification) {
+        guard let contact,
+              let changed = notification.userInfo?[
+                ContactsRepositoryGroupMembershipDidChangeKey.contactIDs
+              ] as? [ContactID],
+              changed.contains(contact.contactID) else { return }
+        Task { await reloadGroups(for: contact) }
     }
 
     @ViewBuilder

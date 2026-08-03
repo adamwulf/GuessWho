@@ -80,4 +80,23 @@ public protocol ContactStoreProtocol: Actor {
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup]
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws
+
+    /// Just the `localID`s of the group's members — the membership question
+    /// without the records. Same group-existence contract as `fetchMembers`
+    /// (`groupNotFound` for an unknown id), and the ids MUST be the same ones
+    /// `fetchMembers` would report on the returned contacts' `localID`, so a
+    /// caller can compare them against a `Contact` it already holds.
+    ///
+    /// Exists because `fetchMembers` is the wrong tool for a membership TEST:
+    /// it materializes every member's full record (all name/work/address/date/
+    /// social/relation keys), so checking whether two people are already in a
+    /// 10,000-member group would build 10,000 contacts to answer a set-membership
+    /// question. `ContactsRepository`'s membership batches use this instead.
+    ///
+    /// Deliberately has NO protocol-extension default. Deriving one from
+    /// `fetchMembers` would be correct and would spare conformers a method, but
+    /// it is exactly the cost this call exists to avoid — and a store that
+    /// forgot to override it would inherit that cost silently, which is the
+    /// failure mode we are trying to prevent. Every conformer states its answer.
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String]
 }

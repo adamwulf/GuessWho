@@ -49,6 +49,9 @@ final class OrganizationsListViewController: UIViewController {
 
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
+    /// Selection ORDER only — see `ContactsListViewController.selectionRecency`.
+    private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
+
     init(
         repository: ContactsRepository,
         photoLoader: ContactPhotoLoader,
@@ -164,9 +167,22 @@ final class OrganizationsListViewController: UIViewController {
         ContactMultiSelectionSupport.selectedContacts(
             in: tableView,
             repository: repository,
+            recency: selectionRecency,
             itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
         )
     }
+
+    /// The row context menu ("Add to Group") — see
+    /// `ContactsListViewController.addToGroupMenu`.
+    private lazy var addToGroupMenu = AddToGroupMenu(
+        repository: repository,
+        host: self,
+        contactAt: { [weak self] indexPath in
+            guard let self, let id = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            return self.repository.contact(id: id)
+        },
+        selection: { [weak self] in self?.selectedContacts() ?? [] }
+    )
 
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
         let contacts = contacts ?? selectedContacts()
@@ -345,6 +361,9 @@ final class OrganizationsListViewController: UIViewController {
 
 extension OrganizationsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        // Before the editing-mode early return — see
+        // `ContactsListViewController.tableView(_:didSelectRowAt:)`.
+        selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -352,6 +371,7 @@ extension OrganizationsListViewController: UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        selectionRecency.recordDeselection(of: dataSource.itemIdentifier(for: indexPath))
         #if targetEnvironment(macCatalyst)
         notifySelectionChanged()
         #endif
@@ -359,6 +379,16 @@ extension OrganizationsListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? OrganizationCell)?.cancelPhotoLoad()
+    }
+
+    /// Right-click / long-press menu. Leaves the selection untouched — see
+    /// `ContactsListViewController`.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        addToGroupMenu.configuration(forRowAt: indexPath)
     }
 }
 

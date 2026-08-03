@@ -54,7 +54,13 @@ final class GroupMembersListViewController: UIViewController {
 
     private var hasLoaded = false
 
+    /// Guards `loadMembers()` against an out-of-order fetch — see that method.
+    private var membersLoadID = UUID()
+
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
+
+    /// Selection ORDER only — see `ContactsListViewController.selectionRecency`.
+    private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
 
     /// Opaque observer token for `.contactsRepositoryDidReload` so a global
     /// sort change re-sorts this member list too. See
@@ -66,6 +72,12 @@ final class GroupMembersListViewController: UIViewController {
     /// repaints the matching row here. Same `nonisolated(unsafe)` rationale as
     /// `reloadObserver`.
     private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
+    /// Observes `.contactsRepositoryGroupMembershipDidChange` so a contact added
+    /// to (or removed from) THIS group elsewhere in the app appears/disappears
+    /// here without a manual reload. Same `nonisolated(unsafe)` rationale as
+    /// `reloadObserver`.
+    private nonisolated(unsafe) var membershipObserver: NSObjectProtocol?
 
     init(
         group: ContactGroup,
@@ -93,6 +105,9 @@ final class GroupMembersListViewController: UIViewController {
         if let favoritesObserver {
             NotificationCenter.default.removeObserver(favoritesObserver)
         }
+        if let membershipObserver {
+            NotificationCenter.default.removeObserver(membershipObserver)
+        }
     }
 
     override func viewDidLoad() {
@@ -117,7 +132,14 @@ final class GroupMembersListViewController: UIViewController {
     // MARK: - Members fetch
 
     private func loadMembers() async {
+        // Newest-request-wins: the initial load and a membership-change refresh
+        // can be in flight together, and Contacts can answer them out of order.
+        // Without this, an older member set could land last and drop the contact
+        // that was just added.
+        let myLoadID = UUID()
+        membersLoadID = myLoadID
         let members = await repository.members(ofGroup: group.localID)
+        guard membersLoadID == myLoadID else { return }
         // Key each fetched member by its opaque `ContactID` (effective identity),
         // exactly like the People list keys its rows. A member appears once per
         // identity — last-writer-wins on the (transient pre-reconcile) duplicate
@@ -156,6 +178,7 @@ final class GroupMembersListViewController: UIViewController {
     private func selectedIDs() -> [ContactID] {
         ContactMultiSelectionSupport.selectedIDs(
             in: tableView,
+            recency: selectionRecency,
             itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
         )
     }
@@ -163,6 +186,20 @@ final class GroupMembersListViewController: UIViewController {
     private func selectedContacts() -> [Contact] {
         selectedIDs().compactMap { membersByID[$0] }
     }
+
+    /// The row context menu ("Add to Group") — see
+    /// `ContactsListViewController.addToGroupMenu`. Adding a member of THIS
+    /// group to ANOTHER group is the useful case here; re-adding it to this one
+    /// is a silent no-op success in the repository.
+    private lazy var addToGroupMenu = AddToGroupMenu(
+        repository: repository,
+        host: self,
+        contactAt: { [weak self] indexPath in
+            guard let self, let id = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            return self.membersByID[id]
+        },
+        selection: { [weak self] in self?.selectedContacts() ?? [] }
+    )
 
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
         let contacts = contacts ?? selectedContacts()
@@ -196,11 +233,11 @@ final class GroupMembersListViewController: UIViewController {
 
     /// Observe `.contactsRepositoryDidReload` so a GLOBAL sort change (posted by
     /// the repository's `sortOrder` `didSet`) re-sorts THIS member list too.
-    /// The member set itself is fetched once in `loadMembers()` and doesn't
-    /// change here — re-applying the snapshot only re-sorts/re-sections the
-    /// already-loaded members by the new order. Same `OperationQueue.main` +
-    /// `MainActor.assumeIsolated` pattern as the contact lists (the diffable
-    /// apply is main-thread-only).
+    /// Re-applying the snapshot only re-sorts/re-sections the already-loaded
+    /// members by the new order; the member SET moves only through
+    /// `loadMembers()` — the initial fetch and the membership observer below.
+    /// Same `OperationQueue.main` + `MainActor.assumeIsolated` pattern as the
+    /// contact lists (the diffable apply is main-thread-only).
     @MainActor
     private func observeRepositoryReloads() {
         reloadObserver = NotificationCenter.default.addObserver(
@@ -227,6 +264,31 @@ final class GroupMembersListViewController: UIViewController {
                 // Keep this group's own star in sync if it was toggled from the
                 // Favorites list or the contact detail Groups section.
                 self?.updateFavoriteButton()
+            }
+        }
+
+        // Membership moved somewhere in the app (the "Add to Group" context
+        // menu). The observer above is NOT enough: `.contactsRepositoryDidReload`
+        // only re-sorts the members this VC already fetched, and membership
+        // isn't cached by the repository at all — the member SET has to be
+        // re-read. Scoped to this group by `groupLocalID`, the userInfo key the
+        // notification documents for exactly this purpose.
+        membershipObserver = NotificationCenter.default.addObserver(
+            forName: .contactsRepositoryGroupMembershipDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            // Unpack BEFORE the isolation hop: `Notification` isn't Sendable, so
+            // carrying it into the main-actor closure would be sending a
+            // non-Sendable value. The group id is a `String` and crosses freely.
+            let changedGroupID = notification.userInfo?[
+                ContactsRepositoryGroupMembershipDidChangeKey.groupLocalID
+            ] as? String
+            MainActor.assumeIsolated {
+                guard let self,
+                      let changedGroupID,
+                      changedGroupID == self.group.localID else { return }
+                Task { await self.loadMembers() }
             }
         }
     }
@@ -352,6 +414,9 @@ final class GroupMembersListViewController: UIViewController {
 
 extension GroupMembersListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        // Before the editing-mode early return — see
+        // `ContactsListViewController.tableView(_:didSelectRowAt:)`.
+        selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -359,6 +424,7 @@ extension GroupMembersListViewController: UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        selectionRecency.recordDeselection(of: dataSource.itemIdentifier(for: indexPath))
         #if targetEnvironment(macCatalyst)
         notifySelectionChanged()
         #endif
@@ -366,6 +432,16 @@ extension GroupMembersListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? ContactCell)?.cancelPhotoLoad()
+    }
+
+    /// Right-click / long-press menu. Leaves the selection untouched — see
+    /// `ContactsListViewController`.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        addToGroupMenu.configuration(forRowAt: indexPath)
     }
 }
 

@@ -259,6 +259,31 @@ final class FavoritesListViewController: UIViewController {
 
         emptyLabel.isHidden = !items.isEmpty
     }
+
+    /// The row context menu ("Add to Group") — see
+    /// `ContactsListViewController.addToGroupMenu`.
+    ///
+    /// Favorites is the one list whose rows are NOT all contacts: it mixes
+    /// people, organizations, events, and groups. `contactAt` resolves only the
+    /// contact-backed rows (a favorited organization IS a `Contact`, so it is
+    /// included, and both can hold group membership); an event or group row
+    /// resolves to nil, which `AddToGroupMenu` already turns into no menu at
+    /// all. That nil is the whole gate — there is no second kind check to keep
+    /// in sync with `FavoriteListItem.Kind`.
+    ///
+    /// The selection is deliberately empty rather than read off the table: this
+    /// list is single-selection (it never calls
+    /// `ContactMultiSelectionSupport.configure`), so a menu here always acts on
+    /// exactly the row it was opened on.
+    private lazy var addToGroupMenu = AddToGroupMenu(
+        repository: repository,
+        host: self,
+        contactAt: { [weak self] indexPath in
+            guard let self, let itemID = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            return self.favoriteItemsByID[itemID]?.contact
+        },
+        selection: { [] }
+    )
 }
 
 // MARK: - UITableViewDelegate
@@ -285,6 +310,17 @@ extension FavoritesListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? FavoriteCell)?.cancelPhotoLoad()
+    }
+
+    /// Right-click / long-press menu, on the contact-backed rows only — see
+    /// `addToGroupMenu`. Event and group rows return no configuration, so they
+    /// keep the behavior they have today (no menu).
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        addToGroupMenu.configuration(forRowAt: indexPath)
     }
 
     func tableView(

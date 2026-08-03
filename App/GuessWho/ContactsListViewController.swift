@@ -64,6 +64,11 @@ final class ContactsListViewController: UIViewController {
 
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
+    /// Selection ORDER only — the table view stays the source of truth for which
+    /// rows are selected. Fed from the selection delegate methods so a
+    /// multi-selection fronts the contact the user picked last.
+    private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
+
     init(
         repository: ContactsRepository,
         photoLoader: ContactPhotoLoader,
@@ -185,9 +190,22 @@ final class ContactsListViewController: UIViewController {
         ContactMultiSelectionSupport.selectedContacts(
             in: tableView,
             repository: repository,
+            recency: selectionRecency,
             itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
         )
     }
+
+    /// The row context menu ("Add to Group"). Lazy so the closures capture a
+    /// fully-initialized `self`; see `AddToGroupMenu` for the target rule.
+    private lazy var addToGroupMenu = AddToGroupMenu(
+        repository: repository,
+        host: self,
+        contactAt: { [weak self] indexPath in
+            guard let self, let id = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            return self.repository.contact(id: id)
+        },
+        selection: { [weak self] in self?.selectedContacts() ?? [] }
+    )
 
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
         let contacts = contacts ?? selectedContacts()
@@ -394,6 +412,12 @@ final class ContactsListViewController: UIViewController {
 
 extension ContactsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        // Stamp the row BEFORE the iPhone editing-mode early return: a
+        // two-finger editing selection reports every row through here even
+        // though it doesn't republish the detail, and shift-click ranges on
+        // Catalyst arrive as one callback per row, so this is the one place
+        // that sees selection order on both platforms.
+        selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -401,6 +425,9 @@ extension ContactsListViewController: UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        // Recorded on every platform (unlike the republish below) so a
+        // deselect-then-reselect returns the row to the front of the stack.
+        selectionRecency.recordDeselection(of: dataSource.itemIdentifier(for: indexPath))
         #if targetEnvironment(macCatalyst)
         notifySelectionChanged()
         #endif
@@ -408,6 +435,17 @@ extension ContactsListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? ContactCell)?.cancelPhotoLoad()
+    }
+
+    /// Right-click (Catalyst) / long-press (iPhone, iPad). Deliberately does NOT
+    /// touch the table's selection — on Catalyst that would replace the detail
+    /// pane the user is reading.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        addToGroupMenu.configuration(forRowAt: indexPath)
     }
 }
 

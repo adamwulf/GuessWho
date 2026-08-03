@@ -501,6 +501,33 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
+    /// Identifier-only membership read. Deliberately the SAME call, predicate,
+    /// and unification as `fetchMembers` — `unifiedContacts(matching:keysToFetch:)`
+    /// with `predicateForContactsInGroup` — narrowed to `CNContactIdentifierKey`.
+    /// `keysToFetch` selects which PROPERTIES are faulted in; it does not change
+    /// which records match or how Contacts unifies them, so each returned
+    /// `identifier` is bit-for-bit the `localID` `fetchMembers` would report for
+    /// that member (`toContact` maps `c.identifier` → `Contact.localID`). That
+    /// equivalence is the whole point: callers compare these ids against a
+    /// `Contact` they already hold.
+    public func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
+        try await runOnWorkQueue { store in
+            // Same fail-fast as `fetchMembers`: a bad group id is a typed error,
+            // never an empty list that reads as "an empty group."
+            let groupPredicate = CNGroup.predicateForGroups(withIdentifiers: [groupLocalID])
+            let cnGroups = try store.groups(matching: groupPredicate)
+            guard cnGroups.first != nil else {
+                throw ContactStoreError.groupNotFound(localID: groupLocalID)
+            }
+            let membersPredicate = CNContact.predicateForContactsInGroup(withIdentifier: groupLocalID)
+            let cnContacts = try store.unifiedContacts(
+                matching: membersPredicate,
+                keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+            )
+            return cnContacts.map(\.identifier)
+        }
+    }
+
     public func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] {
         try await runOnWorkQueue { store in
             // Confirm the contact exists so a bad id throws instead of
