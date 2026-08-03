@@ -385,6 +385,196 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    // MARK: - Group membership
+    //
+    // Membership is a RELATION owned by Contacts — the sidecar does not mirror
+    // it and this repository caches nothing about it, so these writes update no
+    // cached array (see the closing note in `applyGroupMembership`). They live
+    // on the same serialization queue as create/rename/delete because they
+    // address the same group.
+
+    /// Adds every contact in `contacts` to `group`. Duplicate entries in
+    /// `contacts` are collapsed; contacts already in the group are left alone.
+    ///
+    /// **Serialization.** The WHOLE batch runs as one unit on the same
+    /// `performSerializedGroupMutation` queue as `createGroup` / `renameGroup` /
+    /// `deleteGroup`, so it settles entirely before or after one of those —
+    /// never interleaved with one across the store's actor-reentrant awaits.
+    /// Serialized as a batch, not per contact: a concurrent `deleteGroup` on
+    /// the same group cannot land halfway through the membership writes.
+    ///
+    /// **Partial failure — the batch RUNS TO COMPLETION.** One contact the
+    /// store refuses does not cancel the rest; every remaining contact is still
+    /// attempted and the failures are reported together at the end. So:
+    /// returning normally means EVERY requested contact is in the group, and
+    /// throwing `GroupMembershipPartialFailureError` means the batch finished
+    /// with `applied` in and `failures` out (`applied` may be empty). Any other
+    /// error comes from the pre-flight membership read, before any write: it
+    /// means nothing was attempted. See that error type for the full contract.
+    ///
+    /// **Identity.** Membership is keyed by Contacts localIDs
+    /// (`CNContact.identifier` / `CNGroup.identifier`), which are confined to
+    /// this package — see `docs/contact-identity.md`. The caller hands over
+    /// `Contact` / `ContactGroup` VALUES and this method reads the ids off them
+    /// here, inside the boundary; no localID appears in the app-facing
+    /// signature. Nothing reconciles or mints, either: groups are not
+    /// GuessWho-ID'd and membership is not sidecar data, so an unreconciled
+    /// contact joins a group without gaining a GuessWho ID.
+    public func addContacts(_ contacts: [Contact], toGroup group: ContactGroup) async throws {
+        try await performSerializedGroupMutation {
+            try await self.applyGroupMembership(.addition, contacts: contacts, group: group)
+        }
+    }
+
+    /// Removes every contact in `contacts` from `group`. Contacts that are not
+    /// members are left alone. Removing a contact from a group never deletes
+    /// the contact.
+    ///
+    /// Same serialization, partial-failure, and identity contract as
+    /// `addContacts(_:toGroup:)` — it is the same code path in the other
+    /// direction.
+    public func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws {
+        try await performSerializedGroupMutation {
+            try await self.applyGroupMembership(.removal, contacts: contacts, group: group)
+        }
+    }
+
+    /// Adds one contact to `group`, with the serialization and identity
+    /// contract of `addContacts(_:toGroup:)`.
+    ///
+    /// A one-contact batch has no partial state — it either landed or it did
+    /// not — so this throws the underlying store error (e.g.
+    /// `ContactStoreError.contactNotFound`) UNCHANGED rather than wrapping it
+    /// in a `GroupMembershipPartialFailureError`.
+    public func addContact(_ contact: Contact, toGroup group: ContactGroup) async throws {
+        try await Self.unwrappingLoneFailure {
+            try await self.addContacts([contact], toGroup: group)
+        }
+    }
+
+    /// Removes one contact from `group`, with the same contract as
+    /// `addContact(_:toGroup:)`.
+    public func removeContact(_ contact: Contact, fromGroup group: ContactGroup) async throws {
+        try await Self.unwrappingLoneFailure {
+            try await self.removeContacts([contact], fromGroup: group)
+        }
+    }
+
+    /// Runs a one-contact membership batch and unwraps its report: with a
+    /// single contact there is nothing "partial" to describe, so the caller
+    /// gets the store's own typed error instead of a wrapper it would have to
+    /// unpack. The `?? error` fallback is unreachable — a partial-failure error
+    /// is only thrown with a non-empty `failures` — and exists so a future
+    /// change to that invariant degrades to the wrapper rather than trapping.
+    private static func unwrappingLoneFailure(
+        _ body: () async throws -> Void
+    ) async throws {
+        do {
+            try await body()
+        } catch let error as GroupMembershipPartialFailureError {
+            throw error.failures.first?.error ?? error
+        }
+    }
+
+    /// The ONE membership write path, shared by both directions and by the
+    /// single-contact conveniences. Must be called INSIDE
+    /// `performSerializedGroupMutation` — it is not self-serializing.
+    private func applyGroupMembership(
+        _ change: GroupMembershipPartialFailureError.Change,
+        contacts: [Contact],
+        group: ContactGroup
+    ) async throws {
+        // Collapse duplicates by Contacts localID, preserving the caller's
+        // order: one selection can carry the same record twice (reached from
+        // two sections), and a second write for it is pure waste.
+        var seen = Set<String>()
+        let requested = contacts.filter { seen.insert($0.localID).inserted }
+        // An empty request is a no-op SUCCESS — it must not fail on a group
+        // that happens to be gone, since it asked for nothing.
+        guard !requested.isEmpty else { return }
+
+        // Pre-flight the group's CURRENT membership, once for the whole batch.
+        // `ContactStoreProtocol` documents add-already-member and
+        // remove-non-member as UNSPECIFIED for `CNSaveRequest` and tells a
+        // caller who needs a strict contract to query membership first — this
+        // is that query, hoisted out of the loop. It buys two things: the
+        // already-in-the-requested-state contacts (the common case for a
+        // multi-select "Add to Group") are SKIPPED rather than written, and a
+        // group that no longer exists fails the call here, before any write, so
+        // the caller gets the store's typed `groupNotFound` and knows nothing
+        // was attempted instead of a partial-failure report.
+        let currentMemberIDs = Set(
+            try await contactsStore.fetchMembers(ofGroup: group.localID).map(\.localID)
+        )
+
+        var applied: [Contact] = []
+        var failures: [GroupMembershipPartialFailureError.Failure] = []
+        for contact in requested {
+            let isMember = currentMemberIDs.contains(contact.localID)
+            let needsWrite = change == .addition ? !isMember : isMember
+            guard needsWrite else {
+                // Already in the requested state. Counts as APPLIED: the
+                // caller asked for an end state and this contact is in it.
+                applied.append(contact)
+                continue
+            }
+            do {
+                switch change {
+                case .addition:
+                    try await contactsStore.addMember(
+                        contactLocalID: contact.localID,
+                        toGroup: group.localID
+                    )
+                case .removal:
+                    try await contactsStore.removeMember(
+                        contactLocalID: contact.localID,
+                        fromGroup: group.localID
+                    )
+                }
+                applied.append(contact)
+            } catch {
+                // Continue through the rest of the batch so one unwritable
+                // contact does not cancel the writes the user asked for on the
+                // others (the same choice `ContactDetailView`'s multi-select
+                // favorite toggle makes). Every failure is reported together
+                // below, after the batch has run to the end.
+                failures.append(.init(contact: contact, error: error))
+            }
+        }
+
+        // Whichever way this method exits, it updates no cache and posts NO
+        // `postDidReload()` — deliberately.
+        //
+        // `postDidReload` announces that this repository's own published state
+        // moved — `contacts` (the cached records) or `groups` (the cached group
+        // array). A membership write moves NEITHER: Contacts owns the relation,
+        // the sidecar does not mirror it, and nothing above touches a stored
+        // property. `contactDataChanged: true` would be a straight lie that
+        // needlessly invalidates the app's decoded-photo cache; `false` would
+        // be pure noise, because no observer re-reads membership on this
+        // notification — the Groups list deliberately shows no member counts,
+        // `GroupMembersListViewController`'s reload handler only re-sorts the
+        // members it fetched once, and `ContactDetailView` does not observe the
+        // notification at all. Membership is read on demand
+        // (`groups(containing:)` / `members(ofGroup:)`), so a surface that
+        // displays it re-reads after awaiting this call.
+        //
+        // `groupMutationGeneration` is likewise NOT bumped: it exists so a
+        // `loadGroups()` snapshot taken before a create/rename/delete cannot
+        // land afterwards and overwrite the updated `groups` array. Membership
+        // leaves that array valid, so discarding an in-flight load would only
+        // strand the cache as non-authoritative for no gain.
+
+        guard failures.isEmpty else {
+            throw GroupMembershipPartialFailureError(
+                change: change,
+                group: group,
+                applied: applied,
+                failures: failures
+            )
+        }
+    }
+
     /// When the cache was never fully loaded, or the last load failed, rebuild
     /// from Contacts after a successful mutation instead of applying a delta to
     /// an incomplete/stale array. Returns true when recovery was attempted;
