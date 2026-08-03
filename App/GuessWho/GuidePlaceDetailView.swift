@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 import GuessWhoSync
 
 /// Detail page for one place inside an imported guide. Pushed when a row in
@@ -144,17 +145,27 @@ struct GuidePlaceDetailView: View {
 
             if name.isEmpty && address.isEmpty {
                 // Place-ID entry still waiting on its MapKit lookup — mirror the
-                // list row's plain-language copy.
+                // list row's plain-language copy. A coordinate-only entry (no
+                // place id, no address — see `MapsGuideURL.decodeEntry`) also
+                // lands here and never resolves, so the map is the only row that
+                // says where it is.
                 Text("Loading place details…")
                     .foregroundStyle(.secondary)
+                mapPreview(place)
+            } else if name.isEmpty {
+                // No business name (an address entry, or a lookup that returned
+                // none): the address is the title row, so the map goes beneath it.
+                Text(address)
+                    .font(.headline)
+                    .textSelection(.enabled)
+                mapPreview(place)
             } else {
-                if !name.isEmpty {
-                    Text(name)
-                        .font(.headline)
-                }
+                Text(name)
+                    .font(.headline)
+                mapPreview(place)
                 if !address.isEmpty {
                     Text(address)
-                        .font(name.isEmpty ? .headline : .body)
+                        .font(.body)
                         .textSelection(.enabled)
                 }
             }
@@ -175,6 +186,45 @@ struct GuidePlaceDetailView: View {
                     Label("Open in Maps", systemImage: "map")
                 }
             }
+        }
+    }
+
+    /// A static map pinned on the place, sitting directly under the title row.
+    /// Non-interactive (`allowsHitTesting(false)`) so pans and taps fall through
+    /// to the list — "Open in Maps" two rows down is the action; a second silent
+    /// tap target would only duplicate it. Same treatment as the contact
+    /// detail's address-row thumbnails, full-bleed instead of inset.
+    ///
+    /// Omitted while a place-ID entry is still waiting on its coordinate; the
+    /// row appears on its own when the resolution pass lands, since the view
+    /// re-reads the place from the repository. Keyed by coordinate so a refresh
+    /// that MOVES the place rebuilds the map (`initialPosition` is only read
+    /// when the map is first created).
+    ///
+    /// VoiceOver gets one labelled element for the whole row rather than an
+    /// unlabelled pin: everything the map conveys is spoken by the name,
+    /// address, and coordinate rows around it.
+    @ViewBuilder
+    private func mapPreview(_ place: MapsPlace) -> some View {
+        if let latitude = place.latitude, let longitude = place.longitude {
+            let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            Map(initialPosition: .region(MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+            ))) {
+                Marker("", coordinate: coordinate)
+                    .tint(.red)
+            }
+            .allowsHitTesting(false)
+            .frame(height: 160)
+            .id("\(latitude),\(longitude)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Map preview")
+            .listRowInsets(EdgeInsets())
+            // The map runs edge to edge, so a hairline under it would be the
+            // only separator in the card not aligned to the text column. The
+            // map's own bottom edge already divides it from the next row.
+            .listRowSeparator(.hidden)
         }
     }
 
