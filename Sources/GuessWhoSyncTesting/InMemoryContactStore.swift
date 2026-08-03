@@ -207,6 +207,19 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         return memberIDs.compactMap { contactsByID[$0] }
     }
 
+    /// Identifier-only membership read. Mirrors `fetchMembers` exactly — same
+    /// group-existence check, same `contactsByID` filter — so the ids it returns
+    /// are the `localID`s of the very contacts `fetchMembers` would hand back.
+    /// A member id with no contact record is dropped by both, keeping them in
+    /// lockstep.
+    public func fetchMemberLocalIDs(ofGroup groupLocalID: String) throws -> [String] {
+        guard groupsByID[groupLocalID] != nil else {
+            throw ContactStoreError.groupNotFound(localID: groupLocalID)
+        }
+        let memberIDs = groupMembers[groupLocalID] ?? []
+        return memberIDs.compactMap { contactsByID[$0]?.localID }
+    }
+
     public func fetchGroupMemberships(contactLocalID: String) throws -> [ContactGroup] {
         guard contactsByID[contactLocalID] != nil else {
             throw ContactStoreError.contactNotFound(localID: contactLocalID)

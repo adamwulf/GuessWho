@@ -90,9 +90,25 @@ private actor SuspendingMembershipContactStore: ContactStoreProtocol {
         completedOps.append("deleteGroup")
     }
 
+    /// Call counters proving the batch preflight asks the cheap question. The
+    /// full-record read must stay at zero for a membership write.
+    private(set) var fetchMembersCallCount = 0
+    private(set) var fetchMemberLocalIDsCallCount = 0
+
     func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] {
-        try await base.fetchMembers(ofGroup: groupLocalID)
+        fetchMembersCallCount += 1
+        return try await base.fetchMembers(ofGroup: groupLocalID)
     }
+
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
+        fetchMemberLocalIDsCallCount += 1
+        return try await base.fetchMemberLocalIDs(ofGroup: groupLocalID)
+    }
+
+    func seedMember(contactLocalID: String, inGroup groupLocalID: String) async throws {
+        try await base.addMember(contactLocalID: contactLocalID, toGroup: groupLocalID)
+    }
+
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] {
         try await base.fetchGroupMemberships(contactLocalID: contactLocalID)
     }
@@ -120,6 +136,47 @@ private actor SuspendingMembershipContactStore: ContactStoreProtocol {
         }
         try await base.removeMember(contactLocalID: contactLocalID, fromGroup: groupLocalID)
         completedOps.append("removeMember")
+    }
+}
+
+/// Collects `.contactsRepositoryGroupMembershipDidChange` posts. The repository
+/// posts synchronously from the main actor, so `assumeIsolated` holds — the
+/// same pattern the app's list controllers use for its sibling notification.
+@MainActor
+private final class MembershipChangeRecorder {
+    struct Post {
+        let groupLocalID: String?
+        let contactIDs: [ContactID]?
+        let change: GroupMembershipChange?
+    }
+
+    private(set) var posts: [Post] = []
+
+    /// Observing a per-test center keeps one repository's posts out of another's
+    /// recorder under parallel `swift test`.
+    init(center: NotificationCenter) {
+        center.addObserver(
+            forName: .contactsRepositoryGroupMembershipDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                let info = note.userInfo
+                self?.posts.append(
+                    Post(
+                        groupLocalID: info?[
+                            ContactsRepositoryGroupMembershipDidChangeKey.groupLocalID
+                        ] as? String,
+                        contactIDs: info?[
+                            ContactsRepositoryGroupMembershipDidChangeKey.contactIDs
+                        ] as? [ContactID],
+                        change: info?[
+                            ContactsRepositoryGroupMembershipDidChangeKey.change
+                        ] as? GroupMembershipChange
+                    )
+                )
+            }
+        }
     }
 }
 
@@ -340,6 +397,231 @@ struct ContactsRepositoryGroupMembershipTests {
 
         try await repository.removeContact(Self.ada, fromGroup: work)
         #expect(await repository.members(ofGroup: work.localID).isEmpty)
+    }
+
+    // MARK: - Empty-localID contacts
+
+    @Test @MainActor
+    func aNeverSavedContactIsReportedRatherThanSilentlyDropped() async throws {
+        // `Contact()` mints an empty localID: a value that was never saved to
+        // Contacts and so has no membership to change.
+        let unsaved = Contact(givenName: "Unsaved", familyName: "Draft")
+        let store = InMemoryContactStore(contacts: [Self.ada])
+        let work = try await store.createGroup(name: "Work")
+        let repository = ContactsRepository(contacts: store)
+
+        do {
+            try await repository.addContacts([unsaved, Self.ada], toGroup: work)
+            Issue.record("expected a GroupMembershipPartialFailureError")
+        } catch let error as GroupMembershipPartialFailureError {
+            #expect(error.applied.map(\.displayName) == ["Ada Lovelace"])
+            #expect(error.failures.map(\.contact.displayName) == ["Unsaved Draft"])
+            #expect(error.failures.first?.error is ContactNotSavedError)
+        }
+
+        #expect(await repository.members(ofGroup: work.localID).map(\.displayName) == ["Ada Lovelace"])
+    }
+
+    @Test @MainActor
+    func severalNeverSavedContactsAreEachReported() async throws {
+        // They all share the empty localID, so dedup must NOT collapse them —
+        // the report has to account for every contact the caller asked about.
+        let first = Contact(givenName: "First", familyName: "Draft")
+        let second = Contact(givenName: "Second", familyName: "Draft")
+        let third = Contact(givenName: "Third", familyName: "Draft")
+        let store = InMemoryContactStore(contacts: [])
+        let work = try await store.createGroup(name: "Work")
+        let repository = ContactsRepository(contacts: store)
+
+        do {
+            try await repository.addContacts([first, second, third], toGroup: work)
+            Issue.record("expected a GroupMembershipPartialFailureError")
+        } catch let error as GroupMembershipPartialFailureError {
+            #expect(error.applied.isEmpty)
+            #expect(error.failures.map(\.contact.displayName)
+                == ["First Draft", "Second Draft", "Third Draft"])
+            #expect(error.failures.allSatisfy { $0.error is ContactNotSavedError })
+        }
+    }
+
+    @Test @MainActor
+    func twoStaleValuesForOneRecordCollapseToASingleRequest() async throws {
+        // Same Contacts record reached twice (e.g. from two list sections),
+        // captured at different times so the values differ. One record, one
+        // request, one entry — reported as the first value passed.
+        let stale = Contact(localID: "ada", givenName: "Ada", familyName: "Byron")
+        let fresh = Contact(localID: "ada", givenName: "Ada", familyName: "Lovelace")
+        let store = InMemoryContactStore(contacts: [fresh])
+        let work = try await store.createGroup(name: "Work")
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        let recorder = MembershipChangeRecorder(center: center)
+
+        try await repository.addContacts([stale, fresh], toGroup: work)
+
+        #expect(await repository.members(ofGroup: work.localID).count == 1)
+        // One write, so one contact in the single post — not two.
+        #expect(recorder.posts.count == 1)
+        #expect(recorder.posts.first?.contactIDs?.count == 1)
+    }
+
+    // MARK: - Preflight cost
+
+    @Test @MainActor
+    func thePreflightUsesTheIdentifierOnlyReadNotTheFullRecordFetch() async throws {
+        let store = SuspendingMembershipContactStore(contacts: [Self.ada, Self.alan])
+        let work = try await store.seedGroup(name: "Work")
+        let repository = ContactsRepository(contacts: store)
+
+        try await repository.addContacts([Self.ada, Self.alan], toGroup: work)
+
+        // One preflight for the whole batch, and never the fetch that
+        // materializes every member's full record.
+        #expect(await store.fetchMemberLocalIDsCallCount == 1)
+        #expect(await store.fetchMembersCallCount == 0)
+    }
+
+    @Test @MainActor
+    func thePreflightSeesAMemberAddedThroughTheStore() async throws {
+        let store = SuspendingMembershipContactStore(contacts: [Self.ada, Self.alan])
+        let work = try await store.seedGroup(name: "Work")
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        let recorder = MembershipChangeRecorder(center: center)
+
+        // Ada joins behind the repository's back, exactly as an external change
+        // would. The preflight must observe her.
+        try await store.seedMember(contactLocalID: Self.ada.localID, inGroup: work.localID)
+
+        try await repository.addContacts([Self.ada, Self.alan], toGroup: work)
+
+        // Only Alan needed writing, so only Alan is announced.
+        #expect(recorder.posts.count == 1)
+        #expect(recorder.posts.first?.contactIDs == [Self.alan.contactID])
+        let members = await repository.members(ofGroup: work.localID)
+        #expect(Set(members.map(\.displayName)) == ["Ada Lovelace", "Alan Turing"])
+    }
+
+    @Test @MainActor
+    func identifierOnlyReadMatchesTheFullFetchAndFailsOnAMissingGroup() async throws {
+        // The contract the repository relies on: these ids ARE the `localID`s
+        // the full fetch reports, and a bad group id is a typed error.
+        let store = InMemoryContactStore(contacts: [Self.ada, Self.alan])
+        let work = try await store.createGroup(name: "Work")
+        try await store.addMember(contactLocalID: Self.ada.localID, toGroup: work.localID)
+        try await store.addMember(contactLocalID: Self.alan.localID, toGroup: work.localID)
+
+        let ids = try await store.fetchMemberLocalIDs(ofGroup: work.localID)
+        let fromFullFetch = try await store.fetchMembers(ofGroup: work.localID).map(\.localID)
+        #expect(Set(ids) == Set(fromFullFetch))
+        #expect(ids.count == fromFullFetch.count)
+
+        await #expect(throws: ContactStoreError.self) {
+            _ = try await store.fetchMemberLocalIDs(ofGroup: "no-such-group")
+        }
+    }
+
+    // MARK: - Change notification
+
+    @Test @MainActor
+    func aLandedWriteAnnouncesTheGroupContactsAndDirection() async throws {
+        let store = InMemoryContactStore(contacts: [Self.ada, Self.alan])
+        let work = try await store.createGroup(name: "Work")
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        let recorder = MembershipChangeRecorder(center: center)
+
+        try await repository.addContacts([Self.ada, Self.alan], toGroup: work)
+
+        #expect(recorder.posts.count == 1)
+        #expect(recorder.posts.first?.groupLocalID == work.localID)
+        #expect(recorder.posts.first?.contactIDs == [Self.ada.contactID, Self.alan.contactID])
+        #expect(recorder.posts.first?.change == .addition)
+
+        try await repository.removeContacts([Self.ada], fromGroup: work)
+
+        #expect(recorder.posts.count == 2)
+        #expect(recorder.posts.last?.contactIDs == [Self.ada.contactID])
+        #expect(recorder.posts.last?.change == .removal)
+    }
+
+    @Test @MainActor
+    func announcedTokensComeFromTheCacheNotTheCallersStaleValue() async throws {
+        // The record is reconciled (it carries a GuessWho URL), so its identity
+        // is the UUID. A caller holding a value captured BEFORE that would key
+        // its token on localID — and an observer, whose tokens come from this
+        // cache, would compare unequal and ignore the post.
+        let uuid = "550e8400-e29b-41d4-a716-446655440000"
+        let reconciled = Contact(
+            localID: "ada",
+            givenName: "Ada",
+            familyName: "Lovelace",
+            urlAddresses: [LabeledValue(label: "GuessWho", value: "guesswho://contact/\(uuid)")]
+        )
+        let stale = Contact(localID: "ada", givenName: "Ada", familyName: "Lovelace")
+        let store = InMemoryContactStore(contacts: [reconciled])
+        let work = try await store.createGroup(name: "Work")
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        await repository.reload()
+        let recorder = MembershipChangeRecorder(center: center)
+
+        try await repository.addContacts([stale], toGroup: work)
+
+        let cachedToken = try #require(repository.contact(id: stale.contactID)?.contactID)
+        #expect(recorder.posts.first?.contactIDs == [cachedToken])
+        // The stale value's own token keys on localID, so this is a real
+        // difference, not a tautology.
+        #expect(cachedToken != stale.contactID)
+    }
+
+    @Test @MainActor
+    func aPartialFailureAnnouncesTheWritesThatLandedBeforeThrowing() async throws {
+        let ghost = Contact(localID: "ghost", givenName: "No", familyName: "Body")
+        let store = InMemoryContactStore(contacts: [Self.ada])
+        let work = try await store.createGroup(name: "Work")
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        let recorder = MembershipChangeRecorder(center: center)
+
+        await #expect(throws: GroupMembershipPartialFailureError.self) {
+            try await repository.addContacts([ghost, Self.ada], toGroup: work)
+        }
+
+        // Ada really joined, so observers must hear about it even though the
+        // call threw.
+        #expect(recorder.posts.count == 1)
+        #expect(recorder.posts.first?.contactIDs == [Self.ada.contactID])
+    }
+
+    @Test @MainActor
+    func nothingIsAnnouncedWhenNothingWasWritten() async throws {
+        let store = InMemoryContactStore(contacts: [Self.ada])
+        let work = try await store.createGroup(name: "Work")
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        try await repository.addContacts([Self.ada], toGroup: work)
+
+        let recorder = MembershipChangeRecorder(center: center)
+
+        // Already a member: a pure no-op.
+        try await repository.addContacts([Self.ada], toGroup: work)
+        // Not a member: also a pure no-op.
+        try await repository.removeContacts(
+            [Contact(localID: "alan", givenName: "Alan", familyName: "Turing")],
+            fromGroup: work
+        )
+        // Asked for nothing.
+        try await repository.addContacts([], toGroup: work)
+        // Failed before any write.
+        await #expect(throws: ContactStoreError.self) {
+            try await repository.addContacts(
+                [Self.ada],
+                toGroup: ContactGroup(localID: "no-such-group", name: "Ghost")
+            )
+        }
+
+        #expect(recorder.posts.isEmpty)
     }
 
     // MARK: - Serialization

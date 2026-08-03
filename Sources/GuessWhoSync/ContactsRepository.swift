@@ -7,6 +7,63 @@ public extension Notification.Name {
     /// Consumers that do not use Observation (for example UIKit diffable data
     /// sources) can observe this notification and apply one new snapshot.
     static let contactsRepositoryDidReload = Notification.Name("ContactsRepositoryDidReload")
+
+    /// Posted after a `ContactsRepository` group-membership write LANDED in
+    /// Contacts — `addContacts(_:toGroup:)`, `removeContacts(_:fromGroup:)`, or
+    /// their single-contact conveniences.
+    ///
+    /// This is deliberately NOT `.contactsRepositoryDidReload`: membership moves
+    /// neither the cached `contacts` records nor the cached `groups` array, so
+    /// the reload signal would be false (and would needlessly invalidate the
+    /// app's decoded-photo cache). Membership lives only in Contacts and is read
+    /// on demand, so it needs its own announcement — this one.
+    ///
+    /// **Who should observe it.** Anything that displays a membership it read
+    /// earlier and would otherwise go stale: a group's member list (re-read
+    /// `members(ofGroup:)`), a contact's "groups" section (re-read
+    /// `groups(containing:)`).
+    ///
+    /// **userInfo** — see `ContactsRepositoryGroupMembershipDidChangeKey`:
+    /// - `.groupLocalID` (`String`) — the affected group's `ContactGroup.localID`.
+    ///   Compare against the group you are showing and ignore the rest.
+    /// - `.contactIDs` (`[ContactID]`) — the contacts whose membership ACTUALLY
+    ///   changed. A contact already in the requested state is a no-op and is NOT
+    ///   listed. Compare against the `ContactID` you hold; never a raw localID.
+    /// - `.change` (`GroupMembershipChange`) — `.addition` or `.removal`, so an
+    ///   observer can patch a row in place instead of re-reading if it prefers.
+    ///
+    /// `object` is the posting `ContactsRepository`, so an observer can scope to
+    /// one repository; the app has exactly one. Posted on the repository's
+    /// injected notification center (`.default` in production), same as
+    /// `.contactsRepositoryDidReload`.
+    ///
+    /// **Delivery guarantees.** Posted whenever at least one write landed —
+    /// INCLUDING on the partial-failure path, where it is posted BEFORE the
+    /// error is thrown, because the writes that succeeded are real and must be
+    /// reflected. It is NOT posted when nothing was written: an empty request, a
+    /// batch in which every contact was already in the requested state, or a
+    /// failure before any write (the pre-flight membership read). So a post
+    /// always means "membership really moved," and its absence — even alongside
+    /// a thrown error — means it did not.
+    static let contactsRepositoryGroupMembershipDidChange =
+        Notification.Name("ContactsRepositoryGroupMembershipDidChange")
+}
+
+/// userInfo keys for `.contactsRepositoryGroupMembershipDidChange`.
+public enum ContactsRepositoryGroupMembershipDidChangeKey {
+    /// `String` — the affected group's Contacts identifier
+    /// (`ContactGroup.localID`). A group id is public API: it is what the Groups
+    /// list keys its rows on and what `members(ofGroup:)` takes.
+    public static let groupLocalID = "groupLocalID"
+
+    /// `[ContactID]` — the contacts whose membership actually changed, as the
+    /// app's opaque identity token. Deliberately `ContactID` and not a contact
+    /// `localID`: that identifier is confined to the package
+    /// (`docs/contact-identity.md`), and an observer holds `ContactID`s anyway.
+    public static let contactIDs = "contactIDs"
+
+    /// `GroupMembershipChange` — whether the listed contacts joined or left.
+    public static let change = "change"
 }
 
 /// userInfo keys for `.contactsRepositoryDidReload`.
@@ -389,12 +446,16 @@ public final class ContactsRepository: NSObject {
     //
     // Membership is a RELATION owned by Contacts — the sidecar does not mirror
     // it and this repository caches nothing about it, so these writes update no
-    // cached array (see the closing note in `applyGroupMembership`). They live
-    // on the same serialization queue as create/rename/delete because they
+    // cached array and announce themselves on their OWN notification rather than
+    // the reload signal (see the closing note in `applyGroupMembership`). They
+    // live on the same serialization queue as create/rename/delete because they
     // address the same group.
 
-    /// Adds every contact in `contacts` to `group`. Duplicate entries in
-    /// `contacts` are collapsed; contacts already in the group are left alone.
+    /// Adds every contact in `contacts` to `group`. Repeated values for the same
+    /// Contacts record collapse to one request; contacts already in the group
+    /// are left alone. A contact that was never saved to Contacts cannot hold a
+    /// membership, so it is reported as a `ContactNotSavedError` failure rather
+    /// than dropped.
     ///
     /// **Serialization.** The WHOLE batch runs as one unit on the same
     /// `performSerializedGroupMutation` queue as `createGroup` / `renameGroup` /
@@ -411,6 +472,14 @@ public final class ContactsRepository: NSObject {
     /// with `applied` in and `failures` out (`applied` may be empty). Any other
     /// error comes from the pre-flight membership read, before any write: it
     /// means nothing was attempted. See that error type for the full contract.
+    ///
+    /// **Notification.** Every write that lands is announced on
+    /// `.contactsRepositoryGroupMembershipDidChange`, carrying the group, the
+    /// contacts that actually moved, and the direction — including on the
+    /// partial-failure path, where it is posted before the error is thrown. A
+    /// surface displaying membership should observe it rather than re-reading
+    /// speculatively. Nothing is posted when nothing moved. This is NOT
+    /// `.contactsRepositoryDidReload`: no cached contact or group changed.
     ///
     /// **Identity.** Membership is keyed by Contacts localIDs
     /// (`CNContact.identifier` / `CNGroup.identifier`), which are confined to
@@ -480,15 +549,22 @@ public final class ContactsRepository: NSObject {
     /// single-contact conveniences. Must be called INSIDE
     /// `performSerializedGroupMutation` — it is not self-serializing.
     private func applyGroupMembership(
-        _ change: GroupMembershipPartialFailureError.Change,
+        _ change: GroupMembershipChange,
         contacts: [Contact],
         group: ContactGroup
     ) async throws {
-        // Collapse duplicates by Contacts localID, preserving the caller's
-        // order: one selection can carry the same record twice (reached from
-        // two sections), and a second write for it is pure waste.
+        // Collapse repeats of the SAME Contacts record, preserving the caller's
+        // order: one selection can carry the same record twice (reached from two
+        // sections), and a second write for it is pure waste.
+        //
+        // Only NON-EMPTY ids are collapsed. `Contact()` mints an empty
+        // `localID`, so keying dedup on the raw value would fuse every
+        // never-saved contact in a batch into one entry and silently drop the
+        // rest — the caller would get a report that failed to mention contacts
+        // it asked about. Each of those is kept as its own request and fails
+        // below with `ContactNotSavedError`.
         var seen = Set<String>()
-        let requested = contacts.filter { seen.insert($0.localID).inserted }
+        let requested = contacts.filter { $0.localID.isEmpty || seen.insert($0.localID).inserted }
         // An empty request is a no-op SUCCESS — it must not fail on a group
         // that happens to be gone, since it asked for nothing.
         guard !requested.isEmpty else { return }
@@ -503,13 +579,31 @@ public final class ContactsRepository: NSObject {
         // group that no longer exists fails the call here, before any write, so
         // the caller gets the store's typed `groupNotFound` and knows nothing
         // was attempted instead of a partial-failure report.
+        //
+        // Identifier-only by design: this asks a set-membership question, and
+        // `fetchMembers` would answer it by materializing every member's full
+        // record — 10,000 contacts built to decide whether two of them need
+        // writing. `fetchMemberLocalIDs` returns ids from the same unified fetch,
+        // so they compare directly against the `localID`s below.
         let currentMemberIDs = Set(
-            try await contactsStore.fetchMembers(ofGroup: group.localID).map(\.localID)
+            try await contactsStore.fetchMemberLocalIDs(ofGroup: group.localID)
         )
 
         var applied: [Contact] = []
         var failures: [GroupMembershipPartialFailureError.Failure] = []
+        // The contacts a write actually MOVED — the notification's payload.
+        // Narrower than `applied`, which also counts the already-in-state
+        // no-ops: nothing changed for those, so no observer needs to hear it.
+        var written: [Contact] = []
         for contact in requested {
+            // A contact with no Contacts identifier was never saved, so it has
+            // no membership to change. Report it instead of letting it reach
+            // the store as an empty id and come back as a confusing
+            // `contactNotFound` for "".
+            guard !contact.localID.isEmpty else {
+                failures.append(.init(contact: contact, error: ContactNotSavedError()))
+                continue
+            }
             let isMember = currentMemberIDs.contains(contact.localID)
             let needsWrite = change == .addition ? !isMember : isMember
             guard needsWrite else {
@@ -532,6 +626,7 @@ public final class ContactsRepository: NSObject {
                     )
                 }
                 applied.append(contact)
+                written.append(contact)
             } catch {
                 // Continue through the rest of the batch so one unwritable
                 // contact does not cancel the writes the user asked for on the
@@ -542,22 +637,47 @@ public final class ContactsRepository: NSObject {
             }
         }
 
-        // Whichever way this method exits, it updates no cache and posts NO
-        // `postDidReload()` — deliberately.
+        // Announce whatever LANDED, before anything else — including on the way
+        // out through a partial failure, since those writes are real and every
+        // surface showing the old membership is now wrong. Skipped when nothing
+        // moved: an empty batch, an all-already-in-state batch, or a pre-flight
+        // failure (which returned above). A post therefore always means
+        // membership really changed.
+        if !written.isEmpty {
+            // Vend each token off the CACHED record where there is one, not off
+            // the value the caller handed in. Observers hold tokens that came
+            // from this cache, and a `ContactID` compares on `guessWhoID ??
+            // localID` — so a caller's stale value captured before the contact
+            // reconciled would key on `localID` and compare UNEQUAL to the
+            // observer's UUID-keyed token, and the surface that most needed the
+            // refresh would ignore the post. `localID` is the one identifier
+            // that survives the reconcile re-key, so it is the right lookup here.
+            let changedIDs = written.map {
+                contact(localID: $0.localID)?.contactID ?? $0.contactID
+            }
+            notificationCenter.post(
+                name: .contactsRepositoryGroupMembershipDidChange,
+                object: self,
+                userInfo: [
+                    ContactsRepositoryGroupMembershipDidChangeKey.groupLocalID: group.localID,
+                    ContactsRepositoryGroupMembershipDidChangeKey.contactIDs: changedIDs,
+                    ContactsRepositoryGroupMembershipDidChangeKey.change: change,
+                ]
+            )
+        }
+
+        // That post is the ONLY signal this method emits. It updates no cache
+        // and does NOT call `postDidReload()`, deliberately.
         //
         // `postDidReload` announces that this repository's own published state
         // moved — `contacts` (the cached records) or `groups` (the cached group
         // array). A membership write moves NEITHER: Contacts owns the relation,
         // the sidecar does not mirror it, and nothing above touches a stored
         // property. `contactDataChanged: true` would be a straight lie that
-        // needlessly invalidates the app's decoded-photo cache; `false` would
-        // be pure noise, because no observer re-reads membership on this
-        // notification — the Groups list deliberately shows no member counts,
-        // `GroupMembersListViewController`'s reload handler only re-sorts the
-        // members it fetched once, and `ContactDetailView` does not observe the
-        // notification at all. Membership is read on demand
-        // (`groups(containing:)` / `members(ofGroup:)`), so a surface that
-        // displays it re-reads after awaiting this call.
+        // needlessly invalidates the app's decoded-photo cache, and `false`
+        // would tell every contact list to re-snapshot over a change none of
+        // them render. Membership gets its own narrower notification instead,
+        // carrying the group and contacts that actually moved.
         //
         // `groupMutationGeneration` is likewise NOT bumped: it exists so a
         // `loadGroups()` snapshot taken before a create/rename/delete cannot
@@ -618,6 +738,20 @@ public final class ContactsRepository: NSObject {
 
     /// Runs one group mutation after every earlier mutation has settled,
     /// preserving call order across actor-reentrant Contacts store awaits.
+    ///
+    /// INVARIANT — a `ContactStoreProtocol` implementation must never call back
+    /// into `ContactsRepository`. This queue is a strict chain: each mutation
+    /// awaits the previous one's completion. A store method that re-enters a
+    /// repository group mutation (create/rename/delete or a membership batch)
+    /// deadlocks permanently — the outer mutation is blocked awaiting the store,
+    /// the nested one is blocked awaiting the tail, and the tail is the outer
+    /// mutation. Nothing times out; the queue is wedged for the process's life.
+    ///
+    /// Holds for EVERY mutation routed through here, not just any one of them.
+    /// The rule is easy to keep because the dependency runs one way by design:
+    /// the repository drives the store, never the reverse. A store that needs to
+    /// tell the repository something posts a notification (that is what
+    /// `ContactChangeWatcher` does) rather than calling in.
     private func performSerializedGroupMutation<T: Sendable>(
         _ operation: @escaping @MainActor () async throws -> T
     ) async throws -> T {

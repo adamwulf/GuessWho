@@ -80,4 +80,32 @@ public protocol ContactStoreProtocol: Actor {
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup]
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws
+
+    /// Just the `localID`s of the group's members — the membership question
+    /// without the records. Same group-existence contract as `fetchMembers`
+    /// (`groupNotFound` for an unknown id), and the ids MUST be the same ones
+    /// `fetchMembers` would report on the returned contacts' `localID`, so a
+    /// caller can compare them against a `Contact` it already holds.
+    ///
+    /// Exists because `fetchMembers` is the wrong tool for a membership TEST:
+    /// it materializes every member's full record (all name/work/address/date/
+    /// social/relation keys), so checking whether two people are already in a
+    /// 10,000-member group would build 10,000 contacts to answer a set-membership
+    /// question. `ContactsRepository`'s membership batches use this instead.
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String]
+}
+
+public extension ContactStoreProtocol {
+    /// Compatibility default: derive the ids from the full member fetch.
+    ///
+    /// CORRECT but deliberately the expensive path — it is exactly the cost
+    /// `fetchMemberLocalIDs` exists to avoid. It is here so that adding this
+    /// requirement did not break every existing conformer (the app target's
+    /// test stubs among them, which are out of this package's reach). Any store
+    /// that talks to a real backing store SHOULD override it with an
+    /// identifier-only read; `CNContactStoreAdapter` and `InMemoryContactStore`
+    /// both do.
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
+        try await fetchMembers(ofGroup: groupLocalID).map(\.localID)
+    }
 }
