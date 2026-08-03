@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 import GuessWhoSync
 @testable import GuessWho
 
@@ -66,6 +67,22 @@ struct GroupsListViewControllerLogicTests {
         )
         #expect(presentation.message == "Contacts couldn’t complete this change. Please try again.")
         #expect(!presentation.shouldRefreshGroups)
+    }
+
+    @Test(arguments: [("New Group", "Add", nil), ("Rename Group", "Rename", "Family")] as [(String, String, String?)])
+    func namePromptMakesConfirmTheDefaultButton(title: String, actionTitle: String, initialName: String?) {
+        let alert = GroupNamePrompt.makeAlert(
+            title: title,
+            actionTitle: actionTitle,
+            initialName: initialName,
+            completion: { _ in }
+        )
+
+        // Return-key binding and the emphasized button style both hang off
+        // `preferredAction`; without it the two buttons read as interchangeable
+        // and a hardware keyboard can't confirm the prompt.
+        #expect(alert.preferredAction?.title == actionTitle)
+        #expect(alert.actions.contains { $0.style == .cancel })
     }
 
     @Test

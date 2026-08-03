@@ -65,6 +65,12 @@ enum GroupNamePrompt {
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(confirm)
+        // Two jobs, one line. Visually it emphasizes the confirm button so the
+        // two actions don't read as interchangeable; on a hardware keyboard it
+        // binds Return to confirm (Escape already maps to the `.cancel` action).
+        // Must come AFTER `addAction(confirm)` — assigning an action the alert
+        // doesn't own yet is a programmer error.
+        alert.preferredAction = confirm
         return alert
     }
 }
