@@ -45,32 +45,66 @@ struct AddToGroupAlertCopy: Equatable {
     let title: String
     let message: String
 
-    /// The batch RAN and some of it landed. Names what actually made it in and
-    /// which contacts didn't, because a bare "something went wrong" would leave
-    /// the user re-adding contacts that are already there.
-    static func partialFailure(_ error: GroupMembershipPartialFailureError) -> AddToGroupAlertCopy {
+    /// The batch RAN and some of it landed. Reports the RESULTING STATE and
+    /// names the contacts that aren't in it, because a bare "something went
+    /// wrong" would leave the user re-adding contacts that are already there.
+    ///
+    /// "…are in “Family”" rather than "…were added to “Family”" is deliberate
+    /// and load-bearing: `applied` means "ended in the requested state," which
+    /// INCLUDES contacts that were already members and needed no write. Phrasing
+    /// it as an action would claim credit for adds that never happened — a
+    /// selection of one already-member plus one new member plus one failure
+    /// would read "2 of 3 contacts were added" when exactly one was. The
+    /// end-state wording is true either way.
+    ///
+    /// - Parameter authorization: Contacts authorization, for turning a single
+    ///   contact's store error into product copy (see `GroupMutationErrorPresentation`).
+    static func partialFailure(
+        _ error: GroupMembershipPartialFailureError,
+        authorization: StoreAuthorizationStatus
+    ) -> AddToGroupAlertCopy {
         let groupName = error.group.displayName
         let total = error.applied.count + error.failures.count
         let failedNames = names(of: error.failures.map(\.contact))
 
         // One contact has no partial state to describe — say what stopped it.
         if total == 1 {
-            let reason = error.failures.first?.error.localizedDescription ?? ""
             return AddToGroupAlertCopy(
                 title: "Couldn’t Add to “\(groupName)”",
-                message: reason.isEmpty
-                    ? "\(failedNames) wasn’t added to “\(groupName).”"
-                    : reason
+                message: error.failures.first.map {
+                    reason(for: $0.error, authorization: authorization)
+                } ?? "\(failedNames) isn’t in “\(groupName).”"
             )
         }
 
-        let landed = error.applied.isEmpty
-            ? "None of these \(total) contacts were added to “\(groupName).”"
-            : "\(error.applied.count) of \(total) contacts were added to “\(groupName).”"
+        let state = error.applied.isEmpty
+            ? "None of these \(total) contacts are in “\(groupName).”"
+            : "\(error.applied.count) of \(total) contacts are in “\(groupName).”"
         return AddToGroupAlertCopy(
             title: "Couldn’t Add Every Contact",
-            message: "\(landed)\n\nNot added: \(failedNames)."
+            message: "\(state)\n\nNot added: \(failedNames)."
         )
+    }
+
+    /// Plain-language reason for ONE contact's failure.
+    ///
+    /// A store error's `localizedDescription` can be raw framework text
+    /// (`CNErrorDomain` codes read like diagnostics), so everything that isn't
+    /// package-authored user copy routes through the same mapper the Groups tab
+    /// uses. `ContactNotSavedError` is the exception: the package writes that one
+    /// as product copy on purpose ("This contact hasn't been saved yet."), and it
+    /// says something the generic mapper can't.
+    private static func reason(
+        for error: any Error,
+        authorization: StoreAuthorizationStatus
+    ) -> String {
+        if let notSaved = error as? ContactNotSavedError {
+            return notSaved.localizedDescription
+        }
+        return GroupMutationErrorPresentation.make(
+            error: error,
+            authorization: authorization
+        ).message
     }
 
     /// The write failed BEFORE anything was attempted (the repository's
@@ -95,9 +129,17 @@ struct AddToGroupAlertCopy: Equatable {
         AddToGroupAlertCopy(title: "Couldn’t Create Group", message: reason)
     }
 
-    /// Names a small set of contacts for an alert body, capping the list so a
-    /// 200-contact selection can't produce an unreadable wall of text.
     private static func names(of contacts: [Contact], limit: Int = 5) -> String {
+        ContactNameList.joined(contacts, limit: limit)
+    }
+}
+
+/// Names a set of contacts for a menu title or an alert body, capping the list
+/// so a 200-contact selection can't produce an unreadable wall of text. One
+/// helper for both surfaces so a menu and the alert it can produce never
+/// enumerate the same selection two different ways.
+enum ContactNameList {
+    static func joined(_ contacts: [Contact], limit: Int) -> String {
         let shown = contacts.prefix(limit).map(\.displayName)
         let overflow = contacts.count - shown.count
         let parts = overflow > 0 ? shown + ["\(overflow) more"] : Array(shown)
@@ -174,13 +216,16 @@ final class AddToGroupMenu {
 
     /// The submenu: every existing group (alphabetical), then New Group.
     ///
-    /// The groups arrive through `UIDeferredMenuElement.uncached` because
-    /// `repository.groups` is only filled by `loadGroups()`, which the Groups tab
-    /// drives — a user who has never opened that tab has an EMPTY cache, which is
-    /// not the same as having no groups. The deferred element lets UIKit show its
-    /// own loading placeholder while the fetch runs instead of blocking the main
-    /// thread or rendering a submenu that lies. `uncached` (not the caching
-    /// variant) so a group added in Contacts.app since the last menu shows up.
+    /// The groups arrive through `UIDeferredMenuElement.uncached` because they
+    /// have to be READ before they can be listed: `repository.groups` is only
+    /// filled by `loadGroups()`, which the Groups tab drives, so a user who has
+    /// never opened that tab has an EMPTY cache — which is not the same as
+    /// having no groups — and a cache that IS warm can still be stale against
+    /// Contacts.app. The deferred element lets UIKit show its own loading
+    /// placeholder while the fetch runs instead of blocking the main thread or
+    /// rendering a submenu that lies. `uncached` (not the caching variant) is
+    /// what makes the provider run on every display; `loadedGroups()` re-reads
+    /// Contacts each time, and together those are what keep the list honest.
     private func addToGroupMenu(for contacts: [Contact]) -> UIMenu {
         let groups = UIDeferredMenuElement.uncached { [weak self] completion in
             Task { @MainActor in
@@ -225,17 +270,24 @@ final class AddToGroupMenu {
         }
     }
 
-    /// The groups to list, fetching them first when the cache is cold. Sorted
-    /// here rather than trusting the cache's order, since "alphabetical" is the
+    /// The groups to list, re-read from Contacts on every open. Sorted here
+    /// rather than trusting the cache's order, since "alphabetical" is the
     /// menu's own contract.
     ///
-    /// An empty cache re-fetches on every open. That is deliberate: an empty
-    /// cache means either "never loaded" or "genuinely no groups," and the only
-    /// way to tell them apart is to ask Contacts.
+    /// EVERY open, not just a cold cache: `repository.groups` is a cache of
+    /// whatever the Groups tab last loaded, and groups are created, renamed, and
+    /// deleted in Contacts.app behind our back. Trusting a warm cache would
+    /// offer a deleted group forever (choosing it fails, refreshes, and makes
+    /// the user reopen the menu) and would never show a group added since. The
+    /// deferred element already pays for the async load and shows UIKit's own
+    /// placeholder while it runs, so freshness costs nothing the menu wasn't
+    /// already spending — this is the whole reason the submenu is deferred.
+    ///
+    /// One fetch per menu display, and no coalescing machinery: the repository's
+    /// load/mutation generation counters already make the newest read win, so
+    /// two opens in quick succession settle correctly on their own.
     private func loadedGroups() async -> [ContactGroup] {
-        if repository.groups.isEmpty {
-            await repository.loadGroups()
-        }
+        await repository.loadGroups()
         return repository.groups.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
@@ -250,22 +302,40 @@ final class AddToGroupMenu {
 
     // MARK: - Titles
 
-    /// The menu header, stating what the menu acts on. Multi-selection counts
-    /// the contacts; a single contact names them, which reads as plainly and
-    /// carries more information than "1 Contact."
+    /// How many targets get NAMED in the menu titles before they are merely
+    /// counted.
+    ///
+    /// Three is where a name list stops being scannable at menu width: "Alice,
+    /// Bob, and Carol" reads at a glance, while a fourth name (or a truncated
+    /// "…and 4 more") is noisier than the number — and past a handful the number
+    /// is exactly what a user checks a bulk action against. Naming matters
+    /// because the selection can extend OFFSCREEN: right-clicking Bob with Alice
+    /// selected and scrolled out of view must still say Alice is coming along.
+    private static let namedTargetLimit = 3
+
+    /// The menu header, stating who the menu acts on: the names while there are
+    /// few enough to read, the count beyond that.
     static func scopeTitle(for contacts: [Contact]) -> String {
-        if contacts.count == 1, let contact = contacts.first {
-            return contact.displayName
+        guard contacts.count > namedTargetLimit else {
+            return ContactNameList.joined(contacts, limit: namedTargetLimit)
         }
         return "\(contacts.count) Contacts"
     }
 
-    /// The submenu's own title. It repeats the count for a multi-selection
-    /// because a menu HEADER is not guaranteed to be visible everywhere the menu
-    /// is (Mac Catalyst bridges these to AppKit menus), and the scope of a
-    /// destructive-feeling bulk action must never be a guess.
+    /// The submenu's own title. It restates the scope for anything beyond the
+    /// clicked row because a menu HEADER is not guaranteed to be visible
+    /// everywhere the menu is (Mac Catalyst bridges these to AppKit menus), and
+    /// the reach of a bulk action must never be a guess.
     static func addToGroupTitle(for contacts: [Contact]) -> String {
-        contacts.count == 1 ? "Add to Group" : "Add \(contacts.count) Contacts to Group"
+        if contacts.count == 1 {
+            // One target: the header already names them, and the row that was
+            // clicked is the row that is acted on.
+            return "Add to Group"
+        }
+        guard contacts.count > namedTargetLimit else {
+            return "Add \(ContactNameList.joined(contacts, limit: namedTargetLimit)) to Group"
+        }
+        return "Add \(contacts.count) Contacts to Group"
     }
 
     // MARK: - Writes
@@ -287,7 +357,10 @@ final class AddToGroupMenu {
             Self.log.error(
                 "add to group partially failed: \(partial.failures.count) of \(contacts.count) contacts"
             )
-            present(.partialFailure(partial))
+            present(.partialFailure(
+                partial,
+                authorization: await repository.contactsAuthorizationStatus()
+            ))
         } catch {
             Self.log.error("couldn't add contacts to group: \(error.localizedDescription)")
             let presentation = GroupMutationErrorPresentation.make(

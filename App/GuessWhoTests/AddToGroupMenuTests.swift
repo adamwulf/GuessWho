@@ -3,6 +3,11 @@ import Testing
 import GuessWhoSync
 @testable import GuessWho
 
+/// Stands in for a store error with no user-facing text of its own — its
+/// `localizedDescription` is the framework's generic "operation couldn't be
+/// completed" wrapper, naming the type. Nothing like that may reach an alert.
+private struct OpaqueFrameworkError: Error {}
+
 /// The pure logic behind the contact lists' "Add to Group" context menu: which
 /// rows a menu acts on, and what the user is told when a batch doesn't fully
 /// land. Both are decided without a table view or a repository, so both are
@@ -75,6 +80,18 @@ struct AddToGroupCopyTests {
         )
     }
 
+    private func partialCopy(
+        applied: [Contact],
+        failed: [Contact],
+        error: Error = ContactNotSavedError(),
+        authorization: StoreAuthorizationStatus = .authorized
+    ) -> AddToGroupAlertCopy {
+        .partialFailure(
+            partialFailure(applied: applied, failed: failed, error: error),
+            authorization: authorization
+        )
+    }
+
     // MARK: - Titles
 
     @Test
@@ -83,56 +100,115 @@ struct AddToGroupCopyTests {
         #expect(AddToGroupMenu.addToGroupTitle(for: [contact("Ada", "Lovelace")]) == "Add to Group")
     }
 
+    /// A selection can reach OFFSCREEN rows, so a small one is named outright
+    /// rather than counted — the user must see that the contact scrolled out of
+    /// view is coming along.
     @Test
-    func aMultiSelectionStatesItsCountInBothTitles() {
-        let contacts = [contact("Ada", "Lovelace"), contact("Alan", "Turing"), contact("Grace", "Hopper")]
-        #expect(AddToGroupMenu.scopeTitle(for: contacts) == "3 Contacts")
+    func asmallSelectionIsNamedInBothTitles() {
+        let two = [contact("Ada", "Lovelace"), contact("Alan", "Turing")]
+        #expect(AddToGroupMenu.scopeTitle(for: two) == "Ada Lovelace and Alan Turing")
+        #expect(AddToGroupMenu.addToGroupTitle(for: two)
+            == "Add Ada Lovelace and Alan Turing to Group")
+
+        let three = two + [contact("Grace", "Hopper")]
+        #expect(AddToGroupMenu.scopeTitle(for: three).contains("Grace Hopper"))
+        #expect(AddToGroupMenu.addToGroupTitle(for: three).hasPrefix("Add Ada Lovelace"))
+        #expect(AddToGroupMenu.addToGroupTitle(for: three).hasSuffix("to Group"))
+    }
+
+    @Test
+    func aSelectionPastTheNamingThresholdIsCounted() {
+        let contacts = (1...4).map { contact("Contact", "\($0)") }
+        #expect(AddToGroupMenu.scopeTitle(for: contacts) == "4 Contacts")
         // Repeated on the action itself: a menu header isn't guaranteed to be
         // visible on every platform, and the scope must never be a guess.
-        #expect(AddToGroupMenu.addToGroupTitle(for: contacts) == "Add 3 Contacts to Group")
+        #expect(AddToGroupMenu.addToGroupTitle(for: contacts) == "Add 4 Contacts to Group")
+        // No half-named list: past the threshold the count stands alone.
+        #expect(!AddToGroupMenu.addToGroupTitle(for: contacts).contains("Contact 1"))
     }
 
     // MARK: - Partial failure (the batch RAN)
 
     @Test
-    func aPartialFailureSaysHowManyLandedAndNamesTheOnesThatDidnt() {
-        let copy = AddToGroupAlertCopy.partialFailure(partialFailure(
+    func aPartialFailureSaysHowManyEndedInTheGroupAndNamesTheOnesThatDidnt() {
+        let copy = partialCopy(
             applied: [contact("Ada", "Lovelace"), contact("Alan", "Turing")],
             failed: [contact("Grace", "Hopper")]
-        ))
+        )
 
         #expect(copy.title == "Couldn’t Add Every Contact")
-        #expect(copy.message.contains("2 of 3 contacts were added to “Family.”"))
+        #expect(copy.message.contains("2 of 3 contacts are in “Family.”"))
         #expect(copy.message.contains("Grace Hopper"))
     }
 
+    /// `applied` counts contacts that were ALREADY members and needed no write,
+    /// so the copy must describe the resulting state instead of claiming credit
+    /// for adds that never happened.
     @Test
-    func anAllFailedBatchSaysNoneLandedRatherThanZeroOfThree() {
-        let copy = AddToGroupAlertCopy.partialFailure(partialFailure(
+    func anAlreadyMemberIsNotClaimedAsANewAdd() {
+        // Ada was already in Family, Alan was genuinely added, Grace failed.
+        let copy = partialCopy(
+            applied: [contact("Ada", "Lovelace"), contact("Alan", "Turing")],
+            failed: [contact("Grace", "Hopper")]
+        )
+
+        #expect(copy.message.contains("are in"))
+        #expect(!copy.message.contains("were added to “Family"))
+    }
+
+    @Test
+    func anAllFailedBatchSaysNoneAreInTheGroupRatherThanZeroOfThree() {
+        let copy = partialCopy(
             applied: [],
             failed: [contact("Ada", "Lovelace"), contact("Alan", "Turing")]
-        ))
+        )
 
-        #expect(copy.message.contains("None of these 2 contacts were added to “Family.”"))
+        #expect(copy.message.contains("None of these 2 contacts are in “Family.”"))
+        #expect(!copy.message.contains("0 of 2"))
     }
 
     @Test
     func aOneContactBatchReportsWhatStoppedItInsteadOfCounting() {
-        let copy = AddToGroupAlertCopy.partialFailure(partialFailure(
-            applied: [],
-            failed: [contact("Ada", "Lovelace")]
-        ))
+        let copy = partialCopy(applied: [], failed: [contact("Ada", "Lovelace")])
 
         #expect(copy.title == "Couldn’t Add to “Family”")
-        // The store's own reason, not "0 of 1 contacts…".
+        // The package's own product copy for a never-saved contact — it says
+        // something the generic mapper can't — and never "0 of 1 contacts…".
         #expect(copy.message == ContactNotSavedError().localizedDescription)
         #expect(!copy.message.contains("0 of 1"))
+    }
+
+    /// A store error's `localizedDescription` can be raw framework text, so
+    /// anything that isn't package-authored user copy goes through the same
+    /// mapper the Groups tab uses.
+    @Test
+    func aOneContactBatchNeverPrintsRawFrameworkText() {
+        let copy = partialCopy(
+            applied: [],
+            failed: [contact("Ada", "Lovelace")],
+            error: OpaqueFrameworkError()
+        )
+
+        #expect(!copy.message.contains("OpaqueFrameworkError"))
+        #expect(copy.message == "Contacts couldn’t complete this change. Please try again.")
+    }
+
+    @Test
+    func aOneContactBatchDirectsToSettingsWhenAccessIsDenied() {
+        let copy = partialCopy(
+            applied: [],
+            failed: [contact("Ada", "Lovelace")],
+            error: OpaqueFrameworkError(),
+            authorization: .denied
+        )
+
+        #expect(copy.message.contains("Settings"))
     }
 
     @Test
     func aLongFailureListIsCapped() {
         let failed = (1...7).map { contact("Contact", "\($0)") }
-        let copy = AddToGroupAlertCopy.partialFailure(partialFailure(applied: [], failed: failed))
+        let copy = partialCopy(applied: [], failed: failed)
 
         #expect(copy.message.contains("Contact 1"))
         #expect(copy.message.contains("2 more"))
@@ -177,11 +253,11 @@ struct AddToGroupCopyTests {
 
     @Test
     func noCopyLeaksInternalVocabulary() {
-        let copies = [
-            AddToGroupAlertCopy.partialFailure(partialFailure(
+        let copies: [AddToGroupAlertCopy] = [
+            partialCopy(
                 applied: [contact("Ada", "Lovelace")],
                 failed: [contact("Alan", "Turing")]
-            )),
+            ),
             .nothingAttempted(contactCount: 2, groupName: "Family", reason: "Please try again."),
             .groupCreationFailed(reason: "Please try again."),
         ]
