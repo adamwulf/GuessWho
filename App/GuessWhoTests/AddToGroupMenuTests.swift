@@ -104,7 +104,7 @@ struct AddToGroupCopyTests {
     /// rather than counted — the user must see that the contact scrolled out of
     /// view is coming along.
     @Test
-    func asmallSelectionIsNamedInBothTitles() {
+    func aSmallSelectionIsNamedInBothTitles() {
         let two = [contact("Ada", "Lovelace"), contact("Alan", "Turing")]
         #expect(AddToGroupMenu.scopeTitle(for: two) == "Ada Lovelace and Alan Turing")
         #expect(AddToGroupMenu.addToGroupTitle(for: two)
