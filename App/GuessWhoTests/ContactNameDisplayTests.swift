@@ -38,11 +38,22 @@ struct ContactNameDisplayTests {
     }
 
     @Test
-    func aNicknameThatRepeatsTheGivenNameIsDropped() {
+    func aNicknameThatRepeatsANameBesideItIsDropped() {
         // Nobody should read `Kathy "Kathy" Zhang` — a nickname only earns its
-        // quotes when it says something the given name doesn't.
-        let contact = Contact(givenName: "Kathy", familyName: "Zhang", nickname: "kathy")
-        #expect(contact.displayNameWithNickname == "Kathy Zhang")
+        // quotes when it says something the names beside it don't.
+        let repeatsGiven = Contact(givenName: "Kathy", familyName: "Zhang", nickname: "kathy")
+        #expect(repeatsGiven.displayNameWithNickname == "Kathy Zhang")
+
+        let repeatsFamily = Contact(familyName: "Zhang", nickname: "zhang")
+        #expect(repeatsFamily.displayNameWithNickname == "Zhang")
+    }
+
+    @Test
+    func aWhitespaceOnlyNicknameIsNoNicknameAtAll() {
+        // Pins the trim-then-test order: check emptiness first and this renders
+        // an empty pair of quotes.
+        let contact = Contact(givenName: "Kejing", familyName: "Zhang", nickname: "   ")
+        #expect(contact.displayNameWithNickname == "Kejing Zhang")
     }
 
     @Test
@@ -88,6 +99,16 @@ struct ContactNameDisplayTests {
     }
 
     @Test
+    func aRowWithNoGivenNameLeadsWithTheQuotedNickname() {
+        // The one branch where the regular-weight run is nothing but the
+        // nickname — and so the only place a stray trailing space could hide.
+        let contact = Contact(familyName: "Zhang", nickname: "Kathy")
+        let parts = runs(contact.nameAttributedString)
+        #expect(parts.map(\.text) == ["\"Kathy\" ", "Zhang"])
+        #expect(parts.map(\.isBold) == [false, true])
+    }
+
+    @Test
     func aRowWithOnlyAFamilyNameIsAllBold() {
         let parts = runs(Contact(familyName: "Zhang").nameAttributedString)
         #expect(parts.map(\.text) == ["Zhang"])
@@ -102,9 +123,28 @@ struct ContactNameDisplayTests {
         #expect(parts.allSatisfy { !$0.isBold })
     }
 
+    /// Every name shape the composition has to handle. The header and the row
+    /// build their text with two separate hand-written joins, so the invariant
+    /// below is worth checking against all of these, not just the headline case.
+    private var everyNameShape: [Contact] {
+        [
+            Contact(givenName: "Kejing", familyName: "Zhang", nickname: "Kathy"),
+            Contact(givenName: "Kejing", familyName: "Zhang"),
+            Contact(givenName: "Kejing", nickname: "Kathy"),
+            Contact(familyName: "Zhang", nickname: "Kathy"),
+            Contact(givenName: "Kathy", familyName: "Zhang", nickname: "kathy"),
+            Contact(givenName: " Kejing ", familyName: " Zhang ", nickname: " Kathy "),
+            Contact(givenName: "Kejing", familyName: "Zhang", nickname: "   "),
+            Contact(nickname: "Kathy"),
+            Contact(contactType: .organization, nickname: "The Shop", organizationName: "Acme"),
+            Contact(),
+        ]
+    }
+
     @Test
-    func theRowAndTheHeaderShowTheSameName() {
-        let contact = Contact(givenName: "Kejing", familyName: "Zhang", nickname: "Kathy")
-        #expect(contact.nameAttributedString.string == contact.displayNameWithNickname)
+    func theRowAndTheHeaderAlwaysShowTheSameName() {
+        for contact in everyNameShape {
+            #expect(contact.nameAttributedString.string == contact.displayNameWithNickname)
+        }
     }
 }

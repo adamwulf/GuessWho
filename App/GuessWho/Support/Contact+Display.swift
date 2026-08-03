@@ -27,12 +27,15 @@ extension Contact {
 
     /// The nickname in quotes, ready to sit between the given and family names
     /// — `"Kathy"` for Kejing "Kathy" Zhang. Empty when there's no nickname, or
-    /// when it only repeats the given name, so nobody reads `Kathy "Kathy" Zhang`.
+    /// when it only repeats a name already standing next to it, so nobody reads
+    /// `Kathy "Kathy" Zhang`.
     private var quotedNickname: String {
         let nick = nickname.trimmingCharacters(in: .whitespaces)
         guard !nick.isEmpty else { return "" }
-        let given = givenName.trimmingCharacters(in: .whitespaces)
-        guard nick.localizedCaseInsensitiveCompare(given) != .orderedSame else { return "" }
+        let neighbors = [givenName, familyName].map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !neighbors.contains(where: { nick.localizedCaseInsensitiveCompare($0) == .orderedSame }) else {
+            return ""
+        }
         return "\"\(nick)\""
     }
 
