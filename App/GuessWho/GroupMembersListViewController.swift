@@ -56,6 +56,9 @@ final class GroupMembersListViewController: UIViewController {
 
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
+    /// Selection ORDER only — see `ContactsListViewController.selectionRecency`.
+    private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
+
     /// Opaque observer token for `.contactsRepositoryDidReload` so a global
     /// sort change re-sorts this member list too. See
     /// `ContactsListViewController.reloadObserver` for the `nonisolated(unsafe)`
@@ -156,6 +159,7 @@ final class GroupMembersListViewController: UIViewController {
     private func selectedIDs() -> [ContactID] {
         ContactMultiSelectionSupport.selectedIDs(
             in: tableView,
+            recency: selectionRecency,
             itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
         )
     }
@@ -352,6 +356,9 @@ final class GroupMembersListViewController: UIViewController {
 
 extension GroupMembersListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        // Before the editing-mode early return — see
+        // `ContactsListViewController.tableView(_:didSelectRowAt:)`.
+        selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -359,6 +366,7 @@ extension GroupMembersListViewController: UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        selectionRecency.recordDeselection(of: dataSource.itemIdentifier(for: indexPath))
         #if targetEnvironment(macCatalyst)
         notifySelectionChanged()
         #endif
