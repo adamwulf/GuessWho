@@ -3,8 +3,8 @@ import GuessWhoSync
 
 /// The places inside one imported guide, in the guide's shared order. Pushed
 /// from the Guides list on both shells (like Groups → members). Rows fill in
-/// as the MapKit resolution pass lands details; tapping a place opens it in
-/// Apple Maps.
+/// as the MapKit resolution pass lands details; tapping a place opens its
+/// detail via `didSelectPlace`.
 final class GuidePlacesListViewController: UIViewController {
     private var guide: MapsGuide
     private let repository: GuidesRepository
@@ -19,10 +19,12 @@ final class GuidePlacesListViewController: UIViewController {
 
     private var placesByID: [UUID: MapsPlace] = [:]
 
-    /// Invoked when a place row is tapped. The scene delegate wires this to push
-    /// a `GuidePlaceDetailView` onto the owning nav (with the shell-appropriate
-    /// push handlers). When unset, tapping falls back to opening Apple Maps
-    /// directly.
+    /// Invoked when a place row is tapped. The scene delegate wires this to show
+    /// a `GuidePlaceDetailView` the way the owning shell expects: PUSHED onto the
+    /// owning nav in the iPhone tab stack (and for a Catalyst in-detail
+    /// drill-down), or REPLACING the secondary column when this list is in the
+    /// Catalyst supplementary column. When unset, tapping falls back to opening
+    /// Apple Maps directly.
     var didSelectPlace: ((MapsPlace) -> Void)?
 
     private let emptyLabel = UILabel()

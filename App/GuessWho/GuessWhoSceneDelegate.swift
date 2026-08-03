@@ -361,12 +361,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 service: appDelegate.service
             )
             // Selecting a guide PUSHES its places list onto the supplementary
-            // column's nav (back-button returns to the guides list) — the same
-            // drill-in shape as Groups → members. Tapping a place opens Apple
-            // Maps, so the detail column keeps its placeholder.
+            // column's nav (back-button returns to the guides list); selecting a
+            // place then REPLACES the secondary/detail column — the same
+            // drill-in shape as Groups → members → contact detail.
             let nav = UINavigationController(rootViewController: list)
             list.didSelectGuide = { [weak self, weak nav] guide in
-                self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate)
+                self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
+                    self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+                }
             }
             split.setViewController(nav, for: .supplementary)
             installDetailPlaceholder(in: split, for: .guides)
@@ -733,10 +735,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// by both shells: Catalyst pushes onto the supplementary column's nav,
     /// the iPhone tab shell onto the Guides tab's nav stack — the same
     /// drill-in shape as Groups → members.
+    ///
+    /// `onSelectPlace` decides what a place row does. It defaults to PUSHING the
+    /// place detail onto the same `nav`, which is right for the iPhone tab stack
+    /// and for a Catalyst in-detail drill-down (both already live on the stack
+    /// the detail belongs on). The Catalyst sidebar passes a handler that
+    /// REPLACES the secondary column instead — a supplementary-column list must
+    /// not push its detail into itself. Same split as Groups:
+    /// `showGroupMembers` vs. `pushCatalystGroupMembers`.
     private func pushGuidePlaces(
         guide: MapsGuide,
         on nav: UINavigationController?,
-        appDelegate: GuessWhoAppDelegate
+        appDelegate: GuessWhoAppDelegate,
+        onSelectPlace: ((MapsPlace) -> Void)? = nil
     ) {
         guard let nav else { return }
         let places = GuidePlacesListViewController(
@@ -744,7 +755,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             repository: appDelegate.guidesRepository,
             service: appDelegate.service
         )
-        places.didSelectPlace = { [weak self, weak nav] place in
+        places.didSelectPlace = onSelectPlace ?? { [weak self, weak nav] place in
             self?.pushGuidePlaceDetail(place: place, guideID: guide.id, on: nav, appDelegate: appDelegate)
         }
         nav.pushViewController(places, animated: true)
