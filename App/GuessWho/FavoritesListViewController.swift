@@ -575,7 +575,7 @@ private final class FavoriteCell: UITableViewCell {
                         }
                     }
                 }
-                titleLabel.attributedText = Self.nameAttributedString(for: contact)
+                titleLabel.attributedText = contact.nameAttributedString
                 // Same "jobTitle, organizationName" caption the People list
                 // shows. The helper returns "" for organizations (and people
                 // with no job/org), so those rows stay name-only with the
@@ -633,36 +633,6 @@ private final class FavoriteCell: UITableViewCell {
     func cancelPhotoLoad() {
         photoTask?.cancel()
         photoTask = nil
-    }
-
-    /// Bold-family-name title, matching the People / Organizations lists' row
-    /// cells so a favorited contact reads identically wherever it appears.
-    private static func nameAttributedString(for contact: Contact) -> NSAttributedString {
-        let given = contact.givenName.trimmingCharacters(in: .whitespaces)
-        let family = contact.familyName.trimmingCharacters(in: .whitespaces)
-        let bodyFont = UIFont.preferredFont(forTextStyle: .body)
-        let boldDescriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
-        let boldFont = UIFont(descriptor: boldDescriptor, size: bodyFont.pointSize)
-
-        let attributed = NSMutableAttributedString()
-        if !given.isEmpty, !family.isEmpty {
-            attributed.append(NSAttributedString(
-                string: given + " ",
-                attributes: [.font: bodyFont]
-            ))
-            attributed.append(NSAttributedString(
-                string: family,
-                attributes: [.font: boldFont]
-            ))
-            return attributed
-        }
-        if !family.isEmpty {
-            return NSAttributedString(string: family, attributes: [.font: boldFont])
-        }
-        if !given.isEmpty {
-            return NSAttributedString(string: given, attributes: [.font: bodyFont])
-        }
-        return NSAttributedString(string: contact.displayName, attributes: [.font: bodyFont])
     }
 
     /// "jobTitle, organizationName" caption for people; "" for organizations

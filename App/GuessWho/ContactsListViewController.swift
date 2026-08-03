@@ -681,7 +681,7 @@ private final class ContactCell: UITableViewCell {
                 }
             }
         }
-        nameLabel.attributedText = Self.nameAttributedString(for: contact)
+        nameLabel.attributedText = contact.nameAttributedString
         // Non-breaking space when there's no jobTitle/organizationName — an empty
         // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
@@ -703,34 +703,6 @@ private final class ContactCell: UITableViewCell {
     func cancelPhotoLoad() {
         photoTask?.cancel()
         photoTask = nil
-    }
-
-    private static func nameAttributedString(for contact: Contact) -> NSAttributedString {
-        let given = contact.givenName.trimmingCharacters(in: .whitespaces)
-        let family = contact.familyName.trimmingCharacters(in: .whitespaces)
-        let bodyFont = UIFont.preferredFont(forTextStyle: .body)
-        let boldDescriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
-        let boldFont = UIFont(descriptor: boldDescriptor, size: bodyFont.pointSize)
-
-        let attributed = NSMutableAttributedString()
-        if !given.isEmpty, !family.isEmpty {
-            attributed.append(NSAttributedString(
-                string: given + " ",
-                attributes: [.font: bodyFont]
-            ))
-            attributed.append(NSAttributedString(
-                string: family,
-                attributes: [.font: boldFont]
-            ))
-            return attributed
-        }
-        if !family.isEmpty {
-            return NSAttributedString(string: family, attributes: [.font: boldFont])
-        }
-        if !given.isEmpty {
-            return NSAttributedString(string: given, attributes: [.font: bodyFont])
-        }
-        return NSAttributedString(string: contact.displayName, attributes: [.font: bodyFont])
     }
 
     private static func subtitle(for contact: Contact) -> String {

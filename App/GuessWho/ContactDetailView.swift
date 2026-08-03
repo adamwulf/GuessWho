@@ -912,12 +912,13 @@ struct ContactDetailView: View {
                 .frame(width: 96, height: 96)
 
             VStack(spacing: 2) {
-                Text(contact.displayName)
+                let name = contact.displayNameWithNickname
+                Text(name)
                     .font(.title2.weight(.semibold))
                     .multilineTextAlignment(.center)
                     // Long-press (iOS) / right-click (Catalyst) to copy the name
                     // without entering the editor.
-                    .copyableText(contact.displayName)
+                    .copyableText(name)
 
                 let subtitle = headerSubtitle(contact)
                 if !subtitle.isEmpty {
