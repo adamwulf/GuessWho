@@ -200,6 +200,10 @@ struct GuidePlaceDetailView: View {
     /// re-reads the place from the repository. Keyed by coordinate so a refresh
     /// that MOVES the place rebuilds the map (`initialPosition` is only read
     /// when the map is first created).
+    ///
+    /// VoiceOver gets one labelled element for the whole row rather than an
+    /// unlabelled pin: everything the map conveys is spoken by the name,
+    /// address, and coordinate rows around it.
     @ViewBuilder
     private func mapPreview(_ place: MapsPlace) -> some View {
         if let latitude = place.latitude, let longitude = place.longitude {
@@ -214,7 +218,13 @@ struct GuidePlaceDetailView: View {
             .allowsHitTesting(false)
             .frame(height: 160)
             .id("\(latitude),\(longitude)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Map preview")
             .listRowInsets(EdgeInsets())
+            // The map runs edge to edge, so a hairline under it would be the
+            // only separator in the card not aligned to the text column. The
+            // map's own bottom edge already divides it from the next row.
+            .listRowSeparator(.hidden)
         }
     }
 
