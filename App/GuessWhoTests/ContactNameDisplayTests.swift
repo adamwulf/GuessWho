@@ -4,6 +4,22 @@ import UIKit
 import GuessWhoSync
 @testable import GuessWho
 
+/// Every name shape the composition has to handle. The header and the row
+/// build their text with two separate hand-written joins, so the invariant they
+/// share is checked against all of these, not just the headline case.
+private let everyNameShape: [Contact] = [
+    Contact(givenName: "Kejing", familyName: "Zhang", nickname: "Kathy"),
+    Contact(givenName: "Kejing", familyName: "Zhang"),
+    Contact(givenName: "Kejing", nickname: "Kathy"),
+    Contact(familyName: "Zhang", nickname: "Kathy"),
+    Contact(givenName: "Kathy", familyName: "Zhang", nickname: "kathy"),
+    Contact(givenName: " Kejing ", familyName: " Zhang ", nickname: " Kathy "),
+    Contact(givenName: "Kejing", familyName: "Zhang", nickname: "   "),
+    Contact(nickname: "Kathy"),
+    Contact(contactType: .organization, nickname: "The Shop", organizationName: "Acme"),
+    Contact(),
+]
+
 /// How a contact's name reads wherever the app shows it: the detail header's
 /// plain string and the list rows' attributed string are the same name, built
 /// from the same parts, so a nickname shows up identically in both.
@@ -123,28 +139,15 @@ struct ContactNameDisplayTests {
         #expect(parts.allSatisfy { !$0.isBold })
     }
 
-    /// Every name shape the composition has to handle. The header and the row
-    /// build their text with two separate hand-written joins, so the invariant
-    /// below is worth checking against all of these, not just the headline case.
-    private var everyNameShape: [Contact] {
-        [
-            Contact(givenName: "Kejing", familyName: "Zhang", nickname: "Kathy"),
-            Contact(givenName: "Kejing", familyName: "Zhang"),
-            Contact(givenName: "Kejing", nickname: "Kathy"),
-            Contact(familyName: "Zhang", nickname: "Kathy"),
-            Contact(givenName: "Kathy", familyName: "Zhang", nickname: "kathy"),
-            Contact(givenName: " Kejing ", familyName: " Zhang ", nickname: " Kathy "),
-            Contact(givenName: "Kejing", familyName: "Zhang", nickname: "   "),
-            Contact(nickname: "Kathy"),
-            Contact(contactType: .organization, nickname: "The Shop", organizationName: "Acme"),
-            Contact(),
-        ]
+    @Test(arguments: everyNameShape)
+    func theRowAndTheHeaderAlwaysShowTheSameName(contact: Contact) {
+        #expect(contact.nameAttributedString.string == contact.displayNameWithNickname)
     }
 
     @Test
-    func theRowAndTheHeaderAlwaysShowTheSameName() {
-        for contact in everyNameShape {
-            #expect(contact.nameAttributedString.string == contact.displayNameWithNickname)
-        }
+    func theNameShapesAreActuallyExercised() {
+        // Guards the test above from passing vacuously: a parameterized test
+        // over an empty collection runs zero cases and still reports green.
+        #expect(!everyNameShape.isEmpty)
     }
 }
