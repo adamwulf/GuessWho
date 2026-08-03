@@ -25,43 +25,9 @@ struct GroupDeletionOperation {
     }
 }
 
-struct GroupMutationErrorPresentation {
-    let message: String
-    let shouldRefreshGroups: Bool
-
-    static func make(
-        error: Error,
-        authorization: StoreAuthorizationStatus
-    ) -> GroupMutationErrorPresentation {
-        if let contactStoreError = error as? ContactStoreError,
-           case .groupNotFound = contactStoreError {
-            return GroupMutationErrorPresentation(
-                message: "This group was already removed. The Groups list has been refreshed.",
-                shouldRefreshGroups: true
-            )
-        }
-
-        switch authorization {
-        case .denied, .restricted:
-            return GroupMutationErrorPresentation(
-                message: "Allow Guess Who to access Contacts in Settings, then try again.",
-                shouldRefreshGroups: false
-            )
-        case .notDetermined, .authorized:
-            return GroupMutationErrorPresentation(
-                message: "Contacts couldn’t complete this change. Please try again.",
-                shouldRefreshGroups: false
-            )
-        }
-    }
-}
-
-enum GroupNameInput {
-    static func normalized(_ value: String?) -> String? {
-        let name = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? nil : name
-    }
-}
+// `GroupMutationErrorPresentation`, `GroupNameInput`, and the name-entry prompt
+// live in `GroupPresentation.swift` — the "Add to Group" context menu on the
+// contact lists needs the same validation and the same error copy.
 
 /// UIKit Groups list. Used by both the Catalyst 3-column shell (as the
 /// supplementary column for `.groups`) and the iPhone tab shell (rooted in
@@ -110,7 +76,6 @@ final class GroupsListViewController: UIViewController {
     private let emptyDetailLabel = UILabel()
     private let retryButton = UIButton(type: .system)
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
-    private weak var pendingNameAction: UIAlertAction?
     private var pendingAlert: UIAlertController?
     private var isMutatingGroup = false
 
@@ -468,33 +433,14 @@ final class GroupsListViewController: UIViewController {
         initialName: String?,
         completion: @escaping (String) -> Void
     ) {
-        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
-        alert.addTextField { [weak self] textField in
-            textField.placeholder = "Group Name"
-            textField.text = initialName
-            textField.clearButtonMode = .whileEditing
-            textField.addTarget(
-                self,
-                action: #selector(GroupsListViewController.groupNameDidChange(_:)),
-                for: .editingChanged
+        presentAlertWhenReady(
+            GroupNamePrompt.makeAlert(
+                title: title,
+                actionTitle: actionTitle,
+                initialName: initialName,
+                completion: completion
             )
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        let action = UIAlertAction(title: actionTitle, style: .default) { [weak self, weak alert] _ in
-            self?.pendingNameAction = nil
-            guard let name = GroupNameInput.normalized(alert?.textFields?.first?.text) else {
-                return
-            }
-            completion(name)
-        }
-        action.isEnabled = GroupNameInput.normalized(initialName) != nil
-        pendingNameAction = action
-        alert.addAction(action)
-        presentAlertWhenReady(alert)
-    }
-
-    @objc private func groupNameDidChange(_ sender: UITextField) {
-        pendingNameAction?.isEnabled = GroupNameInput.normalized(sender.text) != nil
+        )
     }
 
     private func presentMutationError(action: String, error: Error) async {
@@ -745,10 +691,11 @@ private final class GroupCell: UITableViewCell {
     }
 
     /// The user-facing name for a group, falling back to a neutral placeholder
-    /// for an (effectively never) empty name. Static so the list VC can compute
-    /// the same string when comparing renders to detect a rename.
+    /// for an (effectively never) empty name or a row whose group is gone.
+    /// Static so the list VC can compute the same string when comparing renders
+    /// to detect a rename; the non-optional case is `ContactGroup.displayName`,
+    /// shared with the "Add to Group" menu.
     static func displayName(for group: ContactGroup?) -> String {
-        let name = group?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? "(Unnamed Group)" : name
+        group?.displayName ?? "(Unnamed Group)"
     }
 }

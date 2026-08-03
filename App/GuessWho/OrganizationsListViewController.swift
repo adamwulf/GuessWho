@@ -172,6 +172,18 @@ final class OrganizationsListViewController: UIViewController {
         )
     }
 
+    /// The row context menu ("Add to Group") — see
+    /// `ContactsListViewController.addToGroupMenu`.
+    private lazy var addToGroupMenu = AddToGroupMenu(
+        repository: repository,
+        host: self,
+        contactAt: { [weak self] indexPath in
+            guard let self, let id = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            return self.repository.contact(id: id)
+        },
+        selection: { [weak self] in self?.selectedContacts() ?? [] }
+    )
+
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
         let contacts = contacts ?? selectedContacts()
         if contacts.count == 1, let contact = contacts.first {
@@ -367,6 +379,16 @@ extension OrganizationsListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? OrganizationCell)?.cancelPhotoLoad()
+    }
+
+    /// Right-click / long-press menu. Leaves the selection untouched — see
+    /// `ContactsListViewController`.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        addToGroupMenu.configuration(forRowAt: indexPath)
     }
 }
 

@@ -195,6 +195,18 @@ final class ContactsListViewController: UIViewController {
         )
     }
 
+    /// The row context menu ("Add to Group"). Lazy so the closures capture a
+    /// fully-initialized `self`; see `AddToGroupMenu` for the target rule.
+    private lazy var addToGroupMenu = AddToGroupMenu(
+        repository: repository,
+        host: self,
+        contactAt: { [weak self] indexPath in
+            guard let self, let id = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            return self.repository.contact(id: id)
+        },
+        selection: { [weak self] in self?.selectedContacts() ?? [] }
+    )
+
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
         let contacts = contacts ?? selectedContacts()
         if contacts.count == 1, let contact = contacts.first {
@@ -423,6 +435,17 @@ extension ContactsListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? ContactCell)?.cancelPhotoLoad()
+    }
+
+    /// Right-click (Catalyst) / long-press (iPhone, iPad). Deliberately does NOT
+    /// touch the table's selection — on Catalyst that would replace the detail
+    /// pane the user is reading.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        addToGroupMenu.configuration(forRowAt: indexPath)
     }
 }
 
