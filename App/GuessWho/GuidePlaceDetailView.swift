@@ -193,7 +193,8 @@ struct GuidePlaceDetailView: View {
     /// Non-interactive (`allowsHitTesting(false)`) so pans and taps fall through
     /// to the list — "Open in Maps" two rows down is the action; a second silent
     /// tap target would only duplicate it. Same treatment as the contact
-    /// detail's address-row thumbnails, full-bleed instead of inset.
+    /// detail's address-row thumbnails — same 4:3 shape, but full-bleed and
+    /// sized off the row width instead of a fixed 96×72 inset.
     ///
     /// Omitted while a place-ID entry is still waiting on its coordinate; the
     /// row appears on its own when the resolution pass lands, since the view
@@ -216,7 +217,7 @@ struct GuidePlaceDetailView: View {
                     .tint(.red)
             }
             .allowsHitTesting(false)
-            .frame(height: 160)
+            .aspectRatio(4.0 / 3.0, contentMode: .fit)
             .id("\(latitude),\(longitude)")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Map preview")
