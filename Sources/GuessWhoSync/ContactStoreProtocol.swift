@@ -92,20 +92,11 @@ public protocol ContactStoreProtocol: Actor {
     /// social/relation keys), so checking whether two people are already in a
     /// 10,000-member group would build 10,000 contacts to answer a set-membership
     /// question. `ContactsRepository`'s membership batches use this instead.
-    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String]
-}
-
-public extension ContactStoreProtocol {
-    /// Compatibility default: derive the ids from the full member fetch.
     ///
-    /// CORRECT but deliberately the expensive path — it is exactly the cost
-    /// `fetchMemberLocalIDs` exists to avoid. It is here so that adding this
-    /// requirement did not break every existing conformer (the app target's
-    /// test stubs among them, which are out of this package's reach). Any store
-    /// that talks to a real backing store SHOULD override it with an
-    /// identifier-only read; `CNContactStoreAdapter` and `InMemoryContactStore`
-    /// both do.
-    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
-        try await fetchMembers(ofGroup: groupLocalID).map(\.localID)
-    }
+    /// Deliberately has NO protocol-extension default. Deriving one from
+    /// `fetchMembers` would be correct and would spare conformers a method, but
+    /// it is exactly the cost this call exists to avoid — and a store that
+    /// forgot to override it would inherit that cost silently, which is the
+    /// failure mode we are trying to prevent. Every conformer states its answer.
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String]
 }

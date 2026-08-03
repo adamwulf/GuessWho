@@ -44,6 +44,7 @@ private actor FailAfterSeedContactStore: ContactStoreProtocol {
     func renameGroup(localID: String, to name: String) async throws { throw StoreUnavailable() }
     func deleteGroup(localID: String) async throws { throw StoreUnavailable() }
     func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] { throw StoreUnavailable() }
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] { throw StoreUnavailable() }
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] { throw StoreUnavailable() }
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws { throw StoreUnavailable() }
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws { throw StoreUnavailable() }

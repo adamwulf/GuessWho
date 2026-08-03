@@ -447,6 +447,7 @@ private actor INV2StubContactStore: ContactStoreProtocol {
     func renameGroup(localID: String, to name: String) async throws { inv2Unused() }
     func deleteGroup(localID: String) async throws { inv2Unused() }
     func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] { [] }
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] { [] }
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] { [] }
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws { inv2Unused() }
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws { inv2Unused() }

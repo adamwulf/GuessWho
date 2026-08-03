@@ -127,6 +127,9 @@ private actor SuspendingGroupContactStore: ContactStoreProtocol {
     func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] {
         try await base.fetchMembers(ofGroup: groupLocalID)
     }
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
+        try await base.fetchMemberLocalIDs(ofGroup: groupLocalID)
+    }
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] {
         try await base.fetchGroupMemberships(contactLocalID: contactLocalID)
     }

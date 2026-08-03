@@ -390,6 +390,7 @@ private actor StubContactStore: ContactStoreProtocol {
     func renameGroup(localID: String, to name: String) async throws { unused() }
     func deleteGroup(localID: String) async throws { unused() }
     func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] { unused() }
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] { unused() }
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] { unused() }
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws { unused() }
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws { unused() }
