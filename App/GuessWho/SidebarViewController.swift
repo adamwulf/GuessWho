@@ -241,19 +241,36 @@ final class SidebarViewController: UIViewController {
             // action is the documented way to put the toggle back in front of
             // VoiceOver.
             //
-            // NOT yet verified beyond that: whether Catalyst's Full Keyboard
-            // Access surfaces UIKit custom actions is unconfirmed, and a sighted
-            // keyboard user running neither VoiceOver nor FKA still has no way
-            // to open a section — the chevron was clickable, this is not.
+            // NOT yet verified, and it covers this whole block — the action
+            // below, the value below that, and the badge's own label:
+            //
+            // * Everything here is set on the CELL. `UICollectionViewCell` is an
+            //   accessibility CONTAINER by default rather than an element (unlike
+            //   `UITableViewCell`), and how a list cell aggregates its content
+            //   view is undocumented — neither `UIListContentConfiguration.h` nor
+            //   `UICollectionViewListCell.h` mentions accessibility at all. So
+            //   whether what is spoken comes from these properties or from the
+            //   content view inside is untested. One VoiceOver pass settles the
+            //   lot; they stand or fall together.
+            // * Whether Catalyst's Full Keyboard Access surfaces UIKit custom
+            //   actions is unconfirmed.
+            // * A sighted keyboard user running neither VoiceOver nor FKA still
+            //   has no way to open a section — the chevron was clickable, none
+            //   of this is.
             cell.accessibilityCustomActions = count > 0
                 ? [expansionAction(for: tab, isClosed: isClosed)]
                 : nil
 
-            // The open/closed state, spoken. `accessibilityValue` IS read when
-            // the row takes focus, where the action's name is not — so without
-            // this the only cue is the badge, which says "2 favorites" when
-            // closed and nothing at all when open. That reads as an absence, not
-            // as a state. A section with nothing to open has no state to report.
+            // The open/closed state, spoken. VoiceOver reads an element's value
+            // on focus and does NOT read an action's name there (actions live
+            // behind the Actions rotor), so without this the only cue is the
+            // badge — "2 favorites" when closed, nothing at all when open. That
+            // reads as an absence, not as a state. A section with nothing to
+            // open has no state to report.
+            //
+            // Subject to the caveat above: that VoiceOver is right about the
+            // general rule doesn't prove a value set HERE, on the cell, is the
+            // one spoken.
             cell.accessibilityValue = count > 0 ? (isClosed ? "Collapsed" : "Expanded") : nil
         case .favorite(let id):
             guard let favorite = favoriteItemsByID[id] else { return }
