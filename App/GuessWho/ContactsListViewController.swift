@@ -144,6 +144,55 @@ final class ContactsListViewController: UIViewController {
         ])
     }
 
+    /// Installs the search bar AND republishes its text to the repository, which
+    /// is the load-bearing half.
+    ///
+    /// `peopleSearch` lives on the shared, long-lived repository; this view
+    /// controller does not. Catalyst builds a BRAND NEW list for every sidebar
+    /// section switch, so a fresh, empty search bar can meet a repository that
+    /// still holds the previous list's query. The one clue the user gets is the
+    /// empty-state label, which names the query (`updateEmptyState`) — but only
+    /// when NOTHING matches. A stale query that still matches some rows filters
+    /// the list silently. A fresh `UISearchController` never publishes its own
+    /// empty text (measured in `StaleSearchTeardownTests`), so nothing corrects
+    /// this on its own.
+    ///
+    /// The fix is mount-time, not teardown-time, and deliberately so. A `deinit`
+    /// hook would not even fire on iPhone, where the lists are tab roots built
+    /// once and never deallocated (`makeIPhonePeopleTab`), and where it did fire
+    /// its timing is UIKit's to choose. `viewDidDisappear` is worse: it fires on
+    /// iPhone whenever a detail is pushed, which would drop the filter while the
+    /// bar still showed the query — the same disagreement, inverted. Publishing
+    /// the bar's own text here, before `viewDidLoad`'s first `applySnapshot`,
+    /// makes the two agree by construction and keeps the first paint unfiltered.
+    ///
+    /// Note this is NOT the rule for every piece of shared list state.
+    /// `sortOrder`, `peopleFilter`, `organizationsFilter` and the Events tab's
+    /// `filter` all survive a teardown, and correctly so — but the reason is
+    /// structural, not cosmetic. Each posts its own repository's reload
+    /// notification from its `didSet` — `.contactsRepositoryDidReload` for the
+    /// three contact fields, `.eventsRepositoryDidReload` for the Events filter
+    /// — and every list rebuilds its pull-down menus both at mount and in that
+    /// observer (`refreshSortMenu` / `refreshFilterMenu` on the contact lists,
+    /// inline on the Events list), so the checkmark always tracks the value.
+    /// The three search fields are bare `var`s with no `didSet`
+    /// (`ContactsRepository.peopleSearch` / `organizationsSearch`,
+    /// `EventsRepository.searchText`) — nothing republishes when they change,
+    /// which is exactly why a bar and a query can drift apart. Put the
+    /// user-facing difference plainly: an empty search bar affirmatively
+    /// MISREPRESENTS the filter in force, while an icon-only filter glyph makes
+    /// no claim about its value at all. (Neither glyph shows its value without
+    /// opening the menu; that is a real but separate complaint.) The sort order
+    /// is additionally persisted and restored at launch (`SortOrderSetting`).
+    ///
+    /// KNOWN LIMIT — multi-scene. The repository is app-wide while these fields
+    /// are per-view state, so two windows (Catalyst New Window, iPad Split View)
+    /// share one query. This makes that case differently wrong rather than
+    /// right: mounting a list in the second window now clears a query the first
+    /// window is still showing in its bar. Before this change the second window
+    /// inherited the first window's query instead. Fixing it properly means
+    /// taking the query off app-wide state and giving each list its own, which
+    /// is a larger change than this one.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false
@@ -152,6 +201,10 @@ final class ContactsListViewController: UIViewController {
         searchController.installKeyboardDismissal(for: tableView)
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+        // Mirror the bar, rather than assigning "", so the invariant reads as
+        // "the filter is whatever the user can see in the bar" — still correct
+        // if state restoration ever seeds the bar with text.
+        repository.peopleSearch = searchController.searchBar.text ?? ""
     }
 
     /// Install the nav bar's right items: "+" (add contact, rightmost) and the
