@@ -137,27 +137,25 @@ per-install by `GuideSortOrderSetting`; opening a guide stamps its
 name/address search and a nav-bar sort pull-down — `PlaceSortOrder`: Guide Order
 (the default, the share-link entry order), Name A–Z / Z–A, Last Viewed;
 persisted per-install by `PlaceSortOrderSetting`; opening a place stamps its
-`lastViewedAt`; the package's `places(inGuide:)` stays in canonical guide
-order, only the app's display copy reorders. In
-**Guide Order** the rows are press-and-hold draggable to reorder, like the
-Favorites list — the drop persists the new entry order through
-`GuessWhoSync.reorderPlaces(inGuide:orderedIDs:)` (which rewrites each place's
-`orderCache` cell), and dragging is disabled in the derived Name / Last Viewed
-orders or whenever Linked filtering/search is active, since there is nothing
-safe to persist from a partial/derived result. Unlike Favorites, this list
-runs a live resolution pass that reloads after every place, so a
-`dataSource.apply` can land mid-drag; that reasserts the lifted row in place
-(a duplicate with no gap). `GuidePlacesListViewController` therefore **defers**
-any reload / resolution-status apply while `tableView.hasActiveDrag`/`Drop` is
-true (`needsSnapshotAfterDrag`), flushing it from `performDropWith` and
-`dragSessionDidEnd` — the reorder writes still persist immediately; only the
-view's repaint waits for the drag to settle. Rows fill in one at a time as
-resolution lands, each row showing a spinner while it is
-being looked up, "Waiting to load…" while queued behind others, and its
-name/address once done, plus a passive star on favorited places) → push →
-`GuidePlaceDetailView` (the place detail, below). Both shells share the two list
-VCs; per the product principle there is no user-facing "resolve"/"sidecar"
-vocabulary — the plain-language row states above stand in for it.
+`lastViewedAt`; the package's `places(inGuide:)` stays in canonical guide order,
+while the app's display copy reorders. In **Guide Order** the rows are
+press-and-hold draggable to reorder, like the Favorites list — the drop persists
+the new entry order through `GuessWhoSync.reorderPlaces(inGuide:orderedIDs:)`,
+which rewrites each place's `orderCache` cell. Dragging is disabled in the
+derived Name / Last Viewed orders or whenever Linked filtering/search is
+active, since there is nothing safe to persist from a partial/derived result.
+Unlike Favorites, this list runs a live resolution pass that reloads after
+every place, so a `dataSource.apply` can land mid-drag; that reasserts the
+lifted row in place (a duplicate with no gap). `GuidePlacesListViewController`
+therefore **defers** any reload / resolution-status apply while
+`tableView.hasActiveDrag`/`Drop` is true (`needsSnapshotAfterDrag`), flushing
+it from `performDropWith` and `dragSessionDidEnd`. Reorder writes still persist
+immediately; only the view's repaint waits for the drag to settle. As resolution
+lands, each row shows a spinner during lookup, "Waiting to load…" while queued
+behind others, and its name/address once done, plus a passive star on favorited
+places) → push → `GuidePlaceDetailView` (the place detail, below). Both shells
+share the two list VCs and use plain-language row states rather than exposing
+internal "resolve" or "sidecar" vocabulary.
 
 Alongside the Guides section there is a unified **Places** section
 (`PlacesListViewController`, a sidebar row on Catalyst / a tab on iPhone):
@@ -178,10 +176,8 @@ unresolved place IDs one guide at a time (sequentially, so MapKit traffic stays
 at the resolver's serial pace; the per-guide in-flight guard coalesces with
 passes started from a guide's own screen). Selecting a place replaces the
 detail column with `GuidePlaceDetailView` on Catalyst (the People/Events
-pattern) and pushes it on iPhone; swipe-to-Remove works as in the per-guide
-list, with
-the guide named in the confirmation, and removes any favorite for the deleted
-place.
+pattern) and pushes it on iPhone. Swipe-to-Remove names the guide in its
+confirmation and removes any favorite for the deleted place.
 
 Guide and place favorites also resolve into the global Favorites list and the
 Catalyst sidebar's section children. Selecting one navigates through the same
