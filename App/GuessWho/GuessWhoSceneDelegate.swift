@@ -27,6 +27,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// first section is selected. See `RestorationState`.
     private var restorationState: RestorationState?
 
+    /// Which section's list is mounted in the supplementary column right now.
+    /// Set wherever a section list is installed; `showSection` returns early
+    /// when asked for the one already there.
+    ///
+    /// Deliberately NOT read off `restorationState`: that is seeded from the
+    /// restoration activity BEFORE anything is mounted, so keying the guard on
+    /// it would swallow the very first click and leave the column empty.
+    private var mountedSection: SidebarTab?
+
     /// One-shot observer for the first `contactsRepositoryDidReload`, used to
     /// finish restoring a contact detail when the contacts cache wasn't loaded
     /// yet at scene connect. Cleared on first fire. MainActor-isolated so the
@@ -309,16 +318,57 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Mount a section's list in the supplementary column and reset the detail
     /// column to that section's placeholder — what a click on a sidebar parent
-    /// row has always done.
+    /// row has always done when it CHANGES section.
+    ///
+    /// Asking for the section already mounted does NOT re-mount it: it only pops
+    /// that column back to the section's root, keeping the list and the detail
+    /// column as they are. Every `install…List` builds a brand-new list VC and
+    /// resets the detail column, so without this guard re-clicking the current
+    /// row would throw away the list's scroll position, its in-flight loads, and
+    /// whatever record the user had open in the detail column. That became
+    /// reachable by accident: the sidebar's expand/collapse used to be an
+    /// outline chevron, which UIKit toggles WITHOUT selecting the row, but it is
+    /// now a double click — and each of those clicks selects the row like any
+    /// other.
     private func showSection(
         _ tab: SidebarTab,
         in split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
     ) {
+        guard mountedSection != tab else {
+            // Already here, so keep the list and the detail column — but still
+            // go back to the top of the section, which is what clicking a
+            // sidebar row does on this platform (Music, Mail) and what the
+            // rebuild used to do for free. Guides, Groups and Favorites all push
+            // onto this column, so without this, clicking "Groups" while looking
+            // at a group's members would do nothing at all.
+            supplementaryNavigationController(in: split)?
+                .popToRootViewController(animated: true)
+            return
+        }
+        mountedSection = tab
+
         // A section switch resets the detail column to a placeholder, so restore
         // to this section with no selected record.
         noteSectionShown(tab)
 
+        mountSectionList(tab, in: split, appDelegate: appDelegate)
+    }
+
+    private func supplementaryNavigationController(
+        in split: UISplitViewController
+    ) -> UINavigationController? {
+        split.viewController(for: .supplementary) as? UINavigationController
+    }
+
+    /// Install `tab`'s list in the supplementary column, unconditionally.
+    /// `showSection` is the guarded way in; this is the raw mount, for callers
+    /// that have already decided (and already claimed `mountedSection`).
+    private func mountSectionList(
+        _ tab: SidebarTab,
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         switch tab {
         case .people:
             installPeopleList(in: split, appDelegate: appDelegate)
@@ -356,6 +406,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
     ) {
+        // This mounts `tab`'s list too, so record it — otherwise a later click
+        // on that same sidebar row would see a stale value, decide it was
+        // already showing, and do nothing.
+        mountedSection = tab
         noteSectionShown(tab)
 
         switch tab {
@@ -390,7 +444,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .favorites, .guides, .places:
             // No favorite kind maps to these sections, so they never get
             // children. Defensive: land on the section list.
-            showSection(tab, in: split, appDelegate: appDelegate)
+            //
+            // `mountSectionList` rather than `showSection`: we already claimed
+            // `tab` above, and `showSection` would see its own guard satisfied
+            // and mount nothing at all.
+            mountSectionList(tab, in: split, appDelegate: appDelegate)
         }
     }
 

@@ -20,10 +20,11 @@ enum SidebarSelection {
 /// Groups). Guides and Places never have children — favorites only exist for
 /// contacts, events, and groups.
 ///
-/// The parent row stays a normal selectable row: the disclosure chevron uses
-/// the `.cell` style, so only the chevron expands/collapses and a click on
-/// "People" still shows the People list. Sections without favorites show no
-/// chevron at all.
+/// The parent row stays a normal selectable row: a single click on "People"
+/// shows the People list, and a DOUBLE click opens or closes that section's
+/// favorites. There is no disclosure chevron — a closed section instead carries
+/// a trailing badge counting the favorites it is hiding (e.g. "2 ★"). A section
+/// with no favorites has no badge and nothing to open.
 final class SidebarViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can wire
     /// the sidebar to whichever content view controller is mounted in
@@ -55,6 +56,11 @@ final class SidebarViewController: UIViewController {
     }
 
     private var collectionView: UICollectionView!
+
+    /// The double-click-to-open recognizer, kept so the gesture delegate can
+    /// answer for THAT recognizer specifically rather than for anything that
+    /// happens to be routed here later.
+    private weak var expansionToggle: UITapGestureRecognizer?
     private var dataSource: UICollectionViewDiffableDataSource<Section, Item>!
 
     /// The favorites hanging under each section, in the global favorites order.
@@ -64,16 +70,28 @@ final class SidebarViewController: UIViewController {
     private var favoriteItemsByID: [FavoriteListItem.ID: FavoriteListItem] = [:]
     private var favoriteSections: [FavoriteListItem.ID: SidebarTab] = [:]
 
-    /// Sections the user has open. Every section starts expanded so a freshly
-    /// starred record is visible where it landed; an explicit collapse is
-    /// remembered here and re-applied after every rebuild, so a favorite
-    /// toggled elsewhere never re-opens a section the user closed.
-    private var expandedSections: Set<SidebarTab> = Set(SidebarTab.allCases)
+    /// Sections the user has open. A section the user has never closed starts
+    /// expanded, so a freshly starred record is visible where it landed; an
+    /// explicit collapse is remembered here and re-applied after every rebuild,
+    /// so a favorite toggled elsewhere never re-opens a section the user closed.
+    ///
+    /// Seeded from `SidebarExpansionSetting`, which persists the closed sections
+    /// across launches. `didSet` writes every change straight back, so there is
+    /// no separate "save" call to forget — see the note there on why the STORED
+    /// form is the closed set rather than this one.
+    private var expandedSections: Set<SidebarTab> = SidebarExpansionSetting.expanded {
+        didSet {
+            guard expandedSections != oldValue else { return }
+            SidebarExpansionSetting.save(expanded: expandedSections)
+        }
+    }
 
     /// In-flight thumbnail loads, keyed by contact so a rebuild can't stack
     /// duplicate fetches for the same row. The completion repaints through
-    /// `reconfigureVisibleRows` rather than touching a cell directly, which is
-    /// what makes it safe against reuse.
+    /// `reconfigureVisibleRows`, which re-reads each visible cell's CURRENT
+    /// item identifier from the data source before it paints that cell. If the
+    /// cell the load started against was reused before the photo landed, it
+    /// therefore renders the row that now occupies it, not the row that asked.
     private var photoTasks: [ContactID: Task<Void, Never>] = [:]
 
     /// See `ContactsListViewController.reloadObserver` for the
@@ -147,30 +165,37 @@ final class SidebarViewController: UIViewController {
         collectionView.dragDelegate = self
         collectionView.dropDelegate = self
         collectionView.dragInteractionEnabled = true
+
+        // Double-click a section row to open or close it. This recognizer only
+        // OBSERVES the click — the collection view keeps its own handling of it,
+        // so one click still selects the row and shows that section's list, and
+        // a double click does both. All three settings are needed for that:
+        // `cancelsTouchesInView = false` stops a recognized double click from
+        // swallowing the clicks the collection view was already given,
+        // `delaysTouchesEnded = false` lets the first click land immediately
+        // instead of waiting to see whether a second one follows, and the
+        // delegate lets us and the collection view's own recognizers run
+        // together rather than one blocking the other.
+        let toggle = UITapGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
+        toggle.numberOfTapsRequired = 2
+        toggle.cancelsTouchesInView = false
+        toggle.delaysTouchesEnded = false
+        toggle.delegate = self
+        collectionView.addGestureRecognizer(toggle)
+        expansionToggle = toggle
+
         view.addSubview(collectionView)
     }
 
     private func configureDataSource() {
         let sectionRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, SidebarTab> {
             [weak self] cell, _, tab in
-            var content = cell.defaultContentConfiguration()
-            content.text = tab.title
-            content.image = UIImage(systemName: tab.systemImage)
-            cell.contentConfiguration = content
-            // Chevron only when the section actually holds favorites, and the
-            // `.cell` style so ONLY the chevron toggles — the default
-            // (`.automatic`) resolves to `.header` at the root level, which
-            // would swallow the click and stop "People" from showing the People
-            // list.
-            let hasChildren = !(self?.favoriteChildren[tab]?.isEmpty ?? true)
-            cell.accessories = hasChildren ? [.outlineDisclosure(options: .init(style: .cell))] : []
+            self?.configure(cell, for: .section(tab))
         }
 
         let favoriteRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, FavoriteListItem.ID> {
             [weak self] cell, _, id in
-            guard let self, let item = self.favoriteItemsByID[id] else { return }
-            cell.contentConfiguration = self.contentConfiguration(for: item, in: cell)
-            cell.accessories = []
+            self?.configure(cell, for: .favorite(id))
         }
 
         dataSource = UICollectionViewDiffableDataSource<Section, Item>(
@@ -191,6 +216,105 @@ final class SidebarViewController: UIViewController {
                 )
             }
         }
+    }
+
+    /// Paint `cell` for `item`. The one place a sidebar row's appearance is
+    /// defined, shared by the cell registrations (on dequeue) and by
+    /// `reconfigureVisibleRows` (on a repaint), so the two can never drift.
+    private func configure(_ cell: UICollectionViewListCell, for item: Item) {
+        switch item {
+        case .section(let tab):
+            var content = cell.defaultContentConfiguration()
+            content.text = tab.title
+            content.image = UIImage(systemName: tab.systemImage)
+            cell.contentConfiguration = content
+            // A closed section says how many favorites it is hiding; an open one
+            // is already showing them, so it says nothing. A section with no
+            // favorites has nothing to count and nothing to open.
+            let count = favoriteChildren[tab]?.count ?? 0
+            let isClosed = !expandedSections.contains(tab)
+            cell.accessories = (count > 0 && isClosed) ? [favoritesCountAccessory(count: count)] : []
+
+            // A double click is a mouse-only affordance, so it can't be the ONLY
+            // way to open a section — the outline chevron this replaced was a
+            // real control that assistive technology could reach. A custom
+            // action is the documented way to put the toggle back in front of
+            // VoiceOver.
+            //
+            // NOT yet verified, and it covers this whole block — the action
+            // below, the value below that, and the badge's own label:
+            //
+            // * Everything here is set on the CELL. `UICollectionViewCell` is an
+            //   accessibility CONTAINER by default rather than an element (unlike
+            //   `UITableViewCell`), and how a list cell aggregates its content
+            //   view is undocumented — neither `UIListContentConfiguration.h` nor
+            //   `UICollectionViewListCell.h` mentions accessibility at all. So
+            //   whether what is spoken comes from these properties or from the
+            //   content view inside is untested. One VoiceOver pass settles the
+            //   lot; they stand or fall together.
+            // * Whether Catalyst's Full Keyboard Access surfaces UIKit custom
+            //   actions is unconfirmed.
+            // * A sighted keyboard user running neither VoiceOver nor FKA still
+            //   has no way to open a section — the chevron was clickable, none
+            //   of this is.
+            cell.accessibilityCustomActions = count > 0
+                ? [expansionAction(for: tab, isClosed: isClosed)]
+                : nil
+
+            // The open/closed state, spoken. VoiceOver reads an element's value
+            // on focus and does NOT read an action's name there (actions live
+            // behind the Actions rotor), so without this the only cue is the
+            // badge — "2 favorites" when closed, nothing at all when open. That
+            // reads as an absence, not as a state. A section with nothing to
+            // open has no state to report.
+            //
+            // Subject to the caveat above: that VoiceOver is right about the
+            // general rule doesn't prove a value set HERE, on the cell, is the
+            // one spoken.
+            cell.accessibilityValue = count > 0 ? (isClosed ? "Collapsed" : "Expanded") : nil
+        case .favorite(let id):
+            guard let favorite = favoriteItemsByID[id] else { return }
+            cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
+            cell.accessories = []
+            // Cleared for the same reason as `accessories`: a child has no
+            // section to open, so it has neither an action nor a state to
+            // report. Nothing can carry one over today — the two cell
+            // registrations have separate reuse pools — but leaving the resets
+            // asymmetric is a trap if they are ever merged.
+            cell.accessibilityCustomActions = nil
+            cell.accessibilityValue = nil
+        }
+    }
+
+    /// The trailing badge on a closed section: the number of favorites hiding
+    /// under it, beside a star. Built as a custom view rather than
+    /// `.label(text:)` so the star is the same SF Symbol the rest of the app
+    /// uses for a favorite, at the label's own text size.
+    private func favoritesCountAccessory(count: Int) -> UICellAccessory {
+        let label = UILabel()
+        label.text = "\(count)"
+        label.font = .preferredFont(forTextStyle: .subheadline)
+        label.textColor = .secondaryLabel
+        label.adjustsFontForContentSizeCategory = true
+        // Read as "2 favorites", not a bare "2" — the star carries that meaning
+        // visually and says nothing out loud.
+        label.accessibilityLabel = count == 1 ? "1 favorite" : "\(count) favorites"
+
+        let star = UIImageView(
+            image: UIImage(
+                systemName: "star.fill",
+                withConfiguration: UIImage.SymbolConfiguration(textStyle: .caption1)
+            )
+        )
+        star.tintColor = .secondaryLabel
+        star.isAccessibilityElement = false
+
+        let badge = UIStackView(arrangedSubviews: [label, star])
+        badge.axis = .horizontal
+        badge.alignment = .center
+        badge.spacing = 2
+
+        return .customView(configuration: .init(customView: badge, placement: .trailing()))
     }
 
     /// Row content for one favorite child. Mirrors `FavoritesListViewController`'s
@@ -265,9 +389,9 @@ final class SidebarViewController: UIViewController {
             guard let self else { return }
             self.photoTasks[id] = nil
             // Repaint ONLY when there's something new to show. A contact with no
-            // photo keeps its initials placeholder, and reconfiguring anyway
-            // would re-enter the cell provider, find nothing cached, ask again,
-            // and spin forever. (The loader negative-caches "no photo", so the
+            // photo keeps its initials placeholder, and repainting anyway would
+            // re-enter `configure(_:for:)`, find nothing cached, ask again, and
+            // spin forever. (The loader negative-caches "no photo", so the
             // repeat asks that a later repaint does trigger are cache hits, not
             // Contacts fetches.)
             guard image != nil else { return }
@@ -393,32 +517,47 @@ final class SidebarViewController: UIViewController {
                 snapshot.expand([parent])
             }
         }
-        dataSource.apply(snapshot, to: .tabs, animatingDifferences: animated)
-
         // Every row here renders from state the diff can't see, so an apply
         // alone is not enough to repaint them:
         //
         // * a child's identity is its opaque favorite id, so a row whose
         //   RESOLVED content changed (the cold-launch empty→populated cache, a
         //   renamed group, an edited display name) produces an empty diff; and
-        // * a PARENT's identity never changes at all, yet its chevron is built
-        //   from `favoriteChildren[tab]` inside the cell registration. Starring
-        //   the first record in an empty section would otherwise leave a child
-        //   with no chevron to collapse it, and unstarring the last one would
-        //   leave a chevron over a leaf. `expand(_:)` can't help — it rotates an
-        //   existing disclosure accessory, it can't add or remove one. With
-        //   seven rows and no scrolling, nothing ever re-dequeues to fix it.
+        // * a PARENT's identity never changes at all, yet its badge is built
+        //   from `favoriteChildren[tab]` inside `configure(_:for:)`. Starring a
+        //   record in a closed section would otherwise leave the old count on
+        //   screen, and unstarring the last one would leave a badge over a
+        //   section that no longer hides anything. A parent that stays on screen
+        //   is never re-dequeued, so nothing else would fix it.
         //
-        // So re-run the cell provider for every row on screen; anything
-        // offscreen builds fresh when it is dequeued.
-        reconfigureVisibleRows()
+        // So repaint every row on screen; anything offscreen builds fresh when
+        // it is dequeued.
+        //
+        // From the completion rather than the next line, so the repaint reads
+        // `indexPathsForVisibleItems` after the apply completes rather than
+        // during the animation, where how visible index paths pair with cells is
+        // not documented. The completion is the form Apple documents for "after
+        // the apply", and it runs on the main queue.
+        dataSource.apply(snapshot, to: .tabs, animatingDifferences: animated) { [weak self] in
+            self?.reconfigureVisibleRows()
+        }
     }
 
     /// Carry the user's expand/collapse choices across a rebuild. Only sections
     /// that currently SHOW children have a state worth remembering — a section
-    /// whose last favorite was just removed has no chevron, and treating its
-    /// (always false) expansion as a user choice would leave it collapsed when
-    /// its next favorite arrives.
+    /// whose last favorite was just removed can't be opened at all, and treating
+    /// its (always false) expansion as a user choice would leave it collapsed
+    /// when its next favorite arrives.
+    ///
+    /// MUST run BEFORE `rebuildFavoriteChildren`, so that `favoriteChildren`
+    /// still describes what is on screen — the same thing the snapshot it reads
+    /// describes. Run it after, and it would ask `isExpanded` about parents that
+    /// have no children in the CURRENT snapshot and get false for each one,
+    /// dropping them from `expandedSections`. At cold launch that is EVERY
+    /// section, because the map goes empty→populated in one step. And it is no
+    /// longer merely a display glitch: `expandedSections` is persisted on write,
+    /// so it would save "everything closed" and every later launch would honour
+    /// it.
     private func rememberExpansionState() {
         guard dataSource != nil else { return }
         let current = dataSource.snapshot(for: .tabs)
@@ -470,21 +609,101 @@ final class SidebarViewController: UIViewController {
         }
     }
 
-    /// Re-run the cell provider for the rows on screen, keeping the existing
-    /// cells. Safe for a parent: the chevron's open/closed rotation comes from
-    /// the cell's configuration state, not from how the accessory was built, so
-    /// rebuilding the accessory can't collapse an expanded section.
+    /// Repaint the rows on screen, keeping the existing cells. Safe for a
+    /// parent: a section's open/closed state lives in the section snapshot, not
+    /// in anything painted here, so rebuilding a parent's accessories can't
+    /// close an open section.
     ///
-    /// The collection-view API rather than the snapshot's: an outline is driven
-    /// by `NSDiffableDataSourceSectionSnapshot`, which has no `reconfigureItems`
+    /// This re-applies `configure(_:for:)` to each visible cell rather than
+    /// asking the collection view to reconfigure them. `UICollectionView`
+    /// raises `NSInternalInconsistencyException` ("must be updated via the
+    /// UICollectionViewDiffableDataSource APIs") for `reconfigureItems(at:)`
+    /// and every other direct mutation while a diffable data source is its
+    /// `dataSource` — on Catalyst that fires during the first layout and the
+    /// half-finished update segfaults the process a moment later. The snapshot
+    /// API is not an option either: an outline is driven by
+    /// `NSDiffableDataSourceSectionSnapshot`, which has no `reconfigureItems`
     /// (only the flat `NSDiffableDataSourceSnapshot` does, and that one can't
-    /// express the hierarchy).
+    /// express the hierarchy). Writing the configuration straight onto the cell
+    /// mutates neither, so it is safe from both sides.
     private func reconfigureVisibleRows() {
-        let paths = collectionView.indexPathsForVisibleItems.filter { indexPath in
-            dataSource.itemIdentifier(for: indexPath) != nil
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let item = dataSource.itemIdentifier(for: indexPath),
+                  let cell = collectionView.cellForItem(at: indexPath) as? UICollectionViewListCell
+            else { continue }
+            configure(cell, for: item)
         }
-        guard !paths.isEmpty else { return }
-        collectionView.reconfigureItems(at: paths)
+    }
+
+    // MARK: - Expand / collapse
+
+    /// Open or close the section row under a double click. A click that lands
+    /// on a favorite, on empty space, or on a section with no favorites has
+    /// nothing to toggle.
+    @objc
+    private func handleDoubleClick(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: collectionView)
+        guard let indexPath = collectionView.indexPathForItem(at: point),
+              let item = dataSource.itemIdentifier(for: indexPath),
+              case .section(let tab) = item
+        else { return }
+        toggleExpansion(of: tab)
+    }
+
+    /// The VoiceOver / Full Keyboard Access equivalent of double-clicking the
+    /// row. Named for what it will DO, which is the convention for a custom
+    /// action, and in the user's own words — favorites, not internal vocabulary.
+    private func expansionAction(for tab: SidebarTab, isClosed: Bool) -> UIAccessibilityCustomAction {
+        UIAccessibilityCustomAction(
+            name: isClosed ? "Show Favorites" : "Hide Favorites"
+        ) { [weak self] _ in
+            self?.toggleExpansion(of: tab)
+            return true
+        }
+    }
+
+    /// Flip `tab` between open and closed.
+    ///
+    /// This edits the live section snapshot directly instead of going through
+    /// `applySnapshot`, which would undo the toggle: `applySnapshot` starts by
+    /// calling `rememberExpansionState`, and that reads the state back off the
+    /// snapshot we have not written yet — so it would overwrite the new value
+    /// with the old one before applying.
+    private func toggleExpansion(of tab: SidebarTab) {
+        guard !(favoriteChildren[tab] ?? []).isEmpty else { return }
+        let parent = Item.section(tab)
+        var snapshot = dataSource.snapshot(for: .tabs)
+        guard snapshot.contains(parent) else { return }
+
+        if snapshot.isExpanded(parent) {
+            snapshot.collapse([parent])
+            expandedSections.remove(tab)
+        } else {
+            snapshot.expand([parent])
+            expandedSections.insert(tab)
+        }
+        // The parent's own badge appears or disappears with the toggle, and its
+        // identity did not change, so the apply alone will not repaint it. From
+        // the completion for the same reason as in `applySnapshot`.
+        dataSource.apply(snapshot, to: .tabs, animatingDifferences: true) { [weak self] in
+            guard let self else { return }
+            self.reconfigureVisibleRows()
+
+            // Rows just appeared or disappeared, so VoiceOver's picture of this
+            // screen is stale. This SPEAKS nothing — `.layoutChanged` refreshes
+            // the element map and optionally moves focus; it is not an
+            // announcement. Naming the section's own cell pins focus to the row
+            // the user acted on instead of leaving the landing spot unspecified
+            // after the removed rows.
+            //
+            // What they hear on that focus is the row's label and VALUE. NOT the
+            // action's name — Apple surfaces custom actions through the Actions
+            // rotor, behind a deliberate user cue — which is why the open/closed
+            // state is carried by `accessibilityValue` in `configure(_:for:)`.
+            let toggled = self.dataSource.indexPath(for: .section(tab))
+                .flatMap { self.collectionView.cellForItem(at: $0) }
+            UIAccessibility.post(notification: .layoutChanged, argument: toggled)
+        }
     }
 
     // MARK: - Selection
@@ -503,6 +722,28 @@ final class SidebarViewController: UIViewController {
         let target = initialTab.flatMap { sidebarTabs.contains($0) ? $0 : nil } ?? sidebarTabs.first
         guard let tab = target else { return }
         select(tab)
+    }
+}
+
+extension SidebarViewController: UIGestureRecognizerDelegate {
+    /// Let the double-click recognizer run alongside the collection view's own
+    /// selection and drag recognizers instead of excluding them.
+    ///
+    /// Belt-and-braces, not the actual cure: what broke single clicks was touch
+    /// DELIVERY, not recognizer arbitration. A tap recognizer withholds
+    /// `touchesEnded` from the view while it is still deciding, and cancels it
+    /// outright once it recognizes — which `delaysTouchesEnded = false` and
+    /// `cancelsTouchesInView = false` are what actually fix. This only removes
+    /// the remaining mutual exclusion.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        // Answer only for our own recognizer. `true` here is documented to
+        // GUARANTEE simultaneous recognition, so it overrides UIKit's own
+        // exclusivity rules — worth granting narrowly rather than to whatever
+        // else might be pointed at this delegate later.
+        gestureRecognizer === expansionToggle
     }
 }
 
