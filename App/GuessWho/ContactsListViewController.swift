@@ -144,6 +144,31 @@ final class ContactsListViewController: UIViewController {
         ])
     }
 
+    /// Installs the search bar AND republishes its text to the repository, which
+    /// is the load-bearing half.
+    ///
+    /// `peopleSearch` lives on the shared, long-lived repository; this view
+    /// controller does not. Catalyst builds a BRAND NEW list for every sidebar
+    /// section switch, so a fresh, empty search bar can meet a repository that
+    /// still holds the previous list's query — a silently filtered list with
+    /// nothing on screen to explain it. A fresh `UISearchController` never
+    /// publishes its own empty text (measured on Catalyst in
+    /// `StaleSearchTeardownTests`), so nothing corrects this on its own.
+    ///
+    /// The fix is mount-time, not teardown-time, and deliberately so:
+    /// `deinit` runs at a time UIKit chooses and could clear a query the user
+    /// had already typed into the NEXT list, and `viewDidDisappear` fires on
+    /// iPhone whenever a detail is pushed, which would drop the filter while
+    /// the bar still showed the query — the same disagreement, inverted.
+    /// Publishing the bar's own text here, before `viewDidLoad`'s first
+    /// `applySnapshot`, makes the two agree by construction and keeps the first
+    /// paint unfiltered.
+    ///
+    /// Note this is NOT the rule for every piece of shared list state. The
+    /// sort order and the Events tab's `filter` persist across a teardown on
+    /// purpose: both render their current value in an always-visible nav-bar
+    /// pull-down, so the user can see what is in force. A search query has no
+    /// such indicator once the bar is rebuilt empty.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false
@@ -152,6 +177,10 @@ final class ContactsListViewController: UIViewController {
         searchController.installKeyboardDismissal(for: tableView)
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+        // Mirror the bar, rather than assigning "", so the invariant reads as
+        // "the filter is whatever the user can see in the bar" — still correct
+        // if state restoration ever seeds the bar with text.
+        repository.peopleSearch = searchController.searchBar.text ?? ""
     }
 
     /// Install the nav bar's right items: "+" (add contact, rightmost) and the

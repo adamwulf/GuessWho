@@ -122,6 +122,10 @@ final class OrganizationsListViewController: UIViewController {
         ])
     }
 
+    /// Installs the search bar and republishes its text to the shared
+    /// repository. See `ContactsListViewController.configureSearch` for why the
+    /// republish is here and not in a teardown hook — identical reasoning,
+    /// `organizationsSearch` instead of `peopleSearch`.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false
@@ -130,6 +134,7 @@ final class OrganizationsListViewController: UIViewController {
         searchController.installKeyboardDismissal(for: tableView)
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+        repository.organizationsSearch = searchController.searchBar.text ?? ""
     }
 
     /// Install the nav bar's right items: "+" (add organization, rightmost)

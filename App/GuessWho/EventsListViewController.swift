@@ -153,6 +153,15 @@ final class EventsListViewController: UIViewController {
         ])
     }
 
+    /// Installs the search bar and republishes its text to the shared
+    /// repository. See `ContactsListViewController.configureSearch` for why the
+    /// republish is here and not in a teardown hook — identical reasoning,
+    /// `searchText` instead of `peopleSearch`.
+    ///
+    /// `repository.filter` is deliberately NOT reset alongside it: the filter
+    /// pull-down renders its current value in the nav bar, so a filter that
+    /// survives a section switch stays visible to the user. An empty search bar
+    /// shows nothing.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false
@@ -161,6 +170,7 @@ final class EventsListViewController: UIViewController {
         searchController.installKeyboardDismissal(for: tableView)
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+        repository.searchText = searchController.searchBar.text ?? ""
     }
 
     private func configureEmptyState() {
