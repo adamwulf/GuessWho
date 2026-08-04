@@ -237,8 +237,14 @@ final class SidebarViewController: UIViewController {
 
             // A double click is a mouse-only affordance, so it can't be the ONLY
             // way to open a section — the outline chevron this replaced was a
-            // real control that VoiceOver and Full Keyboard Access could reach.
-            // A custom action puts the same toggle back in front of both.
+            // real control that assistive technology could reach. A custom
+            // action is the documented way to put the toggle back in front of
+            // VoiceOver.
+            //
+            // NOT yet verified beyond that: whether Catalyst's Full Keyboard
+            // Access surfaces UIKit custom actions is unconfirmed, and a sighted
+            // keyboard user running neither VoiceOver nor FKA still has no way
+            // to open a section — the chevron was clickable, this is not.
             cell.accessibilityCustomActions = count > 0
                 ? [expansionAction(for: tab, isClosed: isClosed)]
                 : nil
@@ -246,6 +252,11 @@ final class SidebarViewController: UIViewController {
             guard let favorite = favoriteItemsByID[id] else { return }
             cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
             cell.accessories = []
+            // Cleared for the same reason as `accessories`: a child has no
+            // section to open. Nothing can carry one over today — the two cell
+            // registrations have separate reuse pools — but leaving the two
+            // resets asymmetric is a trap if they are ever merged.
+            cell.accessibilityCustomActions = nil
         }
     }
 
@@ -490,17 +501,17 @@ final class SidebarViewController: UIViewController {
         //   from `favoriteChildren[tab]` inside `configure(_:for:)`. Starring a
         //   record in a closed section would otherwise leave the old count on
         //   screen, and unstarring the last one would leave a badge over a
-        //   section that no longer hides anything. The seven parents never
-        //   scroll off, so nothing re-dequeues them to fix it.
+        //   section that no longer hides anything. A parent that stays on screen
+        //   is never re-dequeued, so nothing else would fix it.
         //
         // So repaint every row on screen; anything offscreen builds fresh when
         // it is dequeued.
         //
         // From the completion rather than the next line, so the repaint reads
-        // `indexPathsForVisibleItems` only once the apply has finished. Called
-        // inline, it would read them mid-animation, where a cell on its way out
-        // can still answer at its pre-update index path — and would then be
-        // painted as whatever row now holds that path.
+        // `indexPathsForVisibleItems` after the apply completes rather than
+        // during the animation, where how visible index paths pair with cells is
+        // not documented. The completion is the form Apple documents for "after
+        // the apply", and it runs on the main queue.
         dataSource.apply(snapshot, to: .tabs, animatingDifferences: animated) { [weak self] in
             self?.reconfigureVisibleRows()
         }
@@ -515,10 +526,12 @@ final class SidebarViewController: UIViewController {
     /// MUST run BEFORE `rebuildFavoriteChildren`, so that `favoriteChildren`
     /// still describes what is on screen — the same thing the snapshot it reads
     /// describes. Run it after, and it would ask `isExpanded` about parents that
-    /// have no children in the CURRENT snapshot, get false for every one, and
-    /// drop every section from `expandedSections`. That is no longer merely a
-    /// display glitch: `expandedSections` is persisted on write, so it would
-    /// save "everything closed" and every later launch would honour it.
+    /// have no children in the CURRENT snapshot and get false for each one,
+    /// dropping them from `expandedSections`. At cold launch that is EVERY
+    /// section, because the map goes empty→populated in one step. And it is no
+    /// longer merely a display glitch: `expandedSections` is persisted on write,
+    /// so it would save "everything closed" and every later launch would honour
+    /// it.
     private func rememberExpansionState() {
         guard dataSource != nil else { return }
         let current = dataSource.snapshot(for: .tabs)
@@ -648,6 +661,10 @@ final class SidebarViewController: UIViewController {
         // the completion for the same reason as in `applySnapshot`.
         dataSource.apply(snapshot, to: .tabs, animatingDifferences: true) { [weak self] in
             self?.reconfigureVisibleRows()
+            // Rows just appeared or disappeared with no announcement of their
+            // own, so a VoiceOver user who ran the custom action would otherwise
+            // hear nothing at all.
+            UIAccessibility.post(notification: .layoutChanged, argument: nil)
         }
     }
 

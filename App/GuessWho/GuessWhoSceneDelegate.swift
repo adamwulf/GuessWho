@@ -333,13 +333,40 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         in split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
     ) {
-        guard mountedSection != tab else { return }
+        guard mountedSection != tab else {
+            // Already here, so keep the list and the detail column — but still
+            // go back to the top of the section, which is what clicking a
+            // sidebar row does on this platform (Music, Mail) and what the
+            // rebuild used to do for free. Guides, Groups and Favorites all push
+            // onto this column, so without this, clicking "Groups" while looking
+            // at a group's members would do nothing at all.
+            supplementaryNavigationController(in: split)?
+                .popToRootViewController(animated: true)
+            return
+        }
         mountedSection = tab
 
         // A section switch resets the detail column to a placeholder, so restore
         // to this section with no selected record.
         noteSectionShown(tab)
 
+        mountSectionList(tab, in: split, appDelegate: appDelegate)
+    }
+
+    private func supplementaryNavigationController(
+        in split: UISplitViewController
+    ) -> UINavigationController? {
+        split.viewController(for: .supplementary) as? UINavigationController
+    }
+
+    /// Install `tab`'s list in the supplementary column, unconditionally.
+    /// `showSection` is the guarded way in; this is the raw mount, for callers
+    /// that have already decided (and already claimed `mountedSection`).
+    private func mountSectionList(
+        _ tab: SidebarTab,
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         switch tab {
         case .people:
             installPeopleList(in: split, appDelegate: appDelegate)
@@ -415,7 +442,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .favorites, .guides, .places:
             // No favorite kind maps to these sections, so they never get
             // children. Defensive: land on the section list.
-            showSection(tab, in: split, appDelegate: appDelegate)
+            //
+            // `mountSectionList` rather than `showSection`: we already claimed
+            // `tab` above, and `showSection` would see its own guard satisfied
+            // and mount nothing at all.
+            mountSectionList(tab, in: split, appDelegate: appDelegate)
         }
     }
 
