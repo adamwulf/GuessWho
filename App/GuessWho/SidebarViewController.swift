@@ -56,6 +56,11 @@ final class SidebarViewController: UIViewController {
     }
 
     private var collectionView: UICollectionView!
+
+    /// The double-click-to-open recognizer, kept so the gesture delegate can
+    /// answer for THAT recognizer specifically rather than for anything that
+    /// happens to be routed here later.
+    private weak var expansionToggle: UITapGestureRecognizer?
     private var dataSource: UICollectionViewDiffableDataSource<Section, Item>!
 
     /// The favorites hanging under each section, in the global favorites order.
@@ -177,6 +182,7 @@ final class SidebarViewController: UIViewController {
         toggle.delaysTouchesEnded = false
         toggle.delegate = self
         collectionView.addGestureRecognizer(toggle)
+        expansionToggle = toggle
 
         view.addSubview(collectionView)
     }
@@ -678,7 +684,11 @@ extension SidebarViewController: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
-        true
+        // Answer only for our own recognizer. `true` here is documented to
+        // GUARANTEE simultaneous recognition, so it overrides UIKit's own
+        // exclusivity rules — worth granting narrowly rather than to whatever
+        // else might be pointed at this delegate later.
+        gestureRecognizer === expansionToggle
     }
 }
 
