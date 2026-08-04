@@ -453,11 +453,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
 
         case .places:
-            // The Places list owns no programmatic row selection, so the child
-            // mounts the section and opens the detail — the visible half of
-            // what clicking that row does.
-            installPlacesList(in: split, appDelegate: appDelegate)
+            let list = installPlacesList(in: split, appDelegate: appDelegate)
             guard let place = item.place else { return }
+            list.select(placeID: place.id)
             showPlaceDetail(place: place, appDelegate: appDelegate)
 
         case .favorites:
@@ -580,10 +578,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return (list, nav)
     }
 
+    @discardableResult
     private func installPlacesList(
         in split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
-    ) {
+    ) -> PlacesListViewController {
         let list = PlacesListViewController(
             repository: appDelegate.guidesRepository,
             service: appDelegate.service
@@ -596,6 +595,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
         installDetailPlaceholder(in: split, for: .places)
+        return list
     }
 
     private func installFavoritesList(

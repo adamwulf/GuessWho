@@ -410,12 +410,11 @@ extension GuidesListViewController: UITableViewDelegate {
     }
 
     private func performDelete(guide: MapsGuide) {
-        // Read the places BEFORE the delete — afterwards there is nothing left
-        // to enumerate. `places(inGuide:)` honors the repository's relationship
-        // filter, so a filtered-out place keeps its star; that row simply reads
-        // "Unavailable" in the Favorites list, which is the same safe fallback
-        // every unresolvable favorite already gets.
-        let placeIDs = repository.places(inGuide: guide.id).map(\.id.uuidString)
+        // Read every place BEFORE the delete — afterwards there is nothing left
+        // to enumerate. Use the unfiltered cache rather than `places(inGuide:)`:
+        // deleting a guide must clean up favorite places even while the shared
+        // Places filter is set to Linked.
+        let placeIDs = (repository.placesByGuide[guide.id] ?? []).map(\.id.uuidString)
         do {
             try service.deleteGuide(uuid: guide.id.uuidString)
         } catch {

@@ -35,6 +35,10 @@ final class PlacesListViewController: UIViewController {
 
     private var placesByID: [UUID: MapsPlace] = [:]
 
+    /// The Catalyst sidebar's outstanding "highlight this place" request,
+    /// retained until the repository reload makes its row available.
+    private let pendingSelection = PendingRowSelection<UUID>()
+
     /// Guide display names keyed by guide id, rebuilt per snapshot. Backs the
     /// flat sorts' per-row guide caption and the remove-confirmation copy.
     private var guideNamesByID: [UUID: String] = [:]
@@ -118,6 +122,22 @@ final class PlacesListViewController: UIViewController {
         // may have hit a network failure, or the app may have quit
         // mid-resolution). No-ops quickly when everything is resolved.
         kickResolutionRetries()
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight `placeID` without opening it. Used by a Catalyst sidebar
+    /// favorite child so navigation matches selecting the row normally.
+    func select(placeID: UUID) {
+        pendingSelection.request(placeID)
+        applyPendingSelection()
+    }
+
+    private func applyPendingSelection() {
+        guard isViewLoaded else { return }
+        pendingSelection.applyIfPossible(in: tableView) { [self] placeID in
+            dataSource.indexPath(for: placeID)
+        }
     }
 
     // MARK: - Table view
@@ -334,6 +354,8 @@ final class PlacesListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        applyPendingSelection()
+
         // Name the query when one is in force: the stock copy invites the user
         // to share a guide link, which is the wrong advice for someone whose
         // places are simply filtered out by what they typed.
@@ -381,7 +403,12 @@ extension PlacesListViewController: UITableViewDelegate {
         // the viewWillAppear helper clears it for the collapsed/push cases.
         guard let placeID = dataSource.itemIdentifier(for: indexPath),
               let place = placesByID[placeID] else { return }
+        pendingSelection.cancel()
         didSelectPlace?(place)
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     func tableView(
