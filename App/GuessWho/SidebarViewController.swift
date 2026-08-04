@@ -1,4 +1,5 @@
 import UIKit
+import EventKit
 import GuessWhoSync
 
 /// What a sidebar row means to the scene: a section (the parent rows, which
@@ -79,6 +80,7 @@ final class SidebarViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var contactsChangedObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
 
     init(
         store: FavoritesListStore,
@@ -102,6 +104,7 @@ final class SidebarViewController: UIViewController {
         let center = NotificationCenter.default
         if let favoritesChangedObserver { center.removeObserver(favoritesChangedObserver) }
         if let contactsChangedObserver { center.removeObserver(contactsChangedObserver) }
+        if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
     }
 
     override func viewDidLoad() {
@@ -209,9 +212,10 @@ final class SidebarViewController: UIViewController {
                 content.image = UIImage(systemName: "person.crop.circle.badge.questionmark")
                 return content
             }
-            // Plain text, not `nameAttributedString`: that helper pins the body
-            // font, which would fight the sidebar's own smaller row typography.
-            content.text = contact.displayName
+            // The nickname form every other contact row shows, but as plain
+            // text: `nameAttributedString` carries the nickname AND pins the
+            // body font, which would fight the sidebar's own row typography.
+            content.text = contact.displayNameWithNickname
             content.imageProperties.cornerRadius = Self.childIconSize / 2
             let id = contact.contactID
             if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
@@ -267,7 +271,7 @@ final class SidebarViewController: UIViewController {
             // repeat asks that a later repaint does trigger are cache hits, not
             // Contacts fetches.)
             guard image != nil else { return }
-            self.reconfigureVisibleFavoriteRows()
+            self.reconfigureVisibleRows()
         }
     }
 
@@ -306,6 +310,22 @@ final class SidebarViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // Same story for events: an event renamed in Calendar.app would leave a
+        // stale title on a child here, so watch the store the Favorites list
+        // watches. This rebuild deliberately does NOT reload the favorites store
+        // first (the Favorites list does): a Calendar edit can't change
+        // `Favorites.json`, only the records the ids resolve to, so re-resolving
+        // is the whole job and a coordinated file read would be pure overhead.
+        eventsChangedObserver = center.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applySnapshot(animated: true)
+            }
+        }
     }
 
     /// Settings has no sidebar row on any platform: every user reaches
@@ -335,12 +355,23 @@ final class SidebarViewController: UIViewController {
         }
         dataSource.apply(snapshot, to: .tabs, animatingDifferences: animated)
 
-        // A child's identity is its opaque favorite id, so a row whose RESOLVED
-        // content changed (the cold-launch empty→populated cache, a renamed
-        // group, an edited display name) produces an empty diff and the stale
-        // cell sticks. Re-run the cell provider for the rows on screen; anything
+        // Every row here renders from state the diff can't see, so an apply
+        // alone is not enough to repaint them:
+        //
+        // * a child's identity is its opaque favorite id, so a row whose
+        //   RESOLVED content changed (the cold-launch empty→populated cache, a
+        //   renamed group, an edited display name) produces an empty diff; and
+        // * a PARENT's identity never changes at all, yet its chevron is built
+        //   from `favoriteChildren[tab]` inside the cell registration. Starring
+        //   the first record in an empty section would otherwise leave a child
+        //   with no chevron to collapse it, and unstarring the last one would
+        //   leave a chevron over a leaf. `expand(_:)` can't help — it rotates an
+        //   existing disclosure accessory, it can't add or remove one. With
+        //   seven rows and no scrolling, nothing ever re-dequeues to fix it.
+        //
+        // So re-run the cell provider for every row on screen; anything
         // offscreen builds fresh when it is dequeued.
-        reconfigureVisibleFavoriteRows()
+        reconfigureVisibleRows()
     }
 
     /// Carry the user's expand/collapse choices across a rebuild. Only sections
@@ -399,11 +430,18 @@ final class SidebarViewController: UIViewController {
         }
     }
 
-    private func reconfigureVisibleFavoriteRows() {
+    /// Re-run the cell provider for the rows on screen, keeping the existing
+    /// cells. Safe for a parent: the chevron's open/closed rotation comes from
+    /// the cell's configuration state, not from how the accessory was built, so
+    /// rebuilding the accessory can't collapse an expanded section.
+    ///
+    /// The collection-view API rather than the snapshot's: an outline is driven
+    /// by `NSDiffableDataSourceSectionSnapshot`, which has no `reconfigureItems`
+    /// (only the flat `NSDiffableDataSourceSnapshot` does, and that one can't
+    /// express the hierarchy).
+    private func reconfigureVisibleRows() {
         let paths = collectionView.indexPathsForVisibleItems.filter { indexPath in
-            guard let item = dataSource.itemIdentifier(for: indexPath) else { return false }
-            if case .favorite = item { return true }
-            return false
+            dataSource.itemIdentifier(for: indexPath) != nil
         }
         guard !paths.isEmpty else { return }
         collectionView.reconfigureItems(at: paths)
@@ -473,11 +511,10 @@ extension SidebarViewController: UICollectionViewDropDelegate {
         dropSessionDidUpdate session: UIDropSession,
         withDestinationIndexPath destinationIndexPath: IndexPath?
     ) -> UICollectionViewDropProposal {
-        guard let destinationIndexPath,
-              let id = draggedFavorite(in: session),
+        guard let id = draggedFavorite(in: session),
               let tab = favoriteSections[id],
               let range = insertionRange(for: tab),
-              range.contains(destinationIndexPath.item)
+              range.contains(resolvedDestination(destinationIndexPath).item)
         else {
             // Outside the row's own section (or a drag from another app):
             // refuse it rather than move a person under Events.
@@ -487,11 +524,11 @@ extension SidebarViewController: UICollectionViewDropDelegate {
     }
 
     func collectionView(_ collectionView: UICollectionView, performDropWith coordinator: UICollectionViewDropCoordinator) {
+        let destinationIndexPath = resolvedDestination(coordinator.destinationIndexPath)
         guard let id = draggedFavorite(in: coordinator.session),
               let tab = favoriteSections[id],
               let siblings = favoriteChildren[tab],
               let source = siblings.firstIndex(where: { $0.id == id }),
-              let destinationIndexPath = coordinator.destinationIndexPath,
               let range = insertionRange(for: tab),
               range.contains(destinationIndexPath.item)
         else { return }
@@ -523,6 +560,16 @@ extension SidebarViewController: UICollectionViewDropDelegate {
     /// drag items).
     private func draggedFavorite(in session: UIDropSession) -> FavoriteListItem.ID? {
         session.items.lazy.compactMap { $0.localObject as? FavoriteListItem.ID }.first
+    }
+
+    /// UIKit reports no destination when the pointer is in the empty space below
+    /// the last row. Read that as the end of the list, so a child of the LAST
+    /// section can be dropped there instead of meeting a "no drop" cursor (the
+    /// same end-of-list fallback `FavoritesListViewController` uses). Every
+    /// other section still refuses it — `insertionRange` doesn't reach.
+    private func resolvedDestination(_ destinationIndexPath: IndexPath?) -> IndexPath {
+        destinationIndexPath
+            ?? IndexPath(item: collectionView.numberOfItems(inSection: 0), section: 0)
     }
 
     /// Visible-row indices a child of `tab` may be dropped at: from its first
