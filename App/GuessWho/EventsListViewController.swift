@@ -158,10 +158,13 @@ final class EventsListViewController: UIViewController {
     /// republish is here and not in a teardown hook — identical reasoning,
     /// `searchText` instead of `peopleSearch`.
     ///
-    /// `repository.filter` is deliberately NOT reset alongside it: the filter
-    /// pull-down renders its current value in the nav bar, so a filter that
-    /// survives a section switch stays visible to the user. An empty search bar
-    /// shows nothing.
+    /// `repository.filter` is deliberately NOT reset alongside it: its menu is
+    /// rebuilt from `repository.filter` every time it opens
+    /// (`makeEventFilterMenu`), so the control and the value cannot drift apart
+    /// the way an empty search bar and a live query can. The button itself is
+    /// icon-only, so a surviving filter is no more discoverable at a glance than
+    /// a surviving query was — but it is at least self-consistent, which is the
+    /// property this fix is about.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false

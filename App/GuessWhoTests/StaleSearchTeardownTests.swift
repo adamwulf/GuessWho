@@ -190,10 +190,15 @@ struct StaleSearchTeardownTests {
     }
 
     /// The Events list keeps its query on a third field, on a different
-    /// repository. This one asserts the field rather than the rows: the Events
-    /// list reloads asynchronously in `viewDidLoad`, so a row count would race,
-    /// and the two tests above already pin that a cleared field means unfiltered
-    /// rows.
+    /// repository.
+    ///
+    /// Rows are assertable here without any calendar fixtures: the list shows
+    /// two paging rows ("load older" / "load later") whose visibility is gated
+    /// on an EMPTY `searchText` (`showsPagingRows`), so a stale query suppresses
+    /// them. Zero events plus a cleared query means two rows; zero events plus a
+    /// stale query means none. The `viewDidLoad` reload runs in a `Task` and
+    /// cannot interleave before the assertions — there is no `await` between
+    /// mounting and reading.
     @Test
     func aFreshEventsListStartsWithNoQuery() async throws {
         let root = try makeTempRoot()
@@ -210,9 +215,12 @@ struct StaleSearchTeardownTests {
             favoritesStore: FavoritesListStore(service: service)
         )
         mount(first, in: window)
+        #expect(try rowCount(in: first) == 2)
 
         try search("standup", in: first)
+        window.layoutIfNeeded()
         #expect(repository.searchText == "standup")
+        #expect(try rowCount(in: first) == 0)
 
         window.rootViewController = nil
 
@@ -225,6 +233,7 @@ struct StaleSearchTeardownTests {
 
         #expect(repository.searchText == "")
         #expect(second.navigationItem.searchController?.searchBar.text == "")
+        #expect(try rowCount(in: second) == 2)
     }
 
     /// Why `configureSearch` has to republish at all: a freshly installed

@@ -150,10 +150,12 @@ final class ContactsListViewController: UIViewController {
     /// `peopleSearch` lives on the shared, long-lived repository; this view
     /// controller does not. Catalyst builds a BRAND NEW list for every sidebar
     /// section switch, so a fresh, empty search bar can meet a repository that
-    /// still holds the previous list's query — a silently filtered list with
-    /// nothing on screen to explain it. A fresh `UISearchController` never
-    /// publishes its own empty text (measured on Catalyst in
-    /// `StaleSearchTeardownTests`), so nothing corrects this on its own.
+    /// still holds the previous list's query. The one clue the user gets is the
+    /// empty-state label, which names the query (`updateEmptyState`) — but only
+    /// when NOTHING matches. A stale query that still matches some rows filters
+    /// the list silently. A fresh `UISearchController` never publishes its own
+    /// empty text (measured on Catalyst in `StaleSearchTeardownTests`), so
+    /// nothing corrects this on its own.
     ///
     /// The fix is mount-time, not teardown-time, and deliberately so:
     /// `deinit` runs at a time UIKit chooses and could clear a query the user
@@ -164,11 +166,24 @@ final class ContactsListViewController: UIViewController {
     /// `applySnapshot`, makes the two agree by construction and keeps the first
     /// paint unfiltered.
     ///
-    /// Note this is NOT the rule for every piece of shared list state. The
-    /// sort order and the Events tab's `filter` persist across a teardown on
-    /// purpose: both render their current value in an always-visible nav-bar
-    /// pull-down, so the user can see what is in force. A search query has no
-    /// such indicator once the bar is rebuilt empty.
+    /// Note this is NOT the rule for every piece of shared list state. The sort
+    /// order and the Events tab's `filter` survive a teardown, and correctly so:
+    /// their pull-down menus are rebuilt FROM the repository every time they are
+    /// opened (`makeSortMenu`, `makeEventFilterMenu`), so the control and the
+    /// value cannot drift apart the way an empty search bar and a live query
+    /// can. The sort order is additionally a persisted preference restored at
+    /// launch (`SortOrderSetting`). Neither is discoverable at a glance — both
+    /// buttons are icon-only, and you must open the menu to see the checkmark —
+    /// but that is a separate question from the one this fixes.
+    ///
+    /// KNOWN LIMIT — multi-scene. The repository is app-wide while these fields
+    /// are per-view state, so two windows (Catalyst New Window, iPad Split View)
+    /// share one query. This makes that case differently wrong rather than
+    /// right: mounting a list in the second window now clears a query the first
+    /// window is still showing in its bar. Before this change the second window
+    /// inherited the first window's query instead. Fixing it properly means
+    /// taking the query off app-wide state and giving each list its own, which
+    /// is a larger change than this one.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false
