@@ -301,13 +301,19 @@ final class SidebarViewController: UIViewController {
         // repository posts this after its launch reload, after incremental
         // external patches, and after its own writes — the same signal the
         // Favorites list leans on for exactly this reason.
+        //
+        // DEBOUNCED: the repository answers each `.guessWhoContactsDidChange`
+        // with an immediate reload-or-patch and posts once per answer
+        // (`ContactsRepository.contactsDidChange`, which has no debounce of its
+        // own — only the sidecar signal gets one), and that inbound signal
+        // bursts during contact sync. So this arrives in bursts too.
         contactsChangedObserver = center.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySnapshot(animated: true)
+                self?.scheduleDebouncedRebuild()
             }
         }
 
@@ -318,13 +324,8 @@ final class SidebarViewController: UIViewController {
         // `Favorites.json`, only the records the ids resolve to, so re-resolving
         // is the whole job and a coordinated file read would be pure overhead.
         //
-        // DEBOUNCED, unlike the two observers above. `.EKEventStoreChanged`
-        // fires in bursts during background calendar sync, and every rebuild
-        // re-reads one sidecar file per favorited event on the main actor —
-        // exactly the shape that has hung this app before. The other two can't
-        // burst: `.favoritesDidChange` is one post per app-side mutation, and
-        // the repository already debounces its own inbound change signals at
-        // the same 300ms before it posts `.contactsRepositoryDidReload`.
+        // Debounced for the same reason: `.EKEventStoreChanged` fires in bursts
+        // during background calendar sync.
         eventsChangedObserver = center.addObserver(
             forName: .EKEventStoreChanged,
             object: nil,
@@ -337,11 +338,20 @@ final class SidebarViewController: UIViewController {
     }
 
     /// The pending debounced rebuild, if any. Replaced (and the prior one
-    /// cancelled) on every Calendar notification, so only the trailing edge
-    /// fires — the same shape as `EventsRepository`'s reload debounce and
-    /// `ContactsRepository`'s sidecar refresh, which is the house pattern for
-    /// this (there is no shared helper to reuse). Direct `applySnapshot` calls
-    /// stay immediate.
+    /// cancelled) on every notification that feeds it, so a burst collapses into
+    /// one rebuild on the trailing edge — the same shape as
+    /// `EventsRepository`'s reload debounce and `ContactsRepository`'s sidecar
+    /// refresh, which is the house pattern for this (there is no shared helper
+    /// to reuse).
+    ///
+    /// It exists because a rebuild re-resolves EVERY favorited event through
+    /// `service.event(uuid:)` — one sidecar file read each, on the main actor,
+    /// which is the shape that has hung this app before.
+    ///
+    /// Both external-change feeds share it; only `.favoritesDidChange` stays
+    /// immediate, because that is one post per user action and a lag before a
+    /// just-starred child appeared would be felt. Direct `applySnapshot` calls
+    /// stay immediate too.
     private var pendingRebuild: Task<Void, Never>?
     private static let rebuildDebounce: Duration = .milliseconds(300)
 
