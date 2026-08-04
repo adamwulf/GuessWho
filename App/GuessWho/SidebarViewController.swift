@@ -72,8 +72,10 @@ final class SidebarViewController: UIViewController {
 
     /// In-flight thumbnail loads, keyed by contact so a rebuild can't stack
     /// duplicate fetches for the same row. The completion repaints through
-    /// `reconfigureVisibleRows` rather than touching a cell directly, which is
-    /// what makes it safe against reuse.
+    /// `reconfigureVisibleRows`, which re-reads each visible cell's CURRENT
+    /// item identifier from the data source before it paints that cell. If the
+    /// cell the load started against was reused before the photo landed, it
+    /// therefore renders the row that now occupies it, not the row that asked.
     private var photoTasks: [ContactID: Task<Void, Never>] = [:]
 
     /// See `ContactsListViewController.reloadObserver` for the
@@ -153,24 +155,12 @@ final class SidebarViewController: UIViewController {
     private func configureDataSource() {
         let sectionRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, SidebarTab> {
             [weak self] cell, _, tab in
-            var content = cell.defaultContentConfiguration()
-            content.text = tab.title
-            content.image = UIImage(systemName: tab.systemImage)
-            cell.contentConfiguration = content
-            // Chevron only when the section actually holds favorites, and the
-            // `.cell` style so ONLY the chevron toggles — the default
-            // (`.automatic`) resolves to `.header` at the root level, which
-            // would swallow the click and stop "People" from showing the People
-            // list.
-            let hasChildren = !(self?.favoriteChildren[tab]?.isEmpty ?? true)
-            cell.accessories = hasChildren ? [.outlineDisclosure(options: .init(style: .cell))] : []
+            self?.configure(cell, for: .section(tab))
         }
 
         let favoriteRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, FavoriteListItem.ID> {
             [weak self] cell, _, id in
-            guard let self, let item = self.favoriteItemsByID[id] else { return }
-            cell.contentConfiguration = self.contentConfiguration(for: item, in: cell)
-            cell.accessories = []
+            self?.configure(cell, for: .favorite(id))
         }
 
         dataSource = UICollectionViewDiffableDataSource<Section, Item>(
@@ -190,6 +180,30 @@ final class SidebarViewController: UIViewController {
                     item: id
                 )
             }
+        }
+    }
+
+    /// Paint `cell` for `item`. The one place a sidebar row's appearance is
+    /// defined, shared by the cell registrations (on dequeue) and by
+    /// `reconfigureVisibleRows` (on a repaint), so the two can never drift.
+    private func configure(_ cell: UICollectionViewListCell, for item: Item) {
+        switch item {
+        case .section(let tab):
+            var content = cell.defaultContentConfiguration()
+            content.text = tab.title
+            content.image = UIImage(systemName: tab.systemImage)
+            cell.contentConfiguration = content
+            // Chevron only when the section actually holds favorites, and the
+            // `.cell` style so ONLY the chevron toggles — the default
+            // (`.automatic`) resolves to `.header` at the root level, which
+            // would swallow the click and stop "People" from showing the People
+            // list.
+            let hasChildren = !(favoriteChildren[tab]?.isEmpty ?? true)
+            cell.accessories = hasChildren ? [.outlineDisclosure(options: .init(style: .cell))] : []
+        case .favorite(let id):
+            guard let favorite = favoriteItemsByID[id] else { return }
+            cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
+            cell.accessories = []
         }
     }
 
@@ -470,21 +484,30 @@ final class SidebarViewController: UIViewController {
         }
     }
 
-    /// Re-run the cell provider for the rows on screen, keeping the existing
-    /// cells. Safe for a parent: the chevron's open/closed rotation comes from
-    /// the cell's configuration state, not from how the accessory was built, so
-    /// rebuilding the accessory can't collapse an expanded section.
+    /// Repaint the rows on screen, keeping the existing cells. Safe for a
+    /// parent: the chevron's open/closed rotation comes from the cell's
+    /// configuration state, not from how the accessory was built, so rebuilding
+    /// the accessory can't collapse an expanded section.
     ///
-    /// The collection-view API rather than the snapshot's: an outline is driven
-    /// by `NSDiffableDataSourceSectionSnapshot`, which has no `reconfigureItems`
+    /// This re-applies `configure(_:for:)` to each visible cell rather than
+    /// asking the collection view to reconfigure them. `UICollectionView`
+    /// raises `NSInternalInconsistencyException` ("must be updated via the
+    /// UICollectionViewDiffableDataSource APIs") for `reconfigureItems(at:)`
+    /// and every other direct mutation while a diffable data source is its
+    /// `dataSource` — on Catalyst that fires during the first layout and the
+    /// half-finished update segfaults the process a moment later. The snapshot
+    /// API is not an option either: an outline is driven by
+    /// `NSDiffableDataSourceSectionSnapshot`, which has no `reconfigureItems`
     /// (only the flat `NSDiffableDataSourceSnapshot` does, and that one can't
-    /// express the hierarchy).
+    /// express the hierarchy). Writing the configuration straight onto the cell
+    /// mutates neither, so it is safe from both sides.
     private func reconfigureVisibleRows() {
-        let paths = collectionView.indexPathsForVisibleItems.filter { indexPath in
-            dataSource.itemIdentifier(for: indexPath) != nil
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let item = dataSource.itemIdentifier(for: indexPath),
+                  let cell = collectionView.cellForItem(at: indexPath) as? UICollectionViewListCell
+            else { continue }
+            configure(cell, for: item)
         }
-        guard !paths.isEmpty else { return }
-        collectionView.reconfigureItems(at: paths)
     }
 
     // MARK: - Selection
