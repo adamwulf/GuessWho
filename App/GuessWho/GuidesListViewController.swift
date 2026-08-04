@@ -18,6 +18,7 @@ final class GuidesListViewController: UIViewController {
 
     private let repository: GuidesRepository
     private let service: SyncService
+    private let favoritesStore: FavoritesListStore
 
     private static let log = GuessWhoLog.logger("app.guides.list")
 
@@ -43,13 +44,23 @@ final class GuidesListViewController: UIViewController {
     /// show a spinner until then. Mirrors `GroupsListViewController.hasGroupsLoaded`.
     private var hasLoaded = false
 
+    /// The Catalyst sidebar's outstanding "highlight this guide" request, kept
+    /// until the row it names exists. See `PendingRowSelection`.
+    private let pendingSelection = PendingRowSelection<UUID>()
+
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
 
-    init(repository: GuidesRepository, service: SyncService) {
+    /// Observes `.favoritesDidChange` so a guide starred from the Favorites
+    /// list (or the Catalyst sidebar) repaints its row's star here. Same
+    /// `nonisolated(unsafe)` rationale as `reloadObserver`.
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
+
+    init(repository: GuidesRepository, service: SyncService, favoritesStore: FavoritesListStore) {
         self.repository = repository
         self.service = service
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = "Guides"
     }
@@ -60,9 +71,9 @@ final class GuidesListViewController: UIViewController {
     }
 
     deinit {
-        if let reloadObserver {
-            NotificationCenter.default.removeObserver(reloadObserver)
-        }
+        let center = NotificationCenter.default
+        if let reloadObserver { center.removeObserver(reloadObserver) }
+        if let favoritesObserver { center.removeObserver(favoritesObserver) }
     }
 
     override func viewDidLoad() {
@@ -88,6 +99,26 @@ final class GuidesListViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight `guideID`'s row and scroll it into view without republishing
+    /// the places list — the Catalyst sidebar's favorite-children entry point.
+    /// See `GroupsListViewController.select(groupLocalID:)` for the full
+    /// contract; guides share its "before the first reload" case, since this
+    /// list owns its own `reload()` fetch.
+    func select(guideID: UUID) {
+        pendingSelection.request(guideID)
+        applyPendingSelection()
+    }
+
+    /// See `ContactsListViewController.applyPendingSelection`.
+    private func applyPendingSelection() {
+        guard isViewLoaded else { return }
+        pendingSelection.applyIfPossible(in: tableView) { [self] guideID in
+            dataSource.indexPath(for: guideID)
+        }
     }
 
     // MARK: - Table view
@@ -141,7 +172,14 @@ final class GuidesListViewController: UIViewController {
             guard let self, let guide = self.guidesByID[guideID] else { return cell }
             (cell as? GuideCell)?.configure(
                 with: guide,
-                placeCount: self.repository.placeCount(inGuide: guide.id)
+                placeCount: self.repository.placeCount(inGuide: guide.id),
+                isFavorite: self.favoritesStore.isFavorite(kind: .guide, id: guide.id.uuidString),
+                onToggleFavorite: { [weak self] in
+                    // The store posts `.favoritesDidChange`, which the observer
+                    // below turns into a row repaint — the cell never flips its
+                    // own star, so what is drawn is always what was persisted.
+                    self?.favoritesStore.toggle(kind: .guide, id: guide.id.uuidString)
+                }
             )
             return cell
         }
@@ -259,6 +297,28 @@ final class GuidesListViewController: UIViewController {
                 self.sortButton.menu = self.makeGuideSortMenu(repository: self.repository)
             }
         }
+
+        // Favorite status is not part of `MapsGuide`, so a star toggled
+        // elsewhere never changes the snapshot — reconfigure the current rows
+        // so their stars repaint (see `GroupsListViewController`).
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconfigureAllRows()
+            }
+        }
+    }
+
+    /// Re-run the cell provider for every current row so favorite stars repaint.
+    /// Reconfigure only touches on-screen cells.
+    private func reconfigureAllRows() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     private func applySnapshot(animated: Bool) {
@@ -282,6 +342,11 @@ final class GuidesListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        // A pending sidebar selection waits here for its row to exist — the
+        // usual case, since a guide favorite is clicked before this list's own
+        // first fetch has landed.
+        applyPendingSelection()
+
         updateEmptyState()
     }
 
@@ -302,7 +367,15 @@ extension GuidesListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         guard let guideID = dataSource.itemIdentifier(for: indexPath),
               let guide = guidesByID[guideID] else { return }
+        // The user picked a row, so retire an unfulfilled sidebar request rather
+        // than let a later reload move the selection out from under them.
+        pendingSelection.cancel()
         didSelectGuide(guide)
+    }
+
+    /// See `ContactsListViewController.scrollViewWillBeginDragging(_:)`.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     func tableView(
@@ -337,12 +410,47 @@ extension GuidesListViewController: UITableViewDelegate {
     }
 
     private func performDelete(guide: MapsGuide) {
+        // Read every place BEFORE the delete — afterwards there is nothing left
+        // to enumerate. Use the unfiltered cache rather than `places(inGuide:)`:
+        // deleting a guide must clean up favorite places even while the shared
+        // Places filter is set to Linked.
+        let placeIDs = (repository.placesByGuide[guide.id] ?? []).map(\.id.uuidString)
         do {
             try service.deleteGuide(uuid: guide.id.uuidString)
         } catch {
             service.recordError("delete guide failed: \(error.localizedDescription)")
+            Task { await repository.reload() }
+            return
         }
+        removeFavorites(guideID: guide.id.uuidString, placeIDs: placeIDs)
         Task { await repository.reload() }
+    }
+
+    /// Drop the stars a deleted guide and its places leave behind, so the
+    /// Favorites list and the sidebar don't keep rows pointing at records that
+    /// no longer exist. Mirrors `GroupsListViewController`'s delete, which
+    /// unfavorites the group it removes. Best-effort: a failed write is logged
+    /// and the row falls back to "Unavailable".
+    ///
+    /// Each removal rewrites and re-reads the favorites file, so the ids are
+    /// filtered against the in-memory list FIRST — a guide whose places were
+    /// never starred (the normal case) does no I/O at all, instead of one
+    /// coordinated read per place.
+    private func removeFavorites(guideID: String, placeIDs: [String]) {
+        if favoritesStore.isFavorite(kind: .guide, id: guideID) {
+            do {
+                try favoritesStore.remove(kind: .guide, id: guideID)
+            } catch {
+                service.recordError("unfavorite deleted guide failed: \(error.localizedDescription)")
+            }
+        }
+        for placeID in placeIDs where favoritesStore.isFavorite(kind: .place, id: placeID) {
+            do {
+                try favoritesStore.remove(kind: .place, id: placeID)
+            } catch {
+                service.recordError("unfavorite deleted place failed: \(error.localizedDescription)")
+            }
+        }
     }
 }
 
@@ -354,11 +462,26 @@ extension GuidesListViewController: ScrollsToTop {
 
 // MARK: - Row cell
 
-/// Guide row: leading map icon, guide name, and a "N places" caption.
+/// Guide row: leading map icon, guide name, a "N places" caption, and a
+/// trailing star button that favorites / unfavorites the guide.
+///
+/// The star is a BUTTON here, not the passive `star.fill` indicator the
+/// contact / event / group rows carry: those records are all starred from a
+/// detail view, and a guide row has no detail view to put a toolbar star on —
+/// selecting it drills straight into the guide's places. So the row itself is
+/// the only place the control can live, and it is drawn in both states (hollow
+/// `star` when unstarred, filled yellow `star.fill` when starred) so it reads
+/// as something to press.
 private final class GuideCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
     private let countLabel = UILabel()
+    private let starButton = UIButton(type: .system)
+
+    /// Invoked when the star is pressed. Owned by the list, which routes it to
+    /// `FavoritesListStore.toggle`; cleared on reuse so a recycled cell can
+    /// never toggle the guide it used to show.
+    private var onToggleFavorite: (() -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -374,6 +497,8 @@ private final class GuideCell: UITableViewCell {
         super.prepareForReuse()
         nameLabel.text = nil
         countLabel.text = nil
+        onToggleFavorite = nil
+        accessibilityCustomActions = nil
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -407,6 +532,26 @@ private final class GuideCell: UITableViewCell {
         countLabel.translatesAutoresizingMaskIntoConstraints = false
         countLabel.numberOfLines = 1
 
+        // Trailing star button. Explicit 44pt minimum constraints below keep
+        // the target accessible even though the glyph is body-sized, and the
+        // image is swapped (never hidden) so the row reserves the same text
+        // width whether or not it is starred.
+        var starConfiguration = UIButton.Configuration.plain()
+        starConfiguration.contentInsets = NSDirectionalEdgeInsets(
+            top: 10, leading: 10, bottom: 10, trailing: 10
+        )
+        starConfiguration.preferredSymbolConfigurationForImage =
+            UIImage.SymbolConfiguration(textStyle: .body)
+        starButton.configuration = starConfiguration
+        starButton.isAccessibilityElement = true
+        starButton.addAction(
+            UIAction { [weak self] _ in self?.onToggleFavorite?() },
+            for: .touchUpInside
+        )
+        starButton.setContentHuggingPriority(.required, for: .horizontal)
+        starButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starButton.translatesAutoresizingMaskIntoConstraints = false
+
         let textStack = UIStackView(arrangedSubviews: [nameLabel, countLabel])
         textStack.axis = .vertical
         textStack.alignment = .leading
@@ -415,6 +560,7 @@ private final class GuideCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
+        contentView.addSubview(starButton)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -422,15 +568,43 @@ private final class GuideCell: UITableViewCell {
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textStack.trailingAnchor.constraint(equalTo: starButton.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+            starButton.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            starButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            starButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
 
-    func configure(with guide: MapsGuide, placeCount: Int) {
+    func configure(
+        with guide: MapsGuide,
+        placeCount: Int,
+        isFavorite: Bool,
+        onToggleFavorite: @escaping () -> Void
+    ) {
         nameLabel.text = Self.displayName(for: guide)
         countLabel.text = placeCount == 1 ? "1 place" : "\(placeCount) places"
+        self.onToggleFavorite = onToggleFavorite
+        starButton.configuration?.image = UIImage(systemName: isFavorite ? "star.fill" : "star")
+        // Unstarred sits at the same weight as the "N places" caption beside
+        // it — the row keeps its selected-state tint background under both, so
+        // anything lighter would wash out on a selected row.
+        starButton.configuration?.baseForegroundColor = isFavorite ? .systemYellow : .secondaryLabel
+        // Same wording as the detail views' toolbar star, so the action reads
+        // identically wherever VoiceOver meets it.
+        starButton.accessibilityLabel = isFavorite ? "Unfavorite" : "Favorite"
+        // UITableViewCell may aggregate its content into one VoiceOver element,
+        // which can hide an interactive contentView subview. Mirror the button
+        // as a custom action on the row so the toggle is always reachable.
+        accessibilityCustomActions = [
+            UIAccessibilityCustomAction(name: isFavorite ? "Unfavorite" : "Favorite") { [weak self] _ in
+                guard let self else { return false }
+                self.onToggleFavorite?()
+                return true
+            }
+        ]
     }
 
     static func displayName(for guide: MapsGuide) -> String {

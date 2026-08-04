@@ -19,7 +19,8 @@ enum PlaceRowStatus {
 /// up), place name (with graceful fallbacks while details are still
 /// resolving), an address caption, and — on the unified Places tab's flat
 /// sorts — a guide-name caption so same-named places from different guides
-/// stay distinguishable. Shared by `GuidePlacesListViewController` (which
+/// stay distinguishable. A passive trailing star mirrors the other list rows
+/// when the place is favorited. Shared by `GuidePlacesListViewController` (which
 /// never passes a guide name; the screen IS one guide) and
 /// `PlacesListViewController`.
 final class PlaceCell: UITableViewCell {
@@ -29,9 +30,10 @@ final class PlaceCell: UITableViewCell {
     private let addressLabel = UILabel()
     private let guideLabel = UILabel()
     private let linkCountLabel = UILabel()
+    private let starView = UIImageView()
     // Spacing between the text stack and the link-count label; collapsed to 0
     // when the label is hidden so a linkless row reclaims the full width up to
-    // the trailing margin (this cell has no star; see ContactCell rationale).
+    // the reserved favorite-star slot (see ContactCell rationale).
     private var textToLinkCountSpacing: NSLayoutConstraint?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -53,6 +55,7 @@ final class PlaceCell: UITableViewCell {
         guideLabel.isHidden = true
         linkCountLabel.text = nil
         linkCountLabel.isHidden = true
+        starView.isHidden = true
         textToLinkCountSpacing?.constant = 0
         showSpinner(false)
     }
@@ -109,6 +112,19 @@ final class PlaceCell: UITableViewCell {
         linkCountLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         linkCountLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Passive favorite indicator. Place favoriting lives on the detail
+        // toolbar; list rows only reflect that state, matching contact/event
+        // rows. Keep the image installed and toggle visibility so every row
+        // reserves identical text width.
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
+
         let textStack = UIStackView(arrangedSubviews: [nameLabel, addressLabel, guideLabel])
         textStack.axis = .vertical
         textStack.alignment = .leading
@@ -119,6 +135,7 @@ final class PlaceCell: UITableViewCell {
         contentView.addSubview(spinner)
         contentView.addSubview(textStack)
         contentView.addSubview(linkCountLabel)
+        contentView.addSubview(starView)
 
         let textToLinkCount = textStack.trailingAnchor.constraint(equalTo: linkCountLabel.leadingAnchor, constant: 0)
         textToLinkCountSpacing = textToLinkCount
@@ -132,7 +149,9 @@ final class PlaceCell: UITableViewCell {
             // row shows the pin or is being looked up.
             spinner.centerXAnchor.constraint(equalTo: iconView.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
-            linkCountLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            linkCountLabel.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             linkCountLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             textToLinkCount,
@@ -153,9 +172,11 @@ final class PlaceCell: UITableViewCell {
     func configure(
         with place: MapsPlace,
         status: PlaceRowStatus,
+        isFavorite: Bool,
         linkCount: Int,
         guideName: String? = nil
     ) {
+        starView.isHidden = !isFavorite
         // Reset every configure so a recycled cell never shows a stale count.
         // The spacing constraint flips with visibility so a hidden label
         // collapses flush and the text reclaims the full width (see property).

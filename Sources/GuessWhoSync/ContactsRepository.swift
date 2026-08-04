@@ -1694,10 +1694,27 @@ public final class ContactsRepository: NSObject {
     /// GuessWhoID index; event favorites use the supplied resolver until the
     /// deferred EventID migration moves event identity behind the package too;
     /// group favorites resolve against the `groups` cache (case-insensitively —
-    /// see `group(localID:)`).
+    /// see `group(localID:)`); guide and place favorites use their supplied
+    /// resolvers too, since this repository caches contacts and groups only.
+    ///
+    /// Each resolver receives the favorite's canonical lowercased id — a minted
+    /// sidecar UUID string for guides and places — so a caller matching against
+    /// a `MapsGuide.id`/`MapsPlace.id` must lowercase its own side of the
+    /// comparison (`uuidString` is uppercase).
+    ///
+    /// The `guide`/`place` resolvers default to "unresolvable" so a caller that
+    /// surfaces neither kind is unaffected; a caller that DOES show them must
+    /// pass real resolvers or its guide/place rows read as unavailable.
+    ///
+    /// Every favorite yields exactly one row, in order, whether or not its
+    /// referent resolved — an unresolvable favorite projects nil payloads (the
+    /// list's "unavailable" state) instead of vanishing, so the row stays
+    /// selectable and un-favoritable.
     public func favoriteListItems(
         from favorites: [Favorite],
-        event: (String) -> Event?
+        event: (String) -> Event?,
+        guide: (String) -> MapsGuide? = { _ in nil },
+        place: (String) -> MapsPlace? = { _ in nil }
     ) -> [FavoriteListItem] {
         favorites.map { favorite in
             switch favorite.kind {
@@ -1718,6 +1735,18 @@ public final class ContactsRepository: NSObject {
                     id: FavoriteListItem.ID(favorite.stableID),
                     kind: favorite.kind,
                     group: group(localID: favorite.id)
+                )
+            case .guide:
+                FavoriteListItem(
+                    id: FavoriteListItem.ID(favorite.stableID),
+                    kind: favorite.kind,
+                    guide: guide(favorite.id)
+                )
+            case .place:
+                FavoriteListItem(
+                    id: FavoriteListItem.ID(favorite.stableID),
+                    kind: favorite.kind,
+                    place: place(favorite.id)
                 )
             }
         }

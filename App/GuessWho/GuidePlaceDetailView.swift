@@ -19,11 +19,11 @@ import GuessWhoSync
 /// repaint if the MapKit resolution pass lands while this page is open.
 struct GuidePlaceDetailView: View {
     let placeID: UUID
-    let guideID: UUID
     let repository: GuidesRepository
 
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var contactsRepository
+    @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.openURL) private var openURL
 
     // Bridge to the outer UIKit nav (both shells) so tapping an event, a
@@ -57,7 +57,10 @@ struct GuidePlaceDetailView: View {
     /// here makes the view repaint when a resolution pass or external change
     /// reloads the guides store.
     private var place: MapsPlace? {
-        repository.places(inGuide: guideID).first { $0.id == placeID }
+        // Detail identity must not depend on the Places list's current Linked
+        // filter. A favorited unlinked place can be opened from Favorites or
+        // the Catalyst sidebar while that filter is active.
+        repository.place(id: placeID)
     }
 
     var body: some View {
@@ -89,6 +92,20 @@ struct GuidePlaceDetailView: View {
         #if !targetEnvironment(macCatalyst)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // Star / unstar this place. Same shape as the event and contact
+        // details' toolbar star; disabled while the place is missing (deleted,
+        // or its guide gone), where there is nothing to point a favorite at.
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    toggleFavorite()
+                } label: {
+                    Image(systemName: isPlaceFavorited ? "star.fill" : "star")
+                }
+                .disabled(place == nil)
+                .accessibilityLabel(isPlaceFavorited ? "Unfavorite" : "Favorite")
+            }
+        }
         // Recompute matches whenever the place's identity or resolved address
         // changes (the address arrives asynchronously for place-ID entries).
         .task(id: matchKey) {
@@ -126,6 +143,22 @@ struct GuidePlaceDetailView: View {
         if !name.isEmpty { return name }
         if let address = place.address, !address.isEmpty { return address }
         return "Place"
+    }
+
+    // MARK: - Favorite
+
+    /// Whether this place is starred. Gated on the place still existing, so a
+    /// deleted place can never read as favorited while its star is disabled —
+    /// the same symmetry `EventDetailView` keeps between `isEventFavorited`
+    /// and `canFavoriteEvent`.
+    private var isPlaceFavorited: Bool {
+        guard place != nil else { return false }
+        return favoritesStore.isFavorite(kind: .place, id: placeID.uuidString)
+    }
+
+    private func toggleFavorite() {
+        guard place != nil else { return }
+        favoritesStore.toggle(kind: .place, id: placeID.uuidString)
     }
 
     /// Stable key for the association fetch: re-run when we point at a different
