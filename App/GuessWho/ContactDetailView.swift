@@ -1639,9 +1639,9 @@ struct ContactDetailView: View {
         for item in contact.socialProfiles {
             rows.append(socialProfileRow(item))
         }
-        // No LinkedIn profile on file: offer a search in the same slot the
-        // profile row would occupy, so the card always has a LinkedIn entry
-        // point (find them → import with the browser extension).
+        // No LinkedIn link on file: offer a search in the same slot the profile
+        // row would occupy, so the card still has a LinkedIn entry point (find
+        // them → import with the browser extension).
         if let searchRow = linkedInSearchRow(for: contact) {
             rows.append(searchRow)
         }
@@ -2539,15 +2539,15 @@ struct ContactDetailView: View {
         return .text(label: label, value: socialProfileValue(profile))
     }
 
-    /// The stand-in row for a contact with no LinkedIn profile: a "Search
+    /// The stand-in row for a contact with no LinkedIn link: a "Search
     /// LinkedIn" link that opens LinkedIn's search for this person's name,
     /// narrowed by their organization when they have one. An organization
     /// record searches companies for the organization name alone.
     ///
-    /// `nil` when the contact already has a LinkedIn profile (the real profile
-    /// row covers it) or has no name/organization to search for.
+    /// `nil` when the contact already links to LinkedIn (that row covers it) or
+    /// has no name, nickname, or organization to search for.
     private func linkedInSearchRow(for contact: Contact) -> InfoRowData? {
-        guard !contact.hasLinkedInProfile,
+        guard !contact.hasLinkedInLink,
               let url = LinkedInSearch.url(for: contact) else {
             return nil
         }
