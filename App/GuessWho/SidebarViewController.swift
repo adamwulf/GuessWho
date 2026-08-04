@@ -48,7 +48,7 @@ final class SidebarViewController: UIViewController {
     /// Diffable identity for a sidebar row. A favorite is keyed on its opaque
     /// package-vended id (never on the resolved record), so a row survives the
     /// contact cache going empty→populated at cold launch — only its rendered
-    /// content changes, which `reconfigureVisibleFavoriteRows` repaints.
+    /// content changes, which `reconfigureVisibleRows` repaints.
     private enum Item: Hashable {
         case section(SidebarTab)
         case favorite(FavoriteListItem.ID)
@@ -72,8 +72,8 @@ final class SidebarViewController: UIViewController {
 
     /// In-flight thumbnail loads, keyed by contact so a rebuild can't stack
     /// duplicate fetches for the same row. The completion repaints through
-    /// `reconfigureVisibleFavoriteRows` rather than touching a cell directly,
-    /// which is what makes it safe against reuse.
+    /// `reconfigureVisibleRows` rather than touching a cell directly, which is
+    /// what makes it safe against reuse.
     private var photoTasks: [ContactID: Task<Void, Never>] = [:]
 
     /// See `ContactsListViewController.reloadObserver` for the
@@ -317,14 +317,43 @@ final class SidebarViewController: UIViewController {
         // first (the Favorites list does): a Calendar edit can't change
         // `Favorites.json`, only the records the ids resolve to, so re-resolving
         // is the whole job and a coordinated file read would be pure overhead.
+        //
+        // DEBOUNCED, unlike the two observers above. `.EKEventStoreChanged`
+        // fires in bursts during background calendar sync, and every rebuild
+        // re-reads one sidecar file per favorited event on the main actor —
+        // exactly the shape that has hung this app before. The other two can't
+        // burst: `.favoritesDidChange` is one post per app-side mutation, and
+        // the repository already debounces its own inbound change signals at
+        // the same 300ms before it posts `.contactsRepositoryDidReload`.
         eventsChangedObserver = center.addObserver(
             forName: .EKEventStoreChanged,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySnapshot(animated: true)
+                self?.scheduleDebouncedRebuild()
             }
+        }
+    }
+
+    /// The pending debounced rebuild, if any. Replaced (and the prior one
+    /// cancelled) on every Calendar notification, so only the trailing edge
+    /// fires — the same shape as `EventsRepository`'s reload debounce and
+    /// `ContactsRepository`'s sidecar refresh, which is the house pattern for
+    /// this (there is no shared helper to reuse). Direct `applySnapshot` calls
+    /// stay immediate.
+    private var pendingRebuild: Task<Void, Never>?
+    private static let rebuildDebounce: Duration = .milliseconds(300)
+
+    private func scheduleDebouncedRebuild() {
+        pendingRebuild?.cancel()
+        pendingRebuild = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.rebuildDebounce)
+            } catch {
+                return   // superseded by a newer notification
+            }
+            self?.applySnapshot(animated: true)
         }
     }
 
