@@ -147,15 +147,15 @@ active, since there is nothing safe to persist from a partial/derived result.
 Unlike Favorites, this list runs a live resolution pass that reloads after
 every place, so a `dataSource.apply` can land mid-drag; that reasserts the
 lifted row in place (a duplicate with no gap). `GuidePlacesListViewController`
-therefore **defers** any reload / resolution-status apply while
-`tableView.hasActiveDrag`/`Drop` is true (`needsSnapshotAfterDrag`), flushing
-it from `performDropWith` and `dragSessionDidEnd`. Reorder writes still persist
-immediately; only the view's repaint waits for the drag to settle. As resolution
-lands, each row shows a spinner during lookup, "Waiting to load…" while queued
-behind others, and its name/address once done, plus a passive star on favorited
-places) → push → `GuidePlaceDetailView` (the place detail, below). Both shells
-share the two list VCs and use plain-language row states rather than exposing
-internal "resolve" or "sidecar" vocabulary.
+therefore **defers** any reload, resolution-status, favorite, or search apply
+while `tableView.hasActiveDrag`/`Drop` is true (`needsSnapshotAfterDrag`),
+flushing it from `performDropWith` and `dragSessionDidEnd`. Reorder writes still
+persist immediately; only the view's repaint waits for the drag to settle. As
+resolution lands, each row shows a spinner during lookup, "Waiting to load…"
+while queued behind others, and its name/address once done, plus a passive
+star on favorited places) → push → `GuidePlaceDetailView` (the place detail,
+below). Both shells share the two list VCs and use plain-language row states
+rather than exposing internal "resolve" or "sidecar" vocabulary.
 
 Alongside the Guides section there is a unified **Places** section
 (`PlacesListViewController`, a sidebar row on Catalyst / a tab on iPhone):
