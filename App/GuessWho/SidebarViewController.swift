@@ -228,6 +228,14 @@ final class SidebarViewController: UIViewController {
             let count = favoriteChildren[tab]?.count ?? 0
             let isClosed = !expandedSections.contains(tab)
             cell.accessories = (count > 0 && isClosed) ? [favoritesCountAccessory(count: count)] : []
+
+            // A double click is a mouse-only affordance, so it can't be the ONLY
+            // way to open a section — the outline chevron this replaced was a
+            // real control that VoiceOver and Full Keyboard Access could reach.
+            // A custom action puts the same toggle back in front of both.
+            cell.accessibilityCustomActions = count > 0
+                ? [expansionAction(for: tab, isClosed: isClosed)]
+                : nil
         case .favorite(let id):
             guard let favorite = favoriteItemsByID[id] else { return }
             cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
@@ -245,6 +253,9 @@ final class SidebarViewController: UIViewController {
         label.font = .preferredFont(forTextStyle: .subheadline)
         label.textColor = .secondaryLabel
         label.adjustsFontForContentSizeCategory = true
+        // Read as "2 favorites", not a bare "2" — the star carries that meaning
+        // visually and says nothing out loud.
+        label.accessibilityLabel = count == 1 ? "1 favorite" : "\(count) favorites"
 
         let star = UIImageView(
             image: UIImage(
@@ -253,6 +264,7 @@ final class SidebarViewController: UIViewController {
             )
         )
         star.tintColor = .secondaryLabel
+        star.isAccessibilityElement = false
 
         let badge = UIStackView(arrangedSubviews: [label, star])
         badge.axis = .horizontal
@@ -334,9 +346,9 @@ final class SidebarViewController: UIViewController {
             guard let self else { return }
             self.photoTasks[id] = nil
             // Repaint ONLY when there's something new to show. A contact with no
-            // photo keeps its initials placeholder, and reconfiguring anyway
-            // would re-enter the cell provider, find nothing cached, ask again,
-            // and spin forever. (The loader negative-caches "no photo", so the
+            // photo keeps its initials placeholder, and repainting anyway would
+            // re-enter `configure(_:for:)`, find nothing cached, ask again, and
+            // spin forever. (The loader negative-caches "no photo", so the
             // repeat asks that a later repaint does trigger are cache hits, not
             // Contacts fetches.)
             guard image != nil else { return }
@@ -462,8 +474,6 @@ final class SidebarViewController: UIViewController {
                 snapshot.expand([parent])
             }
         }
-        dataSource.apply(snapshot, to: .tabs, animatingDifferences: animated)
-
         // Every row here renders from state the diff can't see, so an apply
         // alone is not enough to repaint them:
         //
@@ -474,12 +484,20 @@ final class SidebarViewController: UIViewController {
         //   from `favoriteChildren[tab]` inside `configure(_:for:)`. Starring a
         //   record in a closed section would otherwise leave the old count on
         //   screen, and unstarring the last one would leave a badge over a
-        //   section that no longer hides anything. With seven rows and no
-        //   scrolling, nothing ever re-dequeues to fix it.
+        //   section that no longer hides anything. The seven parents never
+        //   scroll off, so nothing re-dequeues them to fix it.
         //
-        // So re-run the cell provider for every row on screen; anything
-        // offscreen builds fresh when it is dequeued.
-        reconfigureVisibleRows()
+        // So repaint every row on screen; anything offscreen builds fresh when
+        // it is dequeued.
+        //
+        // From the completion rather than the next line, so the repaint reads
+        // `indexPathsForVisibleItems` only once the apply has finished. Called
+        // inline, it would read them mid-animation, where a cell on its way out
+        // can still answer at its pre-update index path — and would then be
+        // painted as whatever row now holds that path.
+        dataSource.apply(snapshot, to: .tabs, animatingDifferences: animated) { [weak self] in
+            self?.reconfigureVisibleRows()
+        }
     }
 
     /// Carry the user's expand/collapse choices across a rebuild. Only sections
@@ -487,6 +505,14 @@ final class SidebarViewController: UIViewController {
     /// whose last favorite was just removed can't be opened at all, and treating
     /// its (always false) expansion as a user choice would leave it collapsed
     /// when its next favorite arrives.
+    ///
+    /// MUST run BEFORE `rebuildFavoriteChildren`, so that `favoriteChildren`
+    /// still describes what is on screen — the same thing the snapshot it reads
+    /// describes. Run it after, and it would ask `isExpanded` about parents that
+    /// have no children in the CURRENT snapshot, get false for every one, and
+    /// drop every section from `expandedSections`. That is no longer merely a
+    /// display glitch: `expandedSections` is persisted on write, so it would
+    /// save "everything closed" and every later launch would honour it.
     private func rememberExpansionState() {
         guard dataSource != nil else { return }
         let current = dataSource.snapshot(for: .tabs)
@@ -539,9 +565,9 @@ final class SidebarViewController: UIViewController {
     }
 
     /// Repaint the rows on screen, keeping the existing cells. Safe for a
-    /// parent: the chevron's open/closed rotation comes from the cell's
-    /// configuration state, not from how the accessory was built, so rebuilding
-    /// the accessory can't collapse an expanded section.
+    /// parent: a section's open/closed state lives in the section snapshot, not
+    /// in anything painted here, so rebuilding a parent's accessories can't
+    /// close an open section.
     ///
     /// This re-applies `configure(_:for:)` to each visible cell rather than
     /// asking the collection view to reconfigure them. `UICollectionView`
@@ -579,6 +605,18 @@ final class SidebarViewController: UIViewController {
         toggleExpansion(of: tab)
     }
 
+    /// The VoiceOver / Full Keyboard Access equivalent of double-clicking the
+    /// row. Named for what it will DO, which is the convention for a custom
+    /// action, and in the user's own words — favorites, not internal vocabulary.
+    private func expansionAction(for tab: SidebarTab, isClosed: Bool) -> UIAccessibilityCustomAction {
+        UIAccessibilityCustomAction(
+            name: isClosed ? "Show Favorites" : "Hide Favorites"
+        ) { [weak self] _ in
+            self?.toggleExpansion(of: tab)
+            return true
+        }
+    }
+
     /// Flip `tab` between open and closed.
     ///
     /// This edits the live section snapshot directly instead of going through
@@ -599,10 +637,12 @@ final class SidebarViewController: UIViewController {
             snapshot.expand([parent])
             expandedSections.insert(tab)
         }
-        dataSource.apply(snapshot, to: .tabs, animatingDifferences: true)
         // The parent's own badge appears or disappears with the toggle, and its
-        // identity did not change, so the apply alone will not repaint it.
-        reconfigureVisibleRows()
+        // identity did not change, so the apply alone will not repaint it. From
+        // the completion for the same reason as in `applySnapshot`.
+        dataSource.apply(snapshot, to: .tabs, animatingDifferences: true) { [weak self] in
+            self?.reconfigureVisibleRows()
+        }
     }
 
     // MARK: - Selection
@@ -626,8 +666,14 @@ final class SidebarViewController: UIViewController {
 
 extension SidebarViewController: UIGestureRecognizerDelegate {
     /// Let the double-click recognizer run alongside the collection view's own
-    /// selection and drag recognizers. Without this the two compete and one of
-    /// them loses — which is how a stray recognizer here swallows single clicks.
+    /// selection and drag recognizers instead of excluding them.
+    ///
+    /// Belt-and-braces, not the actual cure: what broke single clicks was touch
+    /// DELIVERY, not recognizer arbitration. A tap recognizer withholds
+    /// `touchesEnded` from the view while it is still deciding, and cancels it
+    /// outright once it recognizes — which `delaysTouchesEnded = false` and
+    /// `cancelsTouchesInView = false` are what actually fix. This only removes
+    /// the remaining mutual exclusion.
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
