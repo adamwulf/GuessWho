@@ -55,6 +55,11 @@ final class GuidePlacesListViewController: UIViewController {
     private var refreshButton: UIBarButtonItem!
     private var isRefreshing = false
     private var filterButton: UIBarButtonItem!
+    /// Favorites / unfavorites the GUIDE this list belongs to — not a place.
+    /// A guide has no detail view of its own, so this drill-in list is its
+    /// detail surface, exactly as the member list is a group's (see
+    /// `GroupMembersListViewController.favoriteBarButton`).
+    private var favoriteBarButton: UIBarButtonItem!
 
     /// Set true when a reload / resolution notification arrives during an active
     /// drag, so we can defer the `dataSource.apply` until the drag ends. Applying
@@ -245,10 +250,33 @@ final class GuidePlacesListViewController: UIViewController {
         ) { [weak repository] filter in
             repository?.placeFilter = filter
         }
+        favoriteBarButton = UIBarButtonItem(
+            image: nil,
+            style: .plain,
+            target: self,
+            action: #selector(toggleGuideFavorite)
+        )
         // The first item is the trailing (top-right) item. Preserve Refresh in
         // that position, with the sort glyph beside it and the filter glyph on
-        // the left. Left-to-right the user reads: filter, sort, refresh.
-        navigationItem.rightBarButtonItems = [refreshButton, sortButton, filterButton]
+        // the left. Left-to-right the user reads: star, filter, sort, refresh —
+        // the star nearest the title, like the group member list's.
+        navigationItem.rightBarButtonItems = [refreshButton, sortButton, filterButton, favoriteBarButton]
+        updateFavoriteButton()
+    }
+
+    /// Repaint the star to reflect this guide's current favorite state.
+    private func updateFavoriteButton() {
+        let isFavorited = favoritesStore.isFavorite(kind: .guide, id: guide.id.uuidString)
+        favoriteBarButton.image = UIImage(systemName: isFavorited ? "star.fill" : "star")
+        favoriteBarButton.accessibilityLabel = isFavorited ? "Unfavorite" : "Favorite"
+    }
+
+    /// Toggle this guide's favorite. The store posts `.favoritesDidChange`,
+    /// which repaints the star here (through the observer below) and on every
+    /// other favorites surface — the Guides list row, the Favorites list, and
+    /// the Catalyst sidebar children.
+    @objc private func toggleGuideFavorite() {
+        favoritesStore.toggle(kind: .guide, id: guide.id.uuidString)
     }
 
     @objc
@@ -342,6 +370,10 @@ final class GuidePlacesListViewController: UIViewController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                // The guide's own star first, and OUTSIDE the row refresh: it
+                // is a nav-bar item rather than a snapshot apply, so the
+                // mid-drag gate below must not hold it back.
+                self?.updateFavoriteButton()
                 self?.refreshFavoriteStatus()
             }
         }

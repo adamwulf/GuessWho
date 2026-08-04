@@ -129,12 +129,16 @@ Two entry shapes exist:
 
 ## UI shape
 
-`GuidesListViewController` (guides + place counts, with a trailing star/unstar
-button on each row and a nav-bar sort pull-down — `GuideSortOrder`: Name A–Z /
-Z–A, Recently Added (the default, newest import first), Last Viewed; persisted
+`GuidesListViewController` (guides + place counts, with a passive trailing star
+on favorited rows, a trailing-swipe Favorite/Unfavorite beside Remove, and a
+nav-bar sort pull-down — `GuideSortOrder`: Name A–Z / Z–A, Recently Added (the
+default, newest import first), Last Viewed; persisted
 per-install by `GuideSortOrderSetting`; opening a guide stamps its
 `lastViewedAt`) → push → `GuidePlacesListViewController` (places with inline
-name/address search and a nav-bar sort pull-down — `PlaceSortOrder`: Guide Order
+name/address search, a nav-bar star that favorites/unfavorites **the guide**
+itself — a guide has no detail view, so this list is its detail surface, the
+same shape `GroupMembersListViewController` gives a group — and a nav-bar sort
+pull-down — `PlaceSortOrder`: Guide Order
 (the default, the share-link entry order), Name A–Z / Z–A, Last Viewed;
 persisted per-install by `PlaceSortOrderSetting`; opening a place stamps its
 `lastViewedAt`; the package's `places(inGuide:)` stays in canonical guide order,
