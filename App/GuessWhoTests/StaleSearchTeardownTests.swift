@@ -72,6 +72,12 @@ struct StaleSearchTeardownTests {
     /// share one identity and collapse into a single row. Give each a GuessWho
     /// URL instead — that is the app's real identity, and the only one a
     /// non-`@testable` caller can set.
+    ///
+    /// This buys distinct ROWS, not distinct CELL CONTENT: `contact(id:)`
+    /// resolves a GuessWho ID through `localID`, which is `""` for every fixture
+    /// here, so all rows would render the same `Contact`. These tests only count
+    /// rows, so it does not matter — but do not add a content assertion on top
+    /// of these fixtures without giving them real `localID`s first.
     private func identified(
         uuid: String,
         givenName: String = "",
@@ -122,8 +128,11 @@ struct StaleSearchTeardownTests {
         #expect(repository.peopleSearch == "lovelace")
         #expect(try rowCount(in: first) == 1)
 
-        // Tear the first list down the way a sidebar section switch does: the
-        // window stops holding it, and a brand new controller replaces it.
+        // Replace it the way a sidebar section switch does. Note `first` stays
+        // strongly referenced to the end of this test, so its `deinit` does NOT
+        // run — and the assertions below still hold. That is the point of the
+        // mount-time design: the new list corrects the query itself, with no
+        // dependency on when (or whether) the old one is deallocated.
         window.rootViewController = nil
 
         let second = ContactsListViewController(
@@ -199,6 +208,11 @@ struct StaleSearchTeardownTests {
     /// stale query means none. The `viewDidLoad` reload runs in a `Task` and
     /// cannot interleave before the assertions — there is no `await` between
     /// mounting and reading.
+    ///
+    /// `showsPagingRows` has two other gates, `sortOrder == .chronological` and
+    /// `filter != .linked`, so these counts also ride the repository's defaults
+    /// for both. If a future default changes, this test goes to 0 rows
+    /// everywhere and fails loudly rather than passing vacuously.
     @Test
     func aFreshEventsListStartsWithNoQuery() async throws {
         let root = try makeTempRoot()

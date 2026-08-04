@@ -158,13 +158,13 @@ final class EventsListViewController: UIViewController {
     /// republish is here and not in a teardown hook — identical reasoning,
     /// `searchText` instead of `peopleSearch`.
     ///
-    /// `repository.filter` is deliberately NOT reset alongside it: its menu is
-    /// rebuilt from `repository.filter` every time it opens
-    /// (`makeEventFilterMenu`), so the control and the value cannot drift apart
-    /// the way an empty search bar and a live query can. The button itself is
-    /// icon-only, so a surviving filter is no more discoverable at a glance than
-    /// a surviving query was — but it is at least self-consistent, which is the
-    /// property this fix is about.
+    /// `repository.filter` is deliberately NOT reset alongside it: it posts a
+    /// reload from its `didSet`, and the reload observer rebuilds this list's
+    /// filter menu, so its checkmark tracks the value. `searchText` is a bare
+    /// `var` with no `didSet`, which is why a bar and a query can drift apart
+    /// while a filter and its menu cannot. Neither glyph shows its value without
+    /// opening the menu, but only the empty search bar actively misrepresents
+    /// what is in force.
     private func configureSearch() {
         searchController = UISearchController(searchResultsController: nil)
         searchController.obscuresBackgroundDuringPresentation = false
