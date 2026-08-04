@@ -19,6 +19,19 @@ final class PlacesListViewController: UIViewController {
 
     private var tableView: UITableView!
     private var dataSource: PlacesDataSource!
+    private var searchController: UISearchController!
+
+    /// The live search query, exactly as the search bar shows it. Per-view
+    /// state rather than a shared `GuidesRepository` field — see
+    /// `GuidePlacesListViewController.searchQuery` for why that is the safer
+    /// half of the trade. Read it through `trimmedSearchQuery`, never raw.
+    private var searchQuery = ""
+
+    /// `searchQuery` without its surrounding whitespace — the form the matcher
+    /// and the empty-state string use. Empty means "no search in force".
+    private var trimmedSearchQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     private var placesByID: [UUID: MapsPlace] = [:]
 
@@ -79,6 +92,7 @@ final class PlacesListViewController: UIViewController {
         configureEmptyState()
         configureDataSource()
         configureNavigationButtons()
+        configureSearch()
         observeRepositoryReloads()
 
         // Paint whatever the repository already cached, then kick a fresh
@@ -120,8 +134,28 @@ final class PlacesListViewController: UIViewController {
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            // Keyboard guide, not safe area: rows stay above the search
+            // keyboard instead of hiding under it. With no keyboard the guide
+            // rests at the safe-area bottom, so this is the same constraint
+            // the rest of the time. (The People / Events lists pin the same
+            // way — see `UISearchController.installKeyboardDismissal`.)
+            tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+    }
+
+    /// Installs the inline search bar — the same shape as the per-guide list
+    /// and the People / Events lists. See
+    /// `GuidePlacesListViewController.configureSearch` for why nothing is
+    /// republished to the repository.
+    private func configureSearch() {
+        searchController = UISearchController(searchResultsController: nil)
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchResultsUpdater = self
+        searchController.searchBar.placeholder = "Search places"
+        searchController.installKeyboardDismissal(for: tableView)
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+        searchQuery = searchController.searchBar.text ?? ""
     }
 
     private func configureEmptyState() {
@@ -240,8 +274,43 @@ final class PlacesListViewController: UIViewController {
         return .idle
     }
 
-    private func applySnapshot(animated: Bool) {
+    /// The repository's sections — already Linked-filtered and ordered by
+    /// `allPlacesSortOrder` — narrowed to the live search query, with sections
+    /// the query empties dropped so no bare header survives its rows.
+    ///
+    /// Works on either snapshot shape without caring which: `.byGuide` hands
+    /// over one section per guide and the flat orders one big section, and
+    /// filtering rows inside a section disturbs neither the section order nor
+    /// the row order within it.
+    ///
+    /// The guide name is passed alongside each place, so typing a guide's name
+    /// keeps that guide's places — which is what the rows themselves promise on
+    /// this tab: the flat sorts caption every row with its guide, and `.byGuide`
+    /// heads every section with it. Requires `guideNamesByID` to be current,
+    /// hence the rebuild before the call.
+    private func searchedSections() -> [UnifiedPlaceSection] {
         let sections = repository.unifiedPlaceSections()
+        let query = trimmedSearchQuery
+        guard !query.isEmpty else { return sections }
+        return sections.compactMap { section in
+            let kept = section.places.filter {
+                $0.matchesPlaceSearch(query, guideName: guideNamesByID[$0.guideID])
+            }
+            guard !kept.isEmpty else { return nil }
+            return UnifiedPlaceSection(guideID: section.guideID, title: section.title, places: kept)
+        }
+    }
+
+    private func applySnapshot(animated: Bool) {
+        // Names first: the search matcher reads them (see `searchedSections`),
+        // as does the flat sorts' per-row caption and the remove confirmation.
+        var names: [UUID: String] = [:]
+        for guide in repository.guides {
+            names[guide.id] = guide.name
+        }
+        guideNamesByID = names
+
+        let sections = searchedSections()
 
         var byID: [UUID: MapsPlace] = [:]
         for section in sections {
@@ -250,12 +319,6 @@ final class PlacesListViewController: UIViewController {
             }
         }
         placesByID = byID
-
-        var names: [UUID: String] = [:]
-        for guide in repository.guides {
-            names[guide.id] = guide.name
-        }
-        guideNamesByID = names
 
         var snapshot = NSDiffableDataSourceSnapshot<PlacesSection, UUID>()
         for section in sections {
@@ -271,9 +334,17 @@ final class PlacesListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
-        emptyLabel.text = repository.placeFilter == .linked
-            ? "No Linked Places"
-            : "No Places\nShare an Apple Maps guide link to add one."
+        // Name the query when one is in force: the stock copy invites the user
+        // to share a guide link, which is the wrong advice for someone whose
+        // places are simply filtered out by what they typed.
+        let query = trimmedSearchQuery
+        if byID.isEmpty && !query.isEmpty {
+            emptyLabel.text = "No places match “\(query)”."
+        } else if repository.placeFilter == .linked {
+            emptyLabel.text = "No Linked Places"
+        } else {
+            emptyLabel.text = "No Places\nShare an Apple Maps guide link to add one."
+        }
         emptyLabel.isHidden = !byID.isEmpty || !hasLoaded || repository.isLoading
     }
 
@@ -364,6 +435,54 @@ extension PlacesListViewController: UITableViewDelegate {
 extension PlacesListViewController: ScrollsToTop {
     func scrollToTop(animated: Bool) {
         tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
+// MARK: - UISearchResultsUpdating
+
+extension PlacesListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let text = searchController.searchBar.text ?? ""
+        guard searchQuery != text else { return }
+        searchQuery = text
+        // Nothing observes `searchQuery`, so re-snapshot here. Unanimated: the
+        // list re-filters on every keystroke, and a fade per character reads as
+        // flicker (the People and Events lists do the same).
+        applySnapshot(animated: false)
+    }
+}
+
+// MARK: - Search matching
+
+extension MapsPlace {
+    /// Case-, diacritic-, and width-insensitive substring match over the text a
+    /// place row actually shows: the place's name, its address, and — where
+    /// rows span guides — the owning guide's caption.
+    ///
+    /// Shared by BOTH place surfaces, the way `PlaceCell` is:
+    /// `GuidePlacesListViewController` passes no `guideName` (that screen IS
+    /// one guide, so the arm would match every row or none), the unified tab
+    /// always does. It lives here rather than in the package because
+    /// `MapsPlace` search has no package caller; the package's
+    /// `Contact.matches(searchQuery:)` is the model for the shape.
+    ///
+    /// `localizedStandardContains` is what makes "cafe" find "Café" and "SoHo"
+    /// find "soho" — a wider net than the People and Events lists cast with
+    /// `lowercased().contains`, and the one Apple's own search fields use.
+    ///
+    /// Unresolved rows match on whatever they already carry: an address entry
+    /// has its address from import, while a place-ID entry has neither name nor
+    /// address until the resolver fills them in, so it stays unmatchable until
+    /// then. It reappears on the reload that resolution posts.
+    ///
+    /// `query` is expected pre-trimmed; a blank one matches everything, so a
+    /// bar holding only spaces filters nothing.
+    func matchesPlaceSearch(_ query: String, guideName: String? = nil) -> Bool {
+        guard !query.isEmpty else { return true }
+        if name.localizedStandardContains(query) { return true }
+        if let address, address.localizedStandardContains(query) { return true }
+        if let guideName, guideName.localizedStandardContains(query) { return true }
+        return false
     }
 }
 

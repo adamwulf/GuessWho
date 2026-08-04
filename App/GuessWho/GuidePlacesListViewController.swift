@@ -16,6 +16,25 @@ final class GuidePlacesListViewController: UIViewController {
 
     private var tableView: UITableView!
     private var dataSource: UITableViewDiffableDataSource<Int, UUID>!
+    private var searchController: UISearchController!
+
+    /// The live search query, exactly as the search bar shows it.
+    ///
+    /// Unlike the People / Events / Organizations lists — whose queries live on
+    /// their shared repository and so can outlive the list that typed them (see
+    /// `ContactsListViewController.configureSearch`) — this one is per-view
+    /// state, because `GuidesRepository` is out of this list's reach to extend.
+    /// That makes the bar and the filter agree by construction: a fresh list
+    /// gets a fresh, empty bar AND a fresh, empty query, and the two die
+    /// together. Read it through `trimmedSearchQuery`, never raw.
+    private var searchQuery = ""
+
+    /// `searchQuery` without its surrounding whitespace — the form every
+    /// matcher, empty-state string, and drag guard uses. Empty means "no
+    /// search in force", so a bar holding only spaces filters nothing.
+    private var trimmedSearchQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     private var placesByID: [UUID: MapsPlace] = [:]
 
@@ -82,6 +101,7 @@ final class GuidePlacesListViewController: UIViewController {
         configureEmptyState()
         configureDataSource()
         configureNavigationButtons()
+        configureSearch()
         observeRepositoryReloads()
 
         applySnapshot(animated: false)
@@ -131,12 +151,41 @@ final class GuidePlacesListViewController: UIViewController {
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            // Keyboard guide, not safe area: rows stay above the search
+            // keyboard instead of hiding under it. With no keyboard the guide
+            // rests at the safe-area bottom, so this is the same constraint
+            // the rest of the time. (The People / Events lists pin the same
+            // way — see `UISearchController.installKeyboardDismissal`.)
+            tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+    }
+
+    /// Installs the inline search bar, the same shape the People and Events
+    /// lists use: no dimming (rows stay live under the bar), always visible
+    /// rather than hiding on scroll, and both keyboard escape hatches.
+    ///
+    /// No republish-to-the-repository step here, unlike those lists: the query
+    /// is this view controller's own (see `searchQuery`), so there is no shared
+    /// field a stale query could linger in.
+    private func configureSearch() {
+        searchController = UISearchController(searchResultsController: nil)
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchResultsUpdater = self
+        searchController.searchBar.placeholder = "Search places"
+        searchController.installKeyboardDismissal(for: tableView)
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+        // Mirror the bar rather than assigning "", so the invariant reads as
+        // "the filter is whatever the user can see in the bar" — still correct
+        // if state restoration ever seeds the bar with text.
+        searchQuery = searchController.searchBar.text ?? ""
     }
 
     private func configureEmptyState() {
         emptyLabel.text = "No Places"
+        // Multi-line, like the unified Places tab's label: the no-matches copy
+        // quotes the user's query back, which a one-line label would truncate.
+        emptyLabel.numberOfLines = 0
         emptyLabel.font = .preferredFont(forTextStyle: .body)
         emptyLabel.textColor = .secondaryLabel
         emptyLabel.textAlignment = .center
@@ -314,8 +363,23 @@ final class GuidePlacesListViewController: UIViewController {
         return .idle
     }
 
-    private func applySnapshot(animated: Bool) {
+    /// The guide's places after the repository's Linked filter and sort (both
+    /// applied by `places(inGuide:)`) and then this list's search query.
+    /// Filtering last preserves whichever order the repository handed back, so
+    /// search composes with every sort instead of replacing it.
+    ///
+    /// No guide name is passed to the matcher: every row on this screen belongs
+    /// to the SAME guide, so a guide-name arm would match all rows or none —
+    /// the unified Places tab is where that arm earns its keep.
+    private func searchedPlaces() -> [MapsPlace] {
         let places = repository.places(inGuide: guide.id)
+        let query = trimmedSearchQuery
+        guard !query.isEmpty else { return places }
+        return places.filter { $0.matchesPlaceSearch(query) }
+    }
+
+    private func applySnapshot(animated: Bool) {
+        let places = searchedPlaces()
 
         var byID: [UUID: MapsPlace] = [:]
         for place in places {
@@ -334,7 +398,16 @@ final class GuidePlacesListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
-        emptyLabel.text = repository.placeFilter == .linked ? "No Linked Places" : "No Places"
+        // Name the query when one is in force: "No Places" under an active
+        // search would read as an empty guide rather than an empty result.
+        let query = trimmedSearchQuery
+        if places.isEmpty && !query.isEmpty {
+            emptyLabel.text = "No places match “\(query)”."
+        } else if repository.placeFilter == .linked {
+            emptyLabel.text = "No Linked Places"
+        } else {
+            emptyLabel.text = "No Places"
+        }
         emptyLabel.isHidden = !places.isEmpty
     }
 
@@ -434,6 +507,24 @@ extension GuidePlacesListViewController: ScrollsToTop {
 // MARK: - Drag & drop reorder
 
 extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDropDelegate {
+    /// Whether a hand-reorder can be persisted right now. All three conditions
+    /// are about the same hazard: the rows on screen must BE the guide's
+    /// canonical order, because `movePlaces(inGuide:from:to:)` renumbers every
+    /// place from the moved row positions.
+    ///
+    /// - `.guideOrder` — the other orders are derived, so a drop in them has
+    ///   nothing to persist.
+    /// - `.all` — the Linked filter hides rows, so dropping between two
+    ///   survivors would renumber past the hidden ones.
+    /// - no search — likewise, and more so: a query can hide any subset, so a
+    ///   filtered drop would rewrite the whole guide's order from a handful of
+    ///   visible rows.
+    private var canReorder: Bool {
+        repository.placeSortOrder == .guideOrder
+            && repository.placeFilter == .all
+            && trimmedSearchQuery.isEmpty
+    }
+
     func tableView(
         _ tableView: UITableView,
         itemsForBeginning session: UIDragSession,
@@ -442,8 +533,7 @@ extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDro
         // Reordering only makes sense in the guide's own entry order — the
         // Name / Last Viewed orders are derived, so hand-placing a row there
         // has nothing to persist. Returning [] disables the drag lift.
-        guard repository.placeSortOrder == .guideOrder,
-              repository.placeFilter == .all,
+        guard canReorder,
               dataSource.itemIdentifier(for: indexPath) != nil else { return [] }
         // Empty provider — the drop path uses item.sourceIndexPath, so there's
         // nothing to encode (mirrors FavoritesListViewController).
@@ -455,16 +545,17 @@ extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDro
         dropSessionDidUpdate session: UIDropSession,
         withDestinationIndexPath destinationIndexPath: IndexPath?
     ) -> UITableViewDropProposal {
-        guard repository.placeSortOrder == .guideOrder,
-              repository.placeFilter == .all else {
+        guard canReorder else {
             return UITableViewDropProposal(operation: .cancel)
         }
         return UITableViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
     }
 
     func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
-        guard repository.placeSortOrder == .guideOrder,
-              repository.placeFilter == .all else { return }
+        // Re-checked here, not just at lift time: a query typed (or a sort or
+        // filter changed) mid-drag must not land a reorder computed from the
+        // rows the drag started with.
+        guard canReorder else { return }
         let destination = coordinator.destinationIndexPath
             ?? IndexPath(row: tableView.numberOfRows(inSection: 0), section: 0)
 
@@ -499,5 +590,21 @@ extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDro
     }
 }
 
+// MARK: - UISearchResultsUpdating
+
+extension GuidePlacesListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let text = searchController.searchBar.text ?? ""
+        guard searchQuery != text else { return }
+        searchQuery = text
+        // Nothing observes `searchQuery`, so re-snapshot here. Unanimated: the
+        // list re-filters on every keystroke, and a fade per character reads as
+        // flicker (the People and Events lists do the same).
+        applySnapshot(animated: false)
+    }
+}
+
 // The row cell lives in `PlaceCell.swift`, shared with the unified Places
-// tab (`PlacesListViewController`).
+// tab (`PlacesListViewController`). The row matcher
+// (`MapsPlace.matchesPlaceSearch`) is likewise shared, and lives in
+// `PlacesListViewController.swift` — the surface that needs its guide-name arm.
