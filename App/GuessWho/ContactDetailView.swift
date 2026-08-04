@@ -1639,6 +1639,12 @@ struct ContactDetailView: View {
         for item in contact.socialProfiles {
             rows.append(socialProfileRow(item))
         }
+        // No LinkedIn link on file: offer a search in the same slot the profile
+        // row would occupy, so the card still has a LinkedIn entry point (find
+        // them → import with the browser extension).
+        if let searchRow = linkedInSearchRow(for: contact) {
+            rows.append(searchRow)
+        }
         for item in contact.instantMessageAddresses {
             rows.append(.text(label: instantMessageLabel(item), value: item.value.username))
         }
@@ -2533,6 +2539,21 @@ struct ContactDetailView: View {
         return .text(label: label, value: socialProfileValue(profile))
     }
 
+    /// The stand-in row for a contact with no LinkedIn link: a "Search
+    /// LinkedIn" link that opens LinkedIn's search for this person's name,
+    /// narrowed by their organization when they have one. An organization
+    /// record searches companies for the organization name alone.
+    ///
+    /// `nil` when the contact already links to LinkedIn (that row covers it) or
+    /// has no name, nickname, or organization to search for.
+    private func linkedInSearchRow(for contact: Contact) -> InfoRowData? {
+        guard !contact.hasLinkedInLink,
+              let url = LinkedInSearch.url(for: contact) else {
+            return nil
+        }
+        return .link(label: "LinkedIn", title: "Search LinkedIn", urlString: url.absoluteString)
+    }
+
     private func instantMessageLabel(_ labeled: LabeledInstantMessageAddress) -> String {
         let service = labeled.value.service
         if !labeled.label.isEmpty {
@@ -2665,6 +2686,10 @@ private struct InfoRowData: Identifiable {
         case phone(number: String)
         case email(address: String)
         case url(urlString: String)
+        /// A tappable web link whose row shows `title` instead of the URL —
+        /// for a link the app synthesizes (e.g. "Search LinkedIn"), where the
+        /// raw URL is machinery the user doesn't need to read.
+        case link(title: String, urlString: String)
         case address(PostalAddress)
         case date(components: DateComponents, formatted: String)
         case contactLink(displayName: String, contactID: ContactID)
@@ -2708,6 +2733,7 @@ private struct InfoRowData: Identifiable {
         case .phone(let number): kindKey = "phone|\(number)"
         case .email(let address): kindKey = "email|\(address)"
         case .url(let urlString): kindKey = "url|\(urlString)"
+        case .link(let title, let urlString): kindKey = "link|\(title)|\(urlString)"
         case .address(let address): kindKey = "address|\(String(describing: address))"
         case .date(_, let formatted): kindKey = "date|\(formatted)"
         case .contactLink(let displayName, let contactID): kindKey = "contactLink|\(displayName)|\(String(describing: contactID))"
@@ -2728,6 +2754,11 @@ private struct InfoRowData: Identifiable {
     }
     static func url(label: String, urlString: String, isOld: Bool = false) -> InfoRowData {
         InfoRowData(label: label, kind: .url(urlString: urlString), group: .url, isOld: isOld)
+    }
+    /// A synthesized link row. No `group`: it isn't one of the contact's own
+    /// website values, so it never collapses behind the url group's "more…".
+    static func link(label: String, title: String, urlString: String) -> InfoRowData {
+        InfoRowData(label: label, kind: .link(title: title, urlString: urlString))
     }
     static func address(label: String, address: PostalAddress, isOld: Bool = false) -> InfoRowData {
         InfoRowData(label: label, kind: .address(address), group: .address, isOld: isOld)
@@ -2781,6 +2812,13 @@ private struct InfoRow: View {
             // the contact is left untouched.
             let displayURL = httpsDisplayURLString(urlString)
             TappableInfoRow(label: data.label, value: displayURL, url: URL(string: displayURL),
+                            stampsInteraction: false, allowsCopy: false)
+        case .link(let title, let urlString):
+            // Same tappable treatment as `.url`, but the row reads as the
+            // ACTION (`title`) while `value` stays the URL, so Copy and the
+            // "Open in Safari" context item still get the real target.
+            TappableInfoRow(label: data.label, value: urlString, displayValue: title,
+                            url: URL(string: urlString),
                             stampsInteraction: false, allowsCopy: false)
         case .address(let address):
             AddressRow(label: data.label, address: address)
