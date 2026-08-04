@@ -7,18 +7,26 @@ public enum FavoriteKind: String, Codable, Sendable {
     /// UUID — it is keyed by its Contacts `localID` (`CNGroup.identifier`), which
     /// is stored (lowercased, like every favorite `id`) as the favorite's `id`.
     case group
+    /// An imported Apple Maps guide, keyed by its minted `MapsGuide.id` UUID.
+    case guide
+    /// One place inside an imported guide, keyed by its minted `MapsPlace.id`
+    /// UUID. A place favorite stands on its own — it does NOT imply that the
+    /// guide holding the place is favorited.
+    case place
 }
 
 public struct Favorite: Codable, Sendable, Hashable {
     public let kind: FavoriteKind
-    /// Lowercased UUID of the referent (the contact or event sidecar UUID).
+    /// Lowercased identifier of the referent: the sidecar UUID for a contact,
+    /// event, guide, or place; the Contacts `localID` for a group.
     public let id: String
     public let addedAt: Date
 
     /// Composite identity for SwiftUI iteration: `"contact:<uuid>"` /
-    /// `"event:<uuid>"`. Two favorites with the same `id` but different
-    /// kinds remain distinguishable, even though the current schema never
-    /// produces a collision.
+    /// `"event:<uuid>"` / `"guide:<uuid>"` / `"place:<uuid>"`. Two favorites
+    /// with the same `id` but different kinds remain distinguishable — which a
+    /// guide and its own places never are today, but the composite keeps that
+    /// guarantee free of any per-kind uniqueness assumption.
     public var stableID: String { "\(kind.rawValue):\(id)" }
 
     public init(kind: FavoriteKind, id: String, addedAt: Date) {

@@ -68,6 +68,62 @@ struct FavoritesStoreTests {
     }
 
     @Test
+    func guideAndPlaceFavoritesRoundTripThroughDisk() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        // Guides and places are keyed on their minted sidecar UUID, handed in as
+        // an uppercase `uuidString` and persisted lowercased like every id.
+        let guideID = "AAAAAAAA-0000-0000-0000-0000000000A1"
+        let placeID = "BBBBBBBB-0000-0000-0000-0000000000B2"
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        #expect(try store.toggle(kind: .guide, id: guideID, now: now) == true)
+        #expect(try store.toggle(kind: .place, id: placeID, now: now.addingTimeInterval(1)) == true)
+
+        let reloaded = try store.loadAll()
+        #expect(reloaded.map(\.kind) == [.guide, .place])
+        #expect(reloaded.map(\.id) == [guideID.lowercased(), placeID.lowercased()])
+        #expect(try store.isFavorite(kind: .guide, id: guideID.lowercased()) == true)
+        // A place favorite is its own record: favoriting the place did not
+        // favorite its guide, and the two kinds never answer for each other.
+        #expect(try store.isFavorite(kind: .guide, id: placeID) == false)
+        #expect(try store.isFavorite(kind: .place, id: guideID) == false)
+
+        #expect(try store.toggle(kind: .guide, id: guideID, now: now.addingTimeInterval(2)) == false)
+        #expect(try store.loadAll().map(\.kind) == [.place])
+    }
+
+    @Test
+    func guideAndPlaceKindsDecodeFromTheirPersistedRawValues() throws {
+        // Pin the on-disk spelling: a favorite written by another device (or an
+        // earlier build) must decode to the same kind, so these raw values can
+        // never be renamed silently.
+        let json = """
+        {
+          "version": 1,
+          "items": [
+            {"kind": "guide", "id": "aaaaaaaa-0000-0000-0000-0000000000a1", "addedAt": "2026-08-01T12:00:00Z"},
+            {"kind": "place", "id": "bbbbbbbb-0000-0000-0000-0000000000b2", "addedAt": "2026-08-01T12:00:01Z"}
+          ]
+        }
+        """
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        try Data(json.utf8).write(to: store.fileURL, options: .atomic)
+
+        let items = try store.loadAll()
+        #expect(items.map(\.kind) == [.guide, .place])
+        #expect(items[0].stableID == "guide:aaaaaaaa-0000-0000-0000-0000000000a1")
+        #expect(items[1].stableID == "place:bbbbbbbb-0000-0000-0000-0000000000b2")
+        // The pre-existing kinds still encode to what they always did.
+        #expect(FavoriteKind.contact.rawValue == "contact")
+        #expect(FavoriteKind.event.rawValue == "event")
+        #expect(FavoriteKind.group.rawValue == "group")
+    }
+
+    @Test
     func removeIsIdempotentAndDoesNotToggleAnAbsentFavoriteOn() throws {
         let root = makeRoot()
         defer { cleanup(root) }
