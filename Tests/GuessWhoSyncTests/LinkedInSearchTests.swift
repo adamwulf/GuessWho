@@ -251,7 +251,7 @@ struct LinkedInSearchTests {
         #expect(LinkedInSearch.url(for: contact) != nil)
     }
 
-    @Test("A company path with no slug is not a LinkedIn page",
+    @Test("A company path with no slug, or on the wrong host, is not an org page",
           arguments: [
             "https://www.linkedin.com/company/",
             "https://www.linkedin.com/company",
