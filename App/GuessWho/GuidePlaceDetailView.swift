@@ -193,8 +193,10 @@ struct GuidePlaceDetailView: View {
     /// Non-interactive (`allowsHitTesting(false)`) so pans and taps fall through
     /// to the list — "Open in Maps" two rows down is the action; a second silent
     /// tap target would only duplicate it. Same treatment as the contact
-    /// detail's address-row thumbnails — same 4:3 shape, but full-bleed and
-    /// sized off the row width instead of a fixed 96×72 inset.
+    /// detail's address-row thumbnails — same 4:3 shape and same 0.01° span,
+    /// but full-bleed and sized off the row width instead of a fixed 96×72
+    /// inset. The span is wide enough to show the streets around the pin, so
+    /// the place reads in context and not as a marker on empty tile.
     ///
     /// Omitted while a place-ID entry is still waiting on its coordinate; the
     /// row appears on its own when the resolution pass lands, since the view
@@ -211,7 +213,7 @@ struct GuidePlaceDetailView: View {
             let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
             Map(initialPosition: .region(MKCoordinateRegion(
                 center: coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
             ))) {
                 Marker("", coordinate: coordinate)
                     .tint(.red)
