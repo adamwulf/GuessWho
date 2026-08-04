@@ -53,7 +53,7 @@ final class OrganizationsListViewController: UIViewController {
     private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
 
     /// See `ContactsListViewController.pendingSelection`.
-    private var pendingSelection: ContactID?
+    private let pendingSelection = PendingRowSelection<ContactID>()
 
     init(
         repository: ContactsRepository,
@@ -107,21 +107,17 @@ final class OrganizationsListViewController: UIViewController {
     /// `ContactsListViewController.select(contactID:)` for the full contract,
     /// including why it is safe to call before the first snapshot lands.
     func select(contactID id: ContactID) {
-        pendingSelection = id
+        pendingSelection.request(id)
         applyPendingSelection()
     }
 
     /// See `ContactsListViewController.applyPendingSelection`.
     private func applyPendingSelection() {
-        guard isViewLoaded,
-              let id = pendingSelection,
-              let indexPath = dataSource.indexPath(for: id),
-              indexPath.section < tableView.numberOfSections,
-              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
-        else { return }
-        pendingSelection = nil
-        selectionRecency.recordSelection(of: id)
-        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
+        guard isViewLoaded else { return }
+        let selected = pendingSelection.applyIfPossible(in: tableView) { [self] id in
+            dataSource.indexPath(for: id)
+        }
+        selectionRecency.recordSelection(of: selected)
     }
 
     // MARK: - Table view
@@ -401,7 +397,7 @@ extension OrganizationsListViewController: UITableViewDelegate {
         selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
         // See `ContactsListViewController.tableView(_:didSelectRowAt:)` — a user
         // pick retires an unfulfilled sidebar request.
-        pendingSelection = nil
+        pendingSelection.cancel()
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -417,6 +413,11 @@ extension OrganizationsListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? OrganizationCell)?.cancelPhotoLoad()
+    }
+
+    /// See `ContactsListViewController.scrollViewWillBeginDragging(_:)`.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     /// Right-click / long-press menu. Leaves the selection untouched — see

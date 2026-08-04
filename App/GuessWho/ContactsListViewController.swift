@@ -69,10 +69,9 @@ final class ContactsListViewController: UIViewController {
     /// multi-selection fronts the contact the user picked last.
     private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
 
-    /// Row `select(contactID:)` asked for that hasn't been highlighted yet
-    /// because its row wasn't in the snapshot when the request arrived. Cleared
-    /// the moment the row exists; see `applyPendingSelection`.
-    private var pendingSelection: ContactID?
+    /// The sidebar's outstanding "select this row" request, if any. See
+    /// `PendingRowSelection`.
+    private let pendingSelection = PendingRowSelection<ContactID>()
 
     init(
         repository: ContactsRepository,
@@ -137,25 +136,21 @@ final class ContactsListViewController: UIViewController {
     /// request is held and retried after every apply, so the row is highlighted
     /// when the data arrives rather than dropped.
     func select(contactID id: ContactID) {
-        pendingSelection = id
+        pendingSelection.request(id)
         applyPendingSelection()
     }
 
-    /// Consume `pendingSelection` once its row is actually in the table. Called
-    /// after every apply, so a row that only appears with a later reload still
-    /// gets selected; the request stays pending until then.
+    /// Try to consume the request. Called after every apply, so a row that only
+    /// appears with a later reload still gets selected.
     private func applyPendingSelection() {
-        guard isViewLoaded,
-              let id = pendingSelection,
-              let indexPath = dataSource.indexPath(for: id),
-              indexPath.section < tableView.numberOfSections,
-              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
-        else { return }
-        pendingSelection = nil
-        // Stamp the recency tracker the way a tap would, so a follow-up
-        // shift-click range extends from this row.
-        selectionRecency.recordSelection(of: id)
-        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
+        guard isViewLoaded else { return }
+        let selected = pendingSelection.applyIfPossible(in: tableView) { [self] id in
+            dataSource.indexPath(for: id)
+        }
+        // A programmatic selection sends no delegate callback, so stamp the
+        // recency tracker here the way a tap would — a follow-up shift-click
+        // range then extends from this row. Ignored when nothing was selected.
+        selectionRecency.recordSelection(of: selected)
     }
 
     // MARK: - Table view
@@ -516,7 +511,7 @@ extension ContactsListViewController: UITableViewDelegate {
         // The user picked a row, so drop any still-unfulfilled sidebar request:
         // honoring it on a later reload would add a second highlighted row to
         // this multi-selection table.
-        pendingSelection = nil
+        pendingSelection.cancel()
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -534,6 +529,13 @@ extension ContactsListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         (cell as? ContactCell)?.cancelPhotoLoad()
+    }
+
+    /// The user is scrolling this list themselves, so retire an unfulfilled
+    /// sidebar request — a reload landing minutes later must not scroll a row
+    /// they have moved on from back into view.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     /// Right-click (Catalyst) / long-press (iPhone, iPad). Deliberately does NOT

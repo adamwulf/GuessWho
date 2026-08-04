@@ -45,10 +45,9 @@ final class EventsListViewController: UIViewController {
 
     private var eventsByID: [UUID: Event] = [:]
 
-    /// Row `select(eventID:)` asked for that hasn't been highlighted yet
-    /// because it wasn't in the snapshot when the request arrived. See
-    /// `ContactsListViewController.pendingSelection`.
-    private var pendingSelection: UUID?
+    /// The sidebar's outstanding "select this row" request, if any. See
+    /// `PendingRowSelection`.
+    private let pendingSelection = PendingRowSelection<UUID>()
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
@@ -145,20 +144,16 @@ final class EventsListViewController: UIViewController {
     /// the request simply stays pending (the detail is shown either way) and
     /// resolves if paging ever reveals the event.
     func select(eventID id: UUID) {
-        pendingSelection = id
+        pendingSelection.request(id)
         applyPendingSelection()
     }
 
     /// See `ContactsListViewController.applyPendingSelection`.
     private func applyPendingSelection() {
-        guard isViewLoaded,
-              let id = pendingSelection,
-              let indexPath = dataSource.indexPath(for: id),
-              indexPath.section < tableView.numberOfSections,
-              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
-        else { return }
-        pendingSelection = nil
-        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
+        guard isViewLoaded else { return }
+        pendingSelection.applyIfPossible(in: tableView) { [self] id in
+            dataSource.indexPath(for: id)
+        }
     }
 
     // MARK: - Table view
@@ -646,9 +641,6 @@ final class EventsListViewController: UIViewController {
 extension EventsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         guard let itemID = dataSource.itemIdentifier(for: indexPath) else { return }
-        // The user picked a row, so retire an unfulfilled sidebar request rather
-        // than let a later reload move the selection out from under them.
-        pendingSelection = nil
         if itemID == Self.loadOlderItemID || itemID == Self.loadLaterItemID {
             tableView.deselectRow(at: indexPath, animated: true)
             let older = (itemID == Self.loadOlderItemID)
@@ -663,8 +655,20 @@ extension EventsListViewController: UITableViewDelegate {
             }
             return
         }
+        // Below the pager branch on purpose: a "Load older events" tap is a
+        // request for MORE DATA, not a pick of a record, and it is exactly the
+        // tap that can finally reveal a pending row. Only a real event row
+        // retires the request.
+        pendingSelection.cancel()
         guard let event = eventsByID[itemID] else { return }
         didSelectEvent(event)
+    }
+
+    /// See `ContactsListViewController.scrollViewWillBeginDragging(_:)`. A
+    /// manual scroll retires the request even though a pager tap doesn't: the
+    /// user is driving the list now.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     func tableView(
