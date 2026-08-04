@@ -583,7 +583,10 @@ private final class GuideCell: UITableViewCell {
         countLabel.text = placeCount == 1 ? "1 place" : "\(placeCount) places"
         self.onToggleFavorite = onToggleFavorite
         starButton.configuration?.image = UIImage(systemName: isFavorite ? "star.fill" : "star")
-        starButton.configuration?.baseForegroundColor = isFavorite ? .systemYellow : .tertiaryLabel
+        // Unstarred sits at the same weight as the "N places" caption beside
+        // it — the row keeps its selected-state tint background under both, so
+        // anything lighter would wash out on a selected row.
+        starButton.configuration?.baseForegroundColor = isFavorite ? .systemYellow : .secondaryLabel
         // Same wording as the detail views' toolbar star, so the action reads
         // identically wherever VoiceOver meets it.
         starButton.accessibilityLabel = isFavorite ? "Unfavorite" : "Favorite"

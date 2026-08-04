@@ -640,7 +640,7 @@ final class SidebarViewController: UIViewController {
     /// owns the resolution (`favoriteListItems`), so there is exactly one
     /// resolver for the Favorites list and the sidebar alike.
     private func rebuildFavoriteChildren() {
-        // Same four resolvers the Favorites list passes — see
+        // Same resolvers the Favorites list passes — see
         // `FavoritesListViewController.applySnapshot` for the id-parsing notes.
         let items = repository.favoriteListItems(
             from: store.items,

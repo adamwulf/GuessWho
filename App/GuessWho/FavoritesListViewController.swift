@@ -7,7 +7,9 @@ import GuessWhoSync
 /// SwiftUI `FavoritesListView`: swipe-to-unfavorite, drag-to-reorder,
 /// and package-vended favorite rows rebuilt on `.contactsRepositoryDidReload`
 /// (the repository's cache-changed signal, posted after the launch reload,
-/// incremental patches, and self-writes) and scene activation.
+/// incremental patches, and self-writes), `.guidesRepositoryDidReload` (the
+/// guides + places cache behind the guide and place rows), and scene
+/// activation.
 final class FavoritesListViewController: UIViewController {
     /// Selection callbacks — SceneDelegate routes each kind to the
     /// matching detail view (contact → ContactDetailView, event →
