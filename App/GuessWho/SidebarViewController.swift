@@ -125,7 +125,7 @@ final class SidebarViewController: UIViewController {
         // only `loadGroups()` fills — and the sidebar is on screen long before
         // the Groups section ever is. Kick a load so a starred group renders its
         // name instead of "Unavailable"; the resulting `.contactsRepositoryDidReload`
-        // rebuilds the children (observed below).
+        // rebuilds the children through the observer registered above.
         Task { await repository.loadGroups() }
     }
 
@@ -257,9 +257,16 @@ final class SidebarViewController: UIViewController {
     private func loadPhotoIfNeeded(for id: ContactID) {
         guard photoTasks[id] == nil else { return }
         photoTasks[id] = Task { [weak self, photoLoader] in
-            _ = await photoLoader.image(for: id, kind: .thumbnail)
+            let image = await photoLoader.image(for: id, kind: .thumbnail)
             guard let self else { return }
             self.photoTasks[id] = nil
+            // Repaint ONLY when there's something new to show. A contact with no
+            // photo keeps its initials placeholder, and reconfiguring anyway
+            // would re-enter the cell provider, find nothing cached, ask again,
+            // and spin forever. (The loader negative-caches "no photo", so the
+            // repeat asks that a later repaint does trigger are cache hits, not
+            // Contacts fetches.)
+            guard image != nil else { return }
             self.reconfigureVisibleFavoriteRows()
         }
     }
