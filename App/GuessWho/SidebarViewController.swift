@@ -660,11 +660,18 @@ final class SidebarViewController: UIViewController {
         // identity did not change, so the apply alone will not repaint it. From
         // the completion for the same reason as in `applySnapshot`.
         dataSource.apply(snapshot, to: .tabs, animatingDifferences: true) { [weak self] in
-            self?.reconfigureVisibleRows()
-            // Rows just appeared or disappeared with no announcement of their
-            // own, so a VoiceOver user who ran the custom action would otherwise
-            // hear nothing at all.
-            UIAccessibility.post(notification: .layoutChanged, argument: nil)
+            guard let self else { return }
+            self.reconfigureVisibleRows()
+
+            // Rows just appeared or disappeared, so VoiceOver's picture of this
+            // screen is stale. This SPEAKS nothing — `.layoutChanged` refreshes
+            // the element map and moves focus; it is not an announcement. The
+            // feedback is where focus lands: hand it the section's own cell, so
+            // the user is returned to the row they just acted on and hears its
+            // action read back as the opposite of what they chose.
+            let toggled = self.dataSource.indexPath(for: .section(tab))
+                .flatMap { self.collectionView.cellForItem(at: $0) }
+            UIAccessibility.post(notification: .layoutChanged, argument: toggled)
         }
     }
 

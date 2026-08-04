@@ -320,14 +320,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// column to that section's placeholder — what a click on a sidebar parent
     /// row has always done when it CHANGES section.
     ///
-    /// Asking for the section already mounted does nothing at all. Every
-    /// `install…List` builds a brand-new list VC and resets the detail column,
-    /// so without this guard re-clicking the current row would throw away the
-    /// list's scroll position, its in-flight loads, and whatever record the user
-    /// had open in the detail column. That became reachable by accident: the
-    /// sidebar's expand/collapse used to be an outline chevron, which UIKit
-    /// toggles WITHOUT selecting the row, but it is now a double click — and
-    /// each of those clicks selects the row like any other.
+    /// Asking for the section already mounted does NOT re-mount it: it only pops
+    /// that column back to the section's root, keeping the list and the detail
+    /// column as they are. Every `install…List` builds a brand-new list VC and
+    /// resets the detail column, so without this guard re-clicking the current
+    /// row would throw away the list's scroll position, its in-flight loads, and
+    /// whatever record the user had open in the detail column. That became
+    /// reachable by accident: the sidebar's expand/collapse used to be an
+    /// outline chevron, which UIKit toggles WITHOUT selecting the row, but it is
+    /// now a double click — and each of those clicks selects the row like any
+    /// other.
     private func showSection(
         _ tab: SidebarTab,
         in split: UISplitViewController,
