@@ -128,11 +128,11 @@ struct StaleSearchTeardownTests {
         #expect(repository.peopleSearch == "lovelace")
         #expect(try rowCount(in: first) == 1)
 
-        // Replace it the way a sidebar section switch does. Note `first` stays
-        // strongly referenced to the end of this test, so its `deinit` does NOT
-        // run — and the assertions below still hold. That is the point of the
-        // mount-time design: the new list corrects the query itself, with no
-        // dependency on when (or whether) the old one is deallocated.
+        // Replace it the way a sidebar section switch does. Nothing here waits
+        // for, or depends on, the old controller being deallocated — ARC may end
+        // its lifetime at its last use or hold it to the end of the test, and
+        // the assertions below hold either way. That independence is the point
+        // of the mount-time design: the NEW list corrects the query itself.
         window.rootViewController = nil
 
         let second = ContactsListViewController(

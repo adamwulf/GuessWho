@@ -169,11 +169,13 @@ final class ContactsListViewController: UIViewController {
     /// Note this is NOT the rule for every piece of shared list state.
     /// `sortOrder`, `peopleFilter`, `organizationsFilter` and the Events tab's
     /// `filter` all survive a teardown, and correctly so — but the reason is
-    /// structural, not cosmetic. Each of those posts
-    /// `.contactsRepositoryDidReload` from its `didSet`, and every list rebuilds
-    /// its pull-down menus both at mount and in that reload observer
-    /// (`refreshSortMenu` / `refreshFilterMenu`), so the checkmark always tracks
-    /// the value. The three search fields are bare `var`s with no `didSet`
+    /// structural, not cosmetic. Each posts its own repository's reload
+    /// notification from its `didSet` — `.contactsRepositoryDidReload` for the
+    /// three contact fields, `.eventsRepositoryDidReload` for the Events filter
+    /// — and every list rebuilds its pull-down menus both at mount and in that
+    /// observer (`refreshSortMenu` / `refreshFilterMenu` on the contact lists,
+    /// inline on the Events list), so the checkmark always tracks the value.
+    /// The three search fields are bare `var`s with no `didSet`
     /// (`ContactsRepository.peopleSearch` / `organizationsSearch`,
     /// `EventsRepository.searchText`) — nothing republishes when they change,
     /// which is exactly why a bar and a query can drift apart. Put the
