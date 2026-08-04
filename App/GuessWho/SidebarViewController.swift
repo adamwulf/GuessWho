@@ -303,10 +303,11 @@ final class SidebarViewController: UIViewController {
         // Favorites list leans on for exactly this reason.
         //
         // DEBOUNCED: the repository answers each `.guessWhoContactsDidChange`
-        // with an immediate reload-or-patch and posts once per answer
+        // with an immediate reload-or-patch and posts at least once per answer
         // (`ContactsRepository.contactsDidChange`, which has no debounce of its
-        // own — only the sidecar signal gets one), and that inbound signal
-        // bursts during contact sync. So this arrives in bursts too.
+        // own — only the sidecar signal gets one; a full reload that carries
+        // pending creation-timestamp repairs posts again), and that inbound
+        // signal bursts during contact sync. So this arrives in bursts too.
         contactsChangedObserver = center.addObserver(
             forName: .contactsRepositoryDidReload,
             object: nil,
