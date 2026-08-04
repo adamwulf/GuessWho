@@ -20,10 +20,11 @@ enum SidebarSelection {
 /// Groups). Guides and Places never have children — favorites only exist for
 /// contacts, events, and groups.
 ///
-/// The parent row stays a normal selectable row: the disclosure chevron uses
-/// the `.cell` style, so only the chevron expands/collapses and a click on
-/// "People" still shows the People list. Sections without favorites show no
-/// chevron at all.
+/// The parent row stays a normal selectable row: a single click on "People"
+/// shows the People list, and a DOUBLE click opens or closes that section's
+/// favorites. There is no disclosure chevron — a closed section instead carries
+/// a trailing badge counting the favorites it is hiding (e.g. "2 ★"). A section
+/// with no favorites has no badge and nothing to open.
 final class SidebarViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can wire
     /// the sidebar to whichever content view controller is mounted in
@@ -149,6 +150,15 @@ final class SidebarViewController: UIViewController {
         collectionView.dragDelegate = self
         collectionView.dropDelegate = self
         collectionView.dragInteractionEnabled = true
+
+        // Double-click a section row to open or close it. Deliberately NOT set
+        // to require the single click to fail: one click must still show that
+        // section's list at once, so a double click both shows the list and
+        // toggles the row.
+        let toggle = UITapGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
+        toggle.numberOfTapsRequired = 2
+        collectionView.addGestureRecognizer(toggle)
+
         view.addSubview(collectionView)
     }
 
@@ -193,18 +203,44 @@ final class SidebarViewController: UIViewController {
             content.text = tab.title
             content.image = UIImage(systemName: tab.systemImage)
             cell.contentConfiguration = content
-            // Chevron only when the section actually holds favorites, and the
-            // `.cell` style so ONLY the chevron toggles — the default
-            // (`.automatic`) resolves to `.header` at the root level, which
-            // would swallow the click and stop "People" from showing the People
-            // list.
-            let hasChildren = !(favoriteChildren[tab]?.isEmpty ?? true)
-            cell.accessories = hasChildren ? [.outlineDisclosure(options: .init(style: .cell))] : []
+            // A closed section says how many favorites it is hiding; an open one
+            // is already showing them, so it says nothing. A section with no
+            // favorites has nothing to count and nothing to open.
+            let count = favoriteChildren[tab]?.count ?? 0
+            let isClosed = !expandedSections.contains(tab)
+            cell.accessories = (count > 0 && isClosed) ? [favoritesCountAccessory(count: count)] : []
         case .favorite(let id):
             guard let favorite = favoriteItemsByID[id] else { return }
             cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
             cell.accessories = []
         }
+    }
+
+    /// The trailing badge on a closed section: the number of favorites hiding
+    /// under it, beside a star. Built as a custom view rather than
+    /// `.label(text:)` so the star is the same SF Symbol the rest of the app
+    /// uses for a favorite, at the label's own text size.
+    private func favoritesCountAccessory(count: Int) -> UICellAccessory {
+        let label = UILabel()
+        label.text = "\(count)"
+        label.font = .preferredFont(forTextStyle: .subheadline)
+        label.textColor = .secondaryLabel
+        label.adjustsFontForContentSizeCategory = true
+
+        let star = UIImageView(
+            image: UIImage(
+                systemName: "star.fill",
+                withConfiguration: UIImage.SymbolConfiguration(textStyle: .caption1)
+            )
+        )
+        star.tintColor = .secondaryLabel
+
+        let badge = UIStackView(arrangedSubviews: [label, star])
+        badge.axis = .horizontal
+        badge.alignment = .center
+        badge.spacing = 2
+
+        return .customView(configuration: .init(customView: badge, placement: .trailing()))
     }
 
     /// Row content for one favorite child. Mirrors `FavoritesListViewController`'s
@@ -415,13 +451,12 @@ final class SidebarViewController: UIViewController {
         // * a child's identity is its opaque favorite id, so a row whose
         //   RESOLVED content changed (the cold-launch empty→populated cache, a
         //   renamed group, an edited display name) produces an empty diff; and
-        // * a PARENT's identity never changes at all, yet its chevron is built
-        //   from `favoriteChildren[tab]` inside the cell registration. Starring
-        //   the first record in an empty section would otherwise leave a child
-        //   with no chevron to collapse it, and unstarring the last one would
-        //   leave a chevron over a leaf. `expand(_:)` can't help — it rotates an
-        //   existing disclosure accessory, it can't add or remove one. With
-        //   seven rows and no scrolling, nothing ever re-dequeues to fix it.
+        // * a PARENT's identity never changes at all, yet its badge is built
+        //   from `favoriteChildren[tab]` inside `configure(_:for:)`. Starring a
+        //   record in a closed section would otherwise leave the old count on
+        //   screen, and unstarring the last one would leave a badge over a
+        //   section that no longer hides anything. With seven rows and no
+        //   scrolling, nothing ever re-dequeues to fix it.
         //
         // So re-run the cell provider for every row on screen; anything
         // offscreen builds fresh when it is dequeued.
@@ -430,9 +465,9 @@ final class SidebarViewController: UIViewController {
 
     /// Carry the user's expand/collapse choices across a rebuild. Only sections
     /// that currently SHOW children have a state worth remembering — a section
-    /// whose last favorite was just removed has no chevron, and treating its
-    /// (always false) expansion as a user choice would leave it collapsed when
-    /// its next favorite arrives.
+    /// whose last favorite was just removed can't be opened at all, and treating
+    /// its (always false) expansion as a user choice would leave it collapsed
+    /// when its next favorite arrives.
     private func rememberExpansionState() {
         guard dataSource != nil else { return }
         let current = dataSource.snapshot(for: .tabs)
@@ -508,6 +543,47 @@ final class SidebarViewController: UIViewController {
             else { continue }
             configure(cell, for: item)
         }
+    }
+
+    // MARK: - Expand / collapse
+
+    /// Open or close the section row under a double click. A click that lands
+    /// on a favorite, on empty space, or on a section with no favorites has
+    /// nothing to toggle.
+    @objc
+    private func handleDoubleClick(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: collectionView)
+        guard let indexPath = collectionView.indexPathForItem(at: point),
+              let item = dataSource.itemIdentifier(for: indexPath),
+              case .section(let tab) = item
+        else { return }
+        toggleExpansion(of: tab)
+    }
+
+    /// Flip `tab` between open and closed.
+    ///
+    /// This edits the live section snapshot directly instead of going through
+    /// `applySnapshot`, which would undo the toggle: `applySnapshot` starts by
+    /// calling `rememberExpansionState`, and that reads the state back off the
+    /// snapshot we have not written yet — so it would overwrite the new value
+    /// with the old one before applying.
+    private func toggleExpansion(of tab: SidebarTab) {
+        guard !(favoriteChildren[tab] ?? []).isEmpty else { return }
+        let parent = Item.section(tab)
+        var snapshot = dataSource.snapshot(for: .tabs)
+        guard snapshot.contains(parent) else { return }
+
+        if snapshot.isExpanded(parent) {
+            snapshot.collapse([parent])
+            expandedSections.remove(tab)
+        } else {
+            snapshot.expand([parent])
+            expandedSections.insert(tab)
+        }
+        dataSource.apply(snapshot, to: .tabs, animatingDifferences: true)
+        // The parent's own badge appears or disappears with the toggle, and its
+        // identity did not change, so the apply alone will not repaint it.
+        reconfigureVisibleRows()
     }
 
     // MARK: - Selection
