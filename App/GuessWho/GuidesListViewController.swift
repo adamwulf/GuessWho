@@ -419,6 +419,8 @@ extension GuidesListViewController: UITableViewDelegate {
             try service.deleteGuide(uuid: guide.id.uuidString)
         } catch {
             service.recordError("delete guide failed: \(error.localizedDescription)")
+            Task { await repository.reload() }
+            return
         }
         removeFavorites(guideID: guide.id.uuidString, placeIDs: placeIDs)
         Task { await repository.reload() }
@@ -496,6 +498,7 @@ private final class GuideCell: UITableViewCell {
         nameLabel.text = nil
         countLabel.text = nil
         onToggleFavorite = nil
+        accessibilityCustomActions = nil
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -529,10 +532,10 @@ private final class GuideCell: UITableViewCell {
         countLabel.translatesAutoresizingMaskIntoConstraints = false
         countLabel.numberOfLines = 1
 
-        // Trailing star button. Its configuration carries generous content
-        // insets so the tap target clears the 44pt minimum even though the
-        // glyph is footnote-sized, and the image is swapped (never hidden) so
-        // the row reserves the same text width whether or not it is starred.
+        // Trailing star button. Explicit 44pt minimum constraints below keep
+        // the target accessible even though the glyph is body-sized, and the
+        // image is swapped (never hidden) so the row reserves the same text
+        // width whether or not it is starred.
         var starConfiguration = UIButton.Configuration.plain()
         starConfiguration.contentInsets = NSDirectionalEdgeInsets(
             top: 10, leading: 10, bottom: 10, trailing: 10
@@ -540,6 +543,7 @@ private final class GuideCell: UITableViewCell {
         starConfiguration.preferredSymbolConfigurationForImage =
             UIImage.SymbolConfiguration(textStyle: .body)
         starButton.configuration = starConfiguration
+        starButton.isAccessibilityElement = true
         starButton.addAction(
             UIAction { [weak self] _ in self?.onToggleFavorite?() },
             for: .touchUpInside
@@ -569,6 +573,8 @@ private final class GuideCell: UITableViewCell {
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
             starButton.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
             starButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            starButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            starButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
 
@@ -589,6 +595,16 @@ private final class GuideCell: UITableViewCell {
         // Same wording as the detail views' toolbar star, so the action reads
         // identically wherever VoiceOver meets it.
         starButton.accessibilityLabel = isFavorite ? "Unfavorite" : "Favorite"
+        // UITableViewCell may aggregate its content into one VoiceOver element,
+        // which can hide an interactive contentView subview. Mirror the button
+        // as a custom action on the row so the toggle is always reachable.
+        accessibilityCustomActions = [
+            UIAccessibilityCustomAction(name: isFavorite ? "Unfavorite" : "Favorite") { [weak self] _ in
+                guard let self else { return false }
+                self.onToggleFavorite?()
+                return true
+            }
+        ]
     }
 
     static func displayName(for guide: MapsGuide) -> String {

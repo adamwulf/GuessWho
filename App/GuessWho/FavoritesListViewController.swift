@@ -52,6 +52,13 @@ final class FavoritesListViewController: UIViewController {
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var guidesChangedObserver: NSObjectProtocol?
 
+    /// Coalesces the resolver's per-place repository reloads. Re-projecting
+    /// Favorites resolves every event through a synchronous sidecar read, so
+    /// doing that for each place resolved would put repeated file I/O on the
+    /// main actor while large guides load.
+    private var pendingGuidesSnapshot: Task<Void, Never>?
+    private static let guidesSnapshotDebounce: Duration = .milliseconds(300)
+
     init(
         store: FavoritesListStore,
         service: SyncService,
@@ -80,6 +87,7 @@ final class FavoritesListViewController: UIViewController {
         if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
         if let favoritesChangedObserver { center.removeObserver(favoritesChangedObserver) }
         if let guidesChangedObserver { center.removeObserver(guidesChangedObserver) }
+        pendingGuidesSnapshot?.cancel()
     }
 
     override func viewDidLoad() {
@@ -250,16 +258,29 @@ final class FavoritesListViewController: UIViewController {
         // what turns their cold-launch "Unavailable" into a name. No
         // `store.reload()`: a guides change can't rewrite `Favorites.json`,
         // only the records the ids resolve to. Already debounced at the source
-        // (`GuidesRepository.scheduleDebouncedReload`), so no second debounce
-        // is needed here.
+        // Resolution explicitly reloads after each place, so this feed can run
+        // at roughly the resolver's 200 ms cadence. Collapse that burst before
+        // re-projecting every favorite on the main actor.
         guidesChangedObserver = center.addObserver(
             forName: .guidesRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySnapshot(animated: true)
+                self?.scheduleGuidesSnapshot()
             }
+        }
+    }
+
+    private func scheduleGuidesSnapshot() {
+        pendingGuidesSnapshot?.cancel()
+        pendingGuidesSnapshot = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.guidesSnapshotDebounce)
+            } catch {
+                return
+            }
+            self?.applySnapshot(animated: true)
         }
     }
 

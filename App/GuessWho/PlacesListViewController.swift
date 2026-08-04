@@ -12,6 +12,7 @@ import GuessWhoSync
 final class PlacesListViewController: UIViewController {
     private let repository: GuidesRepository
     private let service: SyncService
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case place
@@ -66,10 +67,12 @@ final class PlacesListViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
     private nonisolated(unsafe) var resolutionObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
 
-    init(repository: GuidesRepository, service: SyncService) {
+    init(repository: GuidesRepository, service: SyncService, favoritesStore: FavoritesListStore) {
         self.repository = repository
         self.service = service
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         title = SidebarTab.places.title
     }
@@ -85,6 +88,9 @@ final class PlacesListViewController: UIViewController {
         }
         if let resolutionObserver {
             NotificationCenter.default.removeObserver(resolutionObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
     }
 
@@ -211,6 +217,7 @@ final class PlacesListViewController: UIViewController {
             (cell as? PlaceCell)?.configure(
                 with: place,
                 status: self.status(for: place),
+                isFavorite: self.favoritesStore.isFavorite(kind: .place, id: place.id.uuidString),
                 linkCount: self.repository.linkCount(for: place),
                 guideName: guideName
             )
@@ -274,6 +281,22 @@ final class PlacesListViewController: UIViewController {
                 self?.refreshResolutionStatus()
             }
         }
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshFavoriteStatus()
+            }
+        }
+    }
+
+    private func refreshFavoriteStatus() {
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     /// Reconfigure the still-unresolved rows so their status (looking-up /
@@ -454,6 +477,15 @@ extension PlacesListViewController: UITableViewDelegate {
             try service.deletePlace(uuid: place.id.uuidString)
         } catch {
             service.recordError("delete place failed: \(error.localizedDescription)")
+            Task { await repository.reload() }
+            return
+        }
+        if favoritesStore.isFavorite(kind: .place, id: place.id.uuidString) {
+            do {
+                try favoritesStore.remove(kind: .place, id: place.id.uuidString)
+            } catch {
+                service.recordError("unfavorite deleted place failed: \(error.localizedDescription)")
+            }
         }
         Task { await repository.reload() }
     }

@@ -58,7 +58,10 @@ struct GuidePlaceDetailView: View {
     /// here makes the view repaint when a resolution pass or external change
     /// reloads the guides store.
     private var place: MapsPlace? {
-        repository.places(inGuide: guideID).first { $0.id == placeID }
+        // Detail identity must not depend on the Places list's current Linked
+        // filter. A favorited unlinked place can be opened from Favorites or
+        // the Catalyst sidebar while that filter is active.
+        repository.place(id: placeID)
     }
 
     var body: some View {

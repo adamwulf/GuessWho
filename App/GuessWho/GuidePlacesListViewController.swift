@@ -9,6 +9,7 @@ final class GuidePlacesListViewController: UIViewController {
     private var guide: MapsGuide
     private let repository: GuidesRepository
     private let service: SyncService
+    private let favoritesStore: FavoritesListStore
 
     private enum CellID: String {
         case place
@@ -69,11 +70,18 @@ final class GuidePlacesListViewController: UIViewController {
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
     private nonisolated(unsafe) var resolutionObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var favoritesObserver: NSObjectProtocol?
 
-    init(guide: MapsGuide, repository: GuidesRepository, service: SyncService) {
+    init(
+        guide: MapsGuide,
+        repository: GuidesRepository,
+        service: SyncService,
+        favoritesStore: FavoritesListStore
+    ) {
         self.guide = guide
         self.repository = repository
         self.service = service
+        self.favoritesStore = favoritesStore
         super.init(nibName: nil, bundle: nil)
         let name = guide.name.trimmingCharacters(in: .whitespacesAndNewlines)
         title = name.isEmpty ? "Guide" : name
@@ -90,6 +98,9 @@ final class GuidePlacesListViewController: UIViewController {
         }
         if let resolutionObserver {
             NotificationCenter.default.removeObserver(resolutionObserver)
+        }
+        if let favoritesObserver {
+            NotificationCenter.default.removeObserver(favoritesObserver)
         }
     }
 
@@ -208,7 +219,12 @@ final class GuidePlacesListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, placeID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.place.rawValue, for: indexPath)
             guard let self, let place = self.placesByID[placeID] else { return cell }
-            (cell as? PlaceCell)?.configure(with: place, status: self.status(for: place), linkCount: self.repository.linkCount(for: place))
+            (cell as? PlaceCell)?.configure(
+                with: place,
+                status: self.status(for: place),
+                isFavorite: self.favoritesStore.isFavorite(kind: .place, id: place.id.uuidString),
+                linkCount: self.repository.linkCount(for: place)
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -320,6 +336,29 @@ final class GuidePlacesListViewController: UIViewController {
                 self?.refreshResolutionStatus()
             }
         }
+        favoritesObserver = NotificationCenter.default.addObserver(
+            forName: .favoritesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshFavoriteStatus()
+            }
+        }
+    }
+
+    /// Favorite state is not part of `MapsPlace`, so a toggle from detail does
+    /// not change item identity. Reconfigure rows, while honoring the same
+    /// mid-drag gate as resolver-driven snapshots.
+    private func refreshFavoriteStatus() {
+        guard !isDragActive else {
+            needsSnapshotAfterDrag = true
+            return
+        }
+        var snapshot = dataSource.snapshot()
+        guard snapshot.numberOfItems > 0 else { return }
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     /// Reconfigure the still-unresolved rows so their status (looking-up /
@@ -493,6 +532,15 @@ extension GuidePlacesListViewController: UITableViewDelegate {
             try service.deletePlace(uuid: place.id.uuidString)
         } catch {
             service.recordError("delete place failed: \(error.localizedDescription)")
+            Task { await repository.reload() }
+            return
+        }
+        if favoritesStore.isFavorite(kind: .place, id: place.id.uuidString) {
+            do {
+                try favoritesStore.remove(kind: .place, id: place.id.uuidString)
+            } catch {
+                service.recordError("unfavorite deleted place failed: \(error.localizedDescription)")
+            }
         }
         Task { await repository.reload() }
     }

@@ -585,7 +585,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ) -> PlacesListViewController {
         let list = PlacesListViewController(
             repository: appDelegate.guidesRepository,
-            service: appDelegate.service
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
         )
         // A top-level list, so selecting a place REPLACES the secondary
         // column with its detail — the People/Events pattern, not the
@@ -988,7 +989,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let places = GuidePlacesListViewController(
             guide: guide,
             repository: appDelegate.guidesRepository,
-            service: appDelegate.service
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
         )
         places.didSelectPlace = onSelectPlace ?? { [weak self, weak nav] place in
             self?.pushGuidePlaceDetail(place: place, guideID: guide.id, on: nav, appDelegate: appDelegate)
@@ -1422,7 +1424,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func makeIPhonePlacesTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = PlacesListViewController(
             repository: appDelegate.guidesRepository,
-            service: appDelegate.service
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectPlace = { [weak self] place in
             self?.pushGuidePlaceDetail(
