@@ -321,11 +321,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         switch tab {
         case .people:
-            _ = installPeopleList(in: split, appDelegate: appDelegate)
+            installPeopleList(in: split, appDelegate: appDelegate)
         case .organizations:
-            _ = installOrganizationsList(in: split, appDelegate: appDelegate)
+            installOrganizationsList(in: split, appDelegate: appDelegate)
         case .events:
-            _ = installEventsList(in: split, appDelegate: appDelegate)
+            installEventsList(in: split, appDelegate: appDelegate)
         case .guides:
             installGuidesList(in: split, appDelegate: appDelegate)
         case .places:
@@ -333,7 +333,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .favorites:
             installFavoritesList(in: split, appDelegate: appDelegate)
         case .groups:
-            _ = installGroupsList(in: split, appDelegate: appDelegate)
+            installGroupsList(in: split, appDelegate: appDelegate)
         }
     }
 

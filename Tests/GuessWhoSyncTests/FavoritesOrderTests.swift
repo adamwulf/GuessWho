@@ -9,12 +9,12 @@ import Testing
 struct FavoritesOrderTests {
     private let epoch = Date(timeIntervalSince1970: 1_700_000_000)
 
-    private func favorite(_ kind: FavoriteKind, _ digit: Int, offset: TimeInterval = 0) -> Favorite {
+    private func favorite(_ kind: FavoriteKind, _ digit: Int) -> Favorite {
         let block = String(repeating: "\(digit)", count: 8)
         return Favorite(
             kind: kind,
             id: "\(block)-\(String(repeating: "\(digit)", count: 4))-4000-8000-\(String(repeating: "\(digit)", count: 12))",
-            addedAt: epoch.addingTimeInterval(offset)
+            addedAt: epoch
         )
     }
 
