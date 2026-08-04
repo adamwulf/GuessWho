@@ -24,6 +24,7 @@ struct GuidePlaceDetailView: View {
 
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var contactsRepository
+    @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.openURL) private var openURL
 
     // Bridge to the outer UIKit nav (both shells) so tapping an event, a
@@ -89,6 +90,20 @@ struct GuidePlaceDetailView: View {
         #if !targetEnvironment(macCatalyst)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // Star / unstar this place. Same shape as the event and contact
+        // details' toolbar star; disabled while the place is missing (deleted,
+        // or its guide gone), where there is nothing to point a favorite at.
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    toggleFavorite()
+                } label: {
+                    Image(systemName: isPlaceFavorited ? "star.fill" : "star")
+                }
+                .disabled(place == nil)
+                .accessibilityLabel(isPlaceFavorited ? "Unfavorite" : "Favorite")
+            }
+        }
         // Recompute matches whenever the place's identity or resolved address
         // changes (the address arrives asynchronously for place-ID entries).
         .task(id: matchKey) {
@@ -126,6 +141,22 @@ struct GuidePlaceDetailView: View {
         if !name.isEmpty { return name }
         if let address = place.address, !address.isEmpty { return address }
         return "Place"
+    }
+
+    // MARK: - Favorite
+
+    /// Whether this place is starred. Gated on the place still existing, so a
+    /// deleted place can never read as favorited while its star is disabled —
+    /// the same symmetry `EventDetailView` keeps between `isEventFavorited`
+    /// and `canFavoriteEvent`.
+    private var isPlaceFavorited: Bool {
+        guard place != nil else { return false }
+        return favoritesStore.isFavorite(kind: .place, id: placeID.uuidString)
+    }
+
+    private func toggleFavorite() {
+        guard place != nil else { return }
+        favoritesStore.toggle(kind: .place, id: placeID.uuidString)
     }
 
     /// Stable key for the association fetch: re-run when we point at a different

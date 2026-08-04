@@ -266,14 +266,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.primaryBackgroundStyle = .sidebar
 
         // The sidebar shows each favorited record as an indented child of its
-        // section, so it needs the same four dependencies the Favorites list
-        // does: the favorites store for the order, the repository + service to
-        // resolve each favorite into a record, and the photo loader for the
-        // people and organizations among them.
+        // section, so it needs the same five dependencies the Favorites list
+        // does: the favorites store for the order, the contacts + guides
+        // repositories and the service to resolve each favorite into a record,
+        // and the photo loader for the people and organizations among them.
         let sidebar = SidebarViewController(
             store: appDelegate.favoritesStore,
             service: appDelegate.service,
             repository: appDelegate.contactsRepository,
+            guidesRepository: appDelegate.guidesRepository,
             photoLoader: appDelegate.contactPhotoLoader
         )
         // Wire the selection callback and the restored initial tab BEFORE the
@@ -441,10 +442,27 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             list.select(groupLocalID: group.localID)
             showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
 
-        case .favorites, .guides, .places:
-            // No favorite kind maps to these sections, so they never get
-            // children. Defensive: land on the section list.
-            //
+        case .guides:
+            // A guide row pushes its places and leaves the detail column on its
+            // placeholder, because that is what a guide row already does.
+            let (list, nav) = installGuidesList(in: split, appDelegate: appDelegate)
+            guard let guide = item.guide else { return }
+            list.select(guideID: guide.id)
+            pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
+                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+            }
+
+        case .places:
+            // The Places list owns no programmatic row selection, so the child
+            // mounts the section and opens the detail — the visible half of
+            // what clicking that row does.
+            installPlacesList(in: split, appDelegate: appDelegate)
+            guard let place = item.place else { return }
+            showPlaceDetail(place: place, appDelegate: appDelegate)
+
+        case .favorites:
+            // Nothing is ever favorited "into" the Favorites section, so it
+            // never gets children. Defensive: land on the section list.
             // `mountSectionList` rather than `showSection`: we already claimed
             // `tab` above, and `showSection` would see its own guard satisfied
             // and mount nothing at all.
@@ -537,13 +555,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return list
     }
 
+    @discardableResult
     private func installGuidesList(
         in split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
-    ) {
+    ) -> (GuidesListViewController, UINavigationController) {
         let list = GuidesListViewController(
             repository: appDelegate.guidesRepository,
-            service: appDelegate.service
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
         )
         // Selecting a guide PUSHES its places list onto the supplementary
         // column's nav (back-button returns to the guides list); selecting a
@@ -557,6 +577,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .guides)
+        return (list, nav)
     }
 
     private func installPlacesList(
@@ -585,11 +606,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             store: appDelegate.favoritesStore,
             service: appDelegate.service,
             repository: appDelegate.contactsRepository,
+            guidesRepository: appDelegate.guidesRepository,
             photoLoader: appDelegate.contactPhotoLoader
         )
-        // Hoist the nav so a favorited-group tap can push its member list
-        // onto this supplementary column (member selection then replaces the
-        // secondary/detail column, exactly like the Groups sidebar tab).
+        // Hoist the nav so a favorited-group or favorited-guide tap can push
+        // its member / places list onto this supplementary column (the row
+        // selection inside then replaces the secondary/detail column, exactly
+        // like the Groups and Guides sidebar tabs).
         let nav = UINavigationController(rootViewController: list)
         list.didSelectContact = { [weak self] contact in
             self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -603,6 +626,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         list.didSelectGroup = { [weak self, weak nav] group in
             self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+        }
+        // A guide drills in exactly as it does from the Guides section: its
+        // places list pushes onto this supplementary column, and picking a
+        // place there REPLACES the secondary column.
+        list.didSelectGuide = { [weak self, weak nav] guide in
+            self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
+                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+            }
+        }
+        // A place is a top-level record like a person or an event, so it
+        // REPLACES the secondary column — what the Places section already does.
+        list.didSelectPlace = { [weak self] place in
+            self?.showPlaceDetail(place: place, appDelegate: appDelegate)
         }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .favorites)
@@ -749,6 +785,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         .environment(appDelegate.service)
         .environment(appDelegate.contactsRepository)
+        .environment(appDelegate.favoritesStore)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
@@ -977,6 +1014,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         .environment(appDelegate.service)
         .environment(appDelegate.contactsRepository)
+        .environment(appDelegate.favoritesStore)
         #if targetEnvironment(macCatalyst)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
@@ -1318,6 +1356,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             store: appDelegate.favoritesStore,
             service: appDelegate.service,
             repository: appDelegate.contactsRepository,
+            guidesRepository: appDelegate.guidesRepository,
             photoLoader: appDelegate.contactPhotoLoader
         )
         list.didSelectContact = { [weak self] contact in
@@ -1334,6 +1373,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectGroup = { [weak self] group in
             self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
         }
+        // Guides and places push onto this tab's own stack, exactly as they do
+        // from the Guides and Places tabs.
+        list.didSelectGuide = { [weak self] guide in
+            self?.pushGuidePlaces(guide: guide, on: list.navigationController, appDelegate: appDelegate)
+        }
+        list.didSelectPlace = { [weak self] place in
+            self?.pushGuidePlaceDetail(
+                place: place,
+                guideID: place.guideID,
+                on: list.navigationController,
+                appDelegate: appDelegate
+            )
+        }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.favorites.title,
@@ -1349,7 +1401,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func makeIPhoneGuidesTab(appDelegate: GuessWhoAppDelegate) -> UINavigationController {
         let list = GuidesListViewController(
             repository: appDelegate.guidesRepository,
-            service: appDelegate.service
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectGuide = { [weak self] guide in
             self?.pushGuidePlaces(guide: guide, on: list.navigationController, appDelegate: appDelegate)

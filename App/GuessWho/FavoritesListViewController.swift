@@ -11,16 +11,23 @@ import GuessWhoSync
 final class FavoritesListViewController: UIViewController {
     /// Selection callbacks — SceneDelegate routes each kind to the
     /// matching detail view (contact → ContactDetailView, event →
-    /// EventDetailView).
+    /// EventDetailView, guide → its places list, place →
+    /// GuidePlaceDetailView).
     var didSelectContact: (Contact) -> Void = { _ in }
     var didSelectEvent: (Event) -> Void = { _ in }
     var didSelectGroup: (ContactGroup) -> Void = { _ in }
+    var didSelectGuide: (MapsGuide) -> Void = { _ in }
+    var didSelectPlace: (MapsPlace) -> Void = { _ in }
 
     private let store: FavoritesListStore
     private let service: SyncService
     /// The single app-owned in-memory contact cache. The favorites builder
     /// reads `repository.contacts` instead of re-enumerating the whole store.
     private let repository: ContactsRepository
+    /// The app-owned guides + places cache. Backs the guide and place
+    /// resolvers handed to `favoriteListItems`, so a starred guide or place
+    /// renders its own name rather than "Unavailable".
+    private let guidesRepository: GuidesRepository
     private let photoLoader: ContactPhotoLoader
 
     private enum CellID: String {
@@ -41,16 +48,19 @@ final class FavoritesListViewController: UIViewController {
     private nonisolated(unsafe) var contactsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var guidesChangedObserver: NSObjectProtocol?
 
     init(
         store: FavoritesListStore,
         service: SyncService,
         repository: ContactsRepository,
+        guidesRepository: GuidesRepository,
         photoLoader: ContactPhotoLoader
     ) {
         self.store = store
         self.service = service
         self.repository = repository
+        self.guidesRepository = guidesRepository
         self.photoLoader = photoLoader
         super.init(nibName: nil, bundle: nil)
         title = "Favorites"
@@ -67,6 +77,7 @@ final class FavoritesListViewController: UIViewController {
         if let contactsChangedObserver { center.removeObserver(contactsChangedObserver) }
         if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
         if let favoritesChangedObserver { center.removeObserver(favoritesChangedObserver) }
+        if let guidesChangedObserver { center.removeObserver(guidesChangedObserver) }
     }
 
     override func viewDidLoad() {
@@ -91,6 +102,12 @@ final class FavoritesListViewController: UIViewController {
         // instead of "Unavailable"; the resulting `.contactsRepositoryDidReload`
         // re-applies the snapshot (observed below), repainting the rows.
         Task { await repository.loadGroups() }
+
+        // Same story for guide and place favorites: the guides cache is filled
+        // only by `GuidesRepository.reload()`, which the Guides and Places lists
+        // own — and neither may have been opened yet. The resulting
+        // `.guidesRepositoryDidReload` re-applies the snapshot (observed below).
+        Task { await guidesRepository.reload() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -144,7 +161,11 @@ final class FavoritesListViewController: UIViewController {
         ) { [weak self] tableView, indexPath, itemID in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.favorite.rawValue, for: indexPath)
             guard let self, let item = self.favoriteItemsByID[itemID] else { return cell }
-            (cell as? FavoriteCell)?.configure(with: item, photoLoader: self.photoLoader)
+            (cell as? FavoriteCell)?.configure(
+                with: item,
+                photoLoader: self.photoLoader,
+                guidePlaceCount: item.guide.map { self.guidesRepository.placeCount(inGuide: $0.id) }
+            )
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -220,12 +241,41 @@ final class FavoritesListViewController: UIViewController {
                 self?.applySnapshot(animated: true)
             }
         }
+
+        // The guides repository posts this after every fetch — the reload
+        // kicked above, a sidecar change syncing in, an import, a delete. Guide
+        // and place rows resolve against its caches, so re-applying here is
+        // what turns their cold-launch "Unavailable" into a name. No
+        // `store.reload()`: a guides change can't rewrite `Favorites.json`,
+        // only the records the ids resolve to. Already debounced at the source
+        // (`GuidesRepository.scheduleDebouncedReload`), so no second debounce
+        // is needed here.
+        guidesChangedObserver = center.addObserver(
+            forName: .guidesRepositoryDidReload,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applySnapshot(animated: true)
+            }
+        }
     }
 
     private func applySnapshot(animated: Bool) {
-        let items = repository.favoriteListItems(from: store.items) { [service] uuid in
-            service.event(uuid: uuid)
-        }
+        let items = repository.favoriteListItems(
+            from: store.items,
+            event: { [service] uuid in service.event(uuid: uuid) },
+            // `UUID(uuidString:)` is case-insensitive, so a favorite's
+            // lowercased id resolves against the repository's canonical UUIDs.
+            // A string that isn't a UUID at all (a hand-edited file) simply
+            // yields nil, and the row falls back to "Unavailable".
+            guide: { [guidesRepository] uuid in
+                UUID(uuidString: uuid).flatMap { guidesRepository.guide(id: $0) }
+            },
+            place: { [guidesRepository] uuid in
+                UUID(uuidString: uuid).flatMap { guidesRepository.place(id: $0) }
+            }
+        )
 
         var byID: [FavoriteListItem.ID: FavoriteListItem] = [:]
         for item in items {
@@ -264,12 +314,12 @@ final class FavoritesListViewController: UIViewController {
     /// `ContactsListViewController.addToGroupMenu`.
     ///
     /// Favorites is the one list whose rows are NOT all contacts: it mixes
-    /// people, organizations, events, and groups. `contactAt` resolves only the
-    /// contact-backed rows (a favorited organization IS a `Contact`, so it is
-    /// included, and both can hold group membership); an event or group row
-    /// resolves to nil, which `AddToGroupMenu` already turns into no menu at
-    /// all. That nil is the whole gate — there is no second kind check to keep
-    /// in sync with `FavoriteListItem.Kind`.
+    /// people, organizations, events, groups, guides, and places. `contactAt`
+    /// resolves only the contact-backed rows (a favorited organization IS a
+    /// `Contact`, so it is included, and both can hold group membership); every
+    /// other kind resolves to nil, which `AddToGroupMenu` already turns into no
+    /// menu at all. That nil is the whole gate — there is no second kind check
+    /// to keep in sync with `FavoriteKind`.
     ///
     /// The selection is deliberately empty rather than read off the table: this
     /// list is single-selection (it never calls
@@ -305,6 +355,14 @@ extension FavoritesListViewController: UITableViewDelegate {
             if let group = item.group {
                 didSelectGroup(group)
             }
+        case .guide:
+            if let guide = item.guide {
+                didSelectGuide(guide)
+            }
+        case .place:
+            if let place = item.place {
+                didSelectPlace(place)
+            }
         }
     }
 
@@ -313,8 +371,8 @@ extension FavoritesListViewController: UITableViewDelegate {
     }
 
     /// Right-click / long-press menu, on the contact-backed rows only — see
-    /// `addToGroupMenu`. Event and group rows return no configuration, so they
-    /// keep the behavior they have today (no menu).
+    /// `addToGroupMenu`. Event, group, guide, and place rows return no
+    /// configuration, so they keep the behavior they have today (no menu).
     func tableView(
         _ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath,
@@ -444,6 +502,12 @@ extension FavoritesListViewController: UITableViewDragDelegate, UITableViewDropD
 ///   with an "Event" caption.
 /// * .group resolved → person.3.fill + group name.
 /// * .group unresolved → person.3 + "Unavailable" with a "Group" caption.
+/// * .guide resolved → map + guide name + "N places" caption.
+/// * .guide unresolved → questionmark.circle + "Unavailable" with a "Guide"
+///   caption (SF Symbols has no badged `map` variant to mirror the event row's
+///   calendar.badge.exclamationmark).
+/// * .place resolved → mappin.and.ellipse + place name + address caption.
+/// * .place unresolved → mappin.slash + "Unavailable" with a "Place" caption.
 private final class FavoriteCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
@@ -550,7 +614,14 @@ private final class FavoriteCell: UITableViewCell {
         ])
     }
 
-    func configure(with item: FavoriteListItem, photoLoader: ContactPhotoLoader) {
+    /// - Parameter guidePlaceCount: how many places the row's guide holds, for
+    ///   the "N places" caption the Guides list shows. Nil for every other kind
+    ///   (and for a guide that hasn't resolved).
+    func configure(
+        with item: FavoriteListItem,
+        photoLoader: ContactPhotoLoader,
+        guidePlaceCount: Int? = nil
+    ) {
         cancelPhotoLoad()
         representedContactID = nil
         // Default the calendar line off; only a resolved event turns it on.
@@ -625,6 +696,59 @@ private final class FavoriteCell: UITableViewCell {
                 iconView.image = UIImage(systemName: "person.3")
                 titleLabel.text = "Unavailable"
                 captionLabel.text = "Group"
+                captionLabel.isHidden = false
+            }
+
+        case .guide:
+            iconView.contentMode = .scaleAspectFit
+            if let guide = item.guide {
+                // The Guides list row's icon, which is also the Guides
+                // section's — one icon per kind.
+                iconView.image = UIImage(systemName: SidebarTab.guides.systemImage)
+                let name = guide.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                titleLabel.text = name.isEmpty ? "(Unnamed Guide)" : name
+                if let count = guidePlaceCount {
+                    captionLabel.text = count == 1 ? "1 place" : "\(count) places"
+                    captionLabel.isHidden = false
+                } else {
+                    captionLabel.text = nil
+                    captionLabel.isHidden = true
+                }
+            } else {
+                iconView.image = UIImage(systemName: "questionmark.circle")
+                titleLabel.text = "Unavailable"
+                captionLabel.text = "Guide"
+                captionLabel.isHidden = false
+            }
+
+        case .place:
+            iconView.contentMode = .scaleAspectFit
+            if let place = item.place {
+                iconView.image = UIImage(systemName: SidebarTab.places.systemImage)
+                // Same title/caption split the Places lists use: the business
+                // name leads with its address beneath, and an address-only
+                // entry promotes the address to the title.
+                let name = place.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let address = place.address?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !name.isEmpty {
+                    titleLabel.text = name
+                    captionLabel.text = address
+                    captionLabel.isHidden = address.isEmpty
+                } else if !address.isEmpty {
+                    titleLabel.text = address
+                    captionLabel.text = nil
+                    captionLabel.isHidden = true
+                } else {
+                    // Still waiting on its MapKit lookup, or resolved to
+                    // nothing — same wording `PlaceCell` shows.
+                    titleLabel.text = "(No details)"
+                    captionLabel.text = nil
+                    captionLabel.isHidden = true
+                }
+            } else {
+                iconView.image = UIImage(systemName: "mappin.slash")
+                titleLabel.text = "Unavailable"
+                captionLabel.text = "Place"
                 captionLabel.isHidden = false
             }
         }

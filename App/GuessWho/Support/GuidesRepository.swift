@@ -265,4 +265,26 @@ final class GuidesRepository: NSObject {
     func linkCount(for place: MapsPlace) -> Int {
         linkCountsByID[place.id.uuidString.lowercased()] ?? 0
     }
+
+    // MARK: - Identity lookups
+    //
+    // Both DELIBERATELY ignore `placeFilter`: they answer "does this record
+    // exist" for callers holding only an id — the favorites projection, which
+    // must render a starred guide or place by name whatever relationship
+    // filter the Places tab happens to be showing. `places(inGuide:)` and
+    // `unifiedPlaceSections()` stay filtered; they answer "what should this
+    // list show", which is a different question.
+
+    /// The guide with `id`, or nil when no such guide is cached.
+    func guide(id: UUID) -> MapsGuide? {
+        guides.first { $0.id == id }
+    }
+
+    /// The place with `id` in any guide, or nil when no such place is cached.
+    func place(id: UUID) -> MapsPlace? {
+        for places in placesByGuide.values {
+            if let match = places.first(where: { $0.id == id }) { return match }
+        }
+        return nil
+    }
 }

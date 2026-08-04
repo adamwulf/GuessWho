@@ -17,8 +17,8 @@ enum SidebarSelection {
 /// An outline: every `SidebarTab` is a parent row, and each favorited record
 /// hangs under the section it belongs to (a favorited person under People, an
 /// organization under Organizations, an event under Events, a group under
-/// Groups). Guides and Places never have children — favorites only exist for
-/// contacts, events, and groups.
+/// Groups, a guide under Guides, a place under Places). Only the Favorites
+/// section itself never has children.
 ///
 /// The parent row stays a normal selectable row: a single click on "People"
 /// shows the People list, and a DOUBLE click opens or closes that section's
@@ -40,6 +40,10 @@ final class SidebarViewController: UIViewController {
     private let store: FavoritesListStore
     private let service: SyncService
     private let repository: ContactsRepository
+    /// The app-owned guides + places cache, backing the guide and place
+    /// resolvers handed to `favoriteListItems` — see the Favorites list, which
+    /// uses the same two.
+    private let guidesRepository: GuidesRepository
     private let photoLoader: ContactPhotoLoader
 
     private enum Section: Int, CaseIterable {
@@ -99,16 +103,19 @@ final class SidebarViewController: UIViewController {
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var contactsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var guidesChangedObserver: NSObjectProtocol?
 
     init(
         store: FavoritesListStore,
         service: SyncService,
         repository: ContactsRepository,
+        guidesRepository: GuidesRepository,
         photoLoader: ContactPhotoLoader
     ) {
         self.store = store
         self.service = service
         self.repository = repository
+        self.guidesRepository = guidesRepository
         self.photoLoader = photoLoader
         super.init(nibName: nil, bundle: nil)
     }
@@ -123,6 +130,7 @@ final class SidebarViewController: UIViewController {
         if let favoritesChangedObserver { center.removeObserver(favoritesChangedObserver) }
         if let contactsChangedObserver { center.removeObserver(contactsChangedObserver) }
         if let eventsChangedObserver { center.removeObserver(eventsChangedObserver) }
+        if let guidesChangedObserver { center.removeObserver(guidesChangedObserver) }
     }
 
     override func viewDidLoad() {
@@ -148,6 +156,12 @@ final class SidebarViewController: UIViewController {
         // name instead of "Unavailable"; the resulting `.contactsRepositoryDidReload`
         // rebuilds the children through the observer registered above.
         Task { await repository.loadGroups() }
+
+        // Same story for guides and places, whose cache only
+        // `GuidesRepository.reload()` fills — and the sidebar is on screen
+        // before either of those sections is. Its `.guidesRepositoryDidReload`
+        // rebuilds the children through the observer registered above.
+        Task { await guidesRepository.reload() }
     }
 
     private func configureCollectionView() {
@@ -368,8 +382,42 @@ final class SidebarViewController: UIViewController {
             }
             content.text = group.displayName
             content.image = UIImage(systemName: SidebarTab.groups.systemImage)
+
+        case .guide:
+            guard let guide = item.guide else {
+                content.text = Self.unavailableTitle
+                // SF Symbols has no badged `map`, so an unresolved guide gets
+                // the neutral glyph rather than one from a different family.
+                content.image = UIImage(systemName: "questionmark.circle")
+                return content
+            }
+            let guideName = guide.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            content.text = guideName.isEmpty ? "(Unnamed Guide)" : guideName
+            content.image = UIImage(systemName: SidebarTab.guides.systemImage)
+
+        case .place:
+            guard let place = item.place else {
+                content.text = Self.unavailableTitle
+                content.image = UIImage(systemName: "mappin.slash")
+                return content
+            }
+            content.text = Self.placeTitle(place)
+            content.image = UIImage(systemName: SidebarTab.places.systemImage)
         }
         return content
+    }
+
+    /// One line for a place child: its name, or its address when the entry
+    /// carries no business name, or a neutral placeholder while a place-ID
+    /// entry is still waiting on its MapKit lookup. The sidebar shows a single
+    /// line per row, so unlike the Favorites list there is no address caption
+    /// underneath.
+    private static func placeTitle(_ place: MapsPlace) -> String {
+        let name = place.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let address = place.address?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !address.isEmpty { return address }
+        return "(No details)"
     }
 
     /// Diameter of a child row's leading image, in points.
@@ -453,6 +501,22 @@ final class SidebarViewController: UIViewController {
         // during background calendar sync.
         eventsChangedObserver = center.addObserver(
             forName: .EKEventStoreChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.scheduleDebouncedRebuild()
+            }
+        }
+
+        // And the same for guides and places: a guide renamed on another
+        // device, a place whose MapKit lookup just landed, or the reload kicked
+        // from `viewDidLoad` all arrive here. Like the events feed this does NOT
+        // reload the favorites store — a guides change can't rewrite
+        // `Favorites.json`, only the records the ids resolve to. Shares the
+        // debounce because the repository's own reloads are already bursty.
+        guidesChangedObserver = center.addObserver(
+            forName: .guidesRepositoryDidReload,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -576,9 +640,18 @@ final class SidebarViewController: UIViewController {
     /// owns the resolution (`favoriteListItems`), so there is exactly one
     /// resolver for the Favorites list and the sidebar alike.
     private func rebuildFavoriteChildren() {
-        let items = repository.favoriteListItems(from: store.items) { [service] uuid in
-            service.event(uuid: uuid)
-        }
+        // Same four resolvers the Favorites list passes — see
+        // `FavoritesListViewController.applySnapshot` for the id-parsing notes.
+        let items = repository.favoriteListItems(
+            from: store.items,
+            event: { [service] uuid in service.event(uuid: uuid) },
+            guide: { [guidesRepository] uuid in
+                UUID(uuidString: uuid).flatMap { guidesRepository.guide(id: $0) }
+            },
+            place: { [guidesRepository] uuid in
+                UUID(uuidString: uuid).flatMap { guidesRepository.place(id: $0) }
+            }
+        )
 
         var children: [SidebarTab: [FavoriteListItem]] = [:]
         var byID: [FavoriteListItem.ID: FavoriteListItem] = [:]
@@ -606,6 +679,10 @@ final class SidebarViewController: UIViewController {
             return .events
         case .group:
             return .groups
+        case .guide:
+            return .guides
+        case .place:
+            return .places
         }
     }
 
