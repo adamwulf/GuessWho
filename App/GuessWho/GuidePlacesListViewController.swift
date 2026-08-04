@@ -645,6 +645,13 @@ extension GuidePlacesListViewController: UISearchResultsUpdating {
         let text = searchController.searchBar.text ?? ""
         guard searchQuery != text else { return }
         searchQuery = text
+        // The search controller can update while a lifted row is active (for
+        // example, hardware-keyboard input during a pointer drag). Defer this
+        // snapshot through the same gate as resolution/favorite updates.
+        guard !isDragActive else {
+            needsSnapshotAfterDrag = true
+            return
+        }
         // Nothing observes `searchQuery`, so re-snapshot here. Unanimated: the
         // list re-filters on every keystroke, and a fade per character reads as
         // flicker (the People and Events lists do the same).

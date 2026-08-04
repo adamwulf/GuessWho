@@ -257,8 +257,8 @@ final class FavoritesListViewController: UIViewController {
         // and place rows resolve against its caches, so re-applying here is
         // what turns their cold-launch "Unavailable" into a name. No
         // `store.reload()`: a guides change can't rewrite `Favorites.json`,
-        // only the records the ids resolve to. Already debounced at the source
-        // Resolution explicitly reloads after each place, so this feed can run
+        // only the records the ids resolve to. Resolution explicitly reloads
+        // after each place, so this feed can run
         // at roughly the resolver's 200 ms cadence. Collapse that burst before
         // re-projecting every favorite on the main actor.
         guidesChangedObserver = center.addObserver(

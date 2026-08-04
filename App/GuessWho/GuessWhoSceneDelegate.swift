@@ -781,7 +781,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let nav = UINavigationController()
         let detail = GuidePlaceDetailView(
             placeID: place.id,
-            guideID: place.guideID,
             repository: appDelegate.guidesRepository
         )
         .environment(appDelegate.service)
@@ -941,7 +940,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.pushGuidePlaces(guide: ref.guide, on: nav, appDelegate: appDelegate)
             }
             .environment(\.pushPlaceReference) { [weak self, weak nav] ref in
-                self?.pushGuidePlaceDetail(place: ref.place, guideID: ref.place.guideID, on: nav, appDelegate: appDelegate)
+                self?.pushGuidePlaceDetail(place: ref.place, on: nav, appDelegate: appDelegate)
             }
     }
 
@@ -993,7 +992,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         places.didSelectPlace = onSelectPlace ?? { [weak self, weak nav] place in
-            self?.pushGuidePlaceDetail(place: place, guideID: guide.id, on: nav, appDelegate: appDelegate)
+            self?.pushGuidePlaceDetail(place: place, on: nav, appDelegate: appDelegate)
         }
         nav.pushViewController(places, animated: true)
     }
@@ -1004,14 +1003,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// on the same nav stack (same wiring as the contact/event detail pushes).
     private func pushGuidePlaceDetail(
         place: MapsPlace,
-        guideID: UUID,
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
         guard let nav else { return }
         let detail = GuidePlaceDetailView(
             placeID: place.id,
-            guideID: guideID,
             repository: appDelegate.guidesRepository
         )
         .environment(appDelegate.service)
@@ -1383,7 +1380,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectPlace = { [weak self] place in
             self?.pushGuidePlaceDetail(
                 place: place,
-                guideID: place.guideID,
                 on: list.navigationController,
                 appDelegate: appDelegate
             )
@@ -1430,7 +1426,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectPlace = { [weak self] place in
             self?.pushGuidePlaceDetail(
                 place: place,
-                guideID: place.guideID,
                 on: list.navigationController,
                 appDelegate: appDelegate
             )
@@ -1662,7 +1657,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.pushGuidePlaces(guide: ref.guide, on: nav, appDelegate: appDelegate)
             }
             .environment(\.pushPlaceReference) { [weak self, weak nav] ref in
-                self?.pushGuidePlaceDetail(place: ref.place, guideID: ref.place.guideID, on: nav, appDelegate: appDelegate)
+                self?.pushGuidePlaceDetail(place: ref.place, on: nav, appDelegate: appDelegate)
             }
     }
 

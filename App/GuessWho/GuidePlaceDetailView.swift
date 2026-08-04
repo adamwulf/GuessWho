@@ -19,7 +19,6 @@ import GuessWhoSync
 /// repaint if the MapKit resolution pass lands while this page is open.
 struct GuidePlaceDetailView: View {
     let placeID: UUID
-    let guideID: UUID
     let repository: GuidesRepository
 
     @Environment(SyncService.self) private var service

@@ -131,15 +131,14 @@ Two entry shapes exist:
 
 `GuidesListViewController` (guides + place counts, with a trailing star/unstar
 button on each row and a nav-bar sort pull-down — `GuideSortOrder`: Name A–Z /
-Z–A, Recently Added (the default,
-newest import first), Last Viewed; persisted per-install by
-`GuideSortOrderSetting`, opening a guide stamps its `lastViewedAt`) →
-push → `GuidePlacesListViewController` (places with inline name/address search
-and a nav-bar sort pull-down
-— `PlaceSortOrder`: Guide Order (the default, the share-link entry order),
-Name A–Z / Z–A, Last Viewed; persisted per-install by `PlaceSortOrderSetting`,
-opening a place stamps its `lastViewedAt`; the package's `places(inGuide:)`
-stays in canonical guide order, only the app's display copy reorders. In
+Z–A, Recently Added (the default, newest import first), Last Viewed; persisted
+per-install by `GuideSortOrderSetting`; opening a guide stamps its
+`lastViewedAt`) → push → `GuidePlacesListViewController` (places with inline
+name/address search and a nav-bar sort pull-down — `PlaceSortOrder`: Guide Order
+(the default, the share-link entry order), Name A–Z / Z–A, Last Viewed;
+persisted per-install by `PlaceSortOrderSetting`; opening a place stamps its
+`lastViewedAt`; the package's `places(inGuide:)` stays in canonical guide
+order, only the app's display copy reorders. In
 **Guide Order** the rows are press-and-hold draggable to reorder, like the
 Favorites list — the drop persists the new entry order through
 `GuessWhoSync.reorderPlaces(inGuide:orderedIDs:)` (which rewrites each place's
@@ -152,14 +151,13 @@ runs a live resolution pass that reloads after every place, so a
 any reload / resolution-status apply while `tableView.hasActiveDrag`/`Drop` is
 true (`needsSnapshotAfterDrag`), flushing it from `performDropWith` and
 `dragSessionDidEnd` — the reorder writes still persist immediately; only the
-view's repaint waits for the drag to settle. Rows fill
-in one at a time as resolution lands, each row showing a spinner while it is
+view's repaint waits for the drag to settle. Rows fill in one at a time as
+resolution lands, each row showing a spinner while it is
 being looked up, "Waiting to load…" while queued behind others, and its
 name/address once done, plus a passive star on favorited places) → push →
-`GuidePlaceDetailView` (the place detail,
-below). Both shells share the two list VCs; per the product principle there
-is no user-facing "resolve"/"sidecar" vocabulary — the plain-language row
-states above stand in for it.
+`GuidePlaceDetailView` (the place detail, below). Both shells share the two list
+VCs; per the product principle there is no user-facing "resolve"/"sidecar"
+vocabulary — the plain-language row states above stand in for it.
 
 Alongside the Guides section there is a unified **Places** section
 (`PlacesListViewController`, a sidebar row on Catalyst / a tab on iPhone):
@@ -175,13 +173,13 @@ already filtered/sorted result, and drops grouped sections with no matches.
 The flat sorts caption each row with its guide's name (the shared `PlaceCell`
 grows an optional guide line for this), and every favorited place has a passive
 star. No drag-to-reorder, Refresh, or "+" appears here — entry order, the source
-URL, and importing are
-per-guide concepts. Opening the section retries unresolved place IDs one
-guide at a time (sequentially, so MapKit traffic stays at the resolver's
-serial pace; the per-guide in-flight guard coalesces with passes started
-from a guide's own screen). Selecting a place replaces the detail column
-with `GuidePlaceDetailView` on Catalyst (the People/Events pattern) and
-pushes it on iPhone; swipe-to-Remove works as in the per-guide list, with
+URL, and importing are per-guide concepts. Opening the section retries
+unresolved place IDs one guide at a time (sequentially, so MapKit traffic stays
+at the resolver's serial pace; the per-guide in-flight guard coalesces with
+passes started from a guide's own screen). Selecting a place replaces the
+detail column with `GuidePlaceDetailView` on Catalyst (the People/Events
+pattern) and pushes it on iPhone; swipe-to-Remove works as in the per-guide
+list, with
 the guide named in the confirmation, and removes any favorite for the deleted
 place.
 
@@ -196,11 +194,10 @@ Tapping a place row pushes `GuidePlaceDetailView` (App target, SwiftUI),
 hosted the same way as `ContactDetailView` / `EventDetailView`. Its toolbar
 star favorites/unfavorites the place independently of the Places list's
 current Linked filter. It shows the place's name, address, and coordinate with
-an **Open in Maps** button (the
-`maps.apple.com/place?place-id=…` / coordinate-fallback deep link that used
-to fire on row tap now lives on this button), plus three best-effort
-"who/what is here" sections derived from the place's address, plus a
-**Guides** section:
+an **Open in Maps** button (the `maps.apple.com/place?place-id=…` /
+coordinate-fallback deep link that used to fire on row tap now lives on this
+button), plus three best-effort "who/what is here" sections derived from the
+place's address, plus a **Guides** section:
 
 * **Guides** — every imported guide this place sits in (including its own),
   via `SyncService.guides(containingPlace:)`, which derives the place's
