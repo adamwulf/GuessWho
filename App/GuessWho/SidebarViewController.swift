@@ -65,11 +65,21 @@ final class SidebarViewController: UIViewController {
     private var favoriteItemsByID: [FavoriteListItem.ID: FavoriteListItem] = [:]
     private var favoriteSections: [FavoriteListItem.ID: SidebarTab] = [:]
 
-    /// Sections the user has open. Every section starts expanded so a freshly
-    /// starred record is visible where it landed; an explicit collapse is
-    /// remembered here and re-applied after every rebuild, so a favorite
-    /// toggled elsewhere never re-opens a section the user closed.
-    private var expandedSections: Set<SidebarTab> = Set(SidebarTab.allCases)
+    /// Sections the user has open. A section the user has never closed starts
+    /// expanded, so a freshly starred record is visible where it landed; an
+    /// explicit collapse is remembered here and re-applied after every rebuild,
+    /// so a favorite toggled elsewhere never re-opens a section the user closed.
+    ///
+    /// Seeded from `SidebarExpansionSetting`, which persists the closed sections
+    /// across launches. `didSet` writes every change straight back, so there is
+    /// no separate "save" call to forget — see the note there on why the STORED
+    /// form is the closed set rather than this one.
+    private var expandedSections: Set<SidebarTab> = SidebarExpansionSetting.expanded {
+        didSet {
+            guard expandedSections != oldValue else { return }
+            SidebarExpansionSetting.save(expanded: expandedSections)
+        }
+    }
 
     /// In-flight thumbnail loads, keyed by contact so a rebuild can't stack
     /// duplicate fetches for the same row. The completion repaints through
