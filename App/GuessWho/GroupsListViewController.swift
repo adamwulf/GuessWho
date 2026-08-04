@@ -71,6 +71,11 @@ final class GroupsListViewController: UIViewController {
     /// rows that differ. Mirrors `ContactsListViewController.renderedContacts`.
     private var renderedNames: [String: String] = [:]
 
+    /// Row `select(groupLocalID:)` asked for that hasn't been highlighted yet
+    /// because it wasn't in the snapshot when the request arrived. See
+    /// `ContactsListViewController.pendingSelection`.
+    private var pendingSelection: String?
+
     private let emptyStateStack = UIStackView()
     private let emptyLabel = UILabel()
     private let emptyDetailLabel = UILabel()
@@ -160,6 +165,30 @@ final class GroupsListViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         presentPendingAlertIfPossible()
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight the row for `localID` and scroll it into view without
+    /// republishing the member list — the Catalyst sidebar's favorite children
+    /// entry point. See `ContactsListViewController.select(contactID:)` for the
+    /// full contract; groups make the "before the first reload" case the normal
+    /// one, since this list owns its own `loadGroups()` fetch.
+    func select(groupLocalID localID: String) {
+        pendingSelection = localID
+        applyPendingSelection()
+    }
+
+    /// See `ContactsListViewController.applyPendingSelection`.
+    private func applyPendingSelection() {
+        guard isViewLoaded,
+              let localID = pendingSelection,
+              let indexPath = dataSource.indexPath(for: localID),
+              indexPath.section < tableView.numberOfSections,
+              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+        else { return }
+        pendingSelection = nil
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
     }
 
     // MARK: - Table view
@@ -317,6 +346,10 @@ final class GroupsListViewController: UIViewController {
         renderedNames = rendered
 
         dataSource.apply(snapshot, animatingDifferences: animated)
+
+        // A pending sidebar selection waits here for its row to exist — the
+        // usual case for groups, whose first rows arrive with `loadGroups()`.
+        applyPendingSelection()
 
         updateEmptyState()
     }
@@ -524,6 +557,9 @@ extension GroupsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return }
+        // The user picked a row, so retire an unfulfilled sidebar request rather
+        // than let a later reload move the selection out from under them.
+        pendingSelection = nil
         didSelectGroup(group)
     }
 

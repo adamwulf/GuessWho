@@ -45,6 +45,11 @@ final class EventsListViewController: UIViewController {
 
     private var eventsByID: [UUID: Event] = [:]
 
+    /// Row `select(eventID:)` asked for that hasn't been highlighted yet
+    /// because it wasn't in the snapshot when the request arrived. See
+    /// `ContactsListViewController.pendingSelection`.
+    private var pendingSelection: UUID?
+
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
@@ -128,6 +133,32 @@ final class EventsListViewController: UIViewController {
         // toggle lives in the system Settings app and may have changed while we
         // were backgrounded; the UserDefaults observer covers in-app flips).
         updateNavigationButtons()
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight `id`'s row and scroll it into view without republishing the
+    /// detail — the Catalyst sidebar's favorite children entry point. See
+    /// `ContactsListViewController.select(contactID:)` for the full contract.
+    ///
+    /// A favorited event outside the loaded month window has no row at all;
+    /// the request simply stays pending (the detail is shown either way) and
+    /// resolves if paging ever reveals the event.
+    func select(eventID id: UUID) {
+        pendingSelection = id
+        applyPendingSelection()
+    }
+
+    /// See `ContactsListViewController.applyPendingSelection`.
+    private func applyPendingSelection() {
+        guard isViewLoaded,
+              let id = pendingSelection,
+              let indexPath = dataSource.indexPath(for: id),
+              indexPath.section < tableView.numberOfSections,
+              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+        else { return }
+        pendingSelection = nil
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
     }
 
     // MARK: - Table view
@@ -479,6 +510,9 @@ final class EventsListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        // A pending sidebar selection waits here for its row to exist.
+        applyPendingSelection()
+
         updateEmptyState()
     }
 
@@ -612,6 +646,9 @@ final class EventsListViewController: UIViewController {
 extension EventsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         guard let itemID = dataSource.itemIdentifier(for: indexPath) else { return }
+        // The user picked a row, so retire an unfulfilled sidebar request rather
+        // than let a later reload move the selection out from under them.
+        pendingSelection = nil
         if itemID == Self.loadOlderItemID || itemID == Self.loadLaterItemID {
             tableView.deselectRow(at: indexPath, animated: true)
             let older = (itemID == Self.loadOlderItemID)

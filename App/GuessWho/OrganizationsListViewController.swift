@@ -52,6 +52,9 @@ final class OrganizationsListViewController: UIViewController {
     /// Selection ORDER only — see `ContactsListViewController.selectionRecency`.
     private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
 
+    /// See `ContactsListViewController.pendingSelection`.
+    private var pendingSelection: ContactID?
+
     init(
         repository: ContactsRepository,
         photoLoader: ContactPhotoLoader,
@@ -95,6 +98,30 @@ final class OrganizationsListViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight `id`'s row and scroll it into view without republishing the
+    /// detail — the Catalyst sidebar's favorite children entry point. See
+    /// `ContactsListViewController.select(contactID:)` for the full contract,
+    /// including why it is safe to call before the first snapshot lands.
+    func select(contactID id: ContactID) {
+        pendingSelection = id
+        applyPendingSelection()
+    }
+
+    /// See `ContactsListViewController.applyPendingSelection`.
+    private func applyPendingSelection() {
+        guard isViewLoaded,
+              let id = pendingSelection,
+              let indexPath = dataSource.indexPath(for: id),
+              indexPath.section < tableView.numberOfSections,
+              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+        else { return }
+        pendingSelection = nil
+        selectionRecency.recordSelection(of: id)
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
     }
 
     // MARK: - Table view
@@ -341,6 +368,9 @@ final class OrganizationsListViewController: UIViewController {
 
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        // A pending sidebar selection waits here for its row to exist.
+        applyPendingSelection()
+
         updateEmptyState()
     }
 
@@ -369,6 +399,9 @@ extension OrganizationsListViewController: UITableViewDelegate {
         // Before the editing-mode early return — see
         // `ContactsListViewController.tableView(_:didSelectRowAt:)`.
         selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
+        // See `ContactsListViewController.tableView(_:didSelectRowAt:)` — a user
+        // pick retires an unfulfilled sidebar request.
+        pendingSelection = nil
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif

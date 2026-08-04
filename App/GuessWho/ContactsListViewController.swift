@@ -69,6 +69,11 @@ final class ContactsListViewController: UIViewController {
     /// multi-selection fronts the contact the user picked last.
     private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
 
+    /// Row `select(contactID:)` asked for that hasn't been highlighted yet
+    /// because its row wasn't in the snapshot when the request arrived. Cleared
+    /// the moment the row exists; see `applyPendingSelection`.
+    private var pendingSelection: ContactID?
+
     init(
         repository: ContactsRepository,
         photoLoader: ContactPhotoLoader,
@@ -117,6 +122,40 @@ final class ContactsListViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight `id`'s row and scroll it into view WITHOUT republishing the
+    /// detail — the caller already knows which record it opened. The Catalyst
+    /// sidebar's favorite children use this: clicking a child installs this list
+    /// and shows the contact itself, and the row must end up looking exactly as
+    /// if the user had clicked it here.
+    ///
+    /// Safe to call before the first snapshot lands (the sidebar selects in the
+    /// same turn it builds the list, long before the repository's reload): the
+    /// request is held and retried after every apply, so the row is highlighted
+    /// when the data arrives rather than dropped.
+    func select(contactID id: ContactID) {
+        pendingSelection = id
+        applyPendingSelection()
+    }
+
+    /// Consume `pendingSelection` once its row is actually in the table. Called
+    /// after every apply, so a row that only appears with a later reload still
+    /// gets selected; the request stays pending until then.
+    private func applyPendingSelection() {
+        guard isViewLoaded,
+              let id = pendingSelection,
+              let indexPath = dataSource.indexPath(for: id),
+              indexPath.section < tableView.numberOfSections,
+              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+        else { return }
+        pendingSelection = nil
+        // Stamp the recency tracker the way a tap would, so a follow-up
+        // shift-click range extends from this row.
+        selectionRecency.recordSelection(of: id)
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .middle)
     }
 
     // MARK: - Table view
@@ -440,6 +479,9 @@ final class ContactsListViewController: UIViewController {
 
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        // A pending sidebar selection waits here for its row to exist.
+        applyPendingSelection()
+
         updateEmptyState()
     }
 
@@ -471,6 +513,10 @@ extension ContactsListViewController: UITableViewDelegate {
         // Catalyst arrive as one callback per row, so this is the one place
         // that sees selection order on both platforms.
         selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
+        // The user picked a row, so drop any still-unfulfilled sidebar request:
+        // honoring it on a later reload would add a second highlighted row to
+        // this multi-selection table.
+        pendingSelection = nil
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif

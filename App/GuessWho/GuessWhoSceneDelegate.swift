@@ -256,13 +256,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.preferredSplitBehavior = .tile
         split.primaryBackgroundStyle = .sidebar
 
-        let sidebar = SidebarViewController()
+        // The sidebar shows each favorited record as an indented child of its
+        // section, so it needs the same four dependencies the Favorites list
+        // does: the favorites store for the order, the repository + service to
+        // resolve each favorite into a record, and the photo loader for the
+        // people and organizations among them.
+        let sidebar = SidebarViewController(
+            store: appDelegate.favoritesStore,
+            service: appDelegate.service,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
+        )
         // Wire the selection callback and the restored initial tab BEFORE the
         // view can load: `setViewController(_:for: .primary)` may load the
         // sidebar's view, which runs `selectInitialTab()` synchronously, so both
         // must be in place first or the initial selection is lost / misrouted.
-        sidebar.didSelectTab = { [weak self] tab in
-            self?.handleSidebarSelection(tab, appDelegate: appDelegate)
+        sidebar.didSelect = { [weak self] selection in
+            self?.handleSidebarSelection(selection, appDelegate: appDelegate)
         }
         sidebar.initialTab = restoring?.section
 
@@ -274,7 +284,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(sidebarNav, for: .primary)
 
         // Seed both columns with placeholders. The sidebar's
-        // selectInitialTab() immediately invokes didSelectTab and swaps
+        // selectInitialTab() immediately invokes didSelect and swaps
         // supplementary to the People list, so these show only if sidebar
         // selection fails.
         let initialContent = PlaceholderViewController(
@@ -287,149 +297,279 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return split
     }
 
-    private func handleSidebarSelection(_ tab: SidebarTab, appDelegate: GuessWhoAppDelegate) {
+    private func handleSidebarSelection(_ selection: SidebarSelection, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
+        switch selection {
+        case .section(let tab):
+            showSection(tab, in: split, appDelegate: appDelegate)
+        case .favorite(let item, let tab):
+            showFavoriteChild(item, in: tab, split: split, appDelegate: appDelegate)
+        }
+    }
 
+    /// Mount a section's list in the supplementary column and reset the detail
+    /// column to that section's placeholder — what a click on a sidebar parent
+    /// row has always done.
+    private func showSection(
+        _ tab: SidebarTab,
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         // A section switch resets the detail column to a placeholder, so restore
         // to this section with no selected record.
         noteSectionShown(tab)
 
         switch tab {
         case .people:
-            let list = ContactsListViewController(
-                repository: appDelegate.contactsRepository,
-                photoLoader: appDelegate.contactPhotoLoader,
-                favoritesStore: appDelegate.favoritesStore
-            )
-            list.didSelectContact = { [weak self] contact in
-                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
-            }
-            list.didSelectContacts = { [weak self] contacts in
-                self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
-            }
-            list.didRequestAddContact = { [weak self] in
-                self?.createNewContact(appDelegate: appDelegate) { [weak self] created in
-                    self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
-                }
-            }
-            let nav = UINavigationController(rootViewController: list)
-            split.setViewController(nav, for: .supplementary)
-            installDetailPlaceholder(in: split, for: .people)
+            _ = installPeopleList(in: split, appDelegate: appDelegate)
+        case .organizations:
+            _ = installOrganizationsList(in: split, appDelegate: appDelegate)
+        case .events:
+            _ = installEventsList(in: split, appDelegate: appDelegate)
+        case .guides:
+            installGuidesList(in: split, appDelegate: appDelegate)
+        case .places:
+            installPlacesList(in: split, appDelegate: appDelegate)
+        case .favorites:
+            installFavoritesList(in: split, appDelegate: appDelegate)
+        case .groups:
+            _ = installGroupsList(in: split, appDelegate: appDelegate)
+        }
+    }
+
+    /// A favorite child does exactly what clicking that same record's row in its
+    /// section list does — no more, no less: the FULL section list lands in the
+    /// supplementary column with the record's row selected and scrolled into
+    /// view, and the record's detail replaces the secondary column. A group
+    /// child pushes its member list and leaves the detail column on its
+    /// placeholder, because that is what a group row already does.
+    ///
+    /// That equivalence is also why state restoration needs no new case: this
+    /// ends in the same (section, record) state as a click through the list.
+    ///
+    /// A child whose record hasn't resolved yet (it renders "Unavailable") has
+    /// no row to select, so it stops after mounting the section — the user still
+    /// lands where the row said they would.
+    private func showFavoriteChild(
+        _ item: FavoriteListItem,
+        in tab: SidebarTab,
+        split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        noteSectionShown(tab)
+
+        switch tab {
+        case .people:
+            let list = installPeopleList(in: split, appDelegate: appDelegate)
+            guard let contact = item.contact else { return }
+            list.select(contactID: contact.contactID)
+            showContactDetail(contact: contact, appDelegate: appDelegate)
 
         case .organizations:
-            let list = OrganizationsListViewController(
-                repository: appDelegate.contactsRepository,
-                photoLoader: appDelegate.contactPhotoLoader,
-                favoritesStore: appDelegate.favoritesStore
-            )
-            list.didSelectContact = { [weak self] contact in
-                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
-            }
-            list.didSelectContacts = { [weak self] contacts in
-                self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
-            }
-            list.didRequestAddOrganization = { [weak self] in
-                self?.createNewContact(
-                    appDelegate: appDelegate,
-                    seed: Contact(contactType: .organization)
-                ) { [weak self] created in
-                    self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
-                }
-            }
-            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            installDetailPlaceholder(in: split, for: .organizations)
+            let list = installOrganizationsList(in: split, appDelegate: appDelegate)
+            guard let contact = item.contact else { return }
+            list.select(contactID: contact.contactID)
+            showContactDetail(contact: contact, appDelegate: appDelegate)
 
         case .events:
-            let list = EventsListViewController(
-                repository: appDelegate.eventsRepository,
-                service: appDelegate.service,
-                favoritesStore: appDelegate.favoritesStore
+            let list = installEventsList(in: split, appDelegate: appDelegate)
+            guard let event = item.event else { return }
+            list.select(eventID: event.id)
+            showEventDetail(
+                eventUUID: event.id.uuidString,
+                eventKitID: event.eventKitID,
+                appDelegate: appDelegate
             )
-            list.didSelectEvent = { [weak self] event in
-                self?.showEventDetail(
-                    eventUUID: event.id.uuidString,
-                    eventKitID: event.eventKitID,
-                    appDelegate: appDelegate
-                )
-            }
-            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            installDetailPlaceholder(in: split, for: .events)
-
-        case .guides:
-            let list = GuidesListViewController(
-                repository: appDelegate.guidesRepository,
-                service: appDelegate.service
-            )
-            // Selecting a guide PUSHES its places list onto the supplementary
-            // column's nav (back-button returns to the guides list); selecting a
-            // place then REPLACES the secondary/detail column — the same
-            // drill-in shape as Groups → members → contact detail.
-            let nav = UINavigationController(rootViewController: list)
-            list.didSelectGuide = { [weak self, weak nav] guide in
-                self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
-                    self?.showPlaceDetail(place: place, appDelegate: appDelegate)
-                }
-            }
-            split.setViewController(nav, for: .supplementary)
-            installDetailPlaceholder(in: split, for: .guides)
-
-        case .places:
-            let list = PlacesListViewController(
-                repository: appDelegate.guidesRepository,
-                service: appDelegate.service
-            )
-            // A top-level list, so selecting a place REPLACES the secondary
-            // column with its detail — the People/Events pattern, not the
-            // Guides tab's drill-in push.
-            list.didSelectPlace = { [weak self] place in
-                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
-            }
-            split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
-            installDetailPlaceholder(in: split, for: .places)
-
-        case .favorites:
-            let list = FavoritesListViewController(
-                store: appDelegate.favoritesStore,
-                service: appDelegate.service,
-                repository: appDelegate.contactsRepository,
-                photoLoader: appDelegate.contactPhotoLoader
-            )
-            // Hoist the nav so a favorited-group tap can push its member list
-            // onto this supplementary column (member selection then replaces the
-            // secondary/detail column, exactly like the Groups sidebar tab).
-            let nav = UINavigationController(rootViewController: list)
-            list.didSelectContact = { [weak self] contact in
-                self?.showContactDetail(contact: contact, appDelegate: appDelegate)
-            }
-            list.didSelectEvent = { [weak self] event in
-                self?.showEventDetail(
-                    eventUUID: event.id.uuidString,
-                    eventKitID: event.eventKitID,
-                    appDelegate: appDelegate
-                )
-            }
-            list.didSelectGroup = { [weak self, weak nav] group in
-                self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
-            }
-            split.setViewController(nav, for: .supplementary)
-            installDetailPlaceholder(in: split, for: .favorites)
 
         case .groups:
-            let list = GroupsListViewController(
-                repository: appDelegate.contactsRepository,
-                favoritesStore: appDelegate.favoritesStore
-            )
-            // Selecting a group PUSHES the members list onto the supplementary
-            // column's nav (back-button returns to the group list); selecting a
-            // member REPLACES the secondary/detail column via
-            // `showContactDetail` — the established Catalyst pattern.
-            let nav = UINavigationController(rootViewController: list)
-            list.didSelectGroup = { [weak self, weak nav] group in
-                self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
-            }
-            split.setViewController(nav, for: .supplementary)
-            installDetailPlaceholder(in: split, for: .groups)
+            let (list, nav) = installGroupsList(in: split, appDelegate: appDelegate)
+            guard let group = item.group else { return }
+            list.select(groupLocalID: group.localID)
+            showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+
+        case .favorites, .guides, .places:
+            // No favorite kind maps to these sections, so they never get
+            // children. Defensive: land on the section list.
+            showSection(tab, in: split, appDelegate: appDelegate)
         }
+    }
+
+    // MARK: - Catalyst section installers
+    //
+    // Each mounts one section's list in the supplementary column and resets the
+    // secondary column to that section's placeholder. They return the list (and,
+    // where a row drills in, its nav) so a favorite child can select the row it
+    // came from — the section switch and the child click share one code path.
+
+    @discardableResult
+    private func installPeopleList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> ContactsListViewController {
+        let list = ContactsListViewController(
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        list.didSelectContact = { [weak self] contact in
+            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
+        list.didSelectContacts = { [weak self] contacts in
+            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+        }
+        list.didRequestAddContact = { [weak self] in
+            self?.createNewContact(appDelegate: appDelegate) { [weak self] created in
+                self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+            }
+        }
+        let nav = UINavigationController(rootViewController: list)
+        split.setViewController(nav, for: .supplementary)
+        installDetailPlaceholder(in: split, for: .people)
+        return list
+    }
+
+    @discardableResult
+    private func installOrganizationsList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> OrganizationsListViewController {
+        let list = OrganizationsListViewController(
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        list.didSelectContact = { [weak self] contact in
+            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
+        list.didSelectContacts = { [weak self] contacts in
+            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+        }
+        list.didRequestAddOrganization = { [weak self] in
+            self?.createNewContact(
+                appDelegate: appDelegate,
+                seed: Contact(contactType: .organization)
+            ) { [weak self] created in
+                self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+            }
+        }
+        split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+        installDetailPlaceholder(in: split, for: .organizations)
+        return list
+    }
+
+    @discardableResult
+    private func installEventsList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> EventsListViewController {
+        let list = EventsListViewController(
+            repository: appDelegate.eventsRepository,
+            service: appDelegate.service,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        list.didSelectEvent = { [weak self] event in
+            self?.showEventDetail(
+                eventUUID: event.id.uuidString,
+                eventKitID: event.eventKitID,
+                appDelegate: appDelegate
+            )
+        }
+        split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+        installDetailPlaceholder(in: split, for: .events)
+        return list
+    }
+
+    private func installGuidesList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        let list = GuidesListViewController(
+            repository: appDelegate.guidesRepository,
+            service: appDelegate.service
+        )
+        // Selecting a guide PUSHES its places list onto the supplementary
+        // column's nav (back-button returns to the guides list); selecting a
+        // place then REPLACES the secondary/detail column — the same
+        // drill-in shape as Groups → members → contact detail.
+        let nav = UINavigationController(rootViewController: list)
+        list.didSelectGuide = { [weak self, weak nav] guide in
+            self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
+                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+            }
+        }
+        split.setViewController(nav, for: .supplementary)
+        installDetailPlaceholder(in: split, for: .guides)
+    }
+
+    private func installPlacesList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        let list = PlacesListViewController(
+            repository: appDelegate.guidesRepository,
+            service: appDelegate.service
+        )
+        // A top-level list, so selecting a place REPLACES the secondary
+        // column with its detail — the People/Events pattern, not the
+        // Guides tab's drill-in push.
+        list.didSelectPlace = { [weak self] place in
+            self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+        }
+        split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
+        installDetailPlaceholder(in: split, for: .places)
+    }
+
+    private func installFavoritesList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        let list = FavoritesListViewController(
+            store: appDelegate.favoritesStore,
+            service: appDelegate.service,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader
+        )
+        // Hoist the nav so a favorited-group tap can push its member list
+        // onto this supplementary column (member selection then replaces the
+        // secondary/detail column, exactly like the Groups sidebar tab).
+        let nav = UINavigationController(rootViewController: list)
+        list.didSelectContact = { [weak self] contact in
+            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
+        list.didSelectEvent = { [weak self] event in
+            self?.showEventDetail(
+                eventUUID: event.id.uuidString,
+                eventKitID: event.eventKitID,
+                appDelegate: appDelegate
+            )
+        }
+        list.didSelectGroup = { [weak self, weak nav] group in
+            self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+        }
+        split.setViewController(nav, for: .supplementary)
+        installDetailPlaceholder(in: split, for: .favorites)
+    }
+
+    @discardableResult
+    private func installGroupsList(
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> (GroupsListViewController, UINavigationController) {
+        let list = GroupsListViewController(
+            repository: appDelegate.contactsRepository,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        // Selecting a group PUSHES the members list onto the supplementary
+        // column's nav (back-button returns to the group list); selecting a
+        // member REPLACES the secondary/detail column via
+        // `showContactDetail` — the established Catalyst pattern.
+        let nav = UINavigationController(rootViewController: list)
+        list.didSelectGroup = { [weak self, weak nav] group in
+            self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+        }
+        split.setViewController(nav, for: .supplementary)
+        installDetailPlaceholder(in: split, for: .groups)
+        return (list, nav)
     }
 
     /// Push a `GroupMembersListViewController` for `group` onto the supplementary
@@ -718,7 +858,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// Neutral placeholder shown only at scene-connection time, before the
-    /// sidebar's `selectInitialTab()` invokes `didSelectTab` and a tab-specific
+    /// sidebar's `selectInitialTab()` invokes `didSelect` and a tab-specific
     /// placeholder takes over.
     private func installInitialDetailPlaceholder(in split: UISplitViewController) {
         let detail = PlaceholderViewController(
