@@ -151,12 +151,21 @@ final class SidebarViewController: UIViewController {
         collectionView.dropDelegate = self
         collectionView.dragInteractionEnabled = true
 
-        // Double-click a section row to open or close it. Deliberately NOT set
-        // to require the single click to fail: one click must still show that
-        // section's list at once, so a double click both shows the list and
-        // toggles the row.
+        // Double-click a section row to open or close it. This recognizer only
+        // OBSERVES the click — the collection view keeps its own handling of it,
+        // so one click still selects the row and shows that section's list, and
+        // a double click does both. All three settings are needed for that:
+        // `cancelsTouchesInView = false` stops a recognized double click from
+        // swallowing the clicks the collection view was already given,
+        // `delaysTouchesEnded = false` lets the first click land immediately
+        // instead of waiting to see whether a second one follows, and the
+        // delegate lets us and the collection view's own recognizers run
+        // together rather than one blocking the other.
         let toggle = UITapGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
         toggle.numberOfTapsRequired = 2
+        toggle.cancelsTouchesInView = false
+        toggle.delaysTouchesEnded = false
+        toggle.delegate = self
         collectionView.addGestureRecognizer(toggle)
 
         view.addSubview(collectionView)
@@ -602,6 +611,18 @@ final class SidebarViewController: UIViewController {
         let target = initialTab.flatMap { sidebarTabs.contains($0) ? $0 : nil } ?? sidebarTabs.first
         guard let tab = target else { return }
         select(tab)
+    }
+}
+
+extension SidebarViewController: UIGestureRecognizerDelegate {
+    /// Let the double-click recognizer run alongside the collection view's own
+    /// selection and drag recognizers. Without this the two compete and one of
+    /// them loses — which is how a stray recognizer here swallows single clicks.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 }
 
