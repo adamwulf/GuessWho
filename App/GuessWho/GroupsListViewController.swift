@@ -71,6 +71,10 @@ final class GroupsListViewController: UIViewController {
     /// rows that differ. Mirrors `ContactsListViewController.renderedContacts`.
     private var renderedNames: [String: String] = [:]
 
+    /// The sidebar's outstanding "select this row" request, if any. See
+    /// `PendingRowSelection`.
+    private let pendingSelection = PendingRowSelection<String>()
+
     private let emptyStateStack = UIStackView()
     private let emptyLabel = UILabel()
     private let emptyDetailLabel = UILabel()
@@ -160,6 +164,26 @@ final class GroupsListViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         presentPendingAlertIfPossible()
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight the row for `localID` and scroll it into view without
+    /// republishing the member list — the Catalyst sidebar's favorite children
+    /// entry point. See `ContactsListViewController.select(contactID:)` for the
+    /// full contract; groups make the "before the first reload" case the normal
+    /// one, since this list owns its own `loadGroups()` fetch.
+    func select(groupLocalID localID: String) {
+        pendingSelection.request(localID)
+        applyPendingSelection()
+    }
+
+    /// See `ContactsListViewController.applyPendingSelection`.
+    private func applyPendingSelection() {
+        guard isViewLoaded else { return }
+        pendingSelection.applyIfPossible(in: tableView) { [self] localID in
+            dataSource.indexPath(for: localID)
+        }
     }
 
     // MARK: - Table view
@@ -317,6 +341,10 @@ final class GroupsListViewController: UIViewController {
         renderedNames = rendered
 
         dataSource.apply(snapshot, animatingDifferences: animated)
+
+        // A pending sidebar selection waits here for its row to exist — the
+        // usual case for groups, whose first rows arrive with `loadGroups()`.
+        applyPendingSelection()
 
         updateEmptyState()
     }
@@ -524,7 +552,15 @@ extension GroupsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return }
+        // The user picked a row, so retire an unfulfilled sidebar request rather
+        // than let a later reload move the selection out from under them.
+        pendingSelection.cancel()
         didSelectGroup(group)
+    }
+
+    /// See `ContactsListViewController.scrollViewWillBeginDragging(_:)`.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     /// Trailing swipe to favorite / unfavorite the group, mirroring the

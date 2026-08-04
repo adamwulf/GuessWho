@@ -45,6 +45,10 @@ final class EventsListViewController: UIViewController {
 
     private var eventsByID: [UUID: Event] = [:]
 
+    /// The sidebar's outstanding "select this row" request, if any. See
+    /// `PendingRowSelection`.
+    private let pendingSelection = PendingRowSelection<UUID>()
+
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
@@ -128,6 +132,28 @@ final class EventsListViewController: UIViewController {
         // toggle lives in the system Settings app and may have changed while we
         // were backgrounded; the UserDefaults observer covers in-app flips).
         updateNavigationButtons()
+    }
+
+    // MARK: - Programmatic selection
+
+    /// Highlight `id`'s row and scroll it into view without republishing the
+    /// detail — the Catalyst sidebar's favorite children entry point. See
+    /// `ContactsListViewController.select(contactID:)` for the full contract.
+    ///
+    /// A favorited event outside the loaded month window has no row at all;
+    /// the request simply stays pending (the detail is shown either way) and
+    /// resolves if paging ever reveals the event.
+    func select(eventID id: UUID) {
+        pendingSelection.request(id)
+        applyPendingSelection()
+    }
+
+    /// See `ContactsListViewController.applyPendingSelection`.
+    private func applyPendingSelection() {
+        guard isViewLoaded else { return }
+        pendingSelection.applyIfPossible(in: tableView) { [self] id in
+            dataSource.indexPath(for: id)
+        }
     }
 
     // MARK: - Table view
@@ -479,6 +505,9 @@ final class EventsListViewController: UIViewController {
         }
         dataSource.apply(snapshot, animatingDifferences: animated)
 
+        // A pending sidebar selection waits here for its row to exist.
+        applyPendingSelection()
+
         updateEmptyState()
     }
 
@@ -626,8 +655,20 @@ extension EventsListViewController: UITableViewDelegate {
             }
             return
         }
+        // Below the pager branch on purpose: a "Load older events" tap is a
+        // request for MORE DATA, not a pick of a record, and it is exactly the
+        // tap that can finally reveal a pending row. Only a real event row
+        // retires the request.
+        pendingSelection.cancel()
         guard let event = eventsByID[itemID] else { return }
         didSelectEvent(event)
+    }
+
+    /// See `ContactsListViewController.scrollViewWillBeginDragging(_:)`. A
+    /// manual scroll retires the request even though a pager tap doesn't: the
+    /// user is driving the list now.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingSelection.cancel()
     }
 
     func tableView(
