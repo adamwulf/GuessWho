@@ -25,13 +25,14 @@ struct LinkedInSearchTests {
 
     @Test("Query-breaking characters are percent-encoded, not passed through")
     func encodesSubDelimiters() {
-        let url = LinkedInSearch.peopleURL(keywords: "Ann Smith AT&T C++ ?#")?.absoluteString ?? ""
-        // `&` and `=` would end the keywords early; `+` would decode back to a
-        // space; `#` would start the fragment. All must arrive escaped — `?` is
-        // escaped too, though it wouldn't have broken anything.
+        let url = LinkedInSearch.peopleURL(keywords: "Ann Smith AT&T C++ Q=A ?#")?.absoluteString ?? ""
+        // `&` would end the keywords early, `+` would decode back to a space,
+        // and `#` would start the fragment. `=` and `?` are escaped for a
+        // literal round-trip, though neither would have broken the query.
         #expect(url.hasPrefix("https://www.linkedin.com/search/results/people/?keywords="))
         #expect(url.contains("AT%26T"))
         #expect(url.contains("C%2B%2B"))
+        #expect(url.contains("Q%3DA"))
         #expect(url.contains("%3F%23"))
         // Exactly one "&" — the separator before `origin`.
         #expect(url.filter { $0 == "&" }.count == 1)
@@ -250,13 +251,21 @@ struct LinkedInSearchTests {
         #expect(LinkedInSearch.url(for: contact) != nil)
     }
 
-    @Test("A company path with no slug is not a LinkedIn page")
-    func companyPathWithoutSlug() {
+    @Test("A company path with no slug is not a LinkedIn page",
+          arguments: [
+            "https://www.linkedin.com/company/",
+            "https://www.linkedin.com/company",
+            // Whitespace is not a slug.
+            "https://www.linkedin.com/company/ ",
+            // Right path, wrong host.
+            "https://example.com/company/acme-robotics",
+          ])
+    func companyPathWithoutSlug(website: String) {
         let contact = Contact(
             localID: "1",
             contactType: .organization,
             organizationName: "Acme Robotics",
-            urlAddresses: [LabeledValue(label: "", value: "https://www.linkedin.com/company/")]
+            urlAddresses: [LabeledValue(label: "", value: website)]
         )
         #expect(!contact.hasLinkedInLink)
     }

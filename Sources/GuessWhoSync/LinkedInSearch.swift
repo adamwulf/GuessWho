@@ -1,9 +1,9 @@
 import Foundation
 
-/// Builds the LinkedIn *search* URL for a contact that carries no LinkedIn
-/// profile yet, so the app can offer a "search" affordance where the profile
-/// link would otherwise be. This is the mirror image of `LinkedInURL`, which
-/// normalizes a profile URL the contact ALREADY has.
+/// Builds the LinkedIn *search* URL for a contact that carries no LinkedIn link
+/// yet (see `Contact.hasLinkedInLink`), so the app can offer a "search"
+/// affordance where the link would otherwise be. This is the mirror image of
+/// `LinkedInURL`, which normalizes a profile URL the contact ALREADY has.
 ///
 /// LinkedIn's search page takes free text in one `keywords` parameter — there
 /// is no public facet parameter for a company name, so the company is folded
@@ -14,12 +14,14 @@ public enum LinkedInSearch {
     /// minus everything that would come back out as something other than what
     /// the user typed.
     ///
-    /// - `&` and `=` would read as the boundary between query items, cutting the
+    /// - `&` would read as the boundary between query items, cutting the
     ///   keywords short (`AT&T` → a keyword `AT` plus a stray item `T`).
     /// - `+` decodes back to a space on most servers, so `C++` would search for
     ///   `C  `.
-    /// - `?` is legal inside a query and doesn't split it, but escaping it keeps
-    ///   the value a literal round-trip.
+    /// - `=` and `?` are both harmless where they'd land — a parser splits an
+    ///   item on its FIRST `=`, so a later one stays literal, and a `?` inside a
+    ///   query splits nothing — but escaping them keeps the value a literal
+    ///   round-trip whatever reads it.
     ///
     /// `#` needs no removal — `urlQueryAllowed` already excludes it (it starts
     /// the fragment), as it excludes the space, which is why a space becomes
@@ -57,7 +59,7 @@ public enum LinkedInSearch {
         return URL(string: "https://www.linkedin.com/search/results/\(vertical)/?keywords=\(encoded)&origin=\(origin)")
     }
 
-    /// The search a contact with no stored LinkedIn profile should link to:
+    /// The search a contact with no stored LinkedIn link should point at:
     ///
     /// - A **person** searches people by name, narrowed by the organization
     ///   name when the contact has one.
@@ -108,7 +110,11 @@ public enum LinkedInSearch {
         guard lower.contains("linkedin.com/") else { return false }
         return ["/company/", "/school/", "/showcase/"].contains { segment in
             guard let range = lower.range(of: segment) else { return false }
-            let slug = lower[range.upperBound...].prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+            // Trim before the emptiness test, as `LinkedInURL.slug(from:)` does:
+            // a segment of nothing but whitespace is not a slug.
+            let slug = lower[range.upperBound...]
+                .prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return !slug.isEmpty
         }
     }
