@@ -173,13 +173,7 @@ final class GuidesListViewController: UIViewController {
             (cell as? GuideCell)?.configure(
                 with: guide,
                 placeCount: self.repository.placeCount(inGuide: guide.id),
-                isFavorite: self.favoritesStore.isFavorite(kind: .guide, id: guide.id.uuidString),
-                onToggleFavorite: { [weak self] in
-                    // The store posts `.favoritesDidChange`, which the observer
-                    // below turns into a row repaint — the cell never flips its
-                    // own star, so what is drawn is always what was persisted.
-                    self?.favoritesStore.toggle(kind: .guide, id: guide.id.uuidString)
-                }
+                isFavorite: self.favoritesStore.isFavorite(kind: .guide, id: guide.id.uuidString)
             )
             return cell
         }
@@ -378,6 +372,11 @@ extension GuidesListViewController: UITableViewDelegate {
         pendingSelection.cancel()
     }
 
+    /// Trailing swipe: Remove, plus favorite / unfavorite. The star used to be a
+    /// button on the row itself; it now lives in the nav bar of the guide's
+    /// places list (its detail surface), so the swipe is what keeps a one-gesture
+    /// toggle available from the list — exactly the shape `GroupsListViewController`
+    /// pairs with its own drill-in star.
     func tableView(
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
@@ -388,7 +387,22 @@ extension GuidesListViewController: UITableViewDelegate {
             self?.confirmDelete(guide: guide, completion: completion)
         }
         action.image = UIImage(systemName: "trash")
-        let config = UISwipeActionsConfiguration(actions: [action])
+
+        let isFavorited = favoritesStore.isFavorite(kind: .guide, id: guide.id.uuidString)
+        let favoriteAction = UIContextualAction(
+            style: .normal,
+            title: isFavorited ? "Unfavorite" : "Favorite"
+        ) { [weak self] _, _, completion in
+            // The store posts `.favoritesDidChange`, which the observer above
+            // turns into a row repaint — nothing here flips the star directly,
+            // so what is drawn is always what was persisted.
+            self?.favoritesStore.toggle(kind: .guide, id: guide.id.uuidString)
+            completion(true)
+        }
+        favoriteAction.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
+        favoriteAction.backgroundColor = .systemYellow
+
+        let config = UISwipeActionsConfiguration(actions: [action, favoriteAction])
         config.performsFirstActionWithFullSwipe = false
         return config
     }
@@ -465,23 +479,17 @@ extension GuidesListViewController: ScrollsToTop {
 /// Guide row: leading map icon, guide name, a "N places" caption, and a
 /// trailing star button that favorites / unfavorites the guide.
 ///
-/// The star is a BUTTON here, not the passive `star.fill` indicator the
-/// contact / event / group rows carry: those records are all starred from a
-/// detail view, and a guide row has no detail view to put a toolbar star on —
-/// selecting it drills straight into the guide's places. So the row itself is
-/// the only place the control can live, and it is drawn in both states (hollow
-/// `star` when unstarred, filled yellow `star.fill` when starred) so it reads
-/// as something to press.
+/// The star is the same passive `star.fill` indicator the contact / event /
+/// group rows carry, shown only when the guide is favorited — not a button.
+/// A guide is starred from the nav bar of its places list
+/// (`GuidePlacesListViewController`), which is a guide's detail surface the way
+/// the member list is a group's; the row's trailing swipe offers the same
+/// toggle without drilling in.
 private final class GuideCell: UITableViewCell {
     private let iconView = UIImageView()
     private let nameLabel = UILabel()
     private let countLabel = UILabel()
-    private let starButton = UIButton(type: .system)
-
-    /// Invoked when the star is pressed. Owned by the list, which routes it to
-    /// `FavoritesListStore.toggle`; cleared on reuse so a recycled cell can
-    /// never toggle the guide it used to show.
-    private var onToggleFavorite: (() -> Void)?
+    private let starView = UIImageView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -497,8 +505,7 @@ private final class GuideCell: UITableViewCell {
         super.prepareForReuse()
         nameLabel.text = nil
         countLabel.text = nil
-        onToggleFavorite = nil
-        accessibilityCustomActions = nil
+        starView.isHidden = true
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {
@@ -532,25 +539,17 @@ private final class GuideCell: UITableViewCell {
         countLabel.translatesAutoresizingMaskIntoConstraints = false
         countLabel.numberOfLines = 1
 
-        // Trailing star button. Explicit 44pt minimum constraints below keep
-        // the target accessible even though the glyph is body-sized, and the
-        // image is swapped (never hidden) so the row reserves the same text
-        // width whether or not it is starred.
-        var starConfiguration = UIButton.Configuration.plain()
-        starConfiguration.contentInsets = NSDirectionalEdgeInsets(
-            top: 10, leading: 10, bottom: 10, trailing: 10
-        )
-        starConfiguration.preferredSymbolConfigurationForImage =
-            UIImage.SymbolConfiguration(textStyle: .body)
-        starButton.configuration = starConfiguration
-        starButton.isAccessibilityElement = true
-        starButton.addAction(
-            UIAction { [weak self] _ in self?.onToggleFavorite?() },
-            for: .touchUpInside
-        )
-        starButton.setContentHuggingPriority(.required, for: .horizontal)
-        starButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        starButton.translatesAutoresizingMaskIntoConstraints = false
+        // Trailing favorite star. The image stays installed and only `isHidden`
+        // toggles, so its intrinsic size keeps the layout deterministic — same
+        // pattern as GroupCell / ContactCell.
+        starView.image = UIImage(systemName: "star.fill")
+        starView.contentMode = .scaleAspectFit
+        starView.tintColor = .systemYellow
+        starView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .footnote)
+        starView.isHidden = true
+        starView.setContentHuggingPriority(.required, for: .horizontal)
+        starView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        starView.translatesAutoresizingMaskIntoConstraints = false
 
         let textStack = UIStackView(arrangedSubviews: [nameLabel, countLabel])
         textStack.axis = .vertical
@@ -560,7 +559,7 @@ private final class GuideCell: UITableViewCell {
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
-        contentView.addSubview(starButton)
+        contentView.addSubview(starView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -568,43 +567,18 @@ private final class GuideCell: UITableViewCell {
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
             textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: starButton.leadingAnchor, constant: -8),
+            textStack.trailingAnchor.constraint(equalTo: starView.leadingAnchor, constant: -8),
             textStack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
             textStack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
-            starButton.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
-            starButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            starButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            starButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            starView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            starView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
         ])
     }
 
-    func configure(
-        with guide: MapsGuide,
-        placeCount: Int,
-        isFavorite: Bool,
-        onToggleFavorite: @escaping () -> Void
-    ) {
+    func configure(with guide: MapsGuide, placeCount: Int, isFavorite: Bool) {
         nameLabel.text = Self.displayName(for: guide)
         countLabel.text = placeCount == 1 ? "1 place" : "\(placeCount) places"
-        self.onToggleFavorite = onToggleFavorite
-        starButton.configuration?.image = UIImage(systemName: isFavorite ? "star.fill" : "star")
-        // Unstarred sits at the same weight as the "N places" caption beside
-        // it — the row keeps its selected-state tint background under both, so
-        // anything lighter would wash out on a selected row.
-        starButton.configuration?.baseForegroundColor = isFavorite ? .systemYellow : .secondaryLabel
-        // Same wording as the detail views' toolbar star, so the action reads
-        // identically wherever VoiceOver meets it.
-        starButton.accessibilityLabel = isFavorite ? "Unfavorite" : "Favorite"
-        // UITableViewCell may aggregate its content into one VoiceOver element,
-        // which can hide an interactive contentView subview. Mirror the button
-        // as a custom action on the row so the toggle is always reachable.
-        accessibilityCustomActions = [
-            UIAccessibilityCustomAction(name: isFavorite ? "Unfavorite" : "Favorite") { [weak self] _ in
-                guard let self else { return false }
-                self.onToggleFavorite?()
-                return true
-            }
-        ]
+        starView.isHidden = !isFavorite
     }
 
     static func displayName(for guide: MapsGuide) -> String {
