@@ -248,15 +248,24 @@ final class SidebarViewController: UIViewController {
             cell.accessibilityCustomActions = count > 0
                 ? [expansionAction(for: tab, isClosed: isClosed)]
                 : nil
+
+            // The open/closed state, spoken. `accessibilityValue` IS read when
+            // the row takes focus, where the action's name is not — so without
+            // this the only cue is the badge, which says "2 favorites" when
+            // closed and nothing at all when open. That reads as an absence, not
+            // as a state. A section with nothing to open has no state to report.
+            cell.accessibilityValue = count > 0 ? (isClosed ? "Collapsed" : "Expanded") : nil
         case .favorite(let id):
             guard let favorite = favoriteItemsByID[id] else { return }
             cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
             cell.accessories = []
             // Cleared for the same reason as `accessories`: a child has no
-            // section to open. Nothing can carry one over today — the two cell
-            // registrations have separate reuse pools — but leaving the two
-            // resets asymmetric is a trap if they are ever merged.
+            // section to open, so it has neither an action nor a state to
+            // report. Nothing can carry one over today — the two cell
+            // registrations have separate reuse pools — but leaving the resets
+            // asymmetric is a trap if they are ever merged.
             cell.accessibilityCustomActions = nil
+            cell.accessibilityValue = nil
         }
     }
 
@@ -665,10 +674,15 @@ final class SidebarViewController: UIViewController {
 
             // Rows just appeared or disappeared, so VoiceOver's picture of this
             // screen is stale. This SPEAKS nothing — `.layoutChanged` refreshes
-            // the element map and moves focus; it is not an announcement. The
-            // feedback is where focus lands: hand it the section's own cell, so
-            // the user is returned to the row they just acted on and hears its
-            // action read back as the opposite of what they chose.
+            // the element map and optionally moves focus; it is not an
+            // announcement. Naming the section's own cell pins focus to the row
+            // the user acted on instead of leaving the landing spot unspecified
+            // after the removed rows.
+            //
+            // What they hear on that focus is the row's label and VALUE. NOT the
+            // action's name — Apple surfaces custom actions through the Actions
+            // rotor, behind a deliberate user cue — which is why the open/closed
+            // state is carried by `accessibilityValue` in `configure(_:for:)`.
             let toggled = self.dataSource.indexPath(for: .section(tab))
                 .flatMap { self.collectionView.cellForItem(at: $0) }
             UIAccessibility.post(notification: .layoutChanged, argument: toggled)
