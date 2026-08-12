@@ -190,6 +190,24 @@ final class GuidePlaceReadToolTests: XCTestCase {
         expectError(response, code: .invalidParams)
     }
 
+    func testPlacesSearchUsesGlobalSearchBudgetAcrossHelpers() async {
+        let fixture = await Fixture.make()
+        let dispatcher = ToolDispatcher(
+            contacts: fixture.contacts, events: fixture.events,
+            guides: fixture.guides, links: fixture.links, gates: fixture.gates,
+            searchLimitPerWindow: 1, searchWindowSeconds: 60)
+        let first = await dispatcher.handle(.placesSearch(
+            helperId: Fixture.helper, messageId: "first", query: "coffee",
+            limit: nil, cursor: nil))
+        guard case .placePage = first else {
+            return XCTFail("first search should pass")
+        }
+        let second = await dispatcher.handle(.placesSearch(
+            helperId: RequestOrigin.mcp.makeHelperId(), messageId: "second",
+            query: "coffee", limit: nil, cursor: nil))
+        expectError(second, code: .busy)
+    }
+
     func testPlaceSearchAndListsHaveDeterministicPaging() async {
         let fixture = await Fixture.make()
         let expected = await MainActor.run { () -> [String] in

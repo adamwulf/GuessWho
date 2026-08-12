@@ -858,6 +858,11 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "The query argument must contain visible text.")
         }
+        guard admitSearch() else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .busy, message: WireErrorMessage.busy)
+        }
         guard let page = pageBounds(limit: limit, cursor: cursor) else {
             return invalidCursor(helperId: helperId, messageId: messageId)
         }
