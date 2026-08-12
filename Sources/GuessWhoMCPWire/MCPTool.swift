@@ -38,6 +38,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case placesSearch = "places_search"
     case placesGet = "places_get"
     case linksList = "links_list"
+    case favoritesList = "favorites_list"
 
     // Write tools. The Phase 2 set mutates GuessWho's OWN data (notes,
     // fields, links, favorites, tags, guides); Revision 2 adds full
@@ -76,6 +77,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsSetCustomField = "contacts_set_custom_field"
     case contactsDeleteCustomField = "contacts_delete_custom_field"
     case contactsSetFavorite = "contacts_set_favorite"
+    case favoritesSet = "favorites_set"
+    case favoritesReorder = "favorites_reorder"
     case organizationsRenameDepartment = "organizations_rename_department"
     case eventsAddTag = "events_add_tag"
     case eventsEditTag = "events_edit_tag"
@@ -128,7 +131,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .placesList, .placesSearch, .placesGet,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             return .none
-        case .linksList, .linksCreate, .linksDelete:
+        case .linksList, .linksCreate, .linksDelete,
+             .favoritesList, .favoritesSet, .favoritesReorder:
             // Connection storage is GuessWho's own; no single system
             // permission covers a tool whose endpoints span kinds. The
             // dispatcher additionally gates per call on each referenced
@@ -149,7 +153,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .organizationsListDepartmentMembers,
              .eventsList, .eventsGet, .eventsListTags,
              .guidesList, .guidesGet, .guidesListForPlace,
-             .placesList, .placesSearch, .placesGet, .linksList:
+             .placesList, .placesSearch, .placesGet, .linksList, .favoritesList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsSetPhoto, .contactsDeletePhoto,
@@ -162,7 +166,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsSetFavorite, .organizationsRenameDepartment,
+             .contactsSetFavorite,
+             .favoritesSet, .favoritesReorder,
+             .organizationsRenameDepartment,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -204,6 +210,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
         "An event id — from events_list, or the otherId of a links_list row whose kind is event."
     private static let linkKindDoc =
         "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
+    private static let favoriteKindDoc =
+        "\"contact\", \"event\", \"group\", \"guide\", or \"place\" — the entity kind the id refers to. Use the kind and id together exactly as returned by favorites_list or the matching entity list tool."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [
@@ -649,6 +657,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List every connection on a record — the people, organizations, events, and places the user has connected to it, each with an optional note. Each entry carries the other record's id and kind, usable with the matching read tool.",
                 inputSchema: Self.schema(props, required: ["id", "kind"]))
+        case .favoritesList:
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the user's favorites in their saved order. Each entry includes its entity kind, id, display name, when it was added, and whether the referenced record is still available. Unavailable entries remain in place instead of being omitted.",
+                inputSchema: Self.schema(Self.pagingProperties))
 
         // MARK: Write tools
 
@@ -807,6 +820,38 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     ],
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["contactId", "favorite"]))
+        case .favoritesSet:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Set whether one contact, event, group, guide, or place is a favorite. This assigns the requested state: repeating the same call does not toggle it back.",
+                inputSchema: Self.schema([
+                    "kind": Self.string(Self.favoriteKindDoc),
+                    "id": Self.string("The entity id returned by the matching list tool or favorites_list."),
+                    "favorite": [
+                        "type": "boolean",
+                        "description": .string("true to make it a favorite, false to remove it from favorites."),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["kind", "id", "favorite"]))
+        case .favoritesReorder:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Replace the favorites order without changing the set. Pass every current favorite exactly once as a kind-plus-id pair, in the desired order. The call fails without changing anything if an entry is missing, duplicated, extra, or no longer available.",
+                inputSchema: Self.schema([
+                    "favorites": [
+                        "type": "array",
+                        "description": .string("Every entry from favorites_list exactly once, in the desired order. Both kind and id are required because ids can overlap across entity kinds."),
+                        "items": .object([
+                            "type": "object",
+                            "properties": .object([
+                                "kind": Self.string(Self.favoriteKindDoc),
+                                "id": Self.string("The favorite's id."),
+                            ]),
+                            "required": .array([.string("kind"), .string("id")]),
+                        ]),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["favorites"]))
         case .organizationsRenameDepartment:
             return ToolMetadata(
                 name: rawValue,

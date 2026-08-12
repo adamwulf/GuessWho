@@ -50,6 +50,50 @@ public struct WireDepartmentRenameResult: Codable, Sendable, Equatable {
     }
 }
 
+/// Favorite referent kinds exposed by the generic favorites tools. These are
+/// deliberately entity kinds (not contact-card person/organization subtypes).
+public enum WireFavoriteKind: String, Codable, CaseIterable, Sendable {
+    case contact
+    case event
+    case group
+    case guide
+    case place
+}
+
+/// Composite favorite identity. `kind` is part of identity because ordinary
+/// UUID-shaped ids can legitimately collide across entity namespaces.
+public struct WireFavoriteIdentity: Codable, Sendable, Hashable {
+    public let kind: WireFavoriteKind
+    public let id: String
+
+    public init(kind: WireFavoriteKind, id: String) {
+        self.kind = kind
+        self.id = id
+    }
+}
+
+/// One row from the app's stable favorite projection. Stale referents remain
+/// in their stored position with `isAvailable == false` and the fixed display
+/// name "Unavailable"; they are never silently omitted.
+public struct WireFavorite: Codable, Sendable {
+    public let kind: WireFavoriteKind
+    public let id: String
+    public let displayName: String
+    public let addedAt: String
+    public let isAvailable: Bool
+
+    public init(
+        kind: WireFavoriteKind, id: String, displayName: String,
+        addedAt: String, isAvailable: Bool
+    ) {
+        self.kind = kind
+        self.id = id
+        self.displayName = displayName
+        self.addedAt = addedAt
+        self.isAvailable = isAvailable
+    }
+}
+
 /// A labeled scalar (phone number, email address, web address).
 public struct WireLabeledValue: Codable, Sendable, Equatable {
     public let label: String?

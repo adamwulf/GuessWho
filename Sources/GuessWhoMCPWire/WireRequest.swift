@@ -52,6 +52,7 @@ public enum WireRequest: Codable, Sendable {
     case placesSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
     case placesGet(helperId: String, messageId: String, placeId: String)
     case linksList(helperId: String, messageId: String, id: String, kind: String, limit: Int?, cursor: String?)
+    case favoritesList(helperId: String, messageId: String, limit: Int?, cursor: String?)
 
     // Write tools (plans/cli-mcp.md Phase 2). Every write carries an
     // optional client-supplied `idempotencyToken`: the app dedups a retried
@@ -91,6 +92,8 @@ public enum WireRequest: Codable, Sendable {
     case contactsSetCustomField(helperId: String, messageId: String, contactId: String, name: String, type: String?, value: String, idempotencyToken: String?)
     case contactsDeleteCustomField(helperId: String, messageId: String, contactId: String, fieldId: String, idempotencyToken: String?)
     case contactsSetFavorite(helperId: String, messageId: String, contactId: String, favorite: Bool, idempotencyToken: String?)
+    case favoritesSet(helperId: String, messageId: String, kind: WireFavoriteKind, id: String, favorite: Bool, idempotencyToken: String?)
+    case favoritesReorder(helperId: String, messageId: String, favorites: [WireFavoriteIdentity], idempotencyToken: String?)
     case organizationsRenameDepartment(helperId: String, messageId: String, organizationId: String, oldName: String, newName: String, idempotencyToken: String?)
     case eventsAddTag(helperId: String, messageId: String, eventId: String, text: String, idempotencyToken: String?)
     case eventsEditTag(helperId: String, messageId: String, eventId: String, tagId: String, text: String, idempotencyToken: String?)
@@ -126,6 +129,7 @@ public enum WireRequest: Codable, Sendable {
         case .placesSearch: return .placesSearch
         case .placesGet: return .placesGet
         case .linksList: return .linksList
+        case .favoritesList: return .favoritesList
         case .contactsCreate: return .contactsCreate
         case .contactsUpdate: return .contactsUpdate
         case .contactsDelete: return .contactsDelete
@@ -149,6 +153,8 @@ public enum WireRequest: Codable, Sendable {
         case .contactsSetCustomField: return .contactsSetCustomField
         case .contactsDeleteCustomField: return .contactsDeleteCustomField
         case .contactsSetFavorite: return .contactsSetFavorite
+        case .favoritesSet: return .favoritesSet
+        case .favoritesReorder: return .favoritesReorder
         case .organizationsRenameDepartment: return .organizationsRenameDepartment
         case .eventsAddTag: return .eventsAddTag
         case .eventsEditTag: return .eventsEditTag
@@ -190,6 +196,8 @@ public enum WireRequest: Codable, Sendable {
              .contactsSetCustomField(_, _, _, _, _, _, let token),
              .contactsDeleteCustomField(_, _, _, _, let token),
              .contactsSetFavorite(_, _, _, _, let token),
+             .favoritesSet(_, _, _, _, _, let token),
+             .favoritesReorder(_, _, _, let token),
              .organizationsRenameDepartment(_, _, _, _, _, let token),
              .eventsAddTag(_, _, _, _, let token),
              .eventsEditTag(_, _, _, _, _, let token),
@@ -233,6 +241,7 @@ extension WireRequest: MCPRequestProtocol {
              .placesList(let helperId, _, _, _, _),
              .placesSearch(let helperId, _, _, _, _),
              .placesGet(let helperId, _, _),
+             .favoritesList(let helperId, _, _, _),
              .contactsCreate(let helperId, _, _, _, _),
              .contactsUpdate(let helperId, _, _, _, _),
              .contactsDelete(let helperId, _, _, _),
@@ -256,6 +265,8 @@ extension WireRequest: MCPRequestProtocol {
              .contactsSetCustomField(let helperId, _, _, _, _, _, _),
              .contactsDeleteCustomField(let helperId, _, _, _, _),
              .contactsSetFavorite(let helperId, _, _, _, _),
+             .favoritesSet(let helperId, _, _, _, _, _),
+             .favoritesReorder(let helperId, _, _, _),
              .organizationsRenameDepartment(let helperId, _, _, _, _, _),
              .eventsAddTag(let helperId, _, _, _, _),
              .eventsEditTag(let helperId, _, _, _, _, _),
@@ -295,6 +306,7 @@ extension WireRequest: MCPRequestProtocol {
              .placesList(_, let messageId, _, _, _),
              .placesSearch(_, let messageId, _, _, _),
              .placesGet(_, let messageId, _),
+             .favoritesList(_, let messageId, _, _),
              .contactsCreate(_, let messageId, _, _, _),
              .contactsUpdate(_, let messageId, _, _, _),
              .contactsDelete(_, let messageId, _, _),
@@ -318,6 +330,8 @@ extension WireRequest: MCPRequestProtocol {
              .contactsSetCustomField(_, let messageId, _, _, _, _, _),
              .contactsDeleteCustomField(_, let messageId, _, _, _),
              .contactsSetFavorite(_, let messageId, _, _, _),
+             .favoritesSet(_, let messageId, _, _, _, _),
+             .favoritesReorder(_, let messageId, _, _),
              .organizationsRenameDepartment(_, let messageId, _, _, _, _),
              .eventsAddTag(_, let messageId, _, _, _),
              .eventsEditTag(_, let messageId, _, _, _, _),
@@ -464,6 +478,10 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 id: try args.requiredString("id"),
                 kind: try args.requiredString("kind"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .favoritesList:
+            return .favoritesList(
+                helperId: helperId, messageId: messageId,
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
 
         case .contactsCreate:
@@ -614,6 +632,18 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 favorite: try args.requiredBool("favorite"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .favoritesSet:
+            return .favoritesSet(
+                helperId: helperId, messageId: messageId,
+                kind: try args.requiredFavoriteKind("kind"),
+                id: try args.requiredString("id"),
+                favorite: try args.requiredBool("favorite"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .favoritesReorder:
+            return .favoritesReorder(
+                helperId: helperId, messageId: messageId,
+                favorites: try args.requiredFavoriteIdentities("favorites"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .organizationsRenameDepartment:
             return .organizationsRenameDepartment(
@@ -768,6 +798,16 @@ private struct ToolArguments {
         throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "true or false")
     }
 
+    func requiredFavoriteKind(_ name: String) throws -> WireFavoriteKind {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard let raw = value.stringValue, let kind = WireFavoriteKind(rawValue: raw) else {
+            throw WireRequestError.unsupportedArgument(message: WireErrorMessage.invalidFavoriteKindArgument)
+        }
+        return kind
+    }
+
     func optionalBool(_ name: String) throws -> Bool? {
         guard let value = values[name], value != .null else { return nil }
         if let bool = value.boolValue { return bool }
@@ -791,6 +831,39 @@ private struct ToolArguments {
                 throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a list of ids")
             }
             return string
+        }
+    }
+
+    func requiredFavoriteIdentities(_ name: String) throws -> [WireFavoriteIdentity] {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard case .array(let items) = value else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name, expected: "a list of kind and id objects")
+        }
+        return try items.map { item in
+            guard case .object(let object) = item else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name, expected: "a list of kind and id objects")
+            }
+            guard let kindValue = object["kind"], kindValue != .null else {
+                throw WireRequestError.missingArgument(tool: toolName, name: "kind")
+            }
+            guard let rawKind = kindValue.stringValue,
+                  let kind = WireFavoriteKind(rawValue: rawKind)
+            else {
+                throw WireRequestError.unsupportedArgument(
+                    message: WireErrorMessage.invalidFavoriteKindArgument)
+            }
+            guard let idValue = object["id"], idValue != .null else {
+                throw WireRequestError.missingArgument(tool: toolName, name: "id")
+            }
+            guard let id = idValue.stringValue, !id.isEmpty else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name, expected: "a list of kind and non-empty id objects")
+            }
+            return WireFavoriteIdentity(kind: kind, id: id)
         }
     }
 

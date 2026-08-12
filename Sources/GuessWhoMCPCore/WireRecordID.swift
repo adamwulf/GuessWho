@@ -96,7 +96,18 @@ enum WireRecordID {
     /// The wire id for a contact group: a one-way digest of its Apple
     /// local identifier (the identifier itself is in the exclusion set).
     static func groupID(for group: ContactGroup) -> String {
-        groupPrefix + digest(group.localID)
+        groupID(localID: group.localID)
+    }
+
+    /// Derive an opaque wire id directly from a stored group local id. This
+    /// overload is required for stale favorite rows: the app intentionally
+    /// preserves the row after its group disappears, but the raw local id must
+    /// still never cross the wire.
+    static func groupID(localID: String) -> String {
+        // Favorite storage canonicalizes group ids to lowercase. Hash the same
+        // canonical form everywhere so a group's opaque wire id remains stable
+        // after the referent goes stale and only the persisted favorite remains.
+        groupPrefix + digest(localID.lowercased())
     }
 
     /// Find the group a wire id refers to, by re-derivation.
@@ -110,6 +121,13 @@ enum WireRecordID {
     /// places). `nil` for anything not UUID-shaped.
     static func recordUUID(_ id: String) -> UUID? {
         UUID(uuidString: id.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Stable one-way id for a malformed/stale stored favorite whose kind
+    /// normally carries a UUID. Defensive against hand-edited legacy files:
+    /// an unexpected calendar/local identifier must never be echoed verbatim.
+    static func opaqueStaleID(kind: String, id: String) -> String {
+        "x-" + digest("\(kind):\(id)")
     }
 
     // MARK: - Encoding helpers

@@ -30,6 +30,7 @@ public enum WireResponse: Codable, Sendable {
     case placePage(helperId: String, messageId: String, page: WirePage<WirePlace>)
     case place(helperId: String, messageId: String, place: WirePlace)
     case linkPage(helperId: String, messageId: String, page: WirePage<WireLink>)
+    case favoritePage(helperId: String, messageId: String, page: WirePage<WireFavorite>)
 
     // Write-tool results (plans/cli-mcp.md Phase 2): a write that creates or
     // updates a record echoes the record back (the same allowlisted DTO the
@@ -65,6 +66,7 @@ extension WireResponse: MCPResponseProtocol {
              .placePage(let helperId, _, _),
              .place(let helperId, _, _),
              .linkPage(let helperId, _, _),
+             .favoritePage(let helperId, _, _),
              .note(let helperId, _, _),
              .customField(let helperId, _, _),
              .link(let helperId, _, _),
@@ -95,6 +97,7 @@ extension WireResponse: MCPResponseProtocol {
              .placePage(_, let messageId, _),
              .place(_, let messageId, _),
              .linkPage(_, let messageId, _),
+             .favoritePage(_, let messageId, _),
              .note(_, let messageId, _),
              .customField(_, let messageId, _),
              .link(_, let messageId, _),
@@ -147,6 +150,8 @@ extension WireResponse: MCPResponseProtocol {
             return .place(helperId: helperId, messageId: messageId, place: place)
         case .linkPage(_, _, let page):
             return .linkPage(helperId: helperId, messageId: messageId, page: page)
+        case .favoritePage(_, _, let page):
+            return .favoritePage(helperId: helperId, messageId: messageId, page: page)
         case .note(_, _, let note):
             return .note(helperId: helperId, messageId: messageId, note: note)
         case .customField(_, _, let field):
@@ -209,6 +214,8 @@ extension WireResponse: MCPResponseProtocol {
         case .place(_, _, let place):
             return Self.jsonResult(place)
         case .linkPage(_, _, let page):
+            return Self.jsonResult(page)
+        case .favoritePage(_, _, let page):
             return Self.jsonResult(page)
         case .note(_, _, let note):
             return Self.jsonResult(note)

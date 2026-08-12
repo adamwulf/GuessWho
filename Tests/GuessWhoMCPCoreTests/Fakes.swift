@@ -54,6 +54,7 @@ final class FakeContactSource: MCPContactSource {
     var photoDeleteLeavesEmptyData = false
     private(set) var previousPhotoDataByEffectiveID: [String: Data] = [:]
     private(set) var photoWriteCount = 0
+    weak var genericFavorites: FakeFavoriteSource?
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
@@ -433,9 +434,11 @@ final class FakeContactSource: MCPContactSource {
         let key = try await effectiveWriteID(id)
         if favoriteEffectiveIDs.contains(key) {
             favoriteEffectiveIDs.remove(key)
+            _ = try genericFavorites?.setFavorite(kind: .contact, id: key, favorite: false)
             return false
         }
         favoriteEffectiveIDs.insert(key)
+        _ = try genericFavorites?.setFavorite(kind: .contact, id: key, favorite: true)
         return true
     }
 
@@ -757,6 +760,51 @@ final class FakeGuideSource: MCPGuideSource {
     }
 }
 
+@MainActor
+final class FakeFavoriteSource: MCPFavoriteSource {
+    var items: [Favorite] = []
+    private(set) var setCallCount = 0
+    private(set) var reorderCallCount = 0
+    var mutateBeforeNextReorder = false
+    var failReads = false
+
+    nonisolated init() {}
+
+    func loadFavorites() throws -> [Favorite] {
+        if failReads { throw SidecarUnavailableError() }
+        return items
+    }
+
+    func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool {
+        let canonical = id.lowercased()
+        let index = items.firstIndex { $0.kind == kind && $0.id == canonical }
+        if favorite {
+            guard index == nil else { return false }
+            items.append(Favorite(kind: kind, id: canonical, addedAt: Date()))
+        } else {
+            guard let index else { return false }
+            items.remove(at: index)
+        }
+        setCallCount += 1
+        return true
+    }
+
+    func reorderFavorites(expected: [Favorite], reordered: [Favorite]) throws -> Bool {
+        if mutateBeforeNextReorder {
+            mutateBeforeNextReorder = false
+            items.append(Favorite(kind: .guide, id: UUID().uuidString, addedAt: Date()))
+        }
+        guard items == expected else { throw FavoritesStoreMutationError.changed }
+        guard reordered.count == items.count, Set(reordered) == Set(items) else {
+            throw FavoritesStoreMutationError.invalidOrder
+        }
+        guard reordered != items else { return false }
+        items = reordered
+        reorderCallCount += 1
+        return true
+    }
+}
+
 /// The dispatcher's link source over a REAL `GuessWhoSync` — the same thin
 /// adapter shape as the app's `SyncService` conformance, so the links_*
 /// tools exercise the production engine + on-disk store, not a fake.
@@ -806,6 +854,7 @@ struct Fixture {
     let contacts: FakeContactSource
     let events: FakeEventSource
     let guides: FakeGuideSource
+    let favorites: FakeFavoriteSource
     /// REAL link storage: a production `GuessWhoSync` over a real
     /// temp-directory `FileSystemSidecarStore`. The links_* tests set
     /// `contacts.linkEngine = linkEngine` so the whole link surface — old
@@ -890,6 +939,7 @@ struct Fixture {
         let contacts = FakeContactSource()
         let events = FakeEventSource()
         let guides = FakeGuideSource()
+        let favorites = FakeFavoriteSource()
         let linkEngine = makeLinkEngine()
         let links = EngineLinkSource(engine: linkEngine)
         let gates = FakeGateSource()
@@ -947,6 +997,12 @@ struct Fixture {
         contacts.linksByID[personLink.id] = personLink
         contacts.linksByID[organizationLink.id] = organizationLink
         contacts.favoriteEffectiveIDs = [janeKey]
+        contacts.genericFavorites = favorites
+        favorites.items = [
+            Favorite(
+                kind: .contact, id: janeKey,
+                addedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        ]
         contacts.groups = [ContactGroup(localID: "CNGroup-LOCAL-1", name: "Museum Friends")]
         contacts.membersByGroup["CNGroup-LOCAL-1"] = [jane]
 
@@ -988,14 +1044,16 @@ struct Fixture {
         ]
 
         let dispatcher = ToolDispatcher(
-            contacts: contacts, events: events, guides: guides, links: links, gates: gates,
+            contacts: contacts, events: events, guides: guides,
+            favorites: favorites, links: links, gates: gates,
             confirmations: confirmations,
             audit: audit,
             writeLimitPerWindow: writeLimitPerWindow,
             writeWindowSeconds: writeWindowSeconds)
         return Fixture(
             dispatcher: dispatcher, contacts: contacts, events: events,
-            guides: guides, links: links, linkEngine: linkEngine, gates: gates,
+            guides: guides, favorites: favorites, links: links,
+            linkEngine: linkEngine, gates: gates,
             confirmations: confirmations, audit: audit)
     }
 }

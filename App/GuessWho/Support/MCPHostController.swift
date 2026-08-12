@@ -158,7 +158,8 @@ final class MCPHostController: NSObject {
 
         let gates = MCPGates(service: service, defaults: UserDefaults(suiteName: groupID))
         let dispatcher = ToolDispatcher(
-            contacts: repository, events: service, guides: service, links: service, gates: gates,
+            contacts: repository, events: service, guides: service,
+            favorites: service, links: service, gates: gates,
             confirmations: MCPConfirmationPresenter(),
             audit: auditLog)
         let newHost = MCPPipeHost(
@@ -235,6 +236,7 @@ final class MCPGates: MCPGateSource {
 extension SyncService: MCPEventSource {}
 extension SyncService: MCPGuideSource {}
 extension SyncService: MCPLinkSource {}
+extension SyncService: MCPFavoriteSource {}
 
 /// Presents the contacts_delete confirmation (plans/cli-mcp.md Revision
 /// 2): a standard alert on the frontmost ACTIVE scene naming the specific

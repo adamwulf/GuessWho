@@ -125,28 +125,29 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **53 tools total: 20 read and 33 write**.
+There are **56 tools total: 21 read and 35 write**.
 
-**Read (20):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (21):** `contacts_search`, `contacts_list`, `contacts_get`,
 `contacts_get_photo`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
 `contacts_list_groups`, `organizations_list_members`,
 `organizations_list_departments`, `organizations_list_department_members`,
 `events_list`, `events_get`, `events_list_tags`,
 `guides_list`, `guides_get`, `guides_list_for_place`, `places_list`,
-`places_search`, `places_get`, `links_list`. (Plus
+`places_search`, `places_get`, `links_list`, `favorites_list`. (Plus
 `guesswho_status`, served by the relay itself when the app is unreachable
-/ to re-check.) Favorites and group-membership are no longer their own
-tools — they fold into `contacts_list` as the optional `favoritesOnly`
-and `groupId` filters (see below). `contacts_list_groups` stays: it lists
-the GROUPS themselves and is the source of `groupId` values.
+/ to re-check.) Contact-only favorite and group-membership filtering also
+remain available through `contacts_list`'s optional `favoritesOnly` and
+`groupId` filters (see below). `contacts_list_groups` lists the groups
+themselves and is the source of group ids.
 
-**Write (33):** the GuessWho-data writes — `contacts_add_note`,
+**Write (35):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
 `guides_reorder_places`, `places_delete`, `links_create`, `links_delete`
-— plus, since Revision 2, full Contact Store parity with the app's own
+— plus generic **`favorites_set`** and **`favorites_reorder`** — plus,
+since Revision 2, full Contact Store parity with the app's own
 editor: **`contacts_create`**, **`contacts_update`** (**scalars-only**
 PATCH since Phase 7: only passed single-value fields change; every
 multi-value list is rejected toward the single-entry tools below), and
@@ -291,6 +292,53 @@ All list forms use the standard limit (default 50, maximum 200), opaque offset
 cursor, 256 KB response cap, and typed invalid-cursor / too-large errors.
 Favorite flags come from the app's live favorite store, so reads reflect the
 currently visible star state without reopening the app.
+
+### Generic favorites (`favorites_*`)
+
+`favorites_list(limit?, cursor?)`, `favorites_set(kind, id, favorite)`,
+and `favorites_reorder(favorites)` expose the app's single ordered favorites
+surface across contacts, events, contact groups, guides, and places. Wire
+kinds are exactly `contact`, `event`, `group`, `guide`, and `place`. Each id
+is the ordinary opaque id from that entity's list tool: contact and stored
+event ids are record ids, group ids are one-way opaque values (the Contacts
+identifier never crosses), and guide/place ids are their record ids. A
+calendar-only event keeps its derived opaque event id on reads, but must be
+opened once in the app before it can be favorited; the write never stores or
+returns the calendar identifier.
+
+`favorites_list` preserves the persisted global order and pages over that
+order before resolving rows. Every row contains `kind`, `id`, `displayName`,
+`addedAt`, and `isAvailable`. This deliberately matches the app projection:
+a deleted or otherwise stale referent remains in its exact position as the
+fixed `Unavailable` row (`isAvailable: false`) rather than vanishing. Even a
+malformed legacy stored id is represented by a stable one-way opaque id; raw
+system identifiers are never echoed. Pages use the standard limit (default
+50, max 200), opaque cursors, and response-size cap.
+
+`favorites_set` is desired-state assignment, not a toggle. Repeating
+`favorite: true` on an existing favorite or `false` on an absent one is a
+successful no-op and does not restamp `addedAt`. Every id is resolved and its
+declared kind verified before storage is touched. The compatibility tool
+`contacts_set_favorite` remains and shares the same contact favorite state.
+
+`favorites_reorder` accepts the complete current set as objects containing
+both `kind` and `id`, in the desired order. Identity is composite: equal UUID
+text in two entity namespaces remains two distinct favorites. Duplicate,
+missing, or extra identities reject the whole request. Every current referent
+must still resolve, so a stale row also rejects the whole request; nothing is
+silently dropped. The store then compare-and-swaps against the exact list read
+by the dispatcher, preserving each original `Favorite` value and `addedAt`.
+A concurrent UI/device edit fails with a fixed refresh-and-retry error instead
+of being overwritten.
+
+The favorites tools use dynamic permission gates because their static domain
+spans kinds: contact and group referents require Contacts access, event
+referents require calendar access, and guide/place referents require no system
+permission. List and reorder inspect all referenced kinds and fail as a whole
+when a required domain is unavailable. Writes additionally require read-write
+mode, use the global write budget and idempotency-token replay, append agent
+activity audit records after successful changes, and ride the shared response
+cap and fixed non-data-bearing error strings.
 
 ### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_delete_value`, Phase 7)
 

@@ -93,6 +93,8 @@ public enum WireErrorMessage {
     /// user opens it in the app once, which does.
     public static let eventNeedsAppFirst =
         "That event can't be tagged yet. Ask the user to open the event once in the GuessWho app, then try again."
+    public static let eventNeedsAppFirstToFavorite =
+        "That event can't be favorited yet. Ask the user to open the event once in the GuessWho app, then try again."
     /// Engine write failure. Carries the re-read guidance: a timed-out write
     /// may still have landed, so a blind retry duplicates it.
     public static let writeFailed =
@@ -129,6 +131,18 @@ public enum WireErrorMessage {
         "The value argument for a checkbox field must be \"true\" or \"false\"."
     public static let reorderMustCoverEveryPlace =
         "The placeIds argument must contain every place in the guide exactly once, in the desired order."
+    public static let invalidFavoriteKindArgument =
+        "The kind argument must be \"contact\", \"event\", \"group\", \"guide\", or \"place\"."
+    public static let favoriteKindMismatch =
+        "That id doesn't belong to a record of the kind given for it. Check the kind and id against the matching list tool, then try again."
+    public static let staleFavorite =
+        "One of the favorites is no longer available. Nothing was reordered; refresh favorites_list before making another change."
+    public static let reorderMustCoverEveryFavorite =
+        "The favorites argument must contain every current favorite exactly once as a kind and id pair, in the desired order."
+    public static let favoritesChangedDuringReorder =
+        "The favorites changed before the new order could be saved. Nothing was reordered; run favorites_list again and retry with the current complete list."
+    public static let favoritesReadFailed =
+        "Favorites couldn't be read right now. Wait a moment, then run favorites_list again."
     // Contact-record write errors (plans/cli-mcp.md Revision 2: full
     // Contact Store read/write parity).
     /// A create/update whose field set leaves the contact unnameable.
@@ -281,10 +295,13 @@ public enum WireErrorMessage {
             eventNeedsAppFirst, writeFailed, photoReadFailed, photoTooLarge,
             invalidPhotoMediaType, invalidPhotoData, photoMediaTypeMismatch,
             unsupportedStoredPhoto, writeBusy, reservedFieldName,
+            eventNeedsAppFirstToFavorite,
             invalidFieldType,
             emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
-            reorderMustCoverEveryPlace,
+            reorderMustCoverEveryPlace, invalidFavoriteKindArgument,
+            favoriteKindMismatch, staleFavorite, reorderMustCoverEveryFavorite,
+            favoritesChangedDuringReorder, favoritesReadFailed,
             contactNeedsAName, invalidKindArgument, invalidKindFilterArgument,
             organizationKindMismatch, emptyDepartmentName, unchangedDepartmentName,
             updateNeedsAField,
@@ -319,6 +336,9 @@ public enum WireAckMessage {
     public static let linkRemoved = "The connection was removed."
     public static let favoriteSet = "Done — the contact is now a favorite."
     public static let favoriteCleared = "Done — the contact is no longer a favorite."
+    public static let genericFavoriteSet = "Done — the item is now a favorite."
+    public static let genericFavoriteCleared = "Done — the item is no longer a favorite."
+    public static let favoritesReordered = "The new favorites order was saved."
     public static let guideDeleted = "The guide was deleted."
     public static let placeDeleted = "The place was deleted."
     public static let placesReordered = "The new order was saved."
@@ -336,7 +356,8 @@ public enum WireAckMessage {
     public static var allFixedStrings: [String] {
         [
             noteDeleted, fieldDeleted, tagDeleted, linkRemoved,
-            favoriteSet, favoriteCleared, guideDeleted, placeDeleted,
+            favoriteSet, favoriteCleared, genericFavoriteSet, genericFavoriteCleared,
+            favoritesReordered, guideDeleted, placeDeleted,
             placesReordered, contactDeleted, contactDeleteDeclined,
             photoSet, photoDeleted,
         ]
@@ -482,6 +503,7 @@ public enum AgentActivityStrings {
     public static let createdGuide = "Created the guide %@"
     public static let deletedGuide = "Deleted the guide %@"
     public static let reorderedPlaces = "Reordered the places in %@"
+    public static let reorderedFavorites = "Reordered %@"
     public static let deletedPlace = "Deleted a place from %@"
     public static let createdContact = "Added the contact %@"
     public static let editedContact = "Edited the contact %@"
@@ -498,7 +520,7 @@ public enum AgentActivityStrings {
             addedConnection, removedConnection,
             markedFavorite, clearedFavorite,
             addedTag, editedTag, deletedTag,
-            createdGuide, deletedGuide, reorderedPlaces, deletedPlace,
+            createdGuide, deletedGuide, reorderedPlaces, reorderedFavorites, deletedPlace,
             createdContact, editedContact, deletedContact, renamedDepartment,
             unknownSubject,
         ]

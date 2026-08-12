@@ -15,7 +15,7 @@ public struct MCPAuditEntry: Codable, Sendable {
         case addNote, editNote, deleteNote
         case setCustomField, deleteCustomField
         case addLinkedContact, removeLinkedContact
-        case setFavorite
+        case setFavorite, reorderFavorites
         case addTag, editTag, deleteTag
         case createGuide, deleteGuide, reorderPlaces, deletePlace
         // Contact-record writes (Revision 2). `deleteContact` is only ever
@@ -25,7 +25,7 @@ public struct MCPAuditEntry: Codable, Sendable {
     }
 
     public enum SubjectKind: String, Codable, Sendable {
-        case contact, event, guide, place, link
+        case contact, event, group, guide, place, link, favorites
     }
 
     /// When the entry was appended (immediately after the engine write
@@ -36,7 +36,8 @@ public struct MCPAuditEntry: Codable, Sendable {
     public let subjectKind: SubjectKind
     /// The durable id of the record the write landed on: the contact's
     /// GuessWho UUID, the event/guide/place record UUID, or the link's own
-    /// UUID. Never an Apple local identifier.
+    /// UUID. A whole-list favorites reorder uses the fixed value `favorites`;
+    /// it contains no referent id. Never an Apple local identifier.
     public let subjectID: String
     /// Display-name snapshot at write time ("Jane Doe", an event title, a
     /// guide name) so rows stay renderable after the record changes.

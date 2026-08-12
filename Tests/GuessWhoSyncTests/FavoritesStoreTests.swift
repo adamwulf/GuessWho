@@ -139,6 +139,45 @@ struct FavoritesStoreTests {
     }
 
     @Test
+    func desiredStateSetIsIdempotentAndPreservesOriginalAddedAt() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        let firstDate = Date(timeIntervalSince1970: 100)
+        let laterDate = Date(timeIntervalSince1970: 200)
+        let id = UUID().uuidString
+
+        #expect(try store.set(kind: .event, id: id, favorite: true, now: firstDate))
+        #expect(try store.set(kind: .event, id: id, favorite: true, now: laterDate) == false)
+        let saved = try store.loadAll()
+        #expect(saved.count == 1)
+        #expect(saved[0].addedAt == firstDate)
+        #expect(try store.set(kind: .event, id: id, favorite: false, now: laterDate))
+        #expect(try store.set(kind: .event, id: id, favorite: false, now: laterDate) == false)
+    }
+
+    @Test
+    func reorderPreservesValuesAndRejectsSetOrConcurrentChanges() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        let a = Favorite(kind: .guide, id: UUID().uuidString, addedAt: Date(timeIntervalSince1970: 1))
+        let b = Favorite(kind: .place, id: UUID().uuidString, addedAt: Date(timeIntervalSince1970: 2))
+        try store.setAll([a, b])
+
+        #expect(try store.reorder(expected: [a, b], reordered: [b, a]))
+        #expect(try store.loadAll() == [b, a])
+        #expect(try store.reorder(expected: [b, a], reordered: [b, a]) == false)
+        #expect(throws: FavoritesStoreMutationError.self) {
+            try store.reorder(expected: [b, a], reordered: [a])
+        }
+        #expect(throws: FavoritesStoreMutationError.self) {
+            try store.reorder(expected: [a, b], reordered: [a, b])
+        }
+        #expect(try store.loadAll() == [b, a])
+    }
+
+    @Test
     func setAllPreservesOrderAcrossReload() throws {
         let root = makeRoot()
         defer { cleanup(root) }

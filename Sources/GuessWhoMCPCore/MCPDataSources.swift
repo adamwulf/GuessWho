@@ -184,6 +184,28 @@ public protocol MCPGuideSource: AnyObject {
     func deletePlace(uuid: String) throws
 }
 
+/// The app's single ordered favorites store. Resolution of each referent stays
+/// in the dispatcher (through the contact/event/guide sources above) so ids are
+/// verified against their declared kind before any mutation reaches storage.
+/// The live implementation is `SyncService`, which owns the same
+/// `FavoritesStore` used by every in-app favorites surface.
+@MainActor
+public protocol MCPFavoriteSource: AnyObject {
+    /// The complete persisted order, including stale referents. Like the app's
+    /// projection, callers must preserve one row per stored favorite.
+    func loadFavorites() throws -> [Favorite]
+
+    /// Idempotent desired-state assignment. Returns whether storage changed.
+    @discardableResult
+    func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool
+
+    /// Compare-and-swap full reorder. Implementations must verify `expected`
+    /// still exactly matches storage immediately before replacing it, and must
+    /// preserve every original `Favorite` value (including `addedAt`).
+    @discardableResult
+    func reorderFavorites(expected: [Favorite], reordered: [Favorite]) throws -> Bool
+}
+
 /// Per-surface access mode + system-permission state, read live per call —
 /// the server-side gate (hiding tools from listTools is UX; this is the
 /// enforcement). One tri-state per surface (off → read-only → read-write),

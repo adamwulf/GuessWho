@@ -157,6 +157,21 @@ final class WireFramingTests: XCTestCase {
         })
     }
 
+    func testFavoritePageRoundTripsCompositeKindAndAvailability() throws {
+        let page = WirePage(items: [WireFavorite(
+            kind: .group, id: "g-opaque", displayName: "Unavailable",
+            addedAt: "2026-08-12T00:00:00Z", isAvailable: false)], nextCursor: nil)
+        let encoded = try JSONEncoder().encode(WireResponse.favoritePage(
+            helperId: "h", messageId: "m", page: page))
+        let decoded = try JSONDecoder().decode(WireResponse.self, from: encoded)
+        guard case .favoritePage(_, _, let decodedPage) = decoded else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(decodedPage.items.first?.kind, .group)
+        XCTAssertEqual(decodedPage.items.first?.id, "g-opaque")
+        XCTAssertEqual(decodedPage.items.first?.isAvailable, false)
+    }
+
     /// Control messages must stay far under the 512-byte Darwin PIPE_BUF
     /// atomicity ceiling — the announce channel's forever-rule.
     func testControlMessagesStayUnderPipeBuf() throws {
@@ -375,10 +390,51 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        // Three guide/place reads extend the 50-tool contact-photo baseline.
-        XCTAssertEqual(MCPTool.allCases.count, 53)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 20)
-        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 33)
+        // Generic favorites add one read and two writes to the parent's
+        // 53-tool guide/place/contact-photo baseline.
+        XCTAssertEqual(MCPTool.allCases.count, 56)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 21)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 35)
+    }
+
+    func testGenericFavoriteRequestsParseCompositeIdentities() throws {
+        let set = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.favoritesSet.rawValue, [
+                "kind": "group", "id": "g-opaque", "favorite": true,
+                "idempotencyToken": "set-1",
+            ]))
+        guard case .favoritesSet(_, _, let kind, let id, let favorite, let token) = set else {
+            return XCTFail("wrong favorites_set case")
+        }
+        XCTAssertEqual(kind, .group)
+        XCTAssertEqual(id, "g-opaque")
+        XCTAssertTrue(favorite)
+        XCTAssertEqual(token, "set-1")
+
+        let reorder = try WireRequest.create(
+            helperId: "h", messageId: "m2",
+            parameters: params(MCPTool.favoritesReorder.rawValue, [
+                "favorites": .array([
+                    .object(["kind": "contact", "id": "contact-id"]),
+                    .object(["kind": "guide", "id": "guide-id"]),
+                ]),
+            ]))
+        guard case .favoritesReorder(_, _, let identities, _) = reorder else {
+            return XCTFail("wrong favorites_reorder case")
+        }
+        XCTAssertEqual(identities.count, 2)
+        XCTAssertEqual(identities.map(\.kind), [.contact, .guide])
+    }
+
+    func testInvalidFavoriteKindIsRejectedWithFixedMessage() {
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.favoritesSet.rawValue, [
+                "kind": "organization", "id": "x", "favorite": true,
+            ]))) { error in
+            XCTAssertEqual(String(describing: error), WireErrorMessage.invalidFavoriteKindArgument)
+        }
     }
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {
