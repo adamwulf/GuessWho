@@ -45,6 +45,9 @@ final class FakeContactSource: MCPContactSource {
     private(set) var departmentsReadCount = 0
     private(set) var departmentMembersReadCount = 0
     private(set) var renameDepartmentCallCount = 0
+    var photoDataByLocalID: [String: Data] = [:]
+    private(set) var previousPhotoDataByEffectiveID: [String: Data] = [:]
+    private(set) var photoWriteCount = 0
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
@@ -225,6 +228,12 @@ final class FakeContactSource: MCPContactSource {
         return contactsAssociated(with: organization).filter {
             $0.departmentName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
         }
+    }
+
+    func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
+        try takeContactStoreError()
+        guard let data = photoDataByLocalID[id.restorationToken.localID] else { return nil }
+        return ContactPhoto(data: data, kind: .fullSize)
     }
 
     // MARK: Writes
@@ -464,6 +473,31 @@ final class FakeContactSource: MCPContactSource {
             $0.contactID.restorationToken.localID == edited.contactID.restorationToken.localID
         }) else { return }
         contacts[index] = edited
+    }
+
+    func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
+        try takeContactStoreError()
+        let localID = id.restorationToken.localID
+        guard contacts.contains(where: {
+            $0.contactID.restorationToken.localID == localID
+        }) else { return false }
+        let key = effectiveID(id)
+        if let current = photoDataByLocalID[localID], !current.isEmpty {
+            previousPhotoDataByEffectiveID[key] = current
+            var fields = fieldsByEffectiveID[key] ?? []
+            fields.removeAll {
+                $0.deletedAt == nil && $0.field == "previousPhoto"
+            }
+            fields.append(SidecarField(
+                id: UUID(), field: "previousPhoto",
+                type: .blob, value: .string("reserved-photo-pointer"),
+                createdAt: Date(), modifiedAt: Date(),
+                modifiedBy: Sentinels.deviceID, deletedAt: nil))
+            fieldsByEffectiveID[key] = fields
+        }
+        photoWriteCount += 1
+        photoDataByLocalID[localID] = imageData
+        return true
     }
 
     func createContact(_ seed: Contact) async throws -> Contact {

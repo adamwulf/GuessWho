@@ -21,6 +21,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsSearch = "contacts_search"
     case contactsList = "contacts_list"
     case contactsGet = "contacts_get"
+    case contactsGetPhoto = "contacts_get_photo"
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
     case contactsListGroups = "contacts_list_groups"
@@ -45,6 +46,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsCreate = "contacts_create"
     case contactsUpdate = "contacts_update"
     case contactsDelete = "contacts_delete"
+    case contactsSetPhoto = "contacts_set_photo"
+    case contactsDeletePhoto = "contacts_delete_photo"
     // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
     // is scalars-only — these are the ONLY way to change a contact's
     // multi-value lists, one entry per call, matched by exact value so a
@@ -98,11 +101,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
 
     public var permissionDomain: PermissionDomain {
         switch self {
-        case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
+        case .contactsSearch, .contactsList, .contactsGet, .contactsGetPhoto, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
              .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddPostalAddress, .contactsEditPostalAddress,
              .contactsDeletePostalAddress,
@@ -135,7 +139,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     /// app's settings; writes are OFF by default — plans/cli-mcp.md Phase 2).
     public var isWrite: Bool {
         switch self {
-        case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
+        case .contactsSearch, .contactsList, .contactsGet, .contactsGetPhoto, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
@@ -143,6 +147,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .guidesList, .guidesGet, .placesList, .linksList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddPostalAddress, .contactsEditPostalAddress,
              .contactsDeletePostalAddress,
@@ -526,6 +531,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "Get a contact's full card: name, organization, job title, phone numbers, email addresses, postal and web addresses, and dates.",
                 inputSchema: Self.schema(["contactId": Self.string(Self.contactIdDoc)], required: ["contactId"]))
+        case .contactsGetPhoto:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Get a contact's current photo as bounded base64 image data. A successful result says present false when the contact has no photo.",
+                inputSchema: Self.schema(["contactId": Self.string(Self.contactIdDoc)], required: ["contactId"]))
         case .contactsListNotes:
             var props = Self.pagingProperties
             props["contactId"] = Self.string(Self.contactIdDoc)
@@ -627,12 +637,35 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 inputSchema: Self.schema(props))
         case .contactsUpdate:
             var props = Self.contactScalarFieldProperties
+            props["kind"] = Self.stringEnum(
+                ["person", "organization"],
+                description: "Optional: change the contact to a person or organization. Omit to leave its kind unchanged.")
             props["contactId"] = Self.string(Self.contactIdDoc)
             props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
             return ToolMetadata(
                 name: rawValue,
-                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Multi-value lists are NOT accepted here — change one entry at a time with the matching contacts_add, contacts_edit, or contacts_delete tool. Returns the updated card.",
+                description: "Edit a contact's kind or single-value fields: person/organization kind, names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Multi-value lists are NOT accepted here — change one entry at a time with the matching contacts_add, contacts_edit, or contacts_delete tool. Returns the updated card.",
                 inputSchema: Self.schema(props, required: ["contactId"]))
+        case .contactsSetPhoto:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Set or replace a contact's photo from bounded base64 image data. JPEG, PNG, GIF, HEIC, and WebP are supported. Replacing a photo preserves the prior photo for the app's recovery behavior.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "mediaType": Self.stringEnum(
+                        ["image/jpeg", "image/png", "image/gif", "image/heic", "image/webp"],
+                        description: "The image data's media type."),
+                    "dataBase64": Self.string("The image bytes encoded as base64. Decoded data may be at most \(WireEnvironment.maxContactPhotoBytes) bytes."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "mediaType", "dataBase64"]))
+        case .contactsDeletePhoto:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a contact's current photo. If there is no photo, this succeeds without changing anything. Deleting a photo preserves the prior photo for the app's recovery behavior.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId"]))
         case .contactsAddValue:
             return Self.listAddMetadata(name: rawValue)
         case .contactsDeleteValue:

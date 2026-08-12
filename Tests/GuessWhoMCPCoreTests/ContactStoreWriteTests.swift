@@ -143,6 +143,7 @@ final class ContactStoreWriteTests: XCTestCase {
             return XCTFail("expected the updated card, got \(String(describing: response))")
         }
         XCTAssertEqual(card.jobTitle, "Director")
+        XCTAssertEqual(card.kind, "person", "omitting kind must preserve it")
         // Untouched fields survive the patch.
         XCTAssertEqual(card.name, "Jane Doe")
         XCTAssertEqual(card.phoneNumbers.map(\.value), before?.phoneNumbers.map(\.value))
@@ -160,6 +161,41 @@ final class ContactStoreWriteTests: XCTestCase {
         XCTAssertEqual(
             after?.urlAddresses.filter { $0.value.hasPrefix("guesswho://") }.map(\.value),
             ["guesswho://contact/\(Sentinels.guessWhoUUID)"])
+    }
+
+    func testUpdateConvertsKindBothWaysAndRejectsInvalidKind() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeID(fixture) else { return XCTFail("no jane") }
+
+        var toOrganization = WireContactScalarFields()
+        toOrganization.kind = "organization"
+        let first = await fixture.dispatcher.handle(.contactsUpdate(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, fields: toOrganization, idempotencyToken: nil))
+        guard case .contact(_, _, let organization) = first else {
+            return XCTFail("expected organization conversion")
+        }
+        XCTAssertEqual(organization.kind, "organization")
+        XCTAssertEqual(organization.name, "Jane Doe")
+
+        var toPerson = WireContactScalarFields()
+        toPerson.kind = "person"
+        let second = await fixture.dispatcher.handle(.contactsUpdate(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, fields: toPerson, idempotencyToken: nil))
+        guard case .contact(_, _, let person) = second else {
+            return XCTFail("expected person conversion")
+        }
+        XCTAssertEqual(person.kind, "person")
+        XCTAssertEqual(person.name, "Jane Doe")
+
+        var invalid = WireContactScalarFields()
+        invalid.kind = "venue"
+        let rejected = await fixture.dispatcher.handle(.contactsUpdate(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, fields: invalid, idempotencyToken: nil))
+        expectError(rejected, code: .invalidParams)
+        XCTAssertEqual(rejected?.errorPayload?.message, WireErrorMessage.invalidKindArgument)
     }
 
     func testUpdateClearsWithEmptyValuesAndRejectsEmptyPatch() async {

@@ -35,6 +35,7 @@ public protocol MCPContactSource: AnyObject {
     func contactsAssociated(with organization: Contact) -> [Contact]
     func departments(in organization: Contact) -> [String]
     func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact]
+    func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto?
 
     // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
     // the UI uses (INV-2), so the change-watcher, iCloud push, and UI
@@ -80,6 +81,8 @@ public protocol MCPContactSource: AnyObject {
     // errors to typed wire codes and never crashes.
     func editableContact(id: ContactID) async throws -> Contact?
     func saveContact(_ edited: Contact, for id: ContactID) async throws
+    @discardableResult
+    func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool
     func createContact(_ seed: Contact) async throws -> Contact
     /// Whole-contact delete — reachable ONLY through the user-confirmed
     /// contacts_delete path. Returns false when the id no longer resolves.

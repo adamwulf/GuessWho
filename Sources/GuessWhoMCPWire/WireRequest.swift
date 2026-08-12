@@ -35,6 +35,7 @@ public enum WireRequest: Codable, Sendable {
     case contactsSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
     case contactsList(helperId: String, messageId: String, kind: String?, favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?)
     case contactsGet(helperId: String, messageId: String, contactId: String)
+    case contactsGetPhoto(helperId: String, messageId: String, contactId: String)
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListGroups(helperId: String, messageId: String, limit: Int?, cursor: String?)
@@ -62,6 +63,8 @@ public enum WireRequest: Codable, Sendable {
     case contactsCreate(helperId: String, messageId: String, kind: String?, fields: WireContactFields, idempotencyToken: String?)
     case contactsUpdate(helperId: String, messageId: String, contactId: String, fields: WireContactScalarFields, idempotencyToken: String?)
     case contactsDelete(helperId: String, messageId: String, contactId: String, idempotencyToken: String?)
+    case contactsSetPhoto(helperId: String, messageId: String, contactId: String, mediaType: String, dataBase64: String, idempotencyToken: String?)
+    case contactsDeletePhoto(helperId: String, messageId: String, contactId: String, idempotencyToken: String?)
     // Single-entry list edits (plans/cli-mcp.md Phase 7): one entry per
     // call, matched by exact value — 0 matches answers notFound, more
     // than one answers ambiguous, and nothing changes on either.
@@ -103,6 +106,7 @@ public enum WireRequest: Codable, Sendable {
         case .contactsSearch: return .contactsSearch
         case .contactsList: return .contactsList
         case .contactsGet: return .contactsGet
+        case .contactsGetPhoto: return .contactsGetPhoto
         case .contactsListNotes: return .contactsListNotes
         case .contactsListCustomFields: return .contactsListCustomFields
         case .contactsListGroups: return .contactsListGroups
@@ -119,6 +123,8 @@ public enum WireRequest: Codable, Sendable {
         case .contactsCreate: return .contactsCreate
         case .contactsUpdate: return .contactsUpdate
         case .contactsDelete: return .contactsDelete
+        case .contactsSetPhoto: return .contactsSetPhoto
+        case .contactsDeletePhoto: return .contactsDeletePhoto
         case .contactsAddValue: return .contactsAddValue
         case .contactsDeleteValue: return .contactsDeleteValue
         case .contactsEditValue: return .contactsEditValue
@@ -158,6 +164,8 @@ public enum WireRequest: Codable, Sendable {
         case .contactsCreate(_, _, _, _, let token),
              .contactsUpdate(_, _, _, _, let token),
              .contactsDelete(_, _, _, let token),
+             .contactsSetPhoto(_, _, _, _, _, let token),
+             .contactsDeletePhoto(_, _, _, let token),
              .contactsAddValue(_, _, _, _, _, _, let token),
              .contactsDeleteValue(_, _, _, _, _, let token),
              .contactsEditValue(_, _, _, _, _, _, _, let token),
@@ -203,6 +211,7 @@ extension WireRequest: MCPRequestProtocol {
              .contactsSearch(let helperId, _, _, _, _),
              .contactsList(let helperId, _, _, _, _, _, _),
              .contactsGet(let helperId, _, _),
+             .contactsGetPhoto(let helperId, _, _),
              .contactsListNotes(let helperId, _, _, _, _),
              .contactsListCustomFields(let helperId, _, _, _, _),
              .contactsListGroups(let helperId, _, _, _),
@@ -218,6 +227,8 @@ extension WireRequest: MCPRequestProtocol {
              .contactsCreate(let helperId, _, _, _, _),
              .contactsUpdate(let helperId, _, _, _, _),
              .contactsDelete(let helperId, _, _, _),
+             .contactsSetPhoto(let helperId, _, _, _, _, _),
+             .contactsDeletePhoto(let helperId, _, _, _),
              .contactsAddValue(let helperId, _, _, _, _, _, _),
              .contactsDeleteValue(let helperId, _, _, _, _, _),
              .contactsEditValue(let helperId, _, _, _, _, _, _, _),
@@ -259,6 +270,7 @@ extension WireRequest: MCPRequestProtocol {
              .contactsSearch(_, let messageId, _, _, _),
              .contactsList(_, let messageId, _, _, _, _, _),
              .contactsGet(_, let messageId, _),
+             .contactsGetPhoto(_, let messageId, _),
              .contactsListNotes(_, let messageId, _, _, _),
              .contactsListCustomFields(_, let messageId, _, _, _),
              .contactsListGroups(_, let messageId, _, _),
@@ -274,6 +286,8 @@ extension WireRequest: MCPRequestProtocol {
              .contactsCreate(_, let messageId, _, _, _),
              .contactsUpdate(_, let messageId, _, _, _),
              .contactsDelete(_, let messageId, _, _),
+             .contactsSetPhoto(_, let messageId, _, _, _, _),
+             .contactsDeletePhoto(_, let messageId, _, _),
              .contactsAddValue(_, let messageId, _, _, _, _, _),
              .contactsDeleteValue(_, let messageId, _, _, _, _),
              .contactsEditValue(_, let messageId, _, _, _, _, _, _),
@@ -357,6 +371,10 @@ extension WireRequest: MCPRequestProtocol {
             return .contactsGet(
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"))
+        case .contactsGetPhoto:
+            return .contactsGetPhoto(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"))
         case .contactsListNotes:
             return .contactsListNotes(
                 helperId: helperId, messageId: messageId,
@@ -433,6 +451,18 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 fields: try args.contactScalarFields(),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsSetPhoto:
+            return .contactsSetPhoto(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                mediaType: try args.requiredString("mediaType"),
+                dataBase64: try args.requiredString("dataBase64"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeletePhoto:
+            return .contactsDeletePhoto(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsAddValue:
             return .contactsAddValue(
@@ -804,6 +834,7 @@ private struct ToolArguments {
                 message: WireErrorMessage.createOnlyListArgumentNotAccepted)
         }
         var fields = WireContactScalarFields()
+        fields.kind = try optionalString("kind")
         fields.namePrefix = try optionalString("namePrefix")
         fields.givenName = try optionalString("givenName")
         fields.middleName = try optionalString("middleName")

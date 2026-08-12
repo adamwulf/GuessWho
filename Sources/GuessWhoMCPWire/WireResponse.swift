@@ -17,6 +17,7 @@ public enum WireResponse: Codable, Sendable {
 
     case contactPage(helperId: String, messageId: String, page: WirePage<WireContactSummary>)
     case contact(helperId: String, messageId: String, contact: WireContact)
+    case contactPhoto(helperId: String, messageId: String, photo: WireContactPhoto)
     case notePage(helperId: String, messageId: String, page: WirePage<WireNote>)
     case customFieldPage(helperId: String, messageId: String, page: WirePage<WireCustomField>)
     case groupPage(helperId: String, messageId: String, page: WirePage<WireGroup>)
@@ -50,6 +51,7 @@ extension WireResponse: MCPResponseProtocol {
              .toolList(let helperId, _, _, _),
              .contactPage(let helperId, _, _),
              .contact(let helperId, _, _),
+             .contactPhoto(let helperId, _, _),
              .notePage(let helperId, _, _),
              .customFieldPage(let helperId, _, _),
              .groupPage(let helperId, _, _),
@@ -78,6 +80,7 @@ extension WireResponse: MCPResponseProtocol {
              .toolList(_, let messageId, _, _),
              .contactPage(_, let messageId, _),
              .contact(_, let messageId, _),
+             .contactPhoto(_, let messageId, _),
              .notePage(_, let messageId, _),
              .customFieldPage(_, let messageId, _),
              .groupPage(_, let messageId, _),
@@ -115,6 +118,8 @@ extension WireResponse: MCPResponseProtocol {
             return .contactPage(helperId: helperId, messageId: messageId, page: page)
         case .contact(_, _, let contact):
             return .contact(helperId: helperId, messageId: messageId, contact: contact)
+        case .contactPhoto(_, _, let photo):
+            return .contactPhoto(helperId: helperId, messageId: messageId, photo: photo)
         case .notePage(_, _, let page):
             return .notePage(helperId: helperId, messageId: messageId, page: page)
         case .customFieldPage(_, _, let page):
@@ -174,6 +179,8 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(page)
         case .contact(_, _, let contact):
             return Self.jsonResult(contact)
+        case .contactPhoto(_, _, let photo):
+            return Self.jsonResult(photo)
         case .notePage(_, _, let page):
             return Self.jsonResult(page)
         case .customFieldPage(_, _, let page):

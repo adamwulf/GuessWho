@@ -141,6 +141,52 @@ final class WireRequestCreateTests: XCTestCase {
         XCTAssertNil(cursor)
     }
 
+    func testContactPhotoRequestsParseAndRoundTrip() throws {
+        let encoded = Data([0xff, 0xd8, 0xff]).base64EncodedString()
+        let set = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsSetPhoto.rawValue, [
+                "contactId": "c-1", "mediaType": "image/jpeg",
+                "dataBase64": .string(encoded), "idempotencyToken": "once",
+            ]))
+        guard case .contactsSetPhoto(_, _, let id, let type, let data, let token) = set else {
+            return XCTFail("wrong set-photo case")
+        }
+        XCTAssertEqual(id, "c-1")
+        XCTAssertEqual(type, "image/jpeg")
+        XCTAssertEqual(data, encoded)
+        XCTAssertEqual(token, "once")
+
+        let roundTripped = try JSONDecoder().decode(
+            WireRequest.self, from: JSONEncoder().encode(set))
+        guard case .contactsSetPhoto = roundTripped else {
+            return XCTFail("set-photo request did not round-trip")
+        }
+
+        let get = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsGetPhoto.rawValue, ["contactId": "c-1"]))
+        guard case .contactsGetPhoto = get else { return XCTFail("wrong get-photo case") }
+
+        let delete = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsDeletePhoto.rawValue, ["contactId": "c-1"]))
+        guard case .contactsDeletePhoto = delete else { return XCTFail("wrong delete-photo case") }
+    }
+
+    func testContactsUpdateParsesOptionalKind() throws {
+        let request = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsUpdate.rawValue, [
+                "contactId": "c-1", "kind": "organization",
+            ]))
+        guard case .contactsUpdate(_, _, _, let fields, _) = request else {
+            return XCTFail("wrong update case")
+        }
+        XCTAssertEqual(fields.kind, "organization")
+        XCTAssertEqual(fields.providedFieldNames, ["kind"])
+    }
+
     func testContactsListParsesOptionalFavoritesAndGroupFilters() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
@@ -232,11 +278,10 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        // Nine structured-entry writes and four organization tools extend
-        // the prior 34-tool set.
-        XCTAssertEqual(MCPTool.allCases.count, 47)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 16)
-        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 31)
+        // Three photo tools extend the 47-tool organization/structured-entry baseline.
+        XCTAssertEqual(MCPTool.allCases.count, 50)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 17)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 33)
     }
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {

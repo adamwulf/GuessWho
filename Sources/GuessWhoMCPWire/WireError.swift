@@ -38,6 +38,8 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     /// unavailable, save failure). The message carries the re-read-before-
     /// retry guidance so a timeout-then-retry doesn't duplicate the write.
     case writeFailed
+    /// A record was found but its photo bytes could not be loaded.
+    case readFailed
     /// A match-based single-entry edit found MORE THAN ONE exact entry, so applying it
     /// would guess which one the caller meant. Additive like `busy`:
     /// `invalidParams` would tell the agent its arguments are malformed
@@ -95,6 +97,18 @@ public enum WireErrorMessage {
     /// may still have landed, so a blind retry duplicates it.
     public static let writeFailed =
         "That change couldn't be saved. Re-read the item before retrying, in case an earlier attempt already went through."
+    public static let photoReadFailed =
+        "That contact's photo couldn't be read. Try again in a moment."
+    public static let photoTooLarge =
+        "That photo is too large for this tool. Use an image smaller than 180 KB."
+    public static let invalidPhotoMediaType =
+        "The mediaType argument must be image/jpeg, image/png, image/gif, image/heic, or image/webp."
+    public static let invalidPhotoData =
+        "The dataBase64 argument must contain non-empty, valid base64 image data."
+    public static let photoMediaTypeMismatch =
+        "The image data doesn't match the mediaType argument."
+    public static let unsupportedStoredPhoto =
+        "That contact's photo uses an image format this tool doesn't support."
     /// Write budget exhausted (distinct from the search `busy`: the fix is
     /// to pause, and a re-read guards against duplicating queued retries).
     public static let writeBusy =
@@ -264,7 +278,9 @@ public enum WireErrorMessage {
             noHostStatus,
             hostNotReady, timedOut,
             notFoundNote, notFoundField, notFoundTag, notFoundPlace,
-            eventNeedsAppFirst, writeFailed, writeBusy, reservedFieldName,
+            eventNeedsAppFirst, writeFailed, photoReadFailed, photoTooLarge,
+            invalidPhotoMediaType, invalidPhotoData, photoMediaTypeMismatch,
+            unsupportedStoredPhoto, writeBusy, reservedFieldName,
             invalidFieldType,
             emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
@@ -313,6 +329,8 @@ public enum WireAckMessage {
     /// "declined" as an answer, not a failure to retry.
     public static let contactDeleteDeclined =
         "The user declined to delete this contact. Nothing was changed."
+    public static let photoSet = "The contact photo was saved."
+    public static let photoDeleted = "The contact photo was deleted."
 
     /// Every fixed string above, for the banned-vocabulary test.
     public static var allFixedStrings: [String] {
@@ -320,6 +338,7 @@ public enum WireAckMessage {
             noteDeleted, fieldDeleted, tagDeleted, linkRemoved,
             favoriteSet, favoriteCleared, guideDeleted, placeDeleted,
             placesReordered, contactDeleted, contactDeleteDeclined,
+            photoSet, photoDeleted,
         ]
     }
 }

@@ -184,6 +184,9 @@ public actor ToolDispatcher {
         case .contactsGet(_, _, let contactId):
             response = await contactsGet(
                 helperId: helperId, messageId: messageId, contactId: contactId)
+        case .contactsGetPhoto(_, _, let contactId):
+            response = await contactsGetPhoto(
+                helperId: helperId, messageId: messageId, contactId: contactId)
         case .contactsListNotes(_, _, let contactId, let limit, let cursor):
             response = await contactsListNotes(
                 helperId: helperId, messageId: messageId,
@@ -237,6 +240,7 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
         case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddPostalAddress, .contactsEditPostalAddress,
              .contactsDeletePostalAddress,
@@ -455,6 +459,49 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 contact: WireMapping.contact(
                     contact, id: WireRecordID.contactID(for: contact), isFavorite: isFavorite))
+        }
+    }
+
+    private func contactsGetPhoto(
+        helperId: String, messageId: String, contactId: String
+    ) async -> WireResponse {
+        switch await resolveContact(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            do {
+                guard let photo = try await contacts.contactPhotoData(
+                    for: contact.contactID, kind: .fullSize)
+                else {
+                    return .contactPhoto(
+                        helperId: helperId, messageId: messageId, photo: .none)
+                }
+                guard !photo.data.isEmpty else {
+                    return .contactPhoto(
+                        helperId: helperId, messageId: messageId, photo: .none)
+                }
+                guard photo.data.count <= WireEnvironment.maxContactPhotoBytes else {
+                    return .error(
+                        helperId: helperId, messageId: messageId,
+                        code: .tooLarge, message: WireErrorMessage.photoTooLarge)
+                }
+                guard let mediaType = Self.photoMediaType(for: photo.data) else {
+                    return .error(
+                        helperId: helperId, messageId: messageId,
+                        code: .readFailed, message: WireErrorMessage.unsupportedStoredPhoto)
+                }
+                return .contactPhoto(
+                    helperId: helperId, messageId: messageId,
+                    photo: WireContactPhoto(
+                        present: true,
+                        mediaType: mediaType,
+                        dataBase64: photo.data.base64EncodedString(),
+                        byteCount: photo.data.count))
+            } catch {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .readFailed, message: WireErrorMessage.photoReadFailed)
+            }
         }
     }
 
@@ -796,6 +843,13 @@ public actor ToolDispatcher {
         case .contactsUpdate(_, _, let contactId, let fields, _):
             return await contactsUpdate(
                 helperId: helperId, messageId: messageId, contactId: contactId, fields: fields)
+        case .contactsSetPhoto(_, _, let contactId, let mediaType, let dataBase64, _):
+            return await contactsSetPhoto(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                mediaType: mediaType, dataBase64: dataBase64)
+        case .contactsDeletePhoto(_, _, let contactId, _):
+            return await contactsDeletePhoto(
+                helperId: helperId, messageId: messageId, contactId: contactId)
         case .contactsAddValue(_, _, let contactId, let wireField, let value, let label, _):
             guard let field = ContactListField(wireField: wireField) else {
                 return invalidContactListField(helperId: helperId, messageId: messageId)
@@ -1403,6 +1457,13 @@ public actor ToolDispatcher {
     private static func applyScalarFields(
         _ fields: WireContactScalarFields, to contact: inout Contact
     ) -> String? {
+        if let value = fields.kind {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "person": contact.contactType = .person
+            case "organization": contact.contactType = .organization
+            default: return WireErrorMessage.invalidKindArgument
+            }
+        }
         if let value = fields.namePrefix { contact.namePrefix = value }
         if let value = fields.givenName { contact.givenName = value }
         if let value = fields.middleName { contact.middleName = value }
@@ -1607,6 +1668,156 @@ public actor ToolDispatcher {
                 return contactSaveFailure(error, helperId: helperId, messageId: messageId)
             }
         }
+    }
+
+    private func contactsSetPhoto(
+        helperId: String, messageId: String, contactId: String,
+        mediaType: String, dataBase64: String
+    ) async -> WireResponse {
+        let normalizedType = mediaType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard Self.supportedPhotoMediaTypes.contains(normalizedType) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidPhotoMediaType)
+        }
+        guard dataBase64.utf8.count <= WireEnvironment.maxContactPhotoBase64Bytes else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .tooLarge, message: WireErrorMessage.photoTooLarge)
+        }
+        guard let data = Data(base64Encoded: dataBase64), !data.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidPhotoData)
+        }
+        guard data.count <= WireEnvironment.maxContactPhotoBytes else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .tooLarge, message: WireErrorMessage.photoTooLarge)
+        }
+        guard Self.photoMediaType(for: data) == normalizedType else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.photoMediaTypeMismatch)
+        }
+
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) {
+                    let prior = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data
+                    // Intrinsically idempotent even without a client token:
+                    // do not snapshot and rewrite identical bytes.
+                    if prior == data {
+                        return .acknowledged(
+                            helperId: helperId, messageId: messageId,
+                            message: WireAckMessage.photoSet)
+                    }
+                    guard try await contacts.setContactPhoto(
+                        for: contact.contactID, imageData: data)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    guard try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data == data
+                    else {
+                        return writeFailure(helperId: helperId, messageId: messageId)
+                    }
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? contact
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: prior.map { "photo (\($0.count) bytes)" },
+                        newValue: "photo (\(normalizedType), \(data.count) bytes)")
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: WireAckMessage.photoSet)
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    private func contactsDeletePhoto(
+        helperId: String, messageId: String, contactId: String
+    ) async -> WireResponse {
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) {
+                    guard let prior = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data,
+                          !prior.isEmpty
+                    else {
+                        // Already absent is a successful no-op.
+                        return .acknowledged(
+                            helperId: helperId, messageId: messageId,
+                            message: WireAckMessage.photoDeleted)
+                    }
+                    guard try await contacts.setContactPhoto(
+                        for: contact.contactID, imageData: nil)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    guard try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize) == nil
+                    else {
+                        return writeFailure(helperId: helperId, messageId: messageId)
+                    }
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? contact
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: "photo (\(prior.count) bytes)", newValue: "photo deleted")
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: WireAckMessage.photoDeleted)
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    private static let supportedPhotoMediaTypes: Set<String> = [
+        "image/jpeg", "image/png", "image/gif", "image/heic", "image/webp",
+    ]
+
+    private static func photoMediaType(for data: Data) -> String? {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png"
+        }
+        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
+        if data.count >= 12,
+           String(decoding: data[0..<4], as: UTF8.self) == "RIFF",
+           String(decoding: data[8..<12], as: UTF8.self) == "WEBP" {
+            return "image/webp"
+        }
+        if data.count >= 12,
+           String(decoding: data[4..<8], as: UTF8.self) == "ftyp" {
+            let brand = String(decoding: data[8..<12], as: UTF8.self)
+            if ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].contains(brand) {
+                return "image/heic"
+            }
+        }
+        return nil
     }
 
     // MARK: - Single-entry list edits (plans/cli-mcp.md Phase 7)

@@ -234,6 +234,26 @@ public struct WireContact: Codable, Sendable {
     }
 }
 
+/// Bounded contact-photo result. `present == false` is a successful read of
+/// a contact that has no photo; failures use the ordinary typed error
+/// response. Photo bytes are base64 because the relay wire is JSON-only.
+public struct WireContactPhoto: Codable, Sendable, Equatable {
+    public let present: Bool
+    public let mediaType: String?
+    public let dataBase64: String?
+    public let byteCount: Int
+
+    public init(present: Bool, mediaType: String?, dataBase64: String?, byteCount: Int) {
+        self.present = present
+        self.mediaType = mediaType
+        self.dataBase64 = dataBase64
+        self.byteCount = byteCount
+    }
+
+    public static let none = WireContactPhoto(
+        present: false, mediaType: nil, dataBase64: nil, byteCount: 0)
+}
+
 /// INPUT-side field set for contacts_update — the SINGLE-VALUE contact
 /// fields only, a PATCH: only the fields the caller supplied are applied.
 /// `nil` = untouched; an empty string clears a text field (and clears
@@ -246,8 +266,11 @@ public struct WireContact: Codable, Sendable {
 /// having no list members makes an update-side bulk edit structurally
 /// impossible, the same way the missing note member keeps the Apple note
 /// unwritable. The other update exclusions carry over: no note field, no
-/// contact id, no `kind`.
+/// contact id. `kind` is included because changing person ↔ organization is
+/// a single-value edit with the same PATCH semantics as the other members.
 public struct WireContactScalarFields: Codable, Sendable, Equatable {
+    /// "person" or "organization"; nil means leave it untouched.
+    public var kind: String?
     public var namePrefix: String?
     public var givenName: String?
     public var middleName: String?
@@ -274,6 +297,7 @@ public struct WireContactScalarFields: Codable, Sendable, Equatable {
     /// replaced so audit strings are byte-for-byte unchanged. `WireContactFields`
     /// reuses these same key paths for its scalar half (see `scalarFields`).
     static let scalarKeyPaths: [(name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)] = [
+        ("kind", \.kind),
         ("namePrefix", \.namePrefix),
         ("givenName", \.givenName),
         ("middleName", \.middleName),
@@ -360,7 +384,7 @@ public struct WireContactFields: Codable, Sendable, Equatable {
     /// apply path.
     public var scalarFields: WireContactScalarFields {
         var scalars = WireContactScalarFields()
-        for (dest, source) in zip(WireContactScalarFields.scalarKeyPaths, Self.scalarReadKeyPaths) {
+        for (dest, source) in zip(WireContactScalarFields.scalarKeyPaths.dropFirst(), Self.scalarReadKeyPaths) {
             scalars[keyPath: dest.keyPath] = self[keyPath: source]
         }
         return scalars
@@ -377,7 +401,7 @@ public struct WireContactFields: Codable, Sendable, Equatable {
         // Scalar name -> whether self supplied it, sourced from the shared
         // scalar name list zipped with this struct's own read key paths.
         let scalarProvided = Dictionary(uniqueKeysWithValues:
-            zip(WireContactScalarFields.scalarKeyPaths, Self.scalarReadKeyPaths).map {
+            zip(WireContactScalarFields.scalarKeyPaths.dropFirst(), Self.scalarReadKeyPaths).map {
                 ($0.name, self[keyPath: $1] != nil)
             })
         func scalar(_ name: String) -> (name: String, provided: Bool) {

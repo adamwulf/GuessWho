@@ -125,9 +125,10 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **47 tools total: 16 read and 31 write**.
+There are **50 tools total: 17 read and 33 write**.
 
-**Read (16):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (17):** `contacts_search`, `contacts_list`, `contacts_get`,
+`contacts_get_photo`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
 `contacts_list_groups`, `organizations_list_members`,
 `organizations_list_departments`, `organizations_list_department_members`,
@@ -139,7 +140,7 @@ tools — they fold into `contacts_list` as the optional `favoritesOnly`
 and `groupId` filters (see below). `contacts_list_groups` stays: it lists
 the GROUPS themselves and is the source of `groupId` values.
 
-**Write (31):** the GuessWho-data writes — `contacts_add_note`,
+**Write (33):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
@@ -148,7 +149,8 @@ the GROUPS themselves and is the source of `groupId` values.
 editor: **`contacts_create`**, **`contacts_update`** (**scalars-only**
 PATCH since Phase 7: only passed single-value fields change; every
 multi-value list is rejected toward the single-entry tools below), and
-**`contacts_delete`** — plus the three **single-entry list edit** verbs
+**`contacts_delete`**, **`contacts_set_photo`**, and
+**`contacts_delete_photo`** — plus the three **single-entry list edit** verbs:
 `contacts_add_value`, `contacts_delete_value`, and `contacts_edit_value`.
 Each list-edit verb requires a real JSON-Schema `field` enum whose value is
 exactly one of `phone`, `email`, `url`, `related_name`, or `date`. Nine more
@@ -157,6 +159,37 @@ profiles, and instant-message addresses. Finally,
 `organizations_rename_department` renames one department across an
 organization's matching members through the Contacts repository's user-level
 operation.
+
+### Contact kind and photos
+
+`contacts_update` is a PATCH that also accepts optional `kind` with the
+plain values `person` and `organization`. Supplying it converts the existing
+card through the same editable-contact/save path as the app; omitting it
+leaves kind unchanged, just like every other omitted scalar field. An invalid
+kind is a typed `invalidParams` result and saves nothing.
+
+`contacts_get_photo(contactId)` returns a bounded JSON photo object. A photo
+has `present: true`, its explicit `mediaType`, base64 bytes in `dataBase64`,
+and `byteCount`; no photo is the successful shape `present: false` with no
+media type or bytes. A store read failure remains a typed error, so it cannot
+be mistaken for the no-photo state. Local contact identifiers never appear.
+
+`contacts_set_photo(contactId, mediaType, dataBase64, idempotencyToken?)`
+accepts JPEG, PNG, GIF, HEIC, or WebP, validates that the bytes match the
+declared media type, and rejects malformed or decoded payloads over 180 KiB.
+The same raw-byte limit leaves enough room for base64 plus the response
+envelope under the 256 KiB response ceiling; an existing larger photo returns
+typed `tooLarge` instead of being truncated. `contacts_delete_photo` is a
+successful no-op when no current photo exists. Both writes require Contacts
+permission and read-write access, consume the global write budget, serialize
+per contact, participate in idempotent replay, verify the saved state, and
+append agent activity only after a real write succeeds.
+
+Set, replace, and delete route through `ContactsRepository.setContactPhoto`,
+the app's own photo path. Before replacing or deleting an existing photo that
+path stores the current bytes in the one reserved `previousPhoto` blob slot.
+That reserved attachment remains excluded from `contacts_list_custom_fields`;
+there is no second backup or wire read for it.
 
 ### Listing the whole book (`contacts_list`)
 
