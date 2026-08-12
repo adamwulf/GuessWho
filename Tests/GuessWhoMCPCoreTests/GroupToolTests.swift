@@ -472,6 +472,33 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected group page")
         }
         XCTAssertEqual(groups.items.first { $0.id == groupId }?.isFavorite, false)
+
+        guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: Fixture.helper, messageId: "generic-set",
+            kind: .group, id: groupId, favorite: true,
+            idempotencyToken: nil)) else {
+            return XCTFail("expected generic favorite acknowledgement")
+        }
+        let favoritedGroupList = await fixture.dispatcher.handle(.contactsListGroups(
+            helperId: Fixture.helper, messageId: "favorited-group-list",
+            limit: nil, cursor: nil))
+        guard case .groupPage(_, _, let favoritedGroups) = favoritedGroupList else {
+            return XCTFail("expected group page")
+        }
+        XCTAssertEqual(favoritedGroups.items.first { $0.id == groupId }?.isFavorite, true)
+
+        guard case .acknowledged = await fixture.dispatcher.handle(.groupsDelete(
+            helperId: Fixture.helper, messageId: "delete-group",
+            groupId: groupId, idempotencyToken: nil)) else {
+            return XCTFail("expected group delete acknowledgement")
+        }
+        let afterDelete = await fixture.dispatcher.handle(.favoritesList(
+            helperId: Fixture.helper, messageId: "favorites-after-delete",
+            limit: nil, cursor: nil))
+        guard case .favoritePage(_, _, let remaining) = afterDelete else {
+            return XCTFail("expected generic favorites page")
+        }
+        XCTAssertFalse(remaining.items.contains { $0.kind == .group && $0.id == groupId })
     }
 
     func testPermissionReadOnlyWriteBudgetAndKindGatesApply() async {
