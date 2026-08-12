@@ -35,6 +35,7 @@ enum Sentinels {
 @MainActor
 final class FakeContactSource: MCPContactSource {
     var contacts: [Contact] = []
+    private(set) var allContactsReadCount = 0
     var groups: [ContactGroup] = []
     private(set) var fetchGroupsCallCount = 0
     var membersByGroup: [String: [Contact]] = [:]
@@ -128,7 +129,10 @@ final class FakeContactSource: MCPContactSource {
         contacts[index] = contact
     }
 
-    var allContacts: [Contact] { contacts }
+    var allContacts: [Contact] {
+        allContactsReadCount += 1
+        return contacts
+    }
 
     func contact(restorationToken: ContactRestorationToken) -> Contact? {
         contacts.first { candidate in

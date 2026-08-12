@@ -82,6 +82,8 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertTrue(all[2].id.hasPrefix("g-"))
         XCTAssertFalse(all[2].id.contains(rawGroupID))
         XCTAssertFalse(all[1].id.hasPrefix("e-"), "stored events use ordinary record ids")
+        let contactReads = await MainActor.run { fixture.contacts.allContactsReadCount }
+        XCTAssertEqual(contactReads, 1, "a page without contact favorites must not fetch contacts")
     }
 
     func testStaleRowsStayInPlaceAndNeverLeakStoredIdentifier() async {

@@ -1081,7 +1081,8 @@ public actor ToolDispatcher {
 
         // Resolve only the requested page, but keep the page boundaries over
         // the raw stored order so stale rows cannot shift or disappear.
-        let contactSnapshot = await MainActor.run { contacts.allContacts }
+        let contactSnapshot = slice.contains { $0.kind == .contact }
+            ? await MainActor.run { contacts.allContacts } : []
         let groupSnapshot = slice.contains { $0.kind == .group }
             ? await contacts.fetchGroups() : []
         let guideSnapshot = slice.contains { $0.kind == .guide }
