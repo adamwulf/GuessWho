@@ -290,14 +290,13 @@ public struct WireContactScalarFields: Codable, Sendable, Equatable {
 
     public init() {}
 
-    /// (wire field name, key path) for every scalar field, in DECLARATION
-    /// order. The single source for the scalar field-name list that feeds
-    /// `providedFieldNames` (and, through it, the audit summaries). The order
-    /// is load-bearing — it must stay identical to the hand-rolled list this
-    /// replaced so audit strings are byte-for-byte unchanged. `WireContactFields`
-    /// reuses these same key paths for its scalar half (see `scalarFields`).
-    static let scalarKeyPaths: [(name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)] = [
-        ("kind", \.kind),
+    /// The scalar fields shared by create and update, in contact-card
+    /// declaration order. Create mapping consumes this list directly, so an
+    /// update-only field such as `kind` cannot silently shift its positional
+    /// zip against `WireContactFields`.
+    static let contactCardScalarKeyPaths: [
+        (name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)
+    ] = [
         ("namePrefix", \.namePrefix),
         ("givenName", \.givenName),
         ("middleName", \.middleName),
@@ -314,6 +313,12 @@ public struct WireContactScalarFields: Codable, Sendable, Equatable {
         ("jobTitle", \.jobTitle),
         ("birthday", \.birthday),
     ]
+
+    /// Every contacts_update scalar. `kind` is update-only and intentionally
+    /// precedes the shared contact-card scalars so audit field order is stable.
+    static let scalarKeyPaths: [
+        (name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)
+    ] = [("kind", \.kind)] + contactCardScalarKeyPaths
 
     /// The names of the fields the caller supplied, for audit summaries.
     /// Host-side display only.
@@ -369,9 +374,9 @@ public struct WireContactFields: Codable, Sendable, Equatable {
 
     public init() {}
 
-    /// This struct's scalar key paths, in the SAME order as
-    /// `WireContactScalarFields.scalarKeyPaths`, so the two zip position-for-
-    /// position when copying into the scalar subset.
+    /// This struct's scalar key paths, in the same order as
+    /// `WireContactScalarFields.contactCardScalarKeyPaths`, so the two zip
+    /// position-for-position when copying into the scalar subset.
     private static let scalarReadKeyPaths: [KeyPath<WireContactFields, String?>] = [
         \.namePrefix, \.givenName, \.middleName, \.familyName,
         \.previousFamilyName, \.nameSuffix, \.nickname,
@@ -384,7 +389,9 @@ public struct WireContactFields: Codable, Sendable, Equatable {
     /// apply path.
     public var scalarFields: WireContactScalarFields {
         var scalars = WireContactScalarFields()
-        for (dest, source) in zip(WireContactScalarFields.scalarKeyPaths.dropFirst(), Self.scalarReadKeyPaths) {
+        for (dest, source) in zip(
+            WireContactScalarFields.contactCardScalarKeyPaths, Self.scalarReadKeyPaths
+        ) {
             scalars[keyPath: dest.keyPath] = self[keyPath: source]
         }
         return scalars
@@ -401,7 +408,7 @@ public struct WireContactFields: Codable, Sendable, Equatable {
         // Scalar name -> whether self supplied it, sourced from the shared
         // scalar name list zipped with this struct's own read key paths.
         let scalarProvided = Dictionary(uniqueKeysWithValues:
-            zip(WireContactScalarFields.scalarKeyPaths.dropFirst(), Self.scalarReadKeyPaths).map {
+            zip(WireContactScalarFields.contactCardScalarKeyPaths, Self.scalarReadKeyPaths).map {
                 ($0.name, self[keyPath: $1] != nil)
             })
         func scalar(_ name: String) -> (name: String, provided: Bool) {
