@@ -88,6 +88,12 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertEqual(secondPage.items.count, 1)
         XCTAssertNil(secondPage.nextCursor)
+
+        let invalid = await fixture.dispatcher.handle(.groupsListForContact(
+            helperId: Fixture.helper, messageId: "memberships-invalid",
+            contactId: "not-a-contact", limit: nil, cursor: nil))
+        XCTAssertEqual(invalid?.errorPayload?.code, .notFound)
+        XCTAssertEqual(invalid?.errorPayload?.message, WireErrorMessage.notFoundContact)
     }
 
     func testCreateRenameDeleteAndIdempotency() async {
@@ -314,6 +320,17 @@ final class GroupToolTests: XCTestCase {
             helperId: Fixture.helper, messageId: "empty",
             groupId: groupId, contactIds: [], idempotencyToken: nil))
         XCTAssertEqual(empty?.errorPayload?.code, .invalidParams)
+
+        let tooMany = await fixture.dispatcher.handle(.groupsAddMembers(
+            helperId: Fixture.helper, messageId: "too-many",
+            groupId: groupId,
+            contactIds: (0..<201).map { "id-\($0)" },
+            idempotencyToken: nil))
+        XCTAssertEqual(tooMany?.errorPayload?.code, .invalidParams)
+        let overLimitWrites = await MainActor.run {
+            fixture.contacts.groupMembershipWriteCount
+        }
+        XCTAssertEqual(overLimitWrites, 0)
     }
 
     func testSetFavoriteResolvesOpaqueIDAndEchoesState() async {
