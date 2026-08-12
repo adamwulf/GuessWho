@@ -1838,7 +1838,8 @@ public actor ToolDispatcher {
         guard identities.count == current.count else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
-        let contactSnapshot = await MainActor.run { contacts.allContacts }
+        let contactSnapshot = current.contains { $0.kind == .contact }
+            ? await MainActor.run { contacts.allContacts } : []
         let groupSnapshot = current.contains { $0.kind == .group }
             ? await contacts.fetchGroups() : []
         let guideSnapshot = current.contains { $0.kind == .guide }

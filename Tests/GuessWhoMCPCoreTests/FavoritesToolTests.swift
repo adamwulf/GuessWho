@@ -265,6 +265,28 @@ final class FavoritesToolTests: XCTestCase {
             "one list read and one permission snapshot for each reorder call")
     }
 
+    func testReorderWithoutContactsSkipsContactSnapshot() async {
+        let fixture = await fixture(writable: true)
+        await MainActor.run {
+            fixture.favorites.items = [
+                Favorite(kind: .guide, id: fixture.guides.guides[0].id.uuidString, addedAt: Date()),
+                Favorite(kind: .place, id: fixture.guides.places[0].id.uuidString, addedAt: Date()),
+            ]
+        }
+        guard let page = await list(fixture) else { return XCTFail("no page") }
+        let desired = page.items.reversed().map {
+            WireFavoriteIdentity(kind: $0.kind, id: $0.id)
+        }
+        let response = await fixture.dispatcher.handle(.favoritesReorder(
+            helperId: Fixture.helper, messageId: "non-contact-reorder",
+            favorites: desired, idempotencyToken: nil))
+        guard case .acknowledged = response else {
+            return XCTFail("reorder failed: \(String(describing: response))")
+        }
+        let contactReads = await MainActor.run { fixture.contacts.allContactsReadCount }
+        XCTAssertEqual(contactReads, 0)
+    }
+
     func testReorderRejectsDuplicateMissingExtraStaleAndConcurrentChange() async {
         let fixture = await fixture(writable: true)
         _ = await MainActor.run { installEveryKind(fixture) }
