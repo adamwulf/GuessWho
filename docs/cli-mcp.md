@@ -317,8 +317,12 @@ system identifiers are never echoed. Pages use the standard limit (default
 
 `favorites_set` is desired-state assignment, not a toggle. Repeating
 `favorite: true` on an existing favorite or `false` on an absent one is a
-successful no-op and does not restamp `addedAt`. Every id is resolved and its
-declared kind verified before storage is touched. The compatibility tool
+successful no-op and does not restamp `addedAt`. Adding requires a live
+referent whose id and declared kind both resolve before storage is touched.
+Clearing first follows that same path; if the referent was deleted, it may
+instead resolve the composite kind-plus-id against the stable stale row from
+`favorites_list`. This lets an agent remove an orphan without exposing or
+guessing its stored system identifier. The compatibility tool
 `contacts_set_favorite` remains and shares the same contact favorite state.
 
 `favorites_reorder` accepts the complete current set as objects containing

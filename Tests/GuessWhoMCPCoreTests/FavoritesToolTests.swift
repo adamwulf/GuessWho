@@ -85,7 +85,7 @@ final class FavoritesToolTests: XCTestCase {
     }
 
     func testStaleRowsStayInPlaceAndNeverLeakStoredIdentifier() async {
-        let fixture = await fixture()
+        let fixture = await fixture(writable: true)
         let raw = "EK-RAW-CALENDAR-SHOULD-NOT-CROSS"
         await MainActor.run {
             fixture.favorites.items = [
@@ -99,6 +99,13 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertFalse(page.items[0].isAvailable)
         XCTAssertEqual(page.items[1].displayName, "Jane Doe")
         XCTAssertFalse(page.items[0].id.contains(raw))
+
+        let cleared = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: Fixture.helper, messageId: "clear-stale", kind: .event,
+            id: page.items[0].id, favorite: false, idempotencyToken: nil))
+        guard case .acknowledged = cleared else { return XCTFail("stale clear failed") }
+        let remaining = await list(fixture)
+        XCTAssertEqual(remaining?.items.map(\.kind), [.contact])
     }
 
     func testReadFailureIsExplicitInsteadOfAnEmptyPage() async {
@@ -250,6 +257,8 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertEqual(readsAfter.0 - readsBefore.0, 1)
         XCTAssertEqual(readsAfter.1 - readsBefore.1, 1)
         XCTAssertEqual(readsAfter.2 - readsBefore.2, 1)
+        let favoriteReads = await MainActor.run { fixture.favorites.loadCallCount }
+        XCTAssertEqual(favoriteReads, 2, "one list read and one reorder read; replay must use its cache")
     }
 
     func testReorderRejectsDuplicateMissingExtraStaleAndConcurrentChange() async {
@@ -335,7 +344,7 @@ final class FavoritesToolTests: XCTestCase {
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let identities = page.items.map { WireFavoriteIdentity(kind: $0.kind, id: $0.id) }
         await MainActor.run {
-            let nextBodyLoad = fixture.favorites.loadCallCount + 2
+            let nextBodyLoad = fixture.favorites.loadCallCount + 1
             fixture.favorites.onLoadFavorites = {
                 if fixture.favorites.loadCallCount == nextBodyLoad {
                     fixture.gates.contactsAuthorized = false
@@ -350,6 +359,36 @@ final class FavoritesToolTests: XCTestCase {
         error(response, .permissionDenied)
         let reorderCalls = await MainActor.run { fixture.favorites.reorderCallCount }
         XCTAssertEqual(reorderCalls, 0)
+    }
+
+    func testEntityDeleteLeavesStaleRowsThatGenericClearCanRecover() async {
+        let fixture = await fixture(writable: true)
+        let (guide, place) = await MainActor.run {
+            (fixture.guides.guides[0], fixture.guides.places[0])
+        }
+        await MainActor.run {
+            fixture.favorites.items = [
+                Favorite(kind: .guide, id: guide.id.uuidString, addedAt: Date()),
+                Favorite(kind: .place, id: place.id.uuidString, addedAt: Date()),
+            ]
+        }
+
+        guard case .acknowledged = await fixture.dispatcher.handle(.guidesDelete(
+            helperId: Fixture.helper, messageId: "delete-guide",
+            guideId: guide.id.uuidString, idempotencyToken: nil)) else {
+            return XCTFail("guide delete failed")
+        }
+        guard let stale = await list(fixture) else { return XCTFail("no stale projection") }
+        XCTAssertEqual(stale.items.map(\.isAvailable), [false, false])
+        for item in stale.items {
+            guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
+                helperId: Fixture.helper, messageId: TestMessageID.next(),
+                kind: item.kind, id: item.id, favorite: false, idempotencyToken: nil)) else {
+                return XCTFail("could not clear stale \(item.kind)")
+            }
+        }
+        let empty = await list(fixture)
+        XCTAssertEqual(empty?.items.count, 0)
     }
 
     func testWriteBudgetIdempotencyAuditAndResponseCapPipeline() async {

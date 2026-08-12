@@ -367,24 +367,13 @@ public actor ToolDispatcher {
     ) async -> WireResponse? {
         let kinds: [WireFavoriteKind]
         switch request {
-        case .favoritesList:
-            let stored: [Favorite]
-            do {
-                stored = try await MainActor.run { try favorites.loadFavorites() }
-            } catch {
-                return favoriteReadFailure(helperId: helperId, messageId: messageId)
-            }
-            kinds = stored.map { Self.wireFavoriteKind($0.kind) }
         case .favoritesSet(_, _, let kind, _, _, _):
             kinds = [kind]
-        case .favoritesReorder:
-            let stored: [Favorite]
-            do {
-                stored = try await MainActor.run { try favorites.loadFavorites() }
-            } catch {
-                return favoriteReadFailure(helperId: helperId, messageId: messageId)
-            }
-            kinds = stored.map { Self.wireFavoriteKind($0.kind) }
+        case .favoritesList, .favoritesReorder:
+            // Each handler loads its own authoritative snapshot and checks
+            // every referent kind before reading or writing entity data.
+            // Avoid an immediately-discarded coordinated-file read here.
+            return nil
         default:
             return nil
         }
@@ -1694,9 +1683,15 @@ public actor ToolDispatcher {
             if Self.hasObviouslyDifferentFavoriteKind(id, expected: kind) {
                 return favoriteKindMismatch(helperId: helperId, messageId: messageId)
             }
-            if case .failure = await resolveContact(id),
-               await isKnownFavoriteID(id, excluding: kind) {
-                return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+            if case .failure = await resolveContact(id) {
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                if await isKnownFavoriteID(id, excluding: kind) {
+                    return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+                }
             }
             return await contactsSetFavorite(
                 helperId: helperId, messageId: messageId,
@@ -1705,6 +1700,11 @@ public actor ToolDispatcher {
 
         switch await resolveFavoriteInput(kind: kind, id: id) {
         case .failure(let failure):
+            if !favorite, let cleared = await clearStoredFavorite(
+                kind: kind, id: id, helperId: helperId, messageId: messageId
+            ) {
+                return cleared
+            }
             return failure.response(helperId: helperId, messageId: messageId)
         case .success(let resolved):
             do {
@@ -1728,6 +1728,65 @@ public actor ToolDispatcher {
             } catch {
                 return writeFailure(error, helperId: helperId, messageId: messageId)
             }
+        }
+    }
+
+    /// Removing a favorite is also the recovery path for an orphan left by
+    /// deletion outside the favorites UI (including an MCP entity delete).
+    /// Resolve the supplied composite identity against the stored favorite
+    /// projection, whose opaque stale id is exactly what favorites_list
+    /// exposes, then remove the underlying storage identity. Adding still
+    /// always requires a live referent.
+    private func clearStoredFavorite(
+        kind: WireFavoriteKind, id: String, helperId: String, messageId: String
+    ) async -> WireResponse? {
+        guard let wanted = Self.canonicalStoredFavoriteIdentity(kind: kind, id: id) else {
+            return nil
+        }
+        let stored: [Favorite]
+        do {
+            stored = try await MainActor.run { try favorites.loadFavorites() }
+        } catch {
+            return favoriteReadFailure(helperId: helperId, messageId: messageId)
+        }
+        let candidates = stored.filter { Self.wireFavoriteKind($0.kind) == kind }
+        guard !candidates.isEmpty else { return nil }
+
+        let contactSnapshot = kind == .contact
+            ? await MainActor.run { contacts.allContacts } : []
+        let groupSnapshot = kind == .group ? await contacts.fetchGroups() : []
+        let guideSnapshot = kind == .guide ? await guides.allGuides() : []
+        let placeSnapshot = kind == .place ? await guides.allPlaces() : []
+
+        var match: StoredFavoriteResolution?
+        for candidate in candidates {
+            let resolved = await resolveStoredFavorite(
+                candidate, contacts: contactSnapshot, groups: groupSnapshot,
+                guides: guideSnapshot, places: placeSnapshot)
+            if resolved.identity == wanted {
+                match = resolved
+                break
+            }
+        }
+        guard let match else { return nil }
+
+        do {
+            let changed = try await MainActor.run {
+                try favorites.setFavorite(
+                    kind: match.favorite.kind, id: match.favorite.id, favorite: false)
+            }
+            if changed {
+                await recordAudit(
+                    .setFavorite, kind: Self.auditKind(match.favorite.kind),
+                    subjectID: match.identity.id, subjectName: match.displayName,
+                    instanceID: nil, postModifiedAt: nil,
+                    priorValue: "true", newValue: "false")
+            }
+            return .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.genericFavoriteCleared)
+        } catch {
+            return writeFailure(error, helperId: helperId, messageId: messageId)
         }
     }
 
@@ -4110,6 +4169,33 @@ public actor ToolDispatcher {
             guard trimmed.hasPrefix("g-") else { return nil }
             return WireFavoriteIdentity(kind: .group, id: trimmed)
         }
+    }
+
+    /// Canonical identity accepted when clearing an existing stored row.
+    /// UUID-backed kinds accept their normal record UUID or the stable `x-`
+    /// digest emitted for a malformed/stale legacy id. Groups accept only
+    /// their one-way `g-` digest. Calendar-derived `e-` ids are deliberately
+    /// excluded because they can never be persisted as favorites.
+    private static func canonicalStoredFavoriteIdentity(
+        kind: WireFavoriteKind, id: String
+    ) -> WireFavoriteIdentity? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let uuid = WireRecordID.recordUUID(trimmed), kind != .group {
+            return WireFavoriteIdentity(kind: kind, id: uuid.uuidString.lowercased())
+        }
+        switch kind {
+        case .group:
+            guard isOpaqueDigestID(trimmed, prefix: "g-") else { return nil }
+            return WireFavoriteIdentity(kind: kind, id: trimmed)
+        case .contact, .event, .guide, .place:
+            guard isOpaqueDigestID(trimmed, prefix: "x-") else { return nil }
+            return WireFavoriteIdentity(kind: kind, id: trimmed)
+        }
+    }
+
+    private static func isOpaqueDigestID(_ id: String, prefix: String) -> Bool {
+        guard id.hasPrefix(prefix), id.count == prefix.count + 32 else { return false }
+        return id.dropFirst(prefix.count).allSatisfy { $0.isHexDigit }
     }
 
     private static func safeStoredFavoriteID(_ favorite: Favorite) -> String {
