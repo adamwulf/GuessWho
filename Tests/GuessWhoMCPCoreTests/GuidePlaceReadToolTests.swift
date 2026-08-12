@@ -182,6 +182,14 @@ final class GuidePlaceReadToolTests: XCTestCase {
         XCTAssertTrue(absentMatches.isEmpty)
     }
 
+    func testPlacesSearchRejectsWhitespaceOnlyQuery() async {
+        let fixture = await Fixture.make()
+        let response = await fixture.dispatcher.handle(.placesSearch(
+            helperId: Fixture.helper, messageId: "blank", query: "  \n ",
+            limit: nil, cursor: nil))
+        expectError(response, code: .invalidParams)
+    }
+
     func testPlaceSearchAndListsHaveDeterministicPaging() async {
         let fixture = await Fixture.make()
         let expected = await MainActor.run { () -> [String] in

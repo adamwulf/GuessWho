@@ -864,7 +864,8 @@ public actor ToolDispatcher {
         async let fetchedGuides = guides.allGuides()
         async let fetchedPlaces = guides.allPlaces()
         let guideNames = Dictionary(
-            uniqueKeysWithValues: await fetchedGuides.map { ($0.id, $0.name) })
+            await fetchedGuides.map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first })
         let matches = await fetchedPlaces.filter { place in
             place.name.localizedCaseInsensitiveContains(needle)
                 || place.address?.localizedCaseInsensitiveContains(needle) == true
