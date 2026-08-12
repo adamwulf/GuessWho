@@ -100,7 +100,7 @@ public enum WireErrorMessage {
     public static let photoReadFailed =
         "That contact's photo couldn't be read. Try again in a moment."
     public static let photoTooLarge =
-        "That photo is too large for this tool. Use an image smaller than 180 KB."
+        "That photo is too large for this tool. Use an image no larger than 180 KiB."
     public static let invalidPhotoMediaType =
         "The mediaType argument must be image/jpeg, image/png, image/gif, image/heic, or image/webp."
     public static let invalidPhotoData =
