@@ -143,6 +143,12 @@ final class OrganizationToolTests: XCTestCase {
             organizationId: organizationID, department: "Finance",
             limit: nil, cursor: nil))
         expectError(absent, code: .notFound, message: WireErrorMessage.notFoundDepartment)
+
+        let blank = await fixture.dispatcher.handle(.organizationsListDepartmentMembers(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            organizationId: organizationID, department: "   ",
+            limit: nil, cursor: nil))
+        expectError(blank, code: .invalidParams, message: WireErrorMessage.emptyDepartmentName)
         let calls = await MainActor.run { fixture.contacts.departmentMembersReadCount }
         XCTAssertGreaterThanOrEqual(calls, 2)
     }
