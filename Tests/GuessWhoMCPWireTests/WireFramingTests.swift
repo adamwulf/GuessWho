@@ -478,6 +478,8 @@ final class WireRequestCreateTests: XCTestCase {
             ]))) { error in
             XCTAssertEqual(String(describing: error), WireErrorMessage.invalidFavoriteKindArgument)
         }
+    }
+
     func testGroupRequestsParseAllArguments() throws {
         let members = try WireRequest.create(
             helperId: "h", messageId: "m",
