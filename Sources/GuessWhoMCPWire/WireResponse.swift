@@ -22,6 +22,8 @@ public enum WireResponse: Codable, Sendable {
     case customFieldPage(helperId: String, messageId: String, page: WirePage<WireCustomField>)
     case groupPage(helperId: String, messageId: String, page: WirePage<WireGroup>)
     case departmentPage(helperId: String, messageId: String, page: WirePage<String>)
+    case group(helperId: String, messageId: String, group: WireGroup)
+    case groupMembership(helperId: String, messageId: String, result: WireGroupMembershipResult)
     case eventPage(helperId: String, messageId: String, page: WirePage<WireEventSummary>)
     case event(helperId: String, messageId: String, event: WireEvent)
     case tagPage(helperId: String, messageId: String, page: WirePage<WireTag>)
@@ -58,6 +60,8 @@ extension WireResponse: MCPResponseProtocol {
              .customFieldPage(let helperId, _, _),
              .groupPage(let helperId, _, _),
              .departmentPage(let helperId, _, _),
+             .group(let helperId, _, _),
+             .groupMembership(let helperId, _, _),
              .eventPage(let helperId, _, _),
              .event(let helperId, _, _),
              .tagPage(let helperId, _, _),
@@ -89,6 +93,8 @@ extension WireResponse: MCPResponseProtocol {
              .customFieldPage(_, let messageId, _),
              .groupPage(_, let messageId, _),
              .departmentPage(_, let messageId, _),
+             .group(_, let messageId, _),
+             .groupMembership(_, let messageId, _),
              .eventPage(_, let messageId, _),
              .event(_, let messageId, _),
              .tagPage(_, let messageId, _),
@@ -134,6 +140,10 @@ extension WireResponse: MCPResponseProtocol {
             return .groupPage(helperId: helperId, messageId: messageId, page: page)
         case .departmentPage(_, _, let page):
             return .departmentPage(helperId: helperId, messageId: messageId, page: page)
+        case .group(_, _, let group):
+            return .group(helperId: helperId, messageId: messageId, group: group)
+        case .groupMembership(_, _, let result):
+            return .groupMembership(helperId: helperId, messageId: messageId, result: result)
         case .eventPage(_, _, let page):
             return .eventPage(helperId: helperId, messageId: messageId, page: page)
         case .event(_, _, let event):
@@ -199,6 +209,10 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(page)
         case .departmentPage(_, _, let page):
             return Self.jsonResult(page)
+        case .group(_, _, let group):
+            return Self.jsonResult(group)
+        case .groupMembership(_, _, let result):
+            return Self.jsonResult(AgentGroupMembershipResult(result))
         case .eventPage(_, _, let page):
             return Self.jsonResult(page)
         case .event(_, _, let event):
@@ -267,6 +281,30 @@ extension WireResponse: MCPResponseProtocol {
             return MCP.CallTool.Result(
                 content: [.text("Something went wrong preparing that result. Try again.")],
                 isError: true)
+        }
+    }
+}
+
+/// Agent-facing projection of a partial group-membership result. Typed wire
+/// codes stay inside the relay envelope like every other `WireErrorCode`; the
+/// assistant sees the actionable message and opaque contact id only.
+private struct AgentGroupMembershipResult: Encodable {
+    struct Failure: Encodable {
+        let contactId: String
+        let message: String
+    }
+
+    let groupId: String
+    let isComplete: Bool
+    let appliedContactIds: [String]
+    let failures: [Failure]
+
+    init(_ result: WireGroupMembershipResult) {
+        groupId = result.groupId
+        isComplete = result.isComplete
+        appliedContactIds = result.appliedContactIds
+        failures = result.failures.map {
+            Failure(contactId: $0.contactId, message: $0.message)
         }
     }
 }

@@ -22,6 +22,8 @@ public struct MCPAuditEntry: Codable, Sendable {
         // recorded AFTER the user approved the in-app confirmation.
         case createContact, editContact, deleteContact
         case renameDepartment
+        case createGroup, renameGroup, deleteGroup
+        case addGroupMembers, removeGroupMembers
     }
 
     public enum SubjectKind: String, Codable, Sendable {

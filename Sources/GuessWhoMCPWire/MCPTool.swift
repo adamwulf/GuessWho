@@ -28,6 +28,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case organizationsListMembers = "organizations_list_members"
     case organizationsListDepartments = "organizations_list_departments"
     case organizationsListDepartmentMembers = "organizations_list_department_members"
+    case groupsListForContact = "groups_list_for_contact"
     case eventsList = "events_list"
     case eventsGet = "events_get"
     case eventsListTags = "events_list_tags"
@@ -80,6 +81,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case favoritesSet = "favorites_set"
     case favoritesReorder = "favorites_reorder"
     case organizationsRenameDepartment = "organizations_rename_department"
+    case groupsCreate = "groups_create"
+    case groupsRename = "groups_rename"
+    case groupsDelete = "groups_delete"
+    case groupsAddMembers = "groups_add_members"
+    case groupsRemoveMembers = "groups_remove_members"
+    case groupsSetFavorite = "groups_set_favorite"
     case eventsAddTag = "events_add_tag"
     case eventsEditTag = "events_edit_tag"
     case eventsDeleteTag = "events_delete_tag"
@@ -111,6 +118,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsListCustomFields, .contactsListGroups,
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
+             .groupsListForContact,
              .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
@@ -122,7 +130,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsSetFavorite, .organizationsRenameDepartment:
+             .contactsSetFavorite, .organizationsRenameDepartment,
+             .groupsCreate, .groupsRename, .groupsDelete,
+             .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite:
             return .contacts
         case .eventsList, .eventsGet, .eventsListTags,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag:
@@ -151,6 +161,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsListCustomFields, .contactsListGroups,
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
+             .groupsListForContact,
              .eventsList, .eventsGet, .eventsListTags,
              .guidesList, .guidesGet, .guidesListForPlace,
              .placesList, .placesSearch, .placesGet, .linksList, .favoritesList:
@@ -169,6 +180,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsSetFavorite,
              .favoritesSet, .favoritesReorder,
              .organizationsRenameDepartment,
+             .groupsCreate, .groupsRename, .groupsDelete,
+             .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -208,6 +221,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
         "Optional: a unique string of your choosing that identifies this one change. If the call is retried with the same value, the change is applied only once."
     private static let eventIdDoc =
         "An event id — from events_list, or the otherId of a links_list row whose kind is event."
+    private static let groupIdDoc =
+        "A group id returned by contacts_list_groups or groups_list_for_contact."
     private static let linkKindDoc =
         "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
     private static let favoriteKindDoc =
@@ -566,7 +581,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsListGroups:
             return ToolMetadata(
                 name: rawValue,
-                description: "List the user's contact groups.",
+                description: "List the user's contact groups, including whether each is a favorite.",
                 inputSchema: Self.schema(Self.pagingProperties))
         case .organizationsListMembers:
             var props = Self.pagingProperties
@@ -590,6 +605,13 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List the people in one of an organization's departments. Reports notFound if that department is not present on the organization.",
                 inputSchema: Self.schema(props, required: ["organizationId", "department"]))
+        case .groupsListForContact:
+            var props = Self.pagingProperties
+            props["contactId"] = Self.string(Self.contactIdDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the groups that contain a contact, including whether each group is a favorite.",
+                inputSchema: Self.schema(props, required: ["contactId"]))
         case .eventsList:
             var props = Self.pagingProperties
             props["startDate"] = Self.string("Start of the date window, ISO 8601 (for example 2026-07-01T00:00:00Z).")
@@ -862,6 +884,60 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     "newName": Self.string("The new department name. It must not be empty or exactly the same as oldName after surrounding spaces are removed."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["organizationId", "oldName", "newName"]))
+        case .groupsCreate:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Create a contact group. Returns the new group.",
+                inputSchema: Self.schema([
+                    "name": Self.string("The group's name."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["name"]))
+        case .groupsRename:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Rename a contact group. Returns the renamed group.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "name": Self.string("The group's new name."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId", "name"]))
+        case .groupsDelete:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a contact group. The contacts in it are not deleted.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId"]))
+        case .groupsAddMembers, .groupsRemoveMembers:
+            return ToolMetadata(
+                name: rawValue,
+                description: self == .groupsAddMembers
+                    ? "Add one or more contacts to a group. Contacts already in the group are left unchanged. The result reports every applied and failed contact id."
+                    : "Remove one or more contacts from a group. Contacts already outside the group are left unchanged. The result reports every applied and failed contact id.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "contactIds": [
+                        "type": "array",
+                        "description": .string("One or more contact ids from contacts_search or contacts_list."),
+                        "items": Self.string(Self.contactIdDoc),
+                        "minItems": 1,
+                        "maxItems": 200,
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId", "contactIds"]))
+        case .groupsSetFavorite:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Mark a contact group as a favorite, or remove it from favorites. Returns the updated group.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "favorite": [
+                        "type": "boolean",
+                        "description": .string("true to mark as a favorite, false to remove from favorites."),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId", "favorite"]))
         case .eventsAddTag:
             return ToolMetadata(
                 name: rawValue,

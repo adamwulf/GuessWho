@@ -246,6 +246,10 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 organizationId: organizationId, department: department,
                 limit: limit, cursor: cursor)
+        case .groupsListForContact(_, _, let contactId, let limit, let cursor):
+            response = await groupsListForContact(
+                helperId: helperId, messageId: messageId,
+                contactId: contactId, limit: limit, cursor: cursor)
         case .eventsList(_, _, let startDate, let endDate, let limit, let cursor):
             response = await eventsList(
                 helperId: helperId, messageId: messageId,
@@ -300,6 +304,8 @@ public actor ToolDispatcher {
              .contactsSetFavorite,
              .favoritesSet, .favoritesReorder,
              .organizationsRenameDepartment,
+             .groupsCreate, .groupsRename, .groupsDelete,
+             .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -658,7 +664,13 @@ public actor ToolDispatcher {
         }
         let groups = await contacts.fetchGroups()
         let (slice, nextCursor) = page.slice(groups)
-        let items = slice.map { WireMapping.group($0, id: WireRecordID.groupID(for: $0)) }
+        let favoriteStates = await MainActor.run {
+            slice.map { contacts.isGroupFavorite($0) }
+        }
+        let items = zip(slice, favoriteStates).map {
+            WireMapping.group(
+                $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1)
+        }
         return .groupPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -762,6 +774,300 @@ public actor ToolDispatcher {
             page: WirePage(
                 items: slice.map { WireMapping.summary($0.contact, id: $0.id) },
                 nextCursor: nextCursor))
+    }
+
+    // MARK: - Group tools
+
+    private func groupsListForContact(
+        helperId: String, messageId: String, contactId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        switch await resolveContact(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let groups = await contacts.groups(containing: contact)
+            let (slice, nextCursor) = page.slice(groups)
+            let favoriteStates = await MainActor.run {
+                slice.map { contacts.isGroupFavorite($0) }
+            }
+            let items = zip(slice, favoriteStates).map {
+                WireMapping.group(
+                    $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1)
+            }
+            return .groupPage(
+                helperId: helperId, messageId: messageId,
+                page: WirePage(items: items, nextCursor: nextCursor))
+        }
+    }
+
+    // MARK: - Group writes
+
+    private func groupsCreate(
+        helperId: String, messageId: String, name: String
+    ) async -> WireResponse {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyNameArgument)
+        }
+        do {
+            let group = try await contacts.createGroup(name: normalized)
+            let wireID = WireRecordID.groupID(for: group)
+            let isFavorite = await MainActor.run { contacts.isGroupFavorite(group) }
+            await recordAudit(
+                .createGroup, kind: .group,
+                subjectID: wireID, subjectName: group.name,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: nil, newValue: group.name)
+            return .group(
+                helperId: helperId, messageId: messageId,
+                group: WireMapping.group(
+                    group, id: wireID, isFavorite: isFavorite))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsRename(
+        helperId: String, messageId: String, groupId: String, name: String
+    ) async -> WireResponse {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyNameArgument)
+        }
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+        do {
+            try await contacts.renameGroup(group, to: normalized)
+            let renamed = ContactGroup(localID: group.localID, name: normalized)
+            let isFavorite = await MainActor.run { contacts.isGroupFavorite(renamed) }
+            await recordAudit(
+                .renameGroup, kind: .group,
+                subjectID: groupId, subjectName: normalized,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: group.name, newValue: normalized)
+            return .group(
+                helperId: helperId, messageId: messageId,
+                group: WireMapping.group(
+                    renamed, id: groupId, isFavorite: isFavorite))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsDelete(
+        helperId: String, messageId: String, groupId: String
+    ) async -> WireResponse {
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+        do {
+            try await contacts.deleteGroup(group)
+            // Match the app's delete path: the Contacts deletion is the primary
+            // operation, and stale favorite cleanup is best-effort afterwards.
+            _ = try? await MainActor.run {
+                try contacts.setGroupFavorite(false, for: group)
+            }
+            await recordAudit(
+                .deleteGroup, kind: .group,
+                subjectID: groupId, subjectName: group.name,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: group.name, newValue: nil)
+            return .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.groupDeleted)
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsSetFavorite(
+        helperId: String, messageId: String, groupId: String, favorite: Bool
+    ) async -> WireResponse {
+        // Resolve the opaque id to a live value BEFORE the repository is
+        // allowed to inspect its Contacts identifier as a favorite key.
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+        let prior = await MainActor.run { contacts.isGroupFavorite(group) }
+        do {
+            let resulting = try await MainActor.run {
+                try contacts.setGroupFavorite(favorite, for: group)
+            }
+            guard resulting == favorite else { throw WriteProblem.verifyFailed }
+            if prior != favorite {
+                await recordAudit(
+                    .setFavorite, kind: .group,
+                    subjectID: groupId, subjectName: group.name,
+                    instanceID: nil, postModifiedAt: nil,
+                    priorValue: prior ? "true" : "false",
+                    newValue: favorite ? "true" : "false")
+            }
+            return .group(
+                helperId: helperId, messageId: messageId,
+                group: WireMapping.group(
+                    group, id: groupId, isFavorite: favorite))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsChangeMembers(
+        helperId: String, messageId: String,
+        groupId: String, contactIds: [String], change: GroupMembershipChange
+    ) async -> WireResponse {
+        guard !contactIds.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.groupMembersRequired)
+        }
+        guard contactIds.count <= Self.maxLimit else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.tooManyGroupMembers)
+        }
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+
+        // Collapse duplicate wire ids in caller order. Resolve the whole batch
+        // before the first write: one invalid id cannot cause a half-applied
+        // request before the caller learns its arguments were stale.
+        var seen = Set<String>()
+        let uniqueIDs = contactIds.filter { seen.insert($0).inserted }
+        var requested: [(id: String, contact: Contact)] = []
+        for id in uniqueIDs {
+            switch await resolveContactForWrite(id) {
+            case .failure(let failure):
+                return failure.response(helperId: helperId, messageId: messageId)
+            case .success(let contact):
+                requested.append((id, contact))
+            }
+        }
+
+        // Snapshot membership only to make the audit honest about idempotent
+        // no-ops. The repository remains authoritative for applying the batch.
+        let currentIDs = Set(
+            await contacts.members(ofGroup: group.localID)
+                .map { WireRecordID.contactID(for: $0) }
+        )
+        let wouldChange = Set(requested.compactMap { pair -> String? in
+            let isMember = currentIDs.contains(pair.id)
+            switch change {
+            case .addition: return isMember ? nil : pair.id
+            case .removal: return isMember ? pair.id : nil
+            }
+        })
+
+        do {
+            switch change {
+            case .addition:
+                try await contacts.addContacts(requested.map(\.contact), toGroup: group)
+            case .removal:
+                try await contacts.removeContacts(requested.map(\.contact), fromGroup: group)
+            }
+            await recordGroupMembershipAudit(
+                change: change, group: group, groupId: groupId,
+                changedIDs: uniqueIDs.filter { wouldChange.contains($0) })
+            return .groupMembership(
+                helperId: helperId, messageId: messageId,
+                result: WireGroupMembershipResult(
+                    groupId: groupId,
+                    appliedContactIds: uniqueIDs,
+                    failures: []))
+        } catch let partial as GroupMembershipPartialFailureError {
+            let status = await contacts.contactsAuthorizationStatus()
+            let applied = partial.applied.map { WireRecordID.contactID(for: $0) }
+            let failures = partial.failures.map { failure in
+                groupMembershipFailure(failure, authorization: status)
+            }
+            await recordGroupMembershipAudit(
+                change: change, group: group, groupId: groupId,
+                changedIDs: applied.filter { wouldChange.contains($0) })
+            return .groupMembership(
+                helperId: helperId, messageId: messageId,
+                result: WireGroupMembershipResult(
+                    groupId: groupId,
+                    appliedContactIds: applied,
+                    failures: failures))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func recordGroupMembershipAudit(
+        change: GroupMembershipChange,
+        group: ContactGroup,
+        groupId: String,
+        changedIDs: [String]
+    ) async {
+        guard !changedIDs.isEmpty else { return }
+        await recordAudit(
+            change == .addition ? .addGroupMembers : .removeGroupMembers,
+            kind: .group,
+            subjectID: groupId, subjectName: group.name,
+            instanceID: nil, postModifiedAt: nil,
+            priorValue: nil, newValue: "\(changedIDs.count)")
+    }
+
+    private func groupMembershipFailure(
+        _ failure: GroupMembershipPartialFailureError.Failure,
+        authorization: StoreAuthorizationStatus
+    ) -> WireGroupMembershipFailure {
+        let id = WireRecordID.contactID(for: failure.contact)
+        if let storeError = failure.error as? ContactStoreError,
+           case .contactNotFound = storeError {
+            return WireGroupMembershipFailure(
+                contactId: id, code: .notFound,
+                message: WireErrorMessage.notFoundContact)
+        }
+        if authorization == .denied || authorization == .restricted {
+            return WireGroupMembershipFailure(
+                contactId: id, code: .permissionDenied,
+                message: WireErrorMessage.permissionDeniedContacts)
+        }
+        return WireGroupMembershipFailure(
+            contactId: id, code: .writeFailed,
+            message: WireErrorMessage.writeFailed)
+    }
+
+    private func groupWriteFailure(
+        _ error: Error, helperId: String, messageId: String
+    ) async -> WireResponse {
+        if let storeError = error as? ContactStoreError {
+            switch storeError {
+            case .groupNotFound:
+                return groupNotFound(helperId: helperId, messageId: messageId)
+            case .contactNotFound:
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundContact)
+            }
+        }
+        let authorization = await contacts.contactsAuthorizationStatus()
+        if authorization == .denied || authorization == .restricted {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied,
+                message: WireErrorMessage.permissionDeniedContacts)
+        }
+        return .error(
+            helperId: helperId, messageId: messageId,
+            code: .writeFailed, message: WireErrorMessage.writeFailed)
+    }
+
+    private func groupNotFound(helperId: String, messageId: String) -> WireResponse {
+        .error(
+            helperId: helperId, messageId: messageId,
+            code: .notFound, message: WireErrorMessage.notFoundGroup)
     }
 
     // MARK: - Events tools
@@ -1254,6 +1560,27 @@ public actor ToolDispatcher {
             return await organizationsRenameDepartment(
                 helperId: helperId, messageId: messageId,
                 organizationId: organizationId, oldName: oldName, newName: newName)
+        case .groupsCreate(_, _, let name, _):
+            return await groupsCreate(
+                helperId: helperId, messageId: messageId, name: name)
+        case .groupsRename(_, _, let groupId, let name, _):
+            return await groupsRename(
+                helperId: helperId, messageId: messageId, groupId: groupId, name: name)
+        case .groupsDelete(_, _, let groupId, _):
+            return await groupsDelete(
+                helperId: helperId, messageId: messageId, groupId: groupId)
+        case .groupsAddMembers(_, _, let groupId, let contactIds, _):
+            return await groupsChangeMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: groupId, contactIds: contactIds, change: .addition)
+        case .groupsRemoveMembers(_, _, let groupId, let contactIds, _):
+            return await groupsChangeMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: groupId, contactIds: contactIds, change: .removal)
+        case .groupsSetFavorite(_, _, let groupId, let favorite, _):
+            return await groupsSetFavorite(
+                helperId: helperId, messageId: messageId,
+                groupId: groupId, favorite: favorite)
         case .eventsAddTag(_, _, let eventId, let text, _):
             return await eventsAddTag(
                 helperId: helperId, messageId: messageId, eventId: eventId, text: text)
@@ -4442,6 +4769,11 @@ public actor ToolDispatcher {
         case .success:
             return .failure(.kindMismatch(WireErrorMessage.organizationKindMismatch))
         }
+    }
+
+    private func resolveGroup(_ id: String) async -> ContactGroup? {
+        let groups = await contacts.fetchGroups()
+        return WireRecordID.group(for: id, in: groups)
     }
 
     private func resolveEvent(_ id: String) async -> Result<Event, ResolveFailure> {

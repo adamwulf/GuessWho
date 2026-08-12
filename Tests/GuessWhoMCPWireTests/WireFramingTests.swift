@@ -390,11 +390,11 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        // Generic favorites add one read and two writes to the parent's
-        // 53-tool guide/place/contact-photo baseline.
-        XCTAssertEqual(MCPTool.allCases.count, 56)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 21)
-        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 35)
+        // The 56-tool generic-favorites baseline plus one group read and
+        // six group writes.
+        XCTAssertEqual(MCPTool.allCases.count, 63)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 22)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 41)
     }
 
     func testGenericFavoriteRequestsParseCompositeIdentities() throws {
@@ -435,6 +435,41 @@ final class WireRequestCreateTests: XCTestCase {
             ]))) { error in
             XCTAssertEqual(String(describing: error), WireErrorMessage.invalidFavoriteKindArgument)
         }
+    func testGroupRequestsParseAllArguments() throws {
+        let members = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.groupsAddMembers.rawValue, [
+                "groupId": "g-opaque",
+                "contactIds": ["c-one", "c-two"],
+                "idempotencyToken": "once",
+            ]))
+        guard case .groupsAddMembers(
+            _, _, let groupId, let contactIds, let token
+        ) = members else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(groupId, "g-opaque")
+        XCTAssertEqual(contactIds, ["c-one", "c-two"])
+        XCTAssertEqual(token, "once")
+
+        let favorite = try WireRequest.create(
+            helperId: "h", messageId: "m2",
+            parameters: params(MCPTool.groupsSetFavorite.rawValue, [
+                "groupId": "g-opaque", "favorite": "true",
+            ]))
+        guard case .groupsSetFavorite(_, _, let favoriteGroup, let state, _) = favorite else {
+            return XCTFail("wrong favorite case")
+        }
+        XCTAssertEqual(favoriteGroup, "g-opaque")
+        XCTAssertTrue(state)
+    }
+
+    func testGroupRequestRejectsWrongContactIdsType() {
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.groupsRemoveMembers.rawValue, [
+                "groupId": "g-opaque", "contactIds": "c-one",
+            ])))
     }
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {

@@ -39,6 +39,13 @@ final class FakeContactSource: MCPContactSource {
     var groups: [ContactGroup] = []
     private(set) var fetchGroupsCallCount = 0
     var membersByGroup: [String: [Contact]] = [:]
+    var groupFavoriteLocalIDs: Set<String> = []
+    var membershipFailureLocalIDs: Set<String> = []
+    var groupWriteError: (any Error)?
+    var authorizationStatus: StoreAuthorizationStatus = .authorized
+    private(set) var groupCreateCount = 0
+    private(set) var groupMembershipWriteCount = 0
+    private(set) var groupFavoriteSetCount = 0
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
@@ -251,7 +258,108 @@ final class FakeContactSource: MCPContactSource {
         return ContactPhoto(data: data, kind: .fullSize)
     }
 
+    func groups(containing contact: Contact) async -> [ContactGroup] {
+        groups.filter { group in
+            membersByGroup[group.localID, default: []].contains {
+                $0.contactID == contact.contactID
+            }
+        }
+    }
+
+    func isGroupFavorite(_ group: ContactGroup) -> Bool {
+        groupFavoriteLocalIDs.contains(group.localID.lowercased())
+    }
+
     // MARK: Writes
+
+    func createGroup(name: String) async throws -> ContactGroup {
+        if let groupWriteError { throw groupWriteError }
+        groupCreateCount += 1
+        let group = ContactGroup(localID: "fake-group-\(groupCreateCount)", name: name)
+        groups.append(group)
+        return group
+    }
+
+    func renameGroup(_ group: ContactGroup, to name: String) async throws {
+        if let groupWriteError { throw groupWriteError }
+        guard let index = groups.firstIndex(where: { $0.localID == group.localID }) else {
+            throw ContactStoreError.groupNotFound(localID: group.localID)
+        }
+        groups[index] = ContactGroup(localID: group.localID, name: name)
+    }
+
+    func deleteGroup(_ group: ContactGroup) async throws {
+        if let groupWriteError { throw groupWriteError }
+        guard groups.contains(where: { $0.localID == group.localID }) else {
+            throw ContactStoreError.groupNotFound(localID: group.localID)
+        }
+        groups.removeAll { $0.localID == group.localID }
+        membersByGroup[group.localID] = nil
+    }
+
+    func addContacts(_ requested: [Contact], toGroup group: ContactGroup) async throws {
+        try applyMembership(.addition, requested: requested, group: group)
+    }
+
+    func removeContacts(_ requested: [Contact], fromGroup group: ContactGroup) async throws {
+        try applyMembership(.removal, requested: requested, group: group)
+    }
+
+    private func applyMembership(
+        _ change: GroupMembershipChange,
+        requested: [Contact],
+        group: ContactGroup
+    ) throws {
+        if let groupWriteError { throw groupWriteError }
+        guard groups.contains(where: { $0.localID == group.localID }) else {
+            throw ContactStoreError.groupNotFound(localID: group.localID)
+        }
+        groupMembershipWriteCount += 1
+        var applied: [Contact] = []
+        var failures: [GroupMembershipPartialFailureError.Failure] = []
+        for contact in requested {
+            if membershipFailureLocalIDs.contains(contact.contactID.restorationToken.localID) {
+                failures.append(.init(
+                    contact: contact,
+                    error: ContactStoreError.contactNotFound(
+                        localID: contact.contactID.restorationToken.localID)))
+                continue
+            }
+            switch change {
+            case .addition:
+                if !(membersByGroup[group.localID] ?? []).contains(where: {
+                    $0.contactID == contact.contactID
+                }) {
+                    membersByGroup[group.localID, default: []].append(contact)
+                }
+            case .removal:
+                membersByGroup[group.localID, default: []].removeAll {
+                    $0.contactID == contact.contactID
+                }
+            }
+            applied.append(contact)
+        }
+        if !failures.isEmpty {
+            throw GroupMembershipPartialFailureError(
+                change: change, group: group, applied: applied, failures: failures)
+        }
+    }
+
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
+        if let groupWriteError { throw groupWriteError }
+        groupFavoriteSetCount += 1
+        let key = group.localID.lowercased()
+        if favorite {
+            groupFavoriteLocalIDs.insert(key)
+        } else {
+            groupFavoriteLocalIDs.remove(key)
+        }
+        return favorite
+    }
+
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
+        authorizationStatus
+    }
 
     func addNote(for id: ContactID, body: String, createdAt: Date) async throws -> UUID {
         let key = try await effectiveWriteID(id)

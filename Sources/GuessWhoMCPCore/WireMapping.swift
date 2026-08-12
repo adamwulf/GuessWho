@@ -196,8 +196,8 @@ enum WireMapping {
             createdAt: timestamp(link.createdAt))
     }
 
-    static func group(_ group: ContactGroup, id: String) -> WireGroup {
-        WireGroup(id: id, name: group.name)
+    static func group(_ group: ContactGroup, id: String, isFavorite: Bool) -> WireGroup {
+        WireGroup(id: id, name: group.name, isFavorite: isFavorite)
     }
 
     // MARK: - Events

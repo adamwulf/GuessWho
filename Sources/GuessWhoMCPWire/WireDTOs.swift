@@ -552,10 +552,48 @@ public struct WireLink: Codable, Sendable {
 public struct WireGroup: Codable, Sendable {
     public let id: String
     public let name: String
+    public let isFavorite: Bool
 
-    public init(id: String, name: String) {
+    public init(id: String, name: String, isFavorite: Bool) {
         self.id = id
         self.name = name
+        self.isFavorite = isFavorite
+    }
+}
+
+/// One contact that could not be moved into or out of a group during a
+/// batch membership change. `contactId` is the same opaque id supplied by
+/// the caller; the failure never carries an Apple identifier or raw error.
+public struct WireGroupMembershipFailure: Codable, Sendable {
+    public let contactId: String
+    public let code: WireErrorCode
+    public let message: String
+
+    public init(contactId: String, code: WireErrorCode, message: String) {
+        self.contactId = contactId
+        self.code = code
+        self.message = message
+    }
+}
+
+/// Complete outcome of a group membership batch. A partial write is a data
+/// result rather than a blanket acknowledgement: every requested contact id
+/// appears in exactly one of `appliedContactIds` or `failures`.
+public struct WireGroupMembershipResult: Codable, Sendable {
+    public let groupId: String
+    public let isComplete: Bool
+    public let appliedContactIds: [String]
+    public let failures: [WireGroupMembershipFailure]
+
+    public init(
+        groupId: String,
+        appliedContactIds: [String],
+        failures: [WireGroupMembershipFailure]
+    ) {
+        self.groupId = groupId
+        self.isComplete = failures.isEmpty
+        self.appliedContactIds = appliedContactIds
+        self.failures = failures
     }
 }
 

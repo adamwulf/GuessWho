@@ -1679,6 +1679,33 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// Whether `group` is in the shared favorites list. The Contacts-issued
+    /// identifier remains confined to this repository boundary; callers hold a
+    /// `ContactGroup` value and never receive the raw favorite key separately.
+    public func isGroupFavorite(_ group: ContactGroup) -> Bool {
+        guard let favorites else { return false }
+        do {
+            return try favorites.isFavorite(kind: .group, id: group.localID)
+        } catch {
+            lastError = "group favorites lookup failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Idempotently sets a group's favorite state and returns the resulting
+    /// state. The caller must first resolve its own opaque reference to a live
+    /// `ContactGroup`; only this package boundary reads the Contacts identifier
+    /// used as the persisted favorite key.
+    @discardableResult
+    public func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
+        guard let favorites else { throw SidecarUnavailableError() }
+        let current = try favorites.isFavorite(kind: .group, id: group.localID)
+        guard current != favorite else { return current }
+        let resulting = try favorites.toggle(kind: .group, id: group.localID, now: Date())
+        guard resulting == favorite else { throw SidecarUnavailableError() }
+        return resulting
+    }
+
     /// Look up a cached `ContactGroup` by its Contacts `localID`, matched
     /// case-insensitively because favorites persist the `localID` lowercased
     /// (see `Favorite.id`) while `CNGroup.identifier` is mixed-case. Reads the

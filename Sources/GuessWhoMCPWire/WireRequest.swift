@@ -42,6 +42,7 @@ public enum WireRequest: Codable, Sendable {
     case organizationsListMembers(helperId: String, messageId: String, organizationId: String, limit: Int?, cursor: String?)
     case organizationsListDepartments(helperId: String, messageId: String, organizationId: String, limit: Int?, cursor: String?)
     case organizationsListDepartmentMembers(helperId: String, messageId: String, organizationId: String, department: String, limit: Int?, cursor: String?)
+    case groupsListForContact(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case eventsList(helperId: String, messageId: String, startDate: String, endDate: String, limit: Int?, cursor: String?)
     case eventsGet(helperId: String, messageId: String, eventId: String)
     case eventsListTags(helperId: String, messageId: String, eventId: String, limit: Int?, cursor: String?)
@@ -95,6 +96,12 @@ public enum WireRequest: Codable, Sendable {
     case favoritesSet(helperId: String, messageId: String, kind: WireFavoriteKind, id: String, favorite: Bool, idempotencyToken: String?)
     case favoritesReorder(helperId: String, messageId: String, favorites: [WireFavoriteIdentity], idempotencyToken: String?)
     case organizationsRenameDepartment(helperId: String, messageId: String, organizationId: String, oldName: String, newName: String, idempotencyToken: String?)
+    case groupsCreate(helperId: String, messageId: String, name: String, idempotencyToken: String?)
+    case groupsRename(helperId: String, messageId: String, groupId: String, name: String, idempotencyToken: String?)
+    case groupsDelete(helperId: String, messageId: String, groupId: String, idempotencyToken: String?)
+    case groupsAddMembers(helperId: String, messageId: String, groupId: String, contactIds: [String], idempotencyToken: String?)
+    case groupsRemoveMembers(helperId: String, messageId: String, groupId: String, contactIds: [String], idempotencyToken: String?)
+    case groupsSetFavorite(helperId: String, messageId: String, groupId: String, favorite: Bool, idempotencyToken: String?)
     case eventsAddTag(helperId: String, messageId: String, eventId: String, text: String, idempotencyToken: String?)
     case eventsEditTag(helperId: String, messageId: String, eventId: String, tagId: String, text: String, idempotencyToken: String?)
     case eventsDeleteTag(helperId: String, messageId: String, eventId: String, tagId: String, idempotencyToken: String?)
@@ -119,6 +126,7 @@ public enum WireRequest: Codable, Sendable {
         case .organizationsListMembers: return .organizationsListMembers
         case .organizationsListDepartments: return .organizationsListDepartments
         case .organizationsListDepartmentMembers: return .organizationsListDepartmentMembers
+        case .groupsListForContact: return .groupsListForContact
         case .eventsList: return .eventsList
         case .eventsGet: return .eventsGet
         case .eventsListTags: return .eventsListTags
@@ -156,6 +164,12 @@ public enum WireRequest: Codable, Sendable {
         case .favoritesSet: return .favoritesSet
         case .favoritesReorder: return .favoritesReorder
         case .organizationsRenameDepartment: return .organizationsRenameDepartment
+        case .groupsCreate: return .groupsCreate
+        case .groupsRename: return .groupsRename
+        case .groupsDelete: return .groupsDelete
+        case .groupsAddMembers: return .groupsAddMembers
+        case .groupsRemoveMembers: return .groupsRemoveMembers
+        case .groupsSetFavorite: return .groupsSetFavorite
         case .eventsAddTag: return .eventsAddTag
         case .eventsEditTag: return .eventsEditTag
         case .eventsDeleteTag: return .eventsDeleteTag
@@ -199,6 +213,12 @@ public enum WireRequest: Codable, Sendable {
              .favoritesSet(_, _, _, _, _, let token),
              .favoritesReorder(_, _, _, let token),
              .organizationsRenameDepartment(_, _, _, _, _, let token),
+             .groupsCreate(_, _, _, let token),
+             .groupsRename(_, _, _, _, let token),
+             .groupsDelete(_, _, _, let token),
+             .groupsAddMembers(_, _, _, _, let token),
+             .groupsRemoveMembers(_, _, _, _, let token),
+             .groupsSetFavorite(_, _, _, _, let token),
              .eventsAddTag(_, _, _, _, let token),
              .eventsEditTag(_, _, _, _, _, let token),
              .eventsDeleteTag(_, _, _, _, let token),
@@ -232,6 +252,7 @@ extension WireRequest: MCPRequestProtocol {
              .organizationsListMembers(let helperId, _, _, _, _),
              .organizationsListDepartments(let helperId, _, _, _, _),
              .organizationsListDepartmentMembers(let helperId, _, _, _, _, _),
+             .groupsListForContact(let helperId, _, _, _, _),
              .eventsList(let helperId, _, _, _, _, _),
              .eventsGet(let helperId, _, _),
              .eventsListTags(let helperId, _, _, _, _),
@@ -268,6 +289,12 @@ extension WireRequest: MCPRequestProtocol {
              .favoritesSet(let helperId, _, _, _, _, _),
              .favoritesReorder(let helperId, _, _, _),
              .organizationsRenameDepartment(let helperId, _, _, _, _, _),
+             .groupsCreate(let helperId, _, _, _),
+             .groupsRename(let helperId, _, _, _, _),
+             .groupsDelete(let helperId, _, _, _),
+             .groupsAddMembers(let helperId, _, _, _, _),
+             .groupsRemoveMembers(let helperId, _, _, _, _),
+             .groupsSetFavorite(let helperId, _, _, _, _),
              .eventsAddTag(let helperId, _, _, _, _),
              .eventsEditTag(let helperId, _, _, _, _, _),
              .eventsDeleteTag(let helperId, _, _, _, _),
@@ -297,6 +324,7 @@ extension WireRequest: MCPRequestProtocol {
              .organizationsListMembers(_, let messageId, _, _, _),
              .organizationsListDepartments(_, let messageId, _, _, _),
              .organizationsListDepartmentMembers(_, let messageId, _, _, _, _),
+             .groupsListForContact(_, let messageId, _, _, _),
              .eventsList(_, let messageId, _, _, _, _),
              .eventsGet(_, let messageId, _),
              .eventsListTags(_, let messageId, _, _, _),
@@ -333,6 +361,12 @@ extension WireRequest: MCPRequestProtocol {
              .favoritesSet(_, let messageId, _, _, _, _),
              .favoritesReorder(_, let messageId, _, _),
              .organizationsRenameDepartment(_, let messageId, _, _, _, _),
+             .groupsCreate(_, let messageId, _, _),
+             .groupsRename(_, let messageId, _, _, _),
+             .groupsDelete(_, let messageId, _, _),
+             .groupsAddMembers(_, let messageId, _, _, _),
+             .groupsRemoveMembers(_, let messageId, _, _, _),
+             .groupsSetFavorite(_, let messageId, _, _, _),
              .eventsAddTag(_, let messageId, _, _, _),
              .eventsEditTag(_, let messageId, _, _, _, _),
              .eventsDeleteTag(_, let messageId, _, _, _),
@@ -430,6 +464,11 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 organizationId: try args.requiredString("organizationId"),
                 department: try args.requiredString("department"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .groupsListForContact:
+            return .groupsListForContact(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .eventsList:
             return .eventsList(
@@ -651,6 +690,40 @@ extension WireRequest: MCPRequestProtocol {
                 organizationId: try args.requiredString("organizationId"),
                 oldName: try args.requiredString("oldName"),
                 newName: try args.requiredString("newName"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsCreate:
+            return .groupsCreate(
+                helperId: helperId, messageId: messageId,
+                name: try args.requiredString("name"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsRename:
+            return .groupsRename(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                name: try args.requiredString("name"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsDelete:
+            return .groupsDelete(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsAddMembers:
+            return .groupsAddMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                contactIds: try args.requiredStringArray("contactIds"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsRemoveMembers:
+            return .groupsRemoveMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                contactIds: try args.requiredStringArray("contactIds"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsSetFavorite:
+            return .groupsSetFavorite(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                favorite: try args.requiredBool("favorite"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .eventsAddTag:
             return .eventsAddTag(

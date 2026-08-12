@@ -69,6 +69,11 @@ public enum AgentActivityFormatter {
         case .editContact: return AgentActivityStrings.editedContact
         case .deleteContact: return AgentActivityStrings.deletedContact
         case .renameDepartment: return AgentActivityStrings.renamedDepartment
+        case .createGroup: return AgentActivityStrings.createdGroup
+        case .renameGroup: return AgentActivityStrings.renamedGroup
+        case .deleteGroup: return AgentActivityStrings.deletedGroup
+        case .addGroupMembers: return AgentActivityStrings.addedGroupMembers
+        case .removeGroupMembers: return AgentActivityStrings.removedGroupMembers
         }
     }
 

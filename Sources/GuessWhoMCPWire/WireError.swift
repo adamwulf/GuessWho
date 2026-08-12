@@ -179,6 +179,10 @@ public enum WireErrorMessage {
     /// description could echo contact data into an error string.
     public static let contactFieldRejected =
         "The system rejected one of the field values. Check the values and try again."
+    public static let groupMembersRequired =
+        "Pass at least one contact id in contactIds."
+    public static let tooManyGroupMembers =
+        "A group membership change can include at most 200 contact ids at a time."
     // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
     // is scalars-only: a whole-list argument is rejected LOUDLY toward the
     // dedicated one-entry-at-a-time tools, never silently ignored.
@@ -319,6 +323,7 @@ public enum WireErrorMessage {
             ambiguousPostalAddress, ambiguousSocialProfile,
             ambiguousInstantMessage,
             contactFieldRejected, confirmationUnavailable, confirmationExpired,
+            groupMembersRequired, tooManyGroupMembers,
             confirmationAlreadyPending,
             invalidLinkKindArgument, linkKindMismatch, linkPairUnsupported,
             linkSelfNotAllowed, eventNeedsAppFirstToConnect, notFoundConnection,
@@ -351,6 +356,7 @@ public enum WireAckMessage {
         "The user declined to delete this contact. Nothing was changed."
     public static let photoSet = "The contact photo was saved."
     public static let photoDeleted = "The contact photo was deleted."
+    public static let groupDeleted = "The group was deleted. Its contacts were not deleted."
 
     /// Every fixed string above, for the banned-vocabulary test.
     public static var allFixedStrings: [String] {
@@ -360,6 +366,7 @@ public enum WireAckMessage {
             favoritesReordered, guideDeleted, placeDeleted,
             placesReordered, contactDeleted, contactDeleteDeclined,
             photoSet, photoDeleted,
+            groupDeleted,
         ]
     }
 }
@@ -509,6 +516,11 @@ public enum AgentActivityStrings {
     public static let editedContact = "Edited the contact %@"
     public static let deletedContact = "Deleted the contact %@ (approved by you)"
     public static let renamedDepartment = "Renamed a department in %@"
+    public static let createdGroup = "Created the group %@"
+    public static let renamedGroup = "Renamed the group %@"
+    public static let deletedGroup = "Deleted the group %@"
+    public static let addedGroupMembers = "Added contacts to %@"
+    public static let removedGroupMembers = "Removed contacts from %@"
     /// Fallback when the entry's display-name snapshot is empty.
     public static let unknownSubject = "an item"
 
@@ -522,6 +534,8 @@ public enum AgentActivityStrings {
             addedTag, editedTag, deletedTag,
             createdGuide, deletedGuide, reorderedPlaces, reorderedFavorites, deletedPlace,
             createdContact, editedContact, deletedContact, renamedDepartment,
+            createdGroup, renamedGroup, deletedGroup,
+            addedGroupMembers, removedGroupMembers,
             unknownSubject,
         ]
     }

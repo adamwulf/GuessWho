@@ -125,14 +125,14 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **56 tools total: 21 read and 35 write**.
+There are **63 tools total: 22 read and 41 write**.
 
-**Read (21):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (22):** `contacts_search`, `contacts_list`, `contacts_get`,
 `contacts_get_photo`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
 `contacts_list_groups`, `organizations_list_members`,
 `organizations_list_departments`, `organizations_list_department_members`,
-`events_list`, `events_get`, `events_list_tags`,
+`groups_list_for_contact`, `events_list`, `events_get`, `events_list_tags`,
 `guides_list`, `guides_get`, `guides_list_for_place`, `places_list`,
 `places_search`, `places_get`, `links_list`, `favorites_list`. (Plus
 `guesswho_status`, served by the relay itself when the app is unreachable
@@ -141,7 +141,7 @@ remain available through `contacts_list`'s optional `favoritesOnly` and
 `groupId` filters (see below). `contacts_list_groups` lists the groups
 themselves and is the source of group ids.
 
-**Write (35):** the GuessWho-data writes — `contacts_add_note`,
+**Write (41):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
@@ -160,7 +160,9 @@ dedicated structured-entry tools add/edit/delete postal addresses, social
 profiles, and instant-message addresses. Finally,
 `organizations_rename_department` renames one department across an
 organization's matching members through the Contacts repository's user-level
-operation.
+operation. Complete group writes are also available:
+`groups_create`, `groups_rename`, `groups_delete`,
+`groups_add_members`, `groups_remove_members`, and `groups_set_favorite`.
 
 ### Contact kind and photos
 
@@ -345,6 +347,58 @@ when a required domain is unavailable. Writes additionally require read-write
 mode, use the global write budget and idempotency-token replay, append agent
 activity audit records after successful changes, and ride the shared response
 cap and fixed non-data-bearing error strings.
+
+### Contact groups
+
+`contacts_list_groups(limit?, cursor?)` returns every group as `{id, name,
+isFavorite}`. `groups_list_for_contact(contactId, limit?, cursor?)` returns
+the same DTO for only the groups containing that contact. Both reads require
+Contacts permission, use the standard default-50/max-200 paging contract,
+and are response-capped.
+
+Group ids are opaque `g-` digests. The raw Contacts group identifier never
+crosses the wire. Every tool that takes `groupId` re-fetches the current groups
+and resolves the digest before calling the repository; an unknown, deleted, or
+wrong-form id is typed `notFound`. `groups_set_favorite` performs that resolution
+before the repository is allowed to inspect the Contacts identifier used as the
+favorite key. Contact ids in membership calls use the same opaque ids as
+`contacts_search`/`contacts_list`; group membership does not mint or expose a
+contact identity.
+
+The six group writes are Contacts-permission and read-write gated, consume the
+shared per-host write budget, support the standard optional idempotency token,
+are response-capped, and append to the device-local agent-activity audit only
+after a change lands. Create and rename trim their names and reject a blank
+name. Rename and delete return typed `notFound` if the group disappears between
+resolution and the Contacts write; a permission revoked between the gate and
+the write returns typed `permissionDenied`; other store failures return
+`writeFailed`. Delete removes the group, not its contacts, and then best-effort
+removes the obsolete group favorite just as the app does.
+
+`groups_add_members(groupId, contactIds)` and
+`groups_remove_members(groupId, contactIds)` accept 1–200 contact ids. Duplicate
+ids collapse in caller order. Every id is resolved before the first membership
+write, so a stale argument cannot cause a half-applied call. The repository then
+runs its serialized, idempotent batch: already-in-state contacts are successful
+no-ops, and one store failure does not cancel the remaining contacts. The
+result always accounts for the batch explicitly:
+
+```json
+{
+  "groupId": "g-…",
+  "isComplete": false,
+  "appliedContactIds": ["…"],
+  "failures": [
+    {"contactId": "…", "message": "…"}
+  ]
+}
+```
+
+A partial result is cached for idempotency replay exactly like a complete
+success, so retrying the same token reports the original outcome without
+reapplying the contacts that already moved. The existing
+`contacts_list(groupId: ...)` filter remains the canonical way to page a
+group's members and accepts ids from either group-list read.
 
 ### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_delete_value`, Phase 7)
 

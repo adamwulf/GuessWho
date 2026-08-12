@@ -36,6 +36,8 @@ public protocol MCPContactSource: AnyObject {
     func departments(in organization: Contact) -> [String]
     func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact]
     func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto?
+    func groups(containing contact: Contact) async -> [ContactGroup]
+    func isGroupFavorite(_ group: ContactGroup) -> Bool
 
     // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
     // the UI uses (INV-2), so the change-watcher, iCloud push, and UI
@@ -66,6 +68,15 @@ public protocol MCPContactSource: AnyObject {
     func removeLink(id linkID: UUID) throws
     @discardableResult
     func toggleFavorite(_ id: ContactID) async throws -> Bool
+    @discardableResult
+    func createGroup(name: String) async throws -> ContactGroup
+    func renameGroup(_ group: ContactGroup, to name: String) async throws
+    func deleteGroup(_ group: ContactGroup) async throws
+    func addContacts(_ contacts: [Contact], toGroup group: ContactGroup) async throws
+    func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws
+    @discardableResult
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus
 
     // Tombstone-inclusive reads for the write-side audit (post-write
     // `modifiedAt`) and the Recently Deleted surface. Never wired to a tool.
