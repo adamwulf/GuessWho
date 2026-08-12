@@ -172,6 +172,49 @@ final class WireFramingTests: XCTestCase {
         XCTAssertEqual(decodedPage.items.first?.isAvailable, false)
     }
 
+    func testGroupResponsesRoundTripIntact() throws {
+        let group = WireResponse.group(
+            helperId: "mcp-test", messageId: "group",
+            group: WireGroup(id: "g-opaque", name: "Friends", isFavorite: true))
+        let decodedGroup = try JSONDecoder().decode(
+            WireResponse.self, from: JSONEncoder().encode(group))
+        guard case .group(let helperId, let messageId, let value) = decodedGroup else {
+            return XCTFail("wrong group response case")
+        }
+        XCTAssertEqual(helperId, "mcp-test")
+        XCTAssertEqual(messageId, "group")
+        XCTAssertEqual(value.id, "g-opaque")
+        XCTAssertEqual(value.name, "Friends")
+        XCTAssertTrue(value.isFavorite)
+
+        let membership = WireResponse.groupMembership(
+            helperId: "mcp-test", messageId: "membership",
+            result: WireGroupMembershipResult(
+                groupId: "g-opaque",
+                appliedContactIds: ["c-applied"],
+                failures: [WireGroupMembershipFailure(
+                    contactId: "c-failed", code: .writeFailed,
+                    message: WireErrorMessage.writeFailed)]))
+        let decodedMembership = try JSONDecoder().decode(
+            WireResponse.self, from: JSONEncoder().encode(membership))
+        guard case .groupMembership(_, _, let result) = decodedMembership else {
+            return XCTFail("wrong group membership response case")
+        }
+        XCTAssertFalse(result.isComplete)
+        XCTAssertEqual(result.groupId, "g-opaque")
+        XCTAssertEqual(result.appliedContactIds, ["c-applied"])
+        XCTAssertEqual(result.failures.first?.contactId, "c-failed")
+        XCTAssertEqual(result.failures.first?.code, .writeFailed)
+
+        let agentText = membership.asCallToolResult().content.compactMap { content in
+            if case .text(let text, _, _) = content { return text }
+            return nil
+        }.joined()
+        XCTAssertTrue(agentText.contains("c-failed"))
+        XCTAssertTrue(agentText.contains(WireErrorMessage.writeFailed))
+        XCTAssertFalse(agentText.contains("writeFailed"))
+    }
+
     /// Control messages must stay far under the 512-byte Darwin PIPE_BUF
     /// atomicity ceiling — the announce channel's forever-rule.
     func testControlMessagesStayUnderPipeBuf() throws {
