@@ -258,7 +258,9 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertEqual(readsAfter.1 - readsBefore.1, 1)
         XCTAssertEqual(readsAfter.2 - readsBefore.2, 1)
         let favoriteReads = await MainActor.run { fixture.favorites.loadCallCount }
-        XCTAssertEqual(favoriteReads, 2, "one list read and one reorder read; replay must use its cache")
+        XCTAssertEqual(
+            favoriteReads, 3,
+            "one list read and one permission snapshot for each reorder call")
     }
 
     func testReorderRejectsDuplicateMissingExtraStaleAndConcurrentChange() async {
@@ -339,7 +341,8 @@ final class FavoritesToolTests: XCTestCase {
     }
 
     func testReorderRechecksPermissionsAgainstItsCurrentSnapshot() async {
-        let fixture = await fixture(writable: true)
+        let fixture = await Fixture.make(writeLimitPerWindow: 1, writeWindowSeconds: 60)
+        await MainActor.run { fixture.gates.mcpAccess = .readWrite }
         _ = await MainActor.run { installEveryKind(fixture) }
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let identities = page.items.map { WireFavoriteIdentity(kind: $0.kind, id: $0.id) }
@@ -359,6 +362,19 @@ final class FavoritesToolTests: XCTestCase {
         error(response, .permissionDenied)
         let reorderCalls = await MainActor.run { fixture.favorites.reorderCallCount }
         XCTAssertEqual(reorderCalls, 0)
+
+        guard let guideID = identities.first(where: { $0.kind == .guide })?.id else {
+            return XCTFail("missing guide identity")
+        }
+        await MainActor.run {
+            fixture.gates.contactsAuthorized = true
+            fixture.favorites.onLoadFavorites = nil
+        }
+        guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: Fixture.helper, messageId: "budget-after-denial",
+            kind: .guide, id: guideID, favorite: false, idempotencyToken: nil)) else {
+            return XCTFail("permission denial must not consume the write budget")
+        }
     }
 
     func testEntityDeleteLeavesStaleRowsThatGenericClearCanRecover() async {

@@ -167,6 +167,29 @@ public actor ToolDispatcher {
             return gateError
         }
 
+        // Reorder's permission domain is the complete stored set, not the
+        // caller-provided order. Load that authoritative snapshot once,
+        // reject missing permission before the write budget, and pass the
+        // same values through validation and CAS so no second coordinated
+        // read is needed in the dispatcher.
+        var favoriteReorderSnapshot: [Favorite]?
+        if case .favoritesReorder = request {
+            do {
+                favoriteReorderSnapshot = try await MainActor.run {
+                    try favorites.loadFavorites()
+                }
+            } catch {
+                return favoriteReadFailure(helperId: helperId, messageId: messageId)
+            }
+            if let stored = favoriteReorderSnapshot,
+               let permissionError = await favoritePermissionError(
+                   kinds: stored.map { Self.wireFavoriteKind($0.kind) },
+                   helperId: helperId, messageId: messageId
+               ) {
+                return permissionError
+            }
+        }
+
         if case .contactsDelete(_, _, let contactId, let idempotencyToken) = request {
             // Confirmation-gated: may return nil (answer sent later).
             return await contactsDeleteRequested(
@@ -175,7 +198,9 @@ public actor ToolDispatcher {
         }
 
         if tool.isWrite {
-            return capped(await handleWrite(request, helperId: helperId, messageId: messageId))
+            return capped(await handleWrite(
+                request, helperId: helperId, messageId: messageId,
+                favoriteReorderSnapshot: favoriteReorderSnapshot))
         }
 
         let response: WireResponse
@@ -1084,7 +1109,8 @@ public actor ToolDispatcher {
     /// neither burns budget nor re-applies; only successful responses are
     /// cached (a failed write should re-attempt on retry).
     private func handleWrite(
-        _ request: WireRequest, helperId: String, messageId: String
+        _ request: WireRequest, helperId: String, messageId: String,
+        favoriteReorderSnapshot: [Favorite]?
     ) async -> WireResponse {
         if let token = request.idempotencyToken {
             pruneIdempotencyCache()
@@ -1097,7 +1123,9 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .busy, message: WireErrorMessage.writeBusy)
         }
-        let response = await executeWrite(request, helperId: helperId, messageId: messageId)
+        let response = await executeWrite(
+            request, helperId: helperId, messageId: messageId,
+            favoriteReorderSnapshot: favoriteReorderSnapshot)
         if let token = request.idempotencyToken, response.errorPayload == nil {
             idempotencyCache[Self.idempotencyKey(helperId: helperId, token: token)] =
                 (Date(), response)
@@ -1106,7 +1134,8 @@ public actor ToolDispatcher {
     }
 
     private func executeWrite(
-        _ request: WireRequest, helperId: String, messageId: String
+        _ request: WireRequest, helperId: String, messageId: String,
+        favoriteReorderSnapshot: [Favorite]?
     ) async -> WireResponse {
         switch request {
         case .contactsCreate(_, _, let kind, let fields, _):
@@ -1216,7 +1245,8 @@ public actor ToolDispatcher {
                 kind: kind, id: id, favorite: favorite)
         case .favoritesReorder(_, _, let identities, _):
             return await favoritesReorder(
-                helperId: helperId, messageId: messageId, identities: identities)
+                helperId: helperId, messageId: messageId, identities: identities,
+                current: favoriteReorderSnapshot)
         case .organizationsRenameDepartment(
             _, _, let organizationId, let oldName, let newName, _
         ):
@@ -1791,23 +1821,18 @@ public actor ToolDispatcher {
     }
 
     private func favoritesReorder(
-        helperId: String, messageId: String, identities: [WireFavoriteIdentity]
+        helperId: String, messageId: String, identities: [WireFavoriteIdentity],
+        current suppliedCurrent: [Favorite]?
     ) async -> WireResponse {
         guard Set(identities).count == identities.count else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
 
-        let current: [Favorite]
-        do {
-            current = try await MainActor.run { try favorites.loadFavorites() }
-        } catch {
+        guard let current = suppliedCurrent else {
+            // All callers preflight the authoritative snapshot before the
+            // write budget. Keep this fixed failure rather than silently
+            // re-reading and changing the budget/permission ordering.
             return favoriteReadFailure(helperId: helperId, messageId: messageId)
-        }
-        if let permissionError = await favoritePermissionError(
-            kinds: current.map { Self.wireFavoriteKind($0.kind) },
-            helperId: helperId, messageId: messageId
-        ) {
-            return permissionError
         }
         guard identities.count == current.count else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
