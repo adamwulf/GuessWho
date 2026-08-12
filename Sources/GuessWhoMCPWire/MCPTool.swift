@@ -211,7 +211,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     private static let linkKindDoc =
         "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
     private static let favoriteKindDoc =
-        "\"contact\", \"event\", \"group\", \"guide\", or \"place\" — the entity kind the id refers to. Use the kind and id together exactly as returned by favorites_list or the matching entity list tool."
+        "\"contact\", \"event\", \"group\", \"guide\", or \"place\" — the entity kind the id refers to. Use the kind and id together exactly as returned by favorites_list. For an id from contacts_search or contacts_list, use \"contact\" here even though that row's contact-card kind is \"person\" or \"organization\"."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [

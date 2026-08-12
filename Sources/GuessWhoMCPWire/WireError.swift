@@ -136,7 +136,7 @@ public enum WireErrorMessage {
     public static let favoriteKindMismatch =
         "That id doesn't belong to a record of the kind given for it. Check the kind and id against the matching list tool, then try again."
     public static let staleFavorite =
-        "One of the favorites is no longer available. Nothing was reordered; refresh favorites_list before making another change."
+        "One of the favorites is no longer available. Nothing was reordered; run favorites_list, clear each unavailable entry with favorites_set and favorite false, then reorder the complete remaining list."
     public static let reorderMustCoverEveryFavorite =
         "The favorites argument must contain every current favorite exactly once as a kind and id pair, in the desired order."
     public static let favoritesChangedDuringReorder =

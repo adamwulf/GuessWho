@@ -194,7 +194,8 @@ final class GuidePlaceReadToolTests: XCTestCase {
         let fixture = await Fixture.make()
         let dispatcher = ToolDispatcher(
             contacts: fixture.contacts, events: fixture.events,
-            guides: fixture.guides, links: fixture.links, gates: fixture.gates,
+            guides: fixture.guides, favorites: fixture.favorites,
+            links: fixture.links, gates: fixture.gates,
             searchLimitPerWindow: 1, searchWindowSeconds: 60)
         let first = await dispatcher.handle(.placesSearch(
             helperId: Fixture.helper, messageId: "first", query: "coffee",

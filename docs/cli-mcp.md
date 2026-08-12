@@ -302,6 +302,8 @@ kinds are exactly `contact`, `event`, `group`, `guide`, and `place`. Each id
 is the ordinary opaque id from that entity's list tool: contact and stored
 event ids are record ids, group ids are one-way opaque values (the Contacts
 identifier never crosses), and guide/place ids are their record ids. A
+contact row may describe its card kind as `person` or `organization`; the
+favorites kind for either card is always `contact`. A
 calendar-only event keeps its derived opaque event id on reads, but must be
 opened once in the app before it can be favorited; the write never stores or
 returns the calendar identifier.
