@@ -112,7 +112,7 @@ enum WireMapping {
         return WireLabeledDate(label: blankToNil(date.label), date: rendered)
     }
 
-    private static func postalAddress(_ address: LabeledPostalAddress) -> WirePostalAddress {
+    static func postalAddress(_ address: LabeledPostalAddress) -> WirePostalAddress {
         WirePostalAddress(
             label: blankToNil(address.label),
             street: address.value.street,
@@ -125,7 +125,7 @@ enum WireMapping {
             isoCountryCode: blankToNil(address.value.isoCountryCode))
     }
 
-    private static func socialProfile(_ profile: LabeledSocialProfile) -> WireSocialProfile {
+    static func socialProfile(_ profile: LabeledSocialProfile) -> WireSocialProfile {
         WireSocialProfile(
             label: blankToNil(profile.label),
             service: blankToNil(profile.value.service),
@@ -133,7 +133,7 @@ enum WireMapping {
             url: blankToNil(profile.value.urlString))
     }
 
-    private static func instantMessage(_ address: LabeledInstantMessageAddress) -> WireInstantMessage {
+    static func instantMessage(_ address: LabeledInstantMessageAddress) -> WireInstantMessage {
         WireInstantMessage(
             label: blankToNil(address.label),
             service: blankToNil(address.value.service),

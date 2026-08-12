@@ -46,12 +46,21 @@ public enum MCPTool: String, CaseIterable, Sendable {
     // is scalars-only — these are the ONLY way to change a contact's
     // multi-value lists, one entry per call, matched by exact value so a
     // model can never bulk-replace a list believing it edited one item.
-    // Postal addresses, social profiles, and instant messages have no
-    // single-entry tools yet (their identity spans several subfields);
-    // they can only be provided at create.
     case contactsAddValue = "contacts_add_value"
     case contactsDeleteValue = "contacts_delete_value"
     case contactsEditValue = "contacts_edit_value"
+    // Structured multi-value entries also change one at a time. Dedicated
+    // tools keep their component fields typed JSON objects instead of
+    // weakening contacts_add_value's scalar enum or hiding JSON in strings.
+    case contactsAddPostalAddress = "contacts_add_postal_address"
+    case contactsEditPostalAddress = "contacts_edit_postal_address"
+    case contactsDeletePostalAddress = "contacts_delete_postal_address"
+    case contactsAddSocialProfile = "contacts_add_social_profile"
+    case contactsEditSocialProfile = "contacts_edit_social_profile"
+    case contactsDeleteSocialProfile = "contacts_delete_social_profile"
+    case contactsAddInstantMessage = "contacts_add_instant_message"
+    case contactsEditInstantMessage = "contacts_edit_instant_message"
+    case contactsDeleteInstantMessage = "contacts_delete_instant_message"
     case contactsAddNote = "contacts_add_note"
     case contactsEditNote = "contacts_edit_note"
     case contactsDeleteNote = "contacts_delete_note"
@@ -89,6 +98,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsListCustomFields, .contactsListGroups,
              .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+             .contactsAddPostalAddress, .contactsEditPostalAddress,
+             .contactsDeletePostalAddress,
+             .contactsAddSocialProfile, .contactsEditSocialProfile,
+             .contactsDeleteSocialProfile,
+             .contactsAddInstantMessage, .contactsEditInstantMessage,
+             .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite:
@@ -121,6 +136,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+             .contactsAddPostalAddress, .contactsEditPostalAddress,
+             .contactsDeletePostalAddress,
+             .contactsAddSocialProfile, .contactsEditSocialProfile,
+             .contactsDeleteSocialProfile,
+             .contactsAddInstantMessage, .contactsEditInstantMessage,
+             .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
@@ -172,6 +193,18 @@ public enum MCPTool: String, CaseIterable, Sendable {
         if !required.isEmpty {
             object["required"] = .array(required.map { Value.string($0) })
         }
+        return .object(object)
+    }
+
+    /// Structured entry payloads are replacements, so a misspelled optional
+    /// field must be rejected instead of being silently dropped and cleared.
+    private static func closedSchema(
+        _ properties: [String: Value], required: [String] = []
+    ) -> Value {
+        guard case .object(var object) = schema(properties, required: required) else {
+            return schema(properties, required: required)
+        }
+        object["additionalProperties"] = false
         return .object(object)
     }
 
@@ -249,6 +282,83 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 "newLabel": string("Optional custom replacement label. Omit to keep the current label."),
                 "idempotencyToken": string(idempotencyDoc),
             ], required: ["contactId", "field", "currentValue", "newValue"]))
+    }
+
+    // MARK: Structured single-entry metadata
+
+    private static let exactStructuredMatchDoc =
+        "Copy the complete entry from contacts_get. Every field participates in the exact match; if none match the result is notFound, and if duplicates match the result is ambiguous. Nothing changes in either case."
+
+    private static var postalAddressObject: Value {
+        closedSchema([
+            "label": string("Optional label, e.g. home or work."),
+            "street": string("Street address; may span lines. Pass an empty string when absent."),
+            "subLocality": string("Optional neighborhood or sub-locality."),
+            "city": string("City. Pass an empty string when absent."),
+            "subAdministrativeArea": string("Optional county or sub-administrative area."),
+            "state": string("State or province. Pass an empty string when absent."),
+            "postalCode": string("Postal or ZIP code. Pass an empty string when absent."),
+            "country": string("Country name. Pass an empty string when absent."),
+            "isoCountryCode": string("Optional ISO country code, e.g. us."),
+        ], required: ["street", "city", "state", "postalCode", "country"])
+    }
+
+    private static var socialProfileObject: Value {
+        closedSchema([
+            "label": string("Optional label."),
+            "service": string("Optional service name, e.g. LinkedIn."),
+            "username": string("Optional username on that service."),
+            "url": string("Optional profile web address."),
+        ])
+    }
+
+    private static var instantMessageObject: Value {
+        closedSchema([
+            "label": string("Optional label."),
+            "service": string("Optional messaging service name."),
+            "username": string("The non-empty username on that service."),
+        ], required: ["username"])
+    }
+
+    private static func structuredAddMetadata(
+        name: String, noun: String, argument: String, object: Value
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Add exactly ONE \(noun) to a contact. Every other contact entry and field is untouched. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                argument: object,
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", argument]))
+    }
+
+    private static func structuredDeleteMetadata(
+        name: String, noun: String, argument: String, object: Value
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Delete exactly ONE \(noun) from a contact by its complete exact representation. \(exactStructuredMatchDoc) Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                argument: object,
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", argument]))
+    }
+
+    private static func structuredEditMetadata(
+        name: String, noun: String, currentArgument: String,
+        newArgument: String, object: Value
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Replace exactly ONE \(noun) in place. \(exactStructuredMatchDoc) The replacement label is optional; omit it to keep the matched entry's label. Every other contact entry and field is untouched. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                currentArgument: object,
+                newArgument: object,
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", currentArgument, newArgument]))
     }
 
     private static func labeledArray(_ description: String, valueDoc: String) -> Value {
@@ -489,7 +599,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
             props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
             return ToolMetadata(
                 name: rawValue,
-                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Phone numbers, email addresses, web addresses, related names, and dates are NOT accepted here — change those one entry at a time with contacts_add_value, contacts_edit_value, or contacts_delete_value and the matching field value. Returns the updated card.",
+                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Multi-value lists are NOT accepted here — change one entry at a time with the matching contacts_add, contacts_edit, or contacts_delete tool. Returns the updated card.",
                 inputSchema: Self.schema(props, required: ["contactId"]))
         case .contactsAddValue:
             return Self.listAddMetadata(name: rawValue)
@@ -497,6 +607,45 @@ public enum MCPTool: String, CaseIterable, Sendable {
             return Self.listRemoveMetadata(name: rawValue)
         case .contactsEditValue:
             return Self.listEditMetadata(name: rawValue)
+        case .contactsAddPostalAddress:
+            return Self.structuredAddMetadata(
+                name: rawValue, noun: "postal address", argument: "address",
+                object: Self.postalAddressObject)
+        case .contactsEditPostalAddress:
+            return Self.structuredEditMetadata(
+                name: rawValue, noun: "postal address",
+                currentArgument: "currentAddress", newArgument: "newAddress",
+                object: Self.postalAddressObject)
+        case .contactsDeletePostalAddress:
+            return Self.structuredDeleteMetadata(
+                name: rawValue, noun: "postal address", argument: "address",
+                object: Self.postalAddressObject)
+        case .contactsAddSocialProfile:
+            return Self.structuredAddMetadata(
+                name: rawValue, noun: "social profile", argument: "profile",
+                object: Self.socialProfileObject)
+        case .contactsEditSocialProfile:
+            return Self.structuredEditMetadata(
+                name: rawValue, noun: "social profile",
+                currentArgument: "currentProfile", newArgument: "newProfile",
+                object: Self.socialProfileObject)
+        case .contactsDeleteSocialProfile:
+            return Self.structuredDeleteMetadata(
+                name: rawValue, noun: "social profile", argument: "profile",
+                object: Self.socialProfileObject)
+        case .contactsAddInstantMessage:
+            return Self.structuredAddMetadata(
+                name: rawValue, noun: "instant-message address", argument: "instantMessage",
+                object: Self.instantMessageObject)
+        case .contactsEditInstantMessage:
+            return Self.structuredEditMetadata(
+                name: rawValue, noun: "instant-message address",
+                currentArgument: "currentInstantMessage", newArgument: "newInstantMessage",
+                object: Self.instantMessageObject)
+        case .contactsDeleteInstantMessage:
+            return Self.structuredDeleteMetadata(
+                name: rawValue, noun: "instant-message address", argument: "instantMessage",
+                object: Self.instantMessageObject)
         case .contactsDelete:
             return ToolMetadata(
                 name: rawValue,

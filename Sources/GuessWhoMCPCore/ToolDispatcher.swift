@@ -223,6 +223,12 @@ public actor ToolDispatcher {
                 code: .invalidParams, message: "That isn't a callable tool.")
         case .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+             .contactsAddPostalAddress, .contactsEditPostalAddress,
+             .contactsDeletePostalAddress,
+             .contactsAddSocialProfile, .contactsEditSocialProfile,
+             .contactsDeleteSocialProfile,
+             .contactsAddInstantMessage, .contactsEditInstantMessage,
+             .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
@@ -700,6 +706,49 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId, contactId: contactId,
                 field: field,
                 operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
+        case .contactsAddPostalAddress(_, _, let contactId, let address, _):
+            return await contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .add(address))
+        case .contactsEditPostalAddress(
+            _, _, let contactId, let currentAddress, let newAddress, _
+        ):
+            return await contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .edit(current: currentAddress, replacement: newAddress))
+        case .contactsDeletePostalAddress(_, _, let contactId, let address, _):
+            return await contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .remove(address))
+        case .contactsAddSocialProfile(_, _, let contactId, let profile, _):
+            return await contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .add(profile))
+        case .contactsEditSocialProfile(
+            _, _, let contactId, let currentProfile, let newProfile, _
+        ):
+            return await contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .edit(current: currentProfile, replacement: newProfile))
+        case .contactsDeleteSocialProfile(_, _, let contactId, let profile, _):
+            return await contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .remove(profile))
+        case .contactsAddInstantMessage(_, _, let contactId, let instantMessage, _):
+            return await contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .add(instantMessage))
+        case .contactsEditInstantMessage(
+            _, _, let contactId, let currentInstantMessage, let newInstantMessage, _
+        ):
+            return await contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .edit(
+                    current: currentInstantMessage, replacement: newInstantMessage))
+        case .contactsDeleteInstantMessage(_, _, let contactId, let instantMessage, _):
+            return await contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .remove(instantMessage))
         case .contactsAddNote(_, _, let contactId, let body, _):
             return await contactsAddNote(
                 helperId: helperId, messageId: messageId, contactId: contactId, body: body)
@@ -1715,6 +1764,336 @@ public actor ToolDispatcher {
             return .failure(ListMatchFailure(code: .ambiguous, message: field.ambiguousMessage))
         }
         return .success(first)
+    }
+
+    // MARK: - Structured single-entry edits
+
+    private enum PostalAddressOperation {
+        case add(WirePostalAddress)
+        case remove(WirePostalAddress)
+        case edit(current: WirePostalAddress, replacement: WirePostalAddress)
+    }
+
+    private enum SocialProfileOperation {
+        case add(WireSocialProfile)
+        case remove(WireSocialProfile)
+        case edit(current: WireSocialProfile, replacement: WireSocialProfile)
+    }
+
+    private enum InstantMessageOperation {
+        case add(WireInstantMessage)
+        case remove(WireInstantMessage)
+        case edit(current: WireInstantMessage, replacement: WireInstantMessage)
+    }
+
+    private static func nonBlank(_ values: [String?]) -> Bool {
+        values.compactMap { $0 }.contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private static func postalAddressProblem(_ address: WirePostalAddress) -> String? {
+        nonBlank([
+            address.street, address.subLocality, address.city,
+            address.subAdministrativeArea, address.state, address.postalCode,
+            address.country, address.isoCountryCode,
+        ]) ? nil : WireErrorMessage.emptyPostalAddress
+    }
+
+    private static func socialProfileProblem(_ profile: WireSocialProfile) -> String? {
+        nonBlank([profile.service, profile.username, profile.url])
+            ? nil : WireErrorMessage.emptySocialProfile
+    }
+
+    private static func instantMessageProblem(_ address: WireInstantMessage) -> String? {
+        nonBlank([address.username]) ? nil : WireErrorMessage.emptyInstantMessage
+    }
+
+    private static func postalAddressOperationProblem(
+        _ operation: PostalAddressOperation
+    ) -> String? {
+        switch operation {
+        case .add(let address), .remove(let address):
+            return postalAddressProblem(address)
+        case .edit(let current, let replacement):
+            return postalAddressProblem(current) ?? postalAddressProblem(replacement)
+        }
+    }
+
+    private static func socialProfileOperationProblem(
+        _ operation: SocialProfileOperation
+    ) -> String? {
+        switch operation {
+        case .add(let profile), .remove(let profile):
+            return socialProfileProblem(profile)
+        case .edit(let current, let replacement):
+            return socialProfileProblem(current) ?? socialProfileProblem(replacement)
+        }
+    }
+
+    private static func instantMessageOperationProblem(
+        _ operation: InstantMessageOperation
+    ) -> String? {
+        switch operation {
+        case .add(let address), .remove(let address):
+            return instantMessageProblem(address)
+        case .edit(let current, let replacement):
+            return instantMessageProblem(current) ?? instantMessageProblem(replacement)
+        }
+    }
+
+    /// Convert through the same blank-to-nil projection contacts_get uses.
+    /// This is the canonical wire representation used for exact matching.
+    private static func postalAddress(
+        from wire: WirePostalAddress, preservingLabel: String? = nil
+    ) -> LabeledPostalAddress {
+        LabeledPostalAddress(
+            label: wire.label ?? preservingLabel ?? "",
+            value: PostalAddress(
+                street: wire.street,
+                subLocality: wire.subLocality ?? "",
+                city: wire.city,
+                subAdministrativeArea: wire.subAdministrativeArea ?? "",
+                state: wire.state,
+                postalCode: wire.postalCode,
+                country: wire.country,
+                isoCountryCode: wire.isoCountryCode ?? ""))
+    }
+
+    private static func canonicalPostalAddress(
+        _ wire: WirePostalAddress
+    ) -> WirePostalAddress {
+        WireMapping.postalAddress(postalAddress(from: wire))
+    }
+
+    private static func socialProfile(
+        from wire: WireSocialProfile,
+        preservingLabel: String? = nil,
+        preservingUserIdentifier: String = ""
+    ) -> LabeledSocialProfile {
+        LabeledSocialProfile(
+            label: wire.label ?? preservingLabel ?? "",
+            value: SocialProfile(
+                urlString: wire.url ?? "",
+                username: wire.username ?? "",
+                userIdentifier: preservingUserIdentifier,
+                service: wire.service ?? ""))
+    }
+
+    private static func canonicalSocialProfile(
+        _ wire: WireSocialProfile
+    ) -> WireSocialProfile {
+        WireMapping.socialProfile(socialProfile(from: wire))
+    }
+
+    private static func instantMessage(
+        from wire: WireInstantMessage, preservingLabel: String? = nil
+    ) -> LabeledInstantMessageAddress {
+        LabeledInstantMessageAddress(
+            label: wire.label ?? preservingLabel ?? "",
+            value: InstantMessageAddress(
+                username: wire.username, service: wire.service ?? ""))
+    }
+
+    private static func canonicalInstantMessage(
+        _ wire: WireInstantMessage
+    ) -> WireInstantMessage {
+        WireMapping.instantMessage(instantMessage(from: wire))
+    }
+
+    private static func exactStructuredMatchIndex<T: Equatable>(
+        needle: T, entries: [T], notFound: String, ambiguous: String
+    ) -> Result<Int, ListMatchFailure> {
+        let matches = entries.enumerated()
+            .filter { $0.element == needle }
+            .map(\.offset)
+        guard let first = matches.first else {
+            return .failure(ListMatchFailure(code: .notFound, message: notFound))
+        }
+        guard matches.count == 1 else {
+            return .failure(ListMatchFailure(code: .ambiguous, message: ambiguous))
+        }
+        return .success(first)
+    }
+
+    private func contactsEditPostalAddress(
+        helperId: String, messageId: String, contactId: String,
+        operation: PostalAddressOperation
+    ) async -> WireResponse {
+        if let problem = Self.postalAddressOperationProblem(operation) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        return await contactsEditStructuredEntry(
+            helperId: helperId, messageId: messageId, contactId: contactId,
+            auditFieldName: "postalAddresses"
+        ) { contact in
+            switch operation {
+            case .add(let address):
+                contact.postalAddresses.append(Self.postalAddress(from: address))
+            case .remove(let address):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalPostalAddress(address),
+                    entries: contact.postalAddresses.map(WireMapping.postalAddress),
+                    notFound: WireErrorMessage.noMatchingPostalAddress,
+                    ambiguous: WireErrorMessage.ambiguousPostalAddress)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index): contact.postalAddresses.remove(at: index)
+                }
+            case .edit(let current, let replacement):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalPostalAddress(current),
+                    entries: contact.postalAddresses.map(WireMapping.postalAddress),
+                    notFound: WireErrorMessage.noMatchingPostalAddress,
+                    ambiguous: WireErrorMessage.ambiguousPostalAddress)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index):
+                    let old = contact.postalAddresses[index]
+                    contact.postalAddresses[index] = Self.postalAddress(
+                        from: replacement, preservingLabel: old.label)
+                }
+            }
+            return nil
+        }
+    }
+
+    private func contactsEditSocialProfile(
+        helperId: String, messageId: String, contactId: String,
+        operation: SocialProfileOperation
+    ) async -> WireResponse {
+        if let problem = Self.socialProfileOperationProblem(operation) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        return await contactsEditStructuredEntry(
+            helperId: helperId, messageId: messageId, contactId: contactId,
+            auditFieldName: "socialProfiles"
+        ) { contact in
+            switch operation {
+            case .add(let profile):
+                contact.socialProfiles.append(Self.socialProfile(from: profile))
+            case .remove(let profile):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalSocialProfile(profile),
+                    entries: contact.socialProfiles.map(WireMapping.socialProfile),
+                    notFound: WireErrorMessage.noMatchingSocialProfile,
+                    ambiguous: WireErrorMessage.ambiguousSocialProfile)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index): contact.socialProfiles.remove(at: index)
+                }
+            case .edit(let current, let replacement):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalSocialProfile(current),
+                    entries: contact.socialProfiles.map(WireMapping.socialProfile),
+                    notFound: WireErrorMessage.noMatchingSocialProfile,
+                    ambiguous: WireErrorMessage.ambiguousSocialProfile)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index):
+                    let old = contact.socialProfiles[index]
+                    contact.socialProfiles[index] = Self.socialProfile(
+                        from: replacement,
+                        preservingLabel: old.label,
+                        preservingUserIdentifier: old.value.userIdentifier)
+                }
+            }
+            return nil
+        }
+    }
+
+    private func contactsEditInstantMessage(
+        helperId: String, messageId: String, contactId: String,
+        operation: InstantMessageOperation
+    ) async -> WireResponse {
+        if let problem = Self.instantMessageOperationProblem(operation) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        return await contactsEditStructuredEntry(
+            helperId: helperId, messageId: messageId, contactId: contactId,
+            auditFieldName: "instantMessages"
+        ) { contact in
+            switch operation {
+            case .add(let address):
+                contact.instantMessageAddresses.append(Self.instantMessage(from: address))
+            case .remove(let address):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalInstantMessage(address),
+                    entries: contact.instantMessageAddresses.map(WireMapping.instantMessage),
+                    notFound: WireErrorMessage.noMatchingInstantMessage,
+                    ambiguous: WireErrorMessage.ambiguousInstantMessage)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index): contact.instantMessageAddresses.remove(at: index)
+                }
+            case .edit(let current, let replacement):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalInstantMessage(current),
+                    entries: contact.instantMessageAddresses.map(WireMapping.instantMessage),
+                    notFound: WireErrorMessage.noMatchingInstantMessage,
+                    ambiguous: WireErrorMessage.ambiguousInstantMessage)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index):
+                    let old = contact.instantMessageAddresses[index]
+                    contact.instantMessageAddresses[index] = Self.instantMessage(
+                        from: replacement, preservingLabel: old.label)
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Shared fresh-fetch / single-flight / save / audit funnel for all
+    /// structured entry types. `mutation` changes at most one entry and
+    /// returns a typed match failure before save when it cannot do so safely.
+    private func contactsEditStructuredEntry(
+        helperId: String, messageId: String, contactId: String,
+        auditFieldName: String,
+        mutation: (inout Contact) -> ListMatchFailure?
+    ) async -> WireResponse {
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) { () -> WireResponse in
+                    guard let editable = try await contacts.editableContact(id: contact.contactID)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    var edited = editable
+                    if let failure = mutation(&edited) {
+                        return failure.response(helperId: helperId, messageId: messageId)
+                    }
+                    try await contacts.saveContact(edited, for: contact.contactID)
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? edited
+                    let isFavorite = await MainActor.run { contacts.isFavorite(fresh.contactID) }
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: nil, newValue: auditFieldName)
+                    return .contact(
+                        helperId: helperId, messageId: messageId,
+                        contact: WireMapping.contact(
+                            fresh, id: WireRecordID.contactID(for: fresh),
+                            isFavorite: isFavorite))
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
     }
 
     // MARK: - Confirmation-gated delete (fire-and-forget)

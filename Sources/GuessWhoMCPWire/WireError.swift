@@ -35,8 +35,7 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     /// unavailable, save failure). The message carries the re-read-before-
     /// retry guidance so a timeout-then-retry doesn't duplicate the write.
     case writeFailed
-    /// A match-based single-entry edit (contacts_edit_value)
-    /// found MORE THAN ONE entry with the given value, so applying it
+    /// A match-based single-entry edit found MORE THAN ONE exact entry, so applying it
     /// would guess which one the caller meant. Additive like `busy`:
     /// `invalidParams` would tell the agent its arguments are malformed
     /// (they aren't), and `notFound` would tell it to search again (the
@@ -149,10 +148,11 @@ public enum WireErrorMessage {
     /// contacts_update carried one of the single-entry-editable lists.
     public static let listArgumentNotAccepted =
         "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use contacts_add_value, contacts_edit_value, or contacts_delete_value with field phone, email, url, related_name, or date."
-    /// contacts_update carried a list that has no single-entry tools yet
-    /// (postal addresses, social profiles, instant messages).
+    /// contacts_update carried a structured list. It remains a hard
+    /// rejection: structured entries have dedicated one-at-a-time tools,
+    /// never a whole-list replacement path on an existing contact.
     public static let createOnlyListArgumentNotAccepted =
-        "contacts_update can't change postal addresses, social profiles, or instant messages. Those can currently only be provided when creating a contact with contacts_create."
+        "contacts_update can't replace postal-address, social-profile, or instant-message lists. Use the matching contacts_add, contacts_edit, or contacts_delete tool to change one entry at a time."
     public static let emptyValueArgument =
         "The value argument must not be empty."
     // Match-based single-entry edits: the 0-match answers per list.
@@ -179,6 +179,26 @@ public enum WireErrorMessage {
         "That contact has more than one related name with that exact value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
     public static let ambiguousDateValue =
         "That contact has more than one date with that value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    // Structured single-entry edits. Payload values never appear in these
+    // errors: all strings are fixed so a failure cannot leak contact data.
+    public static let emptyPostalAddress =
+        "A postal address must have at least one non-empty address field."
+    public static let emptySocialProfile =
+        "A social profile must have at least one non-empty service, username, or web address."
+    public static let emptyInstantMessage =
+        "An instant-message address must have a non-empty username."
+    public static let noMatchingPostalAddress =
+        "No postal address with that exact complete representation was found on that contact. Read the contact and copy the complete current address."
+    public static let noMatchingSocialProfile =
+        "No social profile with that exact complete representation was found on that contact. Read the contact and copy the complete current profile."
+    public static let noMatchingInstantMessage =
+        "No instant-message address with that exact complete representation was found on that contact. Read the contact and copy the complete current address."
+    public static let ambiguousPostalAddress =
+        "That contact has more than one postal address with that exact complete representation, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousSocialProfile =
+        "That contact has more than one social profile with that exact complete representation, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousInstantMessage =
+        "That contact has more than one instant-message address with that exact complete representation, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
     /// Confirmation-gated writes: nothing on screen to present the
     /// confirmation on.
     public static let confirmationUnavailable =
@@ -248,6 +268,11 @@ public enum WireErrorMessage {
             noRelatedNameWithThatValue, noDateWithThatValue,
             ambiguousPhoneValue, ambiguousEmailValue, ambiguousURLValue,
             ambiguousRelatedNameValue, ambiguousDateValue,
+            emptyPostalAddress, emptySocialProfile, emptyInstantMessage,
+            noMatchingPostalAddress, noMatchingSocialProfile,
+            noMatchingInstantMessage,
+            ambiguousPostalAddress, ambiguousSocialProfile,
+            ambiguousInstantMessage,
             contactFieldRejected, confirmationUnavailable, confirmationExpired,
             confirmationAlreadyPending,
             invalidLinkKindArgument, linkKindMismatch, linkPairUnsupported,

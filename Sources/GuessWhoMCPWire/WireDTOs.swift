@@ -63,9 +63,9 @@ public struct WireLabeledDate: Codable, Sendable, Equatable {
 }
 
 /// A labeled postal address. Carries the FULL address field set the
-/// system stores (not just the display subset) so an update that replaces
-/// the address list round-trips every subfield instead of dropping the
-/// ones a leaner DTO wouldn't name.
+/// system stores (not just the display subset) so create and dedicated
+/// single-entry edits round-trip every wire-visible subfield instead of
+/// dropping the ones a leaner DTO wouldn't name.
 public struct WirePostalAddress: Codable, Sendable, Equatable {
     public let label: String?
     public let street: String

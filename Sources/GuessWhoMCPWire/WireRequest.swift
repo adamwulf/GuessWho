@@ -65,6 +65,17 @@ public enum WireRequest: Codable, Sendable {
     case contactsAddValue(helperId: String, messageId: String, contactId: String, field: String, value: String, label: String?, idempotencyToken: String?)
     case contactsDeleteValue(helperId: String, messageId: String, contactId: String, field: String, value: String, idempotencyToken: String?)
     case contactsEditValue(helperId: String, messageId: String, contactId: String, field: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
+    // Structured entries use dedicated typed payloads. Delete/edit match
+    // the complete canonical entry; no case can carry a whole list.
+    case contactsAddPostalAddress(helperId: String, messageId: String, contactId: String, address: WirePostalAddress, idempotencyToken: String?)
+    case contactsEditPostalAddress(helperId: String, messageId: String, contactId: String, currentAddress: WirePostalAddress, newAddress: WirePostalAddress, idempotencyToken: String?)
+    case contactsDeletePostalAddress(helperId: String, messageId: String, contactId: String, address: WirePostalAddress, idempotencyToken: String?)
+    case contactsAddSocialProfile(helperId: String, messageId: String, contactId: String, profile: WireSocialProfile, idempotencyToken: String?)
+    case contactsEditSocialProfile(helperId: String, messageId: String, contactId: String, currentProfile: WireSocialProfile, newProfile: WireSocialProfile, idempotencyToken: String?)
+    case contactsDeleteSocialProfile(helperId: String, messageId: String, contactId: String, profile: WireSocialProfile, idempotencyToken: String?)
+    case contactsAddInstantMessage(helperId: String, messageId: String, contactId: String, instantMessage: WireInstantMessage, idempotencyToken: String?)
+    case contactsEditInstantMessage(helperId: String, messageId: String, contactId: String, currentInstantMessage: WireInstantMessage, newInstantMessage: WireInstantMessage, idempotencyToken: String?)
+    case contactsDeleteInstantMessage(helperId: String, messageId: String, contactId: String, instantMessage: WireInstantMessage, idempotencyToken: String?)
     case contactsAddNote(helperId: String, messageId: String, contactId: String, body: String, idempotencyToken: String?)
     case contactsEditNote(helperId: String, messageId: String, contactId: String, noteId: String, body: String, idempotencyToken: String?)
     case contactsDeleteNote(helperId: String, messageId: String, contactId: String, noteId: String, idempotencyToken: String?)
@@ -104,6 +115,15 @@ public enum WireRequest: Codable, Sendable {
         case .contactsAddValue: return .contactsAddValue
         case .contactsDeleteValue: return .contactsDeleteValue
         case .contactsEditValue: return .contactsEditValue
+        case .contactsAddPostalAddress: return .contactsAddPostalAddress
+        case .contactsEditPostalAddress: return .contactsEditPostalAddress
+        case .contactsDeletePostalAddress: return .contactsDeletePostalAddress
+        case .contactsAddSocialProfile: return .contactsAddSocialProfile
+        case .contactsEditSocialProfile: return .contactsEditSocialProfile
+        case .contactsDeleteSocialProfile: return .contactsDeleteSocialProfile
+        case .contactsAddInstantMessage: return .contactsAddInstantMessage
+        case .contactsEditInstantMessage: return .contactsEditInstantMessage
+        case .contactsDeleteInstantMessage: return .contactsDeleteInstantMessage
         case .contactsAddNote: return .contactsAddNote
         case .contactsEditNote: return .contactsEditNote
         case .contactsDeleteNote: return .contactsDeleteNote
@@ -133,6 +153,15 @@ public enum WireRequest: Codable, Sendable {
              .contactsAddValue(_, _, _, _, _, _, let token),
              .contactsDeleteValue(_, _, _, _, _, let token),
              .contactsEditValue(_, _, _, _, _, _, _, let token),
+             .contactsAddPostalAddress(_, _, _, _, let token),
+             .contactsEditPostalAddress(_, _, _, _, _, let token),
+             .contactsDeletePostalAddress(_, _, _, _, let token),
+             .contactsAddSocialProfile(_, _, _, _, let token),
+             .contactsEditSocialProfile(_, _, _, _, _, let token),
+             .contactsDeleteSocialProfile(_, _, _, _, let token),
+             .contactsAddInstantMessage(_, _, _, _, let token),
+             .contactsEditInstantMessage(_, _, _, _, _, let token),
+             .contactsDeleteInstantMessage(_, _, _, _, let token),
              .contactsAddNote(_, _, _, _, let token),
              .contactsEditNote(_, _, _, _, _, let token),
              .contactsDeleteNote(_, _, _, _, let token),
@@ -180,6 +209,15 @@ extension WireRequest: MCPRequestProtocol {
              .contactsAddValue(let helperId, _, _, _, _, _, _),
              .contactsDeleteValue(let helperId, _, _, _, _, _),
              .contactsEditValue(let helperId, _, _, _, _, _, _, _),
+             .contactsAddPostalAddress(let helperId, _, _, _, _),
+             .contactsEditPostalAddress(let helperId, _, _, _, _, _),
+             .contactsDeletePostalAddress(let helperId, _, _, _, _),
+             .contactsAddSocialProfile(let helperId, _, _, _, _),
+             .contactsEditSocialProfile(let helperId, _, _, _, _, _),
+             .contactsDeleteSocialProfile(let helperId, _, _, _, _),
+             .contactsAddInstantMessage(let helperId, _, _, _, _),
+             .contactsEditInstantMessage(let helperId, _, _, _, _, _),
+             .contactsDeleteInstantMessage(let helperId, _, _, _, _),
              .contactsAddNote(let helperId, _, _, _, _),
              .contactsEditNote(let helperId, _, _, _, _, _),
              .contactsDeleteNote(let helperId, _, _, _, _),
@@ -223,6 +261,15 @@ extension WireRequest: MCPRequestProtocol {
              .contactsAddValue(_, let messageId, _, _, _, _, _),
              .contactsDeleteValue(_, let messageId, _, _, _, _),
              .contactsEditValue(_, let messageId, _, _, _, _, _, _),
+             .contactsAddPostalAddress(_, let messageId, _, _, _),
+             .contactsEditPostalAddress(_, let messageId, _, _, _, _),
+             .contactsDeletePostalAddress(_, let messageId, _, _, _),
+             .contactsAddSocialProfile(_, let messageId, _, _, _),
+             .contactsEditSocialProfile(_, let messageId, _, _, _, _),
+             .contactsDeleteSocialProfile(_, let messageId, _, _, _),
+             .contactsAddInstantMessage(_, let messageId, _, _, _),
+             .contactsEditInstantMessage(_, let messageId, _, _, _, _),
+             .contactsDeleteInstantMessage(_, let messageId, _, _, _),
              .contactsAddNote(_, let messageId, _, _, _),
              .contactsEditNote(_, let messageId, _, _, _, _),
              .contactsDeleteNote(_, let messageId, _, _, _),
@@ -377,6 +424,63 @@ extension WireRequest: MCPRequestProtocol {
                 currentValue: try args.requiredString("currentValue"),
                 newValue: try args.requiredString("newValue"),
                 newLabel: try args.optionalString("newLabel"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddPostalAddress:
+            return .contactsAddPostalAddress(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                address: try args.requiredPostalAddress("address"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditPostalAddress:
+            return .contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                currentAddress: try args.requiredPostalAddress("currentAddress"),
+                newAddress: try args.requiredPostalAddress("newAddress"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeletePostalAddress:
+            return .contactsDeletePostalAddress(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                address: try args.requiredPostalAddress("address"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddSocialProfile:
+            return .contactsAddSocialProfile(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                profile: try args.requiredSocialProfile("profile"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditSocialProfile:
+            return .contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                currentProfile: try args.requiredSocialProfile("currentProfile"),
+                newProfile: try args.requiredSocialProfile("newProfile"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeleteSocialProfile:
+            return .contactsDeleteSocialProfile(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                profile: try args.requiredSocialProfile("profile"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddInstantMessage:
+            return .contactsAddInstantMessage(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                instantMessage: try args.requiredInstantMessage("instantMessage"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditInstantMessage:
+            return .contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                currentInstantMessage: try args.requiredInstantMessage("currentInstantMessage"),
+                newInstantMessage: try args.requiredInstantMessage("newInstantMessage"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeleteInstantMessage:
+            return .contactsDeleteInstantMessage(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                instantMessage: try args.requiredInstantMessage("instantMessage"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsDelete:
             return .contactsDelete(
@@ -645,9 +749,8 @@ private struct ToolArguments {
 
     /// The contacts_update field set — SCALARS ONLY (Phase 7). Any
     /// list-shaped argument is rejected LOUDLY with a pointer to the
-    /// dedicated single-entry tools (or to contacts_create, for the lists
-    /// that have none yet): a silently dropped list would let an agent
-    /// believe a bulk edit was saved.
+    /// dedicated single-entry tools: a silently dropped list would let an
+    /// agent believe a bulk edit was saved.
     func contactScalarFields() throws -> WireContactScalarFields {
         try rejectNoteArguments()
         for key in ["phoneNumbers", "emailAddresses", "urlAddresses", "relatedNames", "dates"]
@@ -692,6 +795,125 @@ private struct ToolArguments {
             }
             return object
         }
+    }
+
+    private func requiredObject(_ name: String) throws -> [String: Value] {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard case .object(let object) = value else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name, expected: "an object")
+        }
+        return object
+    }
+
+    private func rejectUnexpectedFields(
+        _ object: [String: Value], allowed: Set<String>, argument: String
+    ) throws {
+        guard object.keys.allSatisfy(allowed.contains) else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: argument,
+                expected: "an object containing only the documented fields")
+        }
+    }
+
+    private func requiredStringField(
+        _ object: [String: Value], key: String, argument: String,
+        allowEmpty: Bool = true
+    ) throws -> String {
+        guard let value = object[key], value != .null,
+              let string = value.stringValue,
+              allowEmpty || !string.isEmpty
+        else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: argument,
+                expected: "an object with a valid \(key) string")
+        }
+        return string
+    }
+
+    private func optionalStringField(
+        _ object: [String: Value], key: String, argument: String
+    ) throws -> String? {
+        guard let value = object[key], value != .null else { return nil }
+        guard let string = value.stringValue else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: argument,
+                expected: "an object whose \(key), when present, is a string")
+        }
+        return string
+    }
+
+    func requiredPostalAddress(_ name: String) throws -> WirePostalAddress {
+        let object = try requiredObject(name)
+        try rejectUnexpectedFields(
+            object,
+            allowed: [
+                "label", "street", "subLocality", "city", "subAdministrativeArea",
+                "state", "postalCode", "country", "isoCountryCode",
+            ],
+            argument: name)
+        let address = WirePostalAddress(
+            label: try optionalStringField(object, key: "label", argument: name),
+            street: try requiredStringField(object, key: "street", argument: name),
+            subLocality: try optionalStringField(object, key: "subLocality", argument: name),
+            city: try requiredStringField(object, key: "city", argument: name),
+            subAdministrativeArea: try optionalStringField(
+                object, key: "subAdministrativeArea", argument: name),
+            state: try requiredStringField(object, key: "state", argument: name),
+            postalCode: try requiredStringField(object, key: "postalCode", argument: name),
+            country: try requiredStringField(object, key: "country", argument: name),
+            isoCountryCode: try optionalStringField(
+                object, key: "isoCountryCode", argument: name))
+        guard [
+            address.street, address.subLocality ?? "", address.city,
+            address.subAdministrativeArea ?? "", address.state,
+            address.postalCode, address.country, address.isoCountryCode ?? "",
+        ].contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name,
+                expected: "an address with at least one non-empty address field")
+        }
+        return address
+    }
+
+    func requiredSocialProfile(_ name: String) throws -> WireSocialProfile {
+        let object = try requiredObject(name)
+        try rejectUnexpectedFields(
+            object, allowed: ["label", "service", "username", "url"],
+            argument: name)
+        let profile = WireSocialProfile(
+            label: try optionalStringField(object, key: "label", argument: name),
+            service: try optionalStringField(object, key: "service", argument: name),
+            username: try optionalStringField(object, key: "username", argument: name),
+            url: try optionalStringField(object, key: "url", argument: name))
+        guard [profile.service, profile.username, profile.url]
+            .compactMap({ $0 })
+            .contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name,
+                expected: "a profile with at least one non-empty service, username, or url")
+        }
+        return profile
+    }
+
+    func requiredInstantMessage(_ name: String) throws -> WireInstantMessage {
+        let object = try requiredObject(name)
+        try rejectUnexpectedFields(
+            object, allowed: ["label", "service", "username"], argument: name)
+        let username = try requiredStringField(
+            object, key: "username", argument: name, allowEmpty: false)
+        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name,
+                expected: "an instant-message address with a non-empty username")
+        }
+        return WireInstantMessage(
+            label: try optionalStringField(object, key: "label", argument: name),
+            service: try optionalStringField(object, key: "service", argument: name),
+            username: username)
     }
 
     private func stringField(_ object: [String: Value], _ key: String) -> String? {

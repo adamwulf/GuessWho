@@ -125,7 +125,7 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **34 tools total: 13 read and 21 write**.
+There are **43 tools total: 13 read and 30 write**.
 
 **Read (13):** `contacts_search`, `contacts_list`, `contacts_get`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
@@ -137,7 +137,7 @@ tools — they fold into `contacts_list` as the optional `favoritesOnly`
 and `groupId` filters (see below). `contacts_list_groups` stays: it lists
 the GROUPS themselves and is the source of `groupId` values.
 
-**Write (21):** the GuessWho-data writes — `contacts_add_note`,
+**Write (30):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
@@ -149,7 +149,9 @@ multi-value list is rejected toward the single-entry tools below), and
 **`contacts_delete`** — plus the three **single-entry list edit** verbs:
 `contacts_add_value`, `contacts_delete_value`, and `contacts_edit_value`.
 Each requires a real JSON-Schema `field` enum whose value is exactly one
-of `phone`, `email`, `url`, `related_name`, or `date`.
+of `phone`, `email`, `url`, `related_name`, or `date` — plus nine dedicated
+structured-entry tools: add/edit/delete for postal addresses, social
+profiles, and instant-message addresses.
 
 ### Listing the whole book (`contacts_list`)
 
@@ -230,15 +232,52 @@ editor and `contacts_update` use (the Apple note rides through
 byte-identical), failures mapped by `saveErrorCategory`, audited as
 edit-contact rows, echoing the updated full card.
 
-**Deferred (follow-up):** postal addresses, social profiles, and instant
-messages have **no single-entry tools yet** and are **not editable via
-`contacts_update` either** (its rejection names them create-only). Their
-entry identity spans several subfields (street+city+…, service+username
-+url), so a single-value exact match can't name one entry and the
-`(newValue, newLabel)` edit signature can't express their changes —
-forcing the match-based pattern onto them would be a broken design. They
-can only be provided at `contacts_create` until they get their own
-design pass.
+### Structured single-entry edits
+
+Postal addresses, social profiles, and instant-message addresses use
+dedicated tools because their identities span several fields and must remain
+typed objects — `contacts_add_value` keeps its five-value scalar enum, and no
+tool hides JSON inside a scalar string:
+
+- `contacts_add_postal_address(contactId, address)`,
+  `contacts_edit_postal_address(contactId, currentAddress, newAddress)`, and
+  `contacts_delete_postal_address(contactId, address)`.
+- `contacts_add_social_profile(contactId, profile)`,
+  `contacts_edit_social_profile(contactId, currentProfile, newProfile)`, and
+  `contacts_delete_social_profile(contactId, profile)`.
+- `contacts_add_instant_message(contactId, instantMessage)`,
+  `contacts_edit_instant_message(contactId, currentInstantMessage,
+  newInstantMessage)`, and `contacts_delete_instant_message(contactId,
+  instantMessage)`.
+
+Postal objects carry every `WirePostalAddress` field: `label`, `street`,
+`subLocality`, `city`, `subAdministrativeArea`, `state`, `postalCode`,
+`country`, and `isoCountryCode`. The five non-optional wire strings (`street`,
+`city`, `state`, `postalCode`, `country`) are required even when their value is
+the empty string, so copying an address from `contacts_get` is lossless. At
+least one address component must be non-empty. Social objects carry `label`,
+`service`, `username`, and `url`, with at least one of the latter three
+non-empty. Instant-message objects carry `label`, `service`, and a required,
+non-empty `username`.
+
+Delete and edit match the **complete canonical wire representation**, including
+the label and every wire-visible identity field. Empty optional strings and
+omitted optional strings canonicalize the same way `contacts_get` projects the
+stored entry. A partial match is never attempted: zero exact matches returns
+typed `notFound`; multiple exact matches returns typed `ambiguous`; neither
+saves anything. An edit replaces the one matched entry at its existing index.
+If the replacement's label is omitted, the matched label is preserved; an
+explicit empty label clears it. The system-only social-profile user identifier
+is not on the wire, is not used to guess between otherwise identical matches,
+and is preserved when the visible profile is edited.
+
+These tools use the same fresh `editableContact` / `saveContact` funnel,
+per-contact single-flight, permission and read-write gates, write budget,
+idempotency replay, fixed non-leaking errors, audit trail, identity-address
+carry-through, and Apple-note preservation as the scalar list tools.
+`contacts_update` still rejects all three structured arrays: it cannot perform
+whole-list replacement on an existing contact. `contacts_create` continues to
+accept initial arrays because a new card has no existing entries to clobber.
 
 ### Generic connections (`links_*`)
 

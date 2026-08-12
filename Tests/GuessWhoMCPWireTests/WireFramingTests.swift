@@ -167,11 +167,10 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        // 34 total after change #3 folded the standalone favorites and
-        // group-members reads into contacts_list filters (reads 15 → 13).
-        XCTAssertEqual(MCPTool.allCases.count, 34)
+        // Nine structured one-entry writes extend the prior 34-tool set.
+        XCTAssertEqual(MCPTool.allCases.count, 43)
         XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 13)
-        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 21)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 30)
     }
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {
@@ -228,8 +227,8 @@ final class WireRequestCreateTests: XCTestCase {
         }
     }
 
-    /// The lists with no single-entry tools yet get their own honest
-    /// rejection (create-only), not the "use the one-entry tools" pointer.
+    /// Structured lists keep their separate hard rejection. Their dedicated
+    /// tools accept one object, never an array replacement.
     func testUpdateRejectsCreateOnlyListArguments() {
         let entries: Value = .array([.object(["street": "1 Main St"])])
         for key in ["postalAddresses", "socialProfiles", "instantMessages"] {
@@ -364,6 +363,164 @@ final class WireRequestCreateTests: XCTestCase {
                     String(describing: error),
                     WireErrorMessage.invalidContactListField)
             }
+        }
+    }
+
+    // MARK: - Structured single-entry tool parsing
+
+    private var postalObject: Value {
+        .object([
+            "label": "home", "street": "1 Main St", "subLocality": "Downtown",
+            "city": "Austin", "subAdministrativeArea": "Travis", "state": "TX",
+            "postalCode": "78701", "country": "United States", "isoCountryCode": "US",
+        ])
+    }
+
+    private var socialObject: Value {
+        .object([
+            "label": "work", "service": "LinkedIn", "username": "jane-doe",
+            "url": "https://www.linkedin.com/in/jane-doe",
+        ])
+    }
+
+    private var instantObject: Value {
+        .object(["label": "mobile", "service": "Signal", "username": "+15550100"])
+    }
+
+    func testStructuredAddRequestsParseEveryPayloadField() throws {
+        let postal = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddPostalAddress.rawValue, [
+                "contactId": "contact", "address": postalObject,
+            ]))
+        guard case .contactsAddPostalAddress(_, _, _, let address, _) = postal else {
+            return XCTFail("wrong postal case")
+        }
+        XCTAssertEqual(address, WirePostalAddress(
+            label: "home", street: "1 Main St", subLocality: "Downtown",
+            city: "Austin", subAdministrativeArea: "Travis", state: "TX",
+            postalCode: "78701", country: "United States", isoCountryCode: "US"))
+
+        let social = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddSocialProfile.rawValue, [
+                "contactId": "contact", "profile": socialObject,
+            ]))
+        guard case .contactsAddSocialProfile(_, _, _, let profile, _) = social else {
+            return XCTFail("wrong social case")
+        }
+        XCTAssertEqual(profile, WireSocialProfile(
+            label: "work", service: "LinkedIn", username: "jane-doe",
+            url: "https://www.linkedin.com/in/jane-doe"))
+
+        let instant = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddInstantMessage.rawValue, [
+                "contactId": "contact", "instantMessage": instantObject,
+            ]))
+        guard case .contactsAddInstantMessage(_, _, _, let address, _) = instant else {
+            return XCTFail("wrong instant-message case")
+        }
+        XCTAssertEqual(address, WireInstantMessage(
+            label: "mobile", service: "Signal", username: "+15550100"))
+    }
+
+    func testStructuredEditAndDeleteRequestsParseTypedObjects() throws {
+        let postalEdit = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsEditPostalAddress.rawValue, [
+                "contactId": "contact", "currentAddress": postalObject,
+                "newAddress": postalObject,
+            ]))
+        guard case .contactsEditPostalAddress(_, _, _, let current, let replacement, _) = postalEdit else {
+            return XCTFail("wrong postal edit case")
+        }
+        XCTAssertEqual(current, replacement)
+
+        let socialDelete = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsDeleteSocialProfile.rawValue, [
+                "contactId": "contact", "profile": socialObject,
+            ]))
+        guard case .contactsDeleteSocialProfile(_, _, _, let profile, _) = socialDelete else {
+            return XCTFail("wrong social delete case")
+        }
+        XCTAssertEqual(profile.username, "jane-doe")
+
+        let instantEdit = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsEditInstantMessage.rawValue, [
+                "contactId": "contact", "currentInstantMessage": instantObject,
+                "newInstantMessage": instantObject,
+            ]))
+        guard case .contactsEditInstantMessage(_, _, _, let currentIM, let newIM, _) = instantEdit else {
+            return XCTFail("wrong instant-message edit case")
+        }
+        XCTAssertEqual(currentIM, newIM)
+    }
+
+    func testMalformedStructuredPayloadsAreRejected() {
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddPostalAddress.rawValue, [
+                "contactId": "contact", "address": "not-an-object",
+            ])))
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddPostalAddress.rawValue, [
+                "contactId": "contact",
+                "address": .object([
+                    "street": "1 Main", "city": "Austin", "state": "TX",
+                    "postalCode": 78701, "country": "US",
+                ]),
+            ])))
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddSocialProfile.rawValue, [
+                "contactId": "contact", "profile": .object(["label": "only"]),
+            ])))
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddInstantMessage.rawValue, [
+                "contactId": "contact",
+                "instantMessage": .object(["service": "Signal"]),
+            ])))
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsAddSocialProfile.rawValue, [
+                "contactId": "contact",
+                "profile": .object([
+                    "service": "LinkedIn", "usernmae": "misspelled",
+                ]),
+            ])))
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.contactsEditSocialProfile.rawValue, [
+                "contactId": "contact", "currentProfile": socialObject,
+            ])))
+    }
+
+    func testStructuredToolSchemasContainObjectsAndNeverArrays() {
+        let tools: [MCPTool] = [
+            .contactsAddPostalAddress, .contactsEditPostalAddress,
+            .contactsDeletePostalAddress, .contactsAddSocialProfile,
+            .contactsEditSocialProfile, .contactsDeleteSocialProfile,
+            .contactsAddInstantMessage, .contactsEditInstantMessage,
+            .contactsDeleteInstantMessage,
+        ]
+        for tool in tools {
+            guard case .object(let schema) = tool.metadata.inputSchema,
+                  case .object(let properties) = schema["properties"]
+            else { return XCTFail("missing schema for \(tool.rawValue)") }
+            XCTAssertFalse(properties.values.contains { value in
+                guard case .object(let property) = value else { return false }
+                return property["type"]?.stringValue == "array"
+            })
+            XCTAssertTrue(properties.values.contains { value in
+                guard case .object(let property) = value else { return false }
+                return property["type"]?.stringValue == "object"
+                    && property["additionalProperties"]?.boolValue == false
+            })
         }
     }
 

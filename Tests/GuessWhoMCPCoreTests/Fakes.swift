@@ -389,6 +389,10 @@ final class FakeContactSource: MCPContactSource {
     /// (one-shot) — the 134092-style store-rejection / revoked-access
     /// simulation.
     var nextContactStoreError: Error?
+    /// A one-shot error specifically at save time, after editableContact
+    /// succeeded. Structured-entry tests use this to prove an in-memory
+    /// mutation is not published when the actual save fails.
+    var nextSaveContactError: Error?
     private(set) var deletedContactLocalIDs: [String] = []
 
     private func takeContactStoreError() throws {
@@ -405,6 +409,10 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func saveContact(_ edited: Contact, for id: ContactID) async throws {
+        if let error = nextSaveContactError {
+            nextSaveContactError = nil
+            throw error
+        }
         try takeContactStoreError()
         guard let index = contacts.firstIndex(where: {
             $0.contactID.restorationToken.localID == edited.contactID.restorationToken.localID

@@ -162,6 +162,67 @@ final class WriteEchoSecurityTests: XCTestCase {
             contactId: jane, field: "url", value: "guesswho://contact/\(Sentinels.guessWhoUUID)",
             label: nil, idempotencyToken: nil))
 
+        // Structured single-entry contact lists: every new write tool gets a
+        // success echo scanned by the same exclusion/sentinel assertions.
+        let postal = WirePostalAddress(
+            label: "home", street: "1 Main St", subLocality: "Downtown",
+            city: "Austin", subAdministrativeArea: "Travis", state: "TX",
+            postalCode: "78701", country: "United States", isoCountryCode: "US")
+        let postal2 = WirePostalAddress(
+            label: nil, street: "2 Main St", subLocality: "Downtown",
+            city: "Austin", subAdministrativeArea: "Travis", state: "TX",
+            postalCode: "78701", country: "United States", isoCountryCode: "US")
+        _ = await run(.contactsAddPostalAddress(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, address: postal, idempotencyToken: nil))
+        _ = await run(.contactsEditPostalAddress(
+            helperId: helper, messageId: TestMessageID.next(), contactId: jane,
+            currentAddress: postal, newAddress: postal2, idempotencyToken: nil))
+        _ = await run(.contactsDeletePostalAddress(
+            helperId: helper, messageId: TestMessageID.next(), contactId: jane,
+            address: WirePostalAddress(
+                label: "home", street: postal2.street, subLocality: postal2.subLocality,
+                city: postal2.city, subAdministrativeArea: postal2.subAdministrativeArea,
+                state: postal2.state, postalCode: postal2.postalCode,
+                country: postal2.country, isoCountryCode: postal2.isoCountryCode),
+            idempotencyToken: nil))
+
+        let social = WireSocialProfile(
+            label: "work", service: "LinkedIn", username: "echo-user",
+            url: "https://example.com/echo-user")
+        let social2 = WireSocialProfile(
+            label: nil, service: "LinkedIn", username: "echo-user-2",
+            url: "https://example.com/echo-user-2")
+        _ = await run(.contactsAddSocialProfile(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, profile: social, idempotencyToken: nil))
+        _ = await run(.contactsEditSocialProfile(
+            helperId: helper, messageId: TestMessageID.next(), contactId: jane,
+            currentProfile: social, newProfile: social2, idempotencyToken: nil))
+        _ = await run(.contactsDeleteSocialProfile(
+            helperId: helper, messageId: TestMessageID.next(), contactId: jane,
+            profile: WireSocialProfile(
+                label: "work", service: social2.service,
+                username: social2.username, url: social2.url),
+            idempotencyToken: nil))
+
+        let instant = WireInstantMessage(
+            label: "work", service: "Matrix", username: "@echo:example.org")
+        let instant2 = WireInstantMessage(
+            label: nil, service: "Matrix", username: "@echo2:example.org")
+        _ = await run(.contactsAddInstantMessage(
+            helperId: helper, messageId: TestMessageID.next(),
+            contactId: jane, instantMessage: instant, idempotencyToken: nil))
+        _ = await run(.contactsEditInstantMessage(
+            helperId: helper, messageId: TestMessageID.next(), contactId: jane,
+            currentInstantMessage: instant, newInstantMessage: instant2,
+            idempotencyToken: nil))
+        _ = await run(.contactsDeleteInstantMessage(
+            helperId: helper, messageId: TestMessageID.next(), contactId: jane,
+            instantMessage: WireInstantMessage(
+                label: "work", service: instant2.service, username: instant2.username),
+            idempotencyToken: nil))
+
         // Contact-record writes (Revision 2): create, patch, failed save,
         // and a user-confirmed delete — echo and error outputs all scanned.
         var createFields = WireContactFields()
