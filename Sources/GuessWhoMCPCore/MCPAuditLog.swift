@@ -21,6 +21,7 @@ public struct MCPAuditEntry: Codable, Sendable {
         // Contact-record writes (Revision 2). `deleteContact` is only ever
         // recorded AFTER the user approved the in-app confirmation.
         case createContact, editContact, deleteContact
+        case renameDepartment
     }
 
     public enum SubjectKind: String, Codable, Sendable {

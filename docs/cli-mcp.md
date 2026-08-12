@@ -125,11 +125,13 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **43 tools total: 13 read and 30 write**.
+There are **47 tools total: 16 read and 31 write**.
 
-**Read (13):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (16):** `contacts_search`, `contacts_list`, `contacts_get`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
-`contacts_list_groups`, `events_list`, `events_get`, `events_list_tags`,
+`contacts_list_groups`, `organizations_list_members`,
+`organizations_list_departments`, `organizations_list_department_members`,
+`events_list`, `events_get`, `events_list_tags`,
 `guides_list`, `guides_get`, `places_list`, `links_list`. (Plus
 `guesswho_status`, served by the relay itself when the app is unreachable
 / to re-check.) Favorites and group-membership are no longer their own
@@ -137,7 +139,7 @@ tools — they fold into `contacts_list` as the optional `favoritesOnly`
 and `groupId` filters (see below). `contacts_list_groups` stays: it lists
 the GROUPS themselves and is the source of `groupId` values.
 
-**Write (30):** the GuessWho-data writes — `contacts_add_note`,
+**Write (31):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
@@ -146,12 +148,15 @@ the GROUPS themselves and is the source of `groupId` values.
 editor: **`contacts_create`**, **`contacts_update`** (**scalars-only**
 PATCH since Phase 7: only passed single-value fields change; every
 multi-value list is rejected toward the single-entry tools below), and
-**`contacts_delete`** — plus the three **single-entry list edit** verbs:
+**`contacts_delete`** — plus the three **single-entry list edit** verbs
 `contacts_add_value`, `contacts_delete_value`, and `contacts_edit_value`.
-Each requires a real JSON-Schema `field` enum whose value is exactly one
-of `phone`, `email`, `url`, `related_name`, or `date` — plus nine dedicated
-structured-entry tools: add/edit/delete for postal addresses, social
-profiles, and instant-message addresses.
+Each list-edit verb requires a real JSON-Schema `field` enum whose value is
+exactly one of `phone`, `email`, `url`, `related_name`, or `date`. Nine more
+dedicated structured-entry tools add/edit/delete postal addresses, social
+profiles, and instant-message addresses. Finally,
+`organizations_rename_department` renames one department across an
+organization's matching members through the Contacts repository's user-level
+operation.
 
 ### Listing the whole book (`contacts_list`)
 
@@ -179,6 +184,45 @@ contact set is unchanged. Every result — favorites included — runs through
 this one sort. Contacts changing between pages is best-effort, like every
 list read; the standard `limit` (default 50, max 200) and the
 response-size cap with the typed too-large error apply.
+
+### Organization membership and departments
+
+Organizations are ordinary contact records whose kind is `organization`.
+All four `organizations_*` tools take an `organizationId` from a contact
+result and resolve it through the normal contact resolver. An unknown id is
+`notFound`; an id that resolves to a person is the distinct typed
+`kindMismatch` error and never produces an empty or misleading organization
+result.
+
+`organizations_list_members` returns the people associated with the
+organization by `ContactsRepository.contactsAssociated(with:)`.
+`organizations_list_departments` returns the repository's trimmed,
+case-insensitively de-duplicated department strings. Both lists use a stable
+total order and the standard paging defaults and caps. Member rows are the
+same `WireContactSummary` used by contact list/search, so none of the four
+excluded contact fields can cross the wire.
+
+`organizations_list_department_members` delegates department matching to
+`ContactsRepository.contactsAssociated(with:inDepartment:)`, whose matching
+is case-insensitive and ignores surrounding spaces. Because departments are
+derived from those members, an empty match means the named department is not
+currently present and answers typed `notFound` rather than a successful empty
+page.
+
+`organizations_rename_department(organizationId, oldName, newName,
+idempotencyToken?)` is a write and calls
+`ContactsRepository.renameDepartment(from:to:in:)` exactly once for the
+user-level operation; the dispatcher does not rewrite contact fields itself.
+Names are trimmed and may not be empty. An exactly unchanged name after
+trimming is `invalidParams`, while a capitalization-only rename is allowed;
+department lookup remains case-insensitive. A missing old department is
+`notFound`. Success returns `{ "affectedCount": N }`, using the count reported
+by the repository. Contact permission, read-write access, the global write
+budget, per-member write serialization, idempotency replay, audit logging, and
+the normal response cap all apply. A Contacts save can fail after earlier
+members were already saved; that is reported as the normal typed save failure
+with re-read-before-retry guidance, never as success or as an assumed zero
+affected count. Error text is fixed and never includes a contact's local id.
 
 ### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_delete_value`, Phase 7)
 

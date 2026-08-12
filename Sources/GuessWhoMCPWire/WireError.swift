@@ -13,13 +13,16 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     case permissionDenied
     case readOnly
     case tooLarge
-    /// The id doesn't resolve to a live record — unknown, out of date
-    /// (the record changed or was removed), or of the wrong kind. Since
+    /// The id doesn't resolve to a live record — unknown or out of date
+    /// (the record changed or was removed). Since
     /// Revision 2 the wire id is the record's own durable id, so there is
     /// no separate per-run stale-reference state: every unresolvable id is
     /// `notFound`, with guidance to search/list again.
     case notFound
     case invalidParams
+    /// The id resolves, but the record is not the kind required by the
+    /// called tool (for example a person id passed to an organization tool).
+    case kindMismatch
     /// Rate-limit rejection (search / global budgets). Additive to the
     /// plan's taxonomy: the rate limit needs an honest code of its own —
     /// mislabeling it `invalidParams` would tell the agent to change its
@@ -71,6 +74,8 @@ public enum WireErrorMessage {
         "No matching event was found for that id. Run events_list again to get current ids."
     public static let notFoundGroup =
         "No matching group was found for that id. Run contacts_list_groups again to get current ids."
+    public static let notFoundDepartment =
+        "No matching department was found in that organization. Run organizations_list_departments again to see its current departments."
     public static let notFoundGuide =
         "No matching guide was found for that id. Run guides_list again to get current ids."
     public static let notFoundNote =
@@ -122,6 +127,12 @@ public enum WireErrorMessage {
     /// filter may be omitted).
     public static let invalidKindFilterArgument =
         "The kind argument must be \"person\" or \"organization\". Omit it to list both."
+    public static let organizationKindMismatch =
+        "That id belongs to a person, not an organization. Use an id whose kind is organization."
+    public static let emptyDepartmentName =
+        "Department names must not be empty."
+    public static let unchangedDepartmentName =
+        "The new department name must differ from the current name. A capitalization-only change is allowed."
     public static let updateNeedsAField =
         "Pass at least one field to change."
     public static let invalidCalendarDateValue =
@@ -249,7 +260,7 @@ public enum WireErrorMessage {
         [
             notRunning, disabled, permissionDeniedContacts, permissionDeniedEvents,
             readOnly, tooLarge, busy,
-            notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide,
+            notFoundContact, notFoundEvent, notFoundGroup, notFoundDepartment, notFoundGuide,
             noHostStatus,
             hostNotReady, timedOut,
             notFoundNote, notFoundField, notFoundTag, notFoundPlace,
@@ -259,6 +270,7 @@ public enum WireErrorMessage {
             invalidDateFieldValue, invalidCheckboxFieldValue,
             reorderMustCoverEveryPlace,
             contactNeedsAName, invalidKindArgument, invalidKindFilterArgument,
+            organizationKindMismatch, emptyDepartmentName, unchangedDepartmentName,
             updateNeedsAField,
             invalidCalendarDateValue,
             reservedWebAddress, contactNoteNotAccepted,
@@ -455,6 +467,7 @@ public enum AgentActivityStrings {
     public static let createdContact = "Added the contact %@"
     public static let editedContact = "Edited the contact %@"
     public static let deletedContact = "Deleted the contact %@ (approved by you)"
+    public static let renamedDepartment = "Renamed a department in %@"
     /// Fallback when the entry's display-name snapshot is empty.
     public static let unknownSubject = "an item"
 
@@ -467,7 +480,7 @@ public enum AgentActivityStrings {
             markedFavorite, clearedFavorite,
             addedTag, editedTag, deletedTag,
             createdGuide, deletedGuide, reorderedPlaces, deletedPlace,
-            createdContact, editedContact, deletedContact,
+            createdContact, editedContact, deletedContact, renamedDepartment,
             unknownSubject,
         ]
     }

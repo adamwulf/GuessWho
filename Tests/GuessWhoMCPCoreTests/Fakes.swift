@@ -41,6 +41,10 @@ final class FakeContactSource: MCPContactSource {
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
     var favoriteEffectiveIDs: Set<String> = []
+    private(set) var associatedMembersReadCount = 0
+    private(set) var departmentsReadCount = 0
+    private(set) var departmentMembersReadCount = 0
+    private(set) var renameDepartmentCallCount = 0
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
@@ -184,6 +188,43 @@ final class FakeContactSource: MCPContactSource {
 
     func members(ofGroup groupLocalID: String) async -> [Contact] {
         membersByGroup[groupLocalID] ?? []
+    }
+
+    func contactsAssociated(with organization: Contact) -> [Contact] {
+        associatedMembersReadCount += 1
+        let needle = organization.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contacts
+            .filter {
+                $0.contactType == .person &&
+                    $0.organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .lowercased() == needle
+            }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+    }
+
+    func departments(in organization: Contact) -> [String] {
+        departmentsReadCount += 1
+        var seen: Set<String> = []
+        return contactsAssociated(with: organization)
+            .compactMap { contact -> String? in
+                let name = contact.departmentName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { return nil }
+                return name
+            }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact] {
+        departmentMembersReadCount += 1
+        let needle = department.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return contactsAssociated(with: organization).filter {
+            $0.departmentName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+        }
     }
 
     // MARK: Writes
@@ -393,6 +434,11 @@ final class FakeContactSource: MCPContactSource {
     /// succeeded. Structured-entry tests use this to prove an in-memory
     /// mutation is not published when the actual save fails.
     var nextSaveContactError: Error?
+    var nextRenameDepartmentError: Error?
+    /// If set with `nextRenameDepartmentError`, throw after this many
+    /// matching contact cards have already changed to simulate the live
+    /// repository's honest partial-save failure contract.
+    var renameDepartmentFailureAfterUpdates: Int?
     private(set) var deletedContactLocalIDs: [String] = []
 
     private func takeContactStoreError() throws {
@@ -466,6 +512,31 @@ final class FakeContactSource: MCPContactSource {
         deletedContactLocalIDs.append(localID)
         contacts.remove(at: index)
         return true
+    }
+
+    func renameDepartment(
+        from oldName: String, to newName: String, in organization: Contact
+    ) async throws -> Int {
+        renameDepartmentCallCount += 1
+        let matches = contactsAssociated(with: organization, inDepartment: oldName)
+        let trimmedNew = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        var updated = 0
+        for match in matches {
+            if let error = nextRenameDepartmentError,
+               renameDepartmentFailureAfterUpdates == nil ||
+                updated == renameDepartmentFailureAfterUpdates {
+                nextRenameDepartmentError = nil
+                renameDepartmentFailureAfterUpdates = nil
+                throw error
+            }
+            guard let index = contacts.firstIndex(where: {
+                $0.contactID.restorationToken.localID ==
+                    match.contactID.restorationToken.localID
+            }) else { continue }
+            contacts[index].departmentName = trimmedNew
+            updated += 1
+        }
+        return updated
     }
 }
 

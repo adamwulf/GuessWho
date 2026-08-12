@@ -24,6 +24,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
     case contactsListGroups = "contacts_list_groups"
+    case organizationsListMembers = "organizations_list_members"
+    case organizationsListDepartments = "organizations_list_departments"
+    case organizationsListDepartmentMembers = "organizations_list_department_members"
     case eventsList = "events_list"
     case eventsGet = "events_get"
     case eventsListTags = "events_list_tags"
@@ -67,6 +70,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsSetCustomField = "contacts_set_custom_field"
     case contactsDeleteCustomField = "contacts_delete_custom_field"
     case contactsSetFavorite = "contacts_set_favorite"
+    case organizationsRenameDepartment = "organizations_rename_department"
     case eventsAddTag = "events_add_tag"
     case eventsEditTag = "events_edit_tag"
     case eventsDeleteTag = "events_delete_tag"
@@ -96,6 +100,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
+             .organizationsListMembers, .organizationsListDepartments,
+             .organizationsListDepartmentMembers,
              .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
              .contactsAddPostalAddress, .contactsEditPostalAddress,
@@ -106,7 +112,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsSetFavorite:
+             .contactsSetFavorite, .organizationsRenameDepartment:
             return .contacts
         case .eventsList, .eventsGet, .eventsListTags,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag:
@@ -131,6 +137,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
+             .organizationsListMembers, .organizationsListDepartments,
+             .organizationsListDepartmentMembers,
              .eventsList, .eventsGet, .eventsListTags,
              .guidesList, .guidesGet, .placesList, .linksList:
             return false
@@ -144,7 +152,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsSetFavorite,
+             .contactsSetFavorite, .organizationsRenameDepartment,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -174,6 +182,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
     /// agent gets them from search/list results and hands them back.
     private static let contactIdDoc =
         "A contact id — from contacts_search, contacts_list, or the otherId of a links_list row whose kind is person or organization. Ids can go out of date; if a call reports that, search again for a fresh one."
+    private static let organizationIdDoc =
+        "An organization contact id — from contacts_search or contacts_list where kind is organization, or the otherId of a links_list row whose kind is organization."
     private static let limitDoc =
         "Maximum number of items to return in one page (default 50, max 200)."
     private static let cursorDoc =
@@ -535,6 +545,28 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List the user's contact groups.",
                 inputSchema: Self.schema(Self.pagingProperties))
+        case .organizationsListMembers:
+            var props = Self.pagingProperties
+            props["organizationId"] = Self.string(Self.organizationIdDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the people whose organization field matches an organization contact. Returns a page ordered by name.",
+                inputSchema: Self.schema(props, required: ["organizationId"]))
+        case .organizationsListDepartments:
+            var props = Self.pagingProperties
+            props["organizationId"] = Self.string(Self.organizationIdDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the distinct departments represented by an organization's members, ordered by name.",
+                inputSchema: Self.schema(props, required: ["organizationId"]))
+        case .organizationsListDepartmentMembers:
+            var props = Self.pagingProperties
+            props["organizationId"] = Self.string(Self.organizationIdDoc)
+            props["department"] = Self.string("The department name, as returned by organizations_list_departments. Matching ignores capitalization and surrounding spaces.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the people in one of an organization's departments. Reports notFound if that department is not present on the organization.",
+                inputSchema: Self.schema(props, required: ["organizationId", "department"]))
         case .eventsList:
             var props = Self.pagingProperties
             props["startDate"] = Self.string("Start of the date window, ISO 8601 (for example 2026-07-01T00:00:00Z).")
@@ -716,6 +748,16 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     ],
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["contactId", "favorite"]))
+        case .organizationsRenameDepartment:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Rename a department across every matching member of an organization. Matching ignores capitalization and surrounding spaces; a capitalization-only rename is allowed. Returns the number of contact cards changed.",
+                inputSchema: Self.schema([
+                    "organizationId": Self.string(Self.organizationIdDoc),
+                    "oldName": Self.string("The current department name, as returned by organizations_list_departments."),
+                    "newName": Self.string("The new department name. It must not be empty or exactly the same as oldName after surrounding spaces are removed."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["organizationId", "oldName", "newName"]))
         case .eventsAddTag:
             return ToolMetadata(
                 name: rawValue,

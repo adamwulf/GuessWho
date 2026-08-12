@@ -20,6 +20,7 @@ public enum WireResponse: Codable, Sendable {
     case notePage(helperId: String, messageId: String, page: WirePage<WireNote>)
     case customFieldPage(helperId: String, messageId: String, page: WirePage<WireCustomField>)
     case groupPage(helperId: String, messageId: String, page: WirePage<WireGroup>)
+    case departmentPage(helperId: String, messageId: String, page: WirePage<String>)
     case eventPage(helperId: String, messageId: String, page: WirePage<WireEventSummary>)
     case event(helperId: String, messageId: String, event: WireEvent)
     case tagPage(helperId: String, messageId: String, page: WirePage<WireTag>)
@@ -38,6 +39,7 @@ public enum WireResponse: Codable, Sendable {
     case link(helperId: String, messageId: String, link: WireLink)
     case tag(helperId: String, messageId: String, tag: WireTag)
     case acknowledged(helperId: String, messageId: String, message: String)
+    case departmentRename(helperId: String, messageId: String, result: WireDepartmentRenameResult)
 }
 
 extension WireResponse: MCPResponseProtocol {
@@ -51,6 +53,7 @@ extension WireResponse: MCPResponseProtocol {
              .notePage(let helperId, _, _),
              .customFieldPage(let helperId, _, _),
              .groupPage(let helperId, _, _),
+             .departmentPage(let helperId, _, _),
              .eventPage(let helperId, _, _),
              .event(let helperId, _, _),
              .tagPage(let helperId, _, _),
@@ -62,7 +65,8 @@ extension WireResponse: MCPResponseProtocol {
              .customField(let helperId, _, _),
              .link(let helperId, _, _),
              .tag(let helperId, _, _),
-             .acknowledged(let helperId, _, _):
+             .acknowledged(let helperId, _, _),
+             .departmentRename(let helperId, _, _):
             return helperId
         }
     }
@@ -77,6 +81,7 @@ extension WireResponse: MCPResponseProtocol {
              .notePage(_, let messageId, _),
              .customFieldPage(_, let messageId, _),
              .groupPage(_, let messageId, _),
+             .departmentPage(_, let messageId, _),
              .eventPage(_, let messageId, _),
              .event(_, let messageId, _),
              .tagPage(_, let messageId, _),
@@ -88,7 +93,8 @@ extension WireResponse: MCPResponseProtocol {
              .customField(_, let messageId, _),
              .link(_, let messageId, _),
              .tag(_, let messageId, _),
-             .acknowledged(_, let messageId, _):
+             .acknowledged(_, let messageId, _),
+             .departmentRename(_, let messageId, _):
             return messageId
         }
     }
@@ -115,6 +121,8 @@ extension WireResponse: MCPResponseProtocol {
             return .customFieldPage(helperId: helperId, messageId: messageId, page: page)
         case .groupPage(_, _, let page):
             return .groupPage(helperId: helperId, messageId: messageId, page: page)
+        case .departmentPage(_, _, let page):
+            return .departmentPage(helperId: helperId, messageId: messageId, page: page)
         case .eventPage(_, _, let page):
             return .eventPage(helperId: helperId, messageId: messageId, page: page)
         case .event(_, _, let event):
@@ -139,6 +147,8 @@ extension WireResponse: MCPResponseProtocol {
             return .tag(helperId: helperId, messageId: messageId, tag: tag)
         case .acknowledged(_, _, let message):
             return .acknowledged(helperId: helperId, messageId: messageId, message: message)
+        case .departmentRename(_, _, let result):
+            return .departmentRename(helperId: helperId, messageId: messageId, result: result)
         }
     }
 
@@ -170,6 +180,8 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(page)
         case .groupPage(_, _, let page):
             return Self.jsonResult(page)
+        case .departmentPage(_, _, let page):
+            return Self.jsonResult(page)
         case .eventPage(_, _, let page):
             return Self.jsonResult(page)
         case .event(_, _, let event):
@@ -194,6 +206,8 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(tag)
         case .acknowledged(_, _, let message):
             return MCP.CallTool.Result(content: [.text(message)], isError: false)
+        case .departmentRename(_, _, let result):
+            return Self.jsonResult(result)
         }
     }
 

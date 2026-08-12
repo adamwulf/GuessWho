@@ -195,6 +195,21 @@ public actor ToolDispatcher {
         case .contactsListGroups(_, _, let limit, let cursor):
             response = await contactsListGroups(
                 helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
+        case .organizationsListMembers(_, _, let organizationId, let limit, let cursor):
+            response = await organizationsListMembers(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, limit: limit, cursor: cursor)
+        case .organizationsListDepartments(_, _, let organizationId, let limit, let cursor):
+            response = await organizationsListDepartments(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, limit: limit, cursor: cursor)
+        case .organizationsListDepartmentMembers(
+            _, _, let organizationId, let department, let limit, let cursor
+        ):
+            response = await organizationsListDepartmentMembers(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, department: department,
+                limit: limit, cursor: cursor)
         case .eventsList(_, _, let startDate, let endDate, let limit, let cursor):
             response = await eventsList(
                 helperId: helperId, messageId: messageId,
@@ -231,7 +246,7 @@ public actor ToolDispatcher {
              .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsSetFavorite,
+             .contactsSetFavorite, .organizationsRenameDepartment,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -508,6 +523,106 @@ public actor ToolDispatcher {
             page: WirePage(items: items, nextCursor: nextCursor))
     }
 
+    // MARK: - Organization tools
+
+    private func organizationsListMembers(
+        helperId: String, messageId: String, organizationId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let members = await MainActor.run {
+                contacts.contactsAssociated(with: organization)
+            }
+            return contactSummaryPage(
+                members, bounds: page, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func organizationsListDepartments(
+        helperId: String, messageId: String, organizationId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let fetched = await MainActor.run { contacts.departments(in: organization) }
+            // The repository owns extraction, trimming, de-duplication, and
+            // matching semantics. This final total sort only makes paging
+            // independent of locale/cache incidental ordering.
+            let ordered = fetched.sorted { lhs, rhs in
+                let foldedLHS = lhs.lowercased()
+                let foldedRHS = rhs.lowercased()
+                if foldedLHS != foldedRHS { return foldedLHS < foldedRHS }
+                return lhs < rhs
+            }
+            let (slice, nextCursor) = page.slice(ordered)
+            return .departmentPage(
+                helperId: helperId, messageId: messageId,
+                page: WirePage(items: slice, nextCursor: nextCursor))
+        }
+    }
+
+    private func organizationsListDepartmentMembers(
+        helperId: String, messageId: String, organizationId: String,
+        department: String, limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        guard !department.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyDepartmentName)
+        }
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let members = await MainActor.run {
+                contacts.contactsAssociated(with: organization, inDepartment: department)
+            }
+            guard !members.isEmpty else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundDepartment)
+            }
+            return contactSummaryPage(
+                members, bounds: page, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    /// Stable total ordering for organization-derived contact pages. The
+    /// repository decides membership; ids only break equal display names.
+    private func contactSummaryPage(
+        _ contacts: [Contact], bounds: PageBounds,
+        helperId: String, messageId: String
+    ) -> WireResponse {
+        let ordered = contacts
+            .map { (contact: $0, id: WireRecordID.contactID(for: $0)) }
+            .sorted { lhs, rhs in
+                let lhsName = lhs.contact.displayName.lowercased()
+                let rhsName = rhs.contact.displayName.lowercased()
+                if lhsName != rhsName { return lhsName < rhsName }
+                return lhs.id < rhs.id
+            }
+        let (slice, nextCursor) = bounds.slice(ordered)
+        return .contactPage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(
+                items: slice.map { WireMapping.summary($0.contact, id: $0.id) },
+                nextCursor: nextCursor))
+    }
+
     // MARK: - Events tools
 
     private func eventsList(
@@ -769,6 +884,12 @@ public actor ToolDispatcher {
         case .contactsSetFavorite(_, _, let contactId, let favorite, _):
             return await contactsSetFavorite(
                 helperId: helperId, messageId: messageId, contactId: contactId, favorite: favorite)
+        case .organizationsRenameDepartment(
+            _, _, let organizationId, let oldName, let newName, _
+        ):
+            return await organizationsRenameDepartment(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, oldName: oldName, newName: newName)
         case .eventsAddTag(_, _, let eventId, let text, _):
             return await eventsAddTag(
                 helperId: helperId, messageId: messageId, eventId: eventId, text: text)
@@ -803,6 +924,63 @@ public actor ToolDispatcher {
     }
 
     // MARK: - Contact writes
+
+    private func organizationsRenameDepartment(
+        helperId: String, messageId: String, organizationId: String,
+        oldName: String, newName: String
+    ) async -> WireResponse {
+        let trimmedOld = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedNew = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedOld.isEmpty, !trimmedNew.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyDepartmentName)
+        }
+        // Exact equality after trimming is a no-op. Case-only changes are
+        // meaningful display edits and deliberately pass through.
+        guard trimmedOld != trimmedNew else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.unchangedDepartmentName)
+        }
+
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let members = await MainActor.run {
+                contacts.contactsAssociated(with: organization, inDepartment: trimmedOld)
+            }
+            guard !members.isEmpty else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundDepartment)
+            }
+            let keys = members.map { $0.contactID.restorationToken.localID }
+            do {
+                let affectedCount = try await withWriteKeysLocked(keys) {
+                    // ONE repository call: it owns matching, fresh fetches,
+                    // saves, cache refresh, and the user-level operation.
+                    try await contacts.renameDepartment(
+                        from: trimmedOld, to: trimmedNew, in: organization)
+                }
+                if affectedCount > 0 {
+                    await recordAudit(
+                        .renameDepartment, kind: .contact, contact: organization,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: trimmedOld, newValue: trimmedNew)
+                }
+                return .departmentRename(
+                    helperId: helperId, messageId: messageId,
+                    result: WireDepartmentRenameResult(affectedCount: affectedCount))
+            } catch {
+                // renameDepartment can throw after earlier member saves.
+                // The fixed failure text explicitly requires a re-read and
+                // never claims that zero records changed.
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
 
     private func contactsAddNote(
         helperId: String, messageId: String, contactId: String, body: String
@@ -3179,11 +3357,14 @@ public actor ToolDispatcher {
 
     private enum ResolveFailure: Error {
         case notFound(String)
+        case kindMismatch(String)
 
         func response(helperId: String, messageId: String) -> WireResponse {
             switch self {
             case .notFound(let message):
                 return .error(helperId: helperId, messageId: messageId, code: .notFound, message: message)
+            case .kindMismatch(let message):
+                return .error(helperId: helperId, messageId: messageId, code: .kindMismatch, message: message)
             }
         }
     }
@@ -3196,6 +3377,20 @@ public actor ToolDispatcher {
             return .failure(.notFound(WireErrorMessage.notFoundContact))
         }
         return .success(found)
+    }
+
+    /// Resolve through the normal contact resolver first, then apply the
+    /// organization-only kind contract. A person's valid contact id is not
+    /// "missing"; it is a typed kind mismatch.
+    private func resolveOrganization(_ id: String) async -> Result<Contact, ResolveFailure> {
+        switch await resolveContact(id) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let contact) where contact.contactType == .organization:
+            return .success(contact)
+        case .success:
+            return .failure(.kindMismatch(WireErrorMessage.organizationKindMismatch))
+        }
     }
 
     private func resolveEvent(_ id: String) async -> Result<Event, ResolveFailure> {

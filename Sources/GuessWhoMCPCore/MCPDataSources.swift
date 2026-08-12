@@ -29,6 +29,12 @@ public protocol MCPContactSource: AnyObject {
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]
     func members(ofGroup groupLocalID: String) async -> [Contact]
+    /// Derived organization membership and department reads. These are the
+    /// repository's canonical name-matching rules; the dispatcher must not
+    /// reproduce them from `allContacts`.
+    func contactsAssociated(with organization: Contact) -> [Contact]
+    func departments(in organization: Contact) -> [String]
+    func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact]
 
     // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
     // the UI uses (INV-2), so the change-watcher, iCloud push, and UI
@@ -79,6 +85,11 @@ public protocol MCPContactSource: AnyObject {
     /// contacts_delete path. Returns false when the id no longer resolves.
     @discardableResult
     func deleteContact(id: ContactID) async throws -> Bool
+    /// One user-level department rename through the same repository entry
+    /// point the organization detail UI uses. A thrown save error may mean
+    /// earlier member saves landed; callers must surface that uncertainty.
+    @discardableResult
+    func renameDepartment(from oldName: String, to newName: String, in organization: Contact) async throws -> Int
 }
 
 extension ContactsRepository: MCPContactSource {

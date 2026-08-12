@@ -39,6 +39,17 @@ public struct WirePage<Item: Codable & Sendable>: Codable, Sendable {
     }
 }
 
+/// Result of renaming one organization's department across its member
+/// contact cards. The count is the number the Contacts repository reports
+/// as saved by this one operation.
+public struct WireDepartmentRenameResult: Codable, Sendable, Equatable {
+    public let affectedCount: Int
+
+    public init(affectedCount: Int) {
+        self.affectedCount = affectedCount
+    }
+}
+
 /// A labeled scalar (phone number, email address, web address).
 public struct WireLabeledValue: Codable, Sendable, Equatable {
     public let label: String?

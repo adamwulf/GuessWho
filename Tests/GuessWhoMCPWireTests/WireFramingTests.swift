@@ -63,6 +63,33 @@ final class WireFramingTests: XCTestCase {
         XCTAssertEqual(decodedPage.nextCursor, "o50")
     }
 
+    func testOrganizationResponsesRoundTripIntact() throws {
+        let departments = WireResponse.departmentPage(
+            helperId: "mcp-test", messageId: "departments",
+            page: WirePage(items: ["Design", "Engineering"], nextCursor: "o2"))
+        let decodedDepartments = try JSONDecoder().decode(
+            WireResponse.self, from: JSONEncoder().encode(departments))
+        guard case .departmentPage(_, _, let page) = decodedDepartments else {
+            return XCTFail("wrong department response case")
+        }
+        XCTAssertEqual(page.items, ["Design", "Engineering"])
+        XCTAssertEqual(page.nextCursor, "o2")
+
+        let renamed = WireResponse.departmentRename(
+            helperId: "mcp-test", messageId: "rename",
+            result: WireDepartmentRenameResult(affectedCount: 7))
+        let decodedRename = try JSONDecoder().decode(
+            WireResponse.self, from: JSONEncoder().encode(renamed))
+        guard case .departmentRename(_, _, let result) = decodedRename else {
+            return XCTFail("wrong rename response case")
+        }
+        XCTAssertEqual(result.affectedCount, 7)
+        XCTAssertTrue(renamed.asCallToolResult().content.contains { content in
+            if case .text(let text, _, _) = content { return text.contains("\"affectedCount\" : 7") }
+            return false
+        })
+    }
+
     /// Control messages must stay far under the 512-byte Darwin PIPE_BUF
     /// atomicity ceiling — the announce channel's forever-rule.
     func testControlMessagesStayUnderPipeBuf() throws {
@@ -128,6 +155,44 @@ final class WireRequestCreateTests: XCTestCase {
         XCTAssertEqual(groupId, "g-1")
     }
 
+    func testOrganizationReadRequestsParse() throws {
+        let members = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.organizationsListDepartmentMembers.rawValue, [
+                "organizationId": "org-1", "department": "Engineering",
+                "limit": 25, "cursor": "o25",
+            ]))
+        guard case .organizationsListDepartmentMembers(
+            _, _, let organizationID, let department, let limit, let cursor
+        ) = members else { return XCTFail("wrong case") }
+        XCTAssertEqual(organizationID, "org-1")
+        XCTAssertEqual(department, "Engineering")
+        XCTAssertEqual(limit, 25)
+        XCTAssertEqual(cursor, "o25")
+
+        XCTAssertThrowsError(try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.organizationsListMembers.rawValue)))
+    }
+
+    func testOrganizationRenameRequestParsesIdempotencyToken() throws {
+        let request = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.organizationsRenameDepartment.rawValue, [
+                "organizationId": "org-1", "oldName": "Engineering",
+                "newName": "Product", "idempotencyToken": "rename-1",
+            ]))
+        guard case .organizationsRenameDepartment(
+            _, _, let organizationID, let oldName, let newName, let token
+        ) = request else { return XCTFail("wrong case") }
+        XCTAssertEqual(organizationID, "org-1")
+        XCTAssertEqual(oldName, "Engineering")
+        XCTAssertEqual(newName, "Product")
+        XCTAssertEqual(token, "rename-1")
+        XCTAssertEqual(request.tool, .organizationsRenameDepartment)
+        XCTAssertEqual(request.idempotencyToken, "rename-1")
+    }
+
     /// Absent filters decode to nil (no filtering on that axis), and the
     /// string spelling some clients send for booleans is tolerated.
     func testContactsListFiltersDefaultNilAndTolerateStringBool() throws {
@@ -167,10 +232,11 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        // Nine structured one-entry writes extend the prior 34-tool set.
-        XCTAssertEqual(MCPTool.allCases.count, 43)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 13)
-        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 30)
+        // Nine structured-entry writes and four organization tools extend
+        // the prior 34-tool set.
+        XCTAssertEqual(MCPTool.allCases.count, 47)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 16)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 31)
     }
 
     func testListVerbSchemasUseRealFieldEnumAndHaveNoArrayParameters() {
