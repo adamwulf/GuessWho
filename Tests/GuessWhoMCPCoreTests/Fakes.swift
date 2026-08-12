@@ -49,6 +49,9 @@ final class FakeContactSource: MCPContactSource {
     /// Simulates Contacts transcoding a successful photo write before the
     /// verification read-back.
     var photoWriteReplacementData: Data?
+    /// Simulates an adapter representing a cleared photo as empty bytes
+    /// instead of nil on the verification read.
+    var photoDeleteLeavesEmptyData = false
     private(set) var previousPhotoDataByEffectiveID: [String: Data] = [:]
     private(set) var photoWriteCount = 0
 
@@ -499,7 +502,9 @@ final class FakeContactSource: MCPContactSource {
             fieldsByEffectiveID[key] = fields
         }
         photoWriteCount += 1
-        if imageData != nil, let replacement = photoWriteReplacementData {
+        if imageData == nil, photoDeleteLeavesEmptyData {
+            photoDataByLocalID[localID] = Data()
+        } else if imageData != nil, let replacement = photoWriteReplacementData {
             photoDataByLocalID[localID] = replacement
         } else {
             photoDataByLocalID[localID] = imageData

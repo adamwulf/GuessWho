@@ -1779,9 +1779,9 @@ public actor ToolDispatcher {
                             helperId: helperId, messageId: messageId,
                             code: .notFound, message: WireErrorMessage.notFoundContact)
                     }
-                    guard try await contacts.contactPhotoData(
-                        for: contact.contactID, kind: .fullSize) == nil
-                    else {
+                    let remaining = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data
+                    guard remaining?.isEmpty != false else {
                         return writeFailure(helperId: helperId, messageId: messageId)
                     }
                     let fresh = await MainActor.run {

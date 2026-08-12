@@ -127,6 +127,20 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(finalWrites, 1, "deleting an absent photo is a no-op")
     }
 
+    func testDeleteVerificationAcceptsEmptyBytesAsNoPhoto() async throws {
+        let fixture = await writableFixture()
+        let jane = try await janeID(fixture)
+        await MainActor.run {
+            fixture.contacts.photoDataByLocalID[Sentinels.localID] = jpegA
+            fixture.contacts.photoDeleteLeavesEmptyData = true
+        }
+
+        let response = await fixture.dispatcher.handle(.contactsDeletePhoto(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, idempotencyToken: nil))
+        XCTAssertNil(response?.errorPayload)
+    }
+
     func testSetRejectsInvalidMismatchedAndOversizedPayloads() async throws {
         let fixture = await writableFixture()
         let jane = try await janeID(fixture)
@@ -160,12 +174,15 @@ final class ContactPhotoToolTests: XCTestCase {
             ("image/jpeg", Data([0xff, 0xd8, 0xff, 0xe0])),
             ("image/png", Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
             ("image/gif", Data("GIF89a".utf8)),
-            ("image/heic", Data([0, 0, 0, 0] + Array("ftypheic".utf8))),
-            ("image/heic", Data([0, 0, 0, 0] + Array("ftyphevm".utf8))),
             ("image/webp", Data(Array("RIFF".utf8) + [0, 0, 0, 0] + Array("WEBP".utf8))),
         ]
+        let heifCases = [
+            "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1",
+        ].map { brand in
+            (mediaType: "image/heic", data: Data([0, 0, 0, 0] + Array("ftyp\(brand)".utf8)))
+        }
 
-        for item in cases {
+        for item in cases + heifCases {
             let set = await fixture.dispatcher.handle(.contactsSetPhoto(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
                 contactId: jane, mediaType: item.mediaType,
