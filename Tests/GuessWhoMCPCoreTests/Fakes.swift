@@ -268,7 +268,11 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func isGroupFavorite(_ group: ContactGroup) -> Bool {
-        groupFavoriteLocalIDs.contains(group.localID.lowercased())
+        let key = group.localID.lowercased()
+        return groupFavoriteLocalIDs.contains(key)
+            || genericFavorites?.items.contains {
+                $0.kind == .group && $0.id == key
+            } == true
     }
 
     // MARK: Writes
@@ -351,7 +355,11 @@ final class FakeContactSource: MCPContactSource {
         if let groupWriteError { throw groupWriteError }
         groupFavoriteSetCount += 1
         let key = group.localID.lowercased()
-        if favorite {
+        if let genericFavorites {
+            _ = try genericFavorites.setFavorite(
+                kind: .group, id: key, favorite: favorite)
+            groupFavoriteLocalIDs.remove(key)
+        } else if favorite {
             groupFavoriteLocalIDs.insert(key)
         } else {
             groupFavoriteLocalIDs.remove(key)

@@ -436,6 +436,44 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(setCount, beforeInvalid, "an unresolved id must not touch the favorite key")
     }
 
+    func testGroupSpecificAndGenericFavoritesShareState() async {
+        let fixture = await writableFixture()
+        guard let groupId = await groupID(fixture) else { return }
+
+        guard case .group(_, _, let favorited) = await fixture.dispatcher.handle(
+            .groupsSetFavorite(
+                helperId: Fixture.helper, messageId: "group-favorite",
+                groupId: groupId, favorite: true, idempotencyToken: nil)
+        ) else {
+            return XCTFail("expected group favorite result")
+        }
+        XCTAssertTrue(favorited.isFavorite)
+
+        let genericList = await fixture.dispatcher.handle(.favoritesList(
+            helperId: Fixture.helper, messageId: "generic-list",
+            limit: nil, cursor: nil))
+        guard case .favoritePage(_, _, let favorites) = genericList else {
+            return XCTFail("expected generic favorites page")
+        }
+        XCTAssertTrue(favorites.items.contains {
+            $0.kind == .group && $0.id == groupId && $0.isAvailable
+        })
+
+        guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: Fixture.helper, messageId: "generic-clear",
+            kind: .group, id: groupId, favorite: false,
+            idempotencyToken: nil)) else {
+            return XCTFail("expected generic favorite acknowledgement")
+        }
+        let groupList = await fixture.dispatcher.handle(.contactsListGroups(
+            helperId: Fixture.helper, messageId: "group-list",
+            limit: nil, cursor: nil))
+        guard case .groupPage(_, _, let groups) = groupList else {
+            return XCTFail("expected group page")
+        }
+        XCTAssertEqual(groups.items.first { $0.id == groupId }?.isFavorite, false)
+    }
+
     func testPermissionReadOnlyWriteBudgetAndKindGatesApply() async {
         let fixture = await writableFixture(writeLimit: 1)
         await MainActor.run { fixture.gates.contactsAuthorized = false }

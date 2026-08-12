@@ -363,7 +363,9 @@ wrong-form id is typed `notFound`. `groups_set_favorite` performs that resolutio
 before the repository is allowed to inspect the Contacts identifier used as the
 favorite key. Contact ids in membership calls use the same opaque ids as
 `contacts_search`/`contacts_list`; group membership does not mint or expose a
-contact identity.
+contact identity. `groups_set_favorite` and `favorites_set(kind: "group", ...)`
+are two views of the same ordered favorite store: a write through either tool
+is immediately visible through group reads and `favorites_list`.
 
 The six group writes are Contacts-permission and read-write gated, consume the
 shared per-host write budget, support the standard optional idempotency token,
