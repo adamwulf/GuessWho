@@ -136,6 +136,15 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertEqual(message, WireAckMessage.groupDeleted)
 
+        let auditEntries = await fixture.audit.entries()
+        XCTAssertEqual(auditEntries.map(\.action), [
+            .createGroup, .renameGroup, .deleteGroup,
+        ])
+        XCTAssertEqual(auditEntries.map(\.subjectKind), [.group, .group, .group])
+        XCTAssertEqual(auditEntries.map(\.subjectID), [created.id, created.id, created.id])
+        XCTAssertEqual(auditEntries.map(\.priorValue), [nil, "Family", "Relatives"])
+        XCTAssertEqual(auditEntries.map(\.newValue), ["Family", "Relatives", nil])
+
         let stale = await fixture.dispatcher.handle(.groupsRename(
             helperId: Fixture.helper, messageId: "stale",
             groupId: created.id, name: "Gone", idempotencyToken: nil))
@@ -385,12 +394,46 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertTrue(group.isFavorite)
 
+        var entries = await fixture.audit.entries()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.last?.action, .setFavorite)
+        XCTAssertEqual(entries.last?.subjectKind, .group)
+        XCTAssertEqual(entries.last?.subjectID, groupId)
+        XCTAssertEqual(entries.last?.priorValue, "false")
+        XCTAssertEqual(entries.last?.newValue, "true")
+
+        let noOp = await fixture.dispatcher.handle(.groupsSetFavorite(
+            helperId: Fixture.helper, messageId: "favorite-no-op",
+            groupId: groupId, favorite: true, idempotencyToken: nil))
+        guard case .group(_, _, let unchanged) = noOp else {
+            return XCTFail("expected unchanged group")
+        }
+        XCTAssertTrue(unchanged.isFavorite)
+        entries = await fixture.audit.entries()
+        XCTAssertEqual(entries.count, 1, "an idempotent favorite write must not add an audit entry")
+
+        let unfavorite = await fixture.dispatcher.handle(.groupsSetFavorite(
+            helperId: Fixture.helper, messageId: "unfavorite",
+            groupId: groupId, favorite: false, idempotencyToken: nil))
+        guard case .group(_, _, let cleared) = unfavorite else {
+            return XCTFail("expected updated group")
+        }
+        XCTAssertFalse(cleared.isFavorite)
+        entries = await fixture.audit.entries()
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.last?.action, .setFavorite)
+        XCTAssertEqual(entries.last?.priorValue, "true")
+        XCTAssertEqual(entries.last?.newValue, "false")
+
+        let beforeInvalid = await MainActor.run {
+            fixture.contacts.groupFavoriteSetCount
+        }
         let invalid = await fixture.dispatcher.handle(.groupsSetFavorite(
             helperId: Fixture.helper, messageId: "invalid",
             groupId: "CNGroup-LOCAL-1", favorite: false, idempotencyToken: nil))
         XCTAssertEqual(invalid?.errorPayload?.code, .notFound)
         let setCount = await MainActor.run { fixture.contacts.groupFavoriteSetCount }
-        XCTAssertEqual(setCount, 1, "an unresolved id must not touch the favorite key")
+        XCTAssertEqual(setCount, beforeInvalid, "an unresolved id must not touch the favorite key")
     }
 
     func testPermissionReadOnlyWriteBudgetAndKindGatesApply() async {
