@@ -46,6 +46,9 @@ final class FakeContactSource: MCPContactSource {
     private(set) var departmentMembersReadCount = 0
     private(set) var renameDepartmentCallCount = 0
     var photoDataByLocalID: [String: Data] = [:]
+    /// Simulates Contacts transcoding a successful photo write before the
+    /// verification read-back.
+    var photoWriteReplacementData: Data?
     private(set) var previousPhotoDataByEffectiveID: [String: Data] = [:]
     private(set) var photoWriteCount = 0
 
@@ -496,7 +499,11 @@ final class FakeContactSource: MCPContactSource {
             fieldsByEffectiveID[key] = fields
         }
         photoWriteCount += 1
-        photoDataByLocalID[localID] = imageData
+        if imageData != nil, let replacement = photoWriteReplacementData {
+            photoDataByLocalID[localID] = replacement
+        } else {
+            photoDataByLocalID[localID] = imageData
+        }
         return true
     }
 

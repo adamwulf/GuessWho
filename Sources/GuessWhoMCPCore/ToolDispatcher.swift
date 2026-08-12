@@ -1724,8 +1724,14 @@ public actor ToolDispatcher {
                             helperId: helperId, messageId: messageId,
                             code: .notFound, message: WireErrorMessage.notFoundContact)
                     }
-                    guard try await contacts.contactPhotoData(
-                        for: contact.contactID, kind: .fullSize)?.data == data
+                    // Contacts may transcode the supplied image, and the
+                    // repository's full-size read deliberately falls back to
+                    // a thumbnail on cards whose full bytes are unavailable.
+                    // Verify the persisted invariant (a non-empty photo now
+                    // exists), not byte identity with the input encoding.
+                    guard let verified = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data,
+                          !verified.isEmpty
                     else {
                         return writeFailure(helperId: helperId, messageId: messageId)
                     }
@@ -1806,14 +1812,18 @@ public actor ToolDispatcher {
         }
         if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
         if data.count >= 12,
-           String(decoding: data[0..<4], as: UTF8.self) == "RIFF",
-           String(decoding: data[8..<12], as: UTF8.self) == "WEBP" {
+           String(decoding: data.prefix(4), as: UTF8.self) == "RIFF",
+           String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self) == "WEBP" {
             return "image/webp"
         }
         if data.count >= 12,
-           String(decoding: data[4..<8], as: UTF8.self) == "ftyp" {
-            let brand = String(decoding: data[8..<12], as: UTF8.self)
-            if ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].contains(brand) {
+           String(decoding: data.dropFirst(4).prefix(4), as: UTF8.self) == "ftyp" {
+            let brand = String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self)
+            if [
+                "heic", "heix", "hevc", "hevx",
+                "heim", "heis", "hevm", "hevs",
+                "mif1", "msf1",
+            ].contains(brand) {
                 return "image/heic"
             }
         }
