@@ -811,6 +811,10 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .notFound, message: WireErrorMessage.notFoundPlace)
         }
+        // The source deliberately resolves containment through the same
+        // address-based repository path used by the app. That live path may
+        // read places again; keep this first snapshot for lookup and counts
+        // instead of duplicating the matcher here and risking parity drift.
         let containing = Self.sortedGuides(await guides.guides(containingPlace: place))
         let (slice, nextCursor) = page.slice(containing)
         let items = await wireGuides(slice, allPlaces: allPlaces)
@@ -853,6 +857,9 @@ public actor ToolDispatcher {
         limit: Int?, cursor: String?
     ) async -> WireResponse {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Unlike contact search, accept one visible character: saved place
+        // and guide names can legitimately be a single character. Paging,
+        // the shared search budget, and the response cap bound the result.
         guard !needle.isEmpty else {
             return .error(
                 helperId: helperId, messageId: messageId,

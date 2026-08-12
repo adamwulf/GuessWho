@@ -63,6 +63,73 @@ final class WireFramingTests: XCTestCase {
         XCTAssertEqual(decodedPage.nextCursor, "o50")
     }
 
+    func testPlaceReadRequestsAndResponseRoundTripIntact() throws {
+        let requests: [WireRequest] = [
+            .guidesListForPlace(
+                helperId: "mcp-test", messageId: "containing", placeId: "place-1",
+                limit: 17, cursor: "o34"),
+            .placesSearch(
+                helperId: "mcp-test", messageId: "search", query: "Q",
+                limit: 9, cursor: "o18"),
+            .placesGet(
+                helperId: "mcp-test", messageId: "get", placeId: "place-2"),
+        ]
+        let decodedRequests = try requests.map {
+            try JSONDecoder().decode(WireRequest.self, from: JSONEncoder().encode($0))
+        }
+        guard case .guidesListForPlace(
+            let containingHelper, let containingMessage, let containingPlace,
+            let containingLimit, let containingCursor) = decodedRequests[0],
+              case .placesSearch(
+                let searchHelper, let searchMessage, let query,
+                let searchLimit, let searchCursor) = decodedRequests[1],
+              case .placesGet(let getHelper, let getMessage, let getPlace) = decodedRequests[2]
+        else {
+            return XCTFail("wrong place-read request case decoded")
+        }
+        XCTAssertEqual(containingHelper, "mcp-test")
+        XCTAssertEqual(containingMessage, "containing")
+        XCTAssertEqual(containingPlace, "place-1")
+        XCTAssertEqual(containingLimit, 17)
+        XCTAssertEqual(containingCursor, "o34")
+        XCTAssertEqual(searchHelper, "mcp-test")
+        XCTAssertEqual(searchMessage, "search")
+        XCTAssertEqual(query, "Q")
+        XCTAssertEqual(searchLimit, 9)
+        XCTAssertEqual(searchCursor, "o18")
+        XCTAssertEqual(getHelper, "mcp-test")
+        XCTAssertEqual(getMessage, "get")
+        XCTAssertEqual(getPlace, "place-2")
+
+        let place = WirePlace(
+            id: "place-2", guideId: "guide-1", name: "Q", address: "1 Main St",
+            latitude: 41.1, longitude: -87.2, sortOrder: 3,
+            createdAt: "2026-01-01T00:00:00Z", lastViewedAt: "2026-01-02T00:00:00Z",
+            resolvedAt: "2026-01-03T00:00:00Z", needsResolution: false,
+            isFavorite: true)
+        let response = WireResponse.place(
+            helperId: "mcp-test", messageId: "get", place: place)
+        let decoded = try JSONDecoder().decode(
+            WireResponse.self, from: JSONEncoder().encode(response))
+        guard case .place(let helperId, let messageId, let decodedPlace) = decoded else {
+            return XCTFail("wrong place response case")
+        }
+        XCTAssertEqual(helperId, "mcp-test")
+        XCTAssertEqual(messageId, "get")
+        XCTAssertEqual(decodedPlace.id, place.id)
+        XCTAssertEqual(decodedPlace.guideId, place.guideId)
+        XCTAssertEqual(decodedPlace.name, place.name)
+        XCTAssertEqual(decodedPlace.address, place.address)
+        XCTAssertEqual(decodedPlace.latitude, place.latitude)
+        XCTAssertEqual(decodedPlace.longitude, place.longitude)
+        XCTAssertEqual(decodedPlace.sortOrder, place.sortOrder)
+        XCTAssertEqual(decodedPlace.createdAt, place.createdAt)
+        XCTAssertEqual(decodedPlace.lastViewedAt, place.lastViewedAt)
+        XCTAssertEqual(decodedPlace.resolvedAt, place.resolvedAt)
+        XCTAssertEqual(decodedPlace.needsResolution, place.needsResolution)
+        XCTAssertEqual(decodedPlace.isFavorite, place.isFavorite)
+    }
+
     func testOrganizationResponsesRoundTripIntact() throws {
         let departments = WireResponse.departmentPage(
             helperId: "mcp-test", messageId: "departments",

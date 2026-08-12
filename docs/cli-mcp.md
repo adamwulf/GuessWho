@@ -280,7 +280,8 @@ and `resolvedAt`, and `needsResolution: true` until its visible details load.
 - `places_search(query, limit?, cursor?)` case-insensitively searches only the
   visible place name, address, and containing guide name. Results use a fixed
   `(name, address, guide name, id)` order so offset cursors are deterministic
-  while the saved records are unchanged.
+  while the saved records are unchanged. A query must contain at least one
+  non-whitespace character; one-character place and guide names are valid.
 - `guides_list_for_place(placeId, limit?, cursor?)` uses the app's address
   matcher to list guides containing the same visible street address. An
   unresolved place without an address matches no guides; an unknown place id
