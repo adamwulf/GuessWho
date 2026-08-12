@@ -169,6 +169,10 @@ public protocol MCPGuideSource: AnyObject {
     func allGuides() async -> [MapsGuide]
     func allPlaces() async -> [MapsPlace]
     func places(inGuide guideID: UUID) async -> [MapsPlace]
+    /// Address-derived reverse lookup used by the app's place detail.
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide]
+    /// Reads the same live favorite store used by the guide/place UI.
+    func favorites() -> [Favorite]
 
     // Guide/place writes (plans/cli-mcp.md Phase 2).
     @discardableResult

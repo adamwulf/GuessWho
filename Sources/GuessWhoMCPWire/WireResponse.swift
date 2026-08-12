@@ -28,6 +28,7 @@ public enum WireResponse: Codable, Sendable {
     case guidePage(helperId: String, messageId: String, page: WirePage<WireGuide>)
     case guide(helperId: String, messageId: String, guide: WireGuide)
     case placePage(helperId: String, messageId: String, page: WirePage<WirePlace>)
+    case place(helperId: String, messageId: String, place: WirePlace)
     case linkPage(helperId: String, messageId: String, page: WirePage<WireLink>)
 
     // Write-tool results (plans/cli-mcp.md Phase 2): a write that creates or
@@ -62,6 +63,7 @@ extension WireResponse: MCPResponseProtocol {
              .guidePage(let helperId, _, _),
              .guide(let helperId, _, _),
              .placePage(let helperId, _, _),
+             .place(let helperId, _, _),
              .linkPage(let helperId, _, _),
              .note(let helperId, _, _),
              .customField(let helperId, _, _),
@@ -91,6 +93,7 @@ extension WireResponse: MCPResponseProtocol {
              .guidePage(_, let messageId, _),
              .guide(_, let messageId, _),
              .placePage(_, let messageId, _),
+             .place(_, let messageId, _),
              .linkPage(_, let messageId, _),
              .note(_, let messageId, _),
              .customField(_, let messageId, _),
@@ -140,6 +143,8 @@ extension WireResponse: MCPResponseProtocol {
             return .guide(helperId: helperId, messageId: messageId, guide: guide)
         case .placePage(_, _, let page):
             return .placePage(helperId: helperId, messageId: messageId, page: page)
+        case .place(_, _, let place):
+            return .place(helperId: helperId, messageId: messageId, place: place)
         case .linkPage(_, _, let page):
             return .linkPage(helperId: helperId, messageId: messageId, page: page)
         case .note(_, _, let note):
@@ -201,6 +206,8 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(guide)
         case .placePage(_, _, let page):
             return Self.jsonResult(page)
+        case .place(_, _, let place):
+            return Self.jsonResult(place)
         case .linkPage(_, _, let page):
             return Self.jsonResult(page)
         case .note(_, _, let note):

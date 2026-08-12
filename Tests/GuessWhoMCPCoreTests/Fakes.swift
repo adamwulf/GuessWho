@@ -705,6 +705,8 @@ final class FakeEventSource: MCPEventSource {
 final class FakeGuideSource: MCPGuideSource {
     var guides: [MapsGuide] = []
     var places: [MapsPlace] = []
+    var favoriteGuideIDs: Set<String> = []
+    var favoritePlaceIDs: Set<String> = []
 
     nonisolated init() {}
 
@@ -712,6 +714,16 @@ final class FakeGuideSource: MCPGuideSource {
     func allPlaces() async -> [MapsPlace] { places }
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         places.filter { $0.guideID == guideID }
+    }
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide] {
+        guard let needle = GuideAddressMatcher.streetNeedle(for: place) else { return [] }
+        return GuideAddressMatcher.guides(
+            containingAnyOf: [needle], guides: guides, places: places
+        ).map(\.guide)
+    }
+    func favorites() -> [Favorite] {
+        favoriteGuideIDs.map { Favorite(kind: .guide, id: $0, addedAt: Date()) }
+            + favoritePlaceIDs.map { Favorite(kind: .place, id: $0, addedAt: Date()) }
     }
 
     func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {

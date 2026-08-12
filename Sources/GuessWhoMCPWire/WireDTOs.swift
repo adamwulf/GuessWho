@@ -597,12 +597,21 @@ public struct WireGuide: Codable, Sendable {
     public let name: String
     public let sourceURL: String?
     public let createdAt: String?
+    public let lastViewedAt: String?
+    public let placeCount: Int
+    public let isFavorite: Bool
 
-    public init(id: String, name: String, sourceURL: String?, createdAt: String?) {
+    public init(
+        id: String, name: String, sourceURL: String?, createdAt: String?,
+        lastViewedAt: String?, placeCount: Int, isFavorite: Bool
+    ) {
         self.id = id
         self.name = name
         self.sourceURL = sourceURL
         self.createdAt = createdAt
+        self.lastViewedAt = lastViewedAt
+        self.placeCount = placeCount
+        self.isFavorite = isFavorite
     }
 }
 
@@ -629,13 +638,30 @@ public struct WirePlace: Codable, Sendable {
     public let address: String?
     public let latitude: Double?
     public let longitude: Double?
+    public let sortOrder: Int
+    public let createdAt: String?
+    public let lastViewedAt: String?
+    public let resolvedAt: String?
+    public let needsResolution: Bool
+    public let isFavorite: Bool
 
-    public init(id: String, guideId: String, name: String, address: String?, latitude: Double?, longitude: Double?) {
+    public init(
+        id: String, guideId: String, name: String, address: String?,
+        latitude: Double?, longitude: Double?, sortOrder: Int,
+        createdAt: String?, lastViewedAt: String?, resolvedAt: String?,
+        needsResolution: Bool, isFavorite: Bool
+    ) {
         self.id = id
         self.guideId = guideId
         self.name = name
         self.address = address
         self.latitude = latitude
         self.longitude = longitude
+        self.sortOrder = sortOrder
+        self.createdAt = createdAt
+        self.lastViewedAt = lastViewedAt
+        self.resolvedAt = resolvedAt
+        self.needsResolution = needsResolution
+        self.isFavorite = isFavorite
     }
 }

@@ -125,15 +125,16 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **50 tools total: 17 read and 33 write**.
+There are **53 tools total: 20 read and 33 write**.
 
-**Read (17):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (20):** `contacts_search`, `contacts_list`, `contacts_get`,
 `contacts_get_photo`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
 `contacts_list_groups`, `organizations_list_members`,
 `organizations_list_departments`, `organizations_list_department_members`,
 `events_list`, `events_get`, `events_list_tags`,
-`guides_list`, `guides_get`, `places_list`, `links_list`. (Plus
+`guides_list`, `guides_get`, `guides_list_for_place`, `places_list`,
+`places_search`, `places_get`, `links_list`. (Plus
 `guesswho_status`, served by the relay itself when the app is unreachable
 / to re-check.) Favorites and group-membership are no longer their own
 tools — they fold into `contacts_list` as the optional `favoritesOnly`
@@ -256,6 +257,39 @@ the normal response cap all apply. A Contacts save can fail after earlier
 members were already saved; that is reported as the normal typed save failure
 with re-read-before-retry guidance, never as success or as an assumed zero
 affected count. Error text is fixed and never includes a contact's local id.
+
+### Reading guides and places
+
+Guide and place reads expose the same visible state as the app. A guide record
+contains `id`, `name`, its optional imported `sourceURL`, `createdAt`,
+`lastViewedAt`, `placeCount`, and `isFavorite`. A place record contains `id`,
+`guideId`, visible `name` and optional `address`/coordinates, `sortOrder`,
+`createdAt`, `lastViewedAt`, optional `resolvedAt`, `needsResolution`, and
+`isFavorite`. The private Maps lookup identifier is never returned or searched.
+An unresolved Maps place therefore has empty `name`, nil address/coordinates
+and `resolvedAt`, and `needsResolution: true` until its visible details load.
+
+- `guides_list(limit?, cursor?)` lists guides by case-insensitive name, with
+  the record id as a total-order tiebreak. `guides_get(guideId)` returns one
+  full guide or typed `notFound`.
+- `places_list(guideId?, limit?, cursor?)` lists every place, or one guide's
+  places in canonical `sortOrder` with the record id as a tiebreak. A validly
+  shaped `guideId` that no longer names a guide is typed `notFound`, never an
+  empty success.
+- `places_get(placeId)` returns one full place or typed `notFound`.
+- `places_search(query, limit?, cursor?)` case-insensitively searches only the
+  visible place name, address, and containing guide name. Results use a fixed
+  `(name, address, guide name, id)` order so offset cursors are deterministic
+  while the saved records are unchanged.
+- `guides_list_for_place(placeId, limit?, cursor?)` uses the app's address
+  matcher to list guides containing the same visible street address. An
+  unresolved place without an address matches no guides; an unknown place id
+  is typed `notFound`.
+
+All list forms use the standard limit (default 50, maximum 200), opaque offset
+cursor, 256 KB response cap, and typed invalid-cursor / too-large errors.
+Favorite flags come from the app's live favorite store, so reads reflect the
+currently visible star state without reopening the app.
 
 ### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_delete_value`, Phase 7)
 

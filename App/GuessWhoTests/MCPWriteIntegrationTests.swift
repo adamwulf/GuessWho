@@ -382,6 +382,10 @@ private final class INV2LiveGuideSource: MCPGuideSource {
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         await service.places(inGuide: guideID)
     }
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide] {
+        await service.guides(containingPlace: place)
+    }
+    func favorites() -> [Favorite] { service.favorites() }
     func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
         try service.importGuide(from: snapshot, sourceURL: sourceURL)
     }

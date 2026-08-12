@@ -227,10 +227,21 @@ public actor ToolDispatcher {
             response = await guidesList(helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
         case .guidesGet(_, _, let guideId):
             response = await guidesGet(helperId: helperId, messageId: messageId, guideId: guideId)
+        case .guidesListForPlace(_, _, let placeId, let limit, let cursor):
+            response = await guidesListForPlace(
+                helperId: helperId, messageId: messageId,
+                placeId: placeId, limit: limit, cursor: cursor)
         case .placesList(_, _, let guideId, let limit, let cursor):
             response = await placesList(
                 helperId: helperId, messageId: messageId,
                 guideId: guideId, limit: limit, cursor: cursor)
+        case .placesSearch(_, _, let query, let limit, let cursor):
+            response = await placesSearch(
+                helperId: helperId, messageId: messageId,
+                query: query, limit: limit, cursor: cursor)
+        case .placesGet(_, _, let placeId):
+            response = await placesGet(
+                helperId: helperId, messageId: messageId, placeId: placeId)
         case .linksList(_, _, let id, let kind, let limit, let cursor):
             response = await linksList(
                 helperId: helperId, messageId: messageId,
@@ -751,10 +762,13 @@ public actor ToolDispatcher {
         guard let page = pageBounds(limit: limit, cursor: cursor) else {
             return invalidCursor(helperId: helperId, messageId: messageId)
         }
-        let all = await guides.allGuides()
-        let sorted = all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        async let fetchedGuides = guides.allGuides()
+        async let fetchedPlaces = guides.allPlaces()
+        let all = await fetchedGuides
+        let allPlaces = await fetchedPlaces
+        let sorted = Self.sortedGuides(all)
         let (slice, nextCursor) = page.slice(sorted)
-        let items = slice.map { WireMapping.guide($0, id: $0.id.uuidString.lowercased()) }
+        let items = await wireGuides(slice, allPlaces: allPlaces)
         return .guidePage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -766,15 +780,43 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
-        let all = await guides.allGuides()
-        guard let guide = all.first(where: { $0.id == id }) else {
+        async let fetchedGuides = guides.allGuides()
+        async let fetchedPlaces = guides.allPlaces()
+        guard let guide = await fetchedGuides.first(where: { $0.id == id }) else {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
+        let items = await wireGuides([guide], allPlaces: await fetchedPlaces)
         return .guide(
             helperId: helperId, messageId: messageId,
-            guide: WireMapping.guide(guide, id: guide.id.uuidString.lowercased()))
+            guide: items[0])
+    }
+
+    private func guidesListForPlace(
+        helperId: String, messageId: String, placeId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        guard let id = WireRecordID.recordUUID(placeId) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
+        }
+        let allPlaces = await guides.allPlaces()
+        guard let place = allPlaces.first(where: { $0.id == id }) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
+        }
+        let containing = Self.sortedGuides(await guides.guides(containingPlace: place))
+        let (slice, nextCursor) = page.slice(containing)
+        let items = await wireGuides(slice, allPlaces: allPlaces)
+        return .guidePage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: items, nextCursor: nextCursor))
     }
 
     private func placesList(
@@ -790,19 +832,133 @@ public actor ToolDispatcher {
                     helperId: helperId, messageId: messageId,
                     code: .notFound, message: WireErrorMessage.notFoundGuide)
             }
-            places = await guides.places(inGuide: id)
+            guard await guides.allGuides().contains(where: { $0.id == id }) else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundGuide)
+            }
+            places = Self.sortedPlacesInGuide(await guides.places(inGuide: id))
         } else {
-            places = await guides.allPlaces()
+            places = Self.sortedPlaces(await guides.allPlaces())
         }
         let (slice, nextCursor) = page.slice(places)
-        let items = slice.map {
-            WireMapping.place(
-                $0, id: $0.id.uuidString.lowercased(),
-                guideID: $0.guideID.uuidString.lowercased())
-        }
+        let items = await wirePlaces(slice)
         return .placePage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    private func placesSearch(
+        helperId: String, messageId: String, query: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: "The query argument must contain visible text.")
+        }
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        async let fetchedGuides = guides.allGuides()
+        async let fetchedPlaces = guides.allPlaces()
+        let guideNames = Dictionary(
+            uniqueKeysWithValues: await fetchedGuides.map { ($0.id, $0.name) })
+        let matches = await fetchedPlaces.filter { place in
+            place.name.localizedCaseInsensitiveContains(needle)
+                || place.address?.localizedCaseInsensitiveContains(needle) == true
+                || guideNames[place.guideID]?.localizedCaseInsensitiveContains(needle) == true
+        }
+        let ordered = Self.sortedPlaceSearchResults(matches, guideNames: guideNames)
+        let (slice, nextCursor) = page.slice(ordered)
+        return .placePage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: await wirePlaces(slice), nextCursor: nextCursor))
+    }
+
+    private func placesGet(
+        helperId: String, messageId: String, placeId: String
+    ) async -> WireResponse {
+        guard let id = WireRecordID.recordUUID(placeId),
+              let place = await guides.allPlaces().first(where: { $0.id == id })
+        else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
+        }
+        let items = await wirePlaces([place])
+        return .place(helperId: helperId, messageId: messageId, place: items[0])
+    }
+
+    private func wireGuides(
+        _ records: [MapsGuide], allPlaces: [MapsPlace]
+    ) async -> [WireGuide] {
+        let counts = Dictionary(grouping: allPlaces, by: \.guideID).mapValues(\.count)
+        let favoriteIDs = await favoriteIDs(kind: .guide)
+        return records.map { guide in
+            let id = guide.id.uuidString.lowercased()
+            return WireMapping.guide(
+                guide, id: id, placeCount: counts[guide.id, default: 0],
+                isFavorite: favoriteIDs.contains(id))
+        }
+    }
+
+    private func wirePlaces(_ records: [MapsPlace]) async -> [WirePlace] {
+        let favoriteIDs = await favoriteIDs(kind: .place)
+        return records.map { place in
+            let id = place.id.uuidString.lowercased()
+            return WireMapping.place(
+                place, id: id, guideID: place.guideID.uuidString.lowercased(),
+                isFavorite: favoriteIDs.contains(id))
+        }
+    }
+
+    private func favoriteIDs(kind: FavoriteKind) async -> Set<String> {
+        Set(await guides.favorites().lazy.filter { $0.kind == kind }.map(\.id))
+    }
+
+    private static func sortedGuides(_ records: [MapsGuide]) -> [MapsGuide] {
+        records.sorted { lhs, rhs in
+            let left = lhs.name.lowercased()
+            let right = rhs.name.lowercased()
+            if left != right { return left < right }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private static func sortedPlacesInGuide(_ records: [MapsPlace]) -> [MapsPlace] {
+        records.sorted { lhs, rhs in
+            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private static func sortedPlaces(_ records: [MapsPlace]) -> [MapsPlace] {
+        records.sorted { lhs, rhs in
+            let leftGuide = lhs.guideID.uuidString.lowercased()
+            let rightGuide = rhs.guideID.uuidString.lowercased()
+            if leftGuide != rightGuide { return leftGuide < rightGuide }
+            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private static func sortedPlaceSearchResults(
+        _ records: [MapsPlace], guideNames: [UUID: String]
+    ) -> [MapsPlace] {
+        records.sorted { lhs, rhs in
+            let leftName = lhs.name.lowercased()
+            let rightName = rhs.name.lowercased()
+            if leftName != rightName { return leftName < rightName }
+            let leftAddress = lhs.address?.lowercased() ?? ""
+            let rightAddress = rhs.address?.lowercased() ?? ""
+            if leftAddress != rightAddress { return leftAddress < rightAddress }
+            let leftGuide = guideNames[lhs.guideID]?.lowercased() ?? ""
+            let rightGuide = guideNames[rhs.guideID]?.lowercased() ?? ""
+            if leftGuide != rightGuide { return leftGuide < rightGuide }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
     }
 
     // MARK: - Write pipeline (plans/cli-mcp.md Phase 2)
@@ -2776,9 +2932,10 @@ public actor ToolDispatcher {
                 subjectID: created.id.uuidString.lowercased(), subjectName: created.name,
                 instanceID: nil, postModifiedAt: nil,
                 priorValue: nil, newValue: trimmed)
+            let wire = await wireGuides([created], allPlaces: await guides.allPlaces())
             return .guide(
                 helperId: helperId, messageId: messageId,
-                guide: WireMapping.guide(created, id: created.id.uuidString.lowercased()))
+                guide: wire[0])
         } catch {
             return writeFailure(error, helperId: helperId, messageId: messageId)
         }

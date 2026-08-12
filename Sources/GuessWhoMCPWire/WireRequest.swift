@@ -47,7 +47,10 @@ public enum WireRequest: Codable, Sendable {
     case eventsListTags(helperId: String, messageId: String, eventId: String, limit: Int?, cursor: String?)
     case guidesList(helperId: String, messageId: String, limit: Int?, cursor: String?)
     case guidesGet(helperId: String, messageId: String, guideId: String)
+    case guidesListForPlace(helperId: String, messageId: String, placeId: String, limit: Int?, cursor: String?)
     case placesList(helperId: String, messageId: String, guideId: String?, limit: Int?, cursor: String?)
+    case placesSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
+    case placesGet(helperId: String, messageId: String, placeId: String)
     case linksList(helperId: String, messageId: String, id: String, kind: String, limit: Int?, cursor: String?)
 
     // Write tools (plans/cli-mcp.md Phase 2). Every write carries an
@@ -118,7 +121,10 @@ public enum WireRequest: Codable, Sendable {
         case .eventsListTags: return .eventsListTags
         case .guidesList: return .guidesList
         case .guidesGet: return .guidesGet
+        case .guidesListForPlace: return .guidesListForPlace
         case .placesList: return .placesList
+        case .placesSearch: return .placesSearch
+        case .placesGet: return .placesGet
         case .linksList: return .linksList
         case .contactsCreate: return .contactsCreate
         case .contactsUpdate: return .contactsUpdate
@@ -223,7 +229,10 @@ extension WireRequest: MCPRequestProtocol {
              .eventsListTags(let helperId, _, _, _, _),
              .guidesList(let helperId, _, _, _),
              .guidesGet(let helperId, _, _),
+             .guidesListForPlace(let helperId, _, _, _, _),
              .placesList(let helperId, _, _, _, _),
+             .placesSearch(let helperId, _, _, _, _),
+             .placesGet(let helperId, _, _),
              .contactsCreate(let helperId, _, _, _, _),
              .contactsUpdate(let helperId, _, _, _, _),
              .contactsDelete(let helperId, _, _, _),
@@ -282,7 +291,10 @@ extension WireRequest: MCPRequestProtocol {
              .eventsListTags(_, let messageId, _, _, _),
              .guidesList(_, let messageId, _, _),
              .guidesGet(_, let messageId, _),
+             .guidesListForPlace(_, let messageId, _, _, _),
              .placesList(_, let messageId, _, _, _),
+             .placesSearch(_, let messageId, _, _, _),
+             .placesGet(_, let messageId, _),
              .contactsCreate(_, let messageId, _, _, _),
              .contactsUpdate(_, let messageId, _, _, _),
              .contactsDelete(_, let messageId, _, _),
@@ -428,11 +440,25 @@ extension WireRequest: MCPRequestProtocol {
             return .guidesGet(
                 helperId: helperId, messageId: messageId,
                 guideId: try args.requiredString("guideId"))
+        case .guidesListForPlace:
+            return .guidesListForPlace(
+                helperId: helperId, messageId: messageId,
+                placeId: try args.requiredString("placeId"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .placesList:
             return .placesList(
                 helperId: helperId, messageId: messageId,
                 guideId: try args.optionalString("guideId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .placesSearch:
+            return .placesSearch(
+                helperId: helperId, messageId: messageId,
+                query: try args.requiredString("query"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .placesGet:
+            return .placesGet(
+                helperId: helperId, messageId: messageId,
+                placeId: try args.requiredString("placeId"))
         case .linksList:
             return .linksList(
                 helperId: helperId, messageId: messageId,

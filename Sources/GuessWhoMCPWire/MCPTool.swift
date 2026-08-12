@@ -33,7 +33,10 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case eventsListTags = "events_list_tags"
     case guidesList = "guides_list"
     case guidesGet = "guides_get"
+    case guidesListForPlace = "guides_list_for_place"
     case placesList = "places_list"
+    case placesSearch = "places_search"
+    case placesGet = "places_get"
     case linksList = "links_list"
 
     // Write tools. The Phase 2 set mutates GuessWho's OWN data (notes,
@@ -121,7 +124,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .eventsList, .eventsGet, .eventsListTags,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag:
             return .events
-        case .guidesList, .guidesGet, .placesList,
+        case .guidesList, .guidesGet, .guidesListForPlace,
+             .placesList, .placesSearch, .placesGet,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             return .none
         case .linksList, .linksCreate, .linksDelete:
@@ -144,7 +148,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
              .eventsList, .eventsGet, .eventsListTags,
-             .guidesList, .guidesGet, .placesList, .linksList:
+             .guidesList, .guidesGet, .guidesListForPlace,
+             .placesList, .placesSearch, .placesGet, .linksList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
              .contactsSetPhoto, .contactsDeletePhoto,
@@ -607,6 +612,13 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "Get one saved place guide by id.",
                 inputSchema: Self.schema(["guideId": Self.string("A guide id returned by guides_list.")], required: ["guideId"]))
+        case .guidesListForPlace:
+            var props = Self.pagingProperties
+            props["placeId"] = Self.string("A place id returned by places_list or places_search.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "List every saved guide containing the same visible address as one place. Unresolved places without an address return an empty page.",
+                inputSchema: Self.schema(props, required: ["placeId"]))
         case .placesList:
             var props = Self.pagingProperties
             props["guideId"] = Self.string("Optional: a guide id returned by guides_list, to list only that guide's places.")
@@ -614,6 +626,20 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List saved places, optionally within one guide. Each place has a name, address, and map coordinates when known.",
                 inputSchema: Self.schema(props))
+        case .placesSearch:
+            var props = Self.pagingProperties
+            props["query"] = Self.string("Text to find in a place's visible name or address, or in its guide's name.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "Search saved places by visible place name, address, or guide name. Returns deterministic pages of full place records.",
+                inputSchema: Self.schema(props, required: ["query"]))
+        case .placesGet:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Get one saved place by id, including its guide, order, timestamps, resolution state, and favorite state.",
+                inputSchema: Self.schema([
+                    "placeId": Self.string("A place id returned by places_list or places_search.")
+                ], required: ["placeId"]))
         case .linksList:
             var props = Self.pagingProperties
             props["id"] = Self.string(

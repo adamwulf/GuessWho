@@ -187,6 +187,36 @@ final class WireRequestCreateTests: XCTestCase {
         XCTAssertEqual(fields.providedFieldNames, ["kind"])
     }
 
+    func testPlaceReadRequestsParse() throws {
+        let search = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.placesSearch.rawValue, [
+                "query": "museum", "limit": 7, "cursor": "o7",
+            ]))
+        guard case .placesSearch(_, _, let query, let limit, let cursor) = search else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(query, "museum")
+        XCTAssertEqual(limit, 7)
+        XCTAssertEqual(cursor, "o7")
+
+        let get = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.placesGet.rawValue, ["placeId": "p1"]))
+        guard case .placesGet(_, _, let placeId) = get else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(placeId, "p1")
+
+        let containing = try WireRequest.create(
+            helperId: "h", messageId: "m",
+            parameters: params(MCPTool.guidesListForPlace.rawValue, ["placeId": "p1"]))
+        guard case .guidesListForPlace(_, _, let containingPlaceId, _, _) = containing else {
+            return XCTFail("wrong case")
+        }
+        XCTAssertEqual(containingPlaceId, "p1")
+    }
+
     func testContactsListParsesOptionalFavoritesAndGroupFilters() throws {
         let request = try WireRequest.create(
             helperId: "h", messageId: "m",
@@ -278,9 +308,9 @@ final class WireRequestCreateTests: XCTestCase {
     }
 
     func testToolInventoryCountAndReadWriteSplit() {
-        // Three photo tools extend the 47-tool organization/structured-entry baseline.
-        XCTAssertEqual(MCPTool.allCases.count, 50)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 17)
+        // Three guide/place reads extend the 50-tool contact-photo baseline.
+        XCTAssertEqual(MCPTool.allCases.count, 53)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 20)
         XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 33)
     }
 
