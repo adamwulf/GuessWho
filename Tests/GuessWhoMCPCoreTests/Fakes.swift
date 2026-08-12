@@ -36,6 +36,7 @@ enum Sentinels {
 final class FakeContactSource: MCPContactSource {
     var contacts: [Contact] = []
     var groups: [ContactGroup] = []
+    private(set) var fetchGroupsCallCount = 0
     var membersByGroup: [String: [Contact]] = [:]
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
@@ -194,7 +195,10 @@ final class FakeContactSource: MCPContactSource {
         favoriteEffectiveIDs.contains(effectiveID(id))
     }
 
-    func fetchGroups() async -> [ContactGroup] { groups }
+    func fetchGroups() async -> [ContactGroup] {
+        fetchGroupsCallCount += 1
+        return groups
+    }
 
     func members(ofGroup groupLocalID: String) async -> [Contact] {
         membersByGroup[groupLocalID] ?? []
@@ -710,11 +714,19 @@ final class FakeGuideSource: MCPGuideSource {
     var places: [MapsPlace] = []
     var favoriteGuideIDs: Set<String> = []
     var favoritePlaceIDs: Set<String> = []
+    private(set) var allGuidesCallCount = 0
+    private(set) var allPlacesCallCount = 0
 
     nonisolated init() {}
 
-    func allGuides() async -> [MapsGuide] { guides }
-    func allPlaces() async -> [MapsPlace] { places }
+    func allGuides() async -> [MapsGuide] {
+        allGuidesCallCount += 1
+        return guides
+    }
+    func allPlaces() async -> [MapsPlace] {
+        allPlacesCallCount += 1
+        return places
+    }
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         places.filter { $0.guideID == guideID }
     }
@@ -763,14 +775,18 @@ final class FakeGuideSource: MCPGuideSource {
 @MainActor
 final class FakeFavoriteSource: MCPFavoriteSource {
     var items: [Favorite] = []
+    private(set) var loadCallCount = 0
     private(set) var setCallCount = 0
     private(set) var reorderCallCount = 0
     var mutateBeforeNextReorder = false
     var failReads = false
+    var onLoadFavorites: (() -> Void)?
 
     nonisolated init() {}
 
     func loadFavorites() throws -> [Favorite] {
+        loadCallCount += 1
+        onLoadFavorites?()
         if failReads { throw SidecarUnavailableError() }
         return items
     }

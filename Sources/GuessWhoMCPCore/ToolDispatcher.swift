@@ -1744,6 +1744,12 @@ public actor ToolDispatcher {
         } catch {
             return favoriteReadFailure(helperId: helperId, messageId: messageId)
         }
+        if let permissionError = await favoritePermissionError(
+            kinds: current.map { Self.wireFavoriteKind($0.kind) },
+            helperId: helperId, messageId: messageId
+        ) {
+            return permissionError
+        }
         guard identities.count == current.count else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
@@ -1774,26 +1780,24 @@ public actor ToolDispatcher {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
 
-        var canonicalRequested: [WireFavoriteIdentity] = []
-        canonicalRequested.reserveCapacity(identities.count)
-        for identity in identities {
-            switch await resolveFavoriteInput(kind: identity.kind, id: identity.id) {
-            case .failure(let failure):
-                return failure.response(helperId: helperId, messageId: messageId)
-            case .success(let resolved):
-                canonicalRequested.append(resolved.identity)
-            }
-        }
-        guard canonicalRequested.count == currentIdentities.count,
-              Set(canonicalRequested).count == canonicalRequested.count,
-              Set(canonicalRequested) == Set(currentIdentities)
-        else {
-            return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
-        }
-
         let byIdentity = Dictionary(uniqueKeysWithValues: projected.map { ($0.identity, $0.favorite) })
-        let reordered = canonicalRequested.compactMap { byIdentity[$0] }
-        guard reordered.count == current.count else {
+        var canonicalRequested: [WireFavoriteIdentity] = []
+        var reordered: [Favorite] = []
+        canonicalRequested.reserveCapacity(identities.count)
+        reordered.reserveCapacity(identities.count)
+        for identity in identities {
+            guard let canonical = Self.canonicalFavoriteIdentityForReorder(identity),
+                  let favorite = byIdentity[canonical]
+            else {
+                return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+            }
+            canonicalRequested.append(canonical)
+            reordered.append(favorite)
+        }
+        guard Set(canonicalRequested).count == canonicalRequested.count,
+              Set(canonicalRequested) == Set(currentIdentities),
+              reordered.count == current.count
+        else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
 
@@ -4082,6 +4086,29 @@ public actor ToolDispatcher {
         if canonical.hasPrefix("g-") { return expected != .group }
         if canonical.hasPrefix("e-") { return expected != .event }
         return false
+    }
+
+    /// Canonicalize only the public wire identity syntax used by reorder.
+    /// Referent resolution has already happened once through `projected`; the
+    /// caller's composite identity must match that live snapshot. Keeping this
+    /// normalization local avoids repeating full contact-group / guide / place
+    /// collection reads once per requested favorite.
+    private static func canonicalFavoriteIdentityForReorder(
+        _ identity: WireFavoriteIdentity
+    ) -> WireFavoriteIdentity? {
+        let trimmed = identity.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch identity.kind {
+        case .contact, .guide, .place:
+            guard let uuid = WireRecordID.recordUUID(trimmed) else { return nil }
+            return WireFavoriteIdentity(
+                kind: identity.kind, id: uuid.uuidString.lowercased())
+        case .event:
+            guard case .record(let id) = WireRecordID.parseEventID(trimmed) else { return nil }
+            return WireFavoriteIdentity(kind: .event, id: id)
+        case .group:
+            guard trimmed.hasPrefix("g-") else { return nil }
+            return WireFavoriteIdentity(kind: .group, id: trimmed)
+        }
     }
 
     private static func safeStoredFavoriteID(_ favorite: Favorite) -> String {

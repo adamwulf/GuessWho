@@ -218,6 +218,13 @@ final class FavoritesToolTests: XCTestCase {
         let desired = page.items.reversed().map {
             WireFavoriteIdentity(kind: $0.kind, id: $0.id)
         }
+        let readsBefore = await MainActor.run {
+            (
+                fixture.contacts.fetchGroupsCallCount,
+                fixture.guides.allGuidesCallCount,
+                fixture.guides.allPlacesCallCount
+            )
+        }
         let response = await fixture.dispatcher.handle(.favoritesReorder(
             helperId: Fixture.helper, messageId: "r", favorites: desired,
             idempotencyToken: "reorder-1"))
@@ -233,6 +240,16 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertEqual(order, [.place, .guide, .group, .event, .contact])
         let reorderCalls = await MainActor.run { fixture.favorites.reorderCallCount }
         XCTAssertEqual(reorderCalls, 1)
+        let readsAfter = await MainActor.run {
+            (
+                fixture.contacts.fetchGroupsCallCount,
+                fixture.guides.allGuidesCallCount,
+                fixture.guides.allPlacesCallCount
+            )
+        }
+        XCTAssertEqual(readsAfter.0 - readsBefore.0, 1)
+        XCTAssertEqual(readsAfter.1 - readsBefore.1, 1)
+        XCTAssertEqual(readsAfter.2 - readsBefore.2, 1)
     }
 
     func testReorderRejectsDuplicateMissingExtraStaleAndConcurrentChange() async {
@@ -310,6 +327,29 @@ final class FavoritesToolTests: XCTestCase {
         await MainActor.run { fixture.gates.mcpAccess = .off }
         error(await fixture.dispatcher.handle(.favoritesList(
             helperId: Fixture.helper, messageId: "off", limit: nil, cursor: nil)), .disabled)
+    }
+
+    func testReorderRechecksPermissionsAgainstItsCurrentSnapshot() async {
+        let fixture = await fixture(writable: true)
+        _ = await MainActor.run { installEveryKind(fixture) }
+        guard let page = await list(fixture) else { return XCTFail("no page") }
+        let identities = page.items.map { WireFavoriteIdentity(kind: $0.kind, id: $0.id) }
+        await MainActor.run {
+            let nextBodyLoad = fixture.favorites.loadCallCount + 2
+            fixture.favorites.onLoadFavorites = {
+                if fixture.favorites.loadCallCount == nextBodyLoad {
+                    fixture.gates.contactsAuthorized = false
+                }
+            }
+        }
+
+        let response = await fixture.dispatcher.handle(.favoritesReorder(
+            helperId: Fixture.helper, messageId: "permission-race",
+            favorites: Array(identities.reversed()), idempotencyToken: nil))
+
+        error(response, .permissionDenied)
+        let reorderCalls = await MainActor.run { fixture.favorites.reorderCallCount }
+        XCTAssertEqual(reorderCalls, 0)
     }
 
     func testWriteBudgetIdempotencyAuditAndResponseCapPipeline() async {
