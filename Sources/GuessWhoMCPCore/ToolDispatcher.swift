@@ -985,9 +985,21 @@ public actor ToolDispatcher {
                     failures: []))
         } catch let partial as GroupMembershipPartialFailureError {
             let status = await contacts.contactsAuthorizationStatus()
-            let applied = partial.applied.map { WireRecordID.contactID(for: $0) }
+            // Echo the opaque ids from the request, even if resolving one of
+            // them refreshed the contact and changed its canonical wire id.
+            // This keeps every partial result directly attributable to the
+            // caller's batch without exposing the repository identifier.
+            let callerID: (Contact) -> String = { contact in
+                requested.first(where: {
+                    $0.contact.contactID == contact.contactID
+                })?.id ?? WireRecordID.contactID(for: contact)
+            }
+            let applied = partial.applied.map(callerID)
             let failures = partial.failures.map { failure in
-                groupMembershipFailure(failure, authorization: status)
+                groupMembershipFailure(
+                    failure,
+                    contactId: callerID(failure.contact),
+                    authorization: status)
             }
             await recordGroupMembershipAudit(
                 change: change, group: group, groupId: groupId,
@@ -1010,32 +1022,40 @@ public actor ToolDispatcher {
         changedIDs: [String]
     ) async {
         guard !changedIDs.isEmpty else { return }
+        let countDescription = changedIDs.count == 1
+            ? "1 contact"
+            : "\(changedIDs.count) contacts"
         await recordAudit(
             change == .addition ? .addGroupMembers : .removeGroupMembers,
             kind: .group,
             subjectID: groupId, subjectName: group.name,
             instanceID: nil, postModifiedAt: nil,
-            priorValue: nil, newValue: "\(changedIDs.count)")
+            priorValue: nil, newValue: countDescription)
     }
 
     private func groupMembershipFailure(
         _ failure: GroupMembershipPartialFailureError.Failure,
+        contactId: String,
         authorization: StoreAuthorizationStatus
     ) -> WireGroupMembershipFailure {
-        let id = WireRecordID.contactID(for: failure.contact)
         if let storeError = failure.error as? ContactStoreError,
            case .contactNotFound = storeError {
             return WireGroupMembershipFailure(
-                contactId: id, code: .notFound,
+                contactId: contactId, code: .notFound,
+                message: WireErrorMessage.notFoundContact)
+        }
+        if failure.error is ContactNotSavedError {
+            return WireGroupMembershipFailure(
+                contactId: contactId, code: .notFound,
                 message: WireErrorMessage.notFoundContact)
         }
         if authorization == .denied || authorization == .restricted {
             return WireGroupMembershipFailure(
-                contactId: id, code: .permissionDenied,
+                contactId: contactId, code: .permissionDenied,
                 message: WireErrorMessage.permissionDeniedContacts)
         }
         return WireGroupMembershipFailure(
-            contactId: id, code: .writeFailed,
+            contactId: contactId, code: .writeFailed,
             message: WireErrorMessage.writeFailed)
     }
 

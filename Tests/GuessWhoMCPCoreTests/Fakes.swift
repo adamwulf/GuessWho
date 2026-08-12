@@ -41,6 +41,7 @@ final class FakeContactSource: MCPContactSource {
     var membersByGroup: [String: [Contact]] = [:]
     var groupFavoriteLocalIDs: Set<String> = []
     var membershipFailureLocalIDs: Set<String> = []
+    var membershipFailureError: (any Error)?
     var groupWriteError: (any Error)?
     var authorizationStatus: StoreAuthorizationStatus = .authorized
     private(set) var groupCreateCount = 0
@@ -321,8 +322,9 @@ final class FakeContactSource: MCPContactSource {
             if membershipFailureLocalIDs.contains(contact.contactID.restorationToken.localID) {
                 failures.append(.init(
                     contact: contact,
-                    error: ContactStoreError.contactNotFound(
-                        localID: contact.contactID.restorationToken.localID)))
+                    error: membershipFailureError
+                        ?? ContactStoreError.contactNotFound(
+                            localID: contact.contactID.restorationToken.localID)))
                 continue
             }
             switch change {

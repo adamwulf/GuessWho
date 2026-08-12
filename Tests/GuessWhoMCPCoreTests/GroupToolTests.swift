@@ -137,6 +137,58 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(stale?.errorPayload?.message, WireErrorMessage.notFoundGroup)
     }
 
+    func testCreateAndRenameRejectBlankNames() async {
+        let fixture = await writableFixture()
+        let blankCreate = await fixture.dispatcher.handle(.groupsCreate(
+            helperId: Fixture.helper, messageId: "blank-create",
+            name: "  \n  ", idempotencyToken: nil))
+        XCTAssertEqual(blankCreate?.errorPayload?.code, .invalidParams)
+        let createCount = await MainActor.run { fixture.contacts.groupCreateCount }
+        XCTAssertEqual(createCount, 0)
+
+        guard let groupId = await groupID(fixture) else { return }
+        let blankRename = await fixture.dispatcher.handle(.groupsRename(
+            helperId: Fixture.helper, messageId: "blank-rename",
+            groupId: groupId, name: "\t", idempotencyToken: nil))
+        XCTAssertEqual(blankRename?.errorPayload?.code, .invalidParams)
+    }
+
+    func testMembershipAddAndRemoveSucceedAndAuditReadableCounts() async {
+        let fixture = await writableFixture()
+        guard let groupId = await groupID(fixture) else { return }
+        let ids = await contactIDs(fixture)
+        XCTAssertGreaterThanOrEqual(ids.count, 2)
+        let contactId = ids[1]
+
+        let added = await fixture.dispatcher.handle(.groupsAddMembers(
+            helperId: Fixture.helper, messageId: "add-success",
+            groupId: groupId, contactIds: [contactId], idempotencyToken: nil))
+        guard case .groupMembership(_, _, let addResult) = added else {
+            return XCTFail("expected add result; got \(String(describing: added))")
+        }
+        XCTAssertTrue(addResult.isComplete)
+        XCTAssertEqual(addResult.appliedContactIds, [contactId])
+        XCTAssertTrue(addResult.failures.isEmpty)
+
+        let removed = await fixture.dispatcher.handle(.groupsRemoveMembers(
+            helperId: Fixture.helper, messageId: "remove-success",
+            groupId: groupId, contactIds: [contactId], idempotencyToken: nil))
+        guard case .groupMembership(_, _, let removeResult) = removed else {
+            return XCTFail("expected remove result; got \(String(describing: removed))")
+        }
+        XCTAssertTrue(removeResult.isComplete)
+        XCTAssertEqual(removeResult.appliedContactIds, [contactId])
+        XCTAssertTrue(removeResult.failures.isEmpty)
+
+        let entries = await fixture.audit.entries()
+        XCTAssertEqual(entries.suffix(2).map(\.action), [
+            .addGroupMembers, .removeGroupMembers,
+        ])
+        XCTAssertEqual(entries.suffix(2).map(\.newValue), [
+            "1 contact", "1 contact",
+        ])
+    }
+
     func testMembershipBatchReportsPartialFailuresWithOpaqueIDs() async {
         let fixture = await writableFixture()
         guard let groupId = await groupID(fixture) else { return }
@@ -160,7 +212,8 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(result.failures.count, 1)
         XCTAssertFalse(result.isComplete)
         XCTAssertEqual(result.failures.first?.code, .notFound)
-        XCTAssertTrue(ids.contains(result.failures.first?.contactId ?? ""))
+        XCTAssertEqual(result.appliedContactIds, [ids[0]])
+        XCTAssertEqual(result.failures.first?.contactId, ids[1])
         XCTAssertFalse(response?.wireJSON.contains(failedLocalID) ?? true)
         XCTAssertFalse(response?.agentVisibleText.contains("notFound") ?? true)
         XCTAssertTrue(response?.agentVisibleText.contains(WireErrorMessage.notFoundContact) ?? false)
@@ -173,6 +226,37 @@ final class GroupToolTests: XCTestCase {
             fixture.contacts.groupMembershipWriteCount
         }
         XCTAssertEqual(writeCount, 1, "a partial result must replay without reapplying")
+    }
+
+    func testMembershipPartialFailuresClassifyPermissionAndWriteErrors() async {
+        let cases: [(StoreAuthorizationStatus, any Error, WireErrorCode)] = [
+            (StoreAuthorizationStatus.denied, InjectedGroupError(), WireErrorCode.permissionDenied),
+            (.authorized, InjectedGroupError(), .writeFailed),
+            (.authorized, ContactNotSavedError(), .notFound),
+        ]
+        for (authorization, error, expectedCode) in cases {
+            let fixture = await writableFixture()
+            guard let groupId = await groupID(fixture) else { return }
+            let ids = await contactIDs(fixture)
+            XCTAssertGreaterThanOrEqual(ids.count, 2)
+            await MainActor.run {
+                let failed = fixture.contacts.contacts[1]
+                fixture.contacts.membershipFailureLocalIDs.insert(
+                    failed.contactID.restorationToken.localID)
+                fixture.contacts.membershipFailureError = error
+                fixture.contacts.authorizationStatus = authorization
+            }
+
+            let response = await fixture.dispatcher.handle(.groupsAddMembers(
+                helperId: Fixture.helper, messageId: TestMessageID.next(),
+                groupId: groupId, contactIds: [ids[1]], idempotencyToken: nil))
+            guard case .groupMembership(_, _, let result) = response else {
+                return XCTFail("expected partial result; got \(String(describing: response))")
+            }
+            XCTAssertEqual(result.failures.count, 1)
+            XCTAssertEqual(result.failures.first?.contactId, ids[1])
+            XCTAssertEqual(result.failures.first?.code, expectedCode)
+        }
     }
 
     func testMembershipValidatesEveryIDBeforeWriting() async {
