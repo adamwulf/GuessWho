@@ -960,7 +960,12 @@ public actor ToolDispatcher {
                 .map { WireRecordID.contactID(for: $0) }
         )
         let wouldChange = Set(requested.compactMap { pair -> String? in
-            let isMember = currentIDs.contains(pair.id)
+            // A pre-mint id can keep resolving after another writer assigns
+            // the contact a different GuessWho id. Compare membership using
+            // the resolved contact's current wire id, while retaining the
+            // caller id as the response/audit correlation key.
+            let canonicalID = WireRecordID.contactID(for: pair.contact)
+            let isMember = currentIDs.contains(canonicalID)
             switch change {
             case .addition: return isMember ? nil : pair.id
             case .removal: return isMember ? pair.id : nil

@@ -189,6 +189,43 @@ final class GroupToolTests: XCTestCase {
         ])
     }
 
+    func testMembershipAuditUsesResolvedIdentityForPreMintCallerID() async {
+        let fixture = await writableFixture()
+        guard let groupId = await groupID(fixture) else { return }
+        let previewID = await MainActor.run {
+            fixture.contacts.contacts[1].deterministicGuessWhoID
+        }
+        await MainActor.run {
+            var minted = fixture.contacts.contacts[1]
+            minted.urlAddresses.append(LabeledValue(
+                label: "",
+                value: "guesswho://contact/11111111-2222-4333-8444-555555555555"))
+            fixture.contacts.contacts[1] = minted
+            fixture.contacts.membersByGroup["CNGroup-LOCAL-1", default: []].append(minted)
+        }
+
+        let noOp = await fixture.dispatcher.handle(.groupsAddMembers(
+            helperId: Fixture.helper, messageId: "pre-mint-no-op",
+            groupId: groupId, contactIds: [previewID], idempotencyToken: nil))
+        guard case .groupMembership(_, _, let noOpResult) = noOp else {
+            return XCTFail("expected add result; got \(String(describing: noOp))")
+        }
+        XCTAssertEqual(noOpResult.appliedContactIds, [previewID])
+        let noOpEntries = await fixture.audit.entries()
+        XCTAssertTrue(noOpEntries.isEmpty)
+
+        let removed = await fixture.dispatcher.handle(.groupsRemoveMembers(
+            helperId: Fixture.helper, messageId: "pre-mint-remove",
+            groupId: groupId, contactIds: [previewID], idempotencyToken: nil))
+        guard case .groupMembership(_, _, let removeResult) = removed else {
+            return XCTFail("expected remove result; got \(String(describing: removed))")
+        }
+        XCTAssertEqual(removeResult.appliedContactIds, [previewID])
+        let entries = await fixture.audit.entries()
+        XCTAssertEqual(entries.last?.action, .removeGroupMembers)
+        XCTAssertEqual(entries.last?.newValue, "1 contact")
+    }
+
     func testMembershipBatchReportsPartialFailuresWithOpaqueIDs() async {
         let fixture = await writableFixture()
         guard let groupId = await groupID(fixture) else { return }
