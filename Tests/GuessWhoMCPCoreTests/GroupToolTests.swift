@@ -271,6 +271,47 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(writeCount, 1, "a partial result must replay without reapplying")
     }
 
+    func testMembershipBatchAccountsForPreAndPostMintAliasesOnce() async {
+        let fixture = await writableFixture()
+        guard let groupId = await groupID(fixture) else { return }
+        let (previewID, mintedID) = await MainActor.run {
+            let preview = fixture.contacts.contacts[1].deterministicGuessWhoID
+            var minted = fixture.contacts.contacts[1]
+            minted.urlAddresses.append(LabeledValue(
+                label: "",
+                value: "guesswho://contact/11111111-2222-4333-8444-555555555555"))
+            fixture.contacts.contacts[1] = minted
+            fixture.contacts.membershipFailureLocalIDs.insert(
+                minted.contactID.restorationToken.localID)
+            return (preview, "11111111-2222-4333-8444-555555555555")
+        }
+        XCTAssertNotEqual(previewID, mintedID)
+
+        let partial = await fixture.dispatcher.handle(.groupsAddMembers(
+            helperId: Fixture.helper, messageId: "alias-partial",
+            groupId: groupId, contactIds: [previewID, mintedID],
+            idempotencyToken: nil))
+        guard case .groupMembership(_, _, let partialResult) = partial else {
+            return XCTFail("expected partial result; got \(String(describing: partial))")
+        }
+        XCTAssertTrue(partialResult.appliedContactIds.isEmpty)
+        XCTAssertEqual(partialResult.failures.map(\.contactId), [previewID, mintedID])
+
+        await MainActor.run {
+            fixture.contacts.membershipFailureLocalIDs.removeAll()
+        }
+        let success = await fixture.dispatcher.handle(.groupsAddMembers(
+            helperId: Fixture.helper, messageId: "alias-success",
+            groupId: groupId, contactIds: [previewID, mintedID],
+            idempotencyToken: nil))
+        guard case .groupMembership(_, _, let successResult) = success else {
+            return XCTFail("expected success result; got \(String(describing: success))")
+        }
+        XCTAssertEqual(successResult.appliedContactIds, [previewID, mintedID])
+        let entries = await fixture.audit.entries()
+        XCTAssertEqual(entries.last?.newValue, "1 contact")
+    }
+
     func testMembershipPartialFailuresClassifyPermissionAndWriteErrors() async {
         let cases: [(StoreAuthorizationStatus, any Error, WireErrorCode)] = [
             (StoreAuthorizationStatus.denied, InjectedGroupError(), WireErrorCode.permissionDenied),

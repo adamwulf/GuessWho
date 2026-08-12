@@ -943,13 +943,22 @@ public actor ToolDispatcher {
         // request before the caller learns its arguments were stale.
         var seen = Set<String>()
         let uniqueIDs = contactIds.filter { seen.insert($0).inserted }
-        var requested: [(id: String, contact: Contact)] = []
+        var resolved: [(id: String, contact: Contact)] = []
+        var requested: [Contact] = []
         for id in uniqueIDs {
             switch await resolveContactForWrite(id) {
             case .failure(let failure):
                 return failure.response(helperId: helperId, messageId: messageId)
             case .success(let contact):
-                requested.append((id, contact))
+                resolved.append((id, contact))
+                // A pre-mint preview id and the subsequently minted id can
+                // both resolve to the same card. Apply that contact once,
+                // while retaining every distinct caller id for the result.
+                if !requested.contains(where: {
+                    $0.contactID == contact.contactID
+                }) {
+                    requested.append(contact)
+                }
             }
         }
 
@@ -959,29 +968,35 @@ public actor ToolDispatcher {
             await contacts.members(ofGroup: group.localID)
                 .map { WireRecordID.contactID(for: $0) }
         )
-        let wouldChange = Set(requested.compactMap { pair -> String? in
+        let wouldChangeLocalIDs = Set(requested.compactMap { contact -> String? in
             // A pre-mint id can keep resolving after another writer assigns
             // the contact a different GuessWho id. Compare membership using
-            // the resolved contact's current wire id, while retaining the
-            // caller id as the response/audit correlation key.
-            let canonicalID = WireRecordID.contactID(for: pair.contact)
+            // the resolved contact's current wire id. Track the internal
+            // identity only for an exact, de-duplicated audit count.
+            let canonicalID = WireRecordID.contactID(for: contact)
             let isMember = currentIDs.contains(canonicalID)
             switch change {
-            case .addition: return isMember ? nil : pair.id
-            case .removal: return isMember ? pair.id : nil
+            case .addition:
+                return isMember ? nil : contact.contactID.restorationToken.localID
+            case .removal:
+                return isMember ? contact.contactID.restorationToken.localID : nil
             }
         })
 
         do {
             switch change {
             case .addition:
-                try await contacts.addContacts(requested.map(\.contact), toGroup: group)
+                try await contacts.addContacts(requested, toGroup: group)
             case .removal:
-                try await contacts.removeContacts(requested.map(\.contact), fromGroup: group)
+                try await contacts.removeContacts(requested, fromGroup: group)
             }
             await recordGroupMembershipAudit(
                 change: change, group: group, groupId: groupId,
-                changedIDs: uniqueIDs.filter { wouldChange.contains($0) })
+                changedIDs: requested.compactMap { contact in
+                    let localID = contact.contactID.restorationToken.localID
+                    return wouldChangeLocalIDs.contains(localID)
+                        ? WireRecordID.contactID(for: contact) : nil
+                })
             return .groupMembership(
                 helperId: helperId, messageId: messageId,
                 result: WireGroupMembershipResult(
@@ -990,25 +1005,30 @@ public actor ToolDispatcher {
                     failures: []))
         } catch let partial as GroupMembershipPartialFailureError {
             let status = await contacts.contactsAuthorizationStatus()
-            // Echo the opaque ids from the request, even if resolving one of
-            // them refreshed the contact and changed its canonical wire id.
-            // This keeps every partial result directly attributable to the
-            // caller's batch without exposing the repository identifier.
-            let callerID: (Contact) -> String = { contact in
-                requested.first(where: {
-                    $0.contact.contactID == contact.contactID
-                })?.id ?? WireRecordID.contactID(for: contact)
+            let appliedContactIDs = Set(partial.applied.map(\.contactID))
+            let failuresByContactID = Dictionary(
+                partial.failures.map { ($0.contact.contactID, $0) },
+                uniquingKeysWith: { first, _ in first })
+
+            // Classify the caller's distinct opaque ids in their original
+            // order. If pre- and post-mint ids name the same contact, both
+            // receive the one repository outcome, so none silently vanish.
+            let applied = resolved.compactMap { pair in
+                appliedContactIDs.contains(pair.contact.contactID) ? pair.id : nil
             }
-            let applied = partial.applied.map(callerID)
-            let failures = partial.failures.map { failure in
-                groupMembershipFailure(
-                    failure,
-                    contactId: callerID(failure.contact),
-                    authorization: status)
+            let failures = resolved.compactMap { pair in
+                failuresByContactID[pair.contact.contactID].map {
+                    groupMembershipFailure(
+                        $0, contactId: pair.id, authorization: status)
+                }
             }
             await recordGroupMembershipAudit(
                 change: change, group: group, groupId: groupId,
-                changedIDs: applied.filter { wouldChange.contains($0) })
+                changedIDs: partial.applied.compactMap { contact in
+                    let localID = contact.contactID.restorationToken.localID
+                    return wouldChangeLocalIDs.contains(localID)
+                        ? WireRecordID.contactID(for: contact) : nil
+                })
             return .groupMembership(
                 helperId: helperId, messageId: messageId,
                 result: WireGroupMembershipResult(
