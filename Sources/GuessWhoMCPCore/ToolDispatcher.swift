@@ -1800,10 +1800,11 @@ public actor ToolDispatcher {
         else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
+        let validatedReorder = reordered
 
         do {
             let changed = try await MainActor.run {
-                try favorites.reorderFavorites(expected: current, reordered: reordered)
+                try favorites.reorderFavorites(expected: current, reordered: validatedReorder)
             }
             if changed {
                 await recordAudit(
