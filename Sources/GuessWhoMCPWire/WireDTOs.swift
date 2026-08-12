@@ -399,11 +399,11 @@ public struct WireContactFields: Codable, Sendable, Equatable {
 
     /// (wire field name, whether the caller supplied it) for EVERY field —
     /// scalars and lists — in the exact order they appear on the wire. Scalar
-    /// entries reuse `WireContactScalarFields.scalarKeyPaths` (one source for
-    /// the scalar names); the list entries interleave at their real positions
-    /// (`birthday` lands AFTER the first list block, not with the other
-    /// scalars). Order is load-bearing: `providedFieldNames` feeds audit
-    /// summaries and must stay byte-identical to the hand-rolled list.
+    /// entries reuse `WireContactScalarFields.contactCardScalarKeyPaths` (one
+    /// source for the create-side scalar names); the list entries interleave at
+    /// their real positions (`birthday` lands AFTER the first list block, not
+    /// with the other scalars). Order is load-bearing: `providedFieldNames`
+    /// feeds audit summaries and must stay byte-identical to the hand-rolled list.
     private var orderedFieldChecks: [(name: String, provided: Bool)] {
         // Scalar name -> whether self supplied it, sourced from the shared
         // scalar name list zipped with this struct's own read key paths.
