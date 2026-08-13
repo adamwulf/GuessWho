@@ -94,6 +94,8 @@ actor RecordingContactStore: ContactStoreProtocol {
     private(set) var photoWriteAttempts: [PhotoWrite] = []
     /// Photo writes that COMMITTED to the wrapped store.
     private(set) var committedPhotoWrites: [PhotoWrite] = []
+    /// Actual values delegated to the wrapped store after boundary adaptation.
+    private(set) var committedPhotoPayloads: [Data?] = []
     /// Membership calls that reached the OS boundary, including rejected ones.
     private(set) var membershipWriteAttempts: [(contactLocalID: String, groupLocalID: String)] = []
 
@@ -253,6 +255,7 @@ actor RecordingContactStore: ContactStoreProtocol {
         }
         try await inner.setImageData(localID: localID, imageData: storedData)
         committedPhotoWrites.append(PhotoWrite(localID: localID, cleared: imageData == nil))
+        committedPhotoPayloads.append(storedData)
     }
 
     func fetchAllGroups() async throws -> [ContactGroup] {

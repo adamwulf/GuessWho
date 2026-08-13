@@ -576,6 +576,9 @@ final class GroupToolTests: XCTestCase {
         XCTAssertFalse(response?.wireJSON.contains(failedLocalID) ?? true)
         XCTAssertFalse(response?.agentVisibleText.contains("notFound") ?? true)
         XCTAssertTrue(response?.agentVisibleText.contains(WireErrorMessage.notFoundContact) ?? false)
+        let auditAfterPartial = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterPartial.count, 1)
+        XCTAssertEqual(auditAfterPartial.first?.action, .addGroupMembers)
 
         let replay = await fixture.dispatcher.handle(.groupsAddMembers(
             helperId: MCPProductionFixture.helper, messageId: "members-retry",
@@ -585,10 +588,14 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected replayed partial result; got \(String(describing: replay))")
         }
         XCTAssertEqual(replayMessageID, "members-retry")
+        XCTAssertEqual(replayResult.groupId, result.groupId)
         XCTAssertEqual(replayResult.appliedContactIds, result.appliedContactIds)
         XCTAssertEqual(replayResult.failures.map(\.contactId), result.failures.map(\.contactId))
         XCTAssertEqual(replayResult.failures.map(\.code), result.failures.map(\.code))
+        XCTAssertEqual(replayResult.failures.map(\.message), result.failures.map(\.message))
         XCTAssertEqual(replayResult.isComplete, result.isComplete)
+        let auditAfterReplay = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterReplay, auditAfterPartial)
         let attempts = await fixture.store.membershipWriteAttempts
         XCTAssertEqual(
             attempts.count, baselineAttempts + 2,
@@ -617,6 +624,7 @@ final class GroupToolTests: XCTestCase {
         await fixture.store.failMembership(
             forLocalID: MCPProductionFixture.blaiseLocalID,
             with: ContactStoreError.contactNotFound(localID: MCPProductionFixture.blaiseLocalID))
+        let attemptsBeforePartial = await fixture.store.membershipWriteAttempts.count
         XCTAssertNotEqual(previewID, mintedID)
 
         let partial = await fixture.dispatcher.handle(.groupsAddMembers(
@@ -628,6 +636,10 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertTrue(partialResult.appliedContactIds.isEmpty)
         XCTAssertEqual(partialResult.failures.map(\.contactId), [previewID, mintedID])
+        let attemptsAfterPartial = await fixture.store.membershipWriteAttempts.count
+        XCTAssertEqual(
+            attemptsAfterPartial, attemptsBeforePartial + 1,
+            "pre/post-mint aliases resolve to one repository membership attempt")
 
         await fixture.store.clearMembershipFailures()
         let success = await fixture.dispatcher.handle(.groupsAddMembers(
@@ -638,6 +650,10 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected success result; got \(String(describing: success))")
         }
         XCTAssertEqual(successResult.appliedContactIds, [previewID, mintedID])
+        let attemptsAfterSuccess = await fixture.store.membershipWriteAttempts.count
+        XCTAssertEqual(
+            attemptsAfterSuccess, attemptsAfterPartial + 1,
+            "successful aliases still apply one durable membership change")
         let entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.last?.newValue, "1 contact")
     }

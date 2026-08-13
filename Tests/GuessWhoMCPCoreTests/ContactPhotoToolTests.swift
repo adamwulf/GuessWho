@@ -427,6 +427,14 @@ final class ContactPhotoToolTests: XCTestCase {
             return XCTFail("expected empty-byte delete acknowledgement")
         }
         XCTAssertEqual(message, WireAckMessage.photoDeleted)
+        let payloads = await fixture.store.committedPhotoPayloads
+        XCTAssertEqual(payloads.count, 1)
+        guard let committedPayload = payloads.first else {
+            return XCTFail("missing committed delete payload")
+        }
+        XCTAssertEqual(
+            committedPayload, Data(),
+            "the boundary represented deletion as empty bytes")
     }
 
     func testSetVerificationAcceptsContactsTranscodingTheImage() async throws {
