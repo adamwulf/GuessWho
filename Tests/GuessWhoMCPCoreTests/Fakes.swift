@@ -39,22 +39,16 @@ final class FakeContactSource: MCPContactSource {
     var groups: [ContactGroup] = []
     private(set) var fetchGroupsCallCount = 0
     var membersByGroup: [String: [Contact]] = [:]
-    var groupFavoriteLocalIDs: Set<String> = []
     var membershipFailureLocalIDs: Set<String> = []
     var membershipFailureError: (any Error)?
     var groupWriteError: (any Error)?
     var authorizationStatus: StoreAuthorizationStatus = .authorized
     private(set) var groupCreateCount = 0
     private(set) var groupMembershipWriteCount = 0
-    private(set) var groupFavoriteSetCount = 0
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
     var favoriteEffectiveIDs: Set<String> = []
-    private(set) var associatedMembersReadCount = 0
-    private(set) var departmentsReadCount = 0
-    private(set) var departmentMembersReadCount = 0
-    private(set) var renameDepartmentCallCount = 0
     var photoDataByLocalID: [String: Data] = [:]
     /// Simulates Contacts transcoding a successful photo write before the
     /// verification read-back.
@@ -62,9 +56,7 @@ final class FakeContactSource: MCPContactSource {
     /// Simulates an adapter representing a cleared photo as empty bytes
     /// instead of nil on the verification read.
     var photoDeleteLeavesEmptyData = false
-    private(set) var previousPhotoDataByEffectiveID: [String: Data] = [:]
     private(set) var photoWriteCount = 0
-    weak var genericFavorites: FakeFavoriteSource?
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
@@ -217,40 +209,18 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func contactsAssociated(with organization: Contact) -> [Contact] {
-        associatedMembersReadCount += 1
-        let needle = organization.displayName
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
-        return contacts
-            .filter {
-                $0.contactType == .person &&
-                    $0.organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .lowercased() == needle
-            }
-            .sorted {
-                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-            }
+        // Organization semantics belong to ContactsRepository. Tests that care
+        // about matching or ordering use MCPProductionFixture; this legacy fake
+        // deliberately offers no canned substitute.
+        []
     }
 
     func departments(in organization: Contact) -> [String] {
-        departmentsReadCount += 1
-        var seen: Set<String> = []
-        return contactsAssociated(with: organization)
-            .compactMap { contact -> String? in
-                let name = contact.departmentName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { return nil }
-                return name
-            }
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        []
     }
 
     func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact] {
-        departmentMembersReadCount += 1
-        let needle = department.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
-        return contactsAssociated(with: organization).filter {
-            $0.departmentName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
-        }
+        []
     }
 
     func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
@@ -268,11 +238,7 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func isGroupFavorite(_ group: ContactGroup) -> Bool {
-        let key = group.localID.lowercased()
-        return groupFavoriteLocalIDs.contains(key)
-            || genericFavorites?.items.contains {
-                $0.kind == .group && $0.id == key
-            } == true
+        false
     }
 
     // MARK: Writes
@@ -353,17 +319,8 @@ final class FakeContactSource: MCPContactSource {
 
     func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
         if let groupWriteError { throw groupWriteError }
-        groupFavoriteSetCount += 1
-        let key = group.localID.lowercased()
-        if let genericFavorites {
-            _ = try genericFavorites.setFavorite(
-                kind: .group, id: key, favorite: favorite)
-            groupFavoriteLocalIDs.remove(key)
-        } else if favorite {
-            groupFavoriteLocalIDs.insert(key)
-        } else {
-            groupFavoriteLocalIDs.remove(key)
-        }
+        // Desired-state persistence is tested through ContactsRepository and a
+        // real FavoritesStore. This fake retains only the group-write fault.
         return favorite
     }
 
@@ -560,11 +517,9 @@ final class FakeContactSource: MCPContactSource {
         let key = try await effectiveWriteID(id)
         if favoriteEffectiveIDs.contains(key) {
             favoriteEffectiveIDs.remove(key)
-            _ = try genericFavorites?.setFavorite(kind: .contact, id: key, favorite: false)
             return false
         }
         favoriteEffectiveIDs.insert(key)
-        _ = try genericFavorites?.setFavorite(kind: .contact, id: key, favorite: true)
         return true
     }
 
@@ -578,11 +533,6 @@ final class FakeContactSource: MCPContactSource {
     /// succeeded. Structured-entry tests use this to prove an in-memory
     /// mutation is not published when the actual save fails.
     var nextSaveContactError: Error?
-    var nextRenameDepartmentError: Error?
-    /// If set with `nextRenameDepartmentError`, throw after this many
-    /// matching contact cards have already changed to simulate the live
-    /// repository's honest partial-save failure contract.
-    var renameDepartmentFailureAfterUpdates: Int?
     private(set) var deletedContactLocalIDs: [String] = []
 
     private func takeContactStoreError() throws {
@@ -616,20 +566,6 @@ final class FakeContactSource: MCPContactSource {
         guard contacts.contains(where: {
             $0.contactID.restorationToken.localID == localID
         }) else { return false }
-        let key = effectiveID(id)
-        if let current = photoDataByLocalID[localID], !current.isEmpty {
-            previousPhotoDataByEffectiveID[key] = current
-            var fields = fieldsByEffectiveID[key] ?? []
-            fields.removeAll {
-                $0.deletedAt == nil && $0.field == "previousPhoto"
-            }
-            fields.append(SidecarField(
-                id: UUID(), field: "previousPhoto",
-                type: .blob, value: .string("reserved-photo-pointer"),
-                createdAt: Date(), modifiedAt: Date(),
-                modifiedBy: Sentinels.deviceID, deletedAt: nil))
-            fieldsByEffectiveID[key] = fields
-        }
         photoWriteCount += 1
         if imageData == nil, photoDeleteLeavesEmptyData {
             photoDataByLocalID[localID] = Data()
@@ -692,26 +628,9 @@ final class FakeContactSource: MCPContactSource {
     func renameDepartment(
         from oldName: String, to newName: String, in organization: Contact
     ) async throws -> Int {
-        renameDepartmentCallCount += 1
-        let matches = contactsAssociated(with: organization, inDepartment: oldName)
-        let trimmedNew = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        var updated = 0
-        for match in matches {
-            if let error = nextRenameDepartmentError,
-               renameDepartmentFailureAfterUpdates == nil ||
-                updated == renameDepartmentFailureAfterUpdates {
-                nextRenameDepartmentError = nil
-                renameDepartmentFailureAfterUpdates = nil
-                throw error
-            }
-            guard let index = contacts.firstIndex(where: {
-                $0.contactID.restorationToken.localID ==
-                    match.contactID.restorationToken.localID
-            }) else { continue }
-            contacts[index].departmentName = trimmedNew
-            updated += 1
-        }
-        return updated
+        // Department mutation and partial-save behavior are exercised through
+        // ContactsRepository with RecordingContactStore fault injection.
+        return 0
     }
 }
 
@@ -894,8 +813,13 @@ final class FakeGuideSource: MCPGuideSource {
     }
 }
 
+/// Scripted boundary used only for dispatcher fault/race observations.
+///
+/// It intentionally does not reproduce FavoritesStore canonicalization,
+/// idempotency, validation, or compare-and-swap. Tests asserting those rules
+/// use MCPProductionFixture and the real on-disk store.
 @MainActor
-final class FakeFavoriteSource: MCPFavoriteSource {
+final class FaultInjectingFavoriteSource: MCPFavoriteSource {
     var items: [Favorite] = []
     private(set) var loadCallCount = 0
     private(set) var setCallCount = 0
@@ -914,14 +838,13 @@ final class FakeFavoriteSource: MCPFavoriteSource {
     }
 
     func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool {
-        let canonical = id.lowercased()
-        let index = items.firstIndex { $0.kind == kind && $0.id == canonical }
+        // Minimal scripted state for gate/fault tests; no canonicalization or
+        // desired-state idempotency is modeled here.
+        let index = items.firstIndex { $0.kind == kind && $0.id == id }
         if favorite {
-            guard index == nil else { return false }
-            items.append(Favorite(kind: kind, id: canonical, addedAt: Date()))
+            if index == nil { items.append(Favorite(kind: kind, id: id, addedAt: Date())) }
         } else {
-            guard let index else { return false }
-            items.remove(at: index)
+            if let index { items.remove(at: index) }
         }
         setCallCount += 1
         return true
@@ -931,12 +854,10 @@ final class FakeFavoriteSource: MCPFavoriteSource {
         if mutateBeforeNextReorder {
             mutateBeforeNextReorder = false
             items.append(Favorite(kind: .guide, id: UUID().uuidString, addedAt: Date()))
+            throw FavoritesStoreMutationError.changed
         }
-        guard items == expected else { throw FavoritesStoreMutationError.changed }
-        guard reordered.count == items.count, Set(reordered) == Set(items) else {
-            throw FavoritesStoreMutationError.invalidOrder
-        }
-        guard reordered != items else { return false }
+        // Dispatcher validation is under test here; storage CAS/order validity
+        // belongs to FavoritesStore and is covered by production-backed tests.
         items = reordered
         reorderCallCount += 1
         return true
@@ -992,7 +913,7 @@ struct Fixture {
     let contacts: FakeContactSource
     let events: FakeEventSource
     let guides: FakeGuideSource
-    let favorites: FakeFavoriteSource
+    let favorites: FaultInjectingFavoriteSource
     /// REAL link storage: a production `GuessWhoSync` over a real
     /// temp-directory `FileSystemSidecarStore`. The links_* tests set
     /// `contacts.linkEngine = linkEngine` so the whole link surface — old
@@ -1077,7 +998,7 @@ struct Fixture {
         let contacts = FakeContactSource()
         let events = FakeEventSource()
         let guides = FakeGuideSource()
-        let favorites = FakeFavoriteSource()
+        let favorites = FaultInjectingFavoriteSource()
         let linkEngine = makeLinkEngine()
         let links = EngineLinkSource(engine: linkEngine)
         let gates = FakeGateSource()
@@ -1135,7 +1056,6 @@ struct Fixture {
         contacts.linksByID[personLink.id] = personLink
         contacts.linksByID[organizationLink.id] = organizationLink
         contacts.favoriteEffectiveIDs = [janeKey]
-        contacts.genericFavorites = favorites
         favorites.items = [
             Favorite(
                 kind: .contact, id: janeKey,

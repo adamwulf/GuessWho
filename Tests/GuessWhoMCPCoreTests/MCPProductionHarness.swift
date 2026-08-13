@@ -14,9 +14,10 @@ import GuessWhoMCPWire
 
 // The production-backed MCP dispatch harness (parity-test refactor).
 //
-// Unlike `Fixture` in Fakes.swift — which stands a `FakeContactSource` and a
-// `FakeFavoriteSource` that RE-IMPLEMENT the repository/favorites algorithms in
-// test code — this harness wires the SAME production objects the app wires:
+// Unlike `Fixture` in Fakes.swift — whose `FakeContactSource` and
+// `FaultInjectingFavoriteSource` are only scripted boundaries and cannot prove
+// repository/store rules — this harness wires the SAME production objects the
+// app wires:
 //
 //   RecordingContactStore  →  GuessWhoSync   ┐
 //         (OS boundary)         (engine)     ├─ shared instances
