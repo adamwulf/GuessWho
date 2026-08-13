@@ -77,7 +77,7 @@ final class MCPProductionHarnessTests: XCTestCase {
     /// through the thin `MCPFavoriteStoreAdapter`, resolving the favorite's
     /// referent against the repository.
     func testFavoritesListReadsRealOnDiskFavorite() async throws {
-        let fixture = await MCPProductionFixture.make()
+        let fixture = await MCPProductionFixture.make(seedContactFavorite: true)
         defer { fixture.cleanUp() }
 
         // The favorite really is on disk.
@@ -103,7 +103,7 @@ final class MCPProductionHarnessTests: XCTestCase {
     /// is — a re-add reports "no change" and the on-disk list is unchanged. The
     /// adapter contributes no logic of its own.
     func testFavoriteAdapterDelegatesIdempotentSet() async throws {
-        let fixture = await MCPProductionFixture.make()
+        let fixture = await MCPProductionFixture.make(seedContactFavorite: true)
         defer { fixture.cleanUp() }
 
         // Ada is already favorited by the seed; a repeat add is a no-op write.

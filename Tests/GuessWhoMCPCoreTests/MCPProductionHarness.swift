@@ -278,7 +278,8 @@ final class MCPFavoriteStoreAdapter: MCPFavoriteSource {
 /// A ready-to-dispatch harness over the production stack, seeded with a
 /// representative book: a reconciled person (already carrying an identity
 /// URL), a never-reconciled person, an organization, one group with a member,
-/// and one on-disk favorite. Build it with `await MCPProductionFixture.make()`.
+/// Build it with `await MCPProductionFixture.make()`; favorite-specific tests
+/// pass `seedContactFavorite: true` to add one real on-disk favorite.
 @MainActor
 struct MCPProductionFixture {
     let dispatcher: ToolDispatcher
@@ -303,7 +304,7 @@ struct MCPProductionFixture {
     // MARK: Seed identities (stable, referenceable by feature tests)
 
     /// The reconciled person's canonical GuessWho UUID (embedded in her
-    /// `guesswho://` URL and used as the seeded favorite id).
+    /// `guesswho://` URL and used as the optional seeded favorite id).
     static let adaGuessWhoID = "11111111-2222-4333-8444-555566667777"
     static let adaLocalID = "harness-person-ada"
     static let blaiseLocalID = "harness-person-blaise"
@@ -354,7 +355,8 @@ struct MCPProductionFixture {
 
     static func make(
         writeLimitPerWindow: Int = 30,
-        writeWindowSeconds: TimeInterval = 60
+        writeWindowSeconds: TimeInterval = 60,
+        seedContactFavorite: Bool = false
     ) async -> MCPProductionFixture {
         // One unique on-disk root shared by the sidecar store and the favorites
         // store — exactly the app's layout (Favorites.json sits beside the
@@ -417,10 +419,15 @@ struct MCPProductionFixture {
             audit: audit, root: root)
 
         // Load the repository so dispatch immediately sees the seeded book +
-        // groups, then seed a group, a membership, and one on-disk favorite.
+        // groups, then seed a group and membership. Favorite-specific tests opt
+        // into the on-disk seed explicitly so unrelated repository tests do not
+        // depend on the operating system's file-coordination service.
         await repository.reload()
         try! await fixture.seedGroup(named: groupName, memberLocalIDs: [adaLocalID])
-        try! favoritesStore.set(kind: .contact, id: adaGuessWhoID, favorite: true, now: Date())
+        if seedContactFavorite {
+            try! favoritesStore.set(
+                kind: .contact, id: adaGuessWhoID, favorite: true, now: Date())
+        }
 
         return fixture
     }
