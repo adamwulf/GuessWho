@@ -106,7 +106,7 @@ final class ContactPhotoToolTests: XCTestCase {
         }
         XCTAssertFalse(page.items.contains { $0.name == "previousPhoto" })
 
-        let audit = await fixture.audit.entries()
+        let audit = await fixture.storedAuditEntries()
         XCTAssertEqual(audit.filter { $0.action == .editContact }.count, 2)
     }
 
@@ -299,6 +299,8 @@ final class ContactPhotoToolTests: XCTestCase {
             return XCTFail("expected first photo-set acknowledgement")
         }
         XCTAssertEqual(firstMessage, WireAckMessage.photoSet)
+        let auditAfterFirst = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterFirst.filter { $0.action == .editContact }.count, 1)
         let replay = await fixture.dispatcher.handle(.contactsSetPhoto(
             helperId: MCPProductionFixture.helper, messageId: "photo-2", contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegB.base64EncodedString(),
@@ -311,6 +313,8 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(committed.count, 1)
         let stored = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
         XCTAssertEqual(stored, jpegA, "a replay returns the original outcome")
+        let auditAfterReplay = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterReplay, auditAfterFirst)
 
         let intrinsicReplay = await fixture.dispatcher.handle(.contactsSetPhoto(
             helperId: MCPProductionFixture.helper, messageId: "photo-3", contactId: ada,
@@ -322,6 +326,8 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(intrinsicMessage, WireAckMessage.photoSet)
         committed = await fixture.store.committedPhotoWrites
         XCTAssertEqual(committed.count, 1, "identical bytes are a no-op without a token too")
+        let auditAfterIntrinsicReplay = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterIntrinsicReplay, auditAfterFirst)
     }
 
     /// The NEW production-backed snapshot-then-fault coverage. Ada already has a
@@ -374,7 +380,7 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(Data(base64Encoded: photo.dataBase64 ?? ""), jpegA)
 
         // Typed error is non-leaking and the failed write is never audited.
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         XCTAssertFalse(entries.contains { $0.action == .editContact })
         XCTAssertFalse(response?.wireJSON.contains(MCPProductionFixture.adaLocalID) == true)
         XCTAssertFalse(response?.agentVisibleText.contains(MCPProductionFixture.adaLocalID) == true)
@@ -398,7 +404,7 @@ final class ContactPhotoToolTests: XCTestCase {
         let commitsAfterRetry = await fixture.store.committedPhotoWrites
         XCTAssertEqual(attemptsAfterRetry.count, 2)
         XCTAssertEqual(commitsAfterRetry.count, 1)
-        let finalEntries = await fixture.audit.entries()
+        let finalEntries = await fixture.storedAuditEntries()
         let finalAudit = finalEntries.filter { $0.action == .editContact }
         XCTAssertEqual(finalAudit.count, 1)
         XCTAssertEqual(finalAudit.first?.priorValue, "photo (6 bytes)")

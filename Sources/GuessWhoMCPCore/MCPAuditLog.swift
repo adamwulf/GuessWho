@@ -10,7 +10,7 @@ import Foundation
 /// `modifiedAt`) — HOST-SIDE ONLY, never on the wire — plus a display-name
 /// snapshot so the app can render plain rows ("Added note to Jane Doe")
 /// even after the record itself is gone.
-public struct MCPAuditEntry: Codable, Sendable {
+public struct MCPAuditEntry: Codable, Equatable, Sendable {
     public enum Action: String, Codable, Sendable {
         case addNote, editNote, deleteNote
         case setCustomField, deleteCustomField

@@ -219,7 +219,7 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertEqual(message, WireAckMessage.groupDeleted)
 
-        let auditEntries = await fixture.audit.entries()
+        let auditEntries = await fixture.storedAuditEntries()
         XCTAssertEqual(auditEntries.map(\.action), [
             .createGroup, .renameGroup, .deleteGroup,
         ])
@@ -297,7 +297,7 @@ final class GroupToolTests: XCTestCase {
         let membersAfterRemove = await fixture.repository.members(ofGroup: pioneersLocalID)
         XCTAssertFalse(membersAfterRemove.contains { $0.localID == MCPProductionFixture.blaiseLocalID })
 
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.suffix(2).map(\.action), [
             .addGroupMembers, .removeGroupMembers,
         ])
@@ -364,7 +364,7 @@ final class GroupToolTests: XCTestCase {
             $0.kind == .group && $0.id == pioneersLocalID.lowercased()
         })
 
-        var entries = await fixture.audit.entries()
+        var entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.count, 1)
         XCTAssertEqual(entries.last?.action, .setFavorite)
         XCTAssertEqual(entries.last?.subjectKind, .group)
@@ -379,7 +379,7 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected unchanged group")
         }
         XCTAssertTrue(unchanged.isFavorite)
-        entries = await fixture.audit.entries()
+        entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.count, 1, "an idempotent favorite write must not add an audit entry")
 
         let unfavorite = await fixture.dispatcher.handle(.groupsSetFavorite(
@@ -389,7 +389,7 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected updated group")
         }
         XCTAssertFalse(cleared.isFavorite)
-        entries = await fixture.audit.entries()
+        entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.count, 2)
         XCTAssertEqual(entries.last?.action, .setFavorite)
         XCTAssertEqual(entries.last?.priorValue, "true")
@@ -488,7 +488,7 @@ final class GroupToolTests: XCTestCase {
         // The store issued a real local identifier; it must never surface in the
         // audit trail — only the opaque `g-` wire id may.
         let createdLocalID = try XCTUnwrap(localID(ofGroupNamed: "Audited", in: fixture))
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         guard let entry = entries.last else { return XCTFail("missing audit entry") }
         XCTAssertEqual(entry.action, .createGroup)
         XCTAssertEqual(entry.subjectKind, .group)
@@ -672,9 +672,13 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(readOnly?.errorPayload?.code, .readOnly)
 
         await MainActor.run { fixture.gates.mcpAccess = .readWrite }
-        _ = await fixture.dispatcher.handle(.groupsCreate(
+        let firstBudgeted = await fixture.dispatcher.handle(.groupsCreate(
             helperId: Fixture.helper, messageId: "budget-1",
             name: "One", idempotencyToken: nil))
+        guard case .group(_, _, let createdGroup) = firstBudgeted else {
+            return XCTFail("the first budgeted group create must succeed")
+        }
+        XCTAssertEqual(createdGroup.name, "One")
         let busy = await fixture.dispatcher.handle(.groupsCreate(
             helperId: Fixture.helper, messageId: "budget-2",
             name: "Two", idempotencyToken: nil))

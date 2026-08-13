@@ -255,7 +255,7 @@ final class OrganizationToolTests: XCTestCase {
         let saves = await fixture.store.saveCount
         XCTAssertEqual(saves, baseline + 2, "one save per matching member, nothing more")
 
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         let audit = entries.last(where: { $0.action == .renameDepartment })
         XCTAssertEqual(audit?.subjectName, "Acme Corp")
         XCTAssertEqual(audit?.priorValue, "engineering")
@@ -339,7 +339,7 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertFalse(response?.wireJSON.contains("ABPerson-") == true)
 
         // A failed write is never success-audited.
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         XCTAssertFalse(entries.contains { $0.action == .renameDepartment })
 
         // Idempotency: the failed write was NOT cached, so retrying the same
@@ -355,7 +355,7 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertEqual(healed.affectedCount, 1, "only the still-unchanged member remains to rename")
         await fixture.reload()
         XCTAssertEqual(fixture.contact(localID: "ABPerson-MEMBER-Z")?.departmentName, "Product")
-        let entriesAfterRetry = await fixture.audit.entries()
+        let entriesAfterRetry = await fixture.storedAuditEntries()
         XCTAssertTrue(
             entriesAfterRetry.contains { $0.action == .renameDepartment },
             "the healing write IS success-audited")
@@ -416,7 +416,10 @@ final class OrganizationToolTests: XCTestCase {
             organizationId: organizationID, oldName: "Engineering", newName: "Product",
             idempotencyToken: "rename-once"))
         guard case .departmentRename(_, _, let firstResult) = first else { return XCTFail("expected success") }
+        XCTAssertEqual(firstResult.affectedCount, 2)
         let savesAfterFirst = await fixture.store.saveCount
+        let auditAfterFirst = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterFirst.filter { $0.action == .renameDepartment }.count, 1)
         let retry = await fixture.dispatcher.handle(.organizationsRenameDepartment(
             helperId: MCPProductionFixture.helper, messageId: "rename-retry",
             organizationId: organizationID, oldName: "Engineering", newName: "Product",
@@ -428,6 +431,8 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertEqual(retryResult, firstResult)
         let savesAfterRetry = await fixture.store.saveCount
         XCTAssertEqual(savesAfterRetry, savesAfterFirst, "a replay does not re-run the repository write")
+        let auditAfterRetry = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterRetry, auditAfterFirst)
 
         let budgetFixture = try await preparedFixture(
             writable: true, writeLimitPerWindow: 1)
@@ -436,15 +441,23 @@ final class OrganizationToolTests: XCTestCase {
             return XCTFail("missing org")
         }
         let budgetBaseline = await budgetFixture.store.saveCount
-        _ = await budgetFixture.dispatcher.handle(.organizationsRenameDepartment(
+        let firstBudgeted = await budgetFixture.dispatcher.handle(.organizationsRenameDepartment(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             organizationId: budgetOrganizationID, oldName: "Engineering", newName: "Product",
             idempotencyToken: "budget-one"))
+        guard case .departmentRename(_, _, let budgetedResult) = firstBudgeted else {
+            return XCTFail("the first budgeted rename must succeed")
+        }
+        XCTAssertEqual(budgetedResult.affectedCount, 2)
+        let budgetAuditAfterFirst = await budgetFixture.storedAuditEntries()
+        XCTAssertEqual(budgetAuditAfterFirst.filter { $0.action == .renameDepartment }.count, 1)
         let busy = await budgetFixture.dispatcher.handle(.organizationsRenameDepartment(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             organizationId: budgetOrganizationID, oldName: "Product", newName: "Design",
             idempotencyToken: "budget-two"))
         expectError(busy, code: .busy, message: WireErrorMessage.writeBusy)
+        let budgetAuditAfterRejection = await budgetFixture.storedAuditEntries()
+        XCTAssertEqual(budgetAuditAfterRejection, budgetAuditAfterFirst)
         let budgetSaves = await budgetFixture.store.saveCount
         XCTAssertEqual(budgetSaves, budgetBaseline + 2, "only the first rename reached the store")
     }

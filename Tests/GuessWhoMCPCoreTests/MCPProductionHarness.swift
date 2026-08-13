@@ -299,6 +299,8 @@ struct MCPProductionFixture {
     /// The unique on-disk root that holds the sidecar directories and
     /// `Favorites.json`. Remove it with `cleanUp()` when the test is done.
     let root: URL
+    /// Isolated repository repair journal removed alongside the file root.
+    let repairDefaultsSuiteName: String
 
     static let helper = RequestOrigin.mcp.makeHelperId()
 
@@ -362,6 +364,12 @@ struct MCPProductionFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("gw-mcp-prod-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let repairDefaultsSuiteName = "gw-mcp-prod-repairs-\(UUID().uuidString)"
+        guard let repairDefaults = UserDefaults(suiteName: repairDefaultsSuiteName) else {
+            try? FileManager.default.removeItem(at: root)
+            throw CocoaError(.fileWriteUnknown)
+        }
+        repairDefaults.removePersistentDomain(forName: repairDefaultsSuiteName)
 
         // The only substituted OS boundary — seeded with the starting book so
         // the first reload sees production contacts. Setup errors propagate to
@@ -396,7 +404,8 @@ struct MCPProductionFixture {
             contacts: store,
             sync: sync,
             favorites: favoritesStore,
-            notificationCenter: NotificationCenter())
+            notificationCenter: NotificationCenter(),
+            creationTimestampRepairDefaults: repairDefaults)
 
         let favoriteSource = MCPFavoriteStoreAdapter(store: favoritesStore)
         let links = EngineLinkSource(engine: sync)
@@ -418,7 +427,8 @@ struct MCPProductionFixture {
             sync: sync, favoritesStore: favoritesStore,
             favoriteSource: favoriteSource, links: links, events: events,
             guides: guides, gates: gates, confirmations: confirmations,
-            audit: audit, root: root)
+            audit: audit, root: root,
+            repairDefaultsSuiteName: repairDefaultsSuiteName)
 
         // Load the repository so dispatch immediately sees the seeded book +
         // groups, then seed a group and membership. Favorite-specific tests opt
@@ -505,6 +515,12 @@ struct MCPProductionFixture {
         try await store.loadImageData(localID: localID)
     }
 
+    /// Audit entries reloaded from the JSONL file through a fresh actor, so
+    /// assertions prove persistence rather than observing the writer's cache.
+    func storedAuditEntries() async -> [MCPAuditEntry] {
+        await MCPAuditLog(fileURL: root.appendingPathComponent("audit.jsonl")).entries()
+    }
+
     // MARK: - Identity helpers
 
     /// The cached `Contact` for a store `localID`, or nil.
@@ -524,5 +540,6 @@ struct MCPProductionFixture {
     /// Remove the on-disk root. Best-effort; safe to call more than once.
     func cleanUp() {
         try? FileManager.default.removeItem(at: root)
+        UserDefaults.standard.removePersistentDomain(forName: repairDefaultsSuiteName)
     }
 }

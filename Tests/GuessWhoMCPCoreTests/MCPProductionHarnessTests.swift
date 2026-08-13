@@ -90,6 +90,11 @@ final class MCPProductionHarnessTests: XCTestCase {
         guard case .contactPage(_, _, let page) = list,
               let blaiseID = page.items.first(where: { $0.name == "Blaise Pascal" })?.id
         else { return XCTFail("expected unreconciled Blaise in CLI contact list") }
+        XCTAssertNil(
+            fixture.guessWhoID(forLocalID: MCPProductionFixture.blaiseLocalID),
+            "the CLI request must begin on the production mint path")
+        let savesBeforeWrite = await fixture.store.saveCount
+        XCTAssertEqual(savesBeforeWrite, 0)
 
         let response = await fixture.dispatcher.handle(.contactsAddNote(
             helperId: cliHelper, messageId: TestMessageID.next(), contactId: blaiseID,
@@ -101,6 +106,8 @@ final class MCPProductionHarnessTests: XCTestCase {
         let fetchedCard = try await fixture.store.fetch(localID: MCPProductionFixture.blaiseLocalID)
         let storedCard = try XCTUnwrap(fetchedCard)
         let stampedID = try XCTUnwrap(storedCard.contactID.guessWhoID)
+        let savesAfterWrite = await fixture.store.saveCount
+        XCTAssertEqual(savesAfterWrite, 1, "the engine stamped the shared contact store")
         await fixture.reload()
         XCTAssertEqual(
             fixture.contact(localID: MCPProductionFixture.blaiseLocalID)?.contactID.guessWhoID,

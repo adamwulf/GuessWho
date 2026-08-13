@@ -385,11 +385,18 @@ final class StructuredContactEntryToolTests: XCTestCase {
         let first = await fixture.dispatcher.handle(.contactsAddInstantMessage(
             helperId: MCPProductionFixture.helper, messageId: "structured-first",
             contactId: adaID, instantMessage: signal, idempotencyToken: "structured-token"))
+        XCTAssertNotNil(expectCard(first))
+        let auditAfterFirst = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterFirst.count, 1)
+        XCTAssertEqual(auditAfterFirst.first?.action, .editContact)
+        XCTAssertEqual(auditAfterFirst.first?.subjectName, "Ada Lovelace")
+        XCTAssertEqual(auditAfterFirst.first?.newValue, "instantMessages")
         let replay = await fixture.dispatcher.handle(.contactsAddInstantMessage(
             helperId: MCPProductionFixture.helper, messageId: "structured-retry",
             contactId: adaID, instantMessage: signal, idempotencyToken: "structured-token"))
-        XCTAssertNotNil(expectCard(first))
         XCTAssertNotNil(expectCard(replay))
+        let auditAfterReplay = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterReplay, auditAfterFirst)
         // Durable: the token replay did not double-write — one entry on the
         // boundary, committed by exactly one save.
         let storedAfterReplay = try await storedAda(fixture)
@@ -397,15 +404,12 @@ final class StructuredContactEntryToolTests: XCTestCase {
         let committed = await fixture.store.committedSaveLocalIDs
         XCTAssertEqual(committed, [MCPProductionFixture.adaLocalID])
 
-        expectError(await fixture.dispatcher.handle(.contactsAddPostalAddress(
+        let blocked = await fixture.dispatcher.handle(.contactsAddPostalAddress(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
-            contactId: adaID, address: home, idempotencyToken: nil)),
-            code: .busy, message: WireErrorMessage.writeBusy)
-        let entries = await fixture.audit.entries()
-        XCTAssertTrue(entries.contains {
-            $0.action == .editContact && $0.subjectName == "Ada Lovelace"
-                && $0.newValue == "instantMessages"
-        })
+            contactId: adaID, address: home, idempotencyToken: nil))
+        expectError(blocked, code: .busy, message: WireErrorMessage.writeBusy)
+        let entries = await fixture.storedAuditEntries()
+        XCTAssertEqual(entries, auditAfterFirst)
     }
 
     // MARK: - Save failure at the real boundary

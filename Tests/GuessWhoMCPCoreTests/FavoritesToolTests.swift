@@ -434,6 +434,8 @@ final class FavoritesToolTests: XCTestCase {
             helperId: MCPProductionFixture.helper, messageId: "1", kind: .guide,
             id: guideID, favorite: true, idempotencyToken: "same"))
         guard case .acknowledged = first else { return XCTFail("first failed") }
+        let auditAfterFirst = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterFirst.count, 1)
         let replay = await fixture.dispatcher.handle(.favoritesSet(
             helperId: MCPProductionFixture.helper, messageId: "2", kind: .guide,
             id: guideID, favorite: false, idempotencyToken: "same"))
@@ -442,12 +444,17 @@ final class FavoritesToolTests: XCTestCase {
         // Same-token replay returns the original result even when the payload
         // conflicts; the cached true write must remain authoritative.
         XCTAssertEqual(try fixture.favoritesStore.loadAll().filter { $0.kind == .guide }.count, 1)
+        let auditAfterReplay = await fixture.storedAuditEntries()
+        XCTAssertEqual(
+            auditAfterReplay, auditAfterFirst,
+            "an idempotency replay must not append another audit entry")
 
         let blocked = await fixture.dispatcher.handle(.favoritesSet(
             helperId: MCPProductionFixture.helper, messageId: "3", kind: .guide,
             id: guideID, favorite: false, idempotencyToken: "different"))
         error(blocked, .busy)
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
+        XCTAssertEqual(entries, auditAfterFirst, "a budget rejection must not be audited")
         XCTAssertEqual(entries.last?.action, .setFavorite)
         XCTAssertEqual(entries.last?.subjectKind, .guide)
 
