@@ -720,7 +720,9 @@ final class GroupToolTests: XCTestCase {
             name: "Two", idempotencyToken: nil))
         XCTAssertEqual(busy?.errorPayload?.code, .busy)
 
-        guard let existingGroup = await groupID(fixture) else { return }
+        guard let existingGroup = await groupID(fixture) else {
+            return XCTFail("missing seeded group for kind validation")
+        }
         let badKind = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "kind",
             kind: "company", favoritesOnly: nil, groupId: existingGroup,

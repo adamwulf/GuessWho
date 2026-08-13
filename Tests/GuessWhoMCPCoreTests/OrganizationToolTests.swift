@@ -466,7 +466,7 @@ final class OrganizationToolTests: XCTestCase {
         let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
-        let responses: [WireResponse?] = [
+        let optionalResponses: [WireResponse?] = [
             await fixture.dispatcher.handle(.organizationsListMembers(
                 helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
                 organizationId: organizationID, limit: nil, cursor: nil)),
@@ -482,7 +482,15 @@ final class OrganizationToolTests: XCTestCase {
                 organizationId: organizationID, oldName: "Engineering", newName: "Product",
                 idempotencyToken: nil)),
         ]
-        for response in responses.compactMap({ $0 }) {
+        var responses: [WireResponse] = []
+        for (index, response) in optionalResponses.enumerated() {
+            guard let response else {
+                return XCTFail("organization response \(index) unexpectedly missing")
+            }
+            responses.append(response)
+        }
+        XCTAssertEqual(responses.count, 4)
+        for response in responses {
             XCTAssertFalse(response.wireJSON.contains("ABPerson-"))
             XCTAssertFalse(response.agentVisibleText.contains("ABPerson-"))
             XCTAssertFalse(response.agentVisibleText.contains("PRIVATE-"))
