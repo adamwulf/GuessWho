@@ -575,10 +575,18 @@ final class GroupToolTests: XCTestCase {
         XCTAssertFalse(response?.agentVisibleText.contains("notFound") ?? true)
         XCTAssertTrue(response?.agentVisibleText.contains(WireErrorMessage.notFoundContact) ?? false)
 
-        _ = await fixture.dispatcher.handle(.groupsAddMembers(
+        let replay = await fixture.dispatcher.handle(.groupsAddMembers(
             helperId: Fixture.helper, messageId: "members-retry",
             groupId: groupId, contactIds: Array(ids.prefix(2)),
             idempotencyToken: "members-once"))
+        guard case .groupMembership(_, let replayMessageID, let replayResult) = replay else {
+            return XCTFail("expected replayed partial result; got \(String(describing: replay))")
+        }
+        XCTAssertEqual(replayMessageID, "members-retry")
+        XCTAssertEqual(replayResult.appliedContactIds, result.appliedContactIds)
+        XCTAssertEqual(replayResult.failures.map(\.contactId), result.failures.map(\.contactId))
+        XCTAssertEqual(replayResult.failures.map(\.code), result.failures.map(\.code))
+        XCTAssertEqual(replayResult.isComplete, result.isComplete)
         let writeCount = await MainActor.run {
             fixture.contacts.groupMembershipWriteCount
         }
