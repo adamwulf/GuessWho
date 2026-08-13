@@ -65,7 +65,7 @@ struct ContactsRepositoryGroupFavoritesTests {
 
     @Test @MainActor
     func setGroupFavoritePersistsCanonicalLowercasedKey() throws {
-        let root = makeRoot()
+        let root = try makeRoot()
         defer { cleanup(root) }
         let store = FavoritesStore(root: root)
         let repository = makeRepository(favorites: store)
@@ -87,7 +87,7 @@ struct ContactsRepositoryGroupFavoritesTests {
 
     @Test @MainActor
     func setGroupFavoriteIdempotentTrueDoesNotRewriteFile() throws {
-        let root = makeRoot()
+        let root = try makeRoot()
         defer { cleanup(root) }
         let store = FavoritesStore(root: root)
         let repository = makeRepository(favorites: store)
@@ -107,7 +107,7 @@ struct ContactsRepositoryGroupFavoritesTests {
 
     @Test @MainActor
     func groupFavoriteSharesGenericStoreState() throws {
-        let root = makeRoot()
+        let root = try makeRoot()
         defer { cleanup(root) }
         let store = FavoritesStore(root: root)
         let repository = makeRepository(favorites: store)
@@ -126,7 +126,7 @@ struct ContactsRepositoryGroupFavoritesTests {
 
     @Test @MainActor
     func setGroupFavoriteFalseClearsPersistedRow() throws {
-        let root = makeRoot()
+        let root = try makeRoot()
         defer { cleanup(root) }
         let store = FavoritesStore(root: root)
         let repository = makeRepository(favorites: store)
@@ -140,7 +140,7 @@ struct ContactsRepositoryGroupFavoritesTests {
 
     @Test @MainActor
     func repeatedGroupFavoriteClearIsANoWrite() throws {
-        let root = makeRoot()
+        let root = try makeRoot()
         defer { cleanup(root) }
         let store = FavoritesStore(root: root)
         let repository = makeRepository(favorites: store)
@@ -162,10 +162,10 @@ struct ContactsRepositoryGroupFavoritesTests {
 
     // MARK: - Helpers
 
-    private func makeRoot() -> URL {
+    private func makeRoot() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("guesswho-repo-groupfav-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
 

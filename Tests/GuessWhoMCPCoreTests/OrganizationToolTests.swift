@@ -51,17 +51,22 @@ final class OrganizationToolTests: XCTestCase {
             fixture.gates.mcpAccess = .readWrite
             fixture.gates.cliAccess = .readWrite
         }
-        try await fixture.seedContacts([
-            Contact(
-                localID: Self.organizationLocalID,
-                contactType: .organization,
-                organizationName: "Acme Corp",
-                note: "ORGANIZATION-PRIVATE-NOTE"),
-            makeContact(localID: "ABPerson-MEMBER-Z", givenName: "Zara", department: " Engineering "),
-            makeContact(localID: "ABPerson-MEMBER-A", givenName: "alice", organization: " acme corp ", department: "engineering"),
-            makeContact(localID: "ABPerson-MEMBER-B", givenName: "Bob", department: "Design"),
-            makeContact(localID: "ABPerson-OUTSIDER", givenName: "Outsider", organization: "Other Corp", department: "Engineering"),
-        ])
+        do {
+            try await fixture.seedContacts([
+                Contact(
+                    localID: Self.organizationLocalID,
+                    contactType: .organization,
+                    organizationName: "Acme Corp",
+                    note: "ORGANIZATION-PRIVATE-NOTE"),
+                makeContact(localID: "ABPerson-MEMBER-Z", givenName: "Zara", department: " Engineering "),
+                makeContact(localID: "ABPerson-MEMBER-A", givenName: "alice", organization: " acme corp ", department: "engineering"),
+                makeContact(localID: "ABPerson-MEMBER-B", givenName: "Bob", department: "Design"),
+                makeContact(localID: "ABPerson-OUTSIDER", givenName: "Outsider", organization: "Other Corp", department: "Engineering"),
+            ])
+        } catch {
+            fixture.cleanUp()
+            throw error
+        }
         return fixture
     }
 
