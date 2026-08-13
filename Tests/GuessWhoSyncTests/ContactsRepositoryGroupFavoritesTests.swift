@@ -17,10 +17,11 @@ struct ContactsRepositoryGroupFavoritesTests {
         let favorite = Favorite(kind: .group, id: family.localID, addedAt: Date())
         let items = repository.favoriteListItems(from: [favorite]) { _ in nil }
 
+        let item = try #require(items.first)
         #expect(items.count == 1)
-        #expect(items[0].kind == .group)
-        #expect(items[0].group?.localID == family.localID)
-        #expect(items[0].group?.name == "Family")
+        #expect(item.kind == .group)
+        #expect(item.group?.localID == family.localID)
+        #expect(item.group?.name == "Family")
     }
 
     @Test @MainActor
@@ -32,9 +33,13 @@ struct ContactsRepositoryGroupFavoritesTests {
 
         let items = repository.favoriteListItems(from: [favorite]) { _ in nil }
 
+        guard let item = items.first else {
+            Issue.record("expected the unresolved favorite projection")
+            return
+        }
         #expect(items.count == 1)
-        #expect(items[0].kind == .group)
-        #expect(items[0].group == nil)
+        #expect(item.kind == .group)
+        #expect(item.group == nil)
     }
 
     @Test @MainActor
@@ -72,11 +77,12 @@ struct ContactsRepositoryGroupFavoritesTests {
         #expect(repository.isGroupFavorite(group) == true)
 
         let stored = try store.loadAll()
+        let persisted = try #require(stored.first)
         #expect(stored.count == 1)
-        #expect(stored[0].kind == .group)
-        #expect(stored[0].id == "cngroup-upper-abc")
+        #expect(persisted.kind == .group)
+        #expect(persisted.id == "cngroup-upper-abc")
         // The raw mixed-case Contacts identifier is never what lands on disk.
-        #expect(stored[0].id != group.localID)
+        #expect(persisted.id != group.localID)
     }
 
     @Test @MainActor
@@ -95,7 +101,7 @@ struct ContactsRepositoryGroupFavoritesTests {
         #expect(try repository.setGroupFavorite(true, for: group) == true)
 
         let after = try fileSnapshot(store.fileURL)
-        #expect(after == before) // bytes AND modification date unchanged → no rewrite
+        #expect(after == before) // bytes, date, and inode unchanged → no replacement
         #expect(try store.loadAll().filter { $0.kind == .group }.count == 1)
     }
 
@@ -177,11 +183,13 @@ struct ContactsRepositoryGroupFavoritesTests {
             notificationCenter: NotificationCenter())
     }
 
-    /// The on-disk bytes AND modification date of a file — a write REPLACES the
-    /// file atomically, so an unchanged snapshot proves no write occurred.
+    /// The on-disk bytes, modification date, and inode of a file. Production
+    /// writes replace the file atomically, so the inode makes a same-content
+    /// rewrite observable even when the filesystem timestamp resolution does not.
     private struct FileSnapshot: Equatable {
         let bytes: Data
         let modificationDate: Date?
+        let systemFileNumber: UInt64?
     }
 
     private func fileSnapshot(_ url: URL) throws -> FileSnapshot {
@@ -189,6 +197,7 @@ struct ContactsRepositoryGroupFavoritesTests {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return FileSnapshot(
             bytes: bytes,
-            modificationDate: attributes[.modificationDate] as? Date)
+            modificationDate: attributes[.modificationDate] as? Date,
+            systemFileNumber: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
     }
 }

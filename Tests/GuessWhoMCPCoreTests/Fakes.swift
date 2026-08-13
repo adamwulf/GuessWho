@@ -32,8 +32,17 @@ enum Sentinels {
     static let localID = "ABPerson-LOCAL-SENTINEL-77"
 }
 
+/// Legacy scripted contact source used only where a test needs a boundary
+/// fault or an identity-race scenario that `RecordingContactStore` cannot
+/// express. It is deliberately *not* a repository conformance harness.
+///
+/// Matching, sorting, department rename, favorite persistence/CAS, group
+/// favorite state, and photo snapshot assertions must use
+/// `MCPProductionFixture`. The remaining identity/link/sidecar simulations
+/// support older, separately-scoped dispatcher race tests and are named here
+/// so no caller can mistake them for production semantics.
 @MainActor
-final class FakeContactSource: MCPContactSource {
+final class LegacyScriptedContactSource: MCPContactSource {
     var contacts: [Contact] = []
     private(set) var allContactsReadCount = 0
     var groups: [ContactGroup] = []
@@ -297,18 +306,11 @@ final class FakeContactSource: MCPContactSource {
                             localID: contact.contactID.restorationToken.localID)))
                 continue
             }
-            switch change {
-            case .addition:
-                if !(membersByGroup[group.localID] ?? []).contains(where: {
-                    $0.contactID == contact.contactID
-                }) {
-                    membersByGroup[group.localID, default: []].append(contact)
-                }
-            case .removal:
-                membersByGroup[group.localID, default: []].removeAll {
-                    $0.contactID == contact.contactID
-                }
-            }
+            // Scripted-success observation only. Real membership mutation,
+            // de-duplication, and persistence are covered through
+            // `ContactsRepository` + `RecordingContactStore`; this boundary
+            // merely tells dispatcher fault-mapping tests which requests the
+            // injected OS failure allowed through.
             applied.append(contact)
         }
         if !failures.isEmpty {
@@ -910,7 +912,7 @@ final class FakeGateSource: MCPGateSource {
 /// note, the identity URL, `modifiedBy` device ids, raw local ids.
 struct Fixture {
     let dispatcher: ToolDispatcher
-    let contacts: FakeContactSource
+    let contacts: LegacyScriptedContactSource
     let events: FakeEventSource
     let guides: FakeGuideSource
     let favorites: FaultInjectingFavoriteSource
@@ -995,7 +997,7 @@ struct Fixture {
         writeLimitPerWindow: Int = 30,
         writeWindowSeconds: TimeInterval = 60
     ) -> Fixture {
-        let contacts = FakeContactSource()
+        let contacts = LegacyScriptedContactSource()
         let events = FakeEventSource()
         let guides = FakeGuideSource()
         let favorites = FaultInjectingFavoriteSource()

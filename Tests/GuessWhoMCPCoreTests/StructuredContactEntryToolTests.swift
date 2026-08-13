@@ -45,8 +45,8 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
     /// A production fixture whose gates are opened for writes — the app's
     /// user-opted-in read-write state.
-    private func writableFixture(writeLimit: Int = 30) async -> MCPProductionFixture {
-        let fixture = await MCPProductionFixture.make(writeLimitPerWindow: writeLimit)
+    private func writableFixture(writeLimit: Int = 30) async throws -> MCPProductionFixture {
+        let fixture = try await MCPProductionFixture.make(writeLimitPerWindow: writeLimit)
         fixture.gates.mcpAccess = .readWrite
         fixture.gates.cliAccess = .readWrite
         return fixture
@@ -56,8 +56,9 @@ final class StructuredContactEntryToolTests: XCTestCase {
     /// the substituted OS boundary (`RecordingContactStore`). This is the
     /// source of truth every structured-entry write must reach — not the
     /// repository cache, not a fake array.
-    private func storedAda(_ fixture: MCPProductionFixture) async -> Contact? {
-        try? await fixture.store.fetch(localID: MCPProductionFixture.adaLocalID)
+    private func storedAda(_ fixture: MCPProductionFixture) async throws -> Contact {
+        let fetched = try await fixture.store.fetch(localID: MCPProductionFixture.adaLocalID)
+        return try XCTUnwrap(fetched)
     }
 
     /// Seed the reconciled contact's structured lists onto the boundary record
@@ -144,18 +145,18 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
     // MARK: - Add / edit / delete preservation (production stack)
 
-    func testPostalAddressAddEditDeletePreservesLabelAndUnrelatedData() async {
-        let fixture = await writableFixture()
+    func testPostalAddressAddEditDeletePreservesLabelAndUnrelatedData() async throws {
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
-        let before = await storedAda(fixture)
+        let before = try await storedAda(fixture)
 
         let added = await fixture.dispatcher.handle(.contactsAddPostalAddress(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: adaID, address: home, idempotencyToken: nil))
         XCTAssertEqual(expectCard(added)?.postalAddresses, [home])
         // Durable: the boundary record now carries the added address.
-        let storedAfterAdd = await storedAda(fixture)
-        XCTAssertEqual(storedAfterAdd?.postalAddresses, [postal(home)])
+        let storedAfterAdd = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterAdd.postalAddresses, [postal(home)])
 
         let replacement = WirePostalAddress(
             label: nil, street: "9 New St", subLocality: "Clarksville",
@@ -168,9 +169,9 @@ final class StructuredContactEntryToolTests: XCTestCase {
         XCTAssertEqual(editedCard.postalAddresses.first?.label, "home")
         XCTAssertEqual(editedCard.postalAddresses.first?.street, "9 New St")
         // Durable: the label survived the labelless replacement on disk.
-        let storedAfterEdit = await storedAda(fixture)
-        XCTAssertEqual(storedAfterEdit?.postalAddresses.first?.label, "home")
-        XCTAssertEqual(storedAfterEdit?.postalAddresses.first?.value.street, "9 New St")
+        let storedAfterEdit = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterEdit.postalAddresses.first?.label, "home")
+        XCTAssertEqual(storedAfterEdit.postalAddresses.first?.value.street, "9 New St")
 
         var currentReplacement = replacement
         currentReplacement = WirePostalAddress(
@@ -185,16 +186,16 @@ final class StructuredContactEntryToolTests: XCTestCase {
             contactId: adaID, address: currentReplacement, idempotencyToken: nil))
         XCTAssertEqual(expectCard(deleted)?.postalAddresses, [])
 
-        let after = await storedAda(fixture)
-        XCTAssertEqual(after?.postalAddresses, [])
-        XCTAssertEqual(after?.note, Sentinels.appleNote)
-        XCTAssertEqual(after?.urlAddresses, before?.urlAddresses)
-        XCTAssertEqual(after?.phoneNumbers, before?.phoneNumbers)
-        XCTAssertEqual(after?.jobTitle, before?.jobTitle)
+        let after = try await storedAda(fixture)
+        XCTAssertEqual(after.postalAddresses, [])
+        XCTAssertEqual(after.note, Sentinels.appleNote)
+        XCTAssertEqual(after.urlAddresses, before.urlAddresses)
+        XCTAssertEqual(after.phoneNumbers, before.phoneNumbers)
+        XCTAssertEqual(after.jobTitle, before.jobTitle)
     }
 
     func testSocialProfileAddEditDeletePreservesLabelAndHiddenUserIdentifier() async throws {
-        let fixture = await writableFixture()
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
         try await seedAda(fixture) {
             $0.socialProfiles = [self.social(self.linkedIn, userIdentifier: "hidden-system-id")]
@@ -217,9 +218,9 @@ final class StructuredContactEntryToolTests: XCTestCase {
         XCTAssertEqual(editedCard.socialProfiles.first?.username, "jane-doe-new")
         // Durable: the hidden system identifier (never on the wire) survived the
         // labelless edit, and the untouched instant-message list is intact.
-        let stored = await storedAda(fixture)
-        XCTAssertEqual(stored?.socialProfiles.first?.value.userIdentifier, "hidden-system-id")
-        XCTAssertEqual(stored?.instantMessageAddresses, [instant(signal)])
+        let stored = try await storedAda(fixture)
+        XCTAssertEqual(stored.socialProfiles.first?.value.userIdentifier, "hidden-system-id")
+        XCTAssertEqual(stored.instantMessageAddresses, [instant(signal)])
 
         let current = WireSocialProfile(
             label: "work", service: replacement.service,
@@ -229,12 +230,12 @@ final class StructuredContactEntryToolTests: XCTestCase {
             contactId: adaID, profile: current, idempotencyToken: nil))
         XCTAssertEqual(expectCard(deleted)?.socialProfiles, [mastodon])
         // Durable: only Mastodon remains on the boundary record.
-        let storedAfterDelete = await storedAda(fixture)
-        XCTAssertEqual(storedAfterDelete?.socialProfiles, [social(mastodon)])
+        let storedAfterDelete = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterDelete.socialProfiles, [social(mastodon)])
     }
 
     func testInstantMessageAddEditDeletePreservesLabelAndOtherLists() async throws {
-        let fixture = await writableFixture()
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
         try await seedAda(fixture) { $0.postalAddresses = [self.postal(self.home)] }
 
@@ -242,8 +243,8 @@ final class StructuredContactEntryToolTests: XCTestCase {
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: adaID, instantMessage: signal, idempotencyToken: nil))
         XCTAssertEqual(expectCard(added)?.instantMessages, [signal])
-        let storedAfterAdd = await storedAda(fixture)
-        XCTAssertEqual(storedAfterAdd?.instantMessageAddresses, [instant(signal)])
+        let storedAfterAdd = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterAdd.instantMessageAddresses, [instant(signal)])
 
         let replacement = WireInstantMessage(
             label: nil, service: "Signal", username: "+15550109999")
@@ -255,9 +256,9 @@ final class StructuredContactEntryToolTests: XCTestCase {
         XCTAssertEqual(card.instantMessages.first?.label, "mobile")
         XCTAssertEqual(card.postalAddresses, [home])
         // Durable: the label survived and the untouched postal list is intact.
-        let storedAfterEdit = await storedAda(fixture)
-        XCTAssertEqual(storedAfterEdit?.instantMessageAddresses.first?.label, "mobile")
-        XCTAssertEqual(storedAfterEdit?.postalAddresses, [postal(home)])
+        let storedAfterEdit = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterEdit.instantMessageAddresses.first?.label, "mobile")
+        XCTAssertEqual(storedAfterEdit.postalAddresses, [postal(home)])
 
         let deleted = await fixture.dispatcher.handle(.contactsDeleteInstantMessage(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: adaID,
@@ -265,15 +266,15 @@ final class StructuredContactEntryToolTests: XCTestCase {
                 label: "mobile", service: "Signal", username: "+15550109999"),
             idempotencyToken: nil))
         XCTAssertEqual(expectCard(deleted)?.instantMessages, [])
-        let storedAfterDelete = await storedAda(fixture)
-        XCTAssertEqual(storedAfterDelete?.instantMessageAddresses, [])
+        let storedAfterDelete = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterDelete.instantMessageAddresses, [])
     }
 
     // MARK: - Matching / zero-match / ambiguous (matching in the dispatcher,
     // mutations reach the real fetch / edit / save)
 
     func testMatchingUsesEveryFieldIncludingLabels() async throws {
-        let fixture = await writableFixture()
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
         let otherPostal = WirePostalAddress(
             label: home.label, street: home.street, subLocality: "East Downtown",
@@ -303,21 +304,21 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
         // Durable: the exact-match delete removed only the fully matching entry
         // on the boundary record; the near-duplicates survive untouched.
-        let stored = await storedAda(fixture)
-        XCTAssertEqual(stored?.postalAddresses, [postal(otherPostal)])
-        XCTAssertEqual(stored?.socialProfiles, [social(otherSocial)])
-        XCTAssertEqual(stored?.instantMessageAddresses, [instant(otherInstant)])
+        let stored = try await storedAda(fixture)
+        XCTAssertEqual(stored.postalAddresses, [postal(otherPostal)])
+        XCTAssertEqual(stored.socialProfiles, [social(otherSocial)])
+        XCTAssertEqual(stored.instantMessageAddresses, [instant(otherInstant)])
     }
 
     func testZeroMatchesReturnNotFoundAndChangeNothing() async throws {
-        let fixture = await writableFixture()
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
         try await seedAda(fixture) {
             $0.postalAddresses = [self.postal(self.home)]
             $0.socialProfiles = [self.social(self.linkedIn)]
             $0.instantMessageAddresses = [self.instant(self.signal)]
         }
-        let before = await storedAda(fixture)
+        let before = try await storedAda(fixture)
 
         expectError(await fixture.dispatcher.handle(.contactsDeletePostalAddress(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
@@ -333,14 +334,14 @@ final class StructuredContactEntryToolTests: XCTestCase {
             code: .notFound, message: WireErrorMessage.noMatchingInstantMessage)
 
         // Durable: nothing changed on the boundary AND no save ever reached it.
-        let after = await storedAda(fixture)
+        let after = try await storedAda(fixture)
         XCTAssertEqual(after, before)
         let saveCount = await fixture.store.saveCount
         XCTAssertEqual(saveCount, 0)
     }
 
     func testExactDuplicatesReturnAmbiguousAndChangeNothing() async throws {
-        let fixture = await writableFixture()
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
         try await seedAda(fixture) {
             $0.postalAddresses = [self.postal(self.home), self.postal(self.home)]
@@ -353,7 +354,7 @@ final class StructuredContactEntryToolTests: XCTestCase {
             ]
             $0.instantMessageAddresses = [self.instant(self.signal), self.instant(self.signal)]
         }
-        let before = await storedAda(fixture)
+        let before = try await storedAda(fixture)
 
         expectError(await fixture.dispatcher.handle(.contactsEditPostalAddress(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: adaID,
@@ -370,7 +371,7 @@ final class StructuredContactEntryToolTests: XCTestCase {
             code: .ambiguous, message: WireErrorMessage.ambiguousInstantMessage)
 
         // Durable: the ambiguous edits changed nothing and never saved.
-        let after = await storedAda(fixture)
+        let after = try await storedAda(fixture)
         XCTAssertEqual(after, before)
         let saveCount = await fixture.store.saveCount
         XCTAssertEqual(saveCount, 0)
@@ -378,8 +379,8 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
     // MARK: - Idempotency + budget + audit (real write path)
 
-    func testIdempotencyBudgetAndAuditApply() async {
-        let fixture = await writableFixture(writeLimit: 1)
+    func testIdempotencyBudgetAndAuditApply() async throws {
+        let fixture = try await writableFixture(writeLimit: 1)
         defer { fixture.cleanUp() }
         let first = await fixture.dispatcher.handle(.contactsAddInstantMessage(
             helperId: MCPProductionFixture.helper, messageId: "structured-first",
@@ -391,8 +392,8 @@ final class StructuredContactEntryToolTests: XCTestCase {
         XCTAssertNotNil(expectCard(replay))
         // Durable: the token replay did not double-write — one entry on the
         // boundary, committed by exactly one save.
-        let storedAfterReplay = await storedAda(fixture)
-        XCTAssertEqual(storedAfterReplay?.instantMessageAddresses.count, 1)
+        let storedAfterReplay = try await storedAda(fixture)
+        XCTAssertEqual(storedAfterReplay.instantMessageAddresses.count, 1)
         let committed = await fixture.store.committedSaveLocalIDs
         XCTAssertEqual(committed, [MCPProductionFixture.adaLocalID])
 
@@ -409,10 +410,10 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
     // MARK: - Save failure at the real boundary
 
-    func testSaveFailureIsTypedAndLeavesStoredCardUnchanged() async {
-        let fixture = await writableFixture()
+    func testSaveFailureIsTypedAndLeavesStoredCardUnchanged() async throws {
+        let fixture = try await writableFixture()
         defer { fixture.cleanUp() }
-        let before = await storedAda(fixture)
+        let before = try await storedAda(fixture)
         // Fault the FIRST boundary save (seeds/reloads never save, so the add's
         // own `saveContact` is ordinal 1) with the Cocoa 134092 store-rejection
         // family the real Contacts store raises.
@@ -426,7 +427,7 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
         // Durable: the boundary counted the rejected attempt but committed
         // nothing, and the stored card is unchanged.
-        let after = await storedAda(fixture)
+        let after = try await storedAda(fixture)
         XCTAssertEqual(after, before)
         let saveCount = await fixture.store.saveCount
         let committed = await fixture.store.committedSaveLocalIDs
@@ -436,8 +437,8 @@ final class StructuredContactEntryToolTests: XCTestCase {
 
     // MARK: - Per-contact single-flight (real serialized read-modify-write)
 
-    func testConcurrentStructuredAddsArePerContactSingleFlight() async {
-        let fixture = await writableFixture(writeLimit: 50)
+    func testConcurrentStructuredAddsArePerContactSingleFlight() async throws {
+        let fixture = try await writableFixture(writeLimit: 50)
         defer { fixture.cleanUp() }
         // Hoist the Sendable pieces the off-main tasks need so the closures
         // never capture the `@MainActor` fixture value itself.
@@ -461,10 +462,10 @@ final class StructuredContactEntryToolTests: XCTestCase {
         // Durable: the per-contact single-flight serialized every read-modify-
         // write, so all 20 distinct usernames land on the boundary record with
         // no lost or duplicated updates.
-        let stored = await storedAda(fixture)
-        let usernames = stored?.instantMessageAddresses.map(\.value.username)
-        XCTAssertEqual(usernames?.count, 20)
-        XCTAssertEqual(Set(usernames ?? []).count, 20)
+        let stored = try await storedAda(fixture)
+        let usernames = stored.instantMessageAddresses.map(\.value.username)
+        XCTAssertEqual(usernames.count, 20)
+        XCTAssertEqual(Set(usernames).count, 20)
     }
 
     // MARK: - Pure gate / malformed cases (rejected before any store touch)

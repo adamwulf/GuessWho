@@ -44,13 +44,14 @@ final class OrganizationToolTests: XCTestCase {
     /// and department queries are isolated to the people seeded here.
     private func preparedFixture(
         writable: Bool = false, writeLimitPerWindow: Int = 30
-    ) async -> MCPProductionFixture {
-        let fixture = await MCPProductionFixture.make(writeLimitPerWindow: writeLimitPerWindow)
+    ) async throws -> MCPProductionFixture {
+        let fixture = try await MCPProductionFixture.make(
+            writeLimitPerWindow: writeLimitPerWindow)
         if writable {
             fixture.gates.mcpAccess = .readWrite
             fixture.gates.cliAccess = .readWrite
         }
-        try! await fixture.seedContacts([
+        try await fixture.seedContacts([
             Contact(
                 localID: Self.organizationLocalID,
                 contactType: .organization,
@@ -82,8 +83,8 @@ final class OrganizationToolTests: XCTestCase {
         return page.items.first?.id
     }
 
-    func testOrganizationResolutionAndPersonKindMismatch() async {
-        let fixture = await preparedFixture()
+    func testOrganizationResolutionAndPersonKindMismatch() async throws {
+        let fixture = try await preparedFixture()
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture),
               let personID = await personID(fixture)
@@ -111,8 +112,8 @@ final class OrganizationToolTests: XCTestCase {
         expectError(unknown, code: .notFound, message: WireErrorMessage.notFoundContact)
     }
 
-    func testMembersAreRepositoryDerivedAndDeterministicallyOrdered() async {
-        let fixture = await preparedFixture()
+    func testMembersAreRepositoryDerivedAndDeterministicallyOrdered() async throws {
+        let fixture = try await preparedFixture()
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let response = await fixture.dispatcher.handle(.organizationsListMembers(
@@ -126,8 +127,8 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertTrue(page.items.allSatisfy { $0.kind == "person" })
     }
 
-    func testDepartmentsAreStableDistinctAndPaged() async {
-        let fixture = await preparedFixture()
+    func testDepartmentsAreStableDistinctAndPaged() async throws {
+        let fixture = try await preparedFixture()
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let first = await fixture.dispatcher.handle(.organizationsListDepartments(
@@ -147,8 +148,8 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertNil(secondPage.nextCursor)
     }
 
-    func testDepartmentMemberLookupIsCaseInsensitiveAndAbsentIsNotFound() async {
-        let fixture = await preparedFixture()
+    func testDepartmentMemberLookupIsCaseInsensitiveAndAbsentIsNotFound() async throws {
+        let fixture = try await preparedFixture()
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let found = await fixture.dispatcher.handle(.organizationsListDepartmentMembers(
@@ -171,10 +172,10 @@ final class OrganizationToolTests: XCTestCase {
         expectError(blank, code: .invalidParams, message: WireErrorMessage.emptyDepartmentName)
     }
 
-    func testMemberPagingUsesStandardMaximumAndStableCursorOrder() async {
-        let fixture = await MCPProductionFixture.make()
+    func testMemberPagingUsesStandardMaximumAndStableCursorOrder() async throws {
+        let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
-        try! await fixture.seedContacts(
+        try await fixture.seedContacts(
             [Contact(
                 localID: Self.organizationLocalID,
                 contactType: .organization,
@@ -204,10 +205,10 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertNil(secondPage.nextCursor)
     }
 
-    func testOrganizationMemberPageUsesStandardResponseSizeCap() async {
-        let fixture = await MCPProductionFixture.make()
+    func testOrganizationMemberPageUsesStandardResponseSizeCap() async throws {
+        let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
-        try! await fixture.seedContacts(
+        try await fixture.seedContacts(
             [Contact(
                 localID: Self.organizationLocalID,
                 contactType: .organization,
@@ -226,7 +227,7 @@ final class OrganizationToolTests: XCTestCase {
     }
 
     func testRenameSuccessReportsCountUpdatesMembersAndAudits() async throws {
-        let fixture = await preparedFixture(writable: true)
+        let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let baseline = await fixture.store.saveCount
@@ -257,8 +258,8 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertNotEqual(audit?.subjectID, Self.organizationLocalID)
     }
 
-    func testRenameValidationAndCapitalizationOnlyBehavior() async {
-        let fixture = await preparedFixture(writable: true)
+    func testRenameValidationAndCapitalizationOnlyBehavior() async throws {
+        let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let empty = await fixture.dispatcher.handle(.organizationsRenameDepartment(
@@ -289,7 +290,7 @@ final class OrganizationToolTests: XCTestCase {
     /// the store + a fresh reload must prove exactly one durable effect, and a
     /// retry (a failed write is never idempotency-cached) must heal the rest.
     func testRenamePartialSaveFailureIsHonestNonLeakingAndRetryable() async throws {
-        let fixture = await preparedFixture(writable: true)
+        let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
 
@@ -355,8 +356,8 @@ final class OrganizationToolTests: XCTestCase {
             "the healing write IS success-audited")
     }
 
-    func testRenameMapsRevokedPermissionAndPersonMismatchWithoutCallingRepository() async {
-        let fixture = await preparedFixture(writable: true)
+    func testRenameMapsRevokedPermissionAndPersonMismatchWithoutCallingRepository() async throws {
+        let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture),
               let personID = await personID(fixture)
@@ -382,8 +383,8 @@ final class OrganizationToolTests: XCTestCase {
         expectError(denied, code: .permissionDenied, message: WireErrorMessage.permissionDeniedContacts)
     }
 
-    func testPermissionsAndReadWriteGateApply() async {
-        let fixture = await preparedFixture()
+    func testPermissionsAndReadWriteGateApply() async throws {
+        let fixture = try await preparedFixture()
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let readOnly = await fixture.dispatcher.handle(.organizationsRenameDepartment(
@@ -401,8 +402,8 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertEqual(saves, 0)
     }
 
-    func testRenameIdempotencyAndWriteBudget() async {
-        let fixture = await preparedFixture(writable: true)
+    func testRenameIdempotencyAndWriteBudget() async throws {
+        let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let first = await fixture.dispatcher.handle(.organizationsRenameDepartment(
@@ -423,7 +424,8 @@ final class OrganizationToolTests: XCTestCase {
         let savesAfterRetry = await fixture.store.saveCount
         XCTAssertEqual(savesAfterRetry, savesAfterFirst, "a replay does not re-run the repository write")
 
-        let budgetFixture = await preparedFixture(writable: true, writeLimitPerWindow: 1)
+        let budgetFixture = try await preparedFixture(
+            writable: true, writeLimitPerWindow: 1)
         defer { budgetFixture.cleanUp() }
         guard let budgetOrganizationID = await self.organizationID(budgetFixture) else {
             return XCTFail("missing org")
@@ -442,8 +444,8 @@ final class OrganizationToolTests: XCTestCase {
         XCTAssertEqual(budgetSaves, budgetBaseline + 2, "only the first rename reached the store")
     }
 
-    func testOrganizationOutputsNeverLeakLocalIdentifiers() async {
-        let fixture = await preparedFixture(writable: true)
+    func testOrganizationOutputsNeverLeakLocalIdentifiers() async throws {
+        let fixture = try await preparedFixture(writable: true)
         defer { fixture.cleanUp() }
         guard let organizationID = await organizationID(fixture) else { return XCTFail("missing org") }
         let responses: [WireResponse?] = [

@@ -21,8 +21,8 @@ final class FavoritesToolTests: XCTestCase {
         seedContactFavorite: Bool = false,
         writeLimit: Int = 30,
         writeWindow: TimeInterval = 60
-    ) async -> MCPProductionFixture {
-        let fixture = await MCPProductionFixture.make(
+    ) async throws -> MCPProductionFixture {
+        let fixture = try await MCPProductionFixture.make(
             writeLimitPerWindow: writeLimit,
             writeWindowSeconds: writeWindow,
             seedContactFavorite: seedContactFavorite)
@@ -158,7 +158,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testListEveryKindPreservesStoredOrderNamesAddedAtAndOpaqueIDs() async throws {
-        let fixture = await productionFixture()
+        let fixture = try await productionFixture()
         defer { fixture.cleanUp() }
         let seed = try installEveryKind(fixture)
         let rawGroupID = seed.groupLocalID
@@ -177,6 +177,7 @@ final class FavoritesToolTests: XCTestCase {
         ])
         XCTAssertTrue(all.allSatisfy(\.isAvailable))
         XCTAssertEqual(all.first?.addedAt, "1970-01-01T00:00:01Z")
+        guard all.count == 5 else { return XCTFail("expected all five favorite kinds") }
         XCTAssertTrue(all[2].id.hasPrefix("g-"))
         XCTAssertFalse(all[2].id.contains(rawGroupID))
         XCTAssertFalse(all[1].id.hasPrefix("e-"), "stored events use ordinary record ids")
@@ -184,7 +185,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testStaleRowsStayInPlaceAndNeverLeakStoredIdentifier() async throws {
-        let fixture = await productionFixture(writable: true)
+        let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
         let raw = "EK-RAW-CALENDAR-SHOULD-NOT-CROSS"
         try fixture.favoritesStore.setAll([
@@ -192,15 +193,17 @@ final class FavoritesToolTests: XCTestCase {
             Favorite(kind: .contact, id: MCPProductionFixture.adaGuessWhoID, addedAt: Date(timeIntervalSince1970: 10)),
         ])
         guard let page = await list(fixture) else { return XCTFail("no page") }
-        XCTAssertEqual(page.items.count, 2)
-        XCTAssertEqual(page.items[0].displayName, "Unavailable")
-        XCTAssertFalse(page.items[0].isAvailable)
-        XCTAssertEqual(page.items[1].displayName, "Ada Lovelace")
-        XCTAssertFalse(page.items[0].id.contains(raw))
+        guard page.items.count == 2 else { return XCTFail("expected stale and live favorites") }
+        let staleItem = page.items[0]
+        let liveItem = page.items[1]
+        XCTAssertEqual(staleItem.displayName, "Unavailable")
+        XCTAssertFalse(staleItem.isAvailable)
+        XCTAssertEqual(liveItem.displayName, "Ada Lovelace")
+        XCTAssertFalse(staleItem.id.contains(raw))
 
         let cleared = await fixture.dispatcher.handle(.favoritesSet(
             helperId: MCPProductionFixture.helper, messageId: "clear-stale", kind: .event,
-            id: page.items[0].id, favorite: false, idempotencyToken: nil))
+            id: staleItem.id, favorite: false, idempotencyToken: nil))
         guard case .acknowledged = cleared else { return XCTFail("stale clear failed") }
         let remaining = await list(fixture)
         XCTAssertEqual(remaining?.items.map(\.kind), [.contact])
@@ -209,7 +212,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testGroupOpaqueIDStaysStableWhenReferentBecomesStale() async throws {
-        let fixture = await productionFixture()
+        let fixture = try await productionFixture()
         defer { fixture.cleanUp() }
         let groupLocalID = try XCTUnwrap(seededGroupLocalID(fixture))
         try fixture.favoritesStore.setAll([Favorite(kind: .group, id: groupLocalID, addedAt: Date())])
@@ -228,7 +231,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testSetSupportsEveryKindAndIsDesiredStateIdempotent() async throws {
-        let fixture = await productionFixture(writable: true)
+        let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
         _ = try installEveryKind(fixture)
         guard let entries = await list(fixture)?.items else { return XCTFail("no entries") }
@@ -241,10 +244,19 @@ final class FavoritesToolTests: XCTestCase {
                 helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
                 kind: entry.kind, id: entry.id, favorite: true, idempotencyToken: token))
             guard case .acknowledged = first else { return XCTFail("set failed: \(String(describing: first))") }
+            let originalStamp = try XCTUnwrap(
+                fixture.favoritesStore.loadAll().first {
+                    $0.kind.rawValue == entry.kind.rawValue
+                }?.addedAt)
             let duplicate = await fixture.dispatcher.handle(.favoritesSet(
                 helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
-                kind: entry.kind, id: entry.id, favorite: true, idempotencyToken: token))
-            guard case .acknowledged = duplicate else { return XCTFail("retry failed") }
+                kind: entry.kind, id: entry.id, favorite: true, idempotencyToken: nil))
+            guard case .acknowledged = duplicate else { return XCTFail("tokenless repeat failed") }
+            XCTAssertEqual(
+                try fixture.favoritesStore.loadAll().first {
+                    $0.kind.rawValue == entry.kind.rawValue
+                }?.addedAt,
+                originalStamp, "desired-state repeat must preserve the original favorite")
         }
         let stored = try fixture.favoritesStore.loadAll()
         XCTAssertEqual(stored.map(\.kind), [.contact, .event, .group, .guide, .place])
@@ -253,7 +265,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testContactsCompatibilityUsesSameFavoriteState() async throws {
-        let fixture = await productionFixture(writable: true, seedContactFavorite: true)
+        let fixture = try await productionFixture(writable: true, seedContactFavorite: true)
         defer { fixture.cleanUp() }
         let contactID = MCPProductionFixture.adaGuessWhoID
         let genericClear = await fixture.dispatcher.handle(.favoritesSet(
@@ -277,7 +289,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testKindMismatchAndUnknownReferentsNeverWrite() async throws {
-        let fixture = await productionFixture(writable: true)
+        let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
         let guide = MapsGuide(id: UUID(), name: "Coffee Crawl", sourceURL: nil, createdAt: Date())
         fixture.guides.guides = [guide]
@@ -303,11 +315,12 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testReorderUsesCompositeIdentityAndAllowsCrossKindIDCollision() async throws {
-        let fixture = await productionFixture(writable: true)
+        let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
         _ = try installEveryKind(fixture, collision: true)
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let collision = page.items.filter { $0.kind == .guide || $0.kind == .place }
+        guard collision.count == 2 else { return XCTFail("expected guide/place collision") }
         XCTAssertEqual(collision[0].id, collision[1].id)
         XCTAssertNotEqual(collision[0].kind, collision[1].kind)
         let desired = page.items.reversed().map {
@@ -339,16 +352,17 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testReorderRejectsDuplicateMissingExtraAndStaleFavorites() async throws {
-        let fixture = await productionFixture(writable: true)
+        let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
         _ = try installEveryKind(fixture)
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let identities = page.items.map { WireFavoriteIdentity(kind: $0.kind, id: $0.id) }
+        guard let firstIdentity = identities.first else { return XCTFail("no identities") }
         let original = try fixture.favoritesStore.loadAll()
 
         let duplicate = await fixture.dispatcher.handle(.favoritesReorder(
             helperId: MCPProductionFixture.helper, messageId: "d",
-            favorites: Array(identities.dropLast()) + [identities[0]], idempotencyToken: nil))
+            favorites: Array(identities.dropLast()) + [firstIdentity], idempotencyToken: nil))
         error(duplicate, .invalidParams)
         let missing = await fixture.dispatcher.handle(.favoritesReorder(
             helperId: MCPProductionFixture.helper, messageId: "m",
@@ -375,7 +389,7 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testEntityDeleteLeavesStaleRowsThatGenericClearCanRecover() async throws {
-        let fixture = await productionFixture(writable: true)
+        let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
         let guide = MapsGuide(id: UUID(), name: "Coffee Crawl", sourceURL: nil, createdAt: Date())
         let place = MapsPlace(
@@ -409,7 +423,8 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     func testWriteBudgetIdempotencyAuditAndResponseCapPipeline() async throws {
-        let fixture = await productionFixture(writable: true, writeLimit: 1, writeWindow: 60)
+        let fixture = try await productionFixture(
+            writable: true, writeLimit: 1, writeWindow: 60)
         defer { fixture.cleanUp() }
         let guide = MapsGuide(id: UUID(), name: "Coffee Crawl", sourceURL: nil, createdAt: Date())
         fixture.guides.guides = [guide]
@@ -421,10 +436,11 @@ final class FavoritesToolTests: XCTestCase {
         guard case .acknowledged = first else { return XCTFail("first failed") }
         let replay = await fixture.dispatcher.handle(.favoritesSet(
             helperId: MCPProductionFixture.helper, messageId: "2", kind: .guide,
-            id: guideID, favorite: true, idempotencyToken: "same"))
+            id: guideID, favorite: false, idempotencyToken: "same"))
         guard case .acknowledged(_, let messageID, _) = replay else { return XCTFail("replay failed") }
         XCTAssertEqual(messageID, "2")
-        // The replay did not write a second time.
+        // Same-token replay returns the original result even when the payload
+        // conflicts; the cached true write must remain authoritative.
         XCTAssertEqual(try fixture.favoritesStore.loadAll().filter { $0.kind == .guide }.count, 1)
 
         let blocked = await fixture.dispatcher.handle(.favoritesSet(

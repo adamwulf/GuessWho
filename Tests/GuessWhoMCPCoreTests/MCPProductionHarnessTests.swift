@@ -21,8 +21,8 @@ final class MCPProductionHarnessTests: XCTestCase {
 
     /// A `contacts_list` dispatch returns the seeded book read through the real
     /// repository cache — the reconciled person lists under her GuessWho UUID.
-    func testContactsListReadsThroughRepository() async {
-        let fixture = await MCPProductionFixture.make()
+    func testContactsListReadsThroughRepository() async throws {
+        let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
 
         let response = await fixture.dispatcher.handle(.contactsList(
@@ -45,8 +45,8 @@ final class MCPProductionHarnessTests: XCTestCase {
     /// A `contacts_list` filtered by the seeded group returns exactly its
     /// member — proving the group + membership seed reached the real store and
     /// the repository resolves the membership.
-    func testContactsListGroupFilterReadsSeededMembership() async {
-        let fixture = await MCPProductionFixture.make()
+    func testContactsListGroupFilterReadsSeededMembership() async throws {
+        let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
 
         // Obtain the group's WIRE id the way an agent would — from
@@ -73,11 +73,47 @@ final class MCPProductionHarnessTests: XCTestCase {
                        "only the seeded group member is listed")
     }
 
+    /// CLI and MCP share the same dispatcher graph. A CLI-origin sidecar write
+    /// to unreconciled Blaise forces the real engine to stamp his Contacts card;
+    /// the repository must observe that stamp after reload and the note must be
+    /// addressable at the same on-disk identity. A second contact-store instance
+    /// inside the engine would make this test fail.
+    func testCLIWriteProvesEngineAndRepositoryShareContactStore() async throws {
+        let fixture = try await MCPProductionFixture.make()
+        defer { fixture.cleanUp() }
+        fixture.gates.cliAccess = .readWrite
+        let cliHelper = RequestOrigin.cli.makeHelperId()
+
+        let list = await fixture.dispatcher.handle(.contactsList(
+            helperId: cliHelper, messageId: TestMessageID.next(), kind: nil,
+            favoritesOnly: nil, groupId: nil, limit: nil, cursor: nil))
+        guard case .contactPage(_, _, let page) = list,
+              let blaiseID = page.items.first(where: { $0.name == "Blaise Pascal" })?.id
+        else { return XCTFail("expected unreconciled Blaise in CLI contact list") }
+
+        let response = await fixture.dispatcher.handle(.contactsAddNote(
+            helperId: cliHelper, messageId: TestMessageID.next(), contactId: blaiseID,
+            body: "CLI seam proof", idempotencyToken: nil))
+        guard case .note(_, _, let note) = response else {
+            return XCTFail("expected CLI note result, got \(String(describing: response))")
+        }
+
+        let fetchedCard = try await fixture.store.fetch(localID: MCPProductionFixture.blaiseLocalID)
+        let storedCard = try XCTUnwrap(fetchedCard)
+        let stampedID = try XCTUnwrap(storedCard.contactID.guessWhoID)
+        await fixture.reload()
+        XCTAssertEqual(
+            fixture.contact(localID: MCPProductionFixture.blaiseLocalID)?.contactID.guessWhoID,
+            stampedID)
+        let noteID = try XCTUnwrap(UUID(uuidString: note.id))
+        XCTAssertEqual(try fixture.storedNotes(forGuessWhoID: stampedID).map(\.id), [noteID])
+    }
+
     /// A `favorites_list` dispatch reads the REAL on-disk `Favorites.json`
     /// through the thin `MCPFavoriteStoreAdapter`, resolving the favorite's
     /// referent against the repository.
     func testFavoritesListReadsRealOnDiskFavorite() async throws {
-        let fixture = await MCPProductionFixture.make(seedContactFavorite: true)
+        let fixture = try await MCPProductionFixture.make(seedContactFavorite: true)
         defer { fixture.cleanUp() }
 
         // The favorite really is on disk.
@@ -103,7 +139,7 @@ final class MCPProductionHarnessTests: XCTestCase {
     /// is — a re-add reports "no change" and the on-disk list is unchanged. The
     /// adapter contributes no logic of its own.
     func testFavoriteAdapterDelegatesIdempotentSet() async throws {
-        let fixture = await MCPProductionFixture.make(seedContactFavorite: true)
+        let fixture = try await MCPProductionFixture.make(seedContactFavorite: true)
         defer { fixture.cleanUp() }
 
         // Ada is already favorited by the seed; a repeat add is a no-op write.
@@ -126,7 +162,7 @@ final class MCPProductionHarnessTests: XCTestCase {
     /// commit nothing, and leave the store record unchanged — while the boundary
     /// still counts the attempt.
     func testOneShotSaveFaultAtOrdinal() async throws {
-        let fixture = await MCPProductionFixture.make()
+        let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
 
         let adaID = try XCTUnwrap(fixture.contact(localID: MCPProductionFixture.adaLocalID)).contactID
@@ -161,7 +197,7 @@ final class MCPProductionHarnessTests: XCTestCase {
     /// photo bytes are unchanged, and the boundary recorded the attempt without
     /// committing it.
     func testPhotoFaultFiresAfterPriorImageSnapshot() async throws {
-        let fixture = await MCPProductionFixture.make()
+        let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
 
         let oldBytes = Data([0xFF, 0xD8, 0xFF, 0x01, 0x02]) // JPEG-ish header

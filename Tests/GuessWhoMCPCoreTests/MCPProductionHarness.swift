@@ -14,7 +14,7 @@ import GuessWhoMCPWire
 
 // The production-backed MCP dispatch harness (parity-test refactor).
 //
-// Unlike `Fixture` in Fakes.swift — whose `FakeContactSource` and
+// Unlike `Fixture` in Fakes.swift — whose `LegacyScriptedContactSource` and
 // `FaultInjectingFavoriteSource` are only scripted boundaries and cannot prove
 // repository/store rules — this harness wires the SAME production objects the
 // app wires:
@@ -279,7 +279,7 @@ final class MCPFavoriteStoreAdapter: MCPFavoriteSource {
 /// A ready-to-dispatch harness over the production stack, seeded with a
 /// representative book: a reconciled person (already carrying an identity
 /// URL), a never-reconciled person, an organization, one group with a member,
-/// Build it with `await MCPProductionFixture.make()`; favorite-specific tests
+/// Build it with `try await MCPProductionFixture.make()`; favorite-specific tests
 /// pass `seedContactFavorite: true` to add one real on-disk favorite.
 @MainActor
 struct MCPProductionFixture {
@@ -347,32 +347,33 @@ struct MCPProductionFixture {
     }
 
     /// A temp-file audit log, unique per fixture.
-    static func makeAuditLog() -> MCPAuditLog {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gw-mcp-prod-audit-\(UUID().uuidString)", isDirectory: true)
-            .appendingPathComponent("audit.jsonl")
-        return MCPAuditLog(fileURL: url)
+    static func makeAuditLog(root: URL) -> MCPAuditLog {
+        MCPAuditLog(fileURL: root.appendingPathComponent("audit.jsonl"))
     }
 
     static func make(
         writeLimitPerWindow: Int = 30,
         writeWindowSeconds: TimeInterval = 60,
         seedContactFavorite: Bool = false
-    ) async -> MCPProductionFixture {
+    ) async throws -> MCPProductionFixture {
         // One unique on-disk root shared by the sidecar store and the favorites
         // store — exactly the app's layout (Favorites.json sits beside the
         // sidecar directories under the same Documents root).
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("gw-mcp-prod-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         // The only substituted OS boundary — seeded with the starting book so
-        // the first reload sees production contacts. Seeding is fail-fast: a
-        // broken seed is a broken harness, so it should crash the run here
-        // rather than surface as a confusing assertion failure downstream.
+        // the first reload sees production contacts. Setup errors propagate to
+        // the individual throwing test and remove the partially-created root.
         let inMemory = InMemoryContactStore()
         let store = RecordingContactStore(inner: inMemory)
-        try! await store.seed([ada(), blaise(), engines()])
+        do {
+            try await store.seed([ada(), blaise(), engines()])
+        } catch {
+            try? FileManager.default.removeItem(at: root)
+            throw error
+        }
 
         // The SAME store instance backs both the engine and the repository, so
         // a mint stamped through the engine is visible to the repository — the
@@ -403,7 +404,7 @@ struct MCPProductionFixture {
         let guides = FakeGuideSource()
         let gates = FakeGateSource()
         let confirmations = FakeConfirmationSource()
-        let audit = makeAuditLog()
+        let audit = makeAuditLog(root: root)
 
         let dispatcher = ToolDispatcher(
             contacts: repository, events: events, guides: guides,
@@ -424,10 +425,20 @@ struct MCPProductionFixture {
         // into the on-disk seed explicitly so unrelated repository tests do not
         // depend on the operating system's file-coordination service.
         await repository.reload()
-        try! await fixture.seedGroup(named: groupName, memberLocalIDs: [adaLocalID])
+        do {
+            try await fixture.seedGroup(named: groupName, memberLocalIDs: [adaLocalID])
+        } catch {
+            fixture.cleanUp()
+            throw error
+        }
         if seedContactFavorite {
-            try! favoritesStore.set(
-                kind: .contact, id: adaGuessWhoID, favorite: true, now: Date())
+            do {
+                try favoritesStore.set(
+                    kind: .contact, id: adaGuessWhoID, favorite: true, now: Date())
+            } catch {
+                fixture.cleanUp()
+                throw error
+            }
         }
 
         return fixture

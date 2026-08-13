@@ -19,8 +19,8 @@ final class GroupToolTests: XCTestCase {
     @MainActor
     private func writableProductionFixture(
         writeLimit: Int = 30
-    ) async -> MCPProductionFixture {
-        let fixture = await MCPProductionFixture.make(writeLimitPerWindow: writeLimit)
+    ) async throws -> MCPProductionFixture {
+        let fixture = try await MCPProductionFixture.make(writeLimitPerWindow: writeLimit)
         fixture.gates.mcpAccess = .readWrite
         return fixture
     }
@@ -105,7 +105,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testGroupListIncludesFavoriteAndNeverLeaksLocalID() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         // Favorite the seeded group by writing straight through the real store;
         // the canonical key is the group's Contacts local identifier, lowercased.
@@ -128,7 +128,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testGroupsListForContactReturnsOnlyMembershipsAndPages() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         // Ada already belongs to the seeded group; a second membership makes a
         // limit-1 page split observable.
@@ -153,9 +153,12 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertEqual(secondPage.items.count, 1)
         XCTAssertNil(secondPage.nextCursor)
+        guard let firstGroup = firstPage.items.first,
+              let secondGroup = secondPage.items.first
+        else { return XCTFail("expected one group on each page") }
         // Exactly Ada's two memberships resolve, and only those.
         XCTAssertEqual(
-            Set([firstPage.items[0].name, secondPage.items[0].name]),
+            Set([firstGroup.name, secondGroup.name]),
             [MCPProductionFixture.groupName, "Board"])
 
         let invalid = await fixture.dispatcher.handle(.groupsListForContact(
@@ -169,7 +172,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testCreateRenameDeleteAndIdempotency() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let create = WireRequest.groupsCreate(
             helperId: MCPProductionFixture.helper, messageId: "create-1",
@@ -234,7 +237,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testCreateAndRenameRejectBlankNames() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let blankCreate = await fixture.dispatcher.handle(.groupsCreate(
             helperId: MCPProductionFixture.helper, messageId: "blank-create",
@@ -260,7 +263,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testMembershipAddAndRemoveSucceedAndAuditReadableCounts() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let resolvedGroupID = await productionGroupID(fixture, named: MCPProductionFixture.groupName)
         let groupId = try XCTUnwrap(resolvedGroupID)
@@ -305,7 +308,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testMembershipValidatesEveryIDBeforeWriting() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let resolvedGroupID = await productionGroupID(fixture, named: MCPProductionFixture.groupName)
         let groupId = try XCTUnwrap(resolvedGroupID)
@@ -343,7 +346,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testSetFavoriteResolvesOpaqueIDAndEchoesState() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let resolvedGroupID = await productionGroupID(fixture, named: MCPProductionFixture.groupName)
         let groupId = try XCTUnwrap(resolvedGroupID)
@@ -406,7 +409,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testGroupSpecificAndGenericFavoritesShareState() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let resolvedGroupID = await productionGroupID(fixture, named: MCPProductionFixture.groupName)
         let groupId = try XCTUnwrap(resolvedGroupID)
@@ -474,7 +477,7 @@ final class GroupToolTests: XCTestCase {
 
     @MainActor
     func testGroupWritesAreAuditedWithoutLocalIdentifiers() async throws {
-        let fixture = await writableProductionFixture()
+        let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
         let created = await fixture.dispatcher.handle(.groupsCreate(
             helperId: MCPProductionFixture.helper, messageId: "audit",
