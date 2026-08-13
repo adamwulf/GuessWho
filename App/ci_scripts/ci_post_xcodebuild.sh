@@ -120,16 +120,27 @@ if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     # This script runs once per xcodebuild action, so the same build can reach
     # here more than once. Skip if the tag is already on the remote — never
     # force-push, so an existing build/N tag can't be moved to a new commit.
-    if git ls-remote --tags "$remote_url" "refs/tags/$tag" | grep -q "refs/tags/$tag"; then
+    #
+    # $remote_url embeds the PAT (https://user:token@github.com/...), and git
+    # echoes the failing URL to stderr on error, so keep stderr suppressed on
+    # every command that uses it or the write-capable token lands in the build
+    # log. A failed ls-remote just finds no tag and falls through to the push.
+    if git ls-remote --tags "$remote_url" "refs/tags/$tag" 2>/dev/null | grep -q "refs/tags/$tag"; then
         echo "Tag $tag already exists on remote, skipping."
     else
         echo "Tagging $tag"
         git tag -a -m "Build $CI_BUILD_NUMBER" $tag
         # Push only the new tag ref, never every local tag. A blanket --tags can
         # re-push (and a force could move) an already-shipped build/N tag onto a
-        # different commit and corrupt the range used for future notes.
-        git push "$remote_url" "refs/tags/$tag"
-        echo "Successfully pushed tag to remote repo."
+        # different commit and corrupt the range used for future notes. Suppress
+        # git's stderr for the same PAT reason above; report failure ourselves so
+        # the suppressed error doesn't become a silent exit under set -e.
+        if git push "$remote_url" "refs/tags/$tag" 2>/dev/null; then
+            echo "Successfully pushed tag to remote repo."
+        else
+            echo "error: failed to push tag $tag (git output withheld to keep the token out of the build log)"
+            exit 1
+        fi
     fi
 else
     echo "Build failed"
