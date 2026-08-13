@@ -386,6 +386,13 @@ struct MCPProductionFixture {
             sidecars: sidecars,
             deviceID: Sentinels.deviceID)
         let favoritesStore = FavoritesStore(root: root)
+        // `FavoritesStore` coordinates writes with `.forReplacing`, matching
+        // the app's established file lifecycle. A brand-new headless temp root
+        // has no file to replace, so establish the same empty-file baseline the
+        // hosted storage setup provides. `loadAll()` deliberately treats an
+        // empty file as an empty list.
+        _ = FileManager.default.createFile(
+            atPath: favoritesStore.fileURL.path, contents: Data())
         // A fresh NotificationCenter isolates this repository's observer from
         // any other repository sharing `.default` in a parallel test.
         let repository = ContactsRepository(
