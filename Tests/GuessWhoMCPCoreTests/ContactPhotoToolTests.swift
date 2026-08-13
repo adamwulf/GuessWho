@@ -1,21 +1,45 @@
 import XCTest
 import GuessWhoSync
+import GuessWhoSyncTesting
 import GuessWhoMCPCore
 import GuessWhoMCPWire
 
+/// Contact-photo tool parity tests over the PRODUCTION dispatch stack
+/// (`MCPProductionFixture`): a real `ContactsRepository` + `GuessWhoSync` over a
+/// real on-disk `FileSystemSidecarStore` supply the previous-photo snapshot,
+/// and the substituted OS boundary (`RecordingContactStore`) injects the photo
+/// write fault the failure test needs AFTER the snapshot has landed.
+///
+/// A handful of tests exercise adapter quirks the in-memory production store
+/// cannot model — a photo READ fault, Contacts TRANSCODING a write, an adapter
+/// reporting a cleared photo as empty bytes — and those stay on the fake
+/// `Fixture` from Fakes.swift, each labelled with why.
+@MainActor
 final class ContactPhotoToolTests: XCTestCase {
     private let jpegA = Data([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02])
     private let jpegB = Data([0xff, 0xd8, 0xff, 0xe1, 0x03, 0x04])
 
-    private func writableFixture(limit: Int = 30) async -> Fixture {
-        let fixture = await Fixture.make(writeLimitPerWindow: limit)
-        await MainActor.run {
-            fixture.gates.mcpAccess = .readWrite
-            fixture.gates.cliAccess = .readWrite
-        }
+    // MARK: - Fixtures
+
+    /// A writable production fixture. Ada (reconciled, carrying her GuessWho
+    /// URL) is the photo subject; her wire id is `adaGuessWhoID`.
+    private func productionFixture(limit: Int = 30) async -> MCPProductionFixture {
+        let fixture = await MCPProductionFixture.make(writeLimitPerWindow: limit)
+        fixture.gates.mcpAccess = .readWrite
+        fixture.gates.cliAccess = .readWrite
         return fixture
     }
 
+    /// A writable FAKE fixture (Fakes.swift) for the adapter-quirk tests that
+    /// have no production analogue.
+    private func legacyFakeFixture(limit: Int = 30) -> Fixture {
+        let fixture = Fixture.make(writeLimitPerWindow: limit)
+        fixture.gates.mcpAccess = .readWrite
+        fixture.gates.cliAccess = .readWrite
+        return fixture
+    }
+
+    /// The fake fixture's reconciled person, resolved through the dispatcher.
     private func janeID(_ fixture: Fixture) async throws -> String {
         let response = await fixture.dispatcher.handle(.contactsSearch(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
@@ -30,41 +54,21 @@ final class ContactPhotoToolTests: XCTestCase {
         response?.errorPayload?.code
     }
 
-    func testGetDistinguishesNoPhotoFromFailure() async throws {
-        let fixture = await Fixture.make()
-        let jane = try await janeID(fixture)
-
-        let absent = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
-        guard case .contactPhoto(_, _, let photo) = absent else {
-            return XCTFail("expected a successful no-photo result")
-        }
-        XCTAssertFalse(photo.present)
-        XCTAssertNil(photo.mediaType)
-        XCTAssertNil(photo.dataBase64)
-        XCTAssertEqual(photo.byteCount, 0)
-
-        await MainActor.run {
-            fixture.contacts.nextContactStoreError = NSError(
-                domain: "PhotoRead", code: 1, userInfo: [:])
-        }
-        let failed = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
-        XCTAssertEqual(errorCode(failed), .readFailed)
-    }
+    // MARK: - Production-backed dispatch tests
 
     func testSetGetReplaceAndReservedPreviousPhotoPath() async throws {
-        let fixture = await writableFixture()
-        let jane = try await janeID(fixture)
+        let fixture = await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
 
         let set = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, mediaType: "image/jpeg",
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/jpeg",
             dataBase64: jpegA.base64EncodedString(), idempotencyToken: nil))
         XCTAssertNil(set?.errorPayload)
 
         let get = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
         guard case .contactPhoto(_, _, let photo) = get else {
             return XCTFail("expected photo")
         }
@@ -73,25 +77,24 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(Data(base64Encoded: photo.dataBase64 ?? ""), jpegA)
 
         let replace = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, mediaType: "image/jpeg",
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/jpeg",
             dataBase64: jpegB.base64EncodedString(), idempotencyToken: nil))
         XCTAssertNil(replace?.errorPayload)
 
-        let prior = await MainActor.run {
-            fixture.contacts.previousPhotoDataByEffectiveID[Sentinels.guessWhoUUID]
-        }
+        // The prior photo (jpegA) was snapshotted to the on-disk sidecar before
+        // the replacement (jpegB) — real GuessWhoSync previous-photo behavior.
+        let prior = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
         XCTAssertEqual(prior, jpegA)
-        let internalFields = await MainActor.run {
-            fixture.contacts.allFields(for: Fixture.janeDoe().contactID)
-        }
+        let internalFields = try fixture.storedFields(forGuessWhoID: ada)
         XCTAssertTrue(internalFields.contains {
             $0.field == "previousPhoto" && $0.type == .blob
         })
 
+        // …yet the reserved snapshot field never surfaces in the user list.
         let visible = await fixture.dispatcher.handle(.contactsListCustomFields(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, limit: nil, cursor: nil))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, limit: nil, cursor: nil))
         guard case .customFieldPage(_, _, let page) = visible else {
             return XCTFail("expected custom-field page")
         }
@@ -102,74 +105,62 @@ final class ContactPhotoToolTests: XCTestCase {
     }
 
     func testDeletePreservesCurrentPhotoAndIsIdempotentWhenAbsent() async throws {
-        let fixture = await writableFixture()
-        let jane = try await janeID(fixture)
-        await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID] = jpegA
-        }
+        let fixture = await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
+        await fixture.seedPhoto(jpegA, forLocalID: MCPProductionFixture.adaLocalID)
 
         let deleted = await fixture.dispatcher.handle(.contactsDeletePhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, idempotencyToken: nil))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, idempotencyToken: nil))
         XCTAssertNil(deleted?.errorPayload)
-        let prior = await MainActor.run {
-            fixture.contacts.previousPhotoDataByEffectiveID[Sentinels.guessWhoUUID]
-        }
+        // The just-deleted photo was snapshotted before removal.
+        let prior = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
         XCTAssertEqual(prior, jpegA)
-        let writesAfterDelete = await MainActor.run { fixture.contacts.photoWriteCount }
-        XCTAssertEqual(writesAfterDelete, 1)
+        let committedAfterDelete = await fixture.store.committedPhotoWrites
+        XCTAssertEqual(committedAfterDelete.count, 1)
+        XCTAssertEqual(committedAfterDelete.last?.cleared, true)
 
         let again = await fixture.dispatcher.handle(.contactsDeletePhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, idempotencyToken: nil))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, idempotencyToken: nil))
         XCTAssertNil(again?.errorPayload)
-        let finalWrites = await MainActor.run { fixture.contacts.photoWriteCount }
-        XCTAssertEqual(finalWrites, 1, "deleting an absent photo is a no-op")
-    }
-
-    func testDeleteVerificationAcceptsEmptyBytesAsNoPhoto() async throws {
-        let fixture = await writableFixture()
-        let jane = try await janeID(fixture)
-        await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID] = jpegA
-            fixture.contacts.photoDeleteLeavesEmptyData = true
-        }
-
-        let response = await fixture.dispatcher.handle(.contactsDeletePhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, idempotencyToken: nil))
-        XCTAssertNil(response?.errorPayload)
+        let finalCommitted = await fixture.store.committedPhotoWrites
+        XCTAssertEqual(finalCommitted.count, 1, "deleting an absent photo is a no-op")
     }
 
     func testSetRejectsInvalidMismatchedAndOversizedPayloads() async throws {
-        let fixture = await writableFixture()
-        let jane = try await janeID(fixture)
+        let fixture = await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
 
         let invalid = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, mediaType: "image/jpeg", dataBase64: "%%%",
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/jpeg", dataBase64: "%%%",
             idempotencyToken: nil))
         XCTAssertEqual(errorCode(invalid), .invalidParams)
 
         let mismatch = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, mediaType: "image/png",
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/png",
             dataBase64: jpegA.base64EncodedString(), idempotencyToken: nil))
         XCTAssertEqual(errorCode(mismatch), .invalidParams)
 
         let oversized = Data(repeating: 0xff, count: WireEnvironment.maxContactPhotoBytes + 1)
         let tooLarge = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, mediaType: "image/jpeg",
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/jpeg",
             dataBase64: oversized.base64EncodedString(), idempotencyToken: nil))
         XCTAssertEqual(errorCode(tooLarge), .tooLarge)
-        let writes = await MainActor.run { fixture.contacts.photoWriteCount }
-        XCTAssertEqual(writes, 0)
+        // Nothing rejected at validation ever reached the store boundary.
+        let attempts = await fixture.store.photoWriteAttempts
+        XCTAssertTrue(attempts.isEmpty)
     }
 
     func testEverySupportedMediaTypeIsAcceptedAndReported() async throws {
-        let fixture = await writableFixture()
-        let jane = try await janeID(fixture)
+        let fixture = await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
         let cases: [(mediaType: String, data: Data)] = [
             ("image/jpeg", Data([0xff, 0xd8, 0xff, 0xe0])),
             ("image/png", Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
@@ -184,13 +175,13 @@ final class ContactPhotoToolTests: XCTestCase {
 
         for item in cases + heifCases {
             let set = await fixture.dispatcher.handle(.contactsSetPhoto(
-                helperId: Fixture.helper, messageId: TestMessageID.next(),
-                contactId: jane, mediaType: item.mediaType,
+                helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+                contactId: ada, mediaType: item.mediaType,
                 dataBase64: item.data.base64EncodedString(), idempotencyToken: nil))
             XCTAssertNil(set?.errorPayload, "set should accept \(item.mediaType)")
 
             let get = await fixture.dispatcher.handle(.contactsGetPhoto(
-                helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+                helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
             guard case .contactPhoto(_, _, let photo) = get else {
                 XCTFail("get should return \(item.mediaType)")
                 continue
@@ -201,28 +192,25 @@ final class ContactPhotoToolTests: XCTestCase {
     }
 
     func testGetRejectsUnsupportedStoredImageFormatAsReadFailure() async throws {
-        let fixture = await Fixture.make()
-        let jane = try await janeID(fixture)
-        await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID] = Data("not-an-image".utf8)
-        }
+        let fixture = await MCPProductionFixture.make()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
+        await fixture.seedPhoto(Data("not-an-image".utf8), forLocalID: MCPProductionFixture.adaLocalID)
         let response = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
         XCTAssertEqual(errorCode(response), .readFailed)
         XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.unsupportedStoredPhoto)
     }
 
     func testGetEnforcesRawAndEncodedResponseBounds() async throws {
-        let fixture = await Fixture.make()
-        let jane = try await janeID(fixture)
+        let fixture = await MCPProductionFixture.make()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
         var bounded = Data(repeating: 0, count: WireEnvironment.maxContactPhotoBytes)
         bounded.replaceSubrange(0..<3, with: [0xff, 0xd8, 0xff])
-        let boundedData = bounded
-        await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID] = boundedData
-        }
+        await fixture.seedPhoto(bounded, forLocalID: MCPProductionFixture.adaLocalID)
         let response = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
         guard case .contactPhoto(_, _, let photo) = response else {
             return XCTFail("the documented maximum must fit the response envelope")
         }
@@ -233,98 +221,201 @@ final class ContactPhotoToolTests: XCTestCase {
 
         var oversized = bounded
         oversized.append(0)
-        let oversizedData = oversized
-        await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID] = oversizedData
-        }
+        await fixture.seedPhoto(oversized, forLocalID: MCPProductionFixture.adaLocalID)
         let rejected = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
         XCTAssertEqual(errorCode(rejected), .tooLarge)
     }
 
     func testPermissionAccessModeWriteBudgetAndTypedSaveErrors() async throws {
-        let readOnly = await Fixture.make()
-        let jane = try await janeID(readOnly)
+        let readOnly = await MCPProductionFixture.make()
+        defer { readOnly.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
         let deniedWrite = await readOnly.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane,
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegA.base64EncodedString(),
             idempotencyToken: nil))
         XCTAssertEqual(errorCode(deniedWrite), .readOnly)
 
-        await MainActor.run { readOnly.gates.contactsAuthorized = false }
+        readOnly.gates.contactsAuthorized = false
         let deniedRead = await readOnly.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
         XCTAssertEqual(errorCode(deniedRead), .permissionDenied)
 
-        let budgeted = await writableFixture(limit: 1)
-        let budgetJane = try await janeID(budgeted)
+        let budgeted = await productionFixture(limit: 1)
+        defer { budgeted.cleanUp() }
         _ = await budgeted.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: budgetJane,
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegA.base64EncodedString(),
             idempotencyToken: nil))
         let busy = await budgeted.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: budgetJane,
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegB.base64EncodedString(),
             idempotencyToken: nil))
         XCTAssertEqual(errorCode(busy), .busy)
 
-        let failing = await writableFixture()
-        let failingJane = try await janeID(failing)
-        await MainActor.run {
-            failing.contacts.nextContactStoreError = NSError(
-                domain: "CNErrorDomain", code: 100, userInfo: [:])
-        }
+        let failing = await productionFixture()
+        defer { failing.cleanUp() }
+        await failing.store.failNextPhotoWrite(
+            with: NSError(domain: "CNErrorDomain", code: 100, userInfo: [:]))
         let permissionFailure = await failing.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: failingJane,
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegA.base64EncodedString(),
             idempotencyToken: nil))
         XCTAssertEqual(errorCode(permissionFailure), .permissionDenied)
     }
 
     func testSetIdempotencyTokenAndIntrinsicIdempotencyAvoidDuplicateWrites() async throws {
-        let fixture = await writableFixture()
-        let jane = try await janeID(fixture)
+        let fixture = await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
         let first = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: "photo-1", contactId: jane,
+            helperId: MCPProductionFixture.helper, messageId: "photo-1", contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegA.base64EncodedString(),
             idempotencyToken: "photo-token"))
         XCTAssertNil(first?.errorPayload)
         let replay = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: "photo-2", contactId: jane,
+            helperId: MCPProductionFixture.helper, messageId: "photo-2", contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegB.base64EncodedString(),
             idempotencyToken: "photo-token"))
         XCTAssertNil(replay?.errorPayload)
-        var writes = await MainActor.run { fixture.contacts.photoWriteCount }
-        XCTAssertEqual(writes, 1)
-        let stored = await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID]
-        }
+        var committed = await fixture.store.committedPhotoWrites
+        XCTAssertEqual(committed.count, 1)
+        let stored = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
         XCTAssertEqual(stored, jpegA, "a replay returns the original outcome")
 
         _ = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: "photo-3", contactId: jane,
+            helperId: MCPProductionFixture.helper, messageId: "photo-3", contactId: ada,
             mediaType: "image/jpeg", dataBase64: jpegA.base64EncodedString(),
             idempotencyToken: nil))
-        writes = await MainActor.run { fixture.contacts.photoWriteCount }
-        XCTAssertEqual(writes, 1, "identical bytes are a no-op without a token too")
+        committed = await fixture.store.committedPhotoWrites
+        XCTAssertEqual(committed.count, 1, "identical bytes are a no-op without a token too")
+    }
+
+    /// The NEW production-backed snapshot-then-fault coverage. Ada already has a
+    /// photo; the store rejects the write (the Cocoa 134092 store-rejection
+    /// family) AFTER `setContactPhoto` has snapshotted the prior bytes. The
+    /// snapshot must be durable through GuessWhoSync, the live photo must be
+    /// untouched, the cache/reload must stay honest, the returned error must be
+    /// typed + non-leaking + unaudited, and a retry (a failed write is never
+    /// idempotency-cached) must apply the new photo.
+    func testSetPhotoSnapshotSurvivesInjectedWriteFailureAndRetries() async throws {
+        let fixture = await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
+        await fixture.seedPhoto(jpegA, forLocalID: MCPProductionFixture.adaLocalID)
+
+        let rejection = NSError(
+            domain: "NSCocoaErrorDomain", code: 134092,
+            userInfo: [NSLocalizedDescriptionKey: MCPProductionFixture.adaLocalID])
+        await fixture.store.failNextPhotoWrite(with: rejection)
+
+        let response = await fixture.dispatcher.handle(.contactsSetPhoto(
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/jpeg",
+            dataBase64: jpegB.base64EncodedString(), idempotencyToken: "photo-retry"))
+        XCTAssertEqual(errorCode(response), .writeFailed)
+
+        // Snapshot durable through sync: the prior image reached the on-disk
+        // sidecar BEFORE the write was rejected.
+        let snapshot = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
+        XCTAssertEqual(snapshot, jpegA, "the previousPhoto snapshot is durable through sync")
+
+        // Live photo unchanged: the rejected write left the bytes intact.
+        let live = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(live, jpegA, "a failed write leaves the live photo intact")
+
+        // The boundary recorded the attempt but committed nothing.
+        let attempts = await fixture.store.photoWriteAttempts
+        let committed = await fixture.store.committedPhotoWrites
+        XCTAssertEqual(attempts, [RecordingContactStore.PhotoWrite(
+            localID: MCPProductionFixture.adaLocalID, cleared: false)])
+        XCTAssertTrue(committed.isEmpty)
+
+        // Cache/reload honesty: a full refresh + fresh GET still returns the
+        // untouched photo — the failed write never changed what is served.
+        await fixture.reload()
+        let get = await fixture.dispatcher.handle(.contactsGetPhoto(
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
+        guard case .contactPhoto(_, _, let photo) = get else { return XCTFail("expected photo") }
+        XCTAssertEqual(Data(base64Encoded: photo.dataBase64 ?? ""), jpegA)
+
+        // Typed error is non-leaking and the failed write is never audited.
+        let entries = await fixture.audit.entries()
+        XCTAssertFalse(entries.contains { $0.action == .editContact })
+        XCTAssertFalse(response?.wireJSON.contains(MCPProductionFixture.adaLocalID) == true)
+        XCTAssertFalse(response?.agentVisibleText.contains(MCPProductionFixture.adaLocalID) == true)
+
+        // Idempotency retry: the failed write was NOT cached, so re-sending the
+        // same token re-executes (the one-shot fault has cleared) and the new
+        // photo finally lands, while the snapshot still holds the original.
+        let retry = await fixture.dispatcher.handle(.contactsSetPhoto(
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, mediaType: "image/jpeg",
+            dataBase64: jpegB.base64EncodedString(), idempotencyToken: "photo-retry"))
+        XCTAssertNil(retry?.errorPayload)
+        let healed = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(healed, jpegB, "the retry applies the new photo")
+        let snapshotAfter = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
+        XCTAssertEqual(snapshotAfter, jpegA, "the retry snapshots the still-current prior photo")
+    }
+
+    // MARK: - Fake-only adapter quirks (no production analogue)
+
+    func testGetDistinguishesNoPhotoFromFailure() async throws {
+        // The no-photo half is covered by the production suite; the read-FAILURE
+        // half needs a one-shot photo READ fault that RecordingContactStore does
+        // not expose, so this stays on the fake source.
+        let fixture = Fixture.make()
+        let jane = try await janeID(fixture)
+
+        let absent = await fixture.dispatcher.handle(.contactsGetPhoto(
+            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+        guard case .contactPhoto(_, _, let photo) = absent else {
+            return XCTFail("expected a successful no-photo result")
+        }
+        XCTAssertFalse(photo.present)
+        XCTAssertNil(photo.mediaType)
+        XCTAssertNil(photo.dataBase64)
+        XCTAssertEqual(photo.byteCount, 0)
+
+        fixture.contacts.nextContactStoreError = NSError(
+            domain: "PhotoRead", code: 1, userInfo: [:])
+        let failed = await fixture.dispatcher.handle(.contactsGetPhoto(
+            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+        XCTAssertEqual(errorCode(failed), .readFailed)
+    }
+
+    func testDeleteVerificationAcceptsEmptyBytesAsNoPhoto() async throws {
+        // Fake-only: an adapter that represents a CLEARED photo as empty bytes
+        // on the verification read-back instead of nil. The production store
+        // removes the bytes outright, so this quirk has no production analogue.
+        let fixture = legacyFakeFixture()
+        let jane = try await janeID(fixture)
+        fixture.contacts.photoDataByLocalID[Sentinels.localID] = jpegA
+        fixture.contacts.photoDeleteLeavesEmptyData = true
+
+        let response = await fixture.dispatcher.handle(.contactsDeletePhoto(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, idempotencyToken: nil))
+        XCTAssertNil(response?.errorPayload)
     }
 
     func testSetVerificationAcceptsContactsTranscodingTheImage() async throws {
-        let fixture = await writableFixture()
+        // Fake-only: simulates Contacts TRANSCODING the supplied image before the
+        // verification read-back. The in-memory production store has no
+        // transcoder, so this adapter quirk stays on the fake source.
+        let fixture = legacyFakeFixture()
         let jane = try await janeID(fixture)
         let transcoded = Data([0xff, 0xd8, 0xff, 0xee, 0x09])
-        await MainActor.run {
-            fixture.contacts.photoWriteReplacementData = transcoded
-        }
+        fixture.contacts.photoWriteReplacementData = transcoded
 
         let response = await fixture.dispatcher.handle(.contactsSetPhoto(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
             contactId: jane, mediaType: "image/jpeg",
             dataBase64: jpegA.base64EncodedString(), idempotencyToken: nil))
         XCTAssertNil(response?.errorPayload)
-        let stored = await MainActor.run {
-            fixture.contacts.photoDataByLocalID[Sentinels.localID]
-        }
+        let stored = fixture.contacts.photoDataByLocalID[Sentinels.localID]
         XCTAssertEqual(stored, transcoded)
     }
 }
