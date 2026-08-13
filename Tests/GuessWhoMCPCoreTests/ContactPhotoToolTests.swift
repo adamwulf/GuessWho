@@ -46,7 +46,10 @@ final class ContactPhotoToolTests: XCTestCase {
             query: "jane", limit: nil, cursor: nil))
         guard case .contactPage(_, _, let page) = response,
               let id = page.items.first(where: { $0.name == "Jane Doe" })?.id
-        else { throw XCTSkip("Jane fixture missing") }
+        else {
+            XCTFail("Jane fixture missing")
+            throw HarnessInjectedFailure(site: .save)
+        }
         return id
     }
 

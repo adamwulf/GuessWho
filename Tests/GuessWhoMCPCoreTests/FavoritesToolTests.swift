@@ -126,14 +126,18 @@ final class FavoritesToolTests: XCTestCase {
 
     @MainActor
     private func installEveryKind(_ fixture: Fixture, collision: Bool = false) -> [WireFavoriteIdentity] {
-        let jane = fixture.contacts.contacts[0]
-        let event = fixture.events.events[0]
-        let group = fixture.contacts.groups[0]
-        let guide = fixture.guides.guides[0]
-        let place = fixture.guides.places[0]
+        guard let jane = fixture.contacts.contacts.first,
+              let event = fixture.events.events.first,
+              let group = fixture.contacts.groups.first,
+              let guide = fixture.guides.guides.first,
+              let place = fixture.guides.places.first
+        else {
+            XCTFail("every-kind fixture is incomplete")
+            return []
+        }
         let shared = collision ? guide.id : place.id
         if collision {
-            fixture.guides.places[0] = MapsPlace(
+            fixture.guides.places[fixture.guides.places.startIndex] = MapsPlace(
                 id: shared, guideID: guide.id, name: place.name,
                 address: place.address, latitude: place.latitude, longitude: place.longitude)
         }
@@ -511,10 +515,18 @@ final class FavoritesToolTests: XCTestCase {
 
     func testReorderWithoutContactsSkipsContactSnapshot() async {
         let fixture = await fixture(writable: true)
+        let referents = await MainActor.run {
+            fixture.guides.guides.first.flatMap { guide in
+                fixture.guides.places.first.map { place in (guide.id, place.id) }
+            }
+        }
+        guard let (guideID, placeID) = referents else {
+            return XCTFail("missing guide/place referents")
+        }
         await MainActor.run {
             fixture.favorites.items = [
-                Favorite(kind: .guide, id: fixture.guides.guides[0].id.uuidString, addedAt: Date()),
-                Favorite(kind: .place, id: fixture.guides.places[0].id.uuidString, addedAt: Date()),
+                Favorite(kind: .guide, id: guideID.uuidString, addedAt: Date()),
+                Favorite(kind: .place, id: placeID.uuidString, addedAt: Date()),
             ]
         }
         guard let page = await list(fixture) else { return XCTFail("no page") }
@@ -573,7 +585,10 @@ final class FavoritesToolTests: XCTestCase {
         error(await fixture.dispatcher.handle(.favoritesSet(
             helperId: Fixture.helper, messageId: "ev", kind: .event,
             id: UUID().uuidString, favorite: true, idempotencyToken: nil)), .permissionDenied)
-        let guideID = await MainActor.run { fixture.guides.guides[0].id.uuidString }
+        let optionalGuideID: String? = await MainActor.run {
+            fixture.guides.guides.first?.id.uuidString
+        }
+        guard let guideID = optionalGuideID else { return XCTFail("missing guide referent") }
         guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
             helperId: Fixture.helper, messageId: "gu", kind: .guide,
             id: guideID, favorite: false, idempotencyToken: nil)) else {

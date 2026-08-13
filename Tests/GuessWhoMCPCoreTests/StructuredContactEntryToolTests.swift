@@ -292,15 +292,18 @@ final class StructuredContactEntryToolTests: XCTestCase {
             $0.instantMessageAddresses = [self.instant(self.signal), self.instant(otherInstant)]
         }
 
-        _ = await fixture.dispatcher.handle(.contactsDeletePostalAddress(
+        let postalDelete = await fixture.dispatcher.handle(.contactsDeletePostalAddress(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: adaID, address: home, idempotencyToken: nil))
-        _ = await fixture.dispatcher.handle(.contactsDeleteSocialProfile(
+        XCTAssertNotNil(expectCard(postalDelete))
+        let socialDelete = await fixture.dispatcher.handle(.contactsDeleteSocialProfile(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: adaID, profile: linkedIn, idempotencyToken: nil))
-        _ = await fixture.dispatcher.handle(.contactsDeleteInstantMessage(
+        XCTAssertNotNil(expectCard(socialDelete))
+        let instantDelete = await fixture.dispatcher.handle(.contactsDeleteInstantMessage(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: adaID, instantMessage: signal, idempotencyToken: nil))
+        XCTAssertNotNil(expectCard(instantDelete))
 
         // Durable: the exact-match delete removed only the fully matching entry
         // on the boundary record; the near-duplicates survive untouched.
@@ -424,10 +427,11 @@ final class StructuredContactEntryToolTests: XCTestCase {
         await fixture.store.failSave(atOrdinal: 1, with: NSError(
             domain: "NSCocoaErrorDomain", code: 134092,
             userInfo: [NSLocalizedDescriptionKey: Sentinels.appleNote]))
-        expectError(await fixture.dispatcher.handle(.contactsAddPostalAddress(
+        let token = "structured-save-retry"
+        let failure = await fixture.dispatcher.handle(.contactsAddPostalAddress(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
-            contactId: adaID, address: home, idempotencyToken: nil)),
-            code: .writeFailed, message: WireErrorMessage.writeFailed)
+            contactId: adaID, address: home, idempotencyToken: token))
+        expectError(failure, code: .writeFailed, message: WireErrorMessage.writeFailed)
 
         // Durable: the boundary counted the rejected attempt but committed
         // nothing, and the stored card is unchanged.
@@ -437,6 +441,25 @@ final class StructuredContactEntryToolTests: XCTestCase {
         let committed = await fixture.store.committedSaveLocalIDs
         XCTAssertEqual(saveCount, 1)
         XCTAssertTrue(committed.isEmpty)
+        let auditAfterFailure = await fixture.storedAuditEntries()
+        XCTAssertTrue(auditAfterFailure.isEmpty)
+
+        // Failed results are neither audited nor idempotency-cached. Reusing
+        // the token after the one-shot boundary fault clears must execute and
+        // persist exactly once.
+        let retry = await fixture.dispatcher.handle(.contactsAddPostalAddress(
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: adaID, address: home, idempotencyToken: token))
+        XCTAssertNotNil(expectCard(retry))
+        let afterRetry = try await storedAda(fixture)
+        XCTAssertEqual(afterRetry.postalAddresses, [postal(home)])
+        let savesAfterRetry = await fixture.store.saveCount
+        let commitsAfterRetry = await fixture.store.committedSaveLocalIDs
+        XCTAssertEqual(savesAfterRetry, 2)
+        XCTAssertEqual(commitsAfterRetry, [MCPProductionFixture.adaLocalID])
+        let retryAudit = await fixture.storedAuditEntries()
+        XCTAssertEqual(retryAudit.count, 1)
+        XCTAssertEqual(retryAudit.first?.action, .editContact)
     }
 
     // MARK: - Per-contact single-flight (real serialized read-modify-write)
@@ -449,10 +472,10 @@ final class StructuredContactEntryToolTests: XCTestCase {
         let dispatcher = fixture.dispatcher
         let contactId = adaID
         let helper = MCPProductionFixture.helper
-        await withTaskGroup(of: Void.self) { group in
+        let responses = await withTaskGroup(of: WireResponse?.self, returning: [WireResponse?].self) { group in
             for index in 0..<20 {
                 group.addTask {
-                    _ = await dispatcher.handle(.contactsAddInstantMessage(
+                    await dispatcher.handle(.contactsAddInstantMessage(
                         helperId: helper,
                         messageId: "structured-concurrent-\(index)",
                         contactId: contactId,
@@ -462,7 +485,12 @@ final class StructuredContactEntryToolTests: XCTestCase {
                         idempotencyToken: nil))
                 }
             }
+            var collected: [WireResponse?] = []
+            for await response in group { collected.append(response) }
+            return collected
         }
+        XCTAssertEqual(responses.count, 20)
+        for response in responses { XCTAssertNotNil(expectCard(response)) }
         // Durable: the per-contact single-flight serialized every read-modify-
         // write, so all 20 distinct usernames land on the boundary record with
         // no lost or duplicated updates.

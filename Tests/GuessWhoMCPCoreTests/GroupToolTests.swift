@@ -507,7 +507,9 @@ final class GroupToolTests: XCTestCase {
 
     func testMembershipAuditUsesResolvedIdentityForPreMintCallerID() async {
         let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return }
+        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
+        let hasTwoContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
+        guard hasTwoContacts else { return XCTFail("expected two seeded contacts") }
         let previewID = await MainActor.run {
             fixture.contacts.contacts[1].deterministicGuessWhoID
         }
@@ -544,9 +546,11 @@ final class GroupToolTests: XCTestCase {
 
     func testMembershipBatchReportsPartialFailuresWithOpaqueIDs() async {
         let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return }
+        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
         let ids = await contactIDs(fixture)
-        XCTAssertGreaterThanOrEqual(ids.count, 2)
+        guard ids.count >= 2 else { return XCTFail("expected two seeded contacts") }
+        let hasTwoStoredContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
+        guard hasTwoStoredContacts else { return XCTFail("expected two stored contacts") }
         let failedLocalID = await MainActor.run {
             let failed = fixture.contacts.contacts[1]
             fixture.contacts.membershipFailureLocalIDs.insert(
@@ -583,7 +587,9 @@ final class GroupToolTests: XCTestCase {
 
     func testMembershipBatchAccountsForPreAndPostMintAliasesOnce() async {
         let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return }
+        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
+        let hasTwoContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
+        guard hasTwoContacts else { return XCTFail("expected two seeded contacts") }
         let (previewID, mintedID) = await MainActor.run {
             let preview = fixture.contacts.contacts[1].deterministicGuessWhoID
             var minted = fixture.contacts.contacts[1]
@@ -630,9 +636,11 @@ final class GroupToolTests: XCTestCase {
         ]
         for (authorization, error, expectedCode) in cases {
             let fixture = await writableFixture()
-            guard let groupId = await groupID(fixture) else { return }
+            guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
             let ids = await contactIDs(fixture)
-            XCTAssertGreaterThanOrEqual(ids.count, 2)
+            guard ids.count >= 2 else { return XCTFail("expected two seeded contacts") }
+            let hasTwoContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
+            guard hasTwoContacts else { return XCTFail("expected two stored contacts") }
             await MainActor.run {
                 let failed = fixture.contacts.contacts[1]
                 fixture.contacts.membershipFailureLocalIDs.insert(
@@ -694,7 +702,7 @@ final class GroupToolTests: XCTestCase {
 
     func testRuntimePermissionAndStoreErrorsAreTyped() async {
         let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return }
+        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
         await MainActor.run {
             fixture.contacts.authorizationStatus = .denied
             fixture.contacts.groupWriteError = InjectedGroupError()
