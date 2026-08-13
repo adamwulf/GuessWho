@@ -10,10 +10,9 @@ import GuessWhoMCPWire
 /// and the substituted OS boundary (`RecordingContactStore`) injects the photo
 /// write fault the failure test needs AFTER the snapshot has landed.
 ///
-/// A handful of tests exercise adapter quirks the in-memory production store
-/// cannot model — a photo READ fault, Contacts TRANSCODING a write, an adapter
-/// reporting a cleared photo as empty bytes — and those stay on the fake
-/// `Fixture` from Fakes.swift, each labelled with why.
+/// Adapter quirks (read faults, Contacts transcoding, and empty-byte deletion)
+/// are injected at `RecordingContactStore`, the OS boundary, so every photo
+/// test still executes the production repository path.
 @MainActor
 final class ContactPhotoToolTests: XCTestCase {
     private let jpegA = Data([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02])
@@ -28,29 +27,6 @@ final class ContactPhotoToolTests: XCTestCase {
         fixture.gates.mcpAccess = .readWrite
         fixture.gates.cliAccess = .readWrite
         return fixture
-    }
-
-    /// A writable FAKE fixture (Fakes.swift) for the adapter-quirk tests that
-    /// have no production analogue.
-    private func legacyFakeFixture(limit: Int = 30) -> Fixture {
-        let fixture = Fixture.make(writeLimitPerWindow: limit)
-        fixture.gates.mcpAccess = .readWrite
-        fixture.gates.cliAccess = .readWrite
-        return fixture
-    }
-
-    /// The fake fixture's reconciled person, resolved through the dispatcher.
-    private func janeID(_ fixture: Fixture) async throws -> String {
-        let response = await fixture.dispatcher.handle(.contactsSearch(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            query: "jane", limit: nil, cursor: nil))
-        guard case .contactPage(_, _, let page) = response,
-              let id = page.items.first(where: { $0.name == "Jane Doe" })?.id
-        else {
-            XCTFail("Jane fixture missing")
-            throw HarnessInjectedFailure(site: .save)
-        }
-        return id
     }
 
     private func errorCode(_ response: WireResponse?) -> WireErrorCode? {
@@ -414,7 +390,7 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(finalAudit.first?.newValue, "photo (image/jpeg, 6 bytes)")
     }
 
-    // MARK: - Fake-only adapter quirks (no production analogue)
+    // MARK: - OS-boundary adapter quirks (production repository path)
 
     func testGetDistinguishesNoPhotoFromFailure() async throws {
         let production = try await MCPProductionFixture.make()
@@ -430,29 +406,23 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertNil(photo.dataBase64)
         XCTAssertEqual(photo.byteCount, 0)
 
-        // The read-failure half needs a one-shot photo-read fault that the
-        // recording OS boundary does not expose, so only this branch stays fake.
-        let fixture = Fixture.make()
-        let jane = try await janeID(fixture)
-        fixture.contacts.nextContactStoreError = NSError(
-            domain: "PhotoRead", code: 1, userInfo: [:])
-        let failed = await fixture.dispatcher.handle(.contactsGetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(), contactId: jane))
+        await production.store.failNextPhotoRead(with: NSError(
+            domain: "PhotoRead", code: 1, userInfo: [:]))
+        let failed = await production.dispatcher.handle(.contactsGetPhoto(
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: MCPProductionFixture.adaGuessWhoID))
         XCTAssertEqual(errorCode(failed), .readFailed)
     }
 
     func testDeleteVerificationAcceptsEmptyBytesAsNoPhoto() async throws {
-        // Fake-only: an adapter that represents a CLEARED photo as empty bytes
-        // on the verification read-back instead of nil. The production store
-        // removes the bytes outright, so this quirk has no production analogue.
-        let fixture = legacyFakeFixture()
-        let jane = try await janeID(fixture)
-        fixture.contacts.photoDataByLocalID[Sentinels.localID] = jpegA
-        fixture.contacts.photoDeleteLeavesEmptyData = true
+        let fixture = try await productionFixture()
+        defer { fixture.cleanUp() }
+        await fixture.seedPhoto(jpegA, forLocalID: MCPProductionFixture.adaLocalID)
+        await fixture.store.representNextPhotoDeleteAsEmptyData()
 
         let response = await fixture.dispatcher.handle(.contactsDeletePhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, idempotencyToken: nil))
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: MCPProductionFixture.adaGuessWhoID, idempotencyToken: nil))
         guard case .acknowledged(_, _, let message) = response else {
             return XCTFail("expected empty-byte delete acknowledgement")
         }
@@ -460,23 +430,20 @@ final class ContactPhotoToolTests: XCTestCase {
     }
 
     func testSetVerificationAcceptsContactsTranscodingTheImage() async throws {
-        // Fake-only: simulates Contacts TRANSCODING the supplied image before the
-        // verification read-back. The in-memory production store has no
-        // transcoder, so this adapter quirk stays on the fake source.
-        let fixture = legacyFakeFixture()
-        let jane = try await janeID(fixture)
+        let fixture = try await productionFixture()
+        defer { fixture.cleanUp() }
         let transcoded = Data([0xff, 0xd8, 0xff, 0xee, 0x09])
-        fixture.contacts.photoWriteReplacementData = transcoded
+        await fixture.store.replaceNextPhotoWrite(with: transcoded)
 
         let response = await fixture.dispatcher.handle(.contactsSetPhoto(
-            helperId: Fixture.helper, messageId: TestMessageID.next(),
-            contactId: jane, mediaType: "image/jpeg",
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: MCPProductionFixture.adaGuessWhoID, mediaType: "image/jpeg",
             dataBase64: jpegA.base64EncodedString(), idempotencyToken: nil))
         guard case .acknowledged(_, _, let message) = response else {
             return XCTFail("expected transcoded photo-set acknowledgement")
         }
         XCTAssertEqual(message, WireAckMessage.photoSet)
-        let stored = fixture.contacts.photoDataByLocalID[Sentinels.localID]
+        let stored = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
         XCTAssertEqual(stored, transcoded)
     }
 }

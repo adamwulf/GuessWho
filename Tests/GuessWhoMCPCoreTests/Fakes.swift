@@ -48,8 +48,6 @@ final class LegacyScriptedContactSource: MCPContactSource {
     var groups: [ContactGroup] = []
     private(set) var fetchGroupsCallCount = 0
     var membersByGroup: [String: [Contact]] = [:]
-    var membershipFailureLocalIDs: Set<String> = []
-    var membershipFailureError: (any Error)?
     var groupWriteError: (any Error)?
     var authorizationStatus: StoreAuthorizationStatus = .authorized
     private(set) var groupCreateCount = 0
@@ -59,12 +57,6 @@ final class LegacyScriptedContactSource: MCPContactSource {
     var linksByID: [UUID: Link] = [:]
     var favoriteEffectiveIDs: Set<String> = []
     var photoDataByLocalID: [String: Data] = [:]
-    /// Simulates Contacts transcoding a successful photo write before the
-    /// verification read-back.
-    var photoWriteReplacementData: Data?
-    /// Simulates an adapter representing a cleared photo as empty bytes
-    /// instead of nil on the verification read.
-    var photoDeleteLeavesEmptyData = false
     private(set) var photoWriteCount = 0
 
     /// When set, EVERY link method routes through this REAL engine (over a
@@ -295,28 +287,9 @@ final class LegacyScriptedContactSource: MCPContactSource {
             throw ContactStoreError.groupNotFound(localID: group.localID)
         }
         groupMembershipWriteCount += 1
-        var applied: [Contact] = []
-        var failures: [GroupMembershipPartialFailureError.Failure] = []
-        for contact in requested {
-            if membershipFailureLocalIDs.contains(contact.contactID.restorationToken.localID) {
-                failures.append(.init(
-                    contact: contact,
-                    error: membershipFailureError
-                        ?? ContactStoreError.contactNotFound(
-                            localID: contact.contactID.restorationToken.localID)))
-                continue
-            }
-            // Scripted-success observation only. Real membership mutation,
-            // de-duplication, and persistence are covered through
-            // `ContactsRepository` + `RecordingContactStore`; this boundary
-            // merely tells dispatcher fault-mapping tests which requests the
-            // injected OS failure allowed through.
-            applied.append(contact)
-        }
-        if !failures.isEmpty {
-            throw GroupMembershipPartialFailureError(
-                change: change, group: group, applied: applied, failures: failures)
-        }
+        // Scripted-success observation only. Real membership mutation,
+        // de-duplication, partial failures, and persistence are covered through
+        // `ContactsRepository` + `RecordingContactStore`.
     }
 
     func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
@@ -569,13 +542,7 @@ final class LegacyScriptedContactSource: MCPContactSource {
             $0.contactID.restorationToken.localID == localID
         }) else { return false }
         photoWriteCount += 1
-        if imageData == nil, photoDeleteLeavesEmptyData {
-            photoDataByLocalID[localID] = Data()
-        } else if imageData != nil, let replacement = photoWriteReplacementData {
-            photoDataByLocalID[localID] = replacement
-        } else {
-            photoDataByLocalID[localID] = imageData
-        }
+        photoDataByLocalID[localID] = imageData
         return true
     }
 

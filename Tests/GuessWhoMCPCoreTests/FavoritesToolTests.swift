@@ -561,7 +561,10 @@ final class FavoritesToolTests: XCTestCase {
         // The rejected reorder did not reorder the caller's requested order; the
         // injected edit is the only mutation the fake performed.
         let afterRejected = await MainActor.run { fixture.favorites.items }
+        XCTAssertEqual(afterRejected.count, original.count + 1)
         XCTAssertEqual(afterRejected.prefix(original.count).map(\.kind), original.map(\.kind))
+        XCTAssertEqual(afterRejected.last?.kind, .guide)
+        XCTAssertFalse(original.contains { $0.id == afterRejected.last?.id })
     }
 
     func testDynamicPermissionsAndAccessGatesApplyPerReferent() async {

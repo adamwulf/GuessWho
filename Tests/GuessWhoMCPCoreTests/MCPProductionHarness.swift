@@ -94,6 +94,8 @@ actor RecordingContactStore: ContactStoreProtocol {
     private(set) var photoWriteAttempts: [PhotoWrite] = []
     /// Photo writes that COMMITTED to the wrapped store.
     private(set) var committedPhotoWrites: [PhotoWrite] = []
+    /// Membership calls that reached the OS boundary, including rejected ones.
+    private(set) var membershipWriteAttempts: [(contactLocalID: String, groupLocalID: String)] = []
 
     // MARK: Fault injection (one-shot)
 
@@ -101,6 +103,11 @@ actor RecordingContactStore: ContactStoreProtocol {
     private var pendingSaveFailureError: Error?
     private var pendingPhotoFailure = false
     private var pendingPhotoFailureError: Error?
+    private var pendingPhotoReadFailure: Error?
+    private var photoWriteReplacementData: Data?
+    private var representDeletedPhotoAsEmptyData = false
+    private var membershipFailureByLocalID: [String: Error] = [:]
+    private var authorizationStatusOverride: StoreAuthorizationStatus?
 
     init(inner: InMemoryContactStore) {
         self.inner = inner
@@ -120,6 +127,35 @@ actor RecordingContactStore: ContactStoreProtocol {
     func failNextPhotoWrite(with error: Error? = nil) {
         pendingPhotoFailure = true
         pendingPhotoFailureError = error
+    }
+
+    /// Boundary-only adapter behaviors used to exercise repository handling of
+    /// OS Contacts quirks without replacing the repository itself.
+    func failNextPhotoRead(with error: Error) {
+        pendingPhotoReadFailure = error
+    }
+
+    func replaceNextPhotoWrite(with data: Data) {
+        photoWriteReplacementData = data
+    }
+
+    func representNextPhotoDeleteAsEmptyData() {
+        representDeletedPhotoAsEmptyData = true
+    }
+
+    /// Inject a Contacts-boundary membership failure for selected records.
+    /// Repository batch accounting and partial-error construction remain in
+    /// production `ContactsRepository`.
+    func failMembership(forLocalID localID: String, with error: Error) {
+        membershipFailureByLocalID[localID] = error
+    }
+
+    func clearMembershipFailures() {
+        membershipFailureByLocalID.removeAll()
+    }
+
+    func overrideAuthorizationStatus(_ status: StoreAuthorizationStatus?) {
+        authorizationStatusOverride = status
     }
 
     // MARK: Seeding (non-recorded, fault-free)
@@ -173,7 +209,8 @@ actor RecordingContactStore: ContactStoreProtocol {
     }
 
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
-        await inner.contactsAuthorizationStatus()
+        if let authorizationStatusOverride { return authorizationStatusOverride }
+        return await inner.contactsAuthorizationStatus()
     }
 
     func requestContactsAccess() async -> StoreAccessResult {
@@ -185,7 +222,11 @@ actor RecordingContactStore: ContactStoreProtocol {
     }
 
     func loadImageData(localID: String) async throws -> Data? {
-        try await inner.loadImageData(localID: localID)
+        if let error = pendingPhotoReadFailure {
+            pendingPhotoReadFailure = nil
+            throw error
+        }
+        return try await inner.loadImageData(localID: localID)
     }
 
     func loadThumbnailImageData(localID: String) async throws -> Data? {
@@ -200,7 +241,17 @@ actor RecordingContactStore: ContactStoreProtocol {
             pendingPhotoFailureError = nil
             throw error
         }
-        try await inner.setImageData(localID: localID, imageData: imageData)
+        let storedData: Data?
+        if imageData == nil, representDeletedPhotoAsEmptyData {
+            representDeletedPhotoAsEmptyData = false
+            storedData = Data()
+        } else if imageData != nil, let replacement = photoWriteReplacementData {
+            photoWriteReplacementData = nil
+            storedData = replacement
+        } else {
+            storedData = imageData
+        }
+        try await inner.setImageData(localID: localID, imageData: storedData)
         committedPhotoWrites.append(PhotoWrite(localID: localID, cleared: imageData == nil))
     }
 
@@ -233,10 +284,14 @@ actor RecordingContactStore: ContactStoreProtocol {
     }
 
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws {
+        membershipWriteAttempts.append((contactLocalID, groupLocalID))
+        if let error = membershipFailureByLocalID[contactLocalID] { throw error }
         try await inner.addMember(contactLocalID: contactLocalID, toGroup: groupLocalID)
     }
 
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws {
+        membershipWriteAttempts.append((contactLocalID, groupLocalID))
+        if let error = membershipFailureByLocalID[contactLocalID] { throw error }
         try await inner.removeMember(contactLocalID: contactLocalID, fromGroup: groupLocalID)
     }
 

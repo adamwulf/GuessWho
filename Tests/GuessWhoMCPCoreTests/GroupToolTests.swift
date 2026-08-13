@@ -497,70 +497,72 @@ final class GroupToolTests: XCTestCase {
         XCTAssertFalse(entry.subjectID.contains(createdLocalID))
     }
 
-    // MARK: - Injected-fault / identity-simulation streams (fake-backed)
-    //
-    // These stay on `Fixture` deliberately: each depends on a fault or identity
-    // race the OS-boundary `RecordingContactStore` does not expose —
-    // per-contact membership failures, pre/post-mint alias simulation, injected
-    // authorization / write errors. They are the sanctioned "OS-boundary fakes
-    // for injected faults" carve-out, not re-implementations of store rules.
+    // MARK: - Boundary faults / identity aliases (production repository path)
 
-    func testMembershipAuditUsesResolvedIdentityForPreMintCallerID() async {
-        let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
-        let hasTwoContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
-        guard hasTwoContacts else { return XCTFail("expected two seeded contacts") }
-        let previewID = await MainActor.run {
-            fixture.contacts.contacts[1].deterministicGuessWhoID
-        }
-        await MainActor.run {
-            var minted = fixture.contacts.contacts[1]
-            minted.urlAddresses.append(LabeledValue(
-                label: "",
-                value: "guesswho://contact/11111111-2222-4333-8444-555555555555"))
-            fixture.contacts.contacts[1] = minted
-            fixture.contacts.membersByGroup["CNGroup-LOCAL-1", default: []].append(minted)
-        }
+    @MainActor
+    func testMembershipAuditUsesResolvedIdentityForPreMintCallerID() async throws {
+        let fixture = try await writableProductionFixture()
+        defer { fixture.cleanUp() }
+        let optionalGroupID = await productionGroupID(
+            fixture, named: MCPProductionFixture.groupName)
+        let optionalPreviewID = await productionContactID(fixture, named: "Blaise Pascal")
+        let groupId = try XCTUnwrap(optionalGroupID)
+        let previewID = try XCTUnwrap(optionalPreviewID)
+        let groupLocalID = try XCTUnwrap(localID(
+            ofGroupNamed: MCPProductionFixture.groupName, in: fixture))
+        try await fixture.store.addMember(
+            contactLocalID: MCPProductionFixture.blaiseLocalID, toGroup: groupLocalID)
+        let fetchedBlaise = try await fixture.store.fetch(
+            localID: MCPProductionFixture.blaiseLocalID)
+        var minted = try XCTUnwrap(fetchedBlaise)
+        minted.urlAddresses.append(LabeledValue(
+            label: "", value: SidecarKey.guessWhoContactURLPrefix
+                + "11111111-2222-4333-8444-555555555555"))
+        try await fixture.seedContacts([minted])
 
         let noOp = await fixture.dispatcher.handle(.groupsAddMembers(
-            helperId: Fixture.helper, messageId: "pre-mint-no-op",
+            helperId: MCPProductionFixture.helper, messageId: "pre-mint-no-op",
             groupId: groupId, contactIds: [previewID], idempotencyToken: nil))
         guard case .groupMembership(_, _, let noOpResult) = noOp else {
             return XCTFail("expected add result; got \(String(describing: noOp))")
         }
         XCTAssertEqual(noOpResult.appliedContactIds, [previewID])
-        let noOpEntries = await fixture.audit.entries()
+        let noOpEntries = await fixture.storedAuditEntries()
         XCTAssertTrue(noOpEntries.isEmpty)
 
         let removed = await fixture.dispatcher.handle(.groupsRemoveMembers(
-            helperId: Fixture.helper, messageId: "pre-mint-remove",
+            helperId: MCPProductionFixture.helper, messageId: "pre-mint-remove",
             groupId: groupId, contactIds: [previewID], idempotencyToken: nil))
         guard case .groupMembership(_, _, let removeResult) = removed else {
             return XCTFail("expected remove result; got \(String(describing: removed))")
         }
         XCTAssertEqual(removeResult.appliedContactIds, [previewID])
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.last?.action, .removeGroupMembers)
         XCTAssertEqual(entries.last?.newValue, "1 contact")
     }
 
-    func testMembershipBatchReportsPartialFailuresWithOpaqueIDs() async {
-        let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
-        let ids = await contactIDs(fixture)
-        guard ids.count >= 2 else { return XCTFail("expected two seeded contacts") }
-        let hasTwoStoredContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
-        guard hasTwoStoredContacts else { return XCTFail("expected two stored contacts") }
-        let failedLocalID = await MainActor.run {
-            let failed = fixture.contacts.contacts[1]
-            fixture.contacts.membershipFailureLocalIDs.insert(
-                failed.contactID.restorationToken.localID)
-            return failed.contactID.restorationToken.localID
-        }
+    @MainActor
+    func testMembershipBatchReportsPartialFailuresWithOpaqueIDs() async throws {
+        let fixture = try await writableProductionFixture()
+        defer { fixture.cleanUp() }
+        _ = try await fixture.seedGroup(named: "Faulted", memberLocalIDs: [])
+        let optionalGroupID = await productionGroupID(fixture, named: "Faulted")
+        let optionalAdaID = await productionContactID(fixture, named: "Ada Lovelace")
+        let optionalBlaiseID = await productionContactID(fixture, named: "Blaise Pascal")
+        let groupId = try XCTUnwrap(optionalGroupID)
+        let adaID = try XCTUnwrap(optionalAdaID)
+        let blaiseID = try XCTUnwrap(optionalBlaiseID)
+        let ids = [adaID, blaiseID]
+        let failedLocalID = MCPProductionFixture.blaiseLocalID
+        await fixture.store.failMembership(
+            forLocalID: failedLocalID,
+            with: ContactStoreError.contactNotFound(localID: failedLocalID))
+        let baselineAttempts = await fixture.store.membershipWriteAttempts.count
 
         let response = await fixture.dispatcher.handle(.groupsAddMembers(
-            helperId: Fixture.helper, messageId: "members",
-            groupId: groupId, contactIds: Array(ids.prefix(2)),
+            helperId: MCPProductionFixture.helper, messageId: "members",
+            groupId: groupId, contactIds: ids,
             idempotencyToken: "members-once"))
         guard case .groupMembership(_, _, let result) = response else {
             return XCTFail("expected membership result; got \(String(describing: response))")
@@ -576,8 +578,8 @@ final class GroupToolTests: XCTestCase {
         XCTAssertTrue(response?.agentVisibleText.contains(WireErrorMessage.notFoundContact) ?? false)
 
         let replay = await fixture.dispatcher.handle(.groupsAddMembers(
-            helperId: Fixture.helper, messageId: "members-retry",
-            groupId: groupId, contactIds: Array(ids.prefix(2)),
+            helperId: MCPProductionFixture.helper, messageId: "members-retry",
+            groupId: groupId, contactIds: ids,
             idempotencyToken: "members-once"))
         guard case .groupMembership(_, let replayMessageID, let replayResult) = replay else {
             return XCTFail("expected replayed partial result; got \(String(describing: replay))")
@@ -587,32 +589,38 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(replayResult.failures.map(\.contactId), result.failures.map(\.contactId))
         XCTAssertEqual(replayResult.failures.map(\.code), result.failures.map(\.code))
         XCTAssertEqual(replayResult.isComplete, result.isComplete)
-        let writeCount = await MainActor.run {
-            fixture.contacts.groupMembershipWriteCount
-        }
-        XCTAssertEqual(writeCount, 1, "a partial result must replay without reapplying")
+        let attempts = await fixture.store.membershipWriteAttempts
+        XCTAssertEqual(
+            attempts.count, baselineAttempts + 2,
+            "a partial result must replay without reapplying")
+        let storedGroupLocalID = try XCTUnwrap(localID(ofGroupNamed: "Faulted", in: fixture))
+        let durableMembers = try await fixture.store.fetchMemberLocalIDs(ofGroup: storedGroupLocalID)
+        XCTAssertEqual(durableMembers, [MCPProductionFixture.adaLocalID])
     }
 
-    func testMembershipBatchAccountsForPreAndPostMintAliasesOnce() async {
-        let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
-        let hasTwoContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
-        guard hasTwoContacts else { return XCTFail("expected two seeded contacts") }
-        let (previewID, mintedID) = await MainActor.run {
-            let preview = fixture.contacts.contacts[1].deterministicGuessWhoID
-            var minted = fixture.contacts.contacts[1]
-            minted.urlAddresses.append(LabeledValue(
-                label: "",
-                value: "guesswho://contact/11111111-2222-4333-8444-555555555555"))
-            fixture.contacts.contacts[1] = minted
-            fixture.contacts.membershipFailureLocalIDs.insert(
-                minted.contactID.restorationToken.localID)
-            return (preview, "11111111-2222-4333-8444-555555555555")
-        }
+    @MainActor
+    func testMembershipBatchAccountsForPreAndPostMintAliasesOnce() async throws {
+        let fixture = try await writableProductionFixture()
+        defer { fixture.cleanUp() }
+        _ = try await fixture.seedGroup(named: "Aliases", memberLocalIDs: [])
+        let optionalGroupID = await productionGroupID(fixture, named: "Aliases")
+        let optionalPreviewID = await productionContactID(fixture, named: "Blaise Pascal")
+        let groupId = try XCTUnwrap(optionalGroupID)
+        let previewID = try XCTUnwrap(optionalPreviewID)
+        let mintedID = "11111111-2222-4333-8444-555555555555"
+        let fetchedBlaise = try await fixture.store.fetch(
+            localID: MCPProductionFixture.blaiseLocalID)
+        var minted = try XCTUnwrap(fetchedBlaise)
+        minted.urlAddresses.append(LabeledValue(
+            label: "", value: SidecarKey.guessWhoContactURLPrefix + mintedID))
+        try await fixture.seedContacts([minted])
+        await fixture.store.failMembership(
+            forLocalID: MCPProductionFixture.blaiseLocalID,
+            with: ContactStoreError.contactNotFound(localID: MCPProductionFixture.blaiseLocalID))
         XCTAssertNotEqual(previewID, mintedID)
 
         let partial = await fixture.dispatcher.handle(.groupsAddMembers(
-            helperId: Fixture.helper, messageId: "alias-partial",
+            helperId: MCPProductionFixture.helper, messageId: "alias-partial",
             groupId: groupId, contactIds: [previewID, mintedID],
             idempotencyToken: nil))
         guard case .groupMembership(_, _, let partialResult) = partial else {
@@ -621,50 +629,46 @@ final class GroupToolTests: XCTestCase {
         XCTAssertTrue(partialResult.appliedContactIds.isEmpty)
         XCTAssertEqual(partialResult.failures.map(\.contactId), [previewID, mintedID])
 
-        await MainActor.run {
-            fixture.contacts.membershipFailureLocalIDs.removeAll()
-        }
+        await fixture.store.clearMembershipFailures()
         let success = await fixture.dispatcher.handle(.groupsAddMembers(
-            helperId: Fixture.helper, messageId: "alias-success",
+            helperId: MCPProductionFixture.helper, messageId: "alias-success",
             groupId: groupId, contactIds: [previewID, mintedID],
             idempotencyToken: nil))
         guard case .groupMembership(_, _, let successResult) = success else {
             return XCTFail("expected success result; got \(String(describing: success))")
         }
         XCTAssertEqual(successResult.appliedContactIds, [previewID, mintedID])
-        let entries = await fixture.audit.entries()
+        let entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.last?.newValue, "1 contact")
     }
 
-    func testMembershipPartialFailuresClassifyPermissionAndWriteErrors() async {
+    @MainActor
+    func testMembershipPartialFailuresClassifyPermissionAndWriteErrors() async throws {
         let cases: [(StoreAuthorizationStatus, any Error, WireErrorCode)] = [
             (StoreAuthorizationStatus.denied, InjectedGroupError(), WireErrorCode.permissionDenied),
             (.authorized, InjectedGroupError(), .writeFailed),
             (.authorized, ContactNotSavedError(), .notFound),
         ]
         for (authorization, error, expectedCode) in cases {
-            let fixture = await writableFixture()
-            guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
-            let ids = await contactIDs(fixture)
-            guard ids.count >= 2 else { return XCTFail("expected two seeded contacts") }
-            let hasTwoContacts = await MainActor.run { fixture.contacts.contacts.count >= 2 }
-            guard hasTwoContacts else { return XCTFail("expected two stored contacts") }
-            await MainActor.run {
-                let failed = fixture.contacts.contacts[1]
-                fixture.contacts.membershipFailureLocalIDs.insert(
-                    failed.contactID.restorationToken.localID)
-                fixture.contacts.membershipFailureError = error
-                fixture.contacts.authorizationStatus = authorization
-            }
+            let fixture = try await writableProductionFixture()
+            defer { fixture.cleanUp() }
+            _ = try await fixture.seedGroup(named: "Classify", memberLocalIDs: [])
+            let optionalGroupID = await productionGroupID(fixture, named: "Classify")
+            let optionalBlaiseID = await productionContactID(fixture, named: "Blaise Pascal")
+            let groupId = try XCTUnwrap(optionalGroupID)
+            let blaiseID = try XCTUnwrap(optionalBlaiseID)
+            await fixture.store.failMembership(
+                forLocalID: MCPProductionFixture.blaiseLocalID, with: error)
+            await fixture.store.overrideAuthorizationStatus(authorization)
 
             let response = await fixture.dispatcher.handle(.groupsAddMembers(
-                helperId: Fixture.helper, messageId: TestMessageID.next(),
-                groupId: groupId, contactIds: [ids[1]], idempotencyToken: nil))
+                helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+                groupId: groupId, contactIds: [blaiseID], idempotencyToken: nil))
             guard case .groupMembership(_, _, let result) = response else {
                 return XCTFail("expected partial result; got \(String(describing: response))")
             }
             XCTAssertEqual(result.failures.count, 1)
-            XCTAssertEqual(result.failures.first?.contactId, ids[1])
+            XCTAssertEqual(result.failures.first?.contactId, blaiseID)
             XCTAssertEqual(result.failures.first?.code, expectedCode)
         }
     }
