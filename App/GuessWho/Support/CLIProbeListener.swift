@@ -22,7 +22,7 @@ final class CLIProbeListener {
     private static let log = GuessWhoLog.logger("cli.probe")
 
     /// Container-relative FIFO path. Must match `ProbeConstants
-    /// .fifoRelativePath` in App/guesswho-cli/GuessWhoCLI.swift; the shared
+    /// .fifoRelativePath` in Sources/GuessWhoCLICore/CLIRoot.swift; the shared
     /// wire module takes over as the single home for pipe paths in Phase 1.
     private static let fifoRelativePath = "Diagnostics/cli-probe.fifo"
 
