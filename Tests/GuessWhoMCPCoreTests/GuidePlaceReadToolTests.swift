@@ -240,10 +240,18 @@ final class GuidePlaceReadToolTests: XCTestCase {
                 at: SidecarKey(kind: .place, id: place.id.uuidString),
                 name: "Same", address: "A", latitude: nil, longitude: nil)
         }
-        // `places(inGuide:)` already returns sort-order order; the search order
-        // is the UUID sort of the same two ids.
-        let bySortOrder = places.map { $0.id.uuidString.lowercased() }
-        let byUUID = bySortOrder.sorted()
+        // Search paging tie-breaks by UUID; list paging tie-breaks by the guide's
+        // sort order. Force the guide's sort order to the REVERSE of UUID order so
+        // the two orderings are guaranteed to differ — otherwise two random v4
+        // UUIDs might already sit in import order, and the run would never
+        // actually exercise the search-vs-list tie-break distinction.
+        let placesByUUID = places.sorted {
+            $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
+        }
+        try engine.reorderPlaces(
+            inGuide: guide.id, orderedIDs: placesByUUID.reversed().map { $0.id })
+        let byUUID = placesByUUID.map { $0.id.uuidString.lowercased() }
+        let bySortOrder = Array(byUUID.reversed())
 
         let first = await fixture.dispatcher.handle(.placesSearch(
             helperId: Fixture.helper, messageId: "first", query: "same",

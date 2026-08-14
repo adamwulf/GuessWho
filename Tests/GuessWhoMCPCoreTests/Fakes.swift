@@ -687,8 +687,11 @@ final class EngineEventSource: MCPEventSource {
 
     func fetchEventsRange(from start: Date, to end: Date) async -> [Event] {
         // No calendar headless: the engine window never includes EventKit
-        // (`includeEventKit: false`). The seam's calendar-only events are
-        // merged in as ephemeral rows, exactly as EventKit would surface them.
+        // (`includeEventKit: false`). The seam's calendar-only events are merged
+        // in as ephemeral rows to stand in for what EventKit would surface. The
+        // filter is a simple start-in-window test (not EventKit's start/end
+        // overlap) — sufficient because the seam holds only point-in-time events
+        // and no test probes the window edges.
         let sidecar = (try? await engine.eventsWindow(
             from: start, to: end, includeEventKit: false)) ?? []
         let calendarOnly = eventKitOnlyEvents.values.filter {
