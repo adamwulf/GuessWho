@@ -226,6 +226,11 @@ struct ContactsRepositoryGroupFavoritesTests {
             memberHash: initialFingerprint.memberHash,
             hashedMemberCount: 0,
             localID: group.localID)
+        // loadGroups() refreshes the fingerprint ONLY for identities that back a
+        // live favorite; an orphan (un-favorited) record is left untouched so it
+        // never churns iCloud. In real use an identity is always minted through a
+        // favorite, so favorite this one to represent that.
+        try fixture.favorites.set(kind: .group, id: identity.id, favorite: true, now: Date())
 
         try await fixture.contacts.addMember(contactLocalID: member.localID, toGroup: group.localID)
         await fixture.repository.loadGroups()
@@ -236,6 +241,56 @@ struct ContactsRepositoryGroupFavoritesTests {
         #expect(stored.memberCount == 1)
         #expect(stored.memberHash == expected.memberHash)
         #expect(stored.hashedMemberCount == 1)
+    }
+
+    @Test @MainActor
+    func concurrentFirstFavoritesMintExactlyOneIdentity() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Team")
+        await fixture.repository.loadGroups()
+
+        // Two first-favorites of the same group race. Serialization must make the
+        // second reuse the first's freshly-minted identity instead of each
+        // minting its own duplicate GroupIdentity + duplicate favorite.
+        async let first = fixture.repository.setGroupFavorite(true, for: group)
+        async let second = fixture.repository.setGroupFavorite(true, for: group)
+        _ = try await (first, second)
+
+        let identities = try fixture.sync.allGroupIdentities()
+        #expect(identities.count == 1)
+        let groupFavorites = try fixture.favorites.loadAll().filter { $0.kind == .group }
+        #expect(groupFavorites.count == 1)
+        #expect(groupFavorites.first?.id == identities.first?.id)
+    }
+
+    @Test @MainActor
+    func loadGroupsLeavesOrphanIdentityUntouched() async throws {
+        let member = contact(localID: "contact-1", guessWhoID: "11111111-1111-1111-8111-111111111111")
+        let fixture = try makeFixture(contacts: [member])
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Members")
+        await fixture.repository.reload()
+        await fixture.repository.loadGroups()
+        let initialFingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
+        // Minted but never favorited → an orphan record (as after an un-favorite).
+        let identity = try fixture.sync.mintGroupIdentity(
+            name: group.name,
+            account: nil,
+            memberCount: 0,
+            memberHash: initialFingerprint.memberHash,
+            hashedMemberCount: 0,
+            localID: group.localID)
+
+        try await fixture.contacts.addMember(contactLocalID: member.localID, toGroup: group.localID)
+        await fixture.repository.loadGroups()
+
+        // loadGroups() must NOT refresh an orphan: its fingerprint stays at the
+        // minted (empty) values, so an un-favorited record never churns iCloud.
+        let stored = try #require(try fixture.sync.groupIdentity(id: identity.id))
+        #expect(stored.memberCount == 0)
+        #expect(stored.memberHash == initialFingerprint.memberHash)
+        #expect(stored.hashedMemberCount == 0)
     }
 
     private struct Fixture {

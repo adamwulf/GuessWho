@@ -2130,6 +2130,25 @@ public actor ToolDispatcher {
                         instanceID: nil, postModifiedAt: nil,
                         priorValue: prior ? "true" : "false",
                         newValue: resulting ? "true" : "false")
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: favorite
+                            ? WireAckMessage.genericFavoriteSet
+                            : WireAckMessage.genericFavoriteCleared)
+                }
+
+                // Nothing changed through the durable-identity path. When
+                // clearing, this may be a LEGACY favorite whose stored id is the
+                // raw CNGroup.identifier: on the device that created it the live
+                // group still carries that identifier, so `WireRecordID.group`
+                // matched here instead of falling to `clearStoredFavorite` above,
+                // yet the live group has no GroupIdentity and `setGroupFavorite`
+                // deliberately leaves the raw row untouched. Clear it directly so
+                // the row actually goes — never ack a no-op clear as success.
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
                 }
                 return .acknowledged(
                     helperId: helperId, messageId: messageId,
@@ -4708,16 +4727,17 @@ public actor ToolDispatcher {
                     displayName: event.title))
             }
         case .group:
-            let groups = await contacts.fetchGroups()
-            guard let group = WireRecordID.group(for: id, in: groups) else {
-                return await isKnownFavoriteID(id, excluding: kind)
-                    ? .failure(.kindMismatch)
-                    : .failure(.notFound(WireErrorMessage.notFoundGroup))
-            }
-            return .success(FavoriteInputResolution(
-                identity: WireFavoriteIdentity(kind: kind, id: WireRecordID.groupID(for: group)),
-                storageKind: .group, storageID: group.localID,
-                displayName: group.name))
+            // Unreachable: group favorites are resolved and persisted ENTIRELY
+            // by favoritesSet's dedicated `.group` branch, which mints/adopts the
+            // durable GroupIdentity UUID and stores THAT. This generic resolver
+            // must never run for a group — the only resolution it could build
+            // here would use the device-local CNGroup.identifier as the storage
+            // id, the exact cross-device boundary violation this feature removes.
+            // Fail hard so a future refactor that routes a group through here
+            // trips a test instead of silently persisting a localID.
+            assertionFailure(
+                "resolveFavoriteInput must not be reached for .group; favoritesSet handles groups directly")
+            return .failure(.notFound(WireErrorMessage.notFoundGroup))
         case .guide:
             guard let uuid = WireRecordID.recordUUID(id),
                   let guide = await guides.allGuides().first(where: { $0.id == uuid })

@@ -64,6 +64,16 @@ extension GuessWhoSync {
             var merged = record
             merged.deviceLocalIDs = mergedMap
 
+            // Idempotent write: when the merged record is byte-for-byte the
+            // record already on disk, skip the write entirely. Otherwise every
+            // `loadGroups()` / membership refresh would stamp a fresh
+            // `modifiedAt`, re-upload an unchanged file to iCloud, and provoke
+            // peers to rewrite it with their own stamp — perpetual low-grade
+            // cross-device churn on data that never changed.
+            if let existingRecord, merged == existingRecord {
+                return
+            }
+
             let json = try Self.encodeGroupIdentityJSON(merged)
             let now = Date()
             // Preserve the record cell's original createdAt across updates

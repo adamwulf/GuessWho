@@ -1750,34 +1750,49 @@ public final class ContactsRepository: NSObject {
     /// `ContactGroup.localID`.
     @discardableResult
     public func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) async throws -> Bool {
-        guard let favorites, let sync else { throw SidecarUnavailableError() }
+        // Serialize through the group-mutation chain. Without it, two concurrent
+        // first-favorites of the same group (double-tap, or MCP + UI) can each
+        // pass the "no identity yet" check before either mints — `groupFingerprint`
+        // suspends first, so both proceed — and each mints a duplicate
+        // `GroupIdentity` + a duplicate `.group` favorite, of which an unfavorite
+        // then clears only one. Serializing makes the second call run only after
+        // the first has minted and cached, so it reuses that identity. (Contacts
+        // tolerate a rare double-mint because Case-D reconciliation converges
+        // them; groups have no such convergence, so a duplicate never collapses.)
+        try await performSerializedGroupMutation {
+            guard let favorites = self.favorites, let sync = self.sync else {
+                throw SidecarUnavailableError()
+            }
 
-        let identity: GroupIdentity
-        if let existing = try await existingGroupIdentity(for: group) {
-            identity = existing
-        } else if favorite {
-            let fingerprint = try await groupFingerprint(for: group)
-            identity = try sync.mintGroupIdentity(
-                name: group.name,
-                account: nil,
-                memberCount: fingerprint.memberCount,
-                memberHash: fingerprint.memberHash,
-                hashedMemberCount: fingerprint.hashedMemberCount,
-                localID: group.localID
-            )
-            cache(group: group, forIdentityID: identity.id)
-        } else {
-            // No durable identity exists, so this live group cannot own a UUID-
-            // keyed favorite. Deliberately do not touch a legacy raw-id row:
-            // those remain unavailable and are cleared from that row itself.
-            return false
+            let identity: GroupIdentity
+            if let existing = try await self.existingGroupIdentity(for: group) {
+                identity = existing
+            } else if favorite {
+                let fingerprint = try await self.groupFingerprint(for: group)
+                identity = try sync.mintGroupIdentity(
+                    name: group.name,
+                    account: nil,
+                    memberCount: fingerprint.memberCount,
+                    memberHash: fingerprint.memberHash,
+                    hashedMemberCount: fingerprint.hashedMemberCount,
+                    localID: group.localID
+                )
+                self.cache(group: group, forIdentityID: identity.id)
+            } else {
+                // No durable identity exists, so this live group cannot own a
+                // UUID-keyed favorite. Deliberately do not touch a legacy raw-id
+                // row: those remain unavailable and are cleared from that row
+                // itself (the app removes them directly; the MCP surface falls
+                // back to `clearStoredFavorite`).
+                return false
+            }
+
+            let current = try favorites.isFavorite(kind: .group, id: identity.id)
+            guard current != favorite else { return current }
+            let resulting = try favorites.toggle(kind: .group, id: identity.id, now: Date())
+            guard resulting == favorite else { throw SidecarUnavailableError() }
+            return resulting
         }
-
-        let current = try favorites.isFavorite(kind: .group, id: identity.id)
-        guard current != favorite else { return current }
-        let resulting = try favorites.toggle(kind: .group, id: identity.id, now: Date())
-        guard resulting == favorite else { throw SidecarUnavailableError() }
-        return resulting
     }
 
     /// Look up a cached `ContactGroup` by its transient Contacts `localID`,
@@ -1847,28 +1862,23 @@ public final class ContactsRepository: NSObject {
         groupIdentityIDByLocalID = groupIdentityIDByLocalID.filter { $0.value != identityID }
     }
 
-    /// Synchronous reverse lookup for row-star rendering. Falls back only to a
-    /// current-device slot scan, never name guessing; full adoption is async and
-    /// runs from load/write paths.
+    /// Synchronous reverse lookup for row-star rendering: durable group UUID for
+    /// a live group, or nil. This is a HOT path — `isGroupFavorite` calls it for
+    /// every visible group row (list cells, swipe actions, the detail header) —
+    /// so it is a pure in-memory read of the reverse pointer only. It must never
+    /// touch disk: an earlier version fell back to enumerating every group
+    /// sidecar off the main actor on each cache miss, which stalls the UI on a
+    /// large group list.
+    ///
+    /// The reverse pointer is warmed by `loadGroups()` adoption
+    /// (`refreshAllGroupIdentities`) before the list renders, so a favorited,
+    /// resolved group hits here. A miss therefore means "not an adopted favorite
+    /// on this device" — the correct answer for a non-favorited row (the common
+    /// case) and a brief pre-adoption unfilled star otherwise, which the
+    /// post-`loadGroups()` reload corrects. The async write path
+    /// (`existingGroupIdentity`) keeps the disk fallback for correctness.
     private func groupIdentityID(for group: ContactGroup) -> String? {
-        let localKey = group.localID.lowercased()
-        if let cached = groupIdentityIDByLocalID[localKey] {
-            return cached
-        }
-        guard let sync else { return nil }
-        do {
-            let matching = try sync.allGroupIdentities()
-                .filter { $0.deviceLocalIDs[sync.deviceID]?.lowercased() == localKey }
-                .sorted { $0.id < $1.id }
-            guard let identity = matching.first else { return nil }
-            cache(group: group, forIdentityID: identity.id)
-            return identity.id
-        } catch {
-            Self.groupIdentityLog.warning(
-                "group identity slot lookup failed",
-                metadata: ["error": "\(error.localizedDescription)"])
-            return nil
-        }
+        groupIdentityIDByLocalID[group.localID.lowercased()]
     }
 
     /// Find an already-minted identity for `group`, resolving/adopting records
@@ -1994,6 +2004,15 @@ public final class ContactsRepository: NSObject {
         do {
             let identities = try sync.allGroupIdentities().sorted { $0.id < $1.id }
             for identity in identities {
+                // Only resolve + refresh identities that still back a live
+                // favorite. An orphan identity — its group was un-favorited but
+                // the sidecar lingers for reuse on re-favorite — needs neither a
+                // reverse-pointer entry (it is not favorited, so `isGroupFavorite`
+                // must read false) nor a fingerprint rewrite; refreshing it would
+                // churn iCloud for data no surface shows.
+                guard (try? favorites?.isFavorite(kind: .group, id: identity.id)) == true else {
+                    continue
+                }
                 if let live = try await resolveGroupIdentity(id: identity.id) {
                     await refreshGroupIdentity(identityID: identity.id, group: live)
                 }
