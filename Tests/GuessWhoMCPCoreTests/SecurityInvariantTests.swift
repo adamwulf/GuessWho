@@ -72,6 +72,13 @@ final class SecurityInvariantTests: XCTestCase {
         _ = await run(.contactsList(
             helperId: helper, messageId: TestMessageID.next(),
             kind: nil, favoritesOnly: true, groupId: nil, limit: nil, cursor: nil))
+        await MainActor.run {
+            // This sweep verifies encoded-output exclusions, not favorite
+            // persistence. Explicitly script only the incidental favorite
+            // decoration required for each fixture group.
+            fixture.contacts.scriptedGroupFavoriteReadResults =
+                fixture.contacts.groups.map { _ in false }
+        }
         let groupsResponse = await run(.contactsListGroups(
             helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         if case .groupPage(_, _, let page) = groupsResponse {
