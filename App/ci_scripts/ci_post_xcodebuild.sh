@@ -2,14 +2,22 @@
 
 set -e
 
-# Build a tokenized push URL for origin from input username and token
+# Build a tokenized push URL for origin from input username and token.
+# Handles both HTTPS (https://github.com/owner/repo.git) and SSH
+# (git@github.com:owner/repo.git) origins: remove the scheme or "git@" prefix,
+# then take everything after the FIRST github.com separator (colon OR slash),
+# so the rebuilt URL always has exactly one slash between github.com and the
+# owner. A plain ${rest_url#*github.com/} only matches the HTTPS form and leaves
+# an SSH origin's "github.com:owner/repo" in place, which makes a broken URL.
 github_authed_url() {
     # Get the original URL
     original_url=$(git remote get-url origin)
-    # Extract the rest of the URL after the protocol
+    # Remove an https:// (or similar) scheme if present
     rest_url=${original_url#*://}
-    # Extract everything after github.com/
-    github_path=${rest_url#*github.com/}
+    # Remove an SSH "git@" prefix if present
+    rest_url=${rest_url#git@}
+    # Take everything after the first github.com separator (colon OR slash)
+    github_path=${rest_url#github.com[:/]}
     # Construct the new URL with the token
     echo "https://${1}:${2}@github.com/${github_path}"
 }
@@ -56,15 +64,36 @@ if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     # it runs only for distribution builds that actually upload to TestFlight.
     if [ -n "$CI_APP_STORE_SIGNED_APP_PATH" ] && [ -d "$CI_APP_STORE_SIGNED_APP_PATH" ]; then
         # Xcode Cloud clones shallow and without tags; deepen so the tag range
-        # and commit history are reachable for git describe / git log.
-        git fetch --unshallow 2>/dev/null || git fetch --deepen 100 2>/dev/null || true
+        # and commit history are reachable for git describe / git log. Depth 100
+        # spans roughly twenty builds of history, so it reaches the previous
+        # build/* tag without paying for a full --unshallow every run. Try the
+        # configured origin first; fall back to the tokenized URL with an explicit
+        # refspec, because the credentials Xcode Cloud used to clone are not
+        # guaranteed to still work for an ad-hoc fetch. Keep stderr suppressed on
+        # the tokenized fetch — git echoes the failing URL, which carries the PAT.
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --deepen 100 2>/dev/null \
+                || git fetch --deepen 100 "$remote_url" '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null \
+                || true
+        fi
         git fetch "$remote_url" 'refs/tags/*:refs/tags/*' 2>/dev/null || true
 
         # Previous build's tag = lower bound. build/* numbers can skip (failed
         # or manual runs), so use the most recent reachable tag, not N-1. This
         # runs before the new build/$CI_BUILD_NUMBER tag is created below, so
         # HEAD's nearest build/* tag is genuinely the previous build.
+        #
+        # A build/* tag can already sit ON the commit being built, which would
+        # make the range empty and silently swap the real notes for the
+        # placeholder. This script runs once per xcodebuild action, so a sibling
+        # action (we archive iOS and Mac Catalyst) can tag this very commit first,
+        # and a rebuild re-runs against an already-tagged commit. Stepping back to
+        # HEAD^ skips every tag on HEAD at once, not just the newest of them.
+        head_sha=$(git rev-parse HEAD)
         prev_tag=$(git describe --tags --match 'build/*' --abbrev=0 HEAD 2>/dev/null || echo "")
+        if [ -n "$prev_tag" ] && [ "$(git rev-list -n 1 "$prev_tag")" = "$head_sha" ]; then
+            prev_tag=$(git describe --tags --match 'build/*' --abbrev=0 'HEAD^' 2>/dev/null || echo "")
+        fi
         if [ -n "$prev_tag" ]; then
             notes=$(git log --no-merges --pretty=format:'- %s' "${prev_tag}..HEAD")
         else
@@ -72,28 +101,46 @@ if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
             notes=$(git log --no-merges -20 --pretty=format:'- %s' HEAD)
         fi
 
-        # Empty range (e.g. rebuild of an already-tagged commit) → fallback.
+        # An empty notes file uploaded to TestFlight is worse than a placeholder
+        # line. Reaching the placeholder almost always means the history lookup
+        # failed rather than that nothing shipped, so log a warning where the
+        # build report will show it.
         if [ -z "$notes" ]; then
             notes="- Maintenance build (no source changes since last build)"
+            echo "warning: What-to-Test found no commits; falling back to the placeholder"
         fi
 
         notes_dir="$CI_PRIMARY_REPOSITORY_PATH/App/TestFlight"
         mkdir -p "$notes_dir"
         printf '%s\n' "$notes" > "$notes_dir/WhatToTest.en-US.txt"
-        echo "Wrote What-to-Test notes (previous tag: ${prev_tag:-none})"
+        echo "Wrote What-to-Test notes (previous tag: ${prev_tag:-none}, shallow: $(git rev-parse --is-shallow-repository))"
     fi
     # ---------------------------------------------------------------------
 
     # This script runs once per xcodebuild action, so the same build can reach
     # here more than once. Skip if the tag is already on the remote — never
     # force-push, so an existing build/N tag can't be moved to a new commit.
-    if git ls-remote --tags "$remote_url" "refs/tags/$tag" | grep -q "refs/tags/$tag"; then
+    #
+    # $remote_url embeds the PAT (https://user:token@github.com/...), and git
+    # echoes the failing URL to stderr on error, so keep stderr suppressed on
+    # every command that uses it or the write-capable token lands in the build
+    # log. A failed ls-remote just finds no tag and falls through to the push.
+    if git ls-remote --tags "$remote_url" "refs/tags/$tag" 2>/dev/null | grep -q "refs/tags/$tag"; then
         echo "Tag $tag already exists on remote, skipping."
     else
         echo "Tagging $tag"
         git tag -a -m "Build $CI_BUILD_NUMBER" $tag
-        git push "$remote_url" --tags
-        echo "Successfully pushed tag to remote repo."
+        # Push only the new tag ref, never every local tag. A blanket --tags can
+        # re-push (and a force could move) an already-shipped build/N tag onto a
+        # different commit and corrupt the range used for future notes. Suppress
+        # git's stderr for the same PAT reason above; report failure ourselves so
+        # the suppressed error doesn't become a silent exit under set -e.
+        if git push "$remote_url" "refs/tags/$tag" 2>/dev/null; then
+            echo "Successfully pushed tag to remote repo."
+        else
+            echo "error: failed to push tag $tag (git output withheld to keep the token out of the build log)"
+            exit 1
+        fi
     fi
 else
     echo "Build failed"
