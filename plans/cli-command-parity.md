@@ -1,7 +1,10 @@
 # CLI command parity — full `guesswho` CLI ↔ MCP tool parity, with a testable core
 
 **Author:** researcher agent `cli-parity-research` · **Date:** 2026-08-14 ·
-**Status:** research/plan — no production code changed.
+**Status:** research/plan — no production code changed. Product decisions
+folded in 2026-08-14 (per-field flags default over `--json`; one shared
+core for CLI + MCP; declined-delete exit 10; favorite flags; note-body
+input) — see §6 for the resolved list.
 All `file:line` anchors below were read at commit `ba7ac6e` ("Merge agent
 agent-6db0f73e work"); symbol names are given alongside so anchors survive
 line drift. Verification baseline on this tree: `swift test` exits 0 —
@@ -96,10 +99,25 @@ is what makes the parity test one loop (§3.4).
   shipped precedent `ContactsCommand.swift:104-105`).
 - Arrays of ids → variadic positionals (`groups add-members <group-id>
   <contact-id> ...`).
-- Booleans → positional `true|false` when required by the schema
-  (`favorites set contact <id> true`), flags when optional.
-- **Structured JSON objects → `--json`** (see the convention note below
-  the table).
+- Booleans → a required **`--flag` / `--no-flag` pair** (an error when
+  neither is given — the wire is desired-state, not a toggle). The three
+  favorite commands use `--favorite` / `--no-favorite`
+  (`ArgumentParser` `@Flag(inversion: .prefixedNo)`; decided 2026-08-14,
+  §6 #6).
+- **Structured objects → per-field flags by DEFAULT** — one `--kebab-case`
+  flag per wire field; an omitted flag = omitted (the wire's PATCH rule,
+  `WireContactScalarFields`; empty string clears). `--json` is an
+  OPTIONAL alternative on `contacts create` and on the structured
+  add/delete tools, and the PRIMARY path for the three structured *edit*
+  tools (which must supply two full objects — 18 per-field flags is why).
+  Both paths build the SAME `[String: Value]` bag and funnel through
+  `WireRequest.create`, so there is no logic fork (decided 2026-08-14, §6
+  #3; see the input-convention note below the table).
+- **Large text / JSON inputs** (a note `--body`, any `--json`) accept an
+  inline value, `-` for stdin, or a `--<field>-file <path>` companion
+  flag. At most one input reads stdin per call. This mirrors the shipped
+  photo commands' `<file | ->` handling (`ContactsCommand.swift:53`,
+  `:101`) and removes the shell-quoting hazard of an inline JSON string.
 - Every write command gets `--idempotency-token`.
 - Every paged read gets `--limit` / `--cursor`.
 
@@ -120,29 +138,29 @@ on stdout; **bytes** = raw photo bytes on stdout; **ack** = the fixed
 | `contacts_list_notes` | `contacts list-notes` | `<contact-id>` | `--limit --cursor` | args | JSON page of notes |
 | `contacts_list_custom_fields` | `contacts list-custom-fields` | `<contact-id>` | `--limit --cursor` | args | JSON page of fields |
 | `contacts_list_groups` | `contacts list-groups` | — | `--limit --cursor` | args | JSON page of groups |
-| `contacts_create` | `contacts create` | — | `--kind` + one flag per scalar field (`--given-name`, `--family-name`, `--organization`, `--job-title`, `--birthday`, …) + `--json` for the list fields + `--idempotency-token` | args / `--json` (obj or `-` stdin) | JSON contact card (echo) |
+| `contacts_create` | `contacts create` | — | `--kind` + one flag per scalar field (`--given-name`, `--family-name`, `--organization`, `--job-title`, `--birthday`, …) + `--json`/`--json-file` for the list fields + `--idempotency-token` | flags (+ optional `--json` for lists) | JSON contact card (echo) |
 | `contacts_update` | `contacts update` | `<contact-id>` | `--kind` + the same scalar flags (scalars-only by wire construction — `WireContactScalarFields`, `WireDTOs.swift:315-336`) + `--idempotency-token` | args | JSON contact card (echo) |
-| `contacts_delete` | `contacts delete` | `<contact-id>` | `--idempotency-token` | args | ack (`contactDeleted` / `contactDeleteDeclined`) — waits on the in-app confirmation, up to the tool's 300 s timeout (`MCPTool.timeout`, `MCPTool.swift:200-205`) |
+| `contacts_delete` | `contacts delete` | `<contact-id>` | `--idempotency-token` | args | waits on the in-app confirmation, up to the tool's 300 s timeout (`MCPTool.timeout`, `MCPTool.swift:200-205`); approved → ack `contactDeleted` on stdout, exit 0; declined → stderr note, **exit 10** (§4, §6 #1) |
 | `contacts_set_photo` | `contacts set-photo` ✅ shipped | `<contact-id>` | `-i/--input <file\|->` `--idempotency-token` | bytes ← stdin or file | ack (`photoSet`) |
 | `contacts_delete_photo` | `contacts delete-photo` | `<contact-id>` | `--idempotency-token` | args | ack (`photoDeleted`) |
 | `contacts_add_value` | `contacts add-value` | `<contact-id> <field> <value>` (`field` ∈ `phone email url related_name date` — `WireContactListField`, `WireRequest.swift:7-13`) | `--label --idempotency-token` | args | JSON contact card (echo) |
 | `contacts_delete_value` | `contacts delete-value` | `<contact-id> <field> <value>` | `--idempotency-token` | args | JSON contact card (echo) |
 | `contacts_edit_value` | `contacts edit-value` | `<contact-id> <field> <current-value> <new-value>` | `--new-label --idempotency-token` | args | JSON contact card (echo) |
-| `contacts_add_postal_address` | `contacts add-postal-address` | `<contact-id>` | `--json --idempotency-token` | `--json` = the `address` object | JSON contact card (echo) |
-| `contacts_edit_postal_address` | `contacts edit-postal-address` | `<contact-id>` | `--json --idempotency-token` | `--json` = `{"currentAddress":…,"newAddress":…}` | JSON contact card (echo) |
-| `contacts_delete_postal_address` | `contacts delete-postal-address` | `<contact-id>` | `--json --idempotency-token` | `--json` = the `address` object | JSON contact card (echo) |
-| `contacts_add_social_profile` | `contacts add-social-profile` | `<contact-id>` | `--json --idempotency-token` | `--json` = the `profile` object | JSON contact card (echo) |
-| `contacts_edit_social_profile` | `contacts edit-social-profile` | `<contact-id>` | `--json --idempotency-token` | `--json` = `{"currentProfile":…,"newProfile":…}` | JSON contact card (echo) |
-| `contacts_delete_social_profile` | `contacts delete-social-profile` | `<contact-id>` | `--json --idempotency-token` | `--json` = the `profile` object | JSON contact card (echo) |
-| `contacts_add_instant_message` | `contacts add-instant-message` | `<contact-id>` | `--json --idempotency-token` | `--json` = the `instantMessage` object | JSON contact card (echo) |
-| `contacts_edit_instant_message` | `contacts edit-instant-message` | `<contact-id>` | `--json --idempotency-token` | `--json` = `{"currentInstantMessage":…,"newInstantMessage":…}` | JSON contact card (echo) |
-| `contacts_delete_instant_message` | `contacts delete-instant-message` | `<contact-id>` | `--json --idempotency-token` | `--json` = the `instantMessage` object | JSON contact card (echo) |
-| `contacts_add_note` | `contacts add-note` | `<contact-id> <body>` | `--idempotency-token` | args (body `-` = read stdin, §6) | JSON note (echo) |
-| `contacts_edit_note` | `contacts edit-note` | `<contact-id> <note-id> <body>` | `--idempotency-token` | args | JSON note (echo) |
+| `contacts_add_postal_address` | `contacts add-postal-address` | `<contact-id>` | postal field flags (§2 note) `--idempotency-token` — or `--json`/`--json-file` | flags (or `--json`) | JSON contact card (echo) |
+| `contacts_edit_postal_address` | `contacts edit-postal-address` | `<contact-id>` | `--json`/`--json-file` = `{"currentAddress":…,"newAddress":…}` `--idempotency-token` — or `--current-*`/`--new-*` flags | `--json` primary (18 per-field flags otherwise) | JSON contact card (echo) |
+| `contacts_delete_postal_address` | `contacts delete-postal-address` | `<contact-id>` | postal field flags (full match) `--idempotency-token` — or `--json` | flags (or `--json`) | JSON contact card (echo) |
+| `contacts_add_social_profile` | `contacts add-social-profile` | `<contact-id>` | `--label --service --username --url` `--idempotency-token` — or `--json` | flags (or `--json`) | JSON contact card (echo) |
+| `contacts_edit_social_profile` | `contacts edit-social-profile` | `<contact-id>` | `--json`/`--json-file` = `{"currentProfile":…,"newProfile":…}` `--idempotency-token` — or `--current-*`/`--new-*` flags | `--json` primary | JSON contact card (echo) |
+| `contacts_delete_social_profile` | `contacts delete-social-profile` | `<contact-id>` | `--label --service --username --url` (full match) `--idempotency-token` — or `--json` | flags (or `--json`) | JSON contact card (echo) |
+| `contacts_add_instant_message` | `contacts add-instant-message` | `<contact-id>` | `--label --service --username` `--idempotency-token` — or `--json` | flags (or `--json`) | JSON contact card (echo) |
+| `contacts_edit_instant_message` | `contacts edit-instant-message` | `<contact-id>` | `--json`/`--json-file` = `{"currentInstantMessage":…,"newInstantMessage":…}` `--idempotency-token` — or `--current-*`/`--new-*` flags | `--json` primary | JSON contact card (echo) |
+| `contacts_delete_instant_message` | `contacts delete-instant-message` | `<contact-id>` | `--label --service --username` (full match) `--idempotency-token` — or `--json` | flags (or `--json`) | JSON contact card (echo) |
+| `contacts_add_note` | `contacts add-note` | `<contact-id>` | `--body` (inline / `-` stdin / `--body-file`) `--idempotency-token` | flag / stdin / file (§2 note, §6 #4) | JSON note (echo) |
+| `contacts_edit_note` | `contacts edit-note` | `<contact-id> <note-id>` | `--body` (inline / `-` stdin / `--body-file`) `--idempotency-token` | flag / stdin / file | JSON note (echo) |
 | `contacts_delete_note` | `contacts delete-note` | `<contact-id> <note-id>` | `--idempotency-token` | args | ack (`noteDeleted`) |
 | `contacts_set_custom_field` | `contacts set-custom-field` | `<contact-id> <name> <value>` | `--type (text\|multilineNote\|date\|checkbox) --idempotency-token` | args | JSON custom field (echo) |
 | `contacts_delete_custom_field` | `contacts delete-custom-field` | `<contact-id> <field-id>` | `--idempotency-token` | args | ack (`fieldDeleted`) |
-| `contacts_set_favorite` | `contacts set-favorite` | `<contact-id> <true\|false>` | `--idempotency-token` | args | ack (`favoriteSet`/`favoriteCleared`) |
+| `contacts_set_favorite` | `contacts set-favorite` | `<contact-id>` | `--favorite`/`--no-favorite` (required) `--idempotency-token` | args | ack (`favoriteSet`/`favoriteCleared`) |
 
 ### organizations (4 tools)
 
@@ -163,7 +181,7 @@ on stdout; **bytes** = raw photo bytes on stdout; **ack** = the fixed
 | `groups_delete` | `groups delete` | `<group-id>` | `--idempotency-token` | args | ack (`groupDeleted`) |
 | `groups_add_members` | `groups add-members` | `<group-id> <contact-id> ...` (1–200, variadic) | `--idempotency-token` | args | JSON membership result (`WireGroupMembershipResult`, `WireDTOs.swift:582-598`) |
 | `groups_remove_members` | `groups remove-members` | `<group-id> <contact-id> ...` | `--idempotency-token` | args | JSON membership result |
-| `groups_set_favorite` | `groups set-favorite` | `<group-id> <true\|false>` | `--idempotency-token` | args | JSON group (echo) |
+| `groups_set_favorite` | `groups set-favorite` | `<group-id>` | `--favorite`/`--no-favorite` (required) `--idempotency-token` | args | JSON group (echo) |
 
 ### events (6 tools)
 
@@ -209,8 +227,8 @@ on stdout; **bytes** = raw photo bytes on stdout; **ack** = the fixed
 | MCP tool | CLI command | Positionals | Options | Input | Output |
 |---|---|---|---|---|---|
 | `favorites_list` | `favorites list` | — | `--limit --cursor` | args | JSON page of favorites |
-| `favorites_set` | `favorites set` | `<kind> <id> <true\|false>` (`kind` ∈ `contact event group guide place`) | `--idempotency-token` | args | ack (`genericFavoriteSet`/`genericFavoriteCleared`) |
-| `favorites_reorder` | `favorites reorder` | — | `--json` (the complete `favorites` array of `{kind,id}`) `--idempotency-token` | `--json` (obj or `-` stdin) | ack (`favoritesReordered`) |
+| `favorites_set` | `favorites set` | `<kind> <id>` (`kind` ∈ `contact event group guide place`) | `--favorite`/`--no-favorite` (required) `--idempotency-token` | args | ack (`genericFavoriteSet`/`genericFavoriteCleared`) |
+| `favorites_reorder` | `favorites reorder` | — | `--json`/`--json-file` (the complete `favorites` array of `{kind,id}`) `--idempotency-token` | `--json` (inline / `-` stdin / file) | ack (`favoritesReordered`) |
 
 **Non-tool commands (exempt from the parity guard):** `run` (MCP stdio
 relay), `probe` (packaging diagnostic) — both exist today
@@ -219,37 +237,69 @@ pseudo-tool (`RelayMCPServer.statusToolName`,
 `Sources/GuessWhoMCPTransport/RelayMCPServer.swift:24`) is not an
 `MCPTool` case and gets no command; `probe` is its terminal counterpart.
 
-### The `--json` convention (structured inputs)
+### Per-field flags (default) and the `--json` escape hatch
 
-**Convention: `--json <value>` supplies the structured part of the tool's
-MCP argument object; `--json -` reads it from stdin.** Positionals and
-flags fill the scalar keys (`contactId`, `idempotencyToken`, …); the
-`--json` payload supplies exactly the object-valued keys as documented in
-the MCP schema (`address`, `currentProfile`/`newProfile`, `places`,
-`favorites`, and `contacts create`'s list fields). Keys supplied both
-ways are a usage error, never a silent merge.
+**Decision (Adam, 2026-08-14): per-field flags are the default; `--json`
+is an optional path, not the primary one.** Per-field flags are the more
+reliable interface for an AI agent that shells out — no nested
+shell-quoting of a JSON blob (the top cause of malformed agent shell
+commands), and `--help` enumerates every field so the schema is
+discoverable rather than guessed. The replace-vs-merge ambiguity of a
+whole-object `--json` on a PATCH is also removed: an omitted flag = key
+absent = unchanged; an explicit empty string clears (the wire's
+`WireContactScalarFields` PATCH rule).
 
-Why this convention and not per-field flags:
+**The front-end choice costs nothing in shared logic.** Per-field flags
+and a `--json` payload BOTH assemble the same `[String: Value]` argument
+bag, and BOTH funnel through the SAME production builder —
+`WireRequest.create(helperId:messageId:parameters:)`
+(`Sources/GuessWhoMCPWire/WireRequest.swift:409-784`) — so required
+fields, closed field sets (`additionalProperties: false`,
+`MCPTool.closedSchema`, `MCPTool.swift:244-252`), the note-argument
+rejection (`WireRequest.swift:953-958`), and the exact error messages are
+the shared, already-tested production path (`WireRequestCreateTests`,
+`WireFramingTests.swift:235-960`). Per-field flags for a structured
+object write into that object's nested keys in the bag
+(e.g. `--street` → `["address": .object(["street": .string(...)])]`).
 
-1. **One validation path.** The parsed JSON becomes part of the same
-   `[String: Value]` argument bag the MCP server builds, and the request
-   is constructed by the SAME production builder —
-   `WireRequest.create(helperId:messageId:parameters:)`
-   (`Sources/GuessWhoMCPWire/WireRequest.swift:409-784`) — so required
-   fields, closed field sets (`additionalProperties: false`,
-   `MCPTool.closedSchema`, `MCPTool.swift:244-252`), the note-argument
-   rejection (`WireRequest.swift:953-958`), and the exact error messages
-   are shared, already-tested production behavior
-   (`WireRequestCreateTests`, `WireFramingTests.swift:235-960`).
-2. **Copy-paste symmetry.** Delete/edit of a structured entry matches the
-   *complete canonical representation* (`docs/cli-mcp.md:510-519`), and
-   the canonical form is exactly what `guesswho contacts get` prints —
-   the user pipes/copies the object out of one command into the next.
-   Flag-per-subfield (`--street`, `--city`, …) cannot express
-   "required-but-empty string" vs "omitted" faithfully; JSON can.
-3. **Terminal-native.** `--json -` composes with `jq` and heredocs, the
-   way the photo commands already compose with stdin/stdout
-   (`docs/cli-mcp.md:127-144`).
+Where `--json` is offered (and why):
+
+1. **`contacts create`** — the list fields (phones/emails/…) are arrays;
+   `--json`/`--json-file` is the compact way to seed a brand-new card.
+   Scalars stay per-field flags.
+2. **Structured *edit* (`edit-postal-address` / `-social-profile` /
+   `-instant-message`)** — an edit must supply BOTH a full current object
+   (the exact match) AND a full new object. As per-field flags that is
+   `--current-street … --new-street …`, ~18 flags; `--json`/`--json-file`
+   (`{"currentAddress":…,"newAddress":…}`) is the primary path, and the
+   canonical object is exactly what `guesswho contacts get` prints, so the
+   user copies it out of one command into the next
+   (`docs/cli-mcp.md:510-519`). Per-field `--current-*`/`--new-*` stay
+   available.
+3. **Structured *add*/*delete* and `favorites reorder`** — per-field flags
+   (add/delete) or a small array (`reorder`); `--json` is the optional
+   alternative for copy-paste from `contacts get`.
+
+`--json` accepts an inline value, `-` for stdin, or `--json-file <path>`;
+the stdin/file forms compose with `jq` and heredocs and carry no
+shell-quoting hazard. Supplying a key BOTH via a flag and via `--json` is
+a usage error, never a silent merge.
+
+**Structured-entry field flags (once, referenced by the table):**
+
+- **postal** (`WirePostalAddress`, `WireDTOs.swift`): `--label --street
+  --sub-locality --city --sub-administrative-area --state --postal-code
+  --country --iso-country-code`. The five non-optional wire strings
+  (`street`, `city`, `state`, `postalCode`, `country`) default to the
+  empty string when their flag is omitted, so the server's "at least one
+  component non-empty" rule (not the CLI) is the gate.
+- **social** (`WireSocialProfile`): `--label --service --username --url`
+  (at least one of the latter three non-empty, server-enforced).
+- **instant message** (`WireInstantMessage`): `--label --service
+  --username` (`username` required, non-empty).
+
+Delete matches the complete canonical representation, so delete takes the
+full flag set (or `--json`) exactly like add.
 
 ---
 
@@ -400,6 +450,29 @@ current way, it would be 60× more untested inline logic.**
 
 ### 3.3 Recommended architecture — a package-resident CLI core
 
+**The two surfaces already share one core; the CLI just needs to join it
+(Adam's Q, 2026-08-14).** The actual tool logic lives in NEITHER wrapper —
+it runs app-side in `ToolDispatcher` (`GuessWhoMCPCore`), across the FIFO,
+because only the app touches Contacts/Calendar/storage; the relay and CLI
+link wire + transport only, never `GuessWhoSync` (INV-1). So neither
+wrapper reimplements logic today. The shared *client-side* funnel is three
+calls, and the MCP relay already runs exactly them
+(`RelayMCPServer.handleCallTool`,
+`Sources/GuessWhoMCPTransport/RelayMCPServer.swift:134-151`):
+
+```
+build:  WireRequest.create(parameters:)      // GuessWhoMCPWire — shared
+send:   connection.send(request, timeout)    // GuessWhoMCPTransport — shared
+render: response.asCallToolResult()          // GuessWhoMCPWire — shared
+```
+
+The CLI must call the SAME three. Each wrapper adds only its own *protocol
+adapter*: the relay parses MCP JSON-RPC (`RelayMCPServer`), the CLI parses
+argv (`GuessWhoCLICore`). Those adapters are different jobs, so the relay
+must **not** link `GuessWhoCLICore` or ArgumentParser — it has no argv.
+`GuessWhoCLICore` is therefore the argv adapter ONLY; the deep shared core
+stays the existing wire + transport packages plus the app-side dispatcher.
+
 **Decision: create a new SwiftPM target + static product
 `GuessWhoCLICore` holding the entire ArgumentParser command tree, and
 shrink the app-target `guesswho-cli` to a `@main` shim.** This is the
@@ -548,6 +621,20 @@ drift (a new tool without a command, a command without a tool, a
 non-derived name). `run`/`probe` don't conform to `CLIToolCommand`, so
 they're structurally exempt.
 
+**Field-level parity (added because the CLI now uses per-field flags).**
+Per-field flags and the `MCPTool` JSON schema (`MCPTool.swift`) declare
+the same field sets twice, so they can drift. A second assertion in the
+same guard checks that every non-object property of a tool's schema is
+reachable as a positional or flag on its command (name-matched via the §2
+derivation), and that every scalar flag/positional names a real schema
+property. Object-valued schema keys (`address`, `profile`, the
+current/new pairs) are satisfied by EITHER the per-field flag group OR the
+`--json` path, so they're checked as "covered by one of the two", not
+flag-by-flag. This keeps a schema change (a new required field on
+`contacts_create`, say) from silently landing without a CLI flag —
+without duplicating the schema, since the schema stays the single source
+and the test reads it.
+
 ---
 
 ## 4. Conventions
@@ -572,20 +659,36 @@ they're structurally exempt.
 - **Exit codes** (replacing today's everything-is-64):
   - `0` — success, including "no data" successes the wire defines as
     normal results (`present: false` handling stays a get-photo error
-    only because bytes were requested; the declined delete is a normal
-    result — see §6).
+    only because bytes were requested).
   - `1` — the app answered with a typed error (`WireResponse.error` —
     message printed to stderr verbatim; codes never printed, matching
     `BannedVocabularyTests.testErrorCodeNamesStayOutOfAgentText`,
     `BannedVocabularyTests.swift:127-135`).
+  - `10` — **the user declined the delete confirmation** (decided
+    2026-08-14, §6 #1). Not an app error and not a data result, so it gets
+    a distinct non-zero code a script can branch on; the declined message
+    (`WireAckMessage.contactDeleteDeclined`) prints to stderr, stdout stays
+    empty. MCP still reports the same outcome as a NORMAL result so agents
+    don't retry-loop — the CLI's non-zero code is a terminal-ergonomics
+    choice layered on top, not a wire change.
   - `69` (`EX_UNAVAILABLE`) — transport-level failure: app not running /
     not ready / timed out (`RelayConnectionError`), so scripts can
     distinguish "open the app" from a real tool error.
   - `64` (`EX_USAGE`) — genuine usage errors only (ArgumentParser
-    validation, malformed `--json`, conflicting inputs).
+    validation, malformed `--json`, a key supplied both by flag and
+    `--json`, more than one stdin-reading input).
   Implemented as a small typed `CLIExitCode` in `GuessWhoCLICore`,
   unit-tested; commands stop wrapping runtime failures in
   `ValidationError`.
+- **Booleans are flags, not toggles** (decided 2026-08-14, §6 #6): the
+  three favorite commands take a required `--favorite` / `--no-favorite`
+  pair and error when neither is given — matching the wire's
+  desired-state (not toggle) semantics.
+- **Text / JSON inputs** (a note `--body`, any `--json`) take an inline
+  value, `-` for stdin, or a `--<field>-file <path>` companion (decided
+  2026-08-14, §6 #4). At most one input per call reads stdin. Per-field
+  flags are the default for structured objects; `--json` is the optional
+  path (§2 note).
 - **Writes:** `--idempotency-token` on every write (shipped precedent,
   `ContactsCommand.swift:104-105`); no client-side retry logic — retry
   identity is the caller's choice, dedup is the app's
@@ -643,12 +746,14 @@ set/reorder`, event tags (3), `guides create/delete/reorder-places`,
 **Phase 4 — Contact Store writes minus delete (22).**
 `contacts create/update/delete-photo`, value edits (3), structured
 entries (9), `organizations rename-department`, groups writes (6).
-The scalar-flag surface for create/update and the structured `--json`
-objects are the bulk of the work; every validation behavior
+The per-field scalar-flag surface for create/update, the per-field
+structured add/delete flags, and the `--json` path for the structured
+*edit* trio are the bulk of the work; every validation behavior
 (scalars-only update, closed structured objects, note rejection) is
 asserted through the shared funnel, i.e. against production
-`WireRequest.create` behavior.
-*Tests:* as before; `pending` −22.
+`WireRequest.create` behavior — flags and `--json` share it.
+*Tests:* as before, plus per-field→bag assembly and flag/`--json`
+conflict cases; `pending` −22.
 
 **Phase 5 — `contacts delete` + closure.**
 The confirmation-gated delete (300 s wait, stderr wait-note, ack/declined
@@ -662,36 +767,39 @@ and the guard names exactly what remains.
 
 ---
 
-## 6. Open questions / product decisions for Adam
+## 6. Decisions (resolved 2026-08-14) & remaining open items
 
-1. **Declined delete exit code.** MCP deliberately reports "the user
-   declined" as a NORMAL result so agents don't retry-loop
-   (`WireAckMessage.contactDeleteDeclined`, `WireError.swift:352-356`).
-   Recommended: CLI prints the same text on stdout and exits `0`
-   (parity). But shell scripts often want `if guesswho contacts delete…`
-   to reflect whether the contact is gone — a distinct exit code (e.g.
-   `10`) is defensible. Default in this plan: exit 0; flag if scripts
-   matter.
-2. **Any tool deliberately without a CLI command?** This plan says no —
-   all 63, including `contacts delete` (headless-safe because the human
-   gate is the app-side dialog, not the terminal). If Adam prefers the
-   terminal to have no delete at all, the parity guard gets a one-entry
-   permanent exempt list and docs must say why.
-3. **Output format default.** JSON-for-data / fixed-text-for-acks
-   (byte-identical to the MCP agent surface) is the recommendation. A
-   human-readable `--format table` could come later; adding it now would
-   fork the tested rendering path 63 ways.
-4. **Note body via stdin.** `contacts add-note <id> -` reading the body
-   from stdin (long notes, heredocs) — cheap under the shared input
-   helper; recommended yes, but it's a small surface addition beyond
-   strict parity.
-5. **`links list <id> <kind>` argument order** follows the wire schema's
-   required order (`MCPTool.swift:681`); `<kind> <id>` may read more
-   naturally. Mechanical derivation says id-first; either is fine if
-   decided before Phase 2.
-6. **Positional `true|false` vs `--favorite` flag** for the three
-   favorite commands. Positional keeps the derivation mechanical
-   (recommended); a flag reads slightly better. Decide before Phase 3.
+**RESOLVED by Adam, 2026-08-14:**
+
+1. **Declined delete exit code → distinct non-zero.** Deleted → exit `0`;
+   user declined → exit `10`, message on stderr (§4). Scripts can branch;
+   the wire result is unchanged (MCP keeps declined as a normal result).
+3. **Structured input → per-field flags by default, `--json` optional.**
+   Per-field is the clearer, quote-safe interface for an agent; `--json`
+   (inline / `-` stdin / `--json-file`) stays as the escape hatch — on
+   `contacts create` (list fields) and as the primary path for the three
+   structured *edit* tools (§2 note, §3.3). Both build the same bag and
+   funnel through `WireRequest.create`, so no logic fork.
+4. **Note body as an input param → yes.** `contacts add-note`/`edit-note`
+   take `--body` inline, `--body -` (stdin), or `--body-file` — same
+   convention as `--json`.
+5. **`links list` argument order → id-first** (`<id> <kind>`), mechanical
+   and consistent with every id-leading command. (Adam: no preference.)
+6. **Favorite value → flag, not toggle.** `--favorite` / `--no-favorite`,
+   required, on the three favorite commands (§4).
+
+**Unchanged recommendations (not challenged):**
+
+2. **No tool is deliberately CLI-less.** All 63 get a command, including
+   `contacts delete` (headless-safe — the human gate is the app dialog,
+   not the terminal). Revisit only if Adam wants no terminal delete.
+   *(was §6.3)* **Output format default** stays JSON-for-data /
+   fixed-text-for-acks, byte-identical to the MCP agent surface; a
+   human-readable `--format table` is a possible later addition that would
+   fork the tested render path, so it is out of scope now.
+
+**Still open — one item, test-only:**
+
 7. **Test-suite follow-ons from the audit (§3.1 #4/#5):** engine-backed
    `EngineEventSource`/`EngineGuideSource` test adapters to retire the
    event-tag and guide mirrors in `Fakes.swift`. Zero production change,
