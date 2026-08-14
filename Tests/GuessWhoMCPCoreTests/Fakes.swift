@@ -287,10 +287,16 @@ final class LegacyScriptedContactSource: MCPContactSource {
         // Resolve a seeded durable favorite UUID to its live group; an unseeded
         // id (e.g. a raw legacy identifier) stays unavailable — the real
         // repository behaves the same for a group with no identity sidecar.
-        groupFavoriteResolutions[id]
+        // Lowercase the lookup for parity with
+        // ContactsRepository.group(forFavoriteID:), which canonicalizes first.
+        groupFavoriteResolutions[id.lowercased()]
     }
 
     func groupFavoriteIdentityIDs() -> [String] {
+        // Only resolvable (available) identities are modeled here; this fake
+        // does not reproduce an orphaned identity — a durable UUID present in
+        // the identity list but with no live group — which no current test
+        // needs. Seed such an id separately if a future test requires it.
         Array(groupFavoriteResolutions.keys)
     }
 
