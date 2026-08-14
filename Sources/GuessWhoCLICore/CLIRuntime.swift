@@ -41,7 +41,14 @@ public struct CLIRuntime: Sendable {
     /// environment closures throw and its transport factory yields a transport
     /// that throws, so a missing install surfaces as a clear error rather than
     /// silent misbehavior.
-    public static var current = CLIRuntime(
+    ///
+    /// `nonisolated(unsafe)`: this is the ArgumentParser testing seam — a
+    /// settable static, written exactly once at startup (the `@main` shim,
+    /// before any command runs) and read serially thereafter. There is no
+    /// concurrent access to protect against, so the manual opt-out is correct
+    /// and keeps the Swift 6 app target (which consumes this from strict-
+    /// concurrency code) building.
+    nonisolated(unsafe) public static var current = CLIRuntime(
         containerURL: { throw CLIRuntimeError.notConfigured },
         groupID: { throw CLIRuntimeError.notConfigured },
         makeTransport: { _ in UnconfiguredCLITransport() },
