@@ -78,15 +78,21 @@ final class GroupToolTests: XCTestCase {
         return fixture
     }
 
-    private func groupID(_ fixture: Fixture) async -> String? {
-        let response = await fixture.dispatcher.handle(.contactsListGroups(
+    /// Creates a group through the intentionally retained scripted CRUD path
+    /// for tests whose only subject is dispatcher gates/error mapping. This
+    /// avoids invoking the removed group-favorite read semantic merely to mint
+    /// a wire id.
+    @MainActor
+    private func scriptedGroupID(_ fixture: Fixture) async -> String? {
+        fixture.contacts.scriptedGroupFavoriteReadResults = [false]
+        let response = await fixture.dispatcher.handle(.groupsCreate(
             helperId: Fixture.helper, messageId: TestMessageID.next(),
-            limit: nil, cursor: nil))
-        guard case .groupPage(_, _, let page) = response else {
-            XCTFail("expected group page; got \(String(describing: response))")
+            name: "Scripted gate target", idempotencyToken: nil))
+        guard case .group(_, _, let group) = response else {
+            XCTFail("expected scripted group; got \(String(describing: response))")
             return nil
         }
-        return page.items.first?.id
+        return group.id
     }
 
     private func contactIDs(_ fixture: Fixture) async -> [String] {
@@ -723,6 +729,9 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(readOnly?.errorPayload?.code, .readOnly)
 
         await MainActor.run { fixture.gates.mcpAccess = .readWrite }
+        await MainActor.run {
+            fixture.contacts.scriptedGroupFavoriteReadResults = [false]
+        }
         let firstBudgeted = await fixture.dispatcher.handle(.groupsCreate(
             helperId: Fixture.helper, messageId: "budget-1",
             name: "One", idempotencyToken: nil))
@@ -735,19 +744,18 @@ final class GroupToolTests: XCTestCase {
             name: "Two", idempotencyToken: nil))
         XCTAssertEqual(busy?.errorPayload?.code, .busy)
 
-        guard let existingGroup = await groupID(fixture) else {
-            return XCTFail("missing seeded group for kind validation")
-        }
         let badKind = await fixture.dispatcher.handle(.contactsList(
             helperId: Fixture.helper, messageId: "kind",
-            kind: "company", favoritesOnly: nil, groupId: existingGroup,
+            kind: "company", favoritesOnly: nil, groupId: createdGroup.id,
             limit: nil, cursor: nil))
         XCTAssertEqual(badKind?.errorPayload?.code, .invalidParams)
     }
 
     func testRuntimePermissionAndStoreErrorsAreTyped() async {
         let fixture = await writableFixture()
-        guard let groupId = await groupID(fixture) else { return XCTFail("missing seeded group") }
+        guard let groupId = await scriptedGroupID(fixture) else {
+            return XCTFail("missing scripted group")
+        }
         await MainActor.run {
             fixture.contacts.authorizationStatus = .denied
             fixture.contacts.groupWriteError = InjectedGroupError()

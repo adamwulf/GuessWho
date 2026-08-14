@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 import GuessWhoSync
 import GuessWhoSyncTesting
 import GuessWhoMCPCore
@@ -32,6 +33,41 @@ enum Sentinels {
     static let localID = "ABPerson-LOCAL-SENTINEL-77"
 }
 
+/// Records accidental use of a repository/storage semantic that this legacy
+/// source intentionally no longer models. Non-throwing protocol requirements
+/// still need a value, so they return a neutral fallback *after* recording the
+/// XCTest failure. Throwing requirements record the same failure and throw.
+private struct UnexpectedLegacySemanticPathError: Error {
+    let path: String
+}
+
+@MainActor
+private func unexpectedLegacySemanticPath<T>(
+    _ path: String,
+    returning fallback: T,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) -> T {
+    XCTFail(
+        "LegacyScriptedContactSource does not model production semantic: \(path)",
+        file: file,
+        line: line)
+    return fallback
+}
+
+@MainActor
+private func throwUnexpectedLegacySemanticPath(
+    _ path: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws -> Never {
+    XCTFail(
+        "Legacy scripted source does not model production semantic: \(path)",
+        file: file,
+        line: line)
+    throw UnexpectedLegacySemanticPathError(path: path)
+}
+
 /// Legacy scripted contact source used only where a test needs a boundary
 /// fault or an identity-race scenario that `RecordingContactStore` cannot
 /// express. It is deliberately *not* a repository conformance harness.
@@ -51,13 +87,13 @@ final class LegacyScriptedContactSource: MCPContactSource {
     var groupWriteError: (any Error)?
     var authorizationStatus: StoreAuthorizationStatus = .authorized
     private(set) var groupCreateCount = 0
-    private(set) var groupMembershipWriteCount = 0
+    /// Explicit results used only when a scripted CRUD gate/error test needs
+    /// the dispatcher to decorate a returned group. Unconfigured reads fail.
+    var scriptedGroupFavoriteReadResults: [Bool] = []
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
     var favoriteEffectiveIDs: Set<String> = []
-    var photoDataByLocalID: [String: Data] = [:]
-    private(set) var photoWriteCount = 0
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
@@ -210,24 +246,23 @@ final class LegacyScriptedContactSource: MCPContactSource {
     }
 
     func contactsAssociated(with organization: Contact) -> [Contact] {
-        // Organization semantics belong to ContactsRepository. Tests that care
-        // about matching or ordering use MCPProductionFixture; this legacy fake
-        // deliberately offers no canned substitute.
-        []
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.contactsAssociated(with:)", returning: [])
     }
 
     func departments(in organization: Contact) -> [String] {
-        []
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.departments(in:)", returning: [])
     }
 
     func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact] {
-        []
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.contactsAssociated(with:inDepartment:)", returning: [])
     }
 
     func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
-        try takeContactStoreError()
-        guard let data = photoDataByLocalID[id.restorationToken.localID] else { return nil }
-        return ContactPhoto(data: data, kind: .fullSize)
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.contactPhotoData(for:kind:)")
     }
 
     func groups(containing contact: Contact) async -> [ContactGroup] {
@@ -239,7 +274,11 @@ final class LegacyScriptedContactSource: MCPContactSource {
     }
 
     func isGroupFavorite(_ group: ContactGroup) -> Bool {
-        false
+        guard !scriptedGroupFavoriteReadResults.isEmpty else {
+            return unexpectedLegacySemanticPath(
+                "ContactsRepository.isGroupFavorite", returning: false)
+        }
+        return scriptedGroupFavoriteReadResults.removeFirst()
     }
 
     // MARK: Writes
@@ -282,21 +321,13 @@ final class LegacyScriptedContactSource: MCPContactSource {
         requested: [Contact],
         group: ContactGroup
     ) throws {
-        if let groupWriteError { throw groupWriteError }
-        guard groups.contains(where: { $0.localID == group.localID }) else {
-            throw ContactStoreError.groupNotFound(localID: group.localID)
-        }
-        groupMembershipWriteCount += 1
-        // Scripted-success observation only. Real membership mutation,
-        // de-duplication, partial failures, and persistence are covered through
-        // `ContactsRepository` + `RecordingContactStore`.
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository group membership mutation")
     }
 
     func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
-        if let groupWriteError { throw groupWriteError }
-        // Desired-state persistence is tested through ContactsRepository and a
-        // real FavoritesStore. This fake retains only the group-write fault.
-        return favorite
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.setGroupFavorite")
     }
 
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
@@ -536,14 +567,8 @@ final class LegacyScriptedContactSource: MCPContactSource {
     }
 
     func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
-        try takeContactStoreError()
-        let localID = id.restorationToken.localID
-        guard contacts.contains(where: {
-            $0.contactID.restorationToken.localID == localID
-        }) else { return false }
-        photoWriteCount += 1
-        photoDataByLocalID[localID] = imageData
-        return true
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.setContactPhoto")
     }
 
     func createContact(_ seed: Contact) async throws -> Contact {
@@ -597,9 +622,8 @@ final class LegacyScriptedContactSource: MCPContactSource {
     func renameDepartment(
         from oldName: String, to newName: String, in organization: Contact
     ) async throws -> Int {
-        // Department mutation and partial-save behavior are exercised through
-        // ContactsRepository with RecordingContactStore fault injection.
-        return 0
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.renameDepartment")
     }
 }
 
@@ -793,6 +817,14 @@ final class FaultInjectingFavoriteSource: MCPFavoriteSource {
     private(set) var loadCallCount = 0
     private(set) var setCallCount = 0
     private(set) var reorderCallCount = 0
+    /// Explicit outcomes for the few gate/budget tests that need a successful
+    /// favorite-source call without asserting storage behavior. An unconfigured
+    /// call is an accidental semantic dependency and fails loudly.
+    var scriptedSetResults: [Bool] = []
+    /// Explicitly allows the one successful reorder used to observe that a
+    /// non-contact snapshot avoids loading Contacts. CAS/order semantics are
+    /// never modeled here.
+    var acceptNextReorder = false
     var mutateBeforeNextReorder = false
     var failReads = false
     var onLoadFavorites: (() -> Void)?
@@ -807,16 +839,11 @@ final class FaultInjectingFavoriteSource: MCPFavoriteSource {
     }
 
     func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool {
-        // Minimal scripted state for gate/fault tests; no canonicalization or
-        // desired-state idempotency is modeled here.
-        let index = items.firstIndex { $0.kind == kind && $0.id == id }
-        if favorite {
-            if index == nil { items.append(Favorite(kind: kind, id: id, addedAt: Date())) }
-        } else {
-            if let index { items.remove(at: index) }
+        guard !scriptedSetResults.isEmpty else {
+            try throwUnexpectedLegacySemanticPath("FavoritesStore.set")
         }
         setCallCount += 1
-        return true
+        return scriptedSetResults.removeFirst()
     }
 
     func reorderFavorites(expected: [Favorite], reordered: [Favorite]) throws -> Bool {
@@ -825,9 +852,10 @@ final class FaultInjectingFavoriteSource: MCPFavoriteSource {
             items.append(Favorite(kind: .guide, id: UUID().uuidString, addedAt: Date()))
             throw FavoritesStoreMutationError.changed
         }
-        // Dispatcher validation is under test here; storage CAS/order validity
-        // belongs to FavoritesStore and is covered by production-backed tests.
-        items = reordered
+        guard acceptNextReorder else {
+            try throwUnexpectedLegacySemanticPath("FavoritesStore.reorder")
+        }
+        acceptNextReorder = false
         reorderCallCount += 1
         return true
     }

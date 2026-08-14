@@ -323,6 +323,11 @@ final class ContactsListToolTests: XCTestCase {
     /// The single wire id of the fixture's one group ("Museum Friends"), as
     /// an agent would obtain it from contacts_list_groups.
     private func onlyGroupID(_ fixture: Fixture) async -> String? {
+        await MainActor.run {
+            // Favorite decoration is incidental to these group-filter tests;
+            // opt into the one scripted answer required to obtain the wire id.
+            fixture.contacts.scriptedGroupFavoriteReadResults = [false]
+        }
         let response = await fixture.dispatcher.handle(.contactsListGroups(
             helperId: Fixture.helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         guard case .groupPage(_, _, let page) = response else {
@@ -398,6 +403,9 @@ final class ContactsListToolTests: XCTestCase {
         await MainActor.run {
             fixture.contacts.groups.append(
                 ContactGroup(localID: "CNGroup-LOCAL-EMPTY", name: "Empty Group"))
+            // contacts_list_groups decorates both real groups. These tests do
+            // not assert favorite persistence, so script only that decoration.
+            fixture.contacts.scriptedGroupFavoriteReadResults = [false, false]
         }
         // Take the empty group's wire id the way an agent would: from
         // contacts_list_groups, by name.

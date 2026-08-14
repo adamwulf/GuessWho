@@ -520,6 +520,7 @@ final class FavoritesToolTests: XCTestCase {
                 Favorite(kind: .guide, id: guideID.uuidString, addedAt: Date()),
                 Favorite(kind: .place, id: placeID.uuidString, addedAt: Date()),
             ]
+            fixture.favorites.acceptNextReorder = true
         }
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let desired = page.items.reversed().map {
@@ -584,6 +585,7 @@ final class FavoritesToolTests: XCTestCase {
             fixture.guides.guides.first?.id.uuidString
         }
         guard let guideID = optionalGuideID else { return XCTFail("missing guide referent") }
+        await MainActor.run { fixture.favorites.scriptedSetResults = [true] }
         guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
             helperId: Fixture.helper, messageId: "gu", kind: .guide,
             id: guideID, favorite: false, idempotencyToken: nil)) else {
@@ -628,6 +630,7 @@ final class FavoritesToolTests: XCTestCase {
         await MainActor.run {
             fixture.gates.contactsAuthorized = true
             fixture.favorites.onLoadFavorites = nil
+            fixture.favorites.scriptedSetResults = [true]
         }
         guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
             helperId: Fixture.helper, messageId: "budget-after-denial",
