@@ -60,34 +60,56 @@ final class FavoritesToolTests: XCTestCase {
     }
 
     /// Seed one favorite of every kind on disk (through `FavoritesStore.setAll`)
-    /// plus their event / guide / place referents on the OS-independent fakes.
-    /// With `collision`, the place reuses the guide's UUID so the reorder test
-    /// can prove composite (kind,id) identity survives a cross-kind id clash.
+    /// plus their event / guide / place referents as REAL records in the
+    /// production `GuessWhoSync` engine. With `collision`, the place is minted at
+    /// the guide's UUID key (by cloning its real envelope through the store's own
+    /// write — the engine can't mint two records to the same UUID) so the reorder
+    /// test can prove composite (kind,id) identity survives a cross-kind id clash.
     @MainActor
     @discardableResult
     private func installEveryKind(
         _ fixture: MCPProductionFixture, collision: Bool = false
     ) throws -> EveryKindSeed {
-        let event = Event(
-            id: UUID(), eventKitID: nil, title: "Museum Gala",
-            startDate: Date(timeIntervalSince1970: 1_760_000_000),
-            endDate: Date(timeIntervalSince1970: 1_760_007_200))
-        fixture.events.events = [event]
+        let eventUUID = try EngineSeed.manualEvent(
+            fixture.sync, title: "Museum Gala",
+            start: Date(timeIntervalSince1970: 1_760_000_000),
+            end: Date(timeIntervalSince1970: 1_760_007_200))
+        let event = try XCTUnwrap(
+            fixture.sync.event(at: SidecarKey(kind: .event, id: eventUUID.uuidString)))
 
-        let guide = MapsGuide(
-            id: UUID(), name: "Coffee Crawl", sourceURL: nil,
-            createdAt: Date(timeIntervalSince1970: 1_740_000_000))
-        let placeID = collision ? guide.id : UUID()
-        let place = MapsPlace(
-            id: placeID, guideID: guide.id, name: "Bluebird Espresso",
-            address: "12 Main St", latitude: 30.27, longitude: -97.74)
-        fixture.guides.guides = [guide]
-        fixture.guides.places = [place]
+        let (guide, importedPlaces) = try EngineSeed.guide(
+            fixture.sync, name: "Coffee Crawl",
+            entries: [MapsGuideURL.Entry(
+                address: "12 Main St", latitude: 30.27, longitude: -97.74)])
+        // Resolve so the place displays "Bluebird Espresso".
+        try fixture.sync.markPlaceResolved(
+            at: SidecarKey(kind: .place, id: importedPlaces[0].id.uuidString),
+            name: "Bluebird Espresso", address: "12 Main St",
+            latitude: 30.27, longitude: -97.74)
+
+        let placeID: UUID
+        if collision {
+            // Force the cross-kind UUID collision the engine's minting API can't
+            // produce: clone the place's REAL envelope onto the guide's UUID key
+            // through the store's public write, then drop the original. Reads
+            // still ride the real engine decode (key.id becomes the place id).
+            let originalKey = SidecarKey(kind: .place, id: importedPlaces[0].id.uuidString)
+            let collidedKey = SidecarKey(kind: .place, id: guide.id.uuidString)
+            if let envelope = try fixture.sidecars.read(originalKey) {
+                try fixture.sidecars.write(envelope, at: collidedKey)
+            }
+            try fixture.sidecars.delete(originalKey)
+            placeID = guide.id
+        } else {
+            placeID = importedPlaces[0].id
+        }
+        let place = try XCTUnwrap(
+            fixture.sync.places(inGuide: guide.id).first { $0.id == placeID })
 
         let groupLocalID = seededGroupLocalID(fixture) ?? ""
         try fixture.favoritesStore.setAll([
             Favorite(kind: .contact, id: MCPProductionFixture.adaGuessWhoID, addedAt: Date(timeIntervalSince1970: 1)),
-            Favorite(kind: .event, id: event.id.uuidString, addedAt: Date(timeIntervalSince1970: 2)),
+            Favorite(kind: .event, id: eventUUID.uuidString, addedAt: Date(timeIntervalSince1970: 2)),
             Favorite(kind: .group, id: groupLocalID, addedAt: Date(timeIntervalSince1970: 3)),
             Favorite(kind: .guide, id: guide.id.uuidString, addedAt: Date(timeIntervalSince1970: 4)),
             Favorite(kind: .place, id: placeID.uuidString, addedAt: Date(timeIntervalSince1970: 5)),
@@ -125,27 +147,20 @@ final class FavoritesToolTests: XCTestCase {
     }
 
     @MainActor
-    private func installEveryKind(_ fixture: Fixture, collision: Bool = false) {
-        guard let event = fixture.events.events.first,
-              let group = fixture.contacts.groups.first,
-              let guide = fixture.guides.guides.first,
-              let place = fixture.guides.places.first
-        else {
+    private func installEveryKind(_ fixture: Fixture) {
+        guard let group = fixture.contacts.groups.first else {
             XCTFail("every-kind fixture is incomplete")
             return
         }
-        let shared = collision ? guide.id : place.id
-        if collision {
-            fixture.guides.places[fixture.guides.places.startIndex] = MapsPlace(
-                id: shared, guideID: guide.id, name: place.name,
-                address: place.address, latitude: place.latitude, longitude: place.longitude)
-        }
+        // The event / guide / place referents are the fixture's REAL
+        // engine-minted records; the fault-injecting favorites source only holds
+        // the ordered list the favorites_* tools mutate.
         fixture.favorites.items = [
             Favorite(kind: .contact, id: Sentinels.guessWhoUUID, addedAt: Date(timeIntervalSince1970: 1)),
-            Favorite(kind: .event, id: event.id.uuidString, addedAt: Date(timeIntervalSince1970: 2)),
+            Favorite(kind: .event, id: fixture.galaEventUUID.uuidString, addedAt: Date(timeIntervalSince1970: 2)),
             Favorite(kind: .group, id: group.localID, addedAt: Date(timeIntervalSince1970: 3)),
-            Favorite(kind: .guide, id: guide.id.uuidString, addedAt: Date(timeIntervalSince1970: 4)),
-            Favorite(kind: .place, id: shared.uuidString, addedAt: Date(timeIntervalSince1970: 5)),
+            Favorite(kind: .guide, id: fixture.coffeeGuideID.uuidString, addedAt: Date(timeIntervalSince1970: 4)),
+            Favorite(kind: .place, id: fixture.bluebirdPlaceID.uuidString, addedAt: Date(timeIntervalSince1970: 5)),
         ]
         fixture.contacts.favoriteEffectiveIDs = [Sentinels.guessWhoUUID]
     }
@@ -287,8 +302,9 @@ final class FavoritesToolTests: XCTestCase {
     func testKindMismatchAndUnknownReferentsNeverWrite() async throws {
         let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
-        let guide = MapsGuide(id: UUID(), name: "Coffee Crawl", sourceURL: nil, createdAt: Date())
-        fixture.guides.guides = [guide]
+        let (guide, _) = try EngineSeed.guide(
+            fixture.sync, name: "Coffee Crawl",
+            entries: [MapsGuideURL.Entry(address: "9 Kind St")])
         let before = try fixture.favoritesStore.loadAll()
 
         let mismatched = await fixture.dispatcher.handle(.favoritesSet(
@@ -372,8 +388,9 @@ final class FavoritesToolTests: XCTestCase {
         // Every rejected order left the stored favorites byte-for-byte untouched.
         XCTAssertEqual(try fixture.favoritesStore.loadAll(), original)
 
-        // A vanished referent makes the whole reorder stale, not partial.
-        fixture.guides.guides = []
+        // A vanished referent makes the whole reorder stale, not partial:
+        // soft-delete the guide (and its places) through the real engine.
+        try EngineSeed.clearGuides(fixture.sync)
         let stale = await fixture.dispatcher.handle(.favoritesReorder(
             helperId: MCPProductionFixture.helper, messageId: "s", favorites: identities,
             idempotencyToken: nil))
@@ -387,12 +404,11 @@ final class FavoritesToolTests: XCTestCase {
     func testEntityDeleteLeavesStaleRowsThatGenericClearCanRecover() async throws {
         let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
-        let guide = MapsGuide(id: UUID(), name: "Coffee Crawl", sourceURL: nil, createdAt: Date())
-        let place = MapsPlace(
-            id: UUID(), guideID: guide.id, name: "Bluebird Espresso",
-            address: "12 Main St", latitude: 30.27, longitude: -97.74)
-        fixture.guides.guides = [guide]
-        fixture.guides.places = [place]
+        let (guide, places) = try EngineSeed.guide(
+            fixture.sync, name: "Coffee Crawl",
+            entries: [MapsGuideURL.Entry(
+                address: "12 Main St", latitude: 30.27, longitude: -97.74)])
+        let place = places[0]
         try fixture.favoritesStore.setAll([
             Favorite(kind: .guide, id: guide.id.uuidString, addedAt: Date()),
             Favorite(kind: .place, id: place.id.uuidString, addedAt: Date()),
@@ -422,8 +438,9 @@ final class FavoritesToolTests: XCTestCase {
         let fixture = try await productionFixture(
             writable: true, writeLimit: 1, writeWindow: 60)
         defer { fixture.cleanUp() }
-        let guide = MapsGuide(id: UUID(), name: "Coffee Crawl", sourceURL: nil, createdAt: Date())
-        fixture.guides.guides = [guide]
+        let (guide, _) = try EngineSeed.guide(
+            fixture.sync, name: "Coffee Crawl",
+            entries: [MapsGuideURL.Entry(address: "5 Budget St")])
         let guideID = guide.id.uuidString
 
         let first = await fixture.dispatcher.handle(.favoritesSet(
@@ -454,16 +471,18 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertEqual(entries.last?.action, .setFavorite)
         XCTAssertEqual(entries.last?.subjectKind, .guide)
 
-        // A huge stale favorite page still rides the shared response cap.
+        // A huge favorite page still rides the shared response cap: 200 REAL
+        // guides with 5,000-char names project into an over-cap favorites list.
         fixture.gates.mcpAccess = .readOnly
-        let bigGuides = (0..<200).map { index in
-            MapsGuide(
-                id: UUID(), name: String(repeating: "A", count: 5_000) + "\(index)",
-                sourceURL: nil, createdAt: Date())
+        var bigGuideIDs: [UUID] = []
+        for index in 0..<200 {
+            bigGuideIDs.append(try fixture.sync.importGuide(
+                from: MapsGuideURL.Snapshot(
+                    name: String(repeating: "A", count: 5_000) + "\(index)", entries: []),
+                sourceURL: nil))
         }
-        fixture.guides.guides = bigGuides
-        try fixture.favoritesStore.setAll(bigGuides.map {
-            Favorite(kind: .guide, id: $0.id.uuidString, addedAt: Date())
+        try fixture.favoritesStore.setAll(bigGuideIDs.map {
+            Favorite(kind: .guide, id: $0.uuidString, addedAt: Date())
         })
         let capped = await fixture.dispatcher.handle(.favoritesList(
             helperId: MCPProductionFixture.helper, messageId: "cap", limit: 200, cursor: nil))
@@ -507,14 +526,8 @@ final class FavoritesToolTests: XCTestCase {
 
     func testReorderWithoutContactsSkipsContactSnapshot() async {
         let fixture = await fixture(writable: true)
-        let referents = await MainActor.run {
-            fixture.guides.guides.first.flatMap { guide in
-                fixture.guides.places.first.map { place in (guide.id, place.id) }
-            }
-        }
-        guard let (guideID, placeID) = referents else {
-            return XCTFail("missing guide/place referents")
-        }
+        let guideID = fixture.coffeeGuideID
+        let placeID = fixture.bluebirdPlaceID
         await MainActor.run {
             fixture.favorites.items = [
                 Favorite(kind: .guide, id: guideID.uuidString, addedAt: Date()),
@@ -581,10 +594,7 @@ final class FavoritesToolTests: XCTestCase {
         error(await fixture.dispatcher.handle(.favoritesSet(
             helperId: Fixture.helper, messageId: "ev", kind: .event,
             id: UUID().uuidString, favorite: true, idempotencyToken: nil)), .permissionDenied)
-        let optionalGuideID: String? = await MainActor.run {
-            fixture.guides.guides.first?.id.uuidString
-        }
-        guard let guideID = optionalGuideID else { return XCTFail("missing guide referent") }
+        let guideID = fixture.coffeeGuideID.uuidString
         await MainActor.run { fixture.favorites.scriptedSetResults = [true] }
         guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(
             helperId: Fixture.helper, messageId: "gu", kind: .guide,
