@@ -7,12 +7,12 @@ import GuessWhoSync
 // a test-only substitution of the crypto seam, NOT a production behavior
 // change. The on-disk sidecar store, its coordinator, and every other write
 // path stay exactly the production `FileSystemSidecarStore`.
-@_spi(ConflictReconcile) import GuessWhoSync
+@_spi(ConflictReconcile) @_spi(MCPTesting) import GuessWhoSync
 import GuessWhoSyncTesting
 import GuessWhoMCPCore
 import GuessWhoMCPWire
 
-// The production-backed MCP dispatch harness (parity-test refactor).
+// Repository/store-backed MCP dispatch harness (parity-test refactor).
 //
 // Unlike `Fixture` in Fakes.swift — whose `LegacyScriptedContactSource` and
 // `FaultInjectingFavoriteSource` are only scripted boundaries and cannot prove
@@ -26,7 +26,8 @@ import GuessWhoMCPWire
 //   FavoritesStore          (real on-disk Favorites.json, same temp root)
 //   ToolDispatcher          (production dispatch core)
 //
-// Only the OS Contacts boundary is substituted: `RecordingContactStore` wraps
+// This is not an app-hosted `MCPHostController` test. The OS Contacts boundary
+// is substituted: `RecordingContactStore` wraps
 // an `InMemoryContactStore` (headless `swift test` has no `CNContactStore` /
 // TCC) and adds recording + one-shot fault injection. Every rule that the
 // parity tests assert on — identity resolve-or-mint, the previous-photo

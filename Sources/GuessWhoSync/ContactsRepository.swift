@@ -247,15 +247,31 @@ public final class ContactsRepository: NSObject {
     ///   wiring); tests pass a fresh `NotificationCenter()` per instance so a
     ///   post from one repository's test cannot fire another's observer. See the
     ///   `notificationCenter` property doc for the full root cause.
-    /// - Parameter creationTimestampRepairDefaults: durable retry-journal
-    ///   storage. Production uses `.standard`; headless integration tests pass
-    ///   an isolated suite so repository reloads cannot consume app state.
+    public convenience init(
+        contacts: ContactStoreProtocol,
+        sync: GuessWhoSync? = nil,
+        favorites: FavoritesStore? = nil,
+        notificationCenter: NotificationCenter = .default
+    ) {
+        self.init(
+            contacts: contacts,
+            sync: sync,
+            favorites: favorites,
+            notificationCenter: notificationCenter,
+            creationTimestampRepairs: UserDefaultsContactCreationTimestampRepairStore()
+        )
+    }
+
+    /// Testability seam for isolating the durable creation-timestamp repair
+    /// journal. Kept behind SPI so the production convenience initializer and
+    /// its public API remain exactly unchanged.
+    @_spi(MCPTesting)
     public convenience init(
         contacts: ContactStoreProtocol,
         sync: GuessWhoSync? = nil,
         favorites: FavoritesStore? = nil,
         notificationCenter: NotificationCenter = .default,
-        creationTimestampRepairDefaults: UserDefaults = .standard
+        creationTimestampRepairDefaults: UserDefaults
     ) {
         self.init(
             contacts: contacts,
