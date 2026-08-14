@@ -71,27 +71,44 @@ final class WriteSourceLifecycleTests: XCTestCase {
         return cond()
     }
 
-    /// Drain whatever the reader fd holds right now into `sink` (non-blocking).
-    /// Returns bytes read this call (0 on EAGAIN).
-    private func drainAvailable(_ fd: Int32, into sink: inout Data) -> Int {
-        var buf = [UInt8](repeating: 0, count: 65536)
-        var total = 0
+    /// Read up to `cap` bytes once (non-blocking) into `sink`. Returns bytes
+    /// read (0 on EAGAIN). A bounded single read keeps the kernel buffer full
+    /// enough that the writer re-blocks, forcing multiple EAGAIN cycles.
+    private func readOnce(_ fd: Int32, cap: Int, into sink: inout Data) -> Int {
+        var buf = [UInt8](repeating: 0, count: cap)
         while true {
-            let n = buf.withUnsafeMutableBytes { raw in
-                Darwin.read(fd, raw.baseAddress, raw.count)
-            }
-            if n > 0 {
-                sink.append(contentsOf: buf[0..<n])
-                total += n
-                if n < buf.count { break }
-            } else if n == 0 {
-                break
-            } else {
-                if errno == EINTR { continue }
-                break // EAGAIN/EWOULDBLOCK: drained dry
-            }
+            let n = buf.withUnsafeMutableBytes { raw in Darwin.read(fd, raw.baseAddress, cap) }
+            if n > 0 { sink.append(contentsOf: buf[0..<n]); return n }
+            if n < 0 && errno == EINTR { continue }
+            return 0
         }
-        return total
+    }
+
+    private struct TimeoutError: Error {}
+
+    /// Await `op`, failing fast if it does not finish within `seconds` so a
+    /// lost-wake regression fails the test instead of hanging the suite.
+    private func withDeadline<T: Sendable>(_ seconds: Double = 10,
+                                           _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw TimeoutError()
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
+    /// Lock-guarded, Sendable holder so a write Task can hand its thrown error
+    /// back to the test without an un-Sendable `Error?` crossing a task group.
+    private final class ErrorBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Error?
+        func set(_ error: Error) { lock.lock(); stored = error; lock.unlock() }
+        func get() -> Error? { lock.lock(); defer { lock.unlock() }; return stored }
     }
 
     // MARK: - Part B: one-shot reopen guard
@@ -133,15 +150,22 @@ final class WriteSourceLifecycleTests: XCTestCase {
 
     // MARK: - Part A: arm/disarm delivers under real backpressure
 
-    func testBackpressureDeliversLargePayloadIntact() async throws {
+    /// Forces multiple EAGAIN cycles (proving arm/wait/disarm repeats), checks
+    /// the payload survives intact, and — the load-bearing part — proves the
+    /// source goes QUIET after the write finishes. Removing `disarmSource()`
+    /// would leave the source armed after the first backpressure event and
+    /// re-introduce the spin; only the post-write-quiet assertion catches that.
+    func testBackpressureCyclesDisarmAndDeliverIntact() async throws {
         let (pipe, readerFD, _) = try makePipeWithReader("backpressure")
         defer { Darwin.close(readerFD) }
 
-        let blocks = Counter()
+        let blocks = Counter()   // onWouldBlock: one per EAGAIN transition
+        let fires = Counter()    // onSourceFire: one per write-source handler entry
         await pipe._setOnWouldBlock { blocks.increment() }
+        await pipe._setOnSourceFire { fires.increment() }
         try await pipe.open()
 
-        // Larger than any FIFO kernel buffer, so the writer must block.
+        // Larger than any FIFO kernel buffer, so the writer must block repeatedly.
         let total = 512 * 1024
         let payload = Data((0..<total).map { UInt8(truncatingIfNeeded: $0) })
 
@@ -152,23 +176,42 @@ final class WriteSourceLifecycleTests: XCTestCase {
         let blocked = try await waitUntil { blocks.count >= 1 }
         XCTAssertTrue(blocked, "writer never hit EAGAIN — backpressure path not exercised")
 
-        // Now drain slowly to completion, letting the writer re-block between
-        // increments. Bounded by idle-read count so a stall fails fast.
+        // Drain in bounded 16 KB reads so the buffer stays near-full and the
+        // writer re-blocks many times. Bounded by an idle-read budget so a
+        // stall fails fast instead of looping forever.
         var received = Data()
         received.reserveCapacity(total)
         var idleReads = 0
         while received.count < total {
-            let n = drainAvailable(readerFD, into: &received)
+            let n = readOnce(readerFD, cap: 16 * 1024, into: &received)
             if n > 0 { idleReads = 0; continue }
             idleReads += 1
-            if idleReads > 2000 { break } // ~4s with no progress
+            if idleReads > 3000 { break } // ~6s with no progress
             try await Task.sleep(nanoseconds: 2_000_000) // 2ms
         }
 
-        try await writeTask.value
+        // Deadline-bounded: a lost wake must fail fast, not hang the suite.
+        do {
+            try await withDeadline(10) { try await writeTask.value }
+        } catch is TimeoutError {
+            writeTask.cancel()
+            await pipe.close()
+            return XCTFail("writer did not complete within the deadline — lost wake?")
+        }
+
         XCTAssertEqual(received.count, total, "payload truncated across backpressure")
         XCTAssertEqual(received, payload, "payload corrupted across backpressure")
-        XCTAssertGreaterThanOrEqual(blocks.count, 1, "arm/disarm path was not exercised")
+        XCTAssertGreaterThanOrEqual(blocks.count, 2,
+            "expected multiple EAGAIN cycles; arm/wait/disarm did not repeat")
+
+        // Post-write disarm: with the pipe drained and the write finished, the
+        // source must be inactive. Sample the handler-fire count, let it settle,
+        // and assert it does not move. If `disarmSource()` regressed, the source
+        // would stay armed on the now-writable empty FIFO and spin here.
+        let firesAfterWrite = fires.count
+        try await Task.sleep(nanoseconds: 150_000_000) // 150 ms
+        XCTAssertEqual(fires.count, firesAfterWrite,
+            "write source kept firing after the write completed — it was not disarmed")
 
         await pipe.close()
     }
@@ -184,9 +227,10 @@ final class WriteSourceLifecycleTests: XCTestCase {
         try await pipe.open()
 
         let payload = Data(repeating: 0x41, count: 512 * 1024)
-        let writeTask = Task { () -> Error? in
-            do { try await pipe.write(payload); return nil }
-            catch { return error }
+        let errorBox = ErrorBox()
+        let writeTask = Task {
+            do { try await pipe.write(payload) }
+            catch { errorBox.set(error) }
         }
 
         // Wait until the writer is parked (source armed), never draining.
@@ -197,7 +241,14 @@ final class WriteSourceLifecycleTests: XCTestCase {
         // an extra resume; the parked writer wakes to fd == -1 and fails.
         await pipe.close()
 
-        let result = await writeTask.value
+        // Deadline-bounded so a lost close-signal fails fast, not hangs.
+        do {
+            try await withDeadline(10) { await writeTask.value }
+        } catch is TimeoutError {
+            writeTask.cancel()
+            return XCTFail("parked writer did not unwind after close — lost close signal?")
+        }
+        let result = errorBox.get()
         guard case WritePipeError.pipeNotOpened? = result else {
             return XCTFail("expected pipeNotOpened, got \(String(describing: result))")
         }
@@ -223,6 +274,7 @@ final class WriteSourceLifecycleTests: XCTestCase {
         let url = container.appendingPathComponent("deinit-\(UUID().uuidString).pipe")
         // Hold a reader so the writer open does not ENXIO. Outlives the pipe.
         var pipe: ChunkedWritePipe? = try ChunkedWritePipe(url: url)
+        weak var weakPipe = pipe
         let readerFD = Darwin.open(url.path, O_RDONLY | O_NONBLOCK, 0)
         XCTAssertNotEqual(readerFD, -1)
         defer { Darwin.close(readerFD) }
@@ -232,6 +284,13 @@ final class WriteSourceLifecycleTests: XCTestCase {
 
         // Give deinit + the source's async cancel handler time to run.
         try await Task.sleep(nanoseconds: 100_000_000)
+
+        // The actor MUST have deallocated: proves deinit actually ran. If a
+        // future change made the source handler capture `self`, the live source
+        // would keep the actor alive, deinit would never run, and this child
+        // would exit 0 without exercising anything — a vacuous pass. This
+        // assertion closes that hole.
+        XCTAssertNil(weakPipe, "pipe did not deallocate — deinit did not run (handler may retain the actor)")
 
         // Prove the scenario actually executed (guards against a mis-filtered
         // child that runs zero tests yet exits 0).
