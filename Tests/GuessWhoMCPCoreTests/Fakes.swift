@@ -266,11 +266,8 @@ final class LegacyScriptedContactSource: MCPContactSource {
     }
 
     func groups(containing contact: Contact) async -> [ContactGroup] {
-        groups.filter { group in
-            membersByGroup[group.localID, default: []].contains {
-                $0.contactID == contact.contactID
-            }
-        }
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.groups(containing:)", returning: [])
     }
 
     func isGroupFavorite(_ group: ContactGroup) -> Bool {
