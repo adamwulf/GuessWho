@@ -44,7 +44,29 @@ public actor ChunkedWritePipe: PipeWritable {
     private let softLimitBytes: Int?
     private var fd: Int32 = -1
     private var source: DispatchSourceWrite?
+    /// Write-source arm state. `false` ⇒ the source is inactive/suspended
+    /// (idle); `true` ⇒ resumed (active). A `DispatchSourceWrite` is
+    /// level-triggered on writability, so an always-armed source on an idle
+    /// FIFO busy-loops — arm it only while a writer is parked on `EAGAIN`.
+    private var isSourceArmed = false
+    /// One-shot latch: set by `close()`, checked by `open()`. Once closed, the
+    /// instance is permanently unusable. Every production caller builds a fresh
+    /// pipe on reconnect, so rejecting reopen closes the close/reopen
+    /// generation race without breaking any caller.
+    private var isClosed = false
     private let writableSignal = PipeSignal()
+    /// Test-only observation seam: invoked once per write-source event-handler
+    /// entry (never from the cancel handler or a manual `signal()`). Nil in
+    /// production, so the optional call is behavior-neutral. Set via
+    /// `_setOnSourceFire(_:)` before `open()`; `open()` snapshots it into a
+    /// local so the dispatch handler never captures the actor.
+    private var onSourceFire: (@Sendable () -> Void)?
+    /// Test-only observation seam: invoked at each `EAGAIN` transition in
+    /// `performWrite` (just before the source is armed and we await
+    /// writability). Nil in production. Lets tests synchronize on real
+    /// backpressure instead of on timing. Called from the actor, not a
+    /// dispatch queue, so it needs no snapshot.
+    private var onWouldBlock: (@Sendable () -> Void)?
     /// Serialization chain: concurrent write() calls append here so whole
     /// messages go out back-to-back even though the actor is re-entrant
     /// across the writability awaits.
@@ -78,10 +100,45 @@ public actor ChunkedWritePipe: PipeWritable {
 
     deinit {
         if let source {
+            // Fallback for deallocate-without-close. After the gating change a
+            // source at rest is inactive/suspended; resume before cancel so
+            // release does not crash libdispatch and the cancel handler closes
+            // the fd. (deinit has exclusive access, so reading isSourceArmed is
+            // safe.)
+            if !isSourceArmed { source.resume() }
             source.cancel()
         } else if fd >= 0 {
             Darwin.close(fd)
         }
+    }
+
+    /// Test-only: install the write-source fire probe. Must be called before
+    /// `open()`. See `onSourceFire`. No production caller sets this.
+    func _setOnSourceFire(_ probe: (@Sendable () -> Void)?) {
+        onSourceFire = probe
+    }
+
+    /// Test-only: install the `EAGAIN`/would-block probe. Must be called before
+    /// `open()`. See `onWouldBlock`. No production caller sets this.
+    func _setOnWouldBlock(_ probe: (@Sendable () -> Void)?) {
+        onWouldBlock = probe
+    }
+
+    /// Resume (activate) the write source so the FIFO becoming writable wakes a
+    /// parked writer. Guarded by `isSourceArmed` so the suspend/resume count
+    /// stays balanced (0 or 1). Only `performWrite`'s `EAGAIN` branch arms.
+    private func armSource() {
+        guard let source, !isSourceArmed else { return }
+        isSourceArmed = true
+        source.resume()   // resume() on an inactive source acts as activate()
+    }
+
+    /// Suspend the write source so it stops firing once no writer waits. This
+    /// is what stops the idle busy-loop.
+    private func disarmSource() {
+        guard let source, isSourceArmed else { return }
+        isSourceArmed = false
+        source.suspend()
     }
 
     /// Opens write-only, non-blocking. Fails with `openFailed` (ENXIO)
@@ -89,6 +146,7 @@ public actor ChunkedWritePipe: PipeWritable {
     /// semantics the inherited WritePipe has, which the connect flow
     /// relies on.
     public func open() async throws {
+        guard !isClosed else { throw ChunkedWritePipeError.pipeClosed }
         guard fd < 0 else { return }
         let path = fileURL.path
         guard FileManager.default.fileExists(atPath: path) else {
@@ -111,17 +169,20 @@ public actor ChunkedWritePipe: PipeWritable {
         let queue = DispatchQueue(label: "com.milestonemade.guesswho.mcp.pipe-write")
         let writeSource = DispatchSource.makeWriteSource(fileDescriptor: opened, queue: queue)
         let signal = writableSignal
+        let onFire = onSourceFire   // local snapshot; nil in production
         writeSource.setEventHandler {
+            onFire?()
             signal.signal()
         }
         writeSource.setCancelHandler {
             Darwin.close(opened)
             signal.signal()
         }
-        writeSource.resume()
-        // The source fires only on future writability EDGES; the pipe is
-        // almost certainly writable right now, so pre-arm one pass.
-        signal.signal()
+        // Do NOT resume here. A DispatchSourceWrite is level-triggered on
+        // writability, and an idle FIFO is always writable, so an always-armed
+        // source would fire its handler continuously and burn a core. The
+        // source is created inactive and is armed (resumed) only around the
+        // EAGAIN wait in performWrite(); see armSource()/disarmSource().
         source = writeSource
     }
 
@@ -153,9 +214,18 @@ public actor ChunkedWritePipe: PipeWritable {
     }
 
     public func close() async {
+        // One-shot first: reject any future open() before touching the source,
+        // so a stale writer can never wake into a newly installed source.
+        isClosed = true
         if let source {
+            // A source at rest here is inactive/suspended. cancel() on such a
+            // source defers its cancel handler (which closes the fd) until a
+            // resume, and releasing it crashes libdispatch. Resume first so the
+            // handler runs now and release is safe.
+            if !isSourceArmed { source.resume(); isSourceArmed = true }
             source.cancel()
             self.source = nil
+            isSourceArmed = false
         } else if fd >= 0 {
             Darwin.close(fd)
         }
@@ -184,7 +254,12 @@ public actor ChunkedWritePipe: PipeWritable {
             let code = errno
             switch code {
             case EAGAIN, EWOULDBLOCK:
+                // The pipe is full. Arm the write source so a writability edge
+                // wakes us, wait, then disarm so the source goes quiet again.
+                onWouldBlock?()
+                armSource()
                 await writableSignal.wait()
+                disarmSource()
             case EINTR:
                 continue
             default:
