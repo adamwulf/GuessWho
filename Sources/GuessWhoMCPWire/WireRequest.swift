@@ -35,16 +35,25 @@ public enum WireRequest: Codable, Sendable {
     case contactsSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
     case contactsList(helperId: String, messageId: String, kind: String?, favoritesOnly: Bool?, groupId: String?, limit: Int?, cursor: String?)
     case contactsGet(helperId: String, messageId: String, contactId: String)
+    case contactsGetPhoto(helperId: String, messageId: String, contactId: String)
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListGroups(helperId: String, messageId: String, limit: Int?, cursor: String?)
+    case organizationsListMembers(helperId: String, messageId: String, organizationId: String, limit: Int?, cursor: String?)
+    case organizationsListDepartments(helperId: String, messageId: String, organizationId: String, limit: Int?, cursor: String?)
+    case organizationsListDepartmentMembers(helperId: String, messageId: String, organizationId: String, department: String, limit: Int?, cursor: String?)
+    case groupsListForContact(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case eventsList(helperId: String, messageId: String, startDate: String, endDate: String, limit: Int?, cursor: String?)
     case eventsGet(helperId: String, messageId: String, eventId: String)
     case eventsListTags(helperId: String, messageId: String, eventId: String, limit: Int?, cursor: String?)
     case guidesList(helperId: String, messageId: String, limit: Int?, cursor: String?)
     case guidesGet(helperId: String, messageId: String, guideId: String)
+    case guidesListForPlace(helperId: String, messageId: String, placeId: String, limit: Int?, cursor: String?)
     case placesList(helperId: String, messageId: String, guideId: String?, limit: Int?, cursor: String?)
+    case placesSearch(helperId: String, messageId: String, query: String, limit: Int?, cursor: String?)
+    case placesGet(helperId: String, messageId: String, placeId: String)
     case linksList(helperId: String, messageId: String, id: String, kind: String, limit: Int?, cursor: String?)
+    case favoritesList(helperId: String, messageId: String, limit: Int?, cursor: String?)
 
     // Write tools (plans/cli-mcp.md Phase 2). Every write carries an
     // optional client-supplied `idempotencyToken`: the app dedups a retried
@@ -59,18 +68,40 @@ public enum WireRequest: Codable, Sendable {
     case contactsCreate(helperId: String, messageId: String, kind: String?, fields: WireContactFields, idempotencyToken: String?)
     case contactsUpdate(helperId: String, messageId: String, contactId: String, fields: WireContactScalarFields, idempotencyToken: String?)
     case contactsDelete(helperId: String, messageId: String, contactId: String, idempotencyToken: String?)
+    case contactsSetPhoto(helperId: String, messageId: String, contactId: String, mediaType: String, dataBase64: String, idempotencyToken: String?)
+    case contactsDeletePhoto(helperId: String, messageId: String, contactId: String, idempotencyToken: String?)
     // Single-entry list edits (plans/cli-mcp.md Phase 7): one entry per
     // call, matched by exact value — 0 matches answers notFound, more
     // than one answers ambiguous, and nothing changes on either.
     case contactsAddValue(helperId: String, messageId: String, contactId: String, field: String, value: String, label: String?, idempotencyToken: String?)
     case contactsDeleteValue(helperId: String, messageId: String, contactId: String, field: String, value: String, idempotencyToken: String?)
     case contactsEditValue(helperId: String, messageId: String, contactId: String, field: String, currentValue: String, newValue: String, newLabel: String?, idempotencyToken: String?)
+    // Structured entries use dedicated typed payloads. Delete/edit match
+    // the complete canonical entry; no case can carry a whole list.
+    case contactsAddPostalAddress(helperId: String, messageId: String, contactId: String, address: WirePostalAddress, idempotencyToken: String?)
+    case contactsEditPostalAddress(helperId: String, messageId: String, contactId: String, currentAddress: WirePostalAddress, newAddress: WirePostalAddress, idempotencyToken: String?)
+    case contactsDeletePostalAddress(helperId: String, messageId: String, contactId: String, address: WirePostalAddress, idempotencyToken: String?)
+    case contactsAddSocialProfile(helperId: String, messageId: String, contactId: String, profile: WireSocialProfile, idempotencyToken: String?)
+    case contactsEditSocialProfile(helperId: String, messageId: String, contactId: String, currentProfile: WireSocialProfile, newProfile: WireSocialProfile, idempotencyToken: String?)
+    case contactsDeleteSocialProfile(helperId: String, messageId: String, contactId: String, profile: WireSocialProfile, idempotencyToken: String?)
+    case contactsAddInstantMessage(helperId: String, messageId: String, contactId: String, instantMessage: WireInstantMessage, idempotencyToken: String?)
+    case contactsEditInstantMessage(helperId: String, messageId: String, contactId: String, currentInstantMessage: WireInstantMessage, newInstantMessage: WireInstantMessage, idempotencyToken: String?)
+    case contactsDeleteInstantMessage(helperId: String, messageId: String, contactId: String, instantMessage: WireInstantMessage, idempotencyToken: String?)
     case contactsAddNote(helperId: String, messageId: String, contactId: String, body: String, idempotencyToken: String?)
     case contactsEditNote(helperId: String, messageId: String, contactId: String, noteId: String, body: String, idempotencyToken: String?)
     case contactsDeleteNote(helperId: String, messageId: String, contactId: String, noteId: String, idempotencyToken: String?)
     case contactsSetCustomField(helperId: String, messageId: String, contactId: String, name: String, type: String?, value: String, idempotencyToken: String?)
     case contactsDeleteCustomField(helperId: String, messageId: String, contactId: String, fieldId: String, idempotencyToken: String?)
     case contactsSetFavorite(helperId: String, messageId: String, contactId: String, favorite: Bool, idempotencyToken: String?)
+    case favoritesSet(helperId: String, messageId: String, kind: WireFavoriteKind, id: String, favorite: Bool, idempotencyToken: String?)
+    case favoritesReorder(helperId: String, messageId: String, favorites: [WireFavoriteIdentity], idempotencyToken: String?)
+    case organizationsRenameDepartment(helperId: String, messageId: String, organizationId: String, oldName: String, newName: String, idempotencyToken: String?)
+    case groupsCreate(helperId: String, messageId: String, name: String, idempotencyToken: String?)
+    case groupsRename(helperId: String, messageId: String, groupId: String, name: String, idempotencyToken: String?)
+    case groupsDelete(helperId: String, messageId: String, groupId: String, idempotencyToken: String?)
+    case groupsAddMembers(helperId: String, messageId: String, groupId: String, contactIds: [String], idempotencyToken: String?)
+    case groupsRemoveMembers(helperId: String, messageId: String, groupId: String, contactIds: [String], idempotencyToken: String?)
+    case groupsSetFavorite(helperId: String, messageId: String, groupId: String, favorite: Bool, idempotencyToken: String?)
     case eventsAddTag(helperId: String, messageId: String, eventId: String, text: String, idempotencyToken: String?)
     case eventsEditTag(helperId: String, messageId: String, eventId: String, tagId: String, text: String, idempotencyToken: String?)
     case eventsDeleteTag(helperId: String, messageId: String, eventId: String, tagId: String, idempotencyToken: String?)
@@ -88,28 +119,57 @@ public enum WireRequest: Codable, Sendable {
         case .contactsSearch: return .contactsSearch
         case .contactsList: return .contactsList
         case .contactsGet: return .contactsGet
+        case .contactsGetPhoto: return .contactsGetPhoto
         case .contactsListNotes: return .contactsListNotes
         case .contactsListCustomFields: return .contactsListCustomFields
         case .contactsListGroups: return .contactsListGroups
+        case .organizationsListMembers: return .organizationsListMembers
+        case .organizationsListDepartments: return .organizationsListDepartments
+        case .organizationsListDepartmentMembers: return .organizationsListDepartmentMembers
+        case .groupsListForContact: return .groupsListForContact
         case .eventsList: return .eventsList
         case .eventsGet: return .eventsGet
         case .eventsListTags: return .eventsListTags
         case .guidesList: return .guidesList
         case .guidesGet: return .guidesGet
+        case .guidesListForPlace: return .guidesListForPlace
         case .placesList: return .placesList
+        case .placesSearch: return .placesSearch
+        case .placesGet: return .placesGet
         case .linksList: return .linksList
+        case .favoritesList: return .favoritesList
         case .contactsCreate: return .contactsCreate
         case .contactsUpdate: return .contactsUpdate
         case .contactsDelete: return .contactsDelete
+        case .contactsSetPhoto: return .contactsSetPhoto
+        case .contactsDeletePhoto: return .contactsDeletePhoto
         case .contactsAddValue: return .contactsAddValue
         case .contactsDeleteValue: return .contactsDeleteValue
         case .contactsEditValue: return .contactsEditValue
+        case .contactsAddPostalAddress: return .contactsAddPostalAddress
+        case .contactsEditPostalAddress: return .contactsEditPostalAddress
+        case .contactsDeletePostalAddress: return .contactsDeletePostalAddress
+        case .contactsAddSocialProfile: return .contactsAddSocialProfile
+        case .contactsEditSocialProfile: return .contactsEditSocialProfile
+        case .contactsDeleteSocialProfile: return .contactsDeleteSocialProfile
+        case .contactsAddInstantMessage: return .contactsAddInstantMessage
+        case .contactsEditInstantMessage: return .contactsEditInstantMessage
+        case .contactsDeleteInstantMessage: return .contactsDeleteInstantMessage
         case .contactsAddNote: return .contactsAddNote
         case .contactsEditNote: return .contactsEditNote
         case .contactsDeleteNote: return .contactsDeleteNote
         case .contactsSetCustomField: return .contactsSetCustomField
         case .contactsDeleteCustomField: return .contactsDeleteCustomField
         case .contactsSetFavorite: return .contactsSetFavorite
+        case .favoritesSet: return .favoritesSet
+        case .favoritesReorder: return .favoritesReorder
+        case .organizationsRenameDepartment: return .organizationsRenameDepartment
+        case .groupsCreate: return .groupsCreate
+        case .groupsRename: return .groupsRename
+        case .groupsDelete: return .groupsDelete
+        case .groupsAddMembers: return .groupsAddMembers
+        case .groupsRemoveMembers: return .groupsRemoveMembers
+        case .groupsSetFavorite: return .groupsSetFavorite
         case .eventsAddTag: return .eventsAddTag
         case .eventsEditTag: return .eventsEditTag
         case .eventsDeleteTag: return .eventsDeleteTag
@@ -130,15 +190,35 @@ public enum WireRequest: Codable, Sendable {
         case .contactsCreate(_, _, _, _, let token),
              .contactsUpdate(_, _, _, _, let token),
              .contactsDelete(_, _, _, let token),
+             .contactsSetPhoto(_, _, _, _, _, let token),
+             .contactsDeletePhoto(_, _, _, let token),
              .contactsAddValue(_, _, _, _, _, _, let token),
              .contactsDeleteValue(_, _, _, _, _, let token),
              .contactsEditValue(_, _, _, _, _, _, _, let token),
+             .contactsAddPostalAddress(_, _, _, _, let token),
+             .contactsEditPostalAddress(_, _, _, _, _, let token),
+             .contactsDeletePostalAddress(_, _, _, _, let token),
+             .contactsAddSocialProfile(_, _, _, _, let token),
+             .contactsEditSocialProfile(_, _, _, _, _, let token),
+             .contactsDeleteSocialProfile(_, _, _, _, let token),
+             .contactsAddInstantMessage(_, _, _, _, let token),
+             .contactsEditInstantMessage(_, _, _, _, _, let token),
+             .contactsDeleteInstantMessage(_, _, _, _, let token),
              .contactsAddNote(_, _, _, _, let token),
              .contactsEditNote(_, _, _, _, _, let token),
              .contactsDeleteNote(_, _, _, _, let token),
              .contactsSetCustomField(_, _, _, _, _, _, let token),
              .contactsDeleteCustomField(_, _, _, _, let token),
              .contactsSetFavorite(_, _, _, _, let token),
+             .favoritesSet(_, _, _, _, _, let token),
+             .favoritesReorder(_, _, _, let token),
+             .organizationsRenameDepartment(_, _, _, _, _, let token),
+             .groupsCreate(_, _, _, let token),
+             .groupsRename(_, _, _, _, let token),
+             .groupsDelete(_, _, _, let token),
+             .groupsAddMembers(_, _, _, _, let token),
+             .groupsRemoveMembers(_, _, _, _, let token),
+             .groupsSetFavorite(_, _, _, _, let token),
              .eventsAddTag(_, _, _, _, let token),
              .eventsEditTag(_, _, _, _, _, let token),
              .eventsDeleteTag(_, _, _, _, let token),
@@ -165,27 +245,56 @@ extension WireRequest: MCPRequestProtocol {
              .contactsSearch(let helperId, _, _, _, _),
              .contactsList(let helperId, _, _, _, _, _, _),
              .contactsGet(let helperId, _, _),
+             .contactsGetPhoto(let helperId, _, _),
              .contactsListNotes(let helperId, _, _, _, _),
              .contactsListCustomFields(let helperId, _, _, _, _),
              .contactsListGroups(let helperId, _, _, _),
+             .organizationsListMembers(let helperId, _, _, _, _),
+             .organizationsListDepartments(let helperId, _, _, _, _),
+             .organizationsListDepartmentMembers(let helperId, _, _, _, _, _),
+             .groupsListForContact(let helperId, _, _, _, _),
              .eventsList(let helperId, _, _, _, _, _),
              .eventsGet(let helperId, _, _),
              .eventsListTags(let helperId, _, _, _, _),
              .guidesList(let helperId, _, _, _),
              .guidesGet(let helperId, _, _),
+             .guidesListForPlace(let helperId, _, _, _, _),
              .placesList(let helperId, _, _, _, _),
+             .placesSearch(let helperId, _, _, _, _),
+             .placesGet(let helperId, _, _),
+             .favoritesList(let helperId, _, _, _),
              .contactsCreate(let helperId, _, _, _, _),
              .contactsUpdate(let helperId, _, _, _, _),
              .contactsDelete(let helperId, _, _, _),
+             .contactsSetPhoto(let helperId, _, _, _, _, _),
+             .contactsDeletePhoto(let helperId, _, _, _),
              .contactsAddValue(let helperId, _, _, _, _, _, _),
              .contactsDeleteValue(let helperId, _, _, _, _, _),
              .contactsEditValue(let helperId, _, _, _, _, _, _, _),
+             .contactsAddPostalAddress(let helperId, _, _, _, _),
+             .contactsEditPostalAddress(let helperId, _, _, _, _, _),
+             .contactsDeletePostalAddress(let helperId, _, _, _, _),
+             .contactsAddSocialProfile(let helperId, _, _, _, _),
+             .contactsEditSocialProfile(let helperId, _, _, _, _, _),
+             .contactsDeleteSocialProfile(let helperId, _, _, _, _),
+             .contactsAddInstantMessage(let helperId, _, _, _, _),
+             .contactsEditInstantMessage(let helperId, _, _, _, _, _),
+             .contactsDeleteInstantMessage(let helperId, _, _, _, _),
              .contactsAddNote(let helperId, _, _, _, _),
              .contactsEditNote(let helperId, _, _, _, _, _),
              .contactsDeleteNote(let helperId, _, _, _, _),
              .contactsSetCustomField(let helperId, _, _, _, _, _, _),
              .contactsDeleteCustomField(let helperId, _, _, _, _),
              .contactsSetFavorite(let helperId, _, _, _, _),
+             .favoritesSet(let helperId, _, _, _, _, _),
+             .favoritesReorder(let helperId, _, _, _),
+             .organizationsRenameDepartment(let helperId, _, _, _, _, _),
+             .groupsCreate(let helperId, _, _, _),
+             .groupsRename(let helperId, _, _, _, _),
+             .groupsDelete(let helperId, _, _, _),
+             .groupsAddMembers(let helperId, _, _, _, _),
+             .groupsRemoveMembers(let helperId, _, _, _, _),
+             .groupsSetFavorite(let helperId, _, _, _, _),
              .eventsAddTag(let helperId, _, _, _, _),
              .eventsEditTag(let helperId, _, _, _, _, _),
              .eventsDeleteTag(let helperId, _, _, _, _),
@@ -208,27 +317,56 @@ extension WireRequest: MCPRequestProtocol {
              .contactsSearch(_, let messageId, _, _, _),
              .contactsList(_, let messageId, _, _, _, _, _),
              .contactsGet(_, let messageId, _),
+             .contactsGetPhoto(_, let messageId, _),
              .contactsListNotes(_, let messageId, _, _, _),
              .contactsListCustomFields(_, let messageId, _, _, _),
              .contactsListGroups(_, let messageId, _, _),
+             .organizationsListMembers(_, let messageId, _, _, _),
+             .organizationsListDepartments(_, let messageId, _, _, _),
+             .organizationsListDepartmentMembers(_, let messageId, _, _, _, _),
+             .groupsListForContact(_, let messageId, _, _, _),
              .eventsList(_, let messageId, _, _, _, _),
              .eventsGet(_, let messageId, _),
              .eventsListTags(_, let messageId, _, _, _),
              .guidesList(_, let messageId, _, _),
              .guidesGet(_, let messageId, _),
+             .guidesListForPlace(_, let messageId, _, _, _),
              .placesList(_, let messageId, _, _, _),
+             .placesSearch(_, let messageId, _, _, _),
+             .placesGet(_, let messageId, _),
+             .favoritesList(_, let messageId, _, _),
              .contactsCreate(_, let messageId, _, _, _),
              .contactsUpdate(_, let messageId, _, _, _),
              .contactsDelete(_, let messageId, _, _),
+             .contactsSetPhoto(_, let messageId, _, _, _, _),
+             .contactsDeletePhoto(_, let messageId, _, _),
              .contactsAddValue(_, let messageId, _, _, _, _, _),
              .contactsDeleteValue(_, let messageId, _, _, _, _),
              .contactsEditValue(_, let messageId, _, _, _, _, _, _),
+             .contactsAddPostalAddress(_, let messageId, _, _, _),
+             .contactsEditPostalAddress(_, let messageId, _, _, _, _),
+             .contactsDeletePostalAddress(_, let messageId, _, _, _),
+             .contactsAddSocialProfile(_, let messageId, _, _, _),
+             .contactsEditSocialProfile(_, let messageId, _, _, _, _),
+             .contactsDeleteSocialProfile(_, let messageId, _, _, _),
+             .contactsAddInstantMessage(_, let messageId, _, _, _),
+             .contactsEditInstantMessage(_, let messageId, _, _, _, _),
+             .contactsDeleteInstantMessage(_, let messageId, _, _, _),
              .contactsAddNote(_, let messageId, _, _, _),
              .contactsEditNote(_, let messageId, _, _, _, _),
              .contactsDeleteNote(_, let messageId, _, _, _),
              .contactsSetCustomField(_, let messageId, _, _, _, _, _),
              .contactsDeleteCustomField(_, let messageId, _, _, _),
              .contactsSetFavorite(_, let messageId, _, _, _),
+             .favoritesSet(_, let messageId, _, _, _, _),
+             .favoritesReorder(_, let messageId, _, _),
+             .organizationsRenameDepartment(_, let messageId, _, _, _, _),
+             .groupsCreate(_, let messageId, _, _),
+             .groupsRename(_, let messageId, _, _, _),
+             .groupsDelete(_, let messageId, _, _),
+             .groupsAddMembers(_, let messageId, _, _, _),
+             .groupsRemoveMembers(_, let messageId, _, _, _),
+             .groupsSetFavorite(_, let messageId, _, _, _),
              .eventsAddTag(_, let messageId, _, _, _),
              .eventsEditTag(_, let messageId, _, _, _, _),
              .eventsDeleteTag(_, let messageId, _, _, _),
@@ -293,6 +431,10 @@ extension WireRequest: MCPRequestProtocol {
             return .contactsGet(
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"))
+        case .contactsGetPhoto:
+            return .contactsGetPhoto(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"))
         case .contactsListNotes:
             return .contactsListNotes(
                 helperId: helperId, messageId: messageId,
@@ -306,6 +448,27 @@ extension WireRequest: MCPRequestProtocol {
         case .contactsListGroups:
             return .contactsListGroups(
                 helperId: helperId, messageId: messageId,
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .organizationsListMembers:
+            return .organizationsListMembers(
+                helperId: helperId, messageId: messageId,
+                organizationId: try args.requiredString("organizationId"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .organizationsListDepartments:
+            return .organizationsListDepartments(
+                helperId: helperId, messageId: messageId,
+                organizationId: try args.requiredString("organizationId"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .organizationsListDepartmentMembers:
+            return .organizationsListDepartmentMembers(
+                helperId: helperId, messageId: messageId,
+                organizationId: try args.requiredString("organizationId"),
+                department: try args.requiredString("department"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .groupsListForContact:
+            return .groupsListForContact(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .eventsList:
             return .eventsList(
@@ -330,16 +493,34 @@ extension WireRequest: MCPRequestProtocol {
             return .guidesGet(
                 helperId: helperId, messageId: messageId,
                 guideId: try args.requiredString("guideId"))
+        case .guidesListForPlace:
+            return .guidesListForPlace(
+                helperId: helperId, messageId: messageId,
+                placeId: try args.requiredString("placeId"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
         case .placesList:
             return .placesList(
                 helperId: helperId, messageId: messageId,
                 guideId: try args.optionalString("guideId"),
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .placesSearch:
+            return .placesSearch(
+                helperId: helperId, messageId: messageId,
+                query: try args.requiredString("query"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .placesGet:
+            return .placesGet(
+                helperId: helperId, messageId: messageId,
+                placeId: try args.requiredString("placeId"))
         case .linksList:
             return .linksList(
                 helperId: helperId, messageId: messageId,
                 id: try args.requiredString("id"),
                 kind: try args.requiredString("kind"),
+                limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
+        case .favoritesList:
+            return .favoritesList(
+                helperId: helperId, messageId: messageId,
                 limit: try args.optionalInt("limit"), cursor: try args.optionalString("cursor"))
 
         case .contactsCreate:
@@ -353,6 +534,18 @@ extension WireRequest: MCPRequestProtocol {
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
                 fields: try args.contactScalarFields(),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsSetPhoto:
+            return .contactsSetPhoto(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                mediaType: try args.requiredString("mediaType"),
+                dataBase64: try args.requiredString("dataBase64"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeletePhoto:
+            return .contactsDeletePhoto(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsAddValue:
             return .contactsAddValue(
@@ -377,6 +570,63 @@ extension WireRequest: MCPRequestProtocol {
                 currentValue: try args.requiredString("currentValue"),
                 newValue: try args.requiredString("newValue"),
                 newLabel: try args.optionalString("newLabel"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddPostalAddress:
+            return .contactsAddPostalAddress(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                address: try args.requiredPostalAddress("address"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditPostalAddress:
+            return .contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                currentAddress: try args.requiredPostalAddress("currentAddress"),
+                newAddress: try args.requiredPostalAddress("newAddress"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeletePostalAddress:
+            return .contactsDeletePostalAddress(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                address: try args.requiredPostalAddress("address"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddSocialProfile:
+            return .contactsAddSocialProfile(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                profile: try args.requiredSocialProfile("profile"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditSocialProfile:
+            return .contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                currentProfile: try args.requiredSocialProfile("currentProfile"),
+                newProfile: try args.requiredSocialProfile("newProfile"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeleteSocialProfile:
+            return .contactsDeleteSocialProfile(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                profile: try args.requiredSocialProfile("profile"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsAddInstantMessage:
+            return .contactsAddInstantMessage(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                instantMessage: try args.requiredInstantMessage("instantMessage"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsEditInstantMessage:
+            return .contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                currentInstantMessage: try args.requiredInstantMessage("currentInstantMessage"),
+                newInstantMessage: try args.requiredInstantMessage("newInstantMessage"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .contactsDeleteInstantMessage:
+            return .contactsDeleteInstantMessage(
+                helperId: helperId, messageId: messageId,
+                contactId: try args.requiredString("contactId"),
+                instantMessage: try args.requiredInstantMessage("instantMessage"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .contactsDelete:
             return .contactsDelete(
@@ -420,6 +670,59 @@ extension WireRequest: MCPRequestProtocol {
             return .contactsSetFavorite(
                 helperId: helperId, messageId: messageId,
                 contactId: try args.requiredString("contactId"),
+                favorite: try args.requiredBool("favorite"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .favoritesSet:
+            return .favoritesSet(
+                helperId: helperId, messageId: messageId,
+                kind: try args.requiredFavoriteKind("kind"),
+                id: try args.requiredString("id"),
+                favorite: try args.requiredBool("favorite"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .favoritesReorder:
+            return .favoritesReorder(
+                helperId: helperId, messageId: messageId,
+                favorites: try args.requiredFavoriteIdentities("favorites"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .organizationsRenameDepartment:
+            return .organizationsRenameDepartment(
+                helperId: helperId, messageId: messageId,
+                organizationId: try args.requiredString("organizationId"),
+                oldName: try args.requiredString("oldName"),
+                newName: try args.requiredString("newName"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsCreate:
+            return .groupsCreate(
+                helperId: helperId, messageId: messageId,
+                name: try args.requiredString("name"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsRename:
+            return .groupsRename(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                name: try args.requiredString("name"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsDelete:
+            return .groupsDelete(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsAddMembers:
+            return .groupsAddMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                contactIds: try args.requiredStringArray("contactIds"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsRemoveMembers:
+            return .groupsRemoveMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                contactIds: try args.requiredStringArray("contactIds"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsSetFavorite:
+            return .groupsSetFavorite(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
                 favorite: try args.requiredBool("favorite"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
         case .eventsAddTag:
@@ -568,6 +871,16 @@ private struct ToolArguments {
         throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "true or false")
     }
 
+    func requiredFavoriteKind(_ name: String) throws -> WireFavoriteKind {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard let raw = value.stringValue, let kind = WireFavoriteKind(rawValue: raw) else {
+            throw WireRequestError.unsupportedArgument(message: WireErrorMessage.invalidFavoriteKindArgument)
+        }
+        return kind
+    }
+
     func optionalBool(_ name: String) throws -> Bool? {
         guard let value = values[name], value != .null else { return nil }
         if let bool = value.boolValue { return bool }
@@ -591,6 +904,39 @@ private struct ToolArguments {
                 throw WireRequestError.invalidArgument(tool: toolName, name: name, expected: "a list of ids")
             }
             return string
+        }
+    }
+
+    func requiredFavoriteIdentities(_ name: String) throws -> [WireFavoriteIdentity] {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard case .array(let items) = value else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name, expected: "a list of kind and id objects")
+        }
+        return try items.map { item in
+            guard case .object(let object) = item else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name, expected: "a list of kind and id objects")
+            }
+            guard let kindValue = object["kind"], kindValue != .null else {
+                throw WireRequestError.missingArgument(tool: toolName, name: "kind")
+            }
+            guard let rawKind = kindValue.stringValue,
+                  let kind = WireFavoriteKind(rawValue: rawKind)
+            else {
+                throw WireRequestError.unsupportedArgument(
+                    message: WireErrorMessage.invalidFavoriteKindArgument)
+            }
+            guard let idValue = object["id"], idValue != .null else {
+                throw WireRequestError.missingArgument(tool: toolName, name: "id")
+            }
+            guard let id = idValue.stringValue, !id.isEmpty else {
+                throw WireRequestError.invalidArgument(
+                    tool: toolName, name: name, expected: "a list of kind and non-empty id objects")
+            }
+            return WireFavoriteIdentity(kind: kind, id: id)
         }
     }
 
@@ -645,9 +991,8 @@ private struct ToolArguments {
 
     /// The contacts_update field set — SCALARS ONLY (Phase 7). Any
     /// list-shaped argument is rejected LOUDLY with a pointer to the
-    /// dedicated single-entry tools (or to contacts_create, for the lists
-    /// that have none yet): a silently dropped list would let an agent
-    /// believe a bulk edit was saved.
+    /// dedicated single-entry tools: a silently dropped list would let an
+    /// agent believe a bulk edit was saved.
     func contactScalarFields() throws -> WireContactScalarFields {
         try rejectNoteArguments()
         for key in ["phoneNumbers", "emailAddresses", "urlAddresses", "relatedNames", "dates"]
@@ -661,6 +1006,7 @@ private struct ToolArguments {
                 message: WireErrorMessage.createOnlyListArgumentNotAccepted)
         }
         var fields = WireContactScalarFields()
+        fields.kind = try optionalString("kind")
         fields.namePrefix = try optionalString("namePrefix")
         fields.givenName = try optionalString("givenName")
         fields.middleName = try optionalString("middleName")
@@ -692,6 +1038,125 @@ private struct ToolArguments {
             }
             return object
         }
+    }
+
+    private func requiredObject(_ name: String) throws -> [String: Value] {
+        guard let value = values[name], value != .null else {
+            throw WireRequestError.missingArgument(tool: toolName, name: name)
+        }
+        guard case .object(let object) = value else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name, expected: "an object")
+        }
+        return object
+    }
+
+    private func rejectUnexpectedFields(
+        _ object: [String: Value], allowed: Set<String>, argument: String
+    ) throws {
+        guard object.keys.allSatisfy(allowed.contains) else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: argument,
+                expected: "an object containing only the documented fields")
+        }
+    }
+
+    private func requiredStringField(
+        _ object: [String: Value], key: String, argument: String,
+        allowEmpty: Bool = true
+    ) throws -> String {
+        guard let value = object[key], value != .null,
+              let string = value.stringValue,
+              allowEmpty || !string.isEmpty
+        else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: argument,
+                expected: "an object with a valid \(key) string")
+        }
+        return string
+    }
+
+    private func optionalStringField(
+        _ object: [String: Value], key: String, argument: String
+    ) throws -> String? {
+        guard let value = object[key], value != .null else { return nil }
+        guard let string = value.stringValue else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: argument,
+                expected: "an object whose \(key), when present, is a string")
+        }
+        return string
+    }
+
+    func requiredPostalAddress(_ name: String) throws -> WirePostalAddress {
+        let object = try requiredObject(name)
+        try rejectUnexpectedFields(
+            object,
+            allowed: [
+                "label", "street", "subLocality", "city", "subAdministrativeArea",
+                "state", "postalCode", "country", "isoCountryCode",
+            ],
+            argument: name)
+        let address = WirePostalAddress(
+            label: try optionalStringField(object, key: "label", argument: name),
+            street: try requiredStringField(object, key: "street", argument: name),
+            subLocality: try optionalStringField(object, key: "subLocality", argument: name),
+            city: try requiredStringField(object, key: "city", argument: name),
+            subAdministrativeArea: try optionalStringField(
+                object, key: "subAdministrativeArea", argument: name),
+            state: try requiredStringField(object, key: "state", argument: name),
+            postalCode: try requiredStringField(object, key: "postalCode", argument: name),
+            country: try requiredStringField(object, key: "country", argument: name),
+            isoCountryCode: try optionalStringField(
+                object, key: "isoCountryCode", argument: name))
+        guard [
+            address.street, address.subLocality ?? "", address.city,
+            address.subAdministrativeArea ?? "", address.state,
+            address.postalCode, address.country, address.isoCountryCode ?? "",
+        ].contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name,
+                expected: "an address with at least one non-empty address field")
+        }
+        return address
+    }
+
+    func requiredSocialProfile(_ name: String) throws -> WireSocialProfile {
+        let object = try requiredObject(name)
+        try rejectUnexpectedFields(
+            object, allowed: ["label", "service", "username", "url"],
+            argument: name)
+        let profile = WireSocialProfile(
+            label: try optionalStringField(object, key: "label", argument: name),
+            service: try optionalStringField(object, key: "service", argument: name),
+            username: try optionalStringField(object, key: "username", argument: name),
+            url: try optionalStringField(object, key: "url", argument: name))
+        guard [profile.service, profile.username, profile.url]
+            .compactMap({ $0 })
+            .contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name,
+                expected: "a profile with at least one non-empty service, username, or url")
+        }
+        return profile
+    }
+
+    func requiredInstantMessage(_ name: String) throws -> WireInstantMessage {
+        let object = try requiredObject(name)
+        try rejectUnexpectedFields(
+            object, allowed: ["label", "service", "username"], argument: name)
+        let username = try requiredStringField(
+            object, key: "username", argument: name, allowEmpty: false)
+        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WireRequestError.invalidArgument(
+                tool: toolName, name: name,
+                expected: "an instant-message address with a non-empty username")
+        }
+        return WireInstantMessage(
+            label: try optionalStringField(object, key: "label", argument: name),
+            service: try optionalStringField(object, key: "service", argument: name),
+            username: username)
     }
 
     private func stringField(_ object: [String: Value], _ key: String) -> String? {

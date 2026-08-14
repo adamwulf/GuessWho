@@ -39,6 +39,61 @@ public struct WirePage<Item: Codable & Sendable>: Codable, Sendable {
     }
 }
 
+/// Result of renaming one organization's department across its member
+/// contact cards. The count is the number the Contacts repository reports
+/// as saved by this one operation.
+public struct WireDepartmentRenameResult: Codable, Sendable, Equatable {
+    public let affectedCount: Int
+
+    public init(affectedCount: Int) {
+        self.affectedCount = affectedCount
+    }
+}
+
+/// Favorite referent kinds exposed by the generic favorites tools. These are
+/// deliberately entity kinds (not contact-card person/organization subtypes).
+public enum WireFavoriteKind: String, Codable, CaseIterable, Sendable {
+    case contact
+    case event
+    case group
+    case guide
+    case place
+}
+
+/// Composite favorite identity. `kind` is part of identity because ordinary
+/// UUID-shaped ids can legitimately collide across entity namespaces.
+public struct WireFavoriteIdentity: Codable, Sendable, Hashable {
+    public let kind: WireFavoriteKind
+    public let id: String
+
+    public init(kind: WireFavoriteKind, id: String) {
+        self.kind = kind
+        self.id = id
+    }
+}
+
+/// One row from the app's stable favorite projection. Stale referents remain
+/// in their stored position with `isAvailable == false` and the fixed display
+/// name "Unavailable"; they are never silently omitted.
+public struct WireFavorite: Codable, Sendable {
+    public let kind: WireFavoriteKind
+    public let id: String
+    public let displayName: String
+    public let addedAt: String
+    public let isAvailable: Bool
+
+    public init(
+        kind: WireFavoriteKind, id: String, displayName: String,
+        addedAt: String, isAvailable: Bool
+    ) {
+        self.kind = kind
+        self.id = id
+        self.displayName = displayName
+        self.addedAt = addedAt
+        self.isAvailable = isAvailable
+    }
+}
+
 /// A labeled scalar (phone number, email address, web address).
 public struct WireLabeledValue: Codable, Sendable, Equatable {
     public let label: String?
@@ -63,9 +118,9 @@ public struct WireLabeledDate: Codable, Sendable, Equatable {
 }
 
 /// A labeled postal address. Carries the FULL address field set the
-/// system stores (not just the display subset) so an update that replaces
-/// the address list round-trips every subfield instead of dropping the
-/// ones a leaner DTO wouldn't name.
+/// system stores (not just the display subset) so create and dedicated
+/// single-entry edits round-trip every wire-visible subfield instead of
+/// dropping the ones a leaner DTO wouldn't name.
 public struct WirePostalAddress: Codable, Sendable, Equatable {
     public let label: String?
     public let street: String
@@ -223,6 +278,26 @@ public struct WireContact: Codable, Sendable {
     }
 }
 
+/// Bounded contact-photo result. `present == false` is a successful read of
+/// a contact that has no photo; failures use the ordinary typed error
+/// response. Photo bytes are base64 because the relay wire is JSON-only.
+public struct WireContactPhoto: Codable, Sendable, Equatable {
+    public let present: Bool
+    public let mediaType: String?
+    public let dataBase64: String?
+    public let byteCount: Int
+
+    public init(present: Bool, mediaType: String?, dataBase64: String?, byteCount: Int) {
+        self.present = present
+        self.mediaType = mediaType
+        self.dataBase64 = dataBase64
+        self.byteCount = byteCount
+    }
+
+    public static let none = WireContactPhoto(
+        present: false, mediaType: nil, dataBase64: nil, byteCount: 0)
+}
+
 /// INPUT-side field set for contacts_update — the SINGLE-VALUE contact
 /// fields only, a PATCH: only the fields the caller supplied are applied.
 /// `nil` = untouched; an empty string clears a text field (and clears
@@ -235,8 +310,11 @@ public struct WireContact: Codable, Sendable {
 /// having no list members makes an update-side bulk edit structurally
 /// impossible, the same way the missing note member keeps the Apple note
 /// unwritable. The other update exclusions carry over: no note field, no
-/// contact id, no `kind`.
+/// contact id. `kind` is included because changing person ↔ organization is
+/// a single-value edit with the same PATCH semantics as the other members.
 public struct WireContactScalarFields: Codable, Sendable, Equatable {
+    /// "person" or "organization"; nil means leave it untouched.
+    public var kind: String?
     public var namePrefix: String?
     public var givenName: String?
     public var middleName: String?
@@ -256,13 +334,13 @@ public struct WireContactScalarFields: Codable, Sendable, Equatable {
 
     public init() {}
 
-    /// (wire field name, key path) for every scalar field, in DECLARATION
-    /// order. The single source for the scalar field-name list that feeds
-    /// `providedFieldNames` (and, through it, the audit summaries). The order
-    /// is load-bearing — it must stay identical to the hand-rolled list this
-    /// replaced so audit strings are byte-for-byte unchanged. `WireContactFields`
-    /// reuses these same key paths for its scalar half (see `scalarFields`).
-    static let scalarKeyPaths: [(name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)] = [
+    /// The scalar fields shared by create and update, in contact-card
+    /// declaration order. Create mapping consumes this list directly, so an
+    /// update-only field such as `kind` cannot silently shift its positional
+    /// zip against `WireContactFields`.
+    static let contactCardScalarKeyPaths: [
+        (name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)
+    ] = [
         ("namePrefix", \.namePrefix),
         ("givenName", \.givenName),
         ("middleName", \.middleName),
@@ -279,6 +357,12 @@ public struct WireContactScalarFields: Codable, Sendable, Equatable {
         ("jobTitle", \.jobTitle),
         ("birthday", \.birthday),
     ]
+
+    /// Every contacts_update scalar. `kind` is update-only and intentionally
+    /// precedes the shared contact-card scalars so audit field order is stable.
+    static let scalarKeyPaths: [
+        (name: String, keyPath: WritableKeyPath<WireContactScalarFields, String?>)
+    ] = [("kind", \.kind)] + contactCardScalarKeyPaths
 
     /// The names of the fields the caller supplied, for audit summaries.
     /// Host-side display only.
@@ -334,9 +418,9 @@ public struct WireContactFields: Codable, Sendable, Equatable {
 
     public init() {}
 
-    /// This struct's scalar key paths, in the SAME order as
-    /// `WireContactScalarFields.scalarKeyPaths`, so the two zip position-for-
-    /// position when copying into the scalar subset.
+    /// This struct's scalar key paths, in the same order as
+    /// `WireContactScalarFields.contactCardScalarKeyPaths`, so the two zip
+    /// position-for-position when copying into the scalar subset.
     private static let scalarReadKeyPaths: [KeyPath<WireContactFields, String?>] = [
         \.namePrefix, \.givenName, \.middleName, \.familyName,
         \.previousFamilyName, \.nameSuffix, \.nickname,
@@ -349,7 +433,9 @@ public struct WireContactFields: Codable, Sendable, Equatable {
     /// apply path.
     public var scalarFields: WireContactScalarFields {
         var scalars = WireContactScalarFields()
-        for (dest, source) in zip(WireContactScalarFields.scalarKeyPaths, Self.scalarReadKeyPaths) {
+        for (dest, source) in zip(
+            WireContactScalarFields.contactCardScalarKeyPaths, Self.scalarReadKeyPaths
+        ) {
             scalars[keyPath: dest.keyPath] = self[keyPath: source]
         }
         return scalars
@@ -357,16 +443,16 @@ public struct WireContactFields: Codable, Sendable, Equatable {
 
     /// (wire field name, whether the caller supplied it) for EVERY field —
     /// scalars and lists — in the exact order they appear on the wire. Scalar
-    /// entries reuse `WireContactScalarFields.scalarKeyPaths` (one source for
-    /// the scalar names); the list entries interleave at their real positions
-    /// (`birthday` lands AFTER the first list block, not with the other
-    /// scalars). Order is load-bearing: `providedFieldNames` feeds audit
-    /// summaries and must stay byte-identical to the hand-rolled list.
+    /// entries reuse `WireContactScalarFields.contactCardScalarKeyPaths` (one
+    /// source for the create-side scalar names); the list entries interleave at
+    /// their real positions (`birthday` lands AFTER the first list block, not
+    /// with the other scalars). Order is load-bearing: `providedFieldNames`
+    /// feeds audit summaries and must stay byte-identical to the hand-rolled list.
     private var orderedFieldChecks: [(name: String, provided: Bool)] {
         // Scalar name -> whether self supplied it, sourced from the shared
         // scalar name list zipped with this struct's own read key paths.
         let scalarProvided = Dictionary(uniqueKeysWithValues:
-            zip(WireContactScalarFields.scalarKeyPaths, Self.scalarReadKeyPaths).map {
+            zip(WireContactScalarFields.contactCardScalarKeyPaths, Self.scalarReadKeyPaths).map {
                 ($0.name, self[keyPath: $1] != nil)
             })
         func scalar(_ name: String) -> (name: String, provided: Bool) {
@@ -466,10 +552,48 @@ public struct WireLink: Codable, Sendable {
 public struct WireGroup: Codable, Sendable {
     public let id: String
     public let name: String
+    public let isFavorite: Bool
 
-    public init(id: String, name: String) {
+    public init(id: String, name: String, isFavorite: Bool) {
         self.id = id
         self.name = name
+        self.isFavorite = isFavorite
+    }
+}
+
+/// One contact that could not be moved into or out of a group during a
+/// batch membership change. `contactId` is the same opaque id supplied by
+/// the caller; the failure never carries an Apple identifier or raw error.
+public struct WireGroupMembershipFailure: Codable, Sendable {
+    public let contactId: String
+    public let code: WireErrorCode
+    public let message: String
+
+    public init(contactId: String, code: WireErrorCode, message: String) {
+        self.contactId = contactId
+        self.code = code
+        self.message = message
+    }
+}
+
+/// Complete outcome of a group membership batch. A partial write is a data
+/// result rather than a blanket acknowledgement: every requested contact id
+/// appears in exactly one of `appliedContactIds` or `failures`.
+public struct WireGroupMembershipResult: Codable, Sendable {
+    public let groupId: String
+    public let isComplete: Bool
+    public let appliedContactIds: [String]
+    public let failures: [WireGroupMembershipFailure]
+
+    public init(
+        groupId: String,
+        appliedContactIds: [String],
+        failures: [WireGroupMembershipFailure]
+    ) {
+        self.groupId = groupId
+        self.isComplete = failures.isEmpty
+        self.appliedContactIds = appliedContactIds
+        self.failures = failures
     }
 }
 
@@ -555,12 +679,21 @@ public struct WireGuide: Codable, Sendable {
     public let name: String
     public let sourceURL: String?
     public let createdAt: String?
+    public let lastViewedAt: String?
+    public let placeCount: Int
+    public let isFavorite: Bool
 
-    public init(id: String, name: String, sourceURL: String?, createdAt: String?) {
+    public init(
+        id: String, name: String, sourceURL: String?, createdAt: String?,
+        lastViewedAt: String?, placeCount: Int, isFavorite: Bool
+    ) {
         self.id = id
         self.name = name
         self.sourceURL = sourceURL
         self.createdAt = createdAt
+        self.lastViewedAt = lastViewedAt
+        self.placeCount = placeCount
+        self.isFavorite = isFavorite
     }
 }
 
@@ -587,13 +720,30 @@ public struct WirePlace: Codable, Sendable {
     public let address: String?
     public let latitude: Double?
     public let longitude: Double?
+    public let sortOrder: Int
+    public let createdAt: String?
+    public let lastViewedAt: String?
+    public let resolvedAt: String?
+    public let needsResolution: Bool
+    public let isFavorite: Bool
 
-    public init(id: String, guideId: String, name: String, address: String?, latitude: Double?, longitude: Double?) {
+    public init(
+        id: String, guideId: String, name: String, address: String?,
+        latitude: Double?, longitude: Double?, sortOrder: Int,
+        createdAt: String?, lastViewedAt: String?, resolvedAt: String?,
+        needsResolution: Bool, isFavorite: Bool
+    ) {
         self.id = id
         self.guideId = guideId
         self.name = name
         self.address = address
         self.latitude = latitude
         self.longitude = longitude
+        self.sortOrder = sortOrder
+        self.createdAt = createdAt
+        self.lastViewedAt = lastViewedAt
+        self.resolvedAt = resolvedAt
+        self.needsResolution = needsResolution
+        self.isFavorite = isFavorite
     }
 }

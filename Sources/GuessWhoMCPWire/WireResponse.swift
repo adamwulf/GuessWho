@@ -17,16 +17,22 @@ public enum WireResponse: Codable, Sendable {
 
     case contactPage(helperId: String, messageId: String, page: WirePage<WireContactSummary>)
     case contact(helperId: String, messageId: String, contact: WireContact)
+    case contactPhoto(helperId: String, messageId: String, photo: WireContactPhoto)
     case notePage(helperId: String, messageId: String, page: WirePage<WireNote>)
     case customFieldPage(helperId: String, messageId: String, page: WirePage<WireCustomField>)
     case groupPage(helperId: String, messageId: String, page: WirePage<WireGroup>)
+    case departmentPage(helperId: String, messageId: String, page: WirePage<String>)
+    case group(helperId: String, messageId: String, group: WireGroup)
+    case groupMembership(helperId: String, messageId: String, result: WireGroupMembershipResult)
     case eventPage(helperId: String, messageId: String, page: WirePage<WireEventSummary>)
     case event(helperId: String, messageId: String, event: WireEvent)
     case tagPage(helperId: String, messageId: String, page: WirePage<WireTag>)
     case guidePage(helperId: String, messageId: String, page: WirePage<WireGuide>)
     case guide(helperId: String, messageId: String, guide: WireGuide)
     case placePage(helperId: String, messageId: String, page: WirePage<WirePlace>)
+    case place(helperId: String, messageId: String, place: WirePlace)
     case linkPage(helperId: String, messageId: String, page: WirePage<WireLink>)
+    case favoritePage(helperId: String, messageId: String, page: WirePage<WireFavorite>)
 
     // Write-tool results (plans/cli-mcp.md Phase 2): a write that creates or
     // updates a record echoes the record back (the same allowlisted DTO the
@@ -38,6 +44,7 @@ public enum WireResponse: Codable, Sendable {
     case link(helperId: String, messageId: String, link: WireLink)
     case tag(helperId: String, messageId: String, tag: WireTag)
     case acknowledged(helperId: String, messageId: String, message: String)
+    case departmentRename(helperId: String, messageId: String, result: WireDepartmentRenameResult)
 }
 
 extension WireResponse: MCPResponseProtocol {
@@ -48,21 +55,28 @@ extension WireResponse: MCPResponseProtocol {
              .toolList(let helperId, _, _, _),
              .contactPage(let helperId, _, _),
              .contact(let helperId, _, _),
+             .contactPhoto(let helperId, _, _),
              .notePage(let helperId, _, _),
              .customFieldPage(let helperId, _, _),
              .groupPage(let helperId, _, _),
+             .departmentPage(let helperId, _, _),
+             .group(let helperId, _, _),
+             .groupMembership(let helperId, _, _),
              .eventPage(let helperId, _, _),
              .event(let helperId, _, _),
              .tagPage(let helperId, _, _),
              .guidePage(let helperId, _, _),
              .guide(let helperId, _, _),
              .placePage(let helperId, _, _),
+             .place(let helperId, _, _),
              .linkPage(let helperId, _, _),
+             .favoritePage(let helperId, _, _),
              .note(let helperId, _, _),
              .customField(let helperId, _, _),
              .link(let helperId, _, _),
              .tag(let helperId, _, _),
-             .acknowledged(let helperId, _, _):
+             .acknowledged(let helperId, _, _),
+             .departmentRename(let helperId, _, _):
             return helperId
         }
     }
@@ -74,21 +88,28 @@ extension WireResponse: MCPResponseProtocol {
              .toolList(_, let messageId, _, _),
              .contactPage(_, let messageId, _),
              .contact(_, let messageId, _),
+             .contactPhoto(_, let messageId, _),
              .notePage(_, let messageId, _),
              .customFieldPage(_, let messageId, _),
              .groupPage(_, let messageId, _),
+             .departmentPage(_, let messageId, _),
+             .group(_, let messageId, _),
+             .groupMembership(_, let messageId, _),
              .eventPage(_, let messageId, _),
              .event(_, let messageId, _),
              .tagPage(_, let messageId, _),
              .guidePage(_, let messageId, _),
              .guide(_, let messageId, _),
              .placePage(_, let messageId, _),
+             .place(_, let messageId, _),
              .linkPage(_, let messageId, _),
+             .favoritePage(_, let messageId, _),
              .note(_, let messageId, _),
              .customField(_, let messageId, _),
              .link(_, let messageId, _),
              .tag(_, let messageId, _),
-             .acknowledged(_, let messageId, _):
+             .acknowledged(_, let messageId, _),
+             .departmentRename(_, let messageId, _):
             return messageId
         }
     }
@@ -109,12 +130,20 @@ extension WireResponse: MCPResponseProtocol {
             return .contactPage(helperId: helperId, messageId: messageId, page: page)
         case .contact(_, _, let contact):
             return .contact(helperId: helperId, messageId: messageId, contact: contact)
+        case .contactPhoto(_, _, let photo):
+            return .contactPhoto(helperId: helperId, messageId: messageId, photo: photo)
         case .notePage(_, _, let page):
             return .notePage(helperId: helperId, messageId: messageId, page: page)
         case .customFieldPage(_, _, let page):
             return .customFieldPage(helperId: helperId, messageId: messageId, page: page)
         case .groupPage(_, _, let page):
             return .groupPage(helperId: helperId, messageId: messageId, page: page)
+        case .departmentPage(_, _, let page):
+            return .departmentPage(helperId: helperId, messageId: messageId, page: page)
+        case .group(_, _, let group):
+            return .group(helperId: helperId, messageId: messageId, group: group)
+        case .groupMembership(_, _, let result):
+            return .groupMembership(helperId: helperId, messageId: messageId, result: result)
         case .eventPage(_, _, let page):
             return .eventPage(helperId: helperId, messageId: messageId, page: page)
         case .event(_, _, let event):
@@ -127,8 +156,12 @@ extension WireResponse: MCPResponseProtocol {
             return .guide(helperId: helperId, messageId: messageId, guide: guide)
         case .placePage(_, _, let page):
             return .placePage(helperId: helperId, messageId: messageId, page: page)
+        case .place(_, _, let place):
+            return .place(helperId: helperId, messageId: messageId, place: place)
         case .linkPage(_, _, let page):
             return .linkPage(helperId: helperId, messageId: messageId, page: page)
+        case .favoritePage(_, _, let page):
+            return .favoritePage(helperId: helperId, messageId: messageId, page: page)
         case .note(_, _, let note):
             return .note(helperId: helperId, messageId: messageId, note: note)
         case .customField(_, _, let field):
@@ -139,6 +172,8 @@ extension WireResponse: MCPResponseProtocol {
             return .tag(helperId: helperId, messageId: messageId, tag: tag)
         case .acknowledged(_, _, let message):
             return .acknowledged(helperId: helperId, messageId: messageId, message: message)
+        case .departmentRename(_, _, let result):
+            return .departmentRename(helperId: helperId, messageId: messageId, result: result)
         }
     }
 
@@ -164,12 +199,20 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(page)
         case .contact(_, _, let contact):
             return Self.jsonResult(contact)
+        case .contactPhoto(_, _, let photo):
+            return Self.jsonResult(photo)
         case .notePage(_, _, let page):
             return Self.jsonResult(page)
         case .customFieldPage(_, _, let page):
             return Self.jsonResult(page)
         case .groupPage(_, _, let page):
             return Self.jsonResult(page)
+        case .departmentPage(_, _, let page):
+            return Self.jsonResult(page)
+        case .group(_, _, let group):
+            return Self.jsonResult(group)
+        case .groupMembership(_, _, let result):
+            return Self.jsonResult(AgentGroupMembershipResult(result))
         case .eventPage(_, _, let page):
             return Self.jsonResult(page)
         case .event(_, _, let event):
@@ -182,7 +225,11 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(guide)
         case .placePage(_, _, let page):
             return Self.jsonResult(page)
+        case .place(_, _, let place):
+            return Self.jsonResult(place)
         case .linkPage(_, _, let page):
+            return Self.jsonResult(page)
+        case .favoritePage(_, _, let page):
             return Self.jsonResult(page)
         case .note(_, _, let note):
             return Self.jsonResult(note)
@@ -194,6 +241,8 @@ extension WireResponse: MCPResponseProtocol {
             return Self.jsonResult(tag)
         case .acknowledged(_, _, let message):
             return MCP.CallTool.Result(content: [.text(message)], isError: false)
+        case .departmentRename(_, _, let result):
+            return Self.jsonResult(result)
         }
     }
 
@@ -232,6 +281,30 @@ extension WireResponse: MCPResponseProtocol {
             return MCP.CallTool.Result(
                 content: [.text("Something went wrong preparing that result. Try again.")],
                 isError: true)
+        }
+    }
+}
+
+/// Agent-facing projection of a partial group-membership result. Typed wire
+/// codes stay inside the relay envelope like every other `WireErrorCode`; the
+/// assistant sees the actionable message and opaque contact id only.
+private struct AgentGroupMembershipResult: Encodable {
+    struct Failure: Encodable {
+        let contactId: String
+        let message: String
+    }
+
+    let groupId: String
+    let isComplete: Bool
+    let appliedContactIds: [String]
+    let failures: [Failure]
+
+    init(_ result: WireGroupMembershipResult) {
+        groupId = result.groupId
+        isComplete = result.isComplete
+        appliedContactIds = result.appliedContactIds
+        failures = result.failures.map {
+            Failure(contactId: $0.contactId, message: $0.message)
         }
     }
 }

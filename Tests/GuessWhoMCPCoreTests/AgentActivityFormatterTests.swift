@@ -33,6 +33,15 @@ final class AgentActivityFormatterTests: XCTestCase {
         XCTAssertEqual(
             AgentActivityFormatter.title(for: entry(action: .createGuide, name: "Tokyo Trip")),
             "Created the guide Tokyo Trip")
+        XCTAssertEqual(
+            AgentActivityFormatter.title(for: entry(action: .reorderFavorites, name: "favorites")),
+            "Reordered favorites")
+        XCTAssertEqual(
+            AgentActivityFormatter.title(for: entry(action: .createGroup, name: "Family")),
+            "Created the group Family")
+        XCTAssertEqual(
+            AgentActivityFormatter.title(for: entry(action: .removeGroupMembers, name: "Family")),
+            "Removed contacts from Family")
     }
 
     func test_favoriteTitle_splitsOnRecordedDirection() {
@@ -65,6 +74,9 @@ final class AgentActivityFormatterTests: XCTestCase {
             "")
         XCTAssertEqual(
             AgentActivityFormatter.detail(for: entry(action: .reorderPlaces)),
+            "")
+        XCTAssertEqual(
+            AgentActivityFormatter.detail(for: entry(action: .reorderFavorites)),
             "")
     }
 

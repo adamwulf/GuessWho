@@ -29,6 +29,15 @@ public protocol MCPContactSource: AnyObject {
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]
     func members(ofGroup groupLocalID: String) async -> [Contact]
+    /// Derived organization membership and department reads. These are the
+    /// repository's canonical name-matching rules; the dispatcher must not
+    /// reproduce them from `allContacts`.
+    func contactsAssociated(with organization: Contact) -> [Contact]
+    func departments(in organization: Contact) -> [String]
+    func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact]
+    func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto?
+    func groups(containing contact: Contact) async -> [ContactGroup]
+    func isGroupFavorite(_ group: ContactGroup) -> Bool
 
     // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
     // the UI uses (INV-2), so the change-watcher, iCloud push, and UI
@@ -59,6 +68,15 @@ public protocol MCPContactSource: AnyObject {
     func removeLink(id linkID: UUID) throws
     @discardableResult
     func toggleFavorite(_ id: ContactID) async throws -> Bool
+    @discardableResult
+    func createGroup(name: String) async throws -> ContactGroup
+    func renameGroup(_ group: ContactGroup, to name: String) async throws
+    func deleteGroup(_ group: ContactGroup) async throws
+    func addContacts(_ contacts: [Contact], toGroup group: ContactGroup) async throws
+    func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws
+    @discardableResult
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus
 
     // Tombstone-inclusive reads for the write-side audit (post-write
     // `modifiedAt`) and the Recently Deleted surface. Never wired to a tool.
@@ -74,11 +92,18 @@ public protocol MCPContactSource: AnyObject {
     // errors to typed wire codes and never crashes.
     func editableContact(id: ContactID) async throws -> Contact?
     func saveContact(_ edited: Contact, for id: ContactID) async throws
+    @discardableResult
+    func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool
     func createContact(_ seed: Contact) async throws -> Contact
     /// Whole-contact delete — reachable ONLY through the user-confirmed
     /// contacts_delete path. Returns false when the id no longer resolves.
     @discardableResult
     func deleteContact(id: ContactID) async throws -> Bool
+    /// One user-level department rename through the same repository entry
+    /// point the organization detail UI uses. A thrown save error may mean
+    /// earlier member saves landed; callers must surface that uncertainty.
+    @discardableResult
+    func renameDepartment(from oldName: String, to newName: String, in organization: Contact) async throws -> Int
 }
 
 extension ContactsRepository: MCPContactSource {
@@ -155,6 +180,10 @@ public protocol MCPGuideSource: AnyObject {
     func allGuides() async -> [MapsGuide]
     func allPlaces() async -> [MapsPlace]
     func places(inGuide guideID: UUID) async -> [MapsPlace]
+    /// Address-derived reverse lookup used by the app's place detail.
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide]
+    /// Reads the same live favorite store used by the guide/place UI.
+    func favorites() -> [Favorite]
 
     // Guide/place writes (plans/cli-mcp.md Phase 2).
     @discardableResult
@@ -164,6 +193,28 @@ public protocol MCPGuideSource: AnyObject {
     /// treats a failed order write as non-fatal.
     func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID])
     func deletePlace(uuid: String) throws
+}
+
+/// The app's single ordered favorites store. Resolution of each referent stays
+/// in the dispatcher (through the contact/event/guide sources above) so ids are
+/// verified against their declared kind before any mutation reaches storage.
+/// The live implementation is `SyncService`, which owns the same
+/// `FavoritesStore` used by every in-app favorites surface.
+@MainActor
+public protocol MCPFavoriteSource: AnyObject {
+    /// The complete persisted order, including stale referents. Like the app's
+    /// projection, callers must preserve one row per stored favorite.
+    func loadFavorites() throws -> [Favorite]
+
+    /// Idempotent desired-state assignment. Returns whether storage changed.
+    @discardableResult
+    func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool
+
+    /// Compare-and-swap full reorder. Implementations must verify `expected`
+    /// still exactly matches storage immediately before replacing it, and must
+    /// preserve every original `Favorite` value (including `addedAt`).
+    @discardableResult
+    func reorderFavorites(expected: [Favorite], reordered: [Favorite]) throws -> Bool
 }
 
 /// Per-surface access mode + system-permission state, read live per call —

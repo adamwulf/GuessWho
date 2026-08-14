@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 import GuessWhoSync
 import GuessWhoSyncTesting
 import GuessWhoMCPCore
@@ -32,11 +33,63 @@ enum Sentinels {
     static let localID = "ABPerson-LOCAL-SENTINEL-77"
 }
 
+/// Records accidental use of a repository/storage semantic that this legacy
+/// source intentionally no longer models. Non-throwing protocol requirements
+/// still need a value, so they return a neutral fallback *after* recording the
+/// XCTest failure. Throwing requirements record the same failure and throw.
+private struct UnexpectedLegacySemanticPathError: Error {
+    let path: String
+}
+
 @MainActor
-final class FakeContactSource: MCPContactSource {
+private func unexpectedLegacySemanticPath<T>(
+    _ path: String,
+    returning fallback: T,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) -> T {
+    XCTFail(
+        "LegacyScriptedContactSource does not model production semantic: \(path)",
+        file: file,
+        line: line)
+    return fallback
+}
+
+@MainActor
+private func throwUnexpectedLegacySemanticPath(
+    _ path: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws -> Never {
+    XCTFail(
+        "Legacy scripted source does not model production semantic: \(path)",
+        file: file,
+        line: line)
+    throw UnexpectedLegacySemanticPathError(path: path)
+}
+
+/// Legacy scripted contact source used only where a test needs a boundary
+/// fault or an identity-race scenario that `RecordingContactStore` cannot
+/// express. It is deliberately *not* a repository conformance harness.
+///
+/// Matching, sorting, department rename, favorite persistence/CAS, group
+/// favorite state, and photo snapshot assertions must use
+/// `MCPProductionFixture`. The remaining identity/link/sidecar simulations
+/// support older, separately-scoped dispatcher race tests and are named here
+/// so no caller can mistake them for production semantics.
+@MainActor
+final class LegacyScriptedContactSource: MCPContactSource {
     var contacts: [Contact] = []
+    private(set) var allContactsReadCount = 0
     var groups: [ContactGroup] = []
+    private(set) var fetchGroupsCallCount = 0
     var membersByGroup: [String: [Contact]] = [:]
+    var groupWriteError: (any Error)?
+    var authorizationStatus: StoreAuthorizationStatus = .authorized
+    private(set) var groupCreateCount = 0
+    /// Explicit results used only when a scripted CRUD gate/error test needs
+    /// the dispatcher to decorate a returned group. Unconfigured reads fail.
+    var scriptedGroupFavoriteReadResults: [Bool] = []
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
@@ -44,11 +97,11 @@ final class FakeContactSource: MCPContactSource {
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
-    /// tests' production pathway. The contact BOOK stays fake (a real
-    /// ContactsRepository needs the system Contacts store + TCC, which
-    /// headless `swift test` can't have); the identity resolve-or-mint
-    /// simulation in `effectiveWriteID` still applies, mirroring how the
-    /// real repository funnels resolve-or-mint before the engine write.
+    /// tests' production pathway. This legacy source still scripts the contact
+    /// book instead of using the production repository with a substituted
+    /// `ContactStoreProtocol` boundary; the identity resolve-or-mint simulation
+    /// in `effectiveWriteID` mirrors how the real repository funnels
+    /// resolve-or-mint before the engine write.
     var linkEngine: GuessWhoSync?
 
     /// When true, every write throws like the engine's `.unavailable`
@@ -113,7 +166,10 @@ final class FakeContactSource: MCPContactSource {
         contacts[index] = contact
     }
 
-    var allContacts: [Contact] { contacts }
+    var allContacts: [Contact] {
+        allContactsReadCount += 1
+        return contacts
+    }
 
     func contact(restorationToken: ContactRestorationToken) -> Contact? {
         contacts.first { candidate in
@@ -180,13 +236,100 @@ final class FakeContactSource: MCPContactSource {
         favoriteEffectiveIDs.contains(effectiveID(id))
     }
 
-    func fetchGroups() async -> [ContactGroup] { groups }
+    func fetchGroups() async -> [ContactGroup] {
+        fetchGroupsCallCount += 1
+        return groups
+    }
 
     func members(ofGroup groupLocalID: String) async -> [Contact] {
         membersByGroup[groupLocalID] ?? []
     }
 
+    func contactsAssociated(with organization: Contact) -> [Contact] {
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.contactsAssociated(with:)", returning: [])
+    }
+
+    func departments(in organization: Contact) -> [String] {
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.departments(in:)", returning: [])
+    }
+
+    func contactsAssociated(with organization: Contact, inDepartment department: String) -> [Contact] {
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.contactsAssociated(with:inDepartment:)", returning: [])
+    }
+
+    func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.contactPhotoData(for:kind:)")
+    }
+
+    func groups(containing contact: Contact) async -> [ContactGroup] {
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.groups(containing:)", returning: [])
+    }
+
+    func isGroupFavorite(_ group: ContactGroup) -> Bool {
+        guard !scriptedGroupFavoriteReadResults.isEmpty else {
+            return unexpectedLegacySemanticPath(
+                "ContactsRepository.isGroupFavorite", returning: false)
+        }
+        return scriptedGroupFavoriteReadResults.removeFirst()
+    }
+
     // MARK: Writes
+
+    func createGroup(name: String) async throws -> ContactGroup {
+        if let groupWriteError { throw groupWriteError }
+        groupCreateCount += 1
+        let group = ContactGroup(localID: "fake-group-\(groupCreateCount)", name: name)
+        groups.append(group)
+        return group
+    }
+
+    func renameGroup(_ group: ContactGroup, to name: String) async throws {
+        if let groupWriteError { throw groupWriteError }
+        guard let index = groups.firstIndex(where: { $0.localID == group.localID }) else {
+            throw ContactStoreError.groupNotFound(localID: group.localID)
+        }
+        groups[index] = ContactGroup(localID: group.localID, name: name)
+    }
+
+    func deleteGroup(_ group: ContactGroup) async throws {
+        if let groupWriteError { throw groupWriteError }
+        guard groups.contains(where: { $0.localID == group.localID }) else {
+            throw ContactStoreError.groupNotFound(localID: group.localID)
+        }
+        groups.removeAll { $0.localID == group.localID }
+        membersByGroup[group.localID] = nil
+    }
+
+    func addContacts(_ requested: [Contact], toGroup group: ContactGroup) async throws {
+        try applyMembership(.addition, requested: requested, group: group)
+    }
+
+    func removeContacts(_ requested: [Contact], fromGroup group: ContactGroup) async throws {
+        try applyMembership(.removal, requested: requested, group: group)
+    }
+
+    private func applyMembership(
+        _ change: GroupMembershipChange,
+        requested: [Contact],
+        group: ContactGroup
+    ) throws {
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository group membership mutation")
+    }
+
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.setGroupFavorite")
+    }
+
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
+        authorizationStatus
+    }
 
     func addNote(for id: ContactID, body: String, createdAt: Date) async throws -> UUID {
         let key = try await effectiveWriteID(id)
@@ -389,6 +532,10 @@ final class FakeContactSource: MCPContactSource {
     /// (one-shot) — the 134092-style store-rejection / revoked-access
     /// simulation.
     var nextContactStoreError: Error?
+    /// A one-shot error specifically at save time, after editableContact
+    /// succeeded. Structured-entry tests use this to prove an in-memory
+    /// mutation is not published when the actual save fails.
+    var nextSaveContactError: Error?
     private(set) var deletedContactLocalIDs: [String] = []
 
     private func takeContactStoreError() throws {
@@ -405,11 +552,20 @@ final class FakeContactSource: MCPContactSource {
     }
 
     func saveContact(_ edited: Contact, for id: ContactID) async throws {
+        if let error = nextSaveContactError {
+            nextSaveContactError = nil
+            throw error
+        }
         try takeContactStoreError()
         guard let index = contacts.firstIndex(where: {
             $0.contactID.restorationToken.localID == edited.contactID.restorationToken.localID
         }) else { return }
         contacts[index] = edited
+    }
+
+    func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.setContactPhoto")
     }
 
     func createContact(_ seed: Contact) async throws -> Contact {
@@ -458,6 +614,13 @@ final class FakeContactSource: MCPContactSource {
         deletedContactLocalIDs.append(localID)
         contacts.remove(at: index)
         return true
+    }
+
+    func renameDepartment(
+        from oldName: String, to newName: String, in organization: Contact
+    ) async throws -> Int {
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.renameDepartment")
     }
 }
 
@@ -580,13 +743,33 @@ final class FakeEventSource: MCPEventSource {
 final class FakeGuideSource: MCPGuideSource {
     var guides: [MapsGuide] = []
     var places: [MapsPlace] = []
+    var favoriteGuideIDs: Set<String> = []
+    var favoritePlaceIDs: Set<String> = []
+    private(set) var allGuidesCallCount = 0
+    private(set) var allPlacesCallCount = 0
 
     nonisolated init() {}
 
-    func allGuides() async -> [MapsGuide] { guides }
-    func allPlaces() async -> [MapsPlace] { places }
+    func allGuides() async -> [MapsGuide] {
+        allGuidesCallCount += 1
+        return guides
+    }
+    func allPlaces() async -> [MapsPlace] {
+        allPlacesCallCount += 1
+        return places
+    }
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         places.filter { $0.guideID == guideID }
+    }
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide] {
+        guard let needle = GuideAddressMatcher.streetNeedle(for: place) else { return [] }
+        return GuideAddressMatcher.guides(
+            containingAnyOf: [needle], guides: guides, places: places
+        ).map(\.guide)
+    }
+    func favorites() -> [Favorite] {
+        favoriteGuideIDs.map { Favorite(kind: .guide, id: $0, addedAt: Date()) }
+            + favoritePlaceIDs.map { Favorite(kind: .place, id: $0, addedAt: Date()) }
     }
 
     func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
@@ -617,6 +800,61 @@ final class FakeGuideSource: MCPGuideSource {
 
     func deletePlace(uuid: String) throws {
         places.removeAll { $0.id.uuidString.lowercased() == uuid.lowercased() }
+    }
+}
+
+/// Scripted boundary used only for dispatcher fault/race observations.
+///
+/// It intentionally does not reproduce FavoritesStore canonicalization,
+/// idempotency, validation, or compare-and-swap. Tests asserting those rules
+/// use MCPProductionFixture and the real on-disk store.
+@MainActor
+final class FaultInjectingFavoriteSource: MCPFavoriteSource {
+    var items: [Favorite] = []
+    private(set) var loadCallCount = 0
+    private(set) var setCallCount = 0
+    private(set) var reorderCallCount = 0
+    /// Explicit outcomes for the few gate/budget tests that need a successful
+    /// favorite-source call without asserting storage behavior. An unconfigured
+    /// call is an accidental semantic dependency and fails loudly.
+    var scriptedSetResults: [Bool] = []
+    /// Explicitly allows the one successful reorder used to observe that a
+    /// non-contact snapshot avoids loading Contacts. CAS/order semantics are
+    /// never modeled here.
+    var acceptNextReorder = false
+    var mutateBeforeNextReorder = false
+    var failReads = false
+    var onLoadFavorites: (() -> Void)?
+
+    nonisolated init() {}
+
+    func loadFavorites() throws -> [Favorite] {
+        loadCallCount += 1
+        onLoadFavorites?()
+        if failReads { throw SidecarUnavailableError() }
+        return items
+    }
+
+    func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool {
+        guard !scriptedSetResults.isEmpty else {
+            try throwUnexpectedLegacySemanticPath("FavoritesStore.set")
+        }
+        setCallCount += 1
+        return scriptedSetResults.removeFirst()
+    }
+
+    func reorderFavorites(expected: [Favorite], reordered: [Favorite]) throws -> Bool {
+        if mutateBeforeNextReorder {
+            mutateBeforeNextReorder = false
+            items.append(Favorite(kind: .guide, id: UUID().uuidString, addedAt: Date()))
+            throw FavoritesStoreMutationError.changed
+        }
+        guard acceptNextReorder else {
+            try throwUnexpectedLegacySemanticPath("FavoritesStore.reorder")
+        }
+        acceptNextReorder = false
+        reorderCallCount += 1
+        return true
     }
 }
 
@@ -666,9 +904,10 @@ final class FakeGateSource: MCPGateSource {
 /// note, the identity URL, `modifiedBy` device ids, raw local ids.
 struct Fixture {
     let dispatcher: ToolDispatcher
-    let contacts: FakeContactSource
+    let contacts: LegacyScriptedContactSource
     let events: FakeEventSource
     let guides: FakeGuideSource
+    let favorites: FaultInjectingFavoriteSource
     /// REAL link storage: a production `GuessWhoSync` over a real
     /// temp-directory `FileSystemSidecarStore`. The links_* tests set
     /// `contacts.linkEngine = linkEngine` so the whole link surface — old
@@ -750,9 +989,10 @@ struct Fixture {
         writeLimitPerWindow: Int = 30,
         writeWindowSeconds: TimeInterval = 60
     ) -> Fixture {
-        let contacts = FakeContactSource()
+        let contacts = LegacyScriptedContactSource()
         let events = FakeEventSource()
         let guides = FakeGuideSource()
+        let favorites = FaultInjectingFavoriteSource()
         let linkEngine = makeLinkEngine()
         let links = EngineLinkSource(engine: linkEngine)
         let gates = FakeGateSource()
@@ -810,6 +1050,11 @@ struct Fixture {
         contacts.linksByID[personLink.id] = personLink
         contacts.linksByID[organizationLink.id] = organizationLink
         contacts.favoriteEffectiveIDs = [janeKey]
+        favorites.items = [
+            Favorite(
+                kind: .contact, id: janeKey,
+                addedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        ]
         contacts.groups = [ContactGroup(localID: "CNGroup-LOCAL-1", name: "Museum Friends")]
         contacts.membersByGroup["CNGroup-LOCAL-1"] = [jane]
 
@@ -851,14 +1096,16 @@ struct Fixture {
         ]
 
         let dispatcher = ToolDispatcher(
-            contacts: contacts, events: events, guides: guides, links: links, gates: gates,
+            contacts: contacts, events: events, guides: guides,
+            favorites: favorites, links: links, gates: gates,
             confirmations: confirmations,
             audit: audit,
             writeLimitPerWindow: writeLimitPerWindow,
             writeWindowSeconds: writeWindowSeconds)
         return Fixture(
             dispatcher: dispatcher, contacts: contacts, events: events,
-            guides: guides, links: links, linkEngine: linkEngine, gates: gates,
+            guides: guides, favorites: favorites, links: links,
+            linkEngine: linkEngine, gates: gates,
             confirmations: confirmations, audit: audit)
     }
 }

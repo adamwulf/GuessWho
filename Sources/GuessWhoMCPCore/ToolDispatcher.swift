@@ -20,6 +20,7 @@ public actor ToolDispatcher {
     private let contacts: MCPContactSource
     private let events: MCPEventSource
     private let guides: MCPGuideSource
+    private let favorites: MCPFavoriteSource
     /// The kind-agnostic connection primitive (links_* tools). Contact
     /// endpoints still WRITE through `contacts` (resolve-or-mint); this is
     /// the list/lookup surface plus the write path for pairs with no
@@ -102,6 +103,7 @@ public actor ToolDispatcher {
         contacts: MCPContactSource,
         events: MCPEventSource,
         guides: MCPGuideSource,
+        favorites: MCPFavoriteSource,
         links: MCPLinkSource,
         gates: MCPGateSource,
         confirmations: MCPConfirmationSource? = nil,
@@ -116,6 +118,7 @@ public actor ToolDispatcher {
         self.contacts = contacts
         self.events = events
         self.guides = guides
+        self.favorites = favorites
         self.links = links
         self.gates = gates
         self.confirmations = confirmations
@@ -158,6 +161,34 @@ public actor ToolDispatcher {
         if let gateError = await gateCheck(tool: tool, helperId: helperId, messageId: messageId) {
             return gateError
         }
+        if let gateError = await favoriteGateCheck(
+            request, helperId: helperId, messageId: messageId
+        ) {
+            return gateError
+        }
+
+        // Reorder's permission domain is the complete stored set, not the
+        // caller-provided order. Load that authoritative snapshot once,
+        // reject missing permission before the write budget, and pass the
+        // same values through validation and CAS so no second coordinated
+        // read is needed in the dispatcher.
+        var favoriteReorderSnapshot: [Favorite]?
+        if case .favoritesReorder = request {
+            do {
+                favoriteReorderSnapshot = try await MainActor.run {
+                    try favorites.loadFavorites()
+                }
+            } catch {
+                return favoriteReadFailure(helperId: helperId, messageId: messageId)
+            }
+            if let stored = favoriteReorderSnapshot,
+               let permissionError = await favoritePermissionError(
+                   kinds: stored.map { Self.wireFavoriteKind($0.kind) },
+                   helperId: helperId, messageId: messageId
+               ) {
+                return permissionError
+            }
+        }
 
         if case .contactsDelete(_, _, let contactId, let idempotencyToken) = request {
             // Confirmation-gated: may return nil (answer sent later).
@@ -167,7 +198,9 @@ public actor ToolDispatcher {
         }
 
         if tool.isWrite {
-            return capped(await handleWrite(request, helperId: helperId, messageId: messageId))
+            return capped(await handleWrite(
+                request, helperId: helperId, messageId: messageId,
+                favoriteReorderSnapshot: favoriteReorderSnapshot))
         }
 
         let response: WireResponse
@@ -184,6 +217,9 @@ public actor ToolDispatcher {
         case .contactsGet(_, _, let contactId):
             response = await contactsGet(
                 helperId: helperId, messageId: messageId, contactId: contactId)
+        case .contactsGetPhoto(_, _, let contactId):
+            response = await contactsGetPhoto(
+                helperId: helperId, messageId: messageId, contactId: contactId)
         case .contactsListNotes(_, _, let contactId, let limit, let cursor):
             response = await contactsListNotes(
                 helperId: helperId, messageId: messageId,
@@ -195,6 +231,25 @@ public actor ToolDispatcher {
         case .contactsListGroups(_, _, let limit, let cursor):
             response = await contactsListGroups(
                 helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
+        case .organizationsListMembers(_, _, let organizationId, let limit, let cursor):
+            response = await organizationsListMembers(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, limit: limit, cursor: cursor)
+        case .organizationsListDepartments(_, _, let organizationId, let limit, let cursor):
+            response = await organizationsListDepartments(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, limit: limit, cursor: cursor)
+        case .organizationsListDepartmentMembers(
+            _, _, let organizationId, let department, let limit, let cursor
+        ):
+            response = await organizationsListDepartmentMembers(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, department: department,
+                limit: limit, cursor: cursor)
+        case .groupsListForContact(_, _, let contactId, let limit, let cursor):
+            response = await groupsListForContact(
+                helperId: helperId, messageId: messageId,
+                contactId: contactId, limit: limit, cursor: cursor)
         case .eventsList(_, _, let startDate, let endDate, let limit, let cursor):
             response = await eventsList(
                 helperId: helperId, messageId: messageId,
@@ -209,23 +264,48 @@ public actor ToolDispatcher {
             response = await guidesList(helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
         case .guidesGet(_, _, let guideId):
             response = await guidesGet(helperId: helperId, messageId: messageId, guideId: guideId)
+        case .guidesListForPlace(_, _, let placeId, let limit, let cursor):
+            response = await guidesListForPlace(
+                helperId: helperId, messageId: messageId,
+                placeId: placeId, limit: limit, cursor: cursor)
         case .placesList(_, _, let guideId, let limit, let cursor):
             response = await placesList(
                 helperId: helperId, messageId: messageId,
                 guideId: guideId, limit: limit, cursor: cursor)
+        case .placesSearch(_, _, let query, let limit, let cursor):
+            response = await placesSearch(
+                helperId: helperId, messageId: messageId,
+                query: query, limit: limit, cursor: cursor)
+        case .placesGet(_, _, let placeId):
+            response = await placesGet(
+                helperId: helperId, messageId: messageId, placeId: placeId)
         case .linksList(_, _, let id, let kind, let limit, let cursor):
             response = await linksList(
                 helperId: helperId, messageId: messageId,
                 id: id, kind: kind, limit: limit, cursor: cursor)
+        case .favoritesList(_, _, let limit, let cursor):
+            response = await favoritesList(
+                helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
         case .initialize, .deinitialize, .ping, .listTools:
             response = .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: "That isn't a callable tool.")
         case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+             .contactsAddPostalAddress, .contactsEditPostalAddress,
+             .contactsDeletePostalAddress,
+             .contactsAddSocialProfile, .contactsEditSocialProfile,
+             .contactsDeleteSocialProfile,
+             .contactsAddInstantMessage, .contactsEditInstantMessage,
+             .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
+             .favoritesSet, .favoritesReorder,
+             .organizationsRenameDepartment,
+             .groupsCreate, .groupsRename, .groupsDelete,
+             .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -307,6 +387,51 @@ public actor ToolDispatcher {
         default:
             return nil
         }
+    }
+
+    /// Favorites span several permission domains, so their static tool
+    /// metadata is `.none` and the enforcement follows the actual referents
+    /// on every call. A list containing an unauthorized referent fails as a
+    /// whole; it never drops rows and thereby changes the stored projection.
+    private func favoriteGateCheck(
+        _ request: WireRequest, helperId: String, messageId: String
+    ) async -> WireResponse? {
+        let kinds: [WireFavoriteKind]
+        switch request {
+        case .favoritesSet(_, _, let kind, _, _, _):
+            kinds = [kind]
+        case .favoritesList, .favoritesReorder:
+            // Each handler loads its own authoritative snapshot and checks
+            // every referent kind before reading or writing entity data.
+            // Avoid an immediately-discarded coordinated-file read here.
+            return nil
+        default:
+            return nil
+        }
+
+        return await favoritePermissionError(
+            kinds: kinds, helperId: helperId, messageId: messageId)
+    }
+
+    private func favoritePermissionError(
+        kinds: [WireFavoriteKind], helperId: String, messageId: String
+    ) async -> WireResponse? {
+        let needsContacts = kinds.contains { $0 == .contact || $0 == .group }
+        let needsEvents = kinds.contains { $0 == .event }
+        let (contactsOK, eventsOK) = await MainActor.run {
+            (gates.contactsAuthorized, gates.eventsAuthorized)
+        }
+        if needsContacts && !contactsOK {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied, message: WireErrorMessage.permissionDeniedContacts)
+        }
+        if needsEvents && !eventsOK {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied, message: WireErrorMessage.permissionDeniedEvents)
+        }
+        return nil
     }
 
     // MARK: - Contacts tools
@@ -437,6 +562,49 @@ public actor ToolDispatcher {
         }
     }
 
+    private func contactsGetPhoto(
+        helperId: String, messageId: String, contactId: String
+    ) async -> WireResponse {
+        switch await resolveContact(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            do {
+                guard let photo = try await contacts.contactPhotoData(
+                    for: contact.contactID, kind: .fullSize)
+                else {
+                    return .contactPhoto(
+                        helperId: helperId, messageId: messageId, photo: .none)
+                }
+                guard !photo.data.isEmpty else {
+                    return .contactPhoto(
+                        helperId: helperId, messageId: messageId, photo: .none)
+                }
+                guard photo.data.count <= WireEnvironment.maxContactPhotoBytes else {
+                    return .error(
+                        helperId: helperId, messageId: messageId,
+                        code: .tooLarge, message: WireErrorMessage.photoTooLarge)
+                }
+                guard let mediaType = Self.photoMediaType(for: photo.data) else {
+                    return .error(
+                        helperId: helperId, messageId: messageId,
+                        code: .readFailed, message: WireErrorMessage.unsupportedStoredPhoto)
+                }
+                return .contactPhoto(
+                    helperId: helperId, messageId: messageId,
+                    photo: WireContactPhoto(
+                        present: true,
+                        mediaType: mediaType,
+                        dataBase64: photo.data.base64EncodedString(),
+                        byteCount: photo.data.count))
+            } catch {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .readFailed, message: WireErrorMessage.photoReadFailed)
+            }
+        }
+    }
+
     private func contactsListNotes(
         helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?
     ) async -> WireResponse {
@@ -496,10 +664,455 @@ public actor ToolDispatcher {
         }
         let groups = await contacts.fetchGroups()
         let (slice, nextCursor) = page.slice(groups)
-        let items = slice.map { WireMapping.group($0, id: WireRecordID.groupID(for: $0)) }
+        let favoriteStates = await MainActor.run {
+            slice.map { contacts.isGroupFavorite($0) }
+        }
+        let items = zip(slice, favoriteStates).map {
+            WireMapping.group(
+                $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1)
+        }
         return .groupPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    // MARK: - Organization tools
+
+    private func organizationsListMembers(
+        helperId: String, messageId: String, organizationId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let members = await MainActor.run {
+                contacts.contactsAssociated(with: organization)
+            }
+            return contactSummaryPage(
+                members, bounds: page, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func organizationsListDepartments(
+        helperId: String, messageId: String, organizationId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let fetched = await MainActor.run { contacts.departments(in: organization) }
+            // The repository owns extraction, trimming, de-duplication, and
+            // matching semantics. This final total sort only makes paging
+            // independent of locale/cache incidental ordering.
+            let ordered = fetched.sorted { lhs, rhs in
+                let foldedLHS = lhs.lowercased()
+                let foldedRHS = rhs.lowercased()
+                if foldedLHS != foldedRHS { return foldedLHS < foldedRHS }
+                return lhs < rhs
+            }
+            let (slice, nextCursor) = page.slice(ordered)
+            return .departmentPage(
+                helperId: helperId, messageId: messageId,
+                page: WirePage(items: slice, nextCursor: nextCursor))
+        }
+    }
+
+    private func organizationsListDepartmentMembers(
+        helperId: String, messageId: String, organizationId: String,
+        department: String, limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        guard !department.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyDepartmentName)
+        }
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let members = await MainActor.run {
+                contacts.contactsAssociated(with: organization, inDepartment: department)
+            }
+            guard !members.isEmpty else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundDepartment)
+            }
+            return contactSummaryPage(
+                members, bounds: page, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    /// Stable total ordering for organization-derived contact pages. The
+    /// repository decides membership; ids only break equal display names.
+    private func contactSummaryPage(
+        _ contacts: [Contact], bounds: PageBounds,
+        helperId: String, messageId: String
+    ) -> WireResponse {
+        let ordered = contacts
+            .map { (contact: $0, id: WireRecordID.contactID(for: $0)) }
+            .sorted { lhs, rhs in
+                let lhsName = lhs.contact.displayName.lowercased()
+                let rhsName = rhs.contact.displayName.lowercased()
+                if lhsName != rhsName { return lhsName < rhsName }
+                return lhs.id < rhs.id
+            }
+        let (slice, nextCursor) = bounds.slice(ordered)
+        return .contactPage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(
+                items: slice.map { WireMapping.summary($0.contact, id: $0.id) },
+                nextCursor: nextCursor))
+    }
+
+    // MARK: - Group tools
+
+    private func groupsListForContact(
+        helperId: String, messageId: String, contactId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        switch await resolveContact(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let groups = await contacts.groups(containing: contact)
+            let (slice, nextCursor) = page.slice(groups)
+            let favoriteStates = await MainActor.run {
+                slice.map { contacts.isGroupFavorite($0) }
+            }
+            let items = zip(slice, favoriteStates).map {
+                WireMapping.group(
+                    $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1)
+            }
+            return .groupPage(
+                helperId: helperId, messageId: messageId,
+                page: WirePage(items: items, nextCursor: nextCursor))
+        }
+    }
+
+    // MARK: - Group writes
+
+    private func groupsCreate(
+        helperId: String, messageId: String, name: String
+    ) async -> WireResponse {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyNameArgument)
+        }
+        do {
+            let group = try await contacts.createGroup(name: normalized)
+            let wireID = WireRecordID.groupID(for: group)
+            let isFavorite = await MainActor.run { contacts.isGroupFavorite(group) }
+            await recordAudit(
+                .createGroup, kind: .group,
+                subjectID: wireID, subjectName: group.name,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: nil, newValue: group.name)
+            return .group(
+                helperId: helperId, messageId: messageId,
+                group: WireMapping.group(
+                    group, id: wireID, isFavorite: isFavorite))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsRename(
+        helperId: String, messageId: String, groupId: String, name: String
+    ) async -> WireResponse {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyNameArgument)
+        }
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+        do {
+            try await contacts.renameGroup(group, to: normalized)
+            let renamed = ContactGroup(localID: group.localID, name: normalized)
+            let isFavorite = await MainActor.run { contacts.isGroupFavorite(renamed) }
+            await recordAudit(
+                .renameGroup, kind: .group,
+                subjectID: groupId, subjectName: normalized,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: group.name, newValue: normalized)
+            return .group(
+                helperId: helperId, messageId: messageId,
+                group: WireMapping.group(
+                    renamed, id: groupId, isFavorite: isFavorite))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsDelete(
+        helperId: String, messageId: String, groupId: String
+    ) async -> WireResponse {
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+        do {
+            try await contacts.deleteGroup(group)
+            // Match the app's delete path: the Contacts deletion is the primary
+            // operation, and stale favorite cleanup is best-effort afterwards.
+            _ = try? await MainActor.run {
+                try contacts.setGroupFavorite(false, for: group)
+            }
+            await recordAudit(
+                .deleteGroup, kind: .group,
+                subjectID: groupId, subjectName: group.name,
+                instanceID: nil, postModifiedAt: nil,
+                priorValue: group.name, newValue: nil)
+            return .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.groupDeleted)
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsSetFavorite(
+        helperId: String, messageId: String, groupId: String, favorite: Bool
+    ) async -> WireResponse {
+        // Resolve the opaque id to a live value BEFORE the repository is
+        // allowed to inspect its Contacts identifier as a favorite key.
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+        let prior = await MainActor.run { contacts.isGroupFavorite(group) }
+        do {
+            let resulting = try await MainActor.run {
+                try contacts.setGroupFavorite(favorite, for: group)
+            }
+            guard resulting == favorite else { throw WriteProblem.verifyFailed }
+            if prior != favorite {
+                await recordAudit(
+                    .setFavorite, kind: .group,
+                    subjectID: groupId, subjectName: group.name,
+                    instanceID: nil, postModifiedAt: nil,
+                    priorValue: prior ? "true" : "false",
+                    newValue: favorite ? "true" : "false")
+            }
+            return .group(
+                helperId: helperId, messageId: messageId,
+                group: WireMapping.group(
+                    group, id: groupId, isFavorite: favorite))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func groupsChangeMembers(
+        helperId: String, messageId: String,
+        groupId: String, contactIds: [String], change: GroupMembershipChange
+    ) async -> WireResponse {
+        guard !contactIds.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.groupMembersRequired)
+        }
+        guard contactIds.count <= Self.maxLimit else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.tooManyGroupMembers)
+        }
+        guard let group = await resolveGroup(groupId) else {
+            return groupNotFound(helperId: helperId, messageId: messageId)
+        }
+
+        // Collapse duplicate wire ids in caller order. Resolve the whole batch
+        // before the first write: one invalid id cannot cause a half-applied
+        // request before the caller learns its arguments were stale.
+        var seen = Set<String>()
+        let uniqueIDs = contactIds.filter { seen.insert($0).inserted }
+        var resolved: [(id: String, contact: Contact)] = []
+        var requested: [Contact] = []
+        for id in uniqueIDs {
+            switch await resolveContactForWrite(id) {
+            case .failure(let failure):
+                return failure.response(helperId: helperId, messageId: messageId)
+            case .success(let contact):
+                resolved.append((id, contact))
+                // A pre-mint preview id and the subsequently minted id can
+                // both resolve to the same card. Apply that contact once,
+                // while retaining every distinct caller id for the result.
+                if !requested.contains(where: {
+                    $0.contactID == contact.contactID
+                }) {
+                    requested.append(contact)
+                }
+            }
+        }
+
+        // Snapshot membership only to make the audit honest about idempotent
+        // no-ops. The repository remains authoritative for applying the batch.
+        let currentIDs = Set(
+            await contacts.members(ofGroup: group.localID)
+                .map { WireRecordID.contactID(for: $0) }
+        )
+        let wouldChangeLocalIDs = Set(requested.compactMap { contact -> String? in
+            // A pre-mint id can keep resolving after another writer assigns
+            // the contact a different GuessWho id. Compare membership using
+            // the resolved contact's current wire id. Track the internal
+            // identity only for an exact, de-duplicated audit count.
+            let canonicalID = WireRecordID.contactID(for: contact)
+            let isMember = currentIDs.contains(canonicalID)
+            switch change {
+            case .addition:
+                return isMember ? nil : contact.contactID.restorationToken.localID
+            case .removal:
+                return isMember ? contact.contactID.restorationToken.localID : nil
+            }
+        })
+
+        do {
+            switch change {
+            case .addition:
+                try await contacts.addContacts(requested, toGroup: group)
+            case .removal:
+                try await contacts.removeContacts(requested, fromGroup: group)
+            }
+            await recordGroupMembershipAudit(
+                change: change, group: group, groupId: groupId,
+                changedIDs: requested.compactMap { contact in
+                    let localID = contact.contactID.restorationToken.localID
+                    return wouldChangeLocalIDs.contains(localID)
+                        ? WireRecordID.contactID(for: contact) : nil
+                })
+            return .groupMembership(
+                helperId: helperId, messageId: messageId,
+                result: WireGroupMembershipResult(
+                    groupId: groupId,
+                    appliedContactIds: uniqueIDs,
+                    failures: []))
+        } catch let partial as GroupMembershipPartialFailureError {
+            let status = await contacts.contactsAuthorizationStatus()
+            let appliedContactIDs = Set(partial.applied.map(\.contactID))
+            let failuresByContactID = Dictionary(
+                partial.failures.map { ($0.contact.contactID, $0) },
+                uniquingKeysWith: { first, _ in first })
+
+            // Classify the caller's distinct opaque ids in their original
+            // order. If pre- and post-mint ids name the same contact, both
+            // receive the one repository outcome, so none silently vanish.
+            let applied = resolved.compactMap { pair in
+                appliedContactIDs.contains(pair.contact.contactID) ? pair.id : nil
+            }
+            let failures = resolved.compactMap { pair in
+                failuresByContactID[pair.contact.contactID].map {
+                    groupMembershipFailure(
+                        $0, contactId: pair.id, authorization: status)
+                }
+            }
+            await recordGroupMembershipAudit(
+                change: change, group: group, groupId: groupId,
+                changedIDs: partial.applied.compactMap { contact in
+                    let localID = contact.contactID.restorationToken.localID
+                    return wouldChangeLocalIDs.contains(localID)
+                        ? WireRecordID.contactID(for: contact) : nil
+                })
+            return .groupMembership(
+                helperId: helperId, messageId: messageId,
+                result: WireGroupMembershipResult(
+                    groupId: groupId,
+                    appliedContactIds: applied,
+                    failures: failures))
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func recordGroupMembershipAudit(
+        change: GroupMembershipChange,
+        group: ContactGroup,
+        groupId: String,
+        changedIDs: [String]
+    ) async {
+        guard !changedIDs.isEmpty else { return }
+        let countDescription = changedIDs.count == 1
+            ? "1 contact"
+            : "\(changedIDs.count) contacts"
+        await recordAudit(
+            change == .addition ? .addGroupMembers : .removeGroupMembers,
+            kind: .group,
+            subjectID: groupId, subjectName: group.name,
+            instanceID: nil, postModifiedAt: nil,
+            priorValue: nil, newValue: countDescription)
+    }
+
+    private func groupMembershipFailure(
+        _ failure: GroupMembershipPartialFailureError.Failure,
+        contactId: String,
+        authorization: StoreAuthorizationStatus
+    ) -> WireGroupMembershipFailure {
+        if let storeError = failure.error as? ContactStoreError,
+           case .contactNotFound = storeError {
+            return WireGroupMembershipFailure(
+                contactId: contactId, code: .notFound,
+                message: WireErrorMessage.notFoundContact)
+        }
+        if failure.error is ContactNotSavedError {
+            return WireGroupMembershipFailure(
+                contactId: contactId, code: .notFound,
+                message: WireErrorMessage.notFoundContact)
+        }
+        if authorization == .denied || authorization == .restricted {
+            return WireGroupMembershipFailure(
+                contactId: contactId, code: .permissionDenied,
+                message: WireErrorMessage.permissionDeniedContacts)
+        }
+        return WireGroupMembershipFailure(
+            contactId: contactId, code: .writeFailed,
+            message: WireErrorMessage.writeFailed)
+    }
+
+    private func groupWriteFailure(
+        _ error: Error, helperId: String, messageId: String
+    ) async -> WireResponse {
+        if let storeError = error as? ContactStoreError {
+            switch storeError {
+            case .groupNotFound:
+                return groupNotFound(helperId: helperId, messageId: messageId)
+            case .contactNotFound:
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundContact)
+            }
+        }
+        let authorization = await contacts.contactsAuthorizationStatus()
+        if authorization == .denied || authorization == .restricted {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .permissionDenied,
+                message: WireErrorMessage.permissionDeniedContacts)
+        }
+        return .error(
+            helperId: helperId, messageId: messageId,
+            code: .writeFailed, message: WireErrorMessage.writeFailed)
+    }
+
+    private func groupNotFound(helperId: String, messageId: String) -> WireResponse {
+        .error(
+            helperId: helperId, messageId: messageId,
+            code: .notFound, message: WireErrorMessage.notFoundGroup)
     }
 
     // MARK: - Events tools
@@ -583,10 +1196,13 @@ public actor ToolDispatcher {
         guard let page = pageBounds(limit: limit, cursor: cursor) else {
             return invalidCursor(helperId: helperId, messageId: messageId)
         }
-        let all = await guides.allGuides()
-        let sorted = all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        async let fetchedGuides = guides.allGuides()
+        async let fetchedPlaces = guides.allPlaces()
+        let all = await fetchedGuides
+        let allPlaces = await fetchedPlaces
+        let sorted = Self.sortedGuides(all)
         let (slice, nextCursor) = page.slice(sorted)
-        let items = slice.map { WireMapping.guide($0, id: $0.id.uuidString.lowercased()) }
+        let items = await wireGuides(slice, allPlaces: allPlaces)
         return .guidePage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
@@ -598,15 +1214,47 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
-        let all = await guides.allGuides()
-        guard let guide = all.first(where: { $0.id == id }) else {
+        async let fetchedGuides = guides.allGuides()
+        async let fetchedPlaces = guides.allPlaces()
+        guard let guide = await fetchedGuides.first(where: { $0.id == id }) else {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .notFound, message: WireErrorMessage.notFoundGuide)
         }
+        let items = await wireGuides([guide], allPlaces: await fetchedPlaces)
         return .guide(
             helperId: helperId, messageId: messageId,
-            guide: WireMapping.guide(guide, id: guide.id.uuidString.lowercased()))
+            guide: items[0])
+    }
+
+    private func guidesListForPlace(
+        helperId: String, messageId: String, placeId: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        guard let id = WireRecordID.recordUUID(placeId) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
+        }
+        let allPlaces = await guides.allPlaces()
+        guard let place = allPlaces.first(where: { $0.id == id }) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
+        }
+        // The source deliberately resolves containment through the same
+        // address-based repository path used by the app. That live path may
+        // read places again; keep this first snapshot for lookup and counts
+        // instead of duplicating the matcher here and risking parity drift.
+        let containing = Self.sortedGuides(await guides.guides(containingPlace: place))
+        let (slice, nextCursor) = page.slice(containing)
+        let items = await wireGuides(slice, allPlaces: allPlaces)
+        return .guidePage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: items, nextCursor: nextCursor))
     }
 
     private func placesList(
@@ -622,17 +1270,186 @@ public actor ToolDispatcher {
                     helperId: helperId, messageId: messageId,
                     code: .notFound, message: WireErrorMessage.notFoundGuide)
             }
-            places = await guides.places(inGuide: id)
+            guard await guides.allGuides().contains(where: { $0.id == id }) else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundGuide)
+            }
+            places = Self.sortedPlacesInGuide(await guides.places(inGuide: id))
         } else {
-            places = await guides.allPlaces()
+            places = Self.sortedPlaces(await guides.allPlaces())
         }
         let (slice, nextCursor) = page.slice(places)
-        let items = slice.map {
-            WireMapping.place(
-                $0, id: $0.id.uuidString.lowercased(),
-                guideID: $0.guideID.uuidString.lowercased())
-        }
+        let items = await wirePlaces(slice)
         return .placePage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    private func placesSearch(
+        helperId: String, messageId: String, query: String,
+        limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Unlike contact search, accept one visible character: saved place
+        // and guide names can legitimately be a single character. Paging,
+        // the shared search budget, and the response cap bound the result.
+        guard !needle.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: "The query argument must contain visible text.")
+        }
+        guard admitSearch() else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .busy, message: WireErrorMessage.busy)
+        }
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        async let fetchedGuides = guides.allGuides()
+        async let fetchedPlaces = guides.allPlaces()
+        let guideNames = Dictionary(
+            await fetchedGuides.map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first })
+        let matches = await fetchedPlaces.filter { place in
+            place.name.localizedCaseInsensitiveContains(needle)
+                || place.address?.localizedCaseInsensitiveContains(needle) == true
+                || guideNames[place.guideID]?.localizedCaseInsensitiveContains(needle) == true
+        }
+        let ordered = Self.sortedPlaceSearchResults(matches, guideNames: guideNames)
+        let (slice, nextCursor) = page.slice(ordered)
+        return .placePage(
+            helperId: helperId, messageId: messageId,
+            page: WirePage(items: await wirePlaces(slice), nextCursor: nextCursor))
+    }
+
+    private func placesGet(
+        helperId: String, messageId: String, placeId: String
+    ) async -> WireResponse {
+        guard let id = WireRecordID.recordUUID(placeId),
+              let place = await guides.allPlaces().first(where: { $0.id == id })
+        else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .notFound, message: WireErrorMessage.notFoundPlace)
+        }
+        let items = await wirePlaces([place])
+        return .place(helperId: helperId, messageId: messageId, place: items[0])
+    }
+
+    private func wireGuides(
+        _ records: [MapsGuide], allPlaces: [MapsPlace]
+    ) async -> [WireGuide] {
+        let counts = Dictionary(grouping: allPlaces, by: \.guideID).mapValues(\.count)
+        let favoriteIDs = await favoriteIDs(kind: .guide)
+        return records.map { guide in
+            let id = guide.id.uuidString.lowercased()
+            return WireMapping.guide(
+                guide, id: id, placeCount: counts[guide.id, default: 0],
+                isFavorite: favoriteIDs.contains(id))
+        }
+    }
+
+    private func wirePlaces(_ records: [MapsPlace]) async -> [WirePlace] {
+        let favoriteIDs = await favoriteIDs(kind: .place)
+        return records.map { place in
+            let id = place.id.uuidString.lowercased()
+            return WireMapping.place(
+                place, id: id, guideID: place.guideID.uuidString.lowercased(),
+                isFavorite: favoriteIDs.contains(id))
+        }
+    }
+
+    private func favoriteIDs(kind: FavoriteKind) async -> Set<String> {
+        Set(await guides.favorites().lazy.filter { $0.kind == kind }.map(\.id))
+    }
+
+    private static func sortedGuides(_ records: [MapsGuide]) -> [MapsGuide] {
+        records.sorted { lhs, rhs in
+            let left = lhs.name.lowercased()
+            let right = rhs.name.lowercased()
+            if left != right { return left < right }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private static func sortedPlacesInGuide(_ records: [MapsPlace]) -> [MapsPlace] {
+        records.sorted { lhs, rhs in
+            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private static func sortedPlaces(_ records: [MapsPlace]) -> [MapsPlace] {
+        records.sorted { lhs, rhs in
+            let leftGuide = lhs.guideID.uuidString.lowercased()
+            let rightGuide = rhs.guideID.uuidString.lowercased()
+            if leftGuide != rightGuide { return leftGuide < rightGuide }
+            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private static func sortedPlaceSearchResults(
+        _ records: [MapsPlace], guideNames: [UUID: String]
+    ) -> [MapsPlace] {
+        records.sorted { lhs, rhs in
+            let leftName = lhs.name.lowercased()
+            let rightName = rhs.name.lowercased()
+            if leftName != rightName { return leftName < rightName }
+            let leftAddress = lhs.address?.lowercased() ?? ""
+            let rightAddress = rhs.address?.lowercased() ?? ""
+            if leftAddress != rightAddress { return leftAddress < rightAddress }
+            let leftGuide = guideNames[lhs.guideID]?.lowercased() ?? ""
+            let rightGuide = guideNames[rhs.guideID]?.lowercased() ?? ""
+            if leftGuide != rightGuide { return leftGuide < rightGuide }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    // MARK: - Favorites read tool
+
+    private func favoritesList(
+        helperId: String, messageId: String, limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let page = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        let stored: [Favorite]
+        do {
+            stored = try await MainActor.run { try favorites.loadFavorites() }
+        } catch {
+            return favoriteReadFailure(helperId: helperId, messageId: messageId)
+        }
+        if let permissionError = await favoritePermissionError(
+            kinds: stored.map { Self.wireFavoriteKind($0.kind) },
+            helperId: helperId, messageId: messageId
+        ) {
+            return permissionError
+        }
+        let (slice, nextCursor) = page.slice(stored)
+
+        // Resolve only the requested page, but keep the page boundaries over
+        // the raw stored order so stale rows cannot shift or disappear.
+        let contactSnapshot = slice.contains { $0.kind == .contact }
+            ? await MainActor.run { contacts.allContacts } : []
+        let groupSnapshot = slice.contains { $0.kind == .group }
+            ? await contacts.fetchGroups() : []
+        let guideSnapshot = slice.contains { $0.kind == .guide }
+            ? await guides.allGuides() : []
+        let placeSnapshot = slice.contains { $0.kind == .place }
+            ? await guides.allPlaces() : []
+
+        var items: [WireFavorite] = []
+        items.reserveCapacity(slice.count)
+        for favorite in slice {
+            let resolved = await resolveStoredFavorite(
+                favorite, contacts: contactSnapshot, groups: groupSnapshot,
+                guides: guideSnapshot, places: placeSnapshot)
+            items.append(resolved.wire)
+        }
+        return .favoritePage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
     }
@@ -644,7 +1461,8 @@ public actor ToolDispatcher {
     /// neither burns budget nor re-applies; only successful responses are
     /// cached (a failed write should re-attempt on retry).
     private func handleWrite(
-        _ request: WireRequest, helperId: String, messageId: String
+        _ request: WireRequest, helperId: String, messageId: String,
+        favoriteReorderSnapshot: [Favorite]?
     ) async -> WireResponse {
         if let token = request.idempotencyToken {
             pruneIdempotencyCache()
@@ -657,7 +1475,9 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .busy, message: WireErrorMessage.writeBusy)
         }
-        let response = await executeWrite(request, helperId: helperId, messageId: messageId)
+        let response = await executeWrite(
+            request, helperId: helperId, messageId: messageId,
+            favoriteReorderSnapshot: favoriteReorderSnapshot)
         if let token = request.idempotencyToken, response.errorPayload == nil {
             idempotencyCache[Self.idempotencyKey(helperId: helperId, token: token)] =
                 (Date(), response)
@@ -666,7 +1486,8 @@ public actor ToolDispatcher {
     }
 
     private func executeWrite(
-        _ request: WireRequest, helperId: String, messageId: String
+        _ request: WireRequest, helperId: String, messageId: String,
+        favoriteReorderSnapshot: [Favorite]?
     ) async -> WireResponse {
         switch request {
         case .contactsCreate(_, _, let kind, let fields, _):
@@ -675,6 +1496,13 @@ public actor ToolDispatcher {
         case .contactsUpdate(_, _, let contactId, let fields, _):
             return await contactsUpdate(
                 helperId: helperId, messageId: messageId, contactId: contactId, fields: fields)
+        case .contactsSetPhoto(_, _, let contactId, let mediaType, let dataBase64, _):
+            return await contactsSetPhoto(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                mediaType: mediaType, dataBase64: dataBase64)
+        case .contactsDeletePhoto(_, _, let contactId, _):
+            return await contactsDeletePhoto(
+                helperId: helperId, messageId: messageId, contactId: contactId)
         case .contactsAddValue(_, _, let contactId, let wireField, let value, let label, _):
             guard let field = ContactListField(wireField: wireField) else {
                 return invalidContactListField(helperId: helperId, messageId: messageId)
@@ -700,6 +1528,49 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId, contactId: contactId,
                 field: field,
                 operation: .edit(currentValue: currentValue, newValue: newValue, newLabel: newLabel))
+        case .contactsAddPostalAddress(_, _, let contactId, let address, _):
+            return await contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .add(address))
+        case .contactsEditPostalAddress(
+            _, _, let contactId, let currentAddress, let newAddress, _
+        ):
+            return await contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .edit(current: currentAddress, replacement: newAddress))
+        case .contactsDeletePostalAddress(_, _, let contactId, let address, _):
+            return await contactsEditPostalAddress(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .remove(address))
+        case .contactsAddSocialProfile(_, _, let contactId, let profile, _):
+            return await contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .add(profile))
+        case .contactsEditSocialProfile(
+            _, _, let contactId, let currentProfile, let newProfile, _
+        ):
+            return await contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .edit(current: currentProfile, replacement: newProfile))
+        case .contactsDeleteSocialProfile(_, _, let contactId, let profile, _):
+            return await contactsEditSocialProfile(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .remove(profile))
+        case .contactsAddInstantMessage(_, _, let contactId, let instantMessage, _):
+            return await contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .add(instantMessage))
+        case .contactsEditInstantMessage(
+            _, _, let contactId, let currentInstantMessage, let newInstantMessage, _
+        ):
+            return await contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .edit(
+                    current: currentInstantMessage, replacement: newInstantMessage))
+        case .contactsDeleteInstantMessage(_, _, let contactId, let instantMessage, _):
+            return await contactsEditInstantMessage(
+                helperId: helperId, messageId: messageId, contactId: contactId,
+                operation: .remove(instantMessage))
         case .contactsAddNote(_, _, let contactId, let body, _):
             return await contactsAddNote(
                 helperId: helperId, messageId: messageId, contactId: contactId, body: body)
@@ -720,6 +1591,41 @@ public actor ToolDispatcher {
         case .contactsSetFavorite(_, _, let contactId, let favorite, _):
             return await contactsSetFavorite(
                 helperId: helperId, messageId: messageId, contactId: contactId, favorite: favorite)
+        case .favoritesSet(_, _, let kind, let id, let favorite, _):
+            return await favoritesSet(
+                helperId: helperId, messageId: messageId,
+                kind: kind, id: id, favorite: favorite)
+        case .favoritesReorder(_, _, let identities, _):
+            return await favoritesReorder(
+                helperId: helperId, messageId: messageId, identities: identities,
+                current: favoriteReorderSnapshot)
+        case .organizationsRenameDepartment(
+            _, _, let organizationId, let oldName, let newName, _
+        ):
+            return await organizationsRenameDepartment(
+                helperId: helperId, messageId: messageId,
+                organizationId: organizationId, oldName: oldName, newName: newName)
+        case .groupsCreate(_, _, let name, _):
+            return await groupsCreate(
+                helperId: helperId, messageId: messageId, name: name)
+        case .groupsRename(_, _, let groupId, let name, _):
+            return await groupsRename(
+                helperId: helperId, messageId: messageId, groupId: groupId, name: name)
+        case .groupsDelete(_, _, let groupId, _):
+            return await groupsDelete(
+                helperId: helperId, messageId: messageId, groupId: groupId)
+        case .groupsAddMembers(_, _, let groupId, let contactIds, _):
+            return await groupsChangeMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: groupId, contactIds: contactIds, change: .addition)
+        case .groupsRemoveMembers(_, _, let groupId, let contactIds, _):
+            return await groupsChangeMembers(
+                helperId: helperId, messageId: messageId,
+                groupId: groupId, contactIds: contactIds, change: .removal)
+        case .groupsSetFavorite(_, _, let groupId, let favorite, _):
+            return await groupsSetFavorite(
+                helperId: helperId, messageId: messageId,
+                groupId: groupId, favorite: favorite)
         case .eventsAddTag(_, _, let eventId, let text, _):
             return await eventsAddTag(
                 helperId: helperId, messageId: messageId, eventId: eventId, text: text)
@@ -754,6 +1660,63 @@ public actor ToolDispatcher {
     }
 
     // MARK: - Contact writes
+
+    private func organizationsRenameDepartment(
+        helperId: String, messageId: String, organizationId: String,
+        oldName: String, newName: String
+    ) async -> WireResponse {
+        let trimmedOld = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedNew = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedOld.isEmpty, !trimmedNew.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.emptyDepartmentName)
+        }
+        // Exact equality after trimming is a no-op. Case-only changes are
+        // meaningful display edits and deliberately pass through.
+        guard trimmedOld != trimmedNew else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.unchangedDepartmentName)
+        }
+
+        switch await resolveOrganization(organizationId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let organization):
+            let members = await MainActor.run {
+                contacts.contactsAssociated(with: organization, inDepartment: trimmedOld)
+            }
+            guard !members.isEmpty else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.notFoundDepartment)
+            }
+            let keys = members.map { $0.contactID.restorationToken.localID }
+            do {
+                let affectedCount = try await withWriteKeysLocked(keys) {
+                    // ONE repository call: it owns matching, fresh fetches,
+                    // saves, cache refresh, and the user-level operation.
+                    try await contacts.renameDepartment(
+                        from: trimmedOld, to: trimmedNew, in: organization)
+                }
+                if affectedCount > 0 {
+                    await recordAudit(
+                        .renameDepartment, kind: .contact, contact: organization,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: trimmedOld, newValue: trimmedNew)
+                }
+                return .departmentRename(
+                    helperId: helperId, messageId: messageId,
+                    result: WireDepartmentRenameResult(affectedCount: affectedCount))
+            } catch {
+                // renameDepartment can throw after earlier member saves.
+                // The fixed failure text explicitly requires a re-read and
+                // never claims that zero records changed.
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
 
     private func contactsAddNote(
         helperId: String, messageId: String, contactId: String, body: String
@@ -1061,7 +2024,8 @@ public actor ToolDispatcher {
     }
 
     private func contactsSetFavorite(
-        helperId: String, messageId: String, contactId: String, favorite: Bool
+        helperId: String, messageId: String, contactId: String, favorite: Bool,
+        genericAcknowledgement: Bool = false
     ) async -> WireResponse {
         switch await resolveContactForWrite(contactId) {
         case .failure(let failure):
@@ -1101,10 +2065,223 @@ public actor ToolDispatcher {
                 }
                 return .acknowledged(
                     helperId: helperId, messageId: messageId,
-                    message: favorite ? WireAckMessage.favoriteSet : WireAckMessage.favoriteCleared)
+                    message: favorite
+                        ? (genericAcknowledgement ? WireAckMessage.genericFavoriteSet : WireAckMessage.favoriteSet)
+                        : (genericAcknowledgement ? WireAckMessage.genericFavoriteCleared : WireAckMessage.favoriteCleared))
             } catch {
                 return writeFailure(error, helperId: helperId, messageId: messageId)
             }
+        }
+    }
+
+    private func favoritesSet(
+        helperId: String, messageId: String, kind: WireFavoriteKind,
+        id: String, favorite: Bool
+    ) async -> WireResponse {
+        // Contact favorites must ride the repository funnel: the first write
+        // to an untouched contact resolves/mints its durable identity, exactly
+        // as contacts_set_favorite has always done. Both tools therefore share
+        // storage and behavior; only the acknowledgement copy differs.
+        if kind == .contact {
+            if Self.hasObviouslyDifferentFavoriteKind(id, expected: kind) {
+                return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+            }
+            if case .failure = await resolveContact(id) {
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                if await isKnownFavoriteID(id, excluding: kind) {
+                    return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+                }
+            }
+            return await contactsSetFavorite(
+                helperId: helperId, messageId: messageId,
+                contactId: id, favorite: favorite, genericAcknowledgement: true)
+        }
+
+        switch await resolveFavoriteInput(kind: kind, id: id) {
+        case .failure(let failure):
+            if !favorite, let cleared = await clearStoredFavorite(
+                kind: kind, id: id, helperId: helperId, messageId: messageId
+            ) {
+                return cleared
+            }
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let resolved):
+            do {
+                let changed = try await MainActor.run {
+                    try favorites.setFavorite(
+                        kind: resolved.storageKind, id: resolved.storageID, favorite: favorite)
+                }
+                if changed {
+                    await recordAudit(
+                        .setFavorite, kind: Self.auditKind(resolved.storageKind),
+                        subjectID: resolved.identity.id, subjectName: resolved.displayName,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: favorite ? "false" : "true",
+                        newValue: favorite ? "true" : "false")
+                }
+                return .acknowledged(
+                    helperId: helperId, messageId: messageId,
+                    message: favorite
+                        ? WireAckMessage.genericFavoriteSet
+                        : WireAckMessage.genericFavoriteCleared)
+            } catch {
+                return writeFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    /// Removing a favorite is also the recovery path for an orphan left by
+    /// deletion outside the favorites UI (including an MCP entity delete).
+    /// Resolve the supplied composite identity against the stored favorite
+    /// projection, whose opaque stale id is exactly what favorites_list
+    /// exposes, then remove the underlying storage identity. Adding still
+    /// always requires a live referent.
+    private func clearStoredFavorite(
+        kind: WireFavoriteKind, id: String, helperId: String, messageId: String
+    ) async -> WireResponse? {
+        guard let wanted = Self.canonicalStoredFavoriteIdentity(kind: kind, id: id) else {
+            return nil
+        }
+        let stored: [Favorite]
+        do {
+            stored = try await MainActor.run { try favorites.loadFavorites() }
+        } catch {
+            return favoriteReadFailure(helperId: helperId, messageId: messageId)
+        }
+        let candidates = stored.filter { Self.wireFavoriteKind($0.kind) == kind }
+        guard !candidates.isEmpty else { return nil }
+
+        let contactSnapshot = kind == .contact
+            ? await MainActor.run { contacts.allContacts } : []
+        let groupSnapshot = kind == .group ? await contacts.fetchGroups() : []
+        let guideSnapshot = kind == .guide ? await guides.allGuides() : []
+        let placeSnapshot = kind == .place ? await guides.allPlaces() : []
+
+        var match: StoredFavoriteResolution?
+        for candidate in candidates {
+            let resolved = await resolveStoredFavorite(
+                candidate, contacts: contactSnapshot, groups: groupSnapshot,
+                guides: guideSnapshot, places: placeSnapshot)
+            if resolved.identity == wanted {
+                match = resolved
+                break
+            }
+        }
+        guard let match else { return nil }
+
+        do {
+            let changed = try await MainActor.run {
+                try favorites.setFavorite(
+                    kind: match.favorite.kind, id: match.favorite.id, favorite: false)
+            }
+            if changed {
+                await recordAudit(
+                    .setFavorite, kind: Self.auditKind(match.favorite.kind),
+                    subjectID: match.identity.id, subjectName: match.displayName,
+                    instanceID: nil, postModifiedAt: nil,
+                    priorValue: "true", newValue: "false")
+            }
+            return .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.genericFavoriteCleared)
+        } catch {
+            return writeFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func favoritesReorder(
+        helperId: String, messageId: String, identities: [WireFavoriteIdentity],
+        current suppliedCurrent: [Favorite]?
+    ) async -> WireResponse {
+        guard Set(identities).count == identities.count else {
+            return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+        }
+
+        guard let current = suppliedCurrent else {
+            // All callers preflight the authoritative snapshot before the
+            // write budget. Keep this fixed failure rather than silently
+            // re-reading and changing the budget/permission ordering.
+            return favoriteReadFailure(helperId: helperId, messageId: messageId)
+        }
+        guard identities.count == current.count else {
+            return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+        }
+        let contactSnapshot = current.contains { $0.kind == .contact }
+            ? await MainActor.run { contacts.allContacts } : []
+        let groupSnapshot = current.contains { $0.kind == .group }
+            ? await contacts.fetchGroups() : []
+        let guideSnapshot = current.contains { $0.kind == .guide }
+            ? await guides.allGuides() : []
+        let placeSnapshot = current.contains { $0.kind == .place }
+            ? await guides.allPlaces() : []
+
+        var projected: [StoredFavoriteResolution] = []
+        projected.reserveCapacity(current.count)
+        for favorite in current {
+            let item = await resolveStoredFavorite(
+                favorite, contacts: contactSnapshot, groups: groupSnapshot,
+                guides: guideSnapshot, places: placeSnapshot)
+            guard item.isAvailable else {
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: WireErrorMessage.staleFavorite)
+            }
+            projected.append(item)
+        }
+
+        let currentIdentities = projected.map(\.identity)
+        guard Set(currentIdentities).count == currentIdentities.count else {
+            return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+        }
+
+        let byIdentity = Dictionary(uniqueKeysWithValues: projected.map { ($0.identity, $0.favorite) })
+        var canonicalRequested: [WireFavoriteIdentity] = []
+        var reordered: [Favorite] = []
+        canonicalRequested.reserveCapacity(identities.count)
+        reordered.reserveCapacity(identities.count)
+        for identity in identities {
+            guard let canonical = Self.canonicalFavoriteIdentityForReorder(identity),
+                  let favorite = byIdentity[canonical]
+            else {
+                return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+            }
+            canonicalRequested.append(canonical)
+            reordered.append(favorite)
+        }
+        guard Set(canonicalRequested).count == canonicalRequested.count,
+              Set(canonicalRequested) == Set(currentIdentities),
+              reordered.count == current.count
+        else {
+            return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+        }
+        let validatedReorder = reordered
+
+        do {
+            let changed = try await MainActor.run {
+                try favorites.reorderFavorites(expected: current, reordered: validatedReorder)
+            }
+            if changed {
+                await recordAudit(
+                    .reorderFavorites, kind: .favorites,
+                    subjectID: "favorites", subjectName: "favorites",
+                    instanceID: nil, postModifiedAt: nil,
+                    priorValue: nil, newValue: nil)
+            }
+            return .acknowledged(
+                helperId: helperId, messageId: messageId,
+                message: WireAckMessage.favoritesReordered)
+        } catch FavoritesStoreMutationError.changed {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .busy, message: WireErrorMessage.favoritesChangedDuringReorder)
+        } catch FavoritesStoreMutationError.invalidOrder {
+            return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
+        } catch {
+            return writeFailure(error, helperId: helperId, messageId: messageId)
         }
     }
 
@@ -1176,6 +2353,13 @@ public actor ToolDispatcher {
     private static func applyScalarFields(
         _ fields: WireContactScalarFields, to contact: inout Contact
     ) -> String? {
+        if let value = fields.kind {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "person": contact.contactType = .person
+            case "organization": contact.contactType = .organization
+            default: return WireErrorMessage.invalidKindArgument
+            }
+        }
         if let value = fields.namePrefix { contact.namePrefix = value }
         if let value = fields.givenName { contact.givenName = value }
         if let value = fields.middleName { contact.middleName = value }
@@ -1380,6 +2564,166 @@ public actor ToolDispatcher {
                 return contactSaveFailure(error, helperId: helperId, messageId: messageId)
             }
         }
+    }
+
+    private func contactsSetPhoto(
+        helperId: String, messageId: String, contactId: String,
+        mediaType: String, dataBase64: String
+    ) async -> WireResponse {
+        let normalizedType = mediaType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard Self.supportedPhotoMediaTypes.contains(normalizedType) else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidPhotoMediaType)
+        }
+        guard dataBase64.utf8.count <= WireEnvironment.maxContactPhotoBase64Bytes else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .tooLarge, message: WireErrorMessage.photoTooLarge)
+        }
+        guard let data = Data(base64Encoded: dataBase64), !data.isEmpty else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.invalidPhotoData)
+        }
+        guard data.count <= WireEnvironment.maxContactPhotoBytes else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .tooLarge, message: WireErrorMessage.photoTooLarge)
+        }
+        guard Self.photoMediaType(for: data) == normalizedType else {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: WireErrorMessage.photoMediaTypeMismatch)
+        }
+
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) {
+                    let prior = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data
+                    // Intrinsically idempotent even without a client token:
+                    // do not snapshot and rewrite identical bytes.
+                    if prior == data {
+                        return .acknowledged(
+                            helperId: helperId, messageId: messageId,
+                            message: WireAckMessage.photoSet)
+                    }
+                    guard try await contacts.setContactPhoto(
+                        for: contact.contactID, imageData: data)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    // Contacts may transcode the supplied image, and the
+                    // repository's full-size read deliberately falls back to
+                    // a thumbnail on cards whose full bytes are unavailable.
+                    // Verify the persisted invariant (a non-empty photo now
+                    // exists), not byte identity with the input encoding.
+                    guard let verified = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data,
+                          !verified.isEmpty
+                    else {
+                        return writeFailure(helperId: helperId, messageId: messageId)
+                    }
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? contact
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: prior.map { "photo (\($0.count) bytes)" },
+                        newValue: "photo (\(normalizedType), \(data.count) bytes)")
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: WireAckMessage.photoSet)
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    private func contactsDeletePhoto(
+        helperId: String, messageId: String, contactId: String
+    ) async -> WireResponse {
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) {
+                    guard let prior = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data,
+                          !prior.isEmpty
+                    else {
+                        // Already absent is a successful no-op.
+                        return .acknowledged(
+                            helperId: helperId, messageId: messageId,
+                            message: WireAckMessage.photoDeleted)
+                    }
+                    guard try await contacts.setContactPhoto(
+                        for: contact.contactID, imageData: nil)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    let remaining = try await contacts.contactPhotoData(
+                        for: contact.contactID, kind: .fullSize)?.data
+                    guard remaining?.isEmpty != false else {
+                        return writeFailure(helperId: helperId, messageId: messageId)
+                    }
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? contact
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: "photo (\(prior.count) bytes)", newValue: "photo deleted")
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: WireAckMessage.photoDeleted)
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
+    private static let supportedPhotoMediaTypes: Set<String> = [
+        "image/jpeg", "image/png", "image/gif", "image/heic", "image/webp",
+    ]
+
+    private static func photoMediaType(for data: Data) -> String? {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png"
+        }
+        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
+        if data.count >= 12,
+           String(decoding: data.prefix(4), as: UTF8.self) == "RIFF",
+           String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self) == "WEBP" {
+            return "image/webp"
+        }
+        if data.count >= 12,
+           String(decoding: data.dropFirst(4).prefix(4), as: UTF8.self) == "ftyp" {
+            let brand = String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self)
+            if [
+                "heic", "heix", "hevc", "hevx",
+                "heim", "heis", "hevm", "hevs",
+                "mif1", "msf1",
+            ].contains(brand) {
+                return "image/heic"
+            }
+        }
+        return nil
     }
 
     // MARK: - Single-entry list edits (plans/cli-mcp.md Phase 7)
@@ -1717,6 +3061,336 @@ public actor ToolDispatcher {
         return .success(first)
     }
 
+    // MARK: - Structured single-entry edits
+
+    private enum PostalAddressOperation {
+        case add(WirePostalAddress)
+        case remove(WirePostalAddress)
+        case edit(current: WirePostalAddress, replacement: WirePostalAddress)
+    }
+
+    private enum SocialProfileOperation {
+        case add(WireSocialProfile)
+        case remove(WireSocialProfile)
+        case edit(current: WireSocialProfile, replacement: WireSocialProfile)
+    }
+
+    private enum InstantMessageOperation {
+        case add(WireInstantMessage)
+        case remove(WireInstantMessage)
+        case edit(current: WireInstantMessage, replacement: WireInstantMessage)
+    }
+
+    private static func nonBlank(_ values: [String?]) -> Bool {
+        values.compactMap { $0 }.contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private static func postalAddressProblem(_ address: WirePostalAddress) -> String? {
+        nonBlank([
+            address.street, address.subLocality, address.city,
+            address.subAdministrativeArea, address.state, address.postalCode,
+            address.country, address.isoCountryCode,
+        ]) ? nil : WireErrorMessage.emptyPostalAddress
+    }
+
+    private static func socialProfileProblem(_ profile: WireSocialProfile) -> String? {
+        nonBlank([profile.service, profile.username, profile.url])
+            ? nil : WireErrorMessage.emptySocialProfile
+    }
+
+    private static func instantMessageProblem(_ address: WireInstantMessage) -> String? {
+        nonBlank([address.username]) ? nil : WireErrorMessage.emptyInstantMessage
+    }
+
+    private static func postalAddressOperationProblem(
+        _ operation: PostalAddressOperation
+    ) -> String? {
+        switch operation {
+        case .add(let address), .remove(let address):
+            return postalAddressProblem(address)
+        case .edit(let current, let replacement):
+            return postalAddressProblem(current) ?? postalAddressProblem(replacement)
+        }
+    }
+
+    private static func socialProfileOperationProblem(
+        _ operation: SocialProfileOperation
+    ) -> String? {
+        switch operation {
+        case .add(let profile), .remove(let profile):
+            return socialProfileProblem(profile)
+        case .edit(let current, let replacement):
+            return socialProfileProblem(current) ?? socialProfileProblem(replacement)
+        }
+    }
+
+    private static func instantMessageOperationProblem(
+        _ operation: InstantMessageOperation
+    ) -> String? {
+        switch operation {
+        case .add(let address), .remove(let address):
+            return instantMessageProblem(address)
+        case .edit(let current, let replacement):
+            return instantMessageProblem(current) ?? instantMessageProblem(replacement)
+        }
+    }
+
+    /// Convert through the same blank-to-nil projection contacts_get uses.
+    /// This is the canonical wire representation used for exact matching.
+    private static func postalAddress(
+        from wire: WirePostalAddress, preservingLabel: String? = nil
+    ) -> LabeledPostalAddress {
+        LabeledPostalAddress(
+            label: wire.label ?? preservingLabel ?? "",
+            value: PostalAddress(
+                street: wire.street,
+                subLocality: wire.subLocality ?? "",
+                city: wire.city,
+                subAdministrativeArea: wire.subAdministrativeArea ?? "",
+                state: wire.state,
+                postalCode: wire.postalCode,
+                country: wire.country,
+                isoCountryCode: wire.isoCountryCode ?? ""))
+    }
+
+    private static func canonicalPostalAddress(
+        _ wire: WirePostalAddress
+    ) -> WirePostalAddress {
+        WireMapping.postalAddress(postalAddress(from: wire))
+    }
+
+    private static func socialProfile(
+        from wire: WireSocialProfile,
+        preservingLabel: String? = nil,
+        preservingUserIdentifier: String = ""
+    ) -> LabeledSocialProfile {
+        LabeledSocialProfile(
+            label: wire.label ?? preservingLabel ?? "",
+            value: SocialProfile(
+                urlString: wire.url ?? "",
+                username: wire.username ?? "",
+                userIdentifier: preservingUserIdentifier,
+                service: wire.service ?? ""))
+    }
+
+    private static func canonicalSocialProfile(
+        _ wire: WireSocialProfile
+    ) -> WireSocialProfile {
+        WireMapping.socialProfile(socialProfile(from: wire))
+    }
+
+    private static func instantMessage(
+        from wire: WireInstantMessage, preservingLabel: String? = nil
+    ) -> LabeledInstantMessageAddress {
+        LabeledInstantMessageAddress(
+            label: wire.label ?? preservingLabel ?? "",
+            value: InstantMessageAddress(
+                username: wire.username, service: wire.service ?? ""))
+    }
+
+    private static func canonicalInstantMessage(
+        _ wire: WireInstantMessage
+    ) -> WireInstantMessage {
+        WireMapping.instantMessage(instantMessage(from: wire))
+    }
+
+    private static func exactStructuredMatchIndex<T: Equatable>(
+        needle: T, entries: [T], notFound: String, ambiguous: String
+    ) -> Result<Int, ListMatchFailure> {
+        let matches = entries.enumerated()
+            .filter { $0.element == needle }
+            .map(\.offset)
+        guard let first = matches.first else {
+            return .failure(ListMatchFailure(code: .notFound, message: notFound))
+        }
+        guard matches.count == 1 else {
+            return .failure(ListMatchFailure(code: .ambiguous, message: ambiguous))
+        }
+        return .success(first)
+    }
+
+    private func contactsEditPostalAddress(
+        helperId: String, messageId: String, contactId: String,
+        operation: PostalAddressOperation
+    ) async -> WireResponse {
+        if let problem = Self.postalAddressOperationProblem(operation) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        return await contactsEditStructuredEntry(
+            helperId: helperId, messageId: messageId, contactId: contactId,
+            auditFieldName: "postalAddresses"
+        ) { contact in
+            switch operation {
+            case .add(let address):
+                contact.postalAddresses.append(Self.postalAddress(from: address))
+            case .remove(let address):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalPostalAddress(address),
+                    entries: contact.postalAddresses.map(WireMapping.postalAddress),
+                    notFound: WireErrorMessage.noMatchingPostalAddress,
+                    ambiguous: WireErrorMessage.ambiguousPostalAddress)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index): contact.postalAddresses.remove(at: index)
+                }
+            case .edit(let current, let replacement):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalPostalAddress(current),
+                    entries: contact.postalAddresses.map(WireMapping.postalAddress),
+                    notFound: WireErrorMessage.noMatchingPostalAddress,
+                    ambiguous: WireErrorMessage.ambiguousPostalAddress)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index):
+                    let old = contact.postalAddresses[index]
+                    contact.postalAddresses[index] = Self.postalAddress(
+                        from: replacement, preservingLabel: old.label)
+                }
+            }
+            return nil
+        }
+    }
+
+    private func contactsEditSocialProfile(
+        helperId: String, messageId: String, contactId: String,
+        operation: SocialProfileOperation
+    ) async -> WireResponse {
+        if let problem = Self.socialProfileOperationProblem(operation) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        return await contactsEditStructuredEntry(
+            helperId: helperId, messageId: messageId, contactId: contactId,
+            auditFieldName: "socialProfiles"
+        ) { contact in
+            switch operation {
+            case .add(let profile):
+                contact.socialProfiles.append(Self.socialProfile(from: profile))
+            case .remove(let profile):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalSocialProfile(profile),
+                    entries: contact.socialProfiles.map(WireMapping.socialProfile),
+                    notFound: WireErrorMessage.noMatchingSocialProfile,
+                    ambiguous: WireErrorMessage.ambiguousSocialProfile)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index): contact.socialProfiles.remove(at: index)
+                }
+            case .edit(let current, let replacement):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalSocialProfile(current),
+                    entries: contact.socialProfiles.map(WireMapping.socialProfile),
+                    notFound: WireErrorMessage.noMatchingSocialProfile,
+                    ambiguous: WireErrorMessage.ambiguousSocialProfile)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index):
+                    let old = contact.socialProfiles[index]
+                    contact.socialProfiles[index] = Self.socialProfile(
+                        from: replacement,
+                        preservingLabel: old.label,
+                        preservingUserIdentifier: old.value.userIdentifier)
+                }
+            }
+            return nil
+        }
+    }
+
+    private func contactsEditInstantMessage(
+        helperId: String, messageId: String, contactId: String,
+        operation: InstantMessageOperation
+    ) async -> WireResponse {
+        if let problem = Self.instantMessageOperationProblem(operation) {
+            return .error(
+                helperId: helperId, messageId: messageId,
+                code: .invalidParams, message: problem)
+        }
+        return await contactsEditStructuredEntry(
+            helperId: helperId, messageId: messageId, contactId: contactId,
+            auditFieldName: "instantMessages"
+        ) { contact in
+            switch operation {
+            case .add(let address):
+                contact.instantMessageAddresses.append(Self.instantMessage(from: address))
+            case .remove(let address):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalInstantMessage(address),
+                    entries: contact.instantMessageAddresses.map(WireMapping.instantMessage),
+                    notFound: WireErrorMessage.noMatchingInstantMessage,
+                    ambiguous: WireErrorMessage.ambiguousInstantMessage)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index): contact.instantMessageAddresses.remove(at: index)
+                }
+            case .edit(let current, let replacement):
+                let match = Self.exactStructuredMatchIndex(
+                    needle: Self.canonicalInstantMessage(current),
+                    entries: contact.instantMessageAddresses.map(WireMapping.instantMessage),
+                    notFound: WireErrorMessage.noMatchingInstantMessage,
+                    ambiguous: WireErrorMessage.ambiguousInstantMessage)
+                switch match {
+                case .failure(let failure): return failure
+                case .success(let index):
+                    let old = contact.instantMessageAddresses[index]
+                    contact.instantMessageAddresses[index] = Self.instantMessage(
+                        from: replacement, preservingLabel: old.label)
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Shared fresh-fetch / single-flight / save / audit funnel for all
+    /// structured entry types. `mutation` changes at most one entry and
+    /// returns a typed match failure before save when it cannot do so safely.
+    private func contactsEditStructuredEntry(
+        helperId: String, messageId: String, contactId: String,
+        auditFieldName: String,
+        mutation: (inout Contact) -> ListMatchFailure?
+    ) async -> WireResponse {
+        switch await resolveContactForWrite(contactId) {
+        case .failure(let failure):
+            return failure.response(helperId: helperId, messageId: messageId)
+        case .success(let contact):
+            let token = contact.contactID.restorationToken
+            do {
+                return try await withWriteKeysLocked([token.localID]) { () -> WireResponse in
+                    guard let editable = try await contacts.editableContact(id: contact.contactID)
+                    else {
+                        return .error(
+                            helperId: helperId, messageId: messageId,
+                            code: .notFound, message: WireErrorMessage.notFoundContact)
+                    }
+                    var edited = editable
+                    if let failure = mutation(&edited) {
+                        return failure.response(helperId: helperId, messageId: messageId)
+                    }
+                    try await contacts.saveContact(edited, for: contact.contactID)
+                    let fresh = await MainActor.run {
+                        contacts.contact(restorationToken: token)
+                    } ?? edited
+                    let isFavorite = await MainActor.run { contacts.isFavorite(fresh.contactID) }
+                    await recordAudit(
+                        .editContact, kind: .contact, contact: fresh,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: nil, newValue: auditFieldName)
+                    return .contact(
+                        helperId: helperId, messageId: messageId,
+                        contact: WireMapping.contact(
+                            fresh, id: WireRecordID.contactID(for: fresh),
+                            isFavorite: isFavorite))
+                }
+            } catch {
+                return contactSaveFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+    }
+
     // MARK: - Confirmation-gated delete (fire-and-forget)
 
     /// contacts_delete, part 1 — runs on the request path and NEVER waits
@@ -1998,9 +3672,10 @@ public actor ToolDispatcher {
                 subjectID: created.id.uuidString.lowercased(), subjectName: created.name,
                 instanceID: nil, postModifiedAt: nil,
                 priorValue: nil, newValue: trimmed)
+            let wire = await wireGuides([created], allPlaces: await guides.allPlaces())
             return .guide(
                 helperId: helperId, messageId: messageId,
-                guide: WireMapping.guide(created, id: created.id.uuidString.lowercased()))
+                guide: wire[0])
         } catch {
             return writeFailure(error, helperId: helperId, messageId: messageId)
         }
@@ -2798,13 +4473,321 @@ public actor ToolDispatcher {
 
     // MARK: - Resolution
 
+    private struct StoredFavoriteResolution {
+        let favorite: Favorite
+        let identity: WireFavoriteIdentity
+        let displayName: String
+        let isAvailable: Bool
+
+        var wire: WireFavorite {
+            WireFavorite(
+                kind: identity.kind, id: identity.id,
+                displayName: displayName,
+                addedAt: WireMapping.timestamp(favorite.addedAt),
+                isAvailable: isAvailable)
+        }
+    }
+
+    private struct FavoriteInputResolution {
+        let identity: WireFavoriteIdentity
+        let storageKind: FavoriteKind
+        let storageID: String
+        let displayName: String
+    }
+
+    private enum FavoriteResolutionFailure: Error {
+        case notFound(String)
+        case kindMismatch
+        case requiresAppAction(String)
+
+        func response(helperId: String, messageId: String) -> WireResponse {
+            switch self {
+            case .notFound(let message):
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .notFound, message: message)
+            case .kindMismatch:
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .invalidParams, message: WireErrorMessage.favoriteKindMismatch)
+            case .requiresAppAction(let message):
+                return .error(
+                    helperId: helperId, messageId: messageId,
+                    code: .requiresAppAction, message: message)
+            }
+        }
+    }
+
+    private static func wireFavoriteKind(_ kind: FavoriteKind) -> WireFavoriteKind {
+        switch kind {
+        case .contact: return .contact
+        case .event: return .event
+        case .group: return .group
+        case .guide: return .guide
+        case .place: return .place
+        }
+    }
+
+    private static func auditKind(_ kind: FavoriteKind) -> MCPAuditEntry.SubjectKind {
+        switch kind {
+        case .contact: return .contact
+        case .event: return .event
+        case .group: return .group
+        case .guide: return .guide
+        case .place: return .place
+        }
+    }
+
+    private static func hasObviouslyDifferentFavoriteKind(
+        _ id: String, expected: WireFavoriteKind
+    ) -> Bool {
+        let canonical = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if canonical.hasPrefix("g-") { return expected != .group }
+        if canonical.hasPrefix("e-") { return expected != .event }
+        return false
+    }
+
+    /// Canonicalize only the public wire identity syntax used by reorder.
+    /// Referent resolution has already happened once through `projected`; the
+    /// caller's composite identity must match that live snapshot. Keeping this
+    /// normalization local avoids repeating full contact-group / guide / place
+    /// collection reads once per requested favorite.
+    private static func canonicalFavoriteIdentityForReorder(
+        _ identity: WireFavoriteIdentity
+    ) -> WireFavoriteIdentity? {
+        let trimmed = identity.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch identity.kind {
+        case .contact, .guide, .place:
+            guard let uuid = WireRecordID.recordUUID(trimmed) else { return nil }
+            return WireFavoriteIdentity(
+                kind: identity.kind, id: uuid.uuidString.lowercased())
+        case .event:
+            guard case .record(let id) = WireRecordID.parseEventID(trimmed) else { return nil }
+            return WireFavoriteIdentity(kind: .event, id: id)
+        case .group:
+            guard trimmed.hasPrefix("g-") else { return nil }
+            return WireFavoriteIdentity(kind: .group, id: trimmed)
+        }
+    }
+
+    /// Canonical identity accepted when clearing an existing stored row.
+    /// UUID-backed kinds accept their normal record UUID or the stable `x-`
+    /// digest emitted for a malformed/stale legacy id. Groups accept only
+    /// their one-way `g-` digest. Calendar-derived `e-` ids are deliberately
+    /// excluded because they can never be persisted as favorites.
+    private static func canonicalStoredFavoriteIdentity(
+        kind: WireFavoriteKind, id: String
+    ) -> WireFavoriteIdentity? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let uuid = WireRecordID.recordUUID(trimmed), kind != .group {
+            return WireFavoriteIdentity(kind: kind, id: uuid.uuidString.lowercased())
+        }
+        switch kind {
+        case .group:
+            guard isOpaqueDigestID(trimmed, prefix: "g-") else { return nil }
+            return WireFavoriteIdentity(kind: kind, id: trimmed)
+        case .contact, .event, .guide, .place:
+            guard isOpaqueDigestID(trimmed, prefix: "x-") else { return nil }
+            return WireFavoriteIdentity(kind: kind, id: trimmed)
+        }
+    }
+
+    private static func isOpaqueDigestID(_ id: String, prefix: String) -> Bool {
+        guard id.hasPrefix(prefix), id.count == prefix.count + 32 else { return false }
+        return id.dropFirst(prefix.count).allSatisfy { $0.isHexDigit }
+    }
+
+    private static func safeStoredFavoriteID(_ favorite: Favorite) -> String {
+        switch favorite.kind {
+        case .group:
+            return WireRecordID.groupID(localID: favorite.id)
+        case .contact, .event, .guide, .place:
+            if let uuid = WireRecordID.recordUUID(favorite.id) {
+                return uuid.uuidString.lowercased()
+            }
+            return WireRecordID.opaqueStaleID(kind: favorite.kind.rawValue, id: favorite.id)
+        }
+    }
+
+    private func resolveStoredFavorite(
+        _ favorite: Favorite, contacts contactSnapshot: [Contact],
+        groups: [ContactGroup], guides: [MapsGuide], places: [MapsPlace]
+    ) async -> StoredFavoriteResolution {
+        let kind = Self.wireFavoriteKind(favorite.kind)
+        var id = Self.safeStoredFavoriteID(favorite)
+        var name = "Unavailable"
+        var available = false
+
+        switch favorite.kind {
+        case .contact:
+            if let contact = WireRecordID.contact(for: favorite.id, in: contactSnapshot) {
+                id = WireRecordID.contactID(for: contact)
+                name = contact.displayName
+                available = true
+            }
+        case .event:
+            if let event = await MainActor.run(body: { events.event(uuid: favorite.id) }) {
+                id = WireRecordID.eventID(for: event)
+                name = event.title
+                available = true
+            }
+        case .group:
+            if let group = groups.first(where: {
+                $0.localID.lowercased() == favorite.id.lowercased()
+            }) {
+                id = WireRecordID.groupID(for: group)
+                name = group.name
+                available = true
+            }
+        case .guide:
+            if let uuid = WireRecordID.recordUUID(favorite.id),
+               let guide = guides.first(where: { $0.id == uuid }) {
+                id = guide.id.uuidString.lowercased()
+                name = guide.name
+                available = true
+            }
+        case .place:
+            if let uuid = WireRecordID.recordUUID(favorite.id),
+               let place = places.first(where: { $0.id == uuid }) {
+                id = place.id.uuidString.lowercased()
+                name = place.name.isEmpty ? (place.address ?? "Unnamed place") : place.name
+                available = true
+            }
+        }
+        return StoredFavoriteResolution(
+            favorite: favorite,
+            identity: WireFavoriteIdentity(kind: kind, id: id),
+            displayName: name, isAvailable: available)
+    }
+
+    private func resolveFavoriteInput(
+        kind: WireFavoriteKind, id: String
+    ) async -> Result<FavoriteInputResolution, FavoriteResolutionFailure> {
+        if Self.hasObviouslyDifferentFavoriteKind(id, expected: kind) {
+            return .failure(.kindMismatch)
+        }
+        switch kind {
+        case .contact:
+            switch await resolveContact(id) {
+            case .failure:
+                return await isKnownFavoriteID(id, excluding: kind)
+                    ? .failure(.kindMismatch)
+                    : .failure(.notFound(WireErrorMessage.notFoundContact))
+            case .success(let contact):
+                let wireID = WireRecordID.contactID(for: contact)
+                return .success(FavoriteInputResolution(
+                    identity: WireFavoriteIdentity(kind: kind, id: wireID),
+                    storageKind: .contact, storageID: wireID,
+                    displayName: contact.displayName))
+            }
+        case .event:
+            switch await resolveEvent(id) {
+            case .failure:
+                return await isKnownFavoriteID(id, excluding: kind)
+                    ? .failure(.kindMismatch)
+                    : .failure(.notFound(WireErrorMessage.notFoundEvent))
+            case .success(let event):
+                guard !WireRecordID.isSystemOnlyEvent(event) else {
+                    return .failure(.requiresAppAction(WireErrorMessage.eventNeedsAppFirstToFavorite))
+                }
+                let storageID = event.id.uuidString.lowercased()
+                return .success(FavoriteInputResolution(
+                    identity: WireFavoriteIdentity(
+                        kind: kind, id: WireRecordID.eventID(for: event)),
+                    storageKind: .event, storageID: storageID,
+                    displayName: event.title))
+            }
+        case .group:
+            let groups = await contacts.fetchGroups()
+            guard let group = WireRecordID.group(for: id, in: groups) else {
+                return await isKnownFavoriteID(id, excluding: kind)
+                    ? .failure(.kindMismatch)
+                    : .failure(.notFound(WireErrorMessage.notFoundGroup))
+            }
+            return .success(FavoriteInputResolution(
+                identity: WireFavoriteIdentity(kind: kind, id: WireRecordID.groupID(for: group)),
+                storageKind: .group, storageID: group.localID,
+                displayName: group.name))
+        case .guide:
+            guard let uuid = WireRecordID.recordUUID(id),
+                  let guide = await guides.allGuides().first(where: { $0.id == uuid })
+            else {
+                return await isKnownFavoriteID(id, excluding: kind)
+                    ? .failure(.kindMismatch)
+                    : .failure(.notFound(WireErrorMessage.notFoundGuide))
+            }
+            return .success(FavoriteInputResolution(
+                identity: WireFavoriteIdentity(kind: kind, id: guide.id.uuidString.lowercased()),
+                storageKind: .guide, storageID: guide.id.uuidString,
+                displayName: guide.name))
+        case .place:
+            guard let uuid = WireRecordID.recordUUID(id),
+                  let place = await guides.allPlaces().first(where: { $0.id == uuid })
+            else {
+                return await isKnownFavoriteID(id, excluding: kind)
+                    ? .failure(.kindMismatch)
+                    : .failure(.notFound(WireErrorMessage.notFoundPlace))
+            }
+            return .success(FavoriteInputResolution(
+                identity: WireFavoriteIdentity(kind: kind, id: place.id.uuidString.lowercased()),
+                storageKind: .place, storageID: place.id.uuidString,
+                displayName: place.name.isEmpty ? (place.address ?? "Unnamed place") : place.name))
+        }
+    }
+
+    private func isKnownFavoriteID(
+        _ id: String, excluding excluded: WireFavoriteKind
+    ) async -> Bool {
+        let (contactsOK, eventsOK) = await MainActor.run {
+            (gates.contactsAuthorized, gates.eventsAuthorized)
+        }
+        if contactsOK, excluded != .contact,
+           case .success = await resolveContact(id) { return true }
+        if eventsOK, excluded != .event,
+           case .success = await resolveEvent(id) { return true }
+        if contactsOK, excluded != .group {
+            let groups = await contacts.fetchGroups()
+            if WireRecordID.group(for: id, in: groups) != nil { return true }
+        }
+        if let uuid = WireRecordID.recordUUID(id) {
+            if excluded != .guide, await guides.allGuides().contains(where: { $0.id == uuid }) {
+                return true
+            }
+            if excluded != .place, await guides.allPlaces().contains(where: { $0.id == uuid }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func favoriteKindMismatch(helperId: String, messageId: String) -> WireResponse {
+        .error(
+            helperId: helperId, messageId: messageId,
+            code: .invalidParams, message: WireErrorMessage.favoriteKindMismatch)
+    }
+
+    private func favoriteReadFailure(helperId: String, messageId: String) -> WireResponse {
+        .error(
+            helperId: helperId, messageId: messageId,
+            code: .busy, message: WireErrorMessage.favoritesReadFailed)
+    }
+
+    private func favoriteOrderMismatch(helperId: String, messageId: String) -> WireResponse {
+        .error(
+            helperId: helperId, messageId: messageId,
+            code: .invalidParams, message: WireErrorMessage.reorderMustCoverEveryFavorite)
+    }
+
     private enum ResolveFailure: Error {
         case notFound(String)
+        case kindMismatch(String)
 
         func response(helperId: String, messageId: String) -> WireResponse {
             switch self {
             case .notFound(let message):
                 return .error(helperId: helperId, messageId: messageId, code: .notFound, message: message)
+            case .kindMismatch(let message):
+                return .error(helperId: helperId, messageId: messageId, code: .kindMismatch, message: message)
             }
         }
     }
@@ -2817,6 +4800,25 @@ public actor ToolDispatcher {
             return .failure(.notFound(WireErrorMessage.notFoundContact))
         }
         return .success(found)
+    }
+
+    /// Resolve through the normal contact resolver first, then apply the
+    /// organization-only kind contract. A person's valid contact id is not
+    /// "missing"; it is a typed kind mismatch.
+    private func resolveOrganization(_ id: String) async -> Result<Contact, ResolveFailure> {
+        switch await resolveContact(id) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let contact) where contact.contactType == .organization:
+            return .success(contact)
+        case .success:
+            return .failure(.kindMismatch(WireErrorMessage.organizationKindMismatch))
+        }
+    }
+
+    private func resolveGroup(_ id: String) async -> ContactGroup? {
+        let groups = await contacts.fetchGroups()
+        return WireRecordID.group(for: id, in: groups)
     }
 
     private func resolveEvent(_ id: String) async -> Result<Event, ResolveFailure> {

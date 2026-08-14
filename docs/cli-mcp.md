@@ -125,31 +125,75 @@ Names use underscores (MCP clients restrict tool names to
 descriptions, schemas, permission domain, read/write class, timeouts — is
 `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`.
 
-There are **34 tools total: 13 read and 21 write**.
+There are **63 tools total: 22 read and 41 write**.
 
-**Read (13):** `contacts_search`, `contacts_list`, `contacts_get`,
+**Read (22):** `contacts_search`, `contacts_list`, `contacts_get`,
+`contacts_get_photo`,
 `contacts_list_notes`, `contacts_list_custom_fields`,
-`contacts_list_groups`, `events_list`, `events_get`, `events_list_tags`,
-`guides_list`, `guides_get`, `places_list`, `links_list`. (Plus
+`contacts_list_groups`, `organizations_list_members`,
+`organizations_list_departments`, `organizations_list_department_members`,
+`groups_list_for_contact`, `events_list`, `events_get`, `events_list_tags`,
+`guides_list`, `guides_get`, `guides_list_for_place`, `places_list`,
+`places_search`, `places_get`, `links_list`, `favorites_list`. (Plus
 `guesswho_status`, served by the relay itself when the app is unreachable
-/ to re-check.) Favorites and group-membership are no longer their own
-tools — they fold into `contacts_list` as the optional `favoritesOnly`
-and `groupId` filters (see below). `contacts_list_groups` stays: it lists
-the GROUPS themselves and is the source of `groupId` values.
+/ to re-check.) Contact-only favorite and group-membership filtering also
+remain available through `contacts_list`'s optional `favoritesOnly` and
+`groupId` filters (see below). `contacts_list_groups` lists the groups
+themselves and is the source of group ids.
 
-**Write (21):** the GuessWho-data writes — `contacts_add_note`,
+**Write (41):** the GuessWho-data writes — `contacts_add_note`,
 `contacts_edit_note`, `contacts_delete_note`, `contacts_set_custom_field`,
 `contacts_delete_custom_field`, `contacts_set_favorite`, `events_add_tag`,
 `events_edit_tag`, `events_delete_tag`, `guides_create`, `guides_delete`,
 `guides_reorder_places`, `places_delete`, `links_create`, `links_delete`
-— plus, since Revision 2, full Contact Store parity with the app's own
+— plus generic **`favorites_set`** and **`favorites_reorder`** — plus,
+since Revision 2, full Contact Store parity with the app's own
 editor: **`contacts_create`**, **`contacts_update`** (**scalars-only**
 PATCH since Phase 7: only passed single-value fields change; every
 multi-value list is rejected toward the single-entry tools below), and
-**`contacts_delete`** — plus the three **single-entry list edit** verbs:
+**`contacts_delete`**, **`contacts_set_photo`**, and
+**`contacts_delete_photo`** — plus the three **single-entry list edit** verbs:
 `contacts_add_value`, `contacts_delete_value`, and `contacts_edit_value`.
-Each requires a real JSON-Schema `field` enum whose value is exactly one
-of `phone`, `email`, `url`, `related_name`, or `date`.
+Each list-edit verb requires a real JSON-Schema `field` enum whose value is
+exactly one of `phone`, `email`, `url`, `related_name`, or `date`. Nine more
+dedicated structured-entry tools add/edit/delete postal addresses, social
+profiles, and instant-message addresses. Finally,
+`organizations_rename_department` renames one department across an
+organization's matching members through the Contacts repository's user-level
+operation. Complete group writes are also available:
+`groups_create`, `groups_rename`, `groups_delete`,
+`groups_add_members`, `groups_remove_members`, and `groups_set_favorite`.
+
+### Contact kind and photos
+
+`contacts_update` is a PATCH that also accepts optional `kind` with the
+plain values `person` and `organization`. Supplying it converts the existing
+card through the same editable-contact/save path as the app; omitting it
+leaves kind unchanged, just like every other omitted scalar field. An invalid
+kind is a typed `invalidParams` result and saves nothing.
+
+`contacts_get_photo(contactId)` returns a bounded JSON photo object. A photo
+has `present: true`, its explicit `mediaType`, base64 bytes in `dataBase64`,
+and `byteCount`; no photo is the successful shape `present: false` with no
+media type or bytes. A store read failure remains a typed error, so it cannot
+be mistaken for the no-photo state. Local contact identifiers never appear.
+
+`contacts_set_photo(contactId, mediaType, dataBase64, idempotencyToken?)`
+accepts JPEG, PNG, GIF, HEIC, or WebP, validates that the bytes match the
+declared media type, and rejects malformed or decoded payloads over 180 KiB.
+The same raw-byte limit leaves enough room for base64 plus the response
+envelope under the 256 KiB response ceiling; an existing larger photo returns
+typed `tooLarge` instead of being truncated. `contacts_delete_photo` is a
+successful no-op when no current photo exists. Both writes require Contacts
+permission and read-write access, consume the global write budget, serialize
+per contact, participate in idempotent replay, verify the saved state, and
+append agent activity only after a real write succeeds.
+
+Set, replace, and delete route through `ContactsRepository.setContactPhoto`,
+the app's own photo path. Before replacing or deleting an existing photo that
+path stores the current bytes in the one reserved `previousPhoto` blob slot.
+That reserved attachment remains excluded from `contacts_list_custom_fields`;
+there is no second backup or wire read for it.
 
 ### Listing the whole book (`contacts_list`)
 
@@ -177,6 +221,186 @@ contact set is unchanged. Every result — favorites included — runs through
 this one sort. Contacts changing between pages is best-effort, like every
 list read; the standard `limit` (default 50, max 200) and the
 response-size cap with the typed too-large error apply.
+
+### Organization membership and departments
+
+Organizations are ordinary contact records whose kind is `organization`.
+All four `organizations_*` tools take an `organizationId` from a contact
+result and resolve it through the normal contact resolver. An unknown id is
+`notFound`; an id that resolves to a person is the distinct typed
+`kindMismatch` error and never produces an empty or misleading organization
+result.
+
+`organizations_list_members` returns the people associated with the
+organization by `ContactsRepository.contactsAssociated(with:)`.
+`organizations_list_departments` returns the repository's trimmed,
+case-insensitively de-duplicated department strings. Both lists use a stable
+total order and the standard paging defaults and caps. Member rows are the
+same `WireContactSummary` used by contact list/search, so none of the four
+excluded contact fields can cross the wire.
+
+`organizations_list_department_members` delegates department matching to
+`ContactsRepository.contactsAssociated(with:inDepartment:)`, whose matching
+is case-insensitive and ignores surrounding spaces. Because departments are
+derived from those members, an empty match means the named department is not
+currently present and answers typed `notFound` rather than a successful empty
+page.
+
+`organizations_rename_department(organizationId, oldName, newName,
+idempotencyToken?)` is a write and calls
+`ContactsRepository.renameDepartment(from:to:in:)` exactly once for the
+user-level operation; the dispatcher does not rewrite contact fields itself.
+Names are trimmed and may not be empty. An exactly unchanged name after
+trimming is `invalidParams`, while a capitalization-only rename is allowed;
+department lookup remains case-insensitive. A missing old department is
+`notFound`. Success returns `{ "affectedCount": N }`, using the count reported
+by the repository. Contact permission, read-write access, the global write
+budget, per-member write serialization, idempotency replay, audit logging, and
+the normal response cap all apply. A Contacts save can fail after earlier
+members were already saved; that is reported as the normal typed save failure
+with re-read-before-retry guidance, never as success or as an assumed zero
+affected count. Error text is fixed and never includes a contact's local id.
+
+### Reading guides and places
+
+Guide and place reads expose the same visible state as the app. A guide record
+contains `id`, `name`, its optional imported `sourceURL`, `createdAt`,
+`lastViewedAt`, `placeCount`, and `isFavorite`. A place record contains `id`,
+`guideId`, visible `name` and optional `address`/coordinates, `sortOrder`,
+`createdAt`, `lastViewedAt`, optional `resolvedAt`, `needsResolution`, and
+`isFavorite`. The private Maps lookup identifier is never returned or searched.
+An unresolved Maps place therefore has empty `name`, nil address/coordinates
+and `resolvedAt`, and `needsResolution: true` until its visible details load.
+
+- `guides_list(limit?, cursor?)` lists guides by case-insensitive name, with
+  the record id as a total-order tiebreak. `guides_get(guideId)` returns one
+  full guide or typed `notFound`.
+- `places_list(guideId?, limit?, cursor?)` lists every place, or one guide's
+  places in canonical `sortOrder` with the record id as a tiebreak. A validly
+  shaped `guideId` that no longer names a guide is typed `notFound`, never an
+  empty success.
+- `places_get(placeId)` returns one full place or typed `notFound`.
+- `places_search(query, limit?, cursor?)` case-insensitively searches only the
+  visible place name, address, and containing guide name. Results use a fixed
+  `(name, address, guide name, id)` order so offset cursors are deterministic
+  while the saved records are unchanged. A query must contain at least one
+  non-whitespace character; one-character place and guide names are valid.
+- `guides_list_for_place(placeId, limit?, cursor?)` uses the app's address
+  matcher to list guides containing the same visible street address. An
+  unresolved place without an address matches no guides; an unknown place id
+  is typed `notFound`.
+
+All list forms use the standard limit (default 50, maximum 200), opaque offset
+cursor, 256 KB response cap, and typed invalid-cursor / too-large errors.
+Favorite flags come from the app's live favorite store, so reads reflect the
+currently visible star state without reopening the app.
+
+### Generic favorites (`favorites_*`)
+
+`favorites_list(limit?, cursor?)`, `favorites_set(kind, id, favorite)`,
+and `favorites_reorder(favorites)` expose the app's single ordered favorites
+surface across contacts, events, contact groups, guides, and places. Wire
+kinds are exactly `contact`, `event`, `group`, `guide`, and `place`. Each id
+is the ordinary opaque id from that entity's list tool: contact and stored
+event ids are record ids, group ids are one-way opaque values (the Contacts
+identifier never crosses), and guide/place ids are their record ids. A
+contact row may describe its card kind as `person` or `organization`; the
+favorites kind for either card is always `contact`. A
+calendar-only event keeps its derived opaque event id on reads, but must be
+opened once in the app before it can be favorited; the write never stores or
+returns the calendar identifier.
+
+`favorites_list` preserves the persisted global order and pages over that
+order before resolving rows. Every row contains `kind`, `id`, `displayName`,
+`addedAt`, and `isAvailable`. This deliberately matches the app projection:
+a deleted or otherwise stale referent remains in its exact position as the
+fixed `Unavailable` row (`isAvailable: false`) rather than vanishing. Even a
+malformed legacy stored id is represented by a stable one-way opaque id; raw
+system identifiers are never echoed. Pages use the standard limit (default
+50, max 200), opaque cursors, and response-size cap.
+
+`favorites_set` is desired-state assignment, not a toggle. Repeating
+`favorite: true` on an existing favorite or `false` on an absent one is a
+successful no-op and does not restamp `addedAt`. Adding requires a live
+referent whose id and declared kind both resolve before storage is touched.
+Clearing first follows that same path; if the referent was deleted, it may
+instead resolve the composite kind-plus-id against the stable stale row from
+`favorites_list`. This lets an agent remove an orphan without exposing or
+guessing its stored system identifier. The compatibility tool
+`contacts_set_favorite` remains and shares the same contact favorite state.
+
+`favorites_reorder` accepts the complete current set as objects containing
+both `kind` and `id`, in the desired order. Identity is composite: equal UUID
+text in two entity namespaces remains two distinct favorites. Duplicate,
+missing, or extra identities reject the whole request. Every current referent
+must still resolve, so a stale row also rejects the whole request; nothing is
+silently dropped. The store then compare-and-swaps against the exact list read
+by the dispatcher, preserving each original `Favorite` value and `addedAt`.
+A concurrent UI/device edit fails with a fixed refresh-and-retry error instead
+of being overwritten.
+
+The favorites tools use dynamic permission gates because their static domain
+spans kinds: contact and group referents require Contacts access, event
+referents require calendar access, and guide/place referents require no system
+permission. List and reorder inspect all referenced kinds and fail as a whole
+when a required domain is unavailable. Writes additionally require read-write
+mode, use the global write budget and idempotency-token replay, append agent
+activity audit records after successful changes, and ride the shared response
+cap and fixed non-data-bearing error strings.
+
+### Contact groups
+
+`contacts_list_groups(limit?, cursor?)` returns every group as `{id, name,
+isFavorite}`. `groups_list_for_contact(contactId, limit?, cursor?)` returns
+the same DTO for only the groups containing that contact. Both reads require
+Contacts permission, use the standard default-50/max-200 paging contract,
+and are response-capped.
+
+Group ids are opaque `g-` digests. The raw Contacts group identifier never
+crosses the wire. Every tool that takes `groupId` re-fetches the current groups
+and resolves the digest before calling the repository; an unknown, deleted, or
+wrong-form id is typed `notFound`. `groups_set_favorite` performs that resolution
+before the repository is allowed to inspect the Contacts identifier used as the
+favorite key. Contact ids in membership calls use the same opaque ids as
+`contacts_search`/`contacts_list`; group membership does not mint or expose a
+contact identity. `groups_set_favorite` and `favorites_set(kind: "group", ...)`
+are two views of the same ordered favorite store: a write through either tool
+is immediately visible through group reads and `favorites_list`.
+
+The six group writes are Contacts-permission and read-write gated, consume the
+shared per-host write budget, support the standard optional idempotency token,
+are response-capped, and append to the device-local agent-activity audit only
+after a change lands. Create and rename trim their names and reject a blank
+name. Rename and delete return typed `notFound` if the group disappears between
+resolution and the Contacts write; a permission revoked between the gate and
+the write returns typed `permissionDenied`; other store failures return
+`writeFailed`. Delete removes the group, not its contacts, and then best-effort
+removes the obsolete group favorite just as the app does.
+
+`groups_add_members(groupId, contactIds)` and
+`groups_remove_members(groupId, contactIds)` accept 1–200 contact ids. Duplicate
+ids collapse in caller order. Every id is resolved before the first membership
+write, so a stale argument cannot cause a half-applied call. The repository then
+runs its serialized, idempotent batch: already-in-state contacts are successful
+no-ops, and one store failure does not cancel the remaining contacts. The
+result always accounts for the batch explicitly:
+
+```json
+{
+  "groupId": "g-…",
+  "isComplete": false,
+  "appliedContactIds": ["…"],
+  "failures": [
+    {"contactId": "…", "message": "…"}
+  ]
+}
+```
+
+A partial result is cached for idempotency replay exactly like a complete
+success, so retrying the same token reports the original outcome without
+reapplying the contacts that already moved. The existing
+`contacts_list(groupId: ...)` filter remains the canonical way to page a
+group's members and accepts ids from either group-list read.
 
 ### Single-entry list edits (`contacts_add_value` / `contacts_edit_value` / `contacts_delete_value`, Phase 7)
 
@@ -230,15 +454,52 @@ editor and `contacts_update` use (the Apple note rides through
 byte-identical), failures mapped by `saveErrorCategory`, audited as
 edit-contact rows, echoing the updated full card.
 
-**Deferred (follow-up):** postal addresses, social profiles, and instant
-messages have **no single-entry tools yet** and are **not editable via
-`contacts_update` either** (its rejection names them create-only). Their
-entry identity spans several subfields (street+city+…, service+username
-+url), so a single-value exact match can't name one entry and the
-`(newValue, newLabel)` edit signature can't express their changes —
-forcing the match-based pattern onto them would be a broken design. They
-can only be provided at `contacts_create` until they get their own
-design pass.
+### Structured single-entry edits
+
+Postal addresses, social profiles, and instant-message addresses use
+dedicated tools because their identities span several fields and must remain
+typed objects — `contacts_add_value` keeps its five-value scalar enum, and no
+tool hides JSON inside a scalar string:
+
+- `contacts_add_postal_address(contactId, address)`,
+  `contacts_edit_postal_address(contactId, currentAddress, newAddress)`, and
+  `contacts_delete_postal_address(contactId, address)`.
+- `contacts_add_social_profile(contactId, profile)`,
+  `contacts_edit_social_profile(contactId, currentProfile, newProfile)`, and
+  `contacts_delete_social_profile(contactId, profile)`.
+- `contacts_add_instant_message(contactId, instantMessage)`,
+  `contacts_edit_instant_message(contactId, currentInstantMessage,
+  newInstantMessage)`, and `contacts_delete_instant_message(contactId,
+  instantMessage)`.
+
+Postal objects carry every `WirePostalAddress` field: `label`, `street`,
+`subLocality`, `city`, `subAdministrativeArea`, `state`, `postalCode`,
+`country`, and `isoCountryCode`. The five non-optional wire strings (`street`,
+`city`, `state`, `postalCode`, `country`) are required even when their value is
+the empty string, so copying an address from `contacts_get` is lossless. At
+least one address component must be non-empty. Social objects carry `label`,
+`service`, `username`, and `url`, with at least one of the latter three
+non-empty. Instant-message objects carry `label`, `service`, and a required,
+non-empty `username`.
+
+Delete and edit match the **complete canonical wire representation**, including
+the label and every wire-visible identity field. Empty optional strings and
+omitted optional strings canonicalize the same way `contacts_get` projects the
+stored entry. A partial match is never attempted: zero exact matches returns
+typed `notFound`; multiple exact matches returns typed `ambiguous`; neither
+saves anything. An edit replaces the one matched entry at its existing index.
+If the replacement's label is omitted, the matched label is preserved; an
+explicit empty label clears it. The system-only social-profile user identifier
+is not on the wire, is not used to guess between otherwise identical matches,
+and is preserved when the visible profile is edited.
+
+These tools use the same fresh `editableContact` / `saveContact` funnel,
+per-contact single-flight, permission and read-write gates, write budget,
+idempotency replay, fixed non-leaking errors, audit trail, identity-address
+carry-through, and Apple-note preservation as the scalar list tools.
+`contacts_update` still rejects all three structured arrays: it cannot perform
+whole-list replacement on an existing contact. `contacts_create` continues to
+accept initial arrays because a new card has no existing entries to clobber.
 
 ### Generic connections (`links_*`)
 

@@ -21,16 +21,25 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsSearch = "contacts_search"
     case contactsList = "contacts_list"
     case contactsGet = "contacts_get"
+    case contactsGetPhoto = "contacts_get_photo"
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
     case contactsListGroups = "contacts_list_groups"
+    case organizationsListMembers = "organizations_list_members"
+    case organizationsListDepartments = "organizations_list_departments"
+    case organizationsListDepartmentMembers = "organizations_list_department_members"
+    case groupsListForContact = "groups_list_for_contact"
     case eventsList = "events_list"
     case eventsGet = "events_get"
     case eventsListTags = "events_list_tags"
     case guidesList = "guides_list"
     case guidesGet = "guides_get"
+    case guidesListForPlace = "guides_list_for_place"
     case placesList = "places_list"
+    case placesSearch = "places_search"
+    case placesGet = "places_get"
     case linksList = "links_list"
+    case favoritesList = "favorites_list"
 
     // Write tools. The Phase 2 set mutates GuessWho's OWN data (notes,
     // fields, links, favorites, tags, guides); Revision 2 adds full
@@ -42,22 +51,42 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsCreate = "contacts_create"
     case contactsUpdate = "contacts_update"
     case contactsDelete = "contacts_delete"
+    case contactsSetPhoto = "contacts_set_photo"
+    case contactsDeletePhoto = "contacts_delete_photo"
     // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
     // is scalars-only — these are the ONLY way to change a contact's
     // multi-value lists, one entry per call, matched by exact value so a
     // model can never bulk-replace a list believing it edited one item.
-    // Postal addresses, social profiles, and instant messages have no
-    // single-entry tools yet (their identity spans several subfields);
-    // they can only be provided at create.
     case contactsAddValue = "contacts_add_value"
     case contactsDeleteValue = "contacts_delete_value"
     case contactsEditValue = "contacts_edit_value"
+    // Structured multi-value entries also change one at a time. Dedicated
+    // tools keep their component fields typed JSON objects instead of
+    // weakening contacts_add_value's scalar enum or hiding JSON in strings.
+    case contactsAddPostalAddress = "contacts_add_postal_address"
+    case contactsEditPostalAddress = "contacts_edit_postal_address"
+    case contactsDeletePostalAddress = "contacts_delete_postal_address"
+    case contactsAddSocialProfile = "contacts_add_social_profile"
+    case contactsEditSocialProfile = "contacts_edit_social_profile"
+    case contactsDeleteSocialProfile = "contacts_delete_social_profile"
+    case contactsAddInstantMessage = "contacts_add_instant_message"
+    case contactsEditInstantMessage = "contacts_edit_instant_message"
+    case contactsDeleteInstantMessage = "contacts_delete_instant_message"
     case contactsAddNote = "contacts_add_note"
     case contactsEditNote = "contacts_edit_note"
     case contactsDeleteNote = "contacts_delete_note"
     case contactsSetCustomField = "contacts_set_custom_field"
     case contactsDeleteCustomField = "contacts_delete_custom_field"
     case contactsSetFavorite = "contacts_set_favorite"
+    case favoritesSet = "favorites_set"
+    case favoritesReorder = "favorites_reorder"
+    case organizationsRenameDepartment = "organizations_rename_department"
+    case groupsCreate = "groups_create"
+    case groupsRename = "groups_rename"
+    case groupsDelete = "groups_delete"
+    case groupsAddMembers = "groups_add_members"
+    case groupsRemoveMembers = "groups_remove_members"
+    case groupsSetFavorite = "groups_set_favorite"
     case eventsAddTag = "events_add_tag"
     case eventsEditTag = "events_edit_tag"
     case eventsDeleteTag = "events_delete_tag"
@@ -85,21 +114,35 @@ public enum MCPTool: String, CaseIterable, Sendable {
 
     public var permissionDomain: PermissionDomain {
         switch self {
-        case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
+        case .contactsSearch, .contactsList, .contactsGet, .contactsGetPhoto, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
+             .organizationsListMembers, .organizationsListDepartments,
+             .organizationsListDepartmentMembers,
+             .groupsListForContact,
              .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+             .contactsAddPostalAddress, .contactsEditPostalAddress,
+             .contactsDeletePostalAddress,
+             .contactsAddSocialProfile, .contactsEditSocialProfile,
+             .contactsDeleteSocialProfile,
+             .contactsAddInstantMessage, .contactsEditInstantMessage,
+             .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
-             .contactsSetFavorite:
+             .contactsSetFavorite, .organizationsRenameDepartment,
+             .groupsCreate, .groupsRename, .groupsDelete,
+             .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite:
             return .contacts
         case .eventsList, .eventsGet, .eventsListTags,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag:
             return .events
-        case .guidesList, .guidesGet, .placesList,
+        case .guidesList, .guidesGet, .guidesListForPlace,
+             .placesList, .placesSearch, .placesGet,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete:
             return .none
-        case .linksList, .linksCreate, .linksDelete:
+        case .linksList, .linksCreate, .linksDelete,
+             .favoritesList, .favoritesSet, .favoritesReorder:
             // Connection storage is GuessWho's own; no single system
             // permission covers a tool whose endpoints span kinds. The
             // dispatcher additionally gates per call on each referenced
@@ -114,16 +157,31 @@ public enum MCPTool: String, CaseIterable, Sendable {
     /// app's settings; writes are OFF by default — plans/cli-mcp.md Phase 2).
     public var isWrite: Bool {
         switch self {
-        case .contactsSearch, .contactsList, .contactsGet, .contactsListNotes,
+        case .contactsSearch, .contactsList, .contactsGet, .contactsGetPhoto, .contactsListNotes,
              .contactsListCustomFields, .contactsListGroups,
+             .organizationsListMembers, .organizationsListDepartments,
+             .organizationsListDepartmentMembers,
+             .groupsListForContact,
              .eventsList, .eventsGet, .eventsListTags,
-             .guidesList, .guidesGet, .placesList, .linksList:
+             .guidesList, .guidesGet, .guidesListForPlace,
+             .placesList, .placesSearch, .placesGet, .linksList, .favoritesList:
             return false
         case .contactsCreate, .contactsUpdate, .contactsDelete,
+             .contactsSetPhoto, .contactsDeletePhoto,
              .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+             .contactsAddPostalAddress, .contactsEditPostalAddress,
+             .contactsDeletePostalAddress,
+             .contactsAddSocialProfile, .contactsEditSocialProfile,
+             .contactsDeleteSocialProfile,
+             .contactsAddInstantMessage, .contactsEditInstantMessage,
+             .contactsDeleteInstantMessage,
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite,
+             .favoritesSet, .favoritesReorder,
+             .organizationsRenameDepartment,
+             .groupsCreate, .groupsRename, .groupsDelete,
+             .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
              .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
              .linksCreate, .linksDelete:
@@ -153,6 +211,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
     /// agent gets them from search/list results and hands them back.
     private static let contactIdDoc =
         "A contact id — from contacts_search, contacts_list, or the otherId of a links_list row whose kind is person or organization. Ids can go out of date; if a call reports that, search again for a fresh one."
+    private static let organizationIdDoc =
+        "An organization contact id — from contacts_search or contacts_list where kind is organization, or the otherId of a links_list row whose kind is organization."
     private static let limitDoc =
         "Maximum number of items to return in one page (default 50, max 200)."
     private static let cursorDoc =
@@ -161,8 +221,12 @@ public enum MCPTool: String, CaseIterable, Sendable {
         "Optional: a unique string of your choosing that identifies this one change. If the call is retried with the same value, the change is applied only once."
     private static let eventIdDoc =
         "An event id — from events_list, or the otherId of a links_list row whose kind is event."
+    private static let groupIdDoc =
+        "A group id returned by contacts_list_groups or groups_list_for_contact."
     private static let linkKindDoc =
         "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
+    private static let favoriteKindDoc =
+        "\"contact\", \"event\", \"group\", \"guide\", or \"place\" — the entity kind the id refers to. Use the kind and id together exactly as returned by favorites_list. For an id from contacts_search or contacts_list, use \"contact\" here even though that row's contact-card kind is \"person\" or \"organization\"."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [
@@ -172,6 +236,18 @@ public enum MCPTool: String, CaseIterable, Sendable {
         if !required.isEmpty {
             object["required"] = .array(required.map { Value.string($0) })
         }
+        return .object(object)
+    }
+
+    /// Structured entry payloads are replacements, so a misspelled optional
+    /// field must be rejected instead of being silently dropped and cleared.
+    private static func closedSchema(
+        _ properties: [String: Value], required: [String] = []
+    ) -> Value {
+        guard case .object(var object) = schema(properties, required: required) else {
+            return schema(properties, required: required)
+        }
+        object["additionalProperties"] = false
         return .object(object)
     }
 
@@ -249,6 +325,83 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 "newLabel": string("Optional custom replacement label. Omit to keep the current label."),
                 "idempotencyToken": string(idempotencyDoc),
             ], required: ["contactId", "field", "currentValue", "newValue"]))
+    }
+
+    // MARK: Structured single-entry metadata
+
+    private static let exactStructuredMatchDoc =
+        "Copy the complete entry from contacts_get. Every field participates in the exact match; if none match the result is notFound, and if duplicates match the result is ambiguous. Nothing changes in either case."
+
+    private static var postalAddressObject: Value {
+        closedSchema([
+            "label": string("Optional label, e.g. home or work."),
+            "street": string("Street address; may span lines. Pass an empty string when absent."),
+            "subLocality": string("Optional neighborhood or sub-locality."),
+            "city": string("City. Pass an empty string when absent."),
+            "subAdministrativeArea": string("Optional county or sub-administrative area."),
+            "state": string("State or province. Pass an empty string when absent."),
+            "postalCode": string("Postal or ZIP code. Pass an empty string when absent."),
+            "country": string("Country name. Pass an empty string when absent."),
+            "isoCountryCode": string("Optional ISO country code, e.g. us."),
+        ], required: ["street", "city", "state", "postalCode", "country"])
+    }
+
+    private static var socialProfileObject: Value {
+        closedSchema([
+            "label": string("Optional label."),
+            "service": string("Optional service name, e.g. LinkedIn."),
+            "username": string("Optional username on that service."),
+            "url": string("Optional profile web address."),
+        ])
+    }
+
+    private static var instantMessageObject: Value {
+        closedSchema([
+            "label": string("Optional label."),
+            "service": string("Optional messaging service name."),
+            "username": string("The non-empty username on that service."),
+        ], required: ["username"])
+    }
+
+    private static func structuredAddMetadata(
+        name: String, noun: String, argument: String, object: Value
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Add exactly ONE \(noun) to a contact. Every other contact entry and field is untouched. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                argument: object,
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", argument]))
+    }
+
+    private static func structuredDeleteMetadata(
+        name: String, noun: String, argument: String, object: Value
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Delete exactly ONE \(noun) from a contact by its complete exact representation. \(exactStructuredMatchDoc) Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                argument: object,
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", argument]))
+    }
+
+    private static func structuredEditMetadata(
+        name: String, noun: String, currentArgument: String,
+        newArgument: String, object: Value
+    ) -> ToolMetadata {
+        ToolMetadata(
+            name: name,
+            description: "Replace exactly ONE \(noun) in place. \(exactStructuredMatchDoc) The replacement label is optional; omit it to keep the matched entry's label. Every other contact entry and field is untouched. Returns the updated card.",
+            inputSchema: schema([
+                "contactId": string(contactIdDoc),
+                currentArgument: object,
+                newArgument: object,
+                "idempotencyToken": string(idempotencyDoc),
+            ], required: ["contactId", currentArgument, newArgument]))
     }
 
     private static func labeledArray(_ description: String, valueDoc: String) -> Value {
@@ -406,6 +559,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "Get a contact's full card: name, organization, job title, phone numbers, email addresses, postal and web addresses, and dates.",
                 inputSchema: Self.schema(["contactId": Self.string(Self.contactIdDoc)], required: ["contactId"]))
+        case .contactsGetPhoto:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Get a contact's current photo as bounded base64 image data. A successful result says present false when the contact has no photo.",
+                inputSchema: Self.schema(["contactId": Self.string(Self.contactIdDoc)], required: ["contactId"]))
         case .contactsListNotes:
             var props = Self.pagingProperties
             props["contactId"] = Self.string(Self.contactIdDoc)
@@ -423,8 +581,37 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsListGroups:
             return ToolMetadata(
                 name: rawValue,
-                description: "List the user's contact groups.",
+                description: "List the user's contact groups, including whether each is a favorite.",
                 inputSchema: Self.schema(Self.pagingProperties))
+        case .organizationsListMembers:
+            var props = Self.pagingProperties
+            props["organizationId"] = Self.string(Self.organizationIdDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the people whose organization field matches an organization contact. Returns a page ordered by name.",
+                inputSchema: Self.schema(props, required: ["organizationId"]))
+        case .organizationsListDepartments:
+            var props = Self.pagingProperties
+            props["organizationId"] = Self.string(Self.organizationIdDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the distinct departments represented by an organization's members, ordered by name.",
+                inputSchema: Self.schema(props, required: ["organizationId"]))
+        case .organizationsListDepartmentMembers:
+            var props = Self.pagingProperties
+            props["organizationId"] = Self.string(Self.organizationIdDoc)
+            props["department"] = Self.string("The department name, as returned by organizations_list_departments. Matching ignores capitalization and surrounding spaces.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the people in one of an organization's departments. Reports notFound if that department is not present on the organization.",
+                inputSchema: Self.schema(props, required: ["organizationId", "department"]))
+        case .groupsListForContact:
+            var props = Self.pagingProperties
+            props["contactId"] = Self.string(Self.contactIdDoc)
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the groups that contain a contact, including whether each group is a favorite.",
+                inputSchema: Self.schema(props, required: ["contactId"]))
         case .eventsList:
             var props = Self.pagingProperties
             props["startDate"] = Self.string("Start of the date window, ISO 8601 (for example 2026-07-01T00:00:00Z).")
@@ -455,6 +642,13 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "Get one saved place guide by id.",
                 inputSchema: Self.schema(["guideId": Self.string("A guide id returned by guides_list.")], required: ["guideId"]))
+        case .guidesListForPlace:
+            var props = Self.pagingProperties
+            props["placeId"] = Self.string("A place id returned by places_list or places_search.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "List every saved guide containing the same visible address as one place. Unresolved places without an address return an empty page.",
+                inputSchema: Self.schema(props, required: ["placeId"]))
         case .placesList:
             var props = Self.pagingProperties
             props["guideId"] = Self.string("Optional: a guide id returned by guides_list, to list only that guide's places.")
@@ -462,6 +656,20 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List saved places, optionally within one guide. Each place has a name, address, and map coordinates when known.",
                 inputSchema: Self.schema(props))
+        case .placesSearch:
+            var props = Self.pagingProperties
+            props["query"] = Self.string("Text to find in a place's visible name or address, or in its guide's name.")
+            return ToolMetadata(
+                name: rawValue,
+                description: "Search saved places by visible place name, address, or guide name. Returns deterministic pages of full place records.",
+                inputSchema: Self.schema(props, required: ["query"]))
+        case .placesGet:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Get one saved place by id, including its guide, order, timestamps, resolution state, and favorite state.",
+                inputSchema: Self.schema([
+                    "placeId": Self.string("A place id returned by places_list or places_search.")
+                ], required: ["placeId"]))
         case .linksList:
             var props = Self.pagingProperties
             props["id"] = Self.string(
@@ -471,6 +679,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 name: rawValue,
                 description: "List every connection on a record — the people, organizations, events, and places the user has connected to it, each with an optional note. Each entry carries the other record's id and kind, usable with the matching read tool.",
                 inputSchema: Self.schema(props, required: ["id", "kind"]))
+        case .favoritesList:
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the user's favorites in their saved order. Each entry includes its entity kind, id, display name, when it was added, and whether the referenced record is still available. Unavailable entries remain in place instead of being omitted.",
+                inputSchema: Self.schema(Self.pagingProperties))
 
         // MARK: Write tools
 
@@ -485,18 +698,80 @@ public enum MCPTool: String, CaseIterable, Sendable {
                 inputSchema: Self.schema(props))
         case .contactsUpdate:
             var props = Self.contactScalarFieldProperties
+            props["kind"] = Self.stringEnum(
+                ["person", "organization"],
+                description: "Optional: change the contact to a person or organization. Omit to leave its kind unchanged.")
             props["contactId"] = Self.string(Self.contactIdDoc)
             props["idempotencyToken"] = Self.string(Self.idempotencyDoc)
             return ToolMetadata(
                 name: rawValue,
-                description: "Edit a contact's single-value fields: names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Phone numbers, email addresses, web addresses, related names, and dates are NOT accepted here — change those one entry at a time with contacts_add_value, contacts_edit_value, or contacts_delete_value and the matching field value. Returns the updated card.",
+                description: "Edit a contact's kind or single-value fields: person/organization kind, names and phonetics, nickname, organization, department, job title, and birthday. Only the fields you pass change; pass an empty string to clear one. Multi-value lists are NOT accepted here — change one entry at a time with the matching contacts_add, contacts_edit, or contacts_delete tool. Returns the updated card.",
                 inputSchema: Self.schema(props, required: ["contactId"]))
+        case .contactsSetPhoto:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Set or replace a contact's photo from bounded base64 image data. JPEG, PNG, GIF, HEIC, and WebP are supported. Replacing a photo preserves the prior photo for the app's recovery behavior.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "mediaType": Self.stringEnum(
+                        ["image/jpeg", "image/png", "image/gif", "image/heic", "image/webp"],
+                        description: "The image data's media type."),
+                    "dataBase64": Self.string("The image bytes encoded as base64. Decoded data may be at most \(WireEnvironment.maxContactPhotoBytes) bytes."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId", "mediaType", "dataBase64"]))
+        case .contactsDeletePhoto:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a contact's current photo. If there is no photo, this succeeds without changing anything. Deleting a photo preserves the prior photo for the app's recovery behavior.",
+                inputSchema: Self.schema([
+                    "contactId": Self.string(Self.contactIdDoc),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["contactId"]))
         case .contactsAddValue:
             return Self.listAddMetadata(name: rawValue)
         case .contactsDeleteValue:
             return Self.listRemoveMetadata(name: rawValue)
         case .contactsEditValue:
             return Self.listEditMetadata(name: rawValue)
+        case .contactsAddPostalAddress:
+            return Self.structuredAddMetadata(
+                name: rawValue, noun: "postal address", argument: "address",
+                object: Self.postalAddressObject)
+        case .contactsEditPostalAddress:
+            return Self.structuredEditMetadata(
+                name: rawValue, noun: "postal address",
+                currentArgument: "currentAddress", newArgument: "newAddress",
+                object: Self.postalAddressObject)
+        case .contactsDeletePostalAddress:
+            return Self.structuredDeleteMetadata(
+                name: rawValue, noun: "postal address", argument: "address",
+                object: Self.postalAddressObject)
+        case .contactsAddSocialProfile:
+            return Self.structuredAddMetadata(
+                name: rawValue, noun: "social profile", argument: "profile",
+                object: Self.socialProfileObject)
+        case .contactsEditSocialProfile:
+            return Self.structuredEditMetadata(
+                name: rawValue, noun: "social profile",
+                currentArgument: "currentProfile", newArgument: "newProfile",
+                object: Self.socialProfileObject)
+        case .contactsDeleteSocialProfile:
+            return Self.structuredDeleteMetadata(
+                name: rawValue, noun: "social profile", argument: "profile",
+                object: Self.socialProfileObject)
+        case .contactsAddInstantMessage:
+            return Self.structuredAddMetadata(
+                name: rawValue, noun: "instant-message address", argument: "instantMessage",
+                object: Self.instantMessageObject)
+        case .contactsEditInstantMessage:
+            return Self.structuredEditMetadata(
+                name: rawValue, noun: "instant-message address",
+                currentArgument: "currentInstantMessage", newArgument: "newInstantMessage",
+                object: Self.instantMessageObject)
+        case .contactsDeleteInstantMessage:
+            return Self.structuredDeleteMetadata(
+                name: rawValue, noun: "instant-message address", argument: "instantMessage",
+                object: Self.instantMessageObject)
         case .contactsDelete:
             return ToolMetadata(
                 name: rawValue,
@@ -567,6 +842,102 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     ],
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["contactId", "favorite"]))
+        case .favoritesSet:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Set whether one contact, event, group, guide, or place is a favorite. This assigns the requested state: repeating the same call does not toggle it back.",
+                inputSchema: Self.schema([
+                    "kind": Self.string(Self.favoriteKindDoc),
+                    "id": Self.string("The entity id returned by the matching list tool or favorites_list."),
+                    "favorite": [
+                        "type": "boolean",
+                        "description": .string("true to make it a favorite, false to remove it from favorites."),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["kind", "id", "favorite"]))
+        case .favoritesReorder:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Replace the favorites order without changing the set. Pass every current favorite exactly once as a kind-plus-id pair, in the desired order. The call fails without changing anything if an entry is missing, duplicated, extra, or no longer available.",
+                inputSchema: Self.schema([
+                    "favorites": [
+                        "type": "array",
+                        "description": .string("Every entry from favorites_list exactly once, in the desired order. Both kind and id are required because ids can overlap across entity kinds."),
+                        "items": .object([
+                            "type": "object",
+                            "properties": .object([
+                                "kind": Self.string(Self.favoriteKindDoc),
+                                "id": Self.string("The favorite's id."),
+                            ]),
+                            "required": .array([.string("kind"), .string("id")]),
+                        ]),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["favorites"]))
+        case .organizationsRenameDepartment:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Rename a department across every matching member of an organization. Matching ignores capitalization and surrounding spaces; a capitalization-only rename is allowed. Returns the number of contact cards changed.",
+                inputSchema: Self.schema([
+                    "organizationId": Self.string(Self.organizationIdDoc),
+                    "oldName": Self.string("The current department name, as returned by organizations_list_departments."),
+                    "newName": Self.string("The new department name. It must not be empty or exactly the same as oldName after surrounding spaces are removed."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["organizationId", "oldName", "newName"]))
+        case .groupsCreate:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Create a contact group. Returns the new group.",
+                inputSchema: Self.schema([
+                    "name": Self.string("The group's name."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["name"]))
+        case .groupsRename:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Rename a contact group. Returns the renamed group.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "name": Self.string("The group's new name."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId", "name"]))
+        case .groupsDelete:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a contact group. The contacts in it are not deleted.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId"]))
+        case .groupsAddMembers, .groupsRemoveMembers:
+            return ToolMetadata(
+                name: rawValue,
+                description: self == .groupsAddMembers
+                    ? "Add one or more contacts to a group. Contacts already in the group are left unchanged. The result reports every applied and failed contact id."
+                    : "Remove one or more contacts from a group. Contacts already outside the group are left unchanged. The result reports every applied and failed contact id.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "contactIds": [
+                        "type": "array",
+                        "description": .string("One or more contact ids from contacts_search or contacts_list."),
+                        "items": Self.string(Self.contactIdDoc),
+                        "minItems": 1,
+                        "maxItems": 200,
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId", "contactIds"]))
+        case .groupsSetFavorite:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Mark a contact group as a favorite, or remove it from favorites. Returns the updated group.",
+                inputSchema: Self.schema([
+                    "groupId": Self.string(Self.groupIdDoc),
+                    "favorite": [
+                        "type": "boolean",
+                        "description": .string("true to mark as a favorite, false to remove from favorites."),
+                    ],
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["groupId", "favorite"]))
         case .eventsAddTag:
             return ToolMetadata(
                 name: rawValue,

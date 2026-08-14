@@ -112,7 +112,7 @@ enum WireMapping {
         return WireLabeledDate(label: blankToNil(date.label), date: rendered)
     }
 
-    private static func postalAddress(_ address: LabeledPostalAddress) -> WirePostalAddress {
+    static func postalAddress(_ address: LabeledPostalAddress) -> WirePostalAddress {
         WirePostalAddress(
             label: blankToNil(address.label),
             street: address.value.street,
@@ -125,7 +125,7 @@ enum WireMapping {
             isoCountryCode: blankToNil(address.value.isoCountryCode))
     }
 
-    private static func socialProfile(_ profile: LabeledSocialProfile) -> WireSocialProfile {
+    static func socialProfile(_ profile: LabeledSocialProfile) -> WireSocialProfile {
         WireSocialProfile(
             label: blankToNil(profile.label),
             service: blankToNil(profile.value.service),
@@ -133,7 +133,7 @@ enum WireMapping {
             url: blankToNil(profile.value.urlString))
     }
 
-    private static func instantMessage(_ address: LabeledInstantMessageAddress) -> WireInstantMessage {
+    static func instantMessage(_ address: LabeledInstantMessageAddress) -> WireInstantMessage {
         WireInstantMessage(
             label: blankToNil(address.label),
             service: blankToNil(address.value.service),
@@ -196,8 +196,8 @@ enum WireMapping {
             createdAt: timestamp(link.createdAt))
     }
 
-    static func group(_ group: ContactGroup, id: String) -> WireGroup {
-        WireGroup(id: id, name: group.name)
+    static func group(_ group: ContactGroup, id: String, isFavorite: Bool) -> WireGroup {
+        WireGroup(id: id, name: group.name, isFavorite: isFavorite)
     }
 
     // MARK: - Events
@@ -235,21 +235,34 @@ enum WireMapping {
 
     // MARK: - Guides
 
-    static func guide(_ guide: MapsGuide, id: String) -> WireGuide {
+    static func guide(
+        _ guide: MapsGuide, id: String, placeCount: Int, isFavorite: Bool
+    ) -> WireGuide {
         WireGuide(
             id: id,
             name: guide.name,
             sourceURL: guide.sourceURL.flatMap(blankToNil),
-            createdAt: timestamp(guide.createdAt))
+            createdAt: timestamp(guide.createdAt),
+            lastViewedAt: timestamp(guide.lastViewedAt),
+            placeCount: placeCount,
+            isFavorite: isFavorite)
     }
 
-    static func place(_ place: MapsPlace, id: String, guideID: String) -> WirePlace {
+    static func place(
+        _ place: MapsPlace, id: String, guideID: String, isFavorite: Bool
+    ) -> WirePlace {
         WirePlace(
             id: id,
             guideId: guideID,
             name: place.name,
             address: place.address.flatMap(blankToNil),
             latitude: place.latitude,
-            longitude: place.longitude)
+            longitude: place.longitude,
+            sortOrder: place.sortOrder,
+            createdAt: timestamp(place.createdAt),
+            lastViewedAt: timestamp(place.lastViewedAt),
+            resolvedAt: timestamp(place.resolvedAt),
+            needsResolution: place.needsResolution,
+            isFavorite: isFavorite)
     }
 }

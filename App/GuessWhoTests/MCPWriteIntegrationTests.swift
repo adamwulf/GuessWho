@@ -58,6 +58,7 @@ struct MCPWriteIntegrationTests {
             contacts: repository,
             events: INV2LiveEventSource(service: service),
             guides: INV2LiveGuideSource(service: service),
+            favorites: service,
             links: service,
             gates: gates,
             audit: audit)
@@ -129,6 +130,7 @@ struct MCPWriteIntegrationTests {
             contacts: repository,
             events: INV2LiveEventSource(service: service),
             guides: INV2LiveGuideSource(service: service),
+            favorites: service,
             links: service,
             gates: gates)
 
@@ -183,6 +185,7 @@ struct MCPWriteIntegrationTests {
             contacts: repository,
             events: INV2LiveEventSource(service: service),
             guides: INV2LiveGuideSource(service: service),
+            favorites: service,
             links: service,
             gates: INV2Gates())
 
@@ -264,6 +267,7 @@ struct MCPWriteIntegrationTests {
             contacts: repository,
             events: INV2LiveEventSource(service: service),
             guides: INV2LiveGuideSource(service: service),
+            favorites: service,
             links: service,
             gates: INV2Gates())
         let helper = RequestOrigin.mcp.makeHelperId()
@@ -382,6 +386,10 @@ private final class INV2LiveGuideSource: MCPGuideSource {
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
         await service.places(inGuide: guideID)
     }
+    func guides(containingPlace place: MapsPlace) async -> [MapsGuide] {
+        await service.guides(containingPlace: place)
+    }
+    func favorites() -> [Favorite] { service.favorites() }
     func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
         try service.importGuide(from: snapshot, sourceURL: sourceURL)
     }

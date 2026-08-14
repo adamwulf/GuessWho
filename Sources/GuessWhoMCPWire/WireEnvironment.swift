@@ -39,6 +39,18 @@ public enum WireEnvironment {
     /// silent truncation (plans/cli-mcp.md bounded reads).
     public static let maxResponsePayloadBytes = 262_144
 
+    /// Maximum decoded contact-photo payload carried by the agent wire.
+    /// Base64 expands this to 245,760 bytes, leaving room for the response
+    /// envelope beneath `maxResponsePayloadBytes`. The same bound applies to
+    /// set requests and get responses so every successfully written photo can
+    /// also be read back through the tool without an oversized response.
+    public static let maxContactPhotoBytes = 180 * 1_024
+
+    /// Largest canonical base64 spelling of `maxContactPhotoBytes`. Checking
+    /// this before decoding prevents a huge string from causing a second,
+    /// equally huge allocation in the dispatcher.
+    public static let maxContactPhotoBase64Bytes = ((maxContactPhotoBytes + 2) / 3) * 4
+
     /// The Info.plist key both processes read their shared container id
     /// from. The value is derived per-channel from ONE shared build variable
     /// (App/Config/CLIAppGroup-*.xcconfig, INV-4) — never hardcode it.

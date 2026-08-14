@@ -22,6 +22,7 @@ final class SecurityInvariantTests: XCTestCase {
         var eventIDs: [String] = []
         var groupIDs: [String] = []
         var guideIDs: [String] = []
+        var placeIDs: [String] = []
 
         func run(_ request: WireRequest) async -> WireResponse {
             guard let response = await dispatcher.handle(request) else {
@@ -71,6 +72,13 @@ final class SecurityInvariantTests: XCTestCase {
         _ = await run(.contactsList(
             helperId: helper, messageId: TestMessageID.next(),
             kind: nil, favoritesOnly: true, groupId: nil, limit: nil, cursor: nil))
+        await MainActor.run {
+            // This sweep verifies encoded-output exclusions, not favorite
+            // persistence. Explicitly script only the incidental favorite
+            // decoration required for each fixture group.
+            fixture.contacts.scriptedGroupFavoriteReadResults =
+                fixture.contacts.groups.map { _ in false }
+        }
         let groupsResponse = await run(.contactsListGroups(
             helperId: helper, messageId: TestMessageID.next(), limit: nil, cursor: nil))
         if case .groupPage(_, _, let page) = groupsResponse {
@@ -108,9 +116,25 @@ final class SecurityInvariantTests: XCTestCase {
                 helperId: helper, messageId: TestMessageID.next(),
                 guideId: id, limit: nil, cursor: nil))
         }
-        _ = await run(.placesList(
+        let placesResponse = await run(.placesList(
             helperId: helper, messageId: TestMessageID.next(),
             guideId: nil, limit: nil, cursor: nil))
+        if case .placePage(_, _, let page) = placesResponse {
+            placeIDs.append(contentsOf: page.items.map(\.id))
+        }
+        let placeSearchResponse = await run(.placesSearch(
+            helperId: helper, messageId: TestMessageID.next(),
+            query: "coffee", limit: nil, cursor: nil))
+        if case .placePage(_, _, let page) = placeSearchResponse {
+            placeIDs.append(contentsOf: page.items.map(\.id))
+        }
+        for id in Set(placeIDs) {
+            _ = await run(.placesGet(
+                helperId: helper, messageId: TestMessageID.next(), placeId: id))
+            _ = await run(.guidesListForPlace(
+                helperId: helper, messageId: TestMessageID.next(),
+                placeId: id, limit: nil, cursor: nil))
+        }
 
         _ = await run(.listTools(helperId: helper, messageId: TestMessageID.next()))
 

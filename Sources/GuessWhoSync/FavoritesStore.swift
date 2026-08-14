@@ -102,6 +102,45 @@ public final class FavoritesStore {
         return try loadAll().contains { $0.kind == kind && $0.id == canonical }
     }
 
+    /// Idempotent desired-state assignment. Returns `true` only when the
+    /// persisted set changed; an already-satisfied request performs no write.
+    @discardableResult
+    public func set(kind: FavoriteKind, id: String, favorite: Bool, now: Date) throws -> Bool {
+        let canonical = id.lowercased()
+        var items = try loadAll()
+        let index = items.firstIndex { $0.kind == kind && $0.id == canonical }
+        if favorite {
+            guard index == nil else { return false }
+            items.append(Favorite(kind: kind, id: canonical, addedAt: now))
+        } else {
+            guard index != nil else { return false }
+            // Defensive repair for a hand-merged/corrupt file: desired false
+            // means no matching rows remain, not merely "remove one".
+            items.removeAll { $0.kind == kind && $0.id == canonical }
+        }
+        try setAll(items)
+        return true
+    }
+
+    /// Atomically replaces only the order of an unchanged favorites list.
+    /// Both arrays carry the original `Favorite` values, including `addedAt`;
+    /// callers cannot use this primitive to add, remove, or restamp an item.
+    /// A concurrent UI/device edit between the caller's read and write is
+    /// rejected instead of being silently overwritten.
+    @discardableResult
+    public func reorder(expected: [Favorite], reordered: [Favorite]) throws -> Bool {
+        let current = try loadAll()
+        guard current == expected else { throw FavoritesStoreMutationError.changed }
+        guard reordered.count == current.count,
+              Set(reordered) == Set(current),
+              Set(current.map(\.stableID)).count == current.count,
+              Set(reordered.map(\.stableID)).count == reordered.count
+        else { throw FavoritesStoreMutationError.invalidOrder }
+        guard reordered != current else { return false }
+        try setAll(reordered)
+        return true
+    }
+
     /// Idempotently removes one favorite. Returns whether an item was removed;
     /// an already-absent item succeeds without rewriting the file.
     @discardableResult
@@ -200,4 +239,12 @@ public final class FavoritesStore {
         let version: Int
         let items: [Favorite]
     }
+}
+
+/// Fixed mutation failures for compare-and-swap favorites writes. These are
+/// intentionally data-free so higher layers can map them to non-leaking wire
+/// messages without carrying file contents in an error description.
+public enum FavoritesStoreMutationError: Error, Sendable {
+    case changed
+    case invalidOrder
 }

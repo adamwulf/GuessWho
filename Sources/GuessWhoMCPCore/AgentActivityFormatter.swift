@@ -63,16 +63,23 @@ public enum AgentActivityFormatter {
         case .createGuide: return AgentActivityStrings.createdGuide
         case .deleteGuide: return AgentActivityStrings.deletedGuide
         case .reorderPlaces: return AgentActivityStrings.reorderedPlaces
+        case .reorderFavorites: return AgentActivityStrings.reorderedFavorites
         case .deletePlace: return AgentActivityStrings.deletedPlace
         case .createContact: return AgentActivityStrings.createdContact
         case .editContact: return AgentActivityStrings.editedContact
         case .deleteContact: return AgentActivityStrings.deletedContact
+        case .renameDepartment: return AgentActivityStrings.renamedDepartment
+        case .createGroup: return AgentActivityStrings.createdGroup
+        case .renameGroup: return AgentActivityStrings.renamedGroup
+        case .deleteGroup: return AgentActivityStrings.deletedGroup
+        case .addGroupMembers: return AgentActivityStrings.addedGroupMembers
+        case .removeGroupMembers: return AgentActivityStrings.removedGroupMembers
         }
     }
 
     static func detail(for entry: MCPAuditEntry) -> String {
         switch entry.action {
-        case .setFavorite, .reorderPlaces:
+        case .setFavorite, .reorderPlaces, .reorderFavorites:
             // The title already says everything; "true" / a raw order list
             // would read as debug output.
             return ""

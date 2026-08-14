@@ -13,13 +13,16 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     case permissionDenied
     case readOnly
     case tooLarge
-    /// The id doesn't resolve to a live record — unknown, out of date
-    /// (the record changed or was removed), or of the wrong kind. Since
+    /// The id doesn't resolve to a live record — unknown or out of date
+    /// (the record changed or was removed). Since
     /// Revision 2 the wire id is the record's own durable id, so there is
     /// no separate per-run stale-reference state: every unresolvable id is
     /// `notFound`, with guidance to search/list again.
     case notFound
     case invalidParams
+    /// The id resolves, but the record is not the kind required by the
+    /// called tool (for example a person id passed to an organization tool).
+    case kindMismatch
     /// Rate-limit rejection (search / global budgets). Additive to the
     /// plan's taxonomy: the rate limit needs an honest code of its own —
     /// mislabeling it `invalidParams` would tell the agent to change its
@@ -35,8 +38,9 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     /// unavailable, save failure). The message carries the re-read-before-
     /// retry guidance so a timeout-then-retry doesn't duplicate the write.
     case writeFailed
-    /// A match-based single-entry edit (contacts_edit_value)
-    /// found MORE THAN ONE entry with the given value, so applying it
+    /// A record was found but its photo bytes could not be loaded.
+    case readFailed
+    /// A match-based single-entry edit found MORE THAN ONE exact entry, so applying it
     /// would guess which one the caller meant. Additive like `busy`:
     /// `invalidParams` would tell the agent its arguments are malformed
     /// (they aren't), and `notFound` would tell it to search again (the
@@ -72,6 +76,8 @@ public enum WireErrorMessage {
         "No matching event was found for that id. Run events_list again to get current ids."
     public static let notFoundGroup =
         "No matching group was found for that id. Run contacts_list_groups again to get current ids."
+    public static let notFoundDepartment =
+        "No matching department was found in that organization. Run organizations_list_departments again to see its current departments."
     public static let notFoundGuide =
         "No matching guide was found for that id. Run guides_list again to get current ids."
     public static let notFoundNote =
@@ -87,10 +93,24 @@ public enum WireErrorMessage {
     /// user opens it in the app once, which does.
     public static let eventNeedsAppFirst =
         "That event can't be tagged yet. Ask the user to open the event once in the GuessWho app, then try again."
+    public static let eventNeedsAppFirstToFavorite =
+        "That event can't be favorited yet. Ask the user to open the event once in the GuessWho app, then try again."
     /// Engine write failure. Carries the re-read guidance: a timed-out write
     /// may still have landed, so a blind retry duplicates it.
     public static let writeFailed =
         "That change couldn't be saved. Re-read the item before retrying, in case an earlier attempt already went through."
+    public static let photoReadFailed =
+        "That contact's photo couldn't be read. Try again in a moment."
+    public static let photoTooLarge =
+        "That photo is too large for this tool. Use an image no larger than 180 KiB."
+    public static let invalidPhotoMediaType =
+        "The mediaType argument must be image/jpeg, image/png, image/gif, image/heic, or image/webp."
+    public static let invalidPhotoData =
+        "The dataBase64 argument must contain non-empty, valid base64 image data."
+    public static let photoMediaTypeMismatch =
+        "The image data doesn't match the mediaType argument."
+    public static let unsupportedStoredPhoto =
+        "That contact's photo uses an image format this tool doesn't support."
     /// Write budget exhausted (distinct from the search `busy`: the fix is
     /// to pause, and a re-read guards against duplicating queued retries).
     public static let writeBusy =
@@ -111,6 +131,18 @@ public enum WireErrorMessage {
         "The value argument for a checkbox field must be \"true\" or \"false\"."
     public static let reorderMustCoverEveryPlace =
         "The placeIds argument must contain every place in the guide exactly once, in the desired order."
+    public static let invalidFavoriteKindArgument =
+        "The kind argument must be \"contact\", \"event\", \"group\", \"guide\", or \"place\"."
+    public static let favoriteKindMismatch =
+        "That id doesn't belong to a record of the kind given for it. Check the kind and id against the matching list tool, then try again."
+    public static let staleFavorite =
+        "One of the favorites is no longer available. Nothing was reordered; run favorites_list, clear each unavailable entry with favorites_set and favorite false, then reorder the complete remaining list."
+    public static let reorderMustCoverEveryFavorite =
+        "The favorites argument must contain every current favorite exactly once as a kind and id pair, in the desired order."
+    public static let favoritesChangedDuringReorder =
+        "The favorites changed before the new order could be saved. Nothing was reordered; run favorites_list again and retry with the current complete list."
+    public static let favoritesReadFailed =
+        "Favorites couldn't be read right now. Wait a moment, then run favorites_list again."
     // Contact-record write errors (plans/cli-mcp.md Revision 2: full
     // Contact Store read/write parity).
     /// A create/update whose field set leaves the contact unnameable.
@@ -123,6 +155,12 @@ public enum WireErrorMessage {
     /// filter may be omitted).
     public static let invalidKindFilterArgument =
         "The kind argument must be \"person\" or \"organization\". Omit it to list both."
+    public static let organizationKindMismatch =
+        "That id belongs to a person, not an organization. Use an id whose kind is organization."
+    public static let emptyDepartmentName =
+        "Department names must not be empty."
+    public static let unchangedDepartmentName =
+        "The new department name must differ from the current name. A capitalization-only change is allowed."
     public static let updateNeedsAField =
         "Pass at least one field to change."
     public static let invalidCalendarDateValue =
@@ -141,6 +179,10 @@ public enum WireErrorMessage {
     /// description could echo contact data into an error string.
     public static let contactFieldRejected =
         "The system rejected one of the field values. Check the values and try again."
+    public static let groupMembersRequired =
+        "Pass at least one contact id in contactIds."
+    public static let tooManyGroupMembers =
+        "A group membership change can include at most 200 contact ids at a time."
     // Single-entry list edits (plans/cli-mcp.md Phase 7). contacts_update
     // is scalars-only: a whole-list argument is rejected LOUDLY toward the
     // dedicated one-entry-at-a-time tools, never silently ignored.
@@ -149,10 +191,11 @@ public enum WireErrorMessage {
     /// contacts_update carried one of the single-entry-editable lists.
     public static let listArgumentNotAccepted =
         "contacts_update changes single-value fields only. To add, change, or remove a phone number, email address, web address, related name, or date, use contacts_add_value, contacts_edit_value, or contacts_delete_value with field phone, email, url, related_name, or date."
-    /// contacts_update carried a list that has no single-entry tools yet
-    /// (postal addresses, social profiles, instant messages).
+    /// contacts_update carried a structured list. It remains a hard
+    /// rejection: structured entries have dedicated one-at-a-time tools,
+    /// never a whole-list replacement path on an existing contact.
     public static let createOnlyListArgumentNotAccepted =
-        "contacts_update can't change postal addresses, social profiles, or instant messages. Those can currently only be provided when creating a contact with contacts_create."
+        "contacts_update can't replace postal-address, social-profile, or instant-message lists. Use the matching contacts_add, contacts_edit, or contacts_delete tool to change one entry at a time."
     public static let emptyValueArgument =
         "The value argument must not be empty."
     // Match-based single-entry edits: the 0-match answers per list.
@@ -179,6 +222,26 @@ public enum WireErrorMessage {
         "That contact has more than one related name with that exact value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
     public static let ambiguousDateValue =
         "That contact has more than one date with that value, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    // Structured single-entry edits. Payload values never appear in these
+    // errors: all strings are fixed so a failure cannot leak contact data.
+    public static let emptyPostalAddress =
+        "A postal address must have at least one non-empty address field."
+    public static let emptySocialProfile =
+        "A social profile must have at least one non-empty service, username, or web address."
+    public static let emptyInstantMessage =
+        "An instant-message address must have a non-empty username."
+    public static let noMatchingPostalAddress =
+        "No postal address with that exact complete representation was found on that contact. Read the contact and copy the complete current address."
+    public static let noMatchingSocialProfile =
+        "No social profile with that exact complete representation was found on that contact. Read the contact and copy the complete current profile."
+    public static let noMatchingInstantMessage =
+        "No instant-message address with that exact complete representation was found on that contact. Read the contact and copy the complete current address."
+    public static let ambiguousPostalAddress =
+        "That contact has more than one postal address with that exact complete representation, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousSocialProfile =
+        "That contact has more than one social profile with that exact complete representation, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
+    public static let ambiguousInstantMessage =
+        "That contact has more than one instant-message address with that exact complete representation, so it isn't clear which one you mean. Nothing was changed. Ask the user to make this change in the GuessWho app."
     /// Confirmation-gated writes: nothing on screen to present the
     /// confirmation on.
     public static let confirmationUnavailable =
@@ -229,16 +292,22 @@ public enum WireErrorMessage {
         [
             notRunning, disabled, permissionDeniedContacts, permissionDeniedEvents,
             readOnly, tooLarge, busy,
-            notFoundContact, notFoundEvent, notFoundGroup, notFoundGuide,
+            notFoundContact, notFoundEvent, notFoundGroup, notFoundDepartment, notFoundGuide,
             noHostStatus,
             hostNotReady, timedOut,
             notFoundNote, notFoundField, notFoundTag, notFoundPlace,
-            eventNeedsAppFirst, writeFailed, writeBusy, reservedFieldName,
+            eventNeedsAppFirst, writeFailed, photoReadFailed, photoTooLarge,
+            invalidPhotoMediaType, invalidPhotoData, photoMediaTypeMismatch,
+            unsupportedStoredPhoto, writeBusy, reservedFieldName,
+            eventNeedsAppFirstToFavorite,
             invalidFieldType,
             emptyNameArgument,
             invalidDateFieldValue, invalidCheckboxFieldValue,
-            reorderMustCoverEveryPlace,
+            reorderMustCoverEveryPlace, invalidFavoriteKindArgument,
+            favoriteKindMismatch, staleFavorite, reorderMustCoverEveryFavorite,
+            favoritesChangedDuringReorder, favoritesReadFailed,
             contactNeedsAName, invalidKindArgument, invalidKindFilterArgument,
+            organizationKindMismatch, emptyDepartmentName, unchangedDepartmentName,
             updateNeedsAField,
             invalidCalendarDateValue,
             reservedWebAddress, contactNoteNotAccepted,
@@ -248,7 +317,13 @@ public enum WireErrorMessage {
             noRelatedNameWithThatValue, noDateWithThatValue,
             ambiguousPhoneValue, ambiguousEmailValue, ambiguousURLValue,
             ambiguousRelatedNameValue, ambiguousDateValue,
+            emptyPostalAddress, emptySocialProfile, emptyInstantMessage,
+            noMatchingPostalAddress, noMatchingSocialProfile,
+            noMatchingInstantMessage,
+            ambiguousPostalAddress, ambiguousSocialProfile,
+            ambiguousInstantMessage,
             contactFieldRejected, confirmationUnavailable, confirmationExpired,
+            groupMembersRequired, tooManyGroupMembers,
             confirmationAlreadyPending,
             invalidLinkKindArgument, linkKindMismatch, linkPairUnsupported,
             linkSelfNotAllowed, eventNeedsAppFirstToConnect, notFoundConnection,
@@ -266,6 +341,9 @@ public enum WireAckMessage {
     public static let linkRemoved = "The connection was removed."
     public static let favoriteSet = "Done — the contact is now a favorite."
     public static let favoriteCleared = "Done — the contact is no longer a favorite."
+    public static let genericFavoriteSet = "Done — the item is now a favorite."
+    public static let genericFavoriteCleared = "Done — the item is no longer a favorite."
+    public static let favoritesReordered = "The new favorites order was saved."
     public static let guideDeleted = "The guide was deleted."
     public static let placeDeleted = "The place was deleted."
     public static let placesReordered = "The new order was saved."
@@ -276,13 +354,19 @@ public enum WireAckMessage {
     /// "declined" as an answer, not a failure to retry.
     public static let contactDeleteDeclined =
         "The user declined to delete this contact. Nothing was changed."
+    public static let photoSet = "The contact photo was saved."
+    public static let photoDeleted = "The contact photo was deleted."
+    public static let groupDeleted = "The group was deleted. Its contacts were not deleted."
 
     /// Every fixed string above, for the banned-vocabulary test.
     public static var allFixedStrings: [String] {
         [
             noteDeleted, fieldDeleted, tagDeleted, linkRemoved,
-            favoriteSet, favoriteCleared, guideDeleted, placeDeleted,
+            favoriteSet, favoriteCleared, genericFavoriteSet, genericFavoriteCleared,
+            favoritesReordered, guideDeleted, placeDeleted,
             placesReordered, contactDeleted, contactDeleteDeclined,
+            photoSet, photoDeleted,
+            groupDeleted,
         ]
     }
 }
@@ -426,10 +510,17 @@ public enum AgentActivityStrings {
     public static let createdGuide = "Created the guide %@"
     public static let deletedGuide = "Deleted the guide %@"
     public static let reorderedPlaces = "Reordered the places in %@"
+    public static let reorderedFavorites = "Reordered %@"
     public static let deletedPlace = "Deleted a place from %@"
     public static let createdContact = "Added the contact %@"
     public static let editedContact = "Edited the contact %@"
     public static let deletedContact = "Deleted the contact %@ (approved by you)"
+    public static let renamedDepartment = "Renamed a department in %@"
+    public static let createdGroup = "Created the group %@"
+    public static let renamedGroup = "Renamed the group %@"
+    public static let deletedGroup = "Deleted the group %@"
+    public static let addedGroupMembers = "Added contacts to %@"
+    public static let removedGroupMembers = "Removed contacts from %@"
     /// Fallback when the entry's display-name snapshot is empty.
     public static let unknownSubject = "an item"
 
@@ -441,8 +532,10 @@ public enum AgentActivityStrings {
             addedConnection, removedConnection,
             markedFavorite, clearedFavorite,
             addedTag, editedTag, deletedTag,
-            createdGuide, deletedGuide, reorderedPlaces, deletedPlace,
-            createdContact, editedContact, deletedContact,
+            createdGuide, deletedGuide, reorderedPlaces, reorderedFavorites, deletedPlace,
+            createdContact, editedContact, deletedContact, renamedDepartment,
+            createdGroup, renamedGroup, deletedGroup,
+            addedGroupMembers, removedGroupMembers,
             unknownSubject,
         ]
     }

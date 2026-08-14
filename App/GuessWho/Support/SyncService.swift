@@ -910,6 +910,14 @@ final class SyncService {
         }
     }
 
+    /// Throwing read for the MCP safety boundary. Unlike the UI convenience
+    /// above, a storage failure must not masquerade as an empty favorites list
+    /// and silently erase rows from the assistant's projection.
+    func loadFavorites() throws -> [Favorite] {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        return try favoritesStore.loadAll()
+    }
+
     /// `false` on error or when storage is unavailable.
     func isFavorite(kind: FavoriteKind, id: String) -> Bool {
         guard let favoritesStore else { return false }
@@ -928,6 +936,14 @@ final class SyncService {
         return try favoritesStore.toggle(kind: kind, id: id, now: Date())
     }
 
+    /// Idempotent desired-state favorite write used by the generic MCP
+    /// surface. Returns whether persistent state changed.
+    @discardableResult
+    func setFavorite(kind: FavoriteKind, id: String, favorite: Bool) throws -> Bool {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        return try favoritesStore.set(kind: kind, id: id, favorite: favorite, now: Date())
+    }
+
     /// Idempotently removes a favorite. Used when its underlying entity was
     /// deleted, where toggle would be unsafe to retry after a partial failure.
     func removeFavorite(kind: FavoriteKind, id: String) throws {
@@ -940,6 +956,15 @@ final class SyncService {
     func setFavoritesOrder(_ items: [Favorite]) throws {
         guard let favoritesStore else { throw SidecarUnavailableError() }
         try favoritesStore.setAll(items)
+    }
+
+    /// Compare-and-swap reorder used by MCP. The store re-reads immediately
+    /// before writing, so a concurrent favorite edit is rejected rather than
+    /// overwritten or dropped.
+    @discardableResult
+    func reorderFavorites(expected: [Favorite], reordered: [Favorite]) throws -> Bool {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        return try favoritesStore.reorder(expected: expected, reordered: reordered)
     }
 
     // MARK: - Private
