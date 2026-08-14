@@ -103,8 +103,11 @@ final class FavoritesToolTests: XCTestCase {
         } else {
             placeID = importedPlaces[0].id
         }
-        let place = try XCTUnwrap(
-            fixture.sync.places(inGuide: guide.id).first { $0.id == placeID })
+        // Hoisted out of XCTUnwrap: in this async function `places(inGuide:)`
+        // resolves to the async overload, which cannot be called inside the
+        // non-async XCTUnwrap autoclosure.
+        let guidePlaces = try await fixture.sync.places(inGuide: guide.id)
+        let place = try XCTUnwrap(guidePlaces.first { $0.id == placeID })
 
         let groupLocalID = seededGroupLocalID(fixture) ?? ""
         await fixture.repository.loadGroups()
