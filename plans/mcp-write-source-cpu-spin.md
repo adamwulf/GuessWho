@@ -1,14 +1,27 @@
 # MCP transport — write-source CPU spin fix
 
 **Author:** `mcp-cpu-spin` (guesswho repo) · **Date:** 2026-08-13
-**Status:** Revised after review cycle 1. Two reviewers: one `codex`
-(engineering), one `researcher` (facts). The researcher CONFIRMED all five
-factual claims against the SDK dispatch headers, the Darwin man pages,
-the libdispatch source, and Apple's Concurrency Programming Guide. The codex
-reviewer approved the direction but found one blocker — a close/reopen
-generation race — plus test refinements. All findings are folded in below.
+**Status:** IMPLEMENTATION-READY after two review cycles, each with one `codex`
+(engineering) and one `researcher` (facts) reviewer.
+
+- **Cycle 1:** researcher CONFIRMED all five factual claims; codex approved the
+  direction but found one blocker — a close/reopen generation race — plus test
+  refinements. All folded in (Part B one-shot contract + the rewritten test
+  plan).
+- **Cycle 2:** researcher CONFIRMED all six sharpened claims at the kernel
+  level (`xnu` `filt_sowrite_common` / `socantrcvmore`), weakened nothing.
+  Codex verdict APPROVE-WITH-CHANGES: the generation-race blocker is fully
+  resolved, and four implementation-readiness edits were required — all folded
+  in here: (1) the foreign `WritePipeError` cannot gain a case → use a
+  transport-owned `ChunkedWritePipeError.pipeClosed`; (2) capture the test
+  probe by value, never the actor; (3) synchronize the EAGAIN tests on an
+  `onWouldBlock` seam with bounded deadlines; (4) a self-relaunching subprocess
+  for the deinit test (no new SwiftPM target).
+
 Reviews: [`review-codex-cpu-spin.md`](review-codex-cpu-spin.md),
-[`review-researcher-cpu-spin.md`](review-researcher-cpu-spin.md).
+[`review-researcher-cpu-spin.md`](review-researcher-cpu-spin.md),
+[`review-codex-cpu-spin-2.md`](review-codex-cpu-spin-2.md),
+[`review-researcher-cpu-spin-2.md`](review-researcher-cpu-spin-2.md).
 
 ---
 
@@ -74,7 +87,9 @@ The comment is wrong. `DISPATCH_SOURCE_TYPE_WRITE` is **level-triggered**, not
 edge-triggered. libdispatch registers the write source with
 `EV_DISPATCH` but **without** `EV_CLEAR`, so after each delivery the invoke
 path re-arms the kqueue note; a level filter on a still-writable fd then fires
-again at once. The write low-water mark is 1 byte, so an idle FIFO with an
+again at once. The effective write low-water mark is 1 byte — the kernel FIFO
+vnode filter ignores libdispatch's `NOTE_LOWAT` and reports writable on any
+nonzero free space (`xnu` `filt_sowrite_common`) — so an idle FIFO with an
 empty buffer is always writable. The code resumes the source one time at
 `open()` and never suspends it. When the pipe is open and idle, with no message
 to send, the handler calls `PipeSignal.signal()` in a tight loop. Apple's own
@@ -120,11 +135,29 @@ inactive/suspended the rest of the time.
 - Remove `writeSource.resume()`.
 - Remove the pre-arm `signal.signal()` at the end of `open()`.
 - Keep the event handler and the cancel handler.
-- **Add a test probe to the event handler** (see the test section). The
-  handler becomes `{ onSourceFire?(); signal.signal() }`, where `onSourceFire`
-  is an optional `@Sendable () -> Void` injected at init (nil in production).
-  The probe must fire ONLY from the write-source event handler, never from the
-  cancel handler or from a manual `signal()`.
+- **Add a test probe to the event handler** (see the test section). The probe
+  must fire ONLY from the write-source event handler, never from the cancel
+  handler or from a manual `signal()`.
+
+  **Capture by value, never capture the actor (cycle-2 finding 10).** Snapshot
+  the optional callback into a local BEFORE installing the handler — exactly as
+  `open()` already does for `writableSignal` via the `signal` local — and have
+  the dispatch closure capture that local:
+  ```swift
+  let onFire = onSourceFire          // local snapshot; nil in production
+  writeSource.setEventHandler {
+      onFire?()
+      signal.signal()
+  }
+  ```
+  Capturing `self.onSourceFire` from the handler would risk an actor-isolation
+  diagnostic and create `actor → source → handler → actor` retention, which
+  would keep the pipe alive and defeat the deinit-without-close test. Keep the
+  public initializer unchanged; expose the probe through an internal, test-only
+  seam (an internal initializer, or an internal `set-before-open` method). In
+  production `onSourceFire` is `nil`, so the optional call is behavior-neutral.
+  The test's counter must be a lock-guarded `Sendable` reference; `@Sendable`
+  alone is not a substitute for the lock.
 
 #### Edit A2 — armed state + helpers
 
@@ -242,11 +275,30 @@ impossible — there is never a source B on the same instance.
 
 #### Edit B1 — reject reopen after close
 
+**Error type (cycle-2 correction).** `WritePipeError` is declared in the pinned
+`EasyMacMCP` dependency, and a Swift enum cannot gain a case by extension. Its
+cases are `invalidURL, failedToCreatePipe, pipeAlreadyExists, pipeDoesNotExist,
+notAPipe, openFailed, getFlagsFailed, setFlagsFailed, pipeNotOpened,
+writeError` — there is no "closed" case and no local `WritePipeError.swift` to
+edit. So do NOT add `WritePipeError.pipeClosed`. Instead:
+
+- **Primary:** define a transport-owned error in this package, e.g.
+  `enum ChunkedWritePipeError: Error { case pipeClosed }`, and throw it from
+  `open()` when `isClosed`. Clear, unambiguous, and the test asserts that exact
+  case. `open()` already throws (`WritePipeError`), so the added throw type is
+  fine for callers, which catch `Error` / specific cases.
+- **Lighter alternative:** reuse `WritePipeError.pipeNotOpened` (a closed pipe
+  is not open) to keep the throw surface homogeneous. Acceptable but less
+  precise; the reopen test then asserts `pipeNotOpened`.
+
+Recommendation: the transport-owned `ChunkedWritePipeError.pipeClosed`.
+
+Then:
+
 - Add `private var isClosed = false`.
-- Add a `WritePipeError.pipeClosed` case.
 - At the top of `open()`, before the existing `guard fd < 0 else { return }`:
   ```swift
-  guard !isClosed else { throw WritePipeError.pipeClosed }
+  guard !isClosed else { throw ChunkedWritePipeError.pipeClosed }
   ```
 - `close()` sets `isClosed = true` (shown in Edit A4).
 
@@ -330,43 +382,73 @@ a manual diagnostic, not a committed assertion.
 The existing `testConcurrentLargeRequestsFromTwoHelpersArriveIntact`
 (`PipeTransportTests.swift:89-111`) uses actively draining readers, so it can
 pass without any writer ever hitting `EAGAIN`. It does not prove the new
-arm/wait/disarm path. Add:
+arm/wait/disarm path.
+
+**Synchronize on an observable seam, not on timing (cycle-2 finding 7).**
+"Do not drain," "park a writer," and "drain in increments" are actions, not
+observations. A scheduling delay could run the assertions before the writer
+reaches `EAGAIN`, and a missed wake could hang the suite forever. So add a
+SECOND test-only probe fired at the `EAGAIN` transition in `performWrite`
+(before `armSource()` / the `await`) — call it `onWouldBlock`, captured
+by value the same way as `onSourceFire`, backed by a lock/`XCTestExpectation`
+in the test. Wait for its count to reach the expected value before each
+controlled drain or `close()`. Put a bounded deadline (`XCTWaiter` /
+`Task`-timeout) around every writer completion so a lost wake fails fast
+instead of hanging. Then add:
 
 - **Multi-EAGAIN, one payload.** Hold a reader open but do NOT drain, so the
-  pipe fills and the writer parks on `EAGAIN`. Then drain in small increments
-  to force more than one `EAGAIN`/wakeup cycle for a single payload. Assert the
-  payload arrives byte-for-byte intact.
-- **close() while parked.** Park a writer on `EAGAIN`, call `close()`, and
-  assert the `write()` throws the expected error and the process does not crash.
+  pipe fills and the writer parks on `EAGAIN` (wait for `onWouldBlock` #1).
+  Then drain in small increments, waiting for the next `onWouldBlock` before
+  each further increment, to force more than one `EAGAIN`/wakeup cycle for a
+  single payload. Assert the payload arrives byte-for-byte intact.
+- **close() while parked.** Wait for `onWouldBlock` to confirm the writer is
+  parked, call `close()`, and assert the `write()` throws the SPECIFIC expected
+  error (`WritePipeError.pipeNotOpened`, or the `writeError` the loop produces)
+  — assert the exact case, not merely "an error" — and that the process does
+  not crash.
 - **Reopen contract (one-shot).** After `close()`, assert `open()` throws
-  `WritePipeError.pipeClosed`.
+  `ChunkedWritePipeError.pipeClosed`.
 
-### Test 3 — deinit without close (subprocess)
+### Test 3 — deinit without close (self-relaunching subprocess)
 
 Edit A4 hardens `deinit` so a never-closed pipe does not release an
 inactive/suspended source. The failure mode is a **libdispatch process abort**,
-which XCTest cannot catch in-process. So this needs a subprocess:
+which XCTest cannot catch in-process. So this needs a child process.
 
-- Add a tiny SwiftPM executable target that opens a `ChunkedWritePipe`, does no
-  `EAGAIN`, drops the last reference WITHOUT calling `close()`, and exits 0.
-- An XCTest spawns it with `Process` and asserts a clean exit (no abort).
+**Chosen strategy (cycle-2 finding 12): a self-relaunching XCTest helper — no
+new SwiftPM target.** Adding an executable product plus a
+configuration-and-triple-independent way to locate its binary is brittle in
+this package layout. Instead:
 
-An in-process companion test still helps: `open()` a writer with no `EAGAIN`
-(source stays inactive), then `close()`; assert no crash and the fd is closed.
-That exercises resume-before-cancel of an inactive source on the `close()` path.
+- One `XCTestCase` reads an env var, say `GUESSWHO_DEINIT_PROBE=1`. When unset
+  (the normal run) it re-launches the current test binary
+  (`ProcessInfo.processInfo.arguments[0]`) with that env var set and
+  `--filter` narrowed to the probe test, then asserts the child exits 0
+  (`terminationStatus == 0`, `terminationReason == .exit`, no signal).
+- When the env var IS set, the same test body opens a `ChunkedWritePipe`
+  (holding a reader fd for the ENXIO probe), does no `EAGAIN`, drops the last
+  reference WITHOUT `close()`, lets `deinit` run, and returns. A pre-fix binary
+  would abort here; the fixed binary exits cleanly.
+
+This keeps `Package.swift` unchanged and needs no binary-path discovery.
+
+An in-process companion test still helps and does NOT need a subprocess:
+`open()` a writer with no `EAGAIN` (source stays inactive), then `close()`;
+assert no crash and that the fd is closed. That exercises resume-before-cancel
+of an inactive source on the `close()` path (the crash-prone release is what
+the subprocess test covers).
 
 ## Files touched
 
 - `Sources/GuessWhoMCPTransport/ChunkedWritePipe.swift` — Parts A + B; add the
-  `onSourceFire` init probe and `isClosed`.
-- `Sources/GuessWhoMCPTransport/WritePipeError.swift` (wherever the enum lives)
-  — add `pipeClosed`.
-- `Tests/GuessWhoMCPTransportTests/…` — a new `@testable` file for Tests 1–2
-  plus the in-process deinit companion; and the subprocess-driver test.
-- A tiny executable target for Test 3 (deinit-without-close). If adding a
-  target is judged too heavy, fall back to code-review of the deinit path plus
-  the in-process close-of-inactive test, and record that the pure
-  deinit-without-close abort is not automatically gated.
+  `onSourceFire` and `onWouldBlock` internal test seams (captured by value),
+  the `isSourceArmed` state + helpers, and `isClosed`.
+- A new small file in `Sources/GuessWhoMCPTransport/` defining
+  `enum ChunkedWritePipeError: Error { case pipeClosed }` (do NOT touch the
+  foreign `WritePipeError`).
+- `Tests/GuessWhoMCPTransportTests/…` — a new `@testable` file for Tests 1–2,
+  the in-process close-of-inactive companion, and the self-relaunching deinit
+  subprocess test (Test 3). No new SwiftPM target; `Package.swift` is unchanged.
 - No change to `CappedLineReadPipe.swift`. State in the PR why the read source
   stays armed (single-consumer + keepalive contract), so a later change does
   not "fix" it and reintroduce the parked-read FIFO wedge.
@@ -375,10 +457,14 @@ That exercises resume-before-cancel of an inactive source on the `close()` path.
 
 Follow the TDD order:
 
-0. **Red:** land Test 1 first, run `swift test --filter GuessWhoMCPTransport`,
-   and confirm Test 1 FAILS against the unmodified `ChunkedWritePipe`. Record
-   the red output.
-1. **Green:** apply Parts A + B, `swift build` to compile the transport package.
+0. **Red:** first add ONLY the behavior-neutral observation seam
+   (`onSourceFire`, captured by value; production still always-arms the source,
+   so this changes no runtime behavior). Land Test 1, run
+   `swift test --filter GuessWhoMCPTransport`, and confirm Test 1 FAILS against
+   the still-buggy always-armed source (the fire counter is large, not 0).
+   Record the red output. This is the proof the test measures the real spin.
+1. **Green:** apply Parts A + B (gating + one-shot), `swift build` to compile
+   the transport package.
 2. `swift test --filter GuessWhoMCPTransport` — Test 1 is now green, Tests 2–3
    pass, and the existing transport suite stays green.
 3. Manual check: run the app + `guesswho-cli`, open a connection, leave it
