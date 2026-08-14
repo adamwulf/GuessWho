@@ -1823,6 +1823,17 @@ public final class ContactsRepository: NSObject {
         return live
     }
 
+    /// The durable `GroupIdentity` UUIDs this device knows about (favorited or
+    /// orphaned). The MCP layer uses these to map a favorites-list group wire id
+    /// — a one-way digest of the durable UUID, which is NOT the digest of the
+    /// live group's `localID` — back to a live group via `group(forFavoriteID:)`.
+    /// Best-effort: a sidecar read failure yields an empty list rather than
+    /// throwing into the caller.
+    public func groupFavoriteIdentityIDs() -> [String] {
+        guard let sync else { return [] }
+        return ((try? sync.allGroupIdentities()) ?? []).map(\.id)
+    }
+
     private struct LiveGroupFingerprint {
         let memberCount: Int
         let memberHash: String

@@ -90,6 +90,11 @@ final class LegacyScriptedContactSource: MCPContactSource {
     /// Explicit results used only when a scripted CRUD gate/error test needs
     /// the dispatcher to decorate a returned group. Unconfigured reads fail.
     var scriptedGroupFavoriteReadResults: [Bool] = []
+    /// Minimal stand-in for the durable group-identity model: durable favorite
+    /// UUID -> the live group it resolves to. A seeded entry makes a group
+    /// favorite AVAILABLE (as after adoption on the real repository); an unseeded
+    /// id stays unavailable (a legacy raw-id favorite).
+    var groupFavoriteResolutions: [String: ContactGroup] = [:]
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
@@ -279,10 +284,14 @@ final class LegacyScriptedContactSource: MCPContactSource {
     }
 
     func group(forFavoriteID id: String) -> ContactGroup? {
-        // This generic fake has no group-identity sidecar model. A seeded raw
-        // group identifier therefore models a legacy favorite and is correctly
-        // unavailable after the durable group-UUID change.
-        nil
+        // Resolve a seeded durable favorite UUID to its live group; an unseeded
+        // id (e.g. a raw legacy identifier) stays unavailable — the real
+        // repository behaves the same for a group with no identity sidecar.
+        groupFavoriteResolutions[id]
+    }
+
+    func groupFavoriteIdentityIDs() -> [String] {
+        Array(groupFavoriteResolutions.keys)
     }
 
     // MARK: Writes

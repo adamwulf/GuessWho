@@ -42,6 +42,11 @@ public protocol MCPContactSource: AnyObject {
     /// device-local adoption cache. Raw Contacts identifiers are never
     /// accepted as favorite identity here.
     func group(forFavoriteID id: String) -> ContactGroup?
+    /// The durable group-favorite identity UUIDs this device knows about. Lets
+    /// the dispatcher map a favorites-list group wire id (a digest of the
+    /// durable UUID, distinct from the groups-list localID digest) back to a
+    /// live group via `group(forFavoriteID:)`.
+    func groupFavoriteIdentityIDs() -> [String]
 
     // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
     // the UI uses (INV-2), so the change-watcher, iCloud push, and UI

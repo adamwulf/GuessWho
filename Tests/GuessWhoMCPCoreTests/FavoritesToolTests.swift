@@ -160,11 +160,16 @@ final class FavoritesToolTests: XCTestCase {
         }
         // The event / guide / place referents are the fixture's REAL
         // engine-minted records; the fault-injecting favorites source only holds
-        // the ordered list the favorites_* tools mutate.
+        // the ordered list the favorites_* tools mutate. The group favorite
+        // references a durable GroupIdentity UUID (like the real repository),
+        // NOT the raw localID; register it so the group resolves to a live,
+        // AVAILABLE row.
+        let groupFavoriteID = "9a9a9a9a-0000-4000-8000-0000000c0de5"
+        fixture.contacts.groupFavoriteResolutions[groupFavoriteID] = group
         fixture.favorites.items = [
             Favorite(kind: .contact, id: Sentinels.guessWhoUUID, addedAt: Date(timeIntervalSince1970: 1)),
             Favorite(kind: .event, id: fixture.galaEventUUID.uuidString, addedAt: Date(timeIntervalSince1970: 2)),
-            Favorite(kind: .group, id: group.localID, addedAt: Date(timeIntervalSince1970: 3)),
+            Favorite(kind: .group, id: groupFavoriteID, addedAt: Date(timeIntervalSince1970: 3)),
             Favorite(kind: .guide, id: fixture.coffeeGuideID.uuidString, addedAt: Date(timeIntervalSince1970: 4)),
             Favorite(kind: .place, id: fixture.bluebirdPlaceID.uuidString, addedAt: Date(timeIntervalSince1970: 5)),
         ]
