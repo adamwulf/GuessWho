@@ -61,6 +61,12 @@ public actor ChunkedWritePipe: PipeWritable {
     /// `_setOnSourceFire(_:)` before `open()`; `open()` snapshots it into a
     /// local so the dispatch handler never captures the actor.
     private var onSourceFire: (@Sendable () -> Void)?
+    /// Test-only observation seam: invoked at each `EAGAIN` transition in
+    /// `performWrite` (just before the source is armed and we await
+    /// writability). Nil in production. Lets tests synchronize on real
+    /// backpressure instead of on timing. Called from the actor, not a
+    /// dispatch queue, so it needs no snapshot.
+    private var onWouldBlock: (@Sendable () -> Void)?
     /// Serialization chain: concurrent write() calls append here so whole
     /// messages go out back-to-back even though the actor is re-entrant
     /// across the writability awaits.
@@ -110,6 +116,12 @@ public actor ChunkedWritePipe: PipeWritable {
     /// `open()`. See `onSourceFire`. No production caller sets this.
     func _setOnSourceFire(_ probe: (@Sendable () -> Void)?) {
         onSourceFire = probe
+    }
+
+    /// Test-only: install the `EAGAIN`/would-block probe. Must be called before
+    /// `open()`. See `onWouldBlock`. No production caller sets this.
+    func _setOnWouldBlock(_ probe: (@Sendable () -> Void)?) {
+        onWouldBlock = probe
     }
 
     /// Resume (activate) the write source so the FIFO becoming writable wakes a
@@ -244,6 +256,7 @@ public actor ChunkedWritePipe: PipeWritable {
             case EAGAIN, EWOULDBLOCK:
                 // The pipe is full. Arm the write source so a writability edge
                 // wakes us, wait, then disarm so the source goes quiet again.
+                onWouldBlock?()
                 armSource()
                 await writableSignal.wait()
                 disarmSource()
