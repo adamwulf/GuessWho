@@ -192,7 +192,7 @@ final class MCPProductionHarnessTests: XCTestCase {
         XCTAssertEqual(saveCount, 1)
         XCTAssertTrue(committed.isEmpty)
 
-        // The record on disk still holds the original job title.
+        // The contact-store boundary still holds the original job title.
         let fetched = try await fixture.store.fetch(localID: MCPProductionFixture.adaLocalID)
         let stored = try XCTUnwrap(fetched)
         XCTAssertEqual(stored.jobTitle, "Analyst")

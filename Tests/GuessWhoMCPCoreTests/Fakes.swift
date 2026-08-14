@@ -97,11 +97,11 @@ final class LegacyScriptedContactSource: MCPContactSource {
 
     /// When set, EVERY link method routes through this REAL engine (over a
     /// real temp-directory store) instead of the in-memory maps — the link
-    /// tests' production pathway. The contact BOOK stays fake (a real
-    /// ContactsRepository needs the system Contacts store + TCC, which
-    /// headless `swift test` can't have); the identity resolve-or-mint
-    /// simulation in `effectiveWriteID` still applies, mirroring how the
-    /// real repository funnels resolve-or-mint before the engine write.
+    /// tests' production pathway. This legacy source still scripts the contact
+    /// book instead of using the production repository with a substituted
+    /// `ContactStoreProtocol` boundary; the identity resolve-or-mint simulation
+    /// in `effectiveWriteID` mirrors how the real repository funnels
+    /// resolve-or-mint before the engine write.
     var linkEngine: GuessWhoSync?
 
     /// When true, every write throws like the engine's `.unavailable`
