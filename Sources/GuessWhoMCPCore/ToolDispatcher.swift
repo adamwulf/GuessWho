@@ -585,7 +585,7 @@ public actor ToolDispatcher {
                         helperId: helperId, messageId: messageId,
                         code: .tooLarge, message: WireErrorMessage.photoTooLarge)
                 }
-                guard let mediaType = Self.photoMediaType(for: photo.data) else {
+                guard let mediaType = WireContactPhotoMedia.mediaType(for: photo.data) else {
                     return .error(
                         helperId: helperId, messageId: messageId,
                         code: .readFailed, message: WireErrorMessage.unsupportedStoredPhoto)
@@ -2571,7 +2571,7 @@ public actor ToolDispatcher {
         mediaType: String, dataBase64: String
     ) async -> WireResponse {
         let normalizedType = mediaType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard Self.supportedPhotoMediaTypes.contains(normalizedType) else {
+        guard WireContactPhotoMedia.supportedMediaTypes.contains(normalizedType) else {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: WireErrorMessage.invalidPhotoMediaType)
@@ -2591,7 +2591,7 @@ public actor ToolDispatcher {
                 helperId: helperId, messageId: messageId,
                 code: .tooLarge, message: WireErrorMessage.photoTooLarge)
         }
-        guard Self.photoMediaType(for: data) == normalizedType else {
+        guard WireContactPhotoMedia.mediaType(for: data) == normalizedType else {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: WireErrorMessage.photoMediaTypeMismatch)
@@ -2695,35 +2695,6 @@ public actor ToolDispatcher {
                 return contactSaveFailure(error, helperId: helperId, messageId: messageId)
             }
         }
-    }
-
-    private static let supportedPhotoMediaTypes: Set<String> = [
-        "image/jpeg", "image/png", "image/gif", "image/heic", "image/webp",
-    ]
-
-    private static func photoMediaType(for data: Data) -> String? {
-        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
-        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
-            return "image/png"
-        }
-        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
-        if data.count >= 12,
-           String(decoding: data.prefix(4), as: UTF8.self) == "RIFF",
-           String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self) == "WEBP" {
-            return "image/webp"
-        }
-        if data.count >= 12,
-           String(decoding: data.dropFirst(4).prefix(4), as: UTF8.self) == "ftyp" {
-            let brand = String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self)
-            if [
-                "heic", "heix", "hevc", "hevx",
-                "heim", "heis", "hevm", "hevs",
-                "mif1", "msf1",
-            ].contains(brand) {
-                return "image/heic"
-            }
-        }
-        return nil
     }
 
     // MARK: - Single-entry list edits (plans/cli-mcp.md Phase 7)

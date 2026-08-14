@@ -118,6 +118,31 @@ plain repair hint ("GuessWho has moved…") when they differ. Sandbox limits
 mean the app cannot read a client's config directly — the stamp is the
 signal.
 
+## Terminal contact commands
+
+The terminal surface currently provides three ergonomic contact commands.
+GuessWho must be open, and Terminal Access in Settings controls whether reads
+and writes are allowed.
+
+```sh
+# Search prints a JSON page of contact summaries.
+guesswho contacts search "Ada Lovelace" --limit 20
+
+# Photo bytes go to stdout by default, or to -o/--output.
+guesswho contacts get-photo <contact-id> -o contact.jpg
+guesswho contacts get-photo <contact-id> > contact.jpg
+
+# Photo bytes come from stdin by default, or from -i/--input.
+guesswho contacts set-photo <contact-id> -i contact.jpg
+guesswho contacts set-photo <contact-id> < contact.jpg
+```
+
+`set-photo` detects JPEG, PNG, GIF, HEIC, and WebP from the bytes rather than
+the filename. Images may be at most 180 KiB. Use `--idempotency-token <token>`
+when a caller needs an explicit retry identity. `get-photo` exits with an
+error when the contact has no photo; diagnostics always go to stderr so
+redirected image output stays clean.
+
 ## Tools
 
 Names use underscores (MCP clients restrict tool names to
