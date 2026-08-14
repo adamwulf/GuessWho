@@ -53,6 +53,15 @@ let package = Package(
         // wire types across images).
         .library(name: "GuessWhoMCPWire", targets: ["GuessWhoMCPWire"]),
         .library(name: "GuessWhoMCPTransport", targets: ["GuessWhoMCPTransport"]),
+        // GuessWhoCLICore — the ArgumentParser command tree for the
+        // guesswho-cli helper (Phase 1), extracted from the app target so
+        // `swift test` exercises the per-command request-building and
+        // response-rendering logic. A standalone STATIC product the helper's
+        // isolated xcodeproj links, exactly like the two wire/transport
+        // products above. MUST NOT link GuessWhoSync (INV-1); the app must
+        // never link it (it is the argv adapter only — the app has no argv and
+        // no business linking ArgumentParser).
+        .library(name: "GuessWhoCLICore", targets: ["GuessWhoCLICore"]),
         // logfmt file logging shared by the GuessWho app + its Safari Web
         // Extension. A thin facade (GuessWhoLog) over FellerBuncher's swift-log
         // bootstrap — the extension links it and appex memory budgets are tight,
@@ -85,6 +94,14 @@ let package = Package(
         // rot, so the pin is load-bearing documentation, not just build
         // reproducibility. Bump deliberately, re-checking those anchors.
         .package(url: "https://github.com/adamwulf/mcp-template.git", revision: "3cb7bec338efeee0b8d4fce338e9e61b755f1066"),
+        // swift-argument-parser: the command tree in GuessWhoCLICore. A
+        // DIRECT dependency now that the CLI command logic lives in a package
+        // target (Phase 1). It is already in the resolved graph transitively
+        // via mcp-template, so `.upToNextMajor(from: "1.5.0")` resolves to the
+        // same 1.8.2 with no conflict; the guesswho-cli xcodeproj also pins
+        // >= 1.5.0. ArgumentParser is added ONLY to GuessWhoCLICore — NEVER to
+        // GuessWhoMCPWire or any target the app links directly.
+        .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
     ],
     targets: [
         // Thin Objective-C shim over the Swift-unavailable
@@ -163,6 +180,27 @@ let package = Package(
         .testTarget(
             name: "GuessWhoMCPTransportTests",
             dependencies: ["GuessWhoMCPTransport", "GuessWhoMCPWire"]
+        ),
+        // GuessWhoCLICore — the CLI argv adapter (plans/cli-command-parity.md
+        // Phase 1): the root command + every subcommand, plus the three seams
+        // (CLIRuntime / CLITransport / CLIOutput) and the shared run() funnel
+        // that routes each command through WireRequest.create → transport →
+        // WireResponse.asCallToolResult, the SAME production path the MCP relay
+        // uses. Depends ONLY on the wire + transport products and
+        // ArgumentParser — MUST NOT depend on GuessWhoSync (INV-1: the app
+        // never links this product, and the wire can only carry what its DTOs
+        // name, so the Apple-note exclusion holds for free).
+        .target(
+            name: "GuessWhoCLICore",
+            dependencies: [
+                "GuessWhoMCPWire",
+                "GuessWhoMCPTransport",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .testTarget(
+            name: "GuessWhoCLICoreTests",
+            dependencies: ["GuessWhoCLICore"]
         ),
         // GuessWhoLogging — swift-log's product is "Logging"; FellerBuncher's
         // product and module are both "FellerBuncher". FellerBuncher owns the
