@@ -84,22 +84,17 @@ final class WriteSourceLifecycleTests: XCTestCase {
         }
     }
 
-    private struct TimeoutError: Error {}
-
-    /// Await `op`, failing fast if it does not finish within `seconds` so a
-    /// lost-wake regression fails the test instead of hanging the suite.
-    private func withDeadline<T: Sendable>(_ seconds: Double = 10,
-                                           _ op: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await op() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw TimeoutError()
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
+    /// Poll a Task's completion flag with a bounded deadline WITHOUT
+    /// structurally awaiting the task (a task group would wait for its
+    /// cancelled child on scope exit, and `Task.value` does not return on the
+    /// awaiter's cancellation — so a parked writer would still hang). Returns
+    /// true if the flag was set within the deadline. On false, the caller
+    /// cancels the writer (PipeSignal's `onCancel` wakes a parked wait) and
+    /// fails fast.
+    private func awaitFlag(_ flag: Counter,
+                           deadlineSeconds: Double = 10) async throws -> Bool {
+        let iterations = max(1, Int(deadlineSeconds * 100))
+        return try await waitUntil(iterations: iterations, sleepNs: 10_000_000) { flag.count > 0 }
     }
 
     /// Lock-guarded, Sendable holder so a write Task can hand its thrown error
@@ -171,7 +166,12 @@ final class WriteSourceLifecycleTests: XCTestCase {
 
         // Write concurrently; do NOT drain yet, so the buffer fills and the
         // writer parks on EAGAIN (deterministic first block).
-        let writeTask = Task { try await pipe.write(payload) }
+        let done = Counter()
+        let errorBox = ErrorBox()
+        let writeTask = Task {
+            do { try await pipe.write(payload) } catch { errorBox.set(error) }
+            done.increment()
+        }
 
         let blocked = try await waitUntil { blocks.count >= 1 }
         XCTAssertTrue(blocked, "writer never hit EAGAIN — backpressure path not exercised")
@@ -190,13 +190,16 @@ final class WriteSourceLifecycleTests: XCTestCase {
             try await Task.sleep(nanoseconds: 2_000_000) // 2ms
         }
 
-        // Deadline-bounded: a lost wake must fail fast, not hang the suite.
-        do {
-            try await withDeadline(10) { try await writeTask.value }
-        } catch is TimeoutError {
-            writeTask.cancel()
+        // Deadline-bounded via a completion flag (never a structured await of
+        // the writer), so a lost wake fails fast instead of hanging the suite.
+        if try await awaitFlag(done) == false {
+            writeTask.cancel()   // PipeSignal's onCancel wakes a parked writer
             await pipe.close()
             return XCTFail("writer did not complete within the deadline — lost wake?")
+        }
+        if let err = errorBox.get() {
+            await pipe.close()
+            return XCTFail("write failed under backpressure: \(err)")
         }
 
         XCTAssertEqual(received.count, total, "payload truncated across backpressure")
@@ -227,10 +230,11 @@ final class WriteSourceLifecycleTests: XCTestCase {
         try await pipe.open()
 
         let payload = Data(repeating: 0x41, count: 512 * 1024)
+        let done = Counter()
         let errorBox = ErrorBox()
         let writeTask = Task {
-            do { try await pipe.write(payload) }
-            catch { errorBox.set(error) }
+            do { try await pipe.write(payload) } catch { errorBox.set(error) }
+            done.increment()
         }
 
         // Wait until the writer is parked (source armed), never draining.
@@ -241,10 +245,9 @@ final class WriteSourceLifecycleTests: XCTestCase {
         // an extra resume; the parked writer wakes to fd == -1 and fails.
         await pipe.close()
 
-        // Deadline-bounded so a lost close-signal fails fast, not hangs.
-        do {
-            try await withDeadline(10) { await writeTask.value }
-        } catch is TimeoutError {
+        // Deadline-bounded on a completion flag so a lost close-signal fails
+        // fast instead of hanging.
+        if try await awaitFlag(done) == false {
             writeTask.cancel()
             return XCTFail("parked writer did not unwind after close — lost close signal?")
         }
@@ -274,7 +277,7 @@ final class WriteSourceLifecycleTests: XCTestCase {
         let url = container.appendingPathComponent("deinit-\(UUID().uuidString).pipe")
         // Hold a reader so the writer open does not ENXIO. Outlives the pipe.
         var pipe: ChunkedWritePipe? = try ChunkedWritePipe(url: url)
-        weak var weakPipe = pipe
+        weak let weakPipe = pipe
         let readerFD = Darwin.open(url.path, O_RDONLY | O_NONBLOCK, 0)
         XCTAssertNotEqual(readerFD, -1)
         defer { Darwin.close(readerFD) }
