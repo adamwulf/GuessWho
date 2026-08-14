@@ -349,9 +349,13 @@ struct MCPProductionFixture {
     let favoritesStore: FavoritesStore
     let favoriteSource: MCPFavoriteStoreAdapter
     let links: EngineLinkSource
-    // OS-independent collaborators — the existing fakes from Fakes.swift.
-    let events: FakeEventSource
-    let guides: FakeGuideSource
+    /// Events + guides/places ride the SAME production `GuessWhoSync` engine +
+    /// on-disk `FileSystemSidecarStore` as the contact/link surface, so their
+    /// read+write semantics run in production code. The event source keeps ONE
+    /// minimal EventKit-visibility seam (see `EngineEventSource`); the guide
+    /// source reads the SAME real `FavoritesStore` the favorites_* tools use.
+    let events: EngineEventSource
+    let guides: EngineGuideSource
     let gates: FakeGateSource
     let confirmations: FakeConfirmationSource
     let audit: MCPAuditLog
@@ -360,6 +364,12 @@ struct MCPProductionFixture {
     let root: URL
     /// Isolated repository repair journal removed alongside the file root.
     let repairDefaultsSuiteName: String
+    /// The production sidecar store behind `sync`, exposed so a test can seed a
+    /// record at a chosen key through the store's own public `write` (used for
+    /// the cross-kind id-collision favorite test, which needs a real place
+    /// whose UUID equals a real guide's — a collision the engine's minting API
+    /// can't otherwise produce). Reads still ride the real engine's decode.
+    let sidecars: FileSystemSidecarStore
 
     static let helper = RequestOrigin.mcp.makeHelperId()
 
@@ -468,8 +478,11 @@ struct MCPProductionFixture {
 
         let favoriteSource = MCPFavoriteStoreAdapter(store: favoritesStore)
         let links = EngineLinkSource(engine: sync)
-        let events = FakeEventSource()
-        let guides = FakeGuideSource()
+        let events = EngineEventSource(engine: sync)
+        // The guide source reads the SAME real FavoritesStore the favorites_*
+        // tools mutate — exactly the app's wiring (one store behind every
+        // favorites surface).
+        let guides = EngineGuideSource(engine: sync, favoritesStore: favoritesStore)
         let gates = FakeGateSource()
         let confirmations = FakeConfirmationSource()
         let audit = makeAuditLog(root: root)
@@ -487,7 +500,8 @@ struct MCPProductionFixture {
             favoriteSource: favoriteSource, links: links, events: events,
             guides: guides, gates: gates, confirmations: confirmations,
             audit: audit, root: root,
-            repairDefaultsSuiteName: repairDefaultsSuiteName)
+            repairDefaultsSuiteName: repairDefaultsSuiteName,
+            sidecars: sidecars)
 
         // Load the repository so dispatch immediately sees the seeded book +
         // groups, then seed a group and membership. Favorite-specific tests opt

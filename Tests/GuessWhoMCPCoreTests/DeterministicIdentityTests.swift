@@ -70,16 +70,14 @@ final class DeterministicIdentityTests: XCTestCase {
         XCTAssertFalse(dentist.id.contains("EK-SENTINEL"), "raw calendar id must not ride")
         XCTAssertTrue(dentist.id.hasPrefix("e-"))
 
-        // The user opens the event in the app: a record now exists for the
-        // calendar id. The SAME wire id keeps resolving, now to the record.
+        // The user opens the event in the app: a REAL sidecar record now exists
+        // for the calendar id (minted through the engine's adopt path). The SAME
+        // wire id keeps resolving, now to the record.
+        try! EngineSeed.adoptedEvent(
+            fixture.linkEngine, eventKitID: "EK-SENTINEL-42", title: "Dentist",
+            start: Date(timeIntervalSince1970: 1_760_100_000),
+            end: Date(timeIntervalSince1970: 1_760_103_600))
         await MainActor.run {
-            let adopted = Event(
-                id: UUID(),
-                eventKitID: "EK-SENTINEL-42",
-                title: "Dentist",
-                startDate: Date(timeIntervalSince1970: 1_760_100_000),
-                endDate: Date(timeIntervalSince1970: 1_760_103_600))
-            fixture.events.events.append(adopted)
             fixture.events.eventKitOnlyEvents.removeValue(forKey: "EK-SENTINEL-42")
         }
         let after = await fixture.dispatcher.handle(.eventsGet(

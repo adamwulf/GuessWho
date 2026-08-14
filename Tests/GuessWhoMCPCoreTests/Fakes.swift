@@ -659,26 +659,49 @@ actor DeferredResponseProbe {
     }
 }
 
+/// The dispatcher's event source over a REAL `GuessWhoSync` — the same thin
+/// adapter shape as the app's `SyncService` conformance, so the events_* and
+/// event-tag tools exercise the production engine + on-disk store, not a
+/// reimplementation of tag storage.
+///
+/// The ONE carve-out is the EventKit-visibility seam `eventKitOnlyEvents`:
+/// headless `swift test` has NO calendar, so a "system-calendar-only" event
+/// (visible in Calendar.app, no GuessWho record yet) can't come from the
+/// engine. This single map stands in for that boundary so the Option-B path —
+/// a tag/favorite write on an un-adopted calendar event must answer the typed
+/// `requiresAppAction` error and MINT NOTHING — stays reproducible. Everything
+/// else (tag add/edit/delete + tombstone-inclusive `allEventTagFields`,
+/// `event(uuid:)`, the `eventUUID` reverse lookup, the sidecar side of the
+/// windowed read) rides the real engine.
 @MainActor
-final class FakeEventSource: MCPEventSource {
-    var events: [Event] = []
+final class EngineEventSource: MCPEventSource {
+    let engine: GuessWhoSync
+    /// The lone EventKit-visibility seam (see the type doc). Keyed by EventKit
+    /// identifier; each event's `id` is `Event.stableID(forEventKitID:)`, so it
+    /// renders as the derived `e-…` wire id and never as a record UUID.
     var eventKitOnlyEvents: [String: Event] = [:]
-    /// Tag storage mirrors the engine: tags are `.note`-typed field cells
-    /// named "tag"; the live `eventTags` read derives from these.
-    var tagFieldsByEventUUID: [String: [SidecarField]] = [:]
-    /// Every event UUID a tag WRITE touched — the Option B test asserts
-    /// this stays empty for un-adopted events (the dispatcher must never
-    /// reach the engine).
-    private(set) var tagWriteEventUUIDs: [String] = []
 
-    nonisolated init() {}
+    nonisolated init(engine: GuessWhoSync) {
+        self.engine = engine
+    }
 
     func fetchEventsRange(from start: Date, to end: Date) async -> [Event] {
-        (events + eventKitOnlyEvents.values).filter { $0.startDate >= start && $0.startDate <= end }
+        // No calendar headless: the engine window never includes EventKit
+        // (`includeEventKit: false`). The seam's calendar-only events are merged
+        // in as ephemeral rows to stand in for what EventKit would surface. The
+        // filter is a simple start-in-window test (not EventKit's start/end
+        // overlap) — sufficient because the seam holds only point-in-time events
+        // and no test probes the window edges.
+        let sidecar = (try? await engine.eventsWindow(
+            from: start, to: end, includeEventKit: false)) ?? []
+        let calendarOnly = eventKitOnlyEvents.values.filter {
+            $0.startDate >= start && $0.startDate <= end
+        }
+        return sidecar + calendarOnly
     }
 
     func event(uuid: String) -> Event? {
-        events.first { $0.id.uuidString.lowercased() == uuid.lowercased() }
+        (try? engine.event(at: SidecarKey(kind: .event, id: uuid))) ?? nil
     }
 
     func eventKitEvent(eventKitID: String) -> Event? {
@@ -686,120 +709,112 @@ final class FakeEventSource: MCPEventSource {
     }
 
     func eventTags(forEventUUID uuid: String) -> [EventTag] {
-        (tagFieldsByEventUUID[uuid.lowercased()] ?? []).compactMap { field in
-            guard field.deletedAt == nil, case .string(let text) = field.value else { return nil }
-            return EventTag(id: field.id, text: text, createdAt: field.createdAt, deletedAt: nil)
-        }
+        (try? engine.tags(at: SidecarKey(kind: .event, id: uuid))) ?? []
     }
 
     func allEventTagFields(forEventUUID uuid: String) -> [SidecarField] {
-        tagFieldsByEventUUID[uuid.lowercased()] ?? []
+        // Same projection as `SyncService.allEventTagFields`: the raw tag cells
+        // INCLUDING tombstones (each carrying its `modifiedAt`/`deletedAt`
+        // stamps), for the audit trail + Recently Deleted surface.
+        let raw = (try? engine.fields(at: SidecarKey(kind: .event, id: uuid))) ?? []
+        return raw.filter { $0.field == GuessWhoSync.eventTagFieldName && $0.type == .note }
     }
 
     func eventUUID(forEventKitID eventKitID: String) async -> UUID? {
-        events.first { $0.eventKitID == eventKitID }?.id
+        (try? await engine.eventUUID(forEventKitID: eventKitID)) ?? nil
     }
 
+    @discardableResult
     func addEventTag(text: String, forEventUUID uuid: String) throws -> UUID {
-        tagWriteEventUUIDs.append(uuid)
-        let tagID = UUID()
-        tagFieldsByEventUUID[uuid.lowercased(), default: []].append(SidecarField(
-            id: tagID, field: "tag", type: .note, value: .string(text),
-            createdAt: Date(), modifiedAt: Date(),
-            modifiedBy: Sentinels.deviceID, deletedAt: nil))
-        return tagID
+        try engine.addTag(at: SidecarKey(kind: .event, id: uuid), text: text)
     }
 
     func editEventTag(id: UUID, text: String, forEventUUID uuid: String) throws {
-        tagWriteEventUUIDs.append(uuid)
-        let key = uuid.lowercased()
-        guard var list = tagFieldsByEventUUID[key],
-              let index = list.firstIndex(where: { $0.id == id }) else { return }
-        let old = list[index]
-        list[index] = SidecarField(
-            id: old.id, field: old.field, type: old.type, value: .string(text),
-            createdAt: old.createdAt, modifiedAt: Date(),
-            modifiedBy: Sentinels.deviceID, deletedAt: nil)
-        tagFieldsByEventUUID[key] = list
+        try engine.editTag(at: SidecarKey(kind: .event, id: uuid), id: id, text: text)
     }
 
     func deleteEventTag(id: UUID, forEventUUID uuid: String) throws {
-        tagWriteEventUUIDs.append(uuid)
-        let key = uuid.lowercased()
-        guard var list = tagFieldsByEventUUID[key],
-              let index = list.firstIndex(where: { $0.id == id }),
-              list[index].deletedAt == nil else { return }
-        let old = list[index]
-        let now = Date()
-        list[index] = SidecarField(
-            id: old.id, field: old.field, type: old.type, value: old.value,
-            createdAt: old.createdAt, modifiedAt: now,
-            modifiedBy: Sentinels.deviceID, deletedAt: now)
-        tagFieldsByEventUUID[key] = list
+        try engine.deleteTag(at: SidecarKey(kind: .event, id: uuid), id: id)
     }
 }
 
+/// The dispatcher's guide/place source over a REAL `GuessWhoSync` + a REAL
+/// `FavoritesStore` — the same thin adapter shape as the app's `SyncService`
+/// conformance, so the guides_*/places_* tools exercise the production engine
+/// + on-disk store, not a reimplementation of guide/place semantics.
+///
+/// `allGuidesCallCount`/`allPlacesCallCount` are pure test observations (the
+/// favorites-reorder test proves the dispatcher reads each collection exactly
+/// once); the counter increments before delegating to the real engine, so the
+/// engine is still underneath. `favorites()` reads the SAME real
+/// `FavoritesStore` the guide/place UI reads.
 @MainActor
-final class FakeGuideSource: MCPGuideSource {
-    var guides: [MapsGuide] = []
-    var places: [MapsPlace] = []
-    var favoriteGuideIDs: Set<String> = []
-    var favoritePlaceIDs: Set<String> = []
+final class EngineGuideSource: MCPGuideSource {
+    let engine: GuessWhoSync
+    let favoritesStore: FavoritesStore
     private(set) var allGuidesCallCount = 0
     private(set) var allPlacesCallCount = 0
 
-    nonisolated init() {}
+    // MainActor-isolated (not `nonisolated` like the other adapters) because
+    // `FavoritesStore` is not `Sendable`; both fixtures build this on the main
+    // actor anyway.
+    init(engine: GuessWhoSync, favoritesStore: FavoritesStore) {
+        self.engine = engine
+        self.favoritesStore = favoritesStore
+    }
 
     func allGuides() async -> [MapsGuide] {
         allGuidesCallCount += 1
-        return guides
+        return (try? await engine.allGuides()) ?? []
     }
+
     func allPlaces() async -> [MapsPlace] {
         allPlacesCallCount += 1
-        return places
+        return (try? await engine.allPlaces()) ?? []
     }
+
     func places(inGuide guideID: UUID) async -> [MapsPlace] {
-        places.filter { $0.guideID == guideID }
+        (try? await engine.places(inGuide: guideID)) ?? []
     }
+
     func guides(containingPlace place: MapsPlace) async -> [MapsGuide] {
+        // Mirrors `SyncService.guides(containingPlace:)`: derive the place's
+        // street needle and match it against every guide/place. Reads the
+        // engine directly (not the counted `allGuides`/`allPlaces` above), so
+        // this reverse lookup doesn't perturb the call-count observation —
+        // exactly as the retired fake did.
         guard let needle = GuideAddressMatcher.streetNeedle(for: place) else { return [] }
+        let guides = (try? await engine.allGuides()) ?? []
+        let places = (try? await engine.allPlaces()) ?? []
         return GuideAddressMatcher.guides(
             containingAnyOf: [needle], guides: guides, places: places
         ).map(\.guide)
     }
+
     func favorites() -> [Favorite] {
-        favoriteGuideIDs.map { Favorite(kind: .guide, id: $0, addedAt: Date()) }
-            + favoritePlaceIDs.map { Favorite(kind: .place, id: $0, addedAt: Date()) }
+        // The SAME real store the guide/place UI reads. Filter to guide/place
+        // kinds, matching the retired fake's contract (guide/place read tools
+        // only care about their own favorite kinds).
+        let all = (try? favoritesStore.loadAll()) ?? []
+        return all.filter { $0.kind == .guide || $0.kind == .place }
     }
 
+    @discardableResult
     func importGuide(from snapshot: MapsGuideURL.Snapshot, sourceURL: String?) throws -> UUID {
-        let guide = MapsGuide(
-            id: UUID(), name: snapshot.name, sourceURL: sourceURL, createdAt: Date())
-        guides.append(guide)
-        for entry in snapshot.entries {
-            places.append(MapsPlace(
-                id: UUID(), guideID: guide.id,
-                name: entry.address ?? "",
-                address: entry.address,
-                latitude: entry.latitude, longitude: entry.longitude))
-        }
-        return guide.id
+        try engine.importGuide(from: snapshot, sourceURL: sourceURL)
     }
 
     func deleteGuide(uuid: String) throws {
-        guides.removeAll { $0.id.uuidString.lowercased() == uuid.lowercased() }
-        places.removeAll { $0.guideID.uuidString.lowercased() == uuid.lowercased() }
+        try engine.deleteGuide(at: SidecarKey(kind: .guide, id: uuid))
     }
 
     func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) {
-        let byID = Dictionary(uniqueKeysWithValues: places.map { ($0.id, $0) })
-        var reordered: [MapsPlace] = places.filter { $0.guideID != guideID }
-        reordered.append(contentsOf: orderedIDs.compactMap { byID[$0] })
-        places = reordered
+        // Best-effort by design, mirroring `SyncService.reorderPlaces`.
+        try? engine.reorderPlaces(inGuide: guideID, orderedIDs: orderedIDs)
     }
 
     func deletePlace(uuid: String) throws {
-        places.removeAll { $0.id.uuidString.lowercased() == uuid.lowercased() }
+        try engine.deletePlace(at: SidecarKey(kind: .place, id: uuid))
     }
 }
 
@@ -886,6 +901,73 @@ final class EngineLinkSource: MCPLinkSource {
     }
 }
 
+/// REAL-engine seeding shared by the fixtures and the migrated guide/place/
+/// event tests. Every record these mint is a genuine sidecar in the shared
+/// `GuessWhoSync` store; callers read the returned projections to learn the
+/// engine-minted UUIDs and derived timestamps instead of hardcoding them.
+enum EngineSeed {
+    enum SeedError: Error { case guideVanished }
+
+    /// Create a manual (sidecar-only) event and return its minted UUID.
+    @discardableResult
+    static func manualEvent(
+        _ engine: GuessWhoSync, title: String,
+        start: Date, end: Date, isAllDay: Bool = false, location: String? = nil
+    ) throws -> UUID {
+        try engine.createManualEvent(
+            title: title, startDate: start, endDate: end,
+            isAllDay: isAllDay, location: location)
+    }
+
+    /// Mint a sidecar event that points at an EventKit id (an "adopted"
+    /// calendar event). Returns the minted record UUID.
+    @discardableResult
+    static func adoptedEvent(
+        _ engine: GuessWhoSync, eventKitID: String, title: String,
+        start: Date, end: Date
+    ) throws -> UUID {
+        let snapshot = Event(
+            id: UUID(), eventKitID: eventKitID, title: title,
+            startDate: start, endDate: end)
+        return try engine.linkEvent(toEventKitID: eventKitID, snapshot: snapshot)
+    }
+
+    /// Import a guide + its places and return the engine's projection of both.
+    @discardableResult
+    static func guide(
+        _ engine: GuessWhoSync, name: String, sourceURL: String? = nil,
+        entries: [MapsGuideURL.Entry]
+    ) throws -> (guide: MapsGuide, places: [MapsPlace]) {
+        let id = try engine.importGuide(
+            from: MapsGuideURL.Snapshot(name: name, entries: entries),
+            sourceURL: sourceURL)
+        guard let guide = try engine.guide(at: SidecarKey(kind: .guide, id: id.uuidString)) else {
+            throw SeedError.guideVanished
+        }
+        return (guide, try engine.places(inGuide: id))
+    }
+
+    /// Re-read a guide's engine projection (for asserting the wire mapping
+    /// against the same values the dispatcher will read).
+    static func guide(_ engine: GuessWhoSync, id: UUID) throws -> MapsGuide? {
+        try engine.guide(at: SidecarKey(kind: .guide, id: id.uuidString))
+    }
+
+    /// Re-read a place's engine projection.
+    static func place(_ engine: GuessWhoSync, id: UUID, inGuide guideID: UUID) throws -> MapsPlace? {
+        try engine.places(inGuide: guideID).first { $0.id == id }
+    }
+
+    /// Soft-delete every live guide (and its places) so a test can start from a
+    /// clean guide set before seeding its own — the engine equivalent of the
+    /// retired fake's `guides = [...]` wholesale replacement.
+    static func clearGuides(_ engine: GuessWhoSync) throws {
+        for guide in try engine.allGuides() {
+            try engine.deleteGuide(at: SidecarKey(kind: .guide, id: guide.id.uuidString))
+        }
+    }
+}
+
 @MainActor
 final class FakeGateSource: MCPGateSource {
     /// Read-only by default — the fixture's stand-in for a user who has
@@ -905,20 +987,37 @@ final class FakeGateSource: MCPGateSource {
 struct Fixture {
     let dispatcher: ToolDispatcher
     let contacts: LegacyScriptedContactSource
-    let events: FakeEventSource
-    let guides: FakeGuideSource
+    /// Events + guides/places now ride the REAL `GuessWhoSync` engine (the
+    /// SAME `linkEngine` store the links surface uses), so event-tag and
+    /// guide/place semantics are exercised in production code. The event
+    /// source keeps ONE minimal EventKit-visibility seam (see
+    /// `EngineEventSource`).
+    let events: EngineEventSource
+    let guides: EngineGuideSource
     let favorites: FaultInjectingFavoriteSource
-    /// REAL link storage: a production `GuessWhoSync` over a real
-    /// temp-directory `FileSystemSidecarStore`. The links_* tests set
-    /// `contacts.linkEngine = linkEngine` so the whole link surface — old
-    /// linked-contact tools included — runs against it; the default
-    /// fixture leaves the fake contact source's canned in-memory links in
-    /// place for the pre-existing read-tool tests.
+    /// REAL storage: a production `GuessWhoSync` over a real temp-directory
+    /// `FileSystemSidecarStore` — links, events, and guides/places all live
+    /// here. The links_* tests set `contacts.linkEngine = linkEngine` so the
+    /// contact-endpoint link surface also runs against it; the default fixture
+    /// leaves the scripted contact source's canned in-memory links in place for
+    /// the pre-existing read-tool tests.
     let links: EngineLinkSource
     let linkEngine: GuessWhoSync
+    /// The REAL on-disk `FavoritesStore` the guide/place read tools read for
+    /// `isFavorite`. Distinct from the fault-injecting `favorites` source that
+    /// backs the favorites_* tools (the two need not be the same store here —
+    /// unlike production — because the fault-injection tests never read the
+    /// guide/place `isFavorite` projection).
+    let guidesFavoritesStore: FavoritesStore
     let gates: FakeGateSource
     let confirmations: FakeConfirmationSource
     let audit: MCPAuditLog
+
+    /// The seeded records' engine-minted identities, exposed so tests can
+    /// address them without reaching through a fake collection.
+    let galaEventUUID: UUID
+    let coffeeGuideID: UUID
+    let bluebirdPlaceID: UUID
 
     static let helper = RequestOrigin.mcp.makeHelperId()
 
@@ -972,7 +1071,7 @@ struct Fixture {
     }
 
     /// A REAL engine over a REAL on-disk store in a unique temp directory —
-    /// the production link-write/read path, no TCC needed.
+    /// the production link/event/guide write/read path, no TCC needed.
     static func makeLinkEngine() -> GuessWhoSync {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("gw-mcp-link-store-\(UUID().uuidString)", isDirectory: true)
@@ -984,16 +1083,26 @@ struct Fixture {
             deviceID: Sentinels.deviceID)
     }
 
+    /// A REAL on-disk `FavoritesStore` in a unique temp directory — backs the
+    /// guide/place read tools' `isFavorite` projection.
+    static func makeFavoritesStore() -> FavoritesStore {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mcp-guide-favorites-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return FavoritesStore(root: root)
+    }
+
     @MainActor
     static func make(
         writeLimitPerWindow: Int = 30,
         writeWindowSeconds: TimeInterval = 60
     ) -> Fixture {
         let contacts = LegacyScriptedContactSource()
-        let events = FakeEventSource()
-        let guides = FakeGuideSource()
-        let favorites = FaultInjectingFavoriteSource()
         let linkEngine = makeLinkEngine()
+        let guidesFavoritesStore = makeFavoritesStore()
+        let events = EngineEventSource(engine: linkEngine)
+        let guides = EngineGuideSource(engine: linkEngine, favoritesStore: guidesFavoritesStore)
+        let favorites = FaultInjectingFavoriteSource()
         let links = EngineLinkSource(engine: linkEngine)
         let gates = FakeGateSource()
         let confirmations = FakeConfirmationSource()
@@ -1058,42 +1167,40 @@ struct Fixture {
         contacts.groups = [ContactGroup(localID: "CNGroup-LOCAL-1", name: "Museum Friends")]
         contacts.membersByGroup["CNGroup-LOCAL-1"] = [jane]
 
-        let gala = Event(
-            id: UUID(),
-            eventKitID: nil,
-            title: "Museum Gala",
-            startDate: Date(timeIntervalSince1970: 1_760_000_000),
-            endDate: Date(timeIntervalSince1970: 1_760_007_200),
-            location: "City Museum",
-            eventKitNotes: "Bring the auction catalog",
-            attendees: [EventAttendee(name: "Jane Doe", email: "jane@doe.example")],
-            calendarName: "Personal")
-        events.events = [gala]
-        let systemOnly = Event(
+        // The gala is a REAL manual (sidecar-only) event minted by the engine;
+        // its tag "fundraiser" is a REAL engine tag cell. `createManualEvent`
+        // carries title/dates/location only (no attendees/calendarName/notes) —
+        // no fixture-backed test asserts those on the gala.
+        let galaEventUUID = try! EngineSeed.manualEvent(
+            linkEngine, title: "Museum Gala",
+            start: Date(timeIntervalSince1970: 1_760_000_000),
+            end: Date(timeIntervalSince1970: 1_760_007_200),
+            location: "City Museum")
+        try! linkEngine.addTag(
+            at: SidecarKey(kind: .event, id: galaEventUUID.uuidString), text: "fundraiser")
+
+        // The dentist is the ONE EventKit-visibility seam: a system-calendar
+        // event with no GuessWho record (headless has no calendar to mint one).
+        events.eventKitOnlyEvents["EK-SENTINEL-42"] = Event(
             id: Event.stableID(forEventKitID: "EK-SENTINEL-42"),
             eventKitID: "EK-SENTINEL-42",
             title: "Dentist",
             startDate: Date(timeIntervalSince1970: 1_760_100_000),
             endDate: Date(timeIntervalSince1970: 1_760_103_600))
-        events.eventKitOnlyEvents["EK-SENTINEL-42"] = systemOnly
-        events.tagFieldsByEventUUID[gala.id.uuidString.lowercased()] = [
-            SidecarField(
-                id: UUID(), field: "tag", type: .note, value: .string("fundraiser"),
-                createdAt: Date(timeIntervalSince1970: 1_750_000_000),
-                modifiedAt: Date(timeIntervalSince1970: 1_750_000_000),
-                modifiedBy: Sentinels.deviceID, deletedAt: nil)
-        ]
 
-        let guide = MapsGuide(
-            id: UUID(), name: "Coffee Crawl",
+        // A REAL guide + place minted by the engine's import path. The place is
+        // resolved to carry the "Bluebird Espresso" name/address the retired
+        // fake gave it.
+        let (coffeeGuide, coffeePlaces) = try! EngineSeed.guide(
+            linkEngine, name: "Coffee Crawl",
             sourceURL: "https://guides.apple/example",
-            createdAt: Date(timeIntervalSince1970: 1_740_000_000))
-        guides.guides = [guide]
-        guides.places = [
-            MapsPlace(
-                id: UUID(), guideID: guide.id, name: "Bluebird Espresso",
-                address: "12 Main St", latitude: 30.27, longitude: -97.74)
-        ]
+            entries: [MapsGuideURL.Entry(
+                address: "12 Main St", latitude: 30.27, longitude: -97.74)])
+        let bluebirdPlaceID = coffeePlaces[0].id
+        try! linkEngine.markPlaceResolved(
+            at: SidecarKey(kind: .place, id: bluebirdPlaceID.uuidString),
+            name: "Bluebird Espresso", address: "12 Main St",
+            latitude: 30.27, longitude: -97.74)
 
         let dispatcher = ToolDispatcher(
             contacts: contacts, events: events, guides: guides,
@@ -1105,8 +1212,10 @@ struct Fixture {
         return Fixture(
             dispatcher: dispatcher, contacts: contacts, events: events,
             guides: guides, favorites: favorites, links: links,
-            linkEngine: linkEngine, gates: gates,
-            confirmations: confirmations, audit: audit)
+            linkEngine: linkEngine, guidesFavoritesStore: guidesFavoritesStore,
+            gates: gates, confirmations: confirmations, audit: audit,
+            galaEventUUID: galaEventUUID, coffeeGuideID: coffeeGuide.id,
+            bluebirdPlaceID: bluebirdPlaceID)
     }
 }
 

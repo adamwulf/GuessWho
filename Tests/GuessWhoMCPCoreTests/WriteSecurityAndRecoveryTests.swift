@@ -571,7 +571,7 @@ final class RecentlyDeletedTests: XCTestCase {
         XCTAssertTrue(tagRestored)
 
         let tagLive = await MainActor.run { () -> Bool in
-            let galaUUID = fixture.events.events[0].id.uuidString.lowercased()
+            let galaUUID = fixture.galaEventUUID.uuidString.lowercased()
             return fixture.events.eventTags(forEventUUID: galaUUID)
                 .contains { $0.text == "fundraiser" }
         }

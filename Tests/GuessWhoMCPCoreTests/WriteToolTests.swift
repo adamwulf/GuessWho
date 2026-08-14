@@ -255,7 +255,7 @@ final class WriteToolTests: XCTestCase {
 
     // MARK: - Event-tag Option B
 
-    func testTagWriteOnUnadoptedEventReturnsTypedErrorAndMintsNothing() async {
+    func testTagWriteOnUnadoptedEventReturnsTypedErrorAndMintsNothing() async throws {
         let fixture = await writableFixture()
         let list = await fixture.dispatcher.handle(.eventsList(
             helperId: Fixture.helper, messageId: "m",
@@ -271,13 +271,18 @@ final class WriteToolTests: XCTestCase {
         expectError(response, code: .requiresAppAction)
         XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.eventNeedsAppFirst)
 
-        // Writes-do-not-adopt: no record was created and the engine's tag
-        // write path was never reached.
-        let (recordCount, tagWrites) = await MainActor.run {
-            (fixture.events.events.count, fixture.events.tagWriteEventUUIDs)
-        }
+        // Writes-do-not-adopt: no record was created and the engine's tag write
+        // path was never reached. A reached write would have minted a sidecar at
+        // the dentist's derived key (bumping the event count and leaving a tag
+        // cell there); the real engine shows neither. Read with `try` (not
+        // `try?`) so a store failure fails the test loudly instead of masquerading
+        // as an empty, passing result.
+        let dentistKey = SidecarKey(
+            kind: .event, id: Event.stableID(forEventKitID: "EK-SENTINEL-42").uuidString)
+        let recordCount = try await fixture.linkEngine.allEvents().count
+        let dentistTags = try fixture.linkEngine.tags(at: dentistKey)
         XCTAssertEqual(recordCount, 1, "no new event record may appear")
-        XCTAssertTrue(tagWrites.isEmpty, "the tag write path must not be reached")
+        XCTAssertTrue(dentistTags.isEmpty, "the tag write path must not be reached")
     }
 
     func testTagRoundTripOnAdoptedEvent() async {

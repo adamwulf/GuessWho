@@ -218,13 +218,10 @@ final class LinkToolTests: XCTestCase {
 
     func testEventEventLinkRoundTripsSymmetrically() async {
         let fixture = await linkFixture()
-        let bookClub = Event(
-            id: UUID(),
-            eventKitID: nil,
-            title: "Book Club",
-            startDate: Date(timeIntervalSince1970: 1_760_200_000),
-            endDate: Date(timeIntervalSince1970: 1_760_203_600))
-        await MainActor.run { fixture.events.events.append(bookClub) }
+        try! EngineSeed.manualEvent(
+            fixture.linkEngine, title: "Book Club",
+            start: Date(timeIntervalSince1970: 1_760_200_000),
+            end: Date(timeIntervalSince1970: 1_760_203_600))
         guard let gala = await eventID(fixture, title: "Museum Gala"),
               let club = await eventID(fixture, title: "Book Club")
         else { return XCTFail("missing fixture events") }
@@ -275,15 +272,14 @@ final class LinkToolTests: XCTestCase {
 
     func testPlacePlacePairRejectedAndNothingWritten() async {
         let fixture = await linkFixture()
-        let second = MapsPlace(
-            id: UUID(), guideID: UUID(), name: "Second Stop",
-            address: "34 Elm St", latitude: 30.28, longitude: -97.75)
-        await MainActor.run { fixture.guides.places.append(second) }
+        // The place↔place pair is rejected on its kind arguments BEFORE either
+        // endpoint is resolved, so the second id need not name a real place.
+        let secondPlaceID = UUID().uuidString.lowercased()
         guard let first = await placeID(fixture) else { return XCTFail("no place") }
 
         let response = await create(
             fixture, fromId: first, fromKind: "place",
-            toId: second.id.uuidString.lowercased(), toKind: "place")
+            toId: secondPlaceID, toKind: "place")
         expectError(response, code: .invalidParams, message: WireErrorMessage.linkPairUnsupported)
         assertStoreHasNoLiveLinks(fixture)
     }

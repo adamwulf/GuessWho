@@ -182,8 +182,9 @@ final class DispatcherBehaviorTests: XCTestCase {
             return XCTFail("expected the event to resolve; got \(getResponse)")
         }
         XCTAssertEqual(event.title, "Dentist")
-        // Reads never mint: the stored-events list is untouched.
-        let stored = await MainActor.run { fixture.events.events.count }
+        // Reads never mint: the engine's stored event set is untouched (only
+        // the seeded gala — the calendar-only dentist has no sidecar).
+        let stored = (try? await fixture.linkEngine.allEvents())?.count ?? -1
         XCTAssertEqual(stored, 1)
     }
 
