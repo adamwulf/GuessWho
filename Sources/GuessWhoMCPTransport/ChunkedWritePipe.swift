@@ -45,6 +45,12 @@ public actor ChunkedWritePipe: PipeWritable {
     private var fd: Int32 = -1
     private var source: DispatchSourceWrite?
     private let writableSignal = PipeSignal()
+    /// Test-only observation seam: invoked once per write-source event-handler
+    /// entry (never from the cancel handler or a manual `signal()`). Nil in
+    /// production, so the optional call is behavior-neutral. Set via
+    /// `_setOnSourceFire(_:)` before `open()`; `open()` snapshots it into a
+    /// local so the dispatch handler never captures the actor.
+    private var onSourceFire: (@Sendable () -> Void)?
     /// Serialization chain: concurrent write() calls append here so whole
     /// messages go out back-to-back even though the actor is re-entrant
     /// across the writability awaits.
@@ -84,6 +90,12 @@ public actor ChunkedWritePipe: PipeWritable {
         }
     }
 
+    /// Test-only: install the write-source fire probe. Must be called before
+    /// `open()`. See `onSourceFire`. No production caller sets this.
+    func _setOnSourceFire(_ probe: (@Sendable () -> Void)?) {
+        onSourceFire = probe
+    }
+
     /// Opens write-only, non-blocking. Fails with `openFailed` (ENXIO)
     /// when nothing holds the read end — the same no-reader probe
     /// semantics the inherited WritePipe has, which the connect flow
@@ -111,7 +123,9 @@ public actor ChunkedWritePipe: PipeWritable {
         let queue = DispatchQueue(label: "com.milestonemade.guesswho.mcp.pipe-write")
         let writeSource = DispatchSource.makeWriteSource(fileDescriptor: opened, queue: queue)
         let signal = writableSignal
+        let onFire = onSourceFire   // local snapshot; nil in production
         writeSource.setEventHandler {
+            onFire?()
             signal.signal()
         }
         writeSource.setCancelHandler {
