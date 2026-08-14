@@ -324,8 +324,7 @@ final class OrganizationToolTests: XCTestCase {
         let saves = await fixture.store.saveCount
         XCTAssertEqual(saves, baseline + 2, "the boundary counted the rejected attempt too")
         let committed = await fixture.store.committedSaveLocalIDs
-        XCTAssertTrue(committed.contains("ABPerson-MEMBER-A"))
-        XCTAssertFalse(committed.contains("ABPerson-MEMBER-Z"))
+        XCTAssertEqual(committed, ["ABPerson-MEMBER-A"])
 
         // Repository cache/reload honesty: a full refresh reflects exactly the
         // durable partial effect — one renamed, one not — hiding nothing.
@@ -353,12 +352,24 @@ final class OrganizationToolTests: XCTestCase {
             return XCTFail("a retry after a failed write must re-run, got \(String(describing: retry))")
         }
         XCTAssertEqual(healed.affectedCount, 1, "only the still-unchanged member remains to rename")
+        let savesAfterRetry = await fixture.store.saveCount
+        let committedAfterRetry = await fixture.store.committedSaveLocalIDs
+        XCTAssertEqual(savesAfterRetry, saves + 1)
+        XCTAssertEqual(committedAfterRetry, ["ABPerson-MEMBER-A", "ABPerson-MEMBER-Z"])
         await fixture.reload()
+        XCTAssertEqual(fixture.contact(localID: "ABPerson-MEMBER-A")?.departmentName, "Product")
         XCTAssertEqual(fixture.contact(localID: "ABPerson-MEMBER-Z")?.departmentName, "Product")
+        let durableAlice = try await fixture.store.fetch(localID: "ABPerson-MEMBER-A")
+        let durableZara = try await fixture.store.fetch(localID: "ABPerson-MEMBER-Z")
+        XCTAssertEqual(durableAlice?.departmentName, "Product")
+        XCTAssertEqual(durableZara?.departmentName, "Product")
         let entriesAfterRetry = await fixture.storedAuditEntries()
-        XCTAssertTrue(
-            entriesAfterRetry.contains { $0.action == .renameDepartment },
-            "the healing write IS success-audited")
+        XCTAssertEqual(entriesAfterRetry.count, 1)
+        XCTAssertEqual(entriesAfterRetry.first?.action, .renameDepartment)
+        XCTAssertEqual(entriesAfterRetry.first?.subjectKind, .contact)
+        XCTAssertEqual(entriesAfterRetry.first?.subjectName, "Acme Corp")
+        XCTAssertEqual(entriesAfterRetry.first?.priorValue, "Engineering")
+        XCTAssertEqual(entriesAfterRetry.first?.newValue, "Product")
     }
 
     func testRenameMapsRevokedPermissionAndPersonMismatchWithoutCallingRepository() async throws {

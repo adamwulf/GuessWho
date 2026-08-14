@@ -108,6 +108,8 @@ final class ContactPhotoToolTests: XCTestCase {
         let committedAfterDelete = await fixture.store.committedPhotoWrites
         XCTAssertEqual(committedAfterDelete.count, 1)
         XCTAssertEqual(committedAfterDelete.last?.cleared, true)
+        let auditAfterDelete = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterDelete.filter { $0.action == .editContact }.count, 1)
 
         let again = await fixture.dispatcher.handle(.contactsDeletePhoto(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
@@ -118,6 +120,8 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(repeatedMessage, WireAckMessage.photoDeleted)
         let finalCommitted = await fixture.store.committedPhotoWrites
         XCTAssertEqual(finalCommitted.count, 1, "deleting an absent photo is a no-op")
+        let auditAfterNoOp = await fixture.storedAuditEntries()
+        XCTAssertEqual(auditAfterNoOp, auditAfterDelete)
     }
 
     func testSetRejectsInvalidMismatchedAndOversizedPayloads() async throws {

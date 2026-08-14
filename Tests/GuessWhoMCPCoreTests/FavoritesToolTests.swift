@@ -125,15 +125,14 @@ final class FavoritesToolTests: XCTestCase {
     }
 
     @MainActor
-    private func installEveryKind(_ fixture: Fixture, collision: Bool = false) -> [WireFavoriteIdentity] {
-        guard let jane = fixture.contacts.contacts.first,
-              let event = fixture.events.events.first,
+    private func installEveryKind(_ fixture: Fixture, collision: Bool = false) {
+        guard let event = fixture.events.events.first,
               let group = fixture.contacts.groups.first,
               let guide = fixture.guides.guides.first,
               let place = fixture.guides.places.first
         else {
             XCTFail("every-kind fixture is incomplete")
-            return []
+            return
         }
         let shared = collision ? guide.id : place.id
         if collision {
@@ -149,13 +148,6 @@ final class FavoritesToolTests: XCTestCase {
             Favorite(kind: .place, id: shared.uuidString, addedAt: Date(timeIntervalSince1970: 5)),
         ]
         fixture.contacts.favoriteEffectiveIDs = [Sentinels.guessWhoUUID]
-        return [
-            WireFavoriteIdentity(kind: .contact, id: WireRecordIDForTests.contact(jane)),
-            WireFavoriteIdentity(kind: .event, id: event.id.uuidString.lowercased()),
-            WireFavoriteIdentity(kind: .group, id: ""), // filled from list
-            WireFavoriteIdentity(kind: .guide, id: guide.id.uuidString.lowercased()),
-            WireFavoriteIdentity(kind: .place, id: shared.uuidString.lowercased()),
-        ]
     }
 
     // MARK: - List stream (production-backed)
@@ -642,14 +634,5 @@ final class FavoritesToolTests: XCTestCase {
             kind: .guide, id: guideID, favorite: false, idempotencyToken: nil)) else {
             return XCTFail("permission denial must not consume the write budget")
         }
-    }
-}
-
-/// The production contact id derivation is intentionally internal. Tests only
-/// need the known reconciled fixture's ordinary id, so keep the helper tiny and
-/// avoid making production identity APIs public for test convenience.
-private enum WireRecordIDForTests {
-    static func contact(_ contact: Contact) -> String {
-        contact.contactID.restorationToken.guessWhoID ?? contact.deterministicGuessWhoID
     }
 }

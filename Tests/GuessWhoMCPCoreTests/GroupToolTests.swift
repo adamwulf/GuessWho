@@ -252,7 +252,9 @@ final class GroupToolTests: XCTestCase {
         }
         XCTAssertEqual(groups.items.map(\.name), [MCPProductionFixture.groupName])
 
-        guard let groupId = groups.items.first?.id else { return }
+        guard let groupId = groups.items.first?.id else {
+            return XCTFail("seeded group missing before blank rename")
+        }
         let blankRename = await fixture.dispatcher.handle(.groupsRename(
             helperId: MCPProductionFixture.helper, messageId: "blank-rename",
             groupId: groupId, name: "\t", idempotencyToken: nil))
@@ -640,6 +642,12 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(
             attemptsAfterPartial, attemptsBeforePartial + 1,
             "pre/post-mint aliases resolve to one repository membership attempt")
+        let aliasesLocalID = try XCTUnwrap(localID(ofGroupNamed: "Aliases", in: fixture))
+        let membersAfterPartial = try await fixture.store.fetchMemberLocalIDs(
+            ofGroup: aliasesLocalID)
+        XCTAssertTrue(membersAfterPartial.isEmpty)
+        let auditAfterPartial = await fixture.storedAuditEntries()
+        XCTAssertTrue(auditAfterPartial.isEmpty)
 
         await fixture.store.clearMembershipFailures()
         let success = await fixture.dispatcher.handle(.groupsAddMembers(
@@ -654,8 +662,15 @@ final class GroupToolTests: XCTestCase {
         XCTAssertEqual(
             attemptsAfterSuccess, attemptsAfterPartial + 1,
             "successful aliases still apply one durable membership change")
+        let membersAfterSuccess = try await fixture.store.fetchMemberLocalIDs(
+            ofGroup: aliasesLocalID)
+        XCTAssertEqual(membersAfterSuccess, [MCPProductionFixture.blaiseLocalID])
         let entries = await fixture.storedAuditEntries()
-        XCTAssertEqual(entries.last?.newValue, "1 contact")
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.action, .addGroupMembers)
+        XCTAssertEqual(entries.first?.subjectKind, .group)
+        XCTAssertEqual(entries.first?.subjectID, groupId)
+        XCTAssertEqual(entries.first?.newValue, "1 contact")
     }
 
     @MainActor
