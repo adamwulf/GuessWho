@@ -146,8 +146,21 @@ public final class ContactsRepository: NSObject {
     /// Contacts.app groups (`CNGroup`), cached for the Groups list. Filled by
     /// `loadGroups()` and updated in place after create/rename/delete; a failed
     /// fetch preserves the last good array and records `groupsError` /
-    /// `lastError`. The sidecar does not mirror groups.
+    /// `lastError`. Durable favorite identity is projected separately through
+    /// the group-identity sidecars below; Contacts remains the live group data.
     public private(set) var groups: [ContactGroup] = []
+
+    /// Live resolution cache: durable `GroupIdentity.id` UUID -> this device's
+    /// current Contacts group. Rebuilt during `loadGroups()` and updated on
+    /// adoption/favorite writes. The app never receives the raw UUID.
+    @ObservationIgnored private var resolvedGroupsByIdentityID: [String: ContactGroup] = [:]
+
+    /// Reverse pointer for synchronous row-star checks: lowercased local group
+    /// id -> durable group UUID. This is transient repository state only; the
+    /// raw local id is never persisted as the favorite key.
+    @ObservationIgnored private var groupIdentityIDByLocalID: [String: String] = [:]
+
+    private static let groupIdentityLog = Logger(label: "sync.group-identity")
 
     /// Group-specific load failure for the Groups screen. Kept separate from
     /// the repository-wide `lastError` so an unrelated contact refresh cannot
@@ -331,6 +344,11 @@ public final class ContactsRepository: NSObject {
         }
         if fetchedContacts {
             await repairPendingCreationTimestamps()
+            // `loadGroups()` and the contact reload race independently at app
+            // start. If groups landed first, refresh their identity
+            // fingerprints now that the contact -> GuessWho-ID cache is full;
+            // if contacts landed first, `loadGroups()` performs the same pass.
+            await refreshAllGroupIdentities()
         }
         await refreshTimestampCache()
         await refreshLinkedContactIDs()
@@ -407,6 +425,7 @@ public final class ContactsRepository: NSObject {
             groups = sortedGroups(fetched)
             groupsError = nil
             hasAuthoritativeGroups = true
+            await refreshAllGroupIdentities(resetCache: true)
         } catch {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return }
@@ -447,6 +466,9 @@ public final class ContactsRepository: NSObject {
                 }
                 self.sortGroups()
                 self.postDidReload(contactDataChanged: false)
+            }
+            if let renamed = self.group(localID: group.localID) {
+                await self.refreshGroupIdentity(for: renamed)
             }
         }
     }
@@ -665,6 +687,12 @@ public final class ContactsRepository: NSObject {
         // failure (which returned above). A post therefore always means
         // membership really changed.
         if !written.isEmpty {
+            // A group identity already exists only for a group that has been
+            // favorited at least once. Refresh its advisory membership
+            // fingerprint before announcing the landed membership change;
+            // never mint an identity (or a contact GuessWho ID) from this path.
+            await refreshGroupIdentity(for: group)
+
             // Vend each token off the CACHED record where there is one, not off
             // the value the caller handed in. Observers hold tokens that came
             // from this cache, and a `ContactID` compares on `guessWhoID ??
@@ -734,6 +762,7 @@ public final class ContactsRepository: NSObject {
             groups = sortedGroups(fetched)
             groupsError = nil
             hasAuthoritativeGroups = true
+            await refreshAllGroupIdentities(resetCache: true)
             postDidReload(contactDataChanged: false)
         } catch {
             guard loadGeneration == groupLoadRequestGeneration,
@@ -1700,13 +1729,14 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// Whether `group` is in the shared favorites list. The Contacts-issued
-    /// identifier remains confined to this repository boundary; callers hold a
-    /// `ContactGroup` value and never receive the raw favorite key separately.
+    /// Whether `group` is in the shared favorites list. Favorites are keyed by
+    /// the durable group UUID; the local Contacts id is used only to chase this
+    /// repository's resolved reverse pointer (or the current device's sidecar
+    /// slot when the cache is cold).
     public func isGroupFavorite(_ group: ContactGroup) -> Bool {
-        guard let favorites else { return false }
+        guard let favorites, let identityID = groupIdentityID(for: group) else { return false }
         do {
-            return try favorites.isFavorite(kind: .group, id: group.localID)
+            return try favorites.isFavorite(kind: .group, id: identityID)
         } catch {
             lastError = "group favorites lookup failed: \(error.localizedDescription)"
             return false
@@ -1714,36 +1744,320 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Idempotently sets a group's favorite state and returns the resulting
-    /// state. The caller must first resolve its own opaque reference to a live
-    /// `ContactGroup`; only this package boundary reads the Contacts identifier
-    /// used as the persisted favorite key.
+    /// state. Favoriting reuses an existing resolved identity when possible,
+    /// otherwise lazily mints one with a fresh membership fingerprint. The
+    /// persisted favorite always references `GroupIdentity.id`, never
+    /// `ContactGroup.localID`.
     @discardableResult
-    public func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
-        guard let favorites else { throw SidecarUnavailableError() }
-        let current = try favorites.isFavorite(kind: .group, id: group.localID)
+    public func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) async throws -> Bool {
+        guard let favorites, let sync else { throw SidecarUnavailableError() }
+
+        let identity: GroupIdentity
+        if let existing = try await existingGroupIdentity(for: group) {
+            identity = existing
+        } else if favorite {
+            let fingerprint = try await groupFingerprint(for: group)
+            identity = try sync.mintGroupIdentity(
+                name: group.name,
+                account: nil,
+                memberCount: fingerprint.memberCount,
+                memberHash: fingerprint.memberHash,
+                hashedMemberCount: fingerprint.hashedMemberCount,
+                localID: group.localID
+            )
+            cache(group: group, forIdentityID: identity.id)
+        } else {
+            // No durable identity exists, so this live group cannot own a UUID-
+            // keyed favorite. Deliberately do not touch a legacy raw-id row:
+            // those remain unavailable and are cleared from that row itself.
+            return false
+        }
+
+        let current = try favorites.isFavorite(kind: .group, id: identity.id)
         guard current != favorite else { return current }
-        let resulting = try favorites.toggle(kind: .group, id: group.localID, now: Date())
+        let resulting = try favorites.toggle(kind: .group, id: identity.id, now: Date())
         guard resulting == favorite else { throw SidecarUnavailableError() }
         return resulting
     }
 
-    /// Look up a cached `ContactGroup` by its Contacts `localID`, matched
-    /// case-insensitively because favorites persist the `localID` lowercased
-    /// (see `Favorite.id`) while `CNGroup.identifier` is mixed-case. Reads the
-    /// `groups` cache filled by `loadGroups()`; returns nil until that lands or
-    /// when the group no longer exists.
+    /// Look up a cached `ContactGroup` by its transient Contacts `localID`,
+    /// matched case-insensitively because framework identifiers can be mixed
+    /// case. This is a Contacts-boundary lookup only; favorites never persist
+    /// this value.
     public func group(localID: String) -> ContactGroup? {
         let needle = localID.lowercased()
         return groups.first { $0.localID.lowercased() == needle }
+    }
+
+    /// Resolve a persisted group-favorite UUID to this device's live group.
+    /// `loadGroups()` performs the full adoption algorithm; this synchronous
+    /// accessor uses that cache, with only the rename-proof current-device slot
+    /// as a cold-cache fallback. A legacy raw-id favorite has no identity
+    /// sidecar and therefore returns nil (the existing unavailable row).
+    public func group(forFavoriteID identityID: String) -> ContactGroup? {
+        let canonical = identityID.lowercased()
+        if let resolved = resolvedGroupsByIdentityID[canonical] {
+            return resolved
+        }
+        guard let sync,
+              let identity = try? sync.groupIdentity(id: canonical),
+              let localID = identity.deviceLocalIDs[sync.deviceID],
+              let live = group(localID: localID)
+        else { return nil }
+        cache(group: live, forIdentityID: identity.id)
+        return live
+    }
+
+    private struct LiveGroupFingerprint {
+        let memberCount: Int
+        let memberHash: String
+        let hashedMemberCount: Int
+    }
+
+    /// Compute a live group's advisory fingerprint without reconciling or
+    /// minting any contact. Every Contacts member contributes to memberCount;
+    /// only members already carrying a GuessWho ID in this repository's cache
+    /// contribute to the SHA-256 fold.
+    private func groupFingerprint(for group: ContactGroup) async throws -> LiveGroupFingerprint {
+        let memberLocalIDs = try await contactsStore.fetchMemberLocalIDs(ofGroup: group.localID)
+        let guessWhoIDs = memberLocalIDs.compactMap {
+            contactsByLocalID[$0]?.contactID.guessWhoID
+        }
+        let fingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: guessWhoIDs)
+        return LiveGroupFingerprint(
+            memberCount: memberLocalIDs.count,
+            memberHash: fingerprint.memberHash,
+            hashedMemberCount: fingerprint.hashedMemberCount
+        )
+    }
+
+    private func cache(group: ContactGroup, forIdentityID rawIdentityID: String) {
+        let identityID = rawIdentityID.lowercased()
+        // An identity can move to a newly minted local group handle after a
+        // dead-slot adoption. Remove its old reverse pointer before pinning the
+        // new one; unrelated identities remain untouched.
+        groupIdentityIDByLocalID = groupIdentityIDByLocalID.filter { $0.value != identityID }
+        resolvedGroupsByIdentityID[identityID] = group
+        groupIdentityIDByLocalID[group.localID.lowercased()] = identityID
+    }
+
+    private func clearCachedResolution(forIdentityID rawIdentityID: String) {
+        let identityID = rawIdentityID.lowercased()
+        resolvedGroupsByIdentityID.removeValue(forKey: identityID)
+        groupIdentityIDByLocalID = groupIdentityIDByLocalID.filter { $0.value != identityID }
+    }
+
+    /// Synchronous reverse lookup for row-star rendering. Falls back only to a
+    /// current-device slot scan, never name guessing; full adoption is async and
+    /// runs from load/write paths.
+    private func groupIdentityID(for group: ContactGroup) -> String? {
+        let localKey = group.localID.lowercased()
+        if let cached = groupIdentityIDByLocalID[localKey] {
+            return cached
+        }
+        guard let sync else { return nil }
+        do {
+            let matching = try sync.allGroupIdentities()
+                .filter { $0.deviceLocalIDs[sync.deviceID]?.lowercased() == localKey }
+                .sorted { $0.id < $1.id }
+            guard let identity = matching.first else { return nil }
+            cache(group: group, forIdentityID: identity.id)
+            return identity.id
+        } catch {
+            Self.groupIdentityLog.warning(
+                "group identity slot lookup failed",
+                metadata: ["error": "\(error.localizedDescription)"])
+            return nil
+        }
+    }
+
+    /// Find an already-minted identity for `group`, resolving/adopting records
+    /// as needed. Used before mint so an unfavorite/re-favorite cycle reuses the
+    /// original UUID and a newly-synced remote record is adopted instead of
+    /// duplicated.
+    private func existingGroupIdentity(for group: ContactGroup) async throws -> GroupIdentity? {
+        guard let sync else { return nil }
+        if let identityID = groupIdentityID(for: group),
+           let identity = try sync.groupIdentity(id: identityID) {
+            return identity
+        }
+
+        let identities = try sync.allGroupIdentities().sorted { $0.id < $1.id }
+        for identity in identities {
+            if let resolved = try await resolveGroupIdentity(id: identity.id),
+               resolved.localID.lowercased() == group.localID.lowercased() {
+                return try sync.groupIdentity(id: identity.id)
+            }
+        }
+        return nil
+    }
+
+    /// Resolve a durable group UUID through the locked adoption algorithm:
+    /// current-device slot -> prune dead slot -> normalized name match ->
+    /// count/hash disambiguation -> deterministic tie break -> pin + refresh.
+    /// Missing identity records and zero name matches return nil so callers
+    /// render the existing unavailable row.
+    func resolveGroupIdentity(id rawIdentityID: String) async throws -> ContactGroup? {
+        guard let sync,
+              var identity = try sync.groupIdentity(id: rawIdentityID)
+        else { return nil }
+
+        clearCachedResolution(forIdentityID: identity.id)
+
+        if let mine = identity.deviceLocalIDs[sync.deviceID] {
+            if let live = group(localID: mine) {
+                cache(group: live, forIdentityID: identity.id)
+                return live
+            }
+
+            // Only this device's dangling slot is pruned. The engine's write
+            // helper unions peer slots from disk and ignores peer mutations in
+            // the incoming value.
+            identity.deviceLocalIDs.removeValue(forKey: sync.deviceID)
+            persistGroupIdentityBestEffort(identity, operation: "prune dead slot")
+        }
+
+        let wantedName = GroupIdentity.normalizedName(identity.name)
+        // ContactGroup currently exposes no account/container field, so the
+        // optional account hint cannot narrow candidates on this adapter. It
+        // remains stored for future adapters and is never treated as a hard key.
+        let candidates = groups.filter {
+            GroupIdentity.normalizedName($0.name) == wantedName
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        let chosen: ContactGroup
+        var chosenFingerprint: LiveGroupFingerprint?
+        if candidates.count == 1 {
+            chosen = candidates[0]
+            chosenFingerprint = try? await groupFingerprint(for: chosen)
+        } else {
+            var scored: [(group: ContactGroup, score: Int, fingerprint: LiveGroupFingerprint?)] = []
+            scored.reserveCapacity(candidates.count)
+            for candidate in candidates {
+                let fingerprint = try? await groupFingerprint(for: candidate)
+                let score: Int
+                if fingerprint?.memberHash == identity.memberHash {
+                    score = 2
+                } else if fingerprint?.memberCount == identity.memberCount {
+                    score = 1
+                } else {
+                    score = 0
+                }
+                scored.append((candidate, score, fingerprint))
+            }
+            scored.sort {
+                if $0.score != $1.score { return $0.score > $1.score }
+                return $0.group.localID < $1.group.localID
+            }
+            let winner = scored[0]
+            chosen = winner.group
+            chosenFingerprint = winner.fingerprint
+            if scored.count > 1, scored[1].score == winner.score {
+                Self.groupIdentityLog.warning(
+                    "group identity candidate tie; chose lowest local identifier",
+                    metadata: [
+                        "identityID": "\(identity.id)",
+                        "candidateCount": "\(scored.count)",
+                        "chosenLocalID": "\(chosen.localID)",
+                    ])
+            }
+        }
+
+        identity.deviceLocalIDs[sync.deviceID] = chosen.localID
+        identity.name = GroupIdentity.normalizedName(chosen.name)
+        if let chosenFingerprint {
+            identity.memberCount = chosenFingerprint.memberCount
+            identity.memberHash = chosenFingerprint.memberHash
+            identity.hashedMemberCount = chosenFingerprint.hashedMemberCount
+        }
+        persistGroupIdentityBestEffort(identity, operation: "pin adopted group")
+        cache(group: chosen, forIdentityID: identity.id)
+        return chosen
+    }
+
+    /// Re-resolve every stored identity against the current group cache, then
+    /// refresh the live scalar fingerprint. Best-effort by design: Contacts or
+    /// iCloud failures never prevent the group list itself from loading.
+    private func refreshAllGroupIdentities(resetCache: Bool = false) async {
+        guard let sync else {
+            if resetCache {
+                resolvedGroupsByIdentityID = [:]
+                groupIdentityIDByLocalID = [:]
+            }
+            return
+        }
+        if resetCache {
+            resolvedGroupsByIdentityID = [:]
+            groupIdentityIDByLocalID = [:]
+        }
+        do {
+            let identities = try sync.allGroupIdentities().sorted { $0.id < $1.id }
+            for identity in identities {
+                if let live = try await resolveGroupIdentity(id: identity.id) {
+                    await refreshGroupIdentity(identityID: identity.id, group: live)
+                }
+            }
+        } catch {
+            Self.groupIdentityLog.warning(
+                "group identity startup refresh failed",
+                metadata: ["error": "\(error.localizedDescription)"])
+        }
+    }
+
+    /// Refresh a group only when it already has an identity record. This is the
+    /// membership-change / rename path; it never mints a group identity or a
+    /// contact GuessWho ID.
+    private func refreshGroupIdentity(for group: ContactGroup) async {
+        guard let identityID = groupIdentityID(for: group) else { return }
+        await refreshGroupIdentity(identityID: identityID, group: group)
+    }
+
+    private func refreshGroupIdentity(identityID: String, group: ContactGroup) async {
+        guard let sync else { return }
+        do {
+            guard var identity = try sync.groupIdentity(id: identityID) else { return }
+            let fingerprint = try await groupFingerprint(for: group)
+            identity.deviceLocalIDs[sync.deviceID] = group.localID
+            identity.name = GroupIdentity.normalizedName(group.name)
+            identity.memberCount = fingerprint.memberCount
+            identity.memberHash = fingerprint.memberHash
+            identity.hashedMemberCount = fingerprint.hashedMemberCount
+            try sync.writeGroupIdentity(identity)
+            cache(group: group, forIdentityID: identity.id)
+        } catch {
+            Self.groupIdentityLog.warning(
+                "group identity fingerprint refresh failed",
+                metadata: [
+                    "identityID": "\(identityID)",
+                    "error": "\(error.localizedDescription)",
+                ])
+        }
+    }
+
+    private func persistGroupIdentityBestEffort(_ identity: GroupIdentity, operation: String) {
+        guard let sync else { return }
+        do {
+            try sync.writeGroupIdentity(identity)
+        } catch {
+            Self.groupIdentityLog.warning(
+                "group identity write failed",
+                metadata: [
+                    "operation": "\(operation)",
+                    "identityID": "\(identity.id)",
+                    "error": "\(error.localizedDescription)",
+                ])
+        }
     }
 
     /// Project persisted favorites into app-facing rows without exposing contact
     /// favorite UUIDs. Contact favorites resolve through this repository's
     /// GuessWhoID index; event favorites use the supplied resolver until the
     /// deferred EventID migration moves event identity behind the package too;
-    /// group favorites resolve against the `groups` cache (case-insensitively —
-    /// see `group(localID:)`); guide and place favorites use their supplied
-    /// resolvers too, since this repository caches contacts and groups only.
+    /// group favorites resolve from their durable UUID through the adoption
+    /// cache built by `loadGroups()`; guide and place favorites use their
+    /// supplied resolvers too, since this repository caches contacts and groups
+    /// only.
     ///
     /// Each resolver receives the favorite's canonical lowercased id — a minted
     /// sidecar UUID string for guides and places — so a caller matching against
@@ -1782,7 +2096,7 @@ public final class ContactsRepository: NSObject {
                 FavoriteListItem(
                     id: FavoriteListItem.ID(favorite.stableID),
                     kind: favorite.kind,
-                    group: group(localID: favorite.id)
+                    group: group(forFavoriteID: favorite.id)
                 )
             case .guide:
                 FavoriteListItem(

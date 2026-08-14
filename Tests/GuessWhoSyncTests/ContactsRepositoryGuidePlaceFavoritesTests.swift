@@ -159,9 +159,23 @@ struct ContactsRepositoryGuidePlaceFavoritesTests {
         )
         let store = InMemoryContactStore(contacts: [contact])
         let family = try await store.createGroup(name: "Family")
-        let repository = ContactsRepository(contacts: store)
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-test")
+        let repository = ContactsRepository(contacts: store, sync: sync)
         await repository.reload()
         await repository.loadGroups()
+        let emptyFingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
+        let groupIdentity = try sync.mintGroupIdentity(
+            name: family.name,
+            account: nil,
+            memberCount: 0,
+            memberHash: emptyFingerprint.memberHash,
+            hashedMemberCount: emptyFingerprint.hashedMemberCount,
+            localID: family.localID)
+        _ = try await repository.resolveGroupIdentity(id: groupIdentity.id)
 
         let eventID = try #require(UUID(uuidString: "66666666-6666-6666-6666-666666666666"))
         let event = Event(
@@ -174,7 +188,7 @@ struct ContactsRepositoryGuidePlaceFavoritesTests {
         let favorites = [
             Favorite(kind: .contact, id: contactUUID, addedAt: now),
             Favorite(kind: .event, id: eventID.uuidString, addedAt: now.addingTimeInterval(1)),
-            Favorite(kind: .group, id: family.localID, addedAt: now.addingTimeInterval(2)),
+            Favorite(kind: .group, id: groupIdentity.id, addedAt: now.addingTimeInterval(2)),
             Favorite(kind: .guide, id: Self.guideUUID.uuidString, addedAt: now.addingTimeInterval(3)),
             Favorite(kind: .place, id: Self.placeUUID.uuidString, addedAt: now.addingTimeInterval(4))
         ]

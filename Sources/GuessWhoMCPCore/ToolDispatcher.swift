@@ -3963,7 +3963,7 @@ public actor ToolDispatcher {
                 $0.id.uuidString.lowercased() == endpoint.id
             }) else { return nil }
             return ("place", place.id.uuidString.lowercased())
-        case .link, .guide:
+        case .link, .guide, .group:
             return nil
         }
     }
@@ -4236,7 +4236,7 @@ public actor ToolDispatcher {
                 return await guides.allPlaces().first {
                     $0.id.uuidString.lowercased() == endpoint.id
                 }?.name
-            case .link, .guide:
+            case .link, .guide, .group:
                 return nil
             }
         }
