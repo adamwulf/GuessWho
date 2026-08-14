@@ -69,7 +69,7 @@ final class FavoritesToolTests: XCTestCase {
     @discardableResult
     private func installEveryKind(
         _ fixture: MCPProductionFixture, collision: Bool = false
-    ) throws -> EveryKindSeed {
+    ) async throws -> EveryKindSeed {
         let eventUUID = try EngineSeed.manualEvent(
             fixture.sync, title: "Museum Gala",
             start: Date(timeIntervalSince1970: 1_760_000_000),
@@ -107,10 +107,16 @@ final class FavoritesToolTests: XCTestCase {
             fixture.sync.places(inGuide: guide.id).first { $0.id == placeID })
 
         let groupLocalID = seededGroupLocalID(fixture) ?? ""
+        await fixture.repository.loadGroups()
+        let group = try XCTUnwrap(
+            fixture.repository.groups.first { $0.localID == groupLocalID })
+        _ = try await fixture.repository.setGroupFavorite(true, for: group)
+        let groupIdentityID = try XCTUnwrap(
+            fixture.favoritesStore.loadAll().first { $0.kind == .group }?.id)
         try fixture.favoritesStore.setAll([
             Favorite(kind: .contact, id: MCPProductionFixture.adaGuessWhoID, addedAt: Date(timeIntervalSince1970: 1)),
             Favorite(kind: .event, id: eventUUID.uuidString, addedAt: Date(timeIntervalSince1970: 2)),
-            Favorite(kind: .group, id: groupLocalID, addedAt: Date(timeIntervalSince1970: 3)),
+            Favorite(kind: .group, id: groupIdentityID, addedAt: Date(timeIntervalSince1970: 3)),
             Favorite(kind: .guide, id: guide.id.uuidString, addedAt: Date(timeIntervalSince1970: 4)),
             Favorite(kind: .place, id: placeID.uuidString, addedAt: Date(timeIntervalSince1970: 5)),
         ])
@@ -171,7 +177,7 @@ final class FavoritesToolTests: XCTestCase {
     func testListEveryKindPreservesStoredOrderNamesAddedAtAndOpaqueIDs() async throws {
         let fixture = try await productionFixture()
         defer { fixture.cleanUp() }
-        let seed = try installEveryKind(fixture)
+        let seed = try await installEveryKind(fixture)
         let rawGroupID = seed.groupLocalID
 
         guard let first = await list(fixture, limit: 2) else { return XCTFail("no first page") }
@@ -226,7 +232,10 @@ final class FavoritesToolTests: XCTestCase {
         let fixture = try await productionFixture()
         defer { fixture.cleanUp() }
         let groupLocalID = try XCTUnwrap(seededGroupLocalID(fixture))
-        try fixture.favoritesStore.setAll([Favorite(kind: .group, id: groupLocalID, addedAt: Date())])
+        await fixture.repository.loadGroups()
+        let group = try XCTUnwrap(
+            fixture.repository.groups.first { $0.localID == groupLocalID })
+        _ = try await fixture.repository.setGroupFavorite(true, for: group)
         guard let liveID = await list(fixture)?.items.first?.id else { return XCTFail("no live row") }
         XCTAssertTrue(liveID.hasPrefix("g-"))
         // Make the group referent stale by deleting it from the store, then
@@ -244,7 +253,7 @@ final class FavoritesToolTests: XCTestCase {
     func testSetSupportsEveryKindAndIsDesiredStateIdempotent() async throws {
         let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
-        _ = try installEveryKind(fixture)
+        _ = try await installEveryKind(fixture)
         guard let entries = await list(fixture)?.items else { return XCTFail("no entries") }
 
         // Start from an empty favorites file; each kind is set from scratch.
@@ -329,7 +338,7 @@ final class FavoritesToolTests: XCTestCase {
     func testReorderUsesCompositeIdentityAndAllowsCrossKindIDCollision() async throws {
         let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
-        _ = try installEveryKind(fixture, collision: true)
+        _ = try await installEveryKind(fixture, collision: true)
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let collision = page.items.filter { $0.kind == .guide || $0.kind == .place }
         guard collision.count == 2 else { return XCTFail("expected guide/place collision") }
@@ -366,7 +375,7 @@ final class FavoritesToolTests: XCTestCase {
     func testReorderRejectsDuplicateMissingExtraAndStaleFavorites() async throws {
         let fixture = try await productionFixture(writable: true)
         defer { fixture.cleanUp() }
-        _ = try installEveryKind(fixture)
+        _ = try await installEveryKind(fixture)
         guard let page = await list(fixture) else { return XCTFail("no page") }
         let identities = page.items.map { WireFavoriteIdentity(kind: $0.kind, id: $0.id) }
         guard let firstIdentity = identities.first else { return XCTFail("no identities") }

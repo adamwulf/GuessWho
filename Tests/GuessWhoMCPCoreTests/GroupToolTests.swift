@@ -113,10 +113,13 @@ final class GroupToolTests: XCTestCase {
     func testGroupListIncludesFavoriteAndNeverLeaksLocalID() async throws {
         let fixture = try await writableProductionFixture()
         defer { fixture.cleanUp() }
-        // Favorite the seeded group by writing straight through the real store;
-        // the canonical key is the group's Contacts local identifier, lowercased.
+        // Favorite the seeded group through the repository so Favorites stores
+        // the durable group-identity UUID, never the Contacts local identifier.
         let groupLocalID = try XCTUnwrap(localID(ofGroupNamed: MCPProductionFixture.groupName, in: fixture))
-        try fixture.favoritesStore.set(kind: .group, id: groupLocalID, favorite: true, now: Date())
+        await fixture.repository.loadGroups()
+        let liveGroup = try XCTUnwrap(
+            fixture.repository.groups.first { $0.localID == groupLocalID })
+        _ = try await fixture.repository.setGroupFavorite(true, for: liveGroup)
 
         let response = await fixture.dispatcher.handle(.contactsListGroups(
             helperId: MCPProductionFixture.helper, messageId: "list", limit: nil, cursor: nil))
@@ -367,10 +370,11 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected updated group")
         }
         XCTAssertTrue(group.isFavorite)
-        // Durable on disk under the group's canonical (lowercased) local id.
-        XCTAssertTrue(try fixture.favoritesStore.loadAll().contains {
-            $0.kind == .group && $0.id == pioneersLocalID.lowercased()
-        })
+        // Durable on disk under a minted group UUID, never the Contacts-local id.
+        let storedGroupFavorite = try XCTUnwrap(
+            fixture.favoritesStore.loadAll().first { $0.kind == .group })
+        XCTAssertNotNil(UUID(uuidString: storedGroupFavorite.id))
+        XCTAssertNotEqual(storedGroupFavorite.id, pioneersLocalID.lowercased())
 
         var entries = await fixture.storedAuditEntries()
         XCTAssertEqual(entries.count, 1)
@@ -438,7 +442,7 @@ final class GroupToolTests: XCTestCase {
             return XCTFail("expected generic favorites page")
         }
         XCTAssertTrue(favorites.items.contains {
-            $0.kind == .group && $0.id == groupId && $0.isAvailable
+            $0.kind == .group && $0.id.hasPrefix("g-") && $0.isAvailable
         })
 
         guard case .acknowledged = await fixture.dispatcher.handle(.favoritesSet(

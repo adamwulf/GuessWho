@@ -4646,7 +4646,6 @@ public actor ToolDispatcher {
             if let group = await MainActor.run(body: {
                 contacts.group(forFavoriteID: favorite.id)
             }) {
-                id = WireRecordID.groupID(for: group)
                 name = group.name
                 available = true
             }
