@@ -1536,7 +1536,7 @@ struct ContactDetailView: View {
     private func groupRow(_ group: ContactGroup) -> some View {
         // Read through the @Observable favorites cache so the star repaints when
         // the group is favorited/unfavorited from here or anywhere else.
-        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
+        let isFavorited = repository.isGroupFavorite(group)
         Button {
             pushGroupReference(GroupReference(group: group))
         } label: {
@@ -1561,7 +1561,15 @@ struct ContactDetailView: View {
         // click), mirroring the recent-event row's link menu.
         .contextMenu {
             Button {
-                favoritesStore.toggle(kind: .group, id: group.localID)
+                Task { @MainActor in
+                    do {
+                        _ = try await repository.setGroupFavorite(!isFavorited, for: group)
+                    } catch {
+                        // Keep favorite writes best-effort, matching the other
+                        // detail-view favorite actions.
+                    }
+                    favoritesStore.reload()
+                }
             } label: {
                 if isFavorited {
                     Label("Unfavorite", systemImage: "star.slash")

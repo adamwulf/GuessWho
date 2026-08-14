@@ -3,9 +3,9 @@ import Foundation
 public enum FavoriteKind: String, Codable, Sendable {
     case contact
     case event
-    /// A Contacts.app group. Unlike `contact`/`event`, a group has no GuessWho
-    /// UUID — it is keyed by its Contacts `localID` (`CNGroup.identifier`), which
-    /// is stored (lowercased, like every favorite `id`) as the favorite's `id`.
+    /// A Contacts.app group, keyed by its minted `GroupIdentity.id` UUID. The
+    /// device-local `CNGroup.identifier` stays inside the repository's resolve
+    /// boundary and is never persisted as the favorite key.
     case group
     /// An imported Apple Maps guide, keyed by its minted `MapsGuide.id` UUID.
     case guide
@@ -17,8 +17,8 @@ public enum FavoriteKind: String, Codable, Sendable {
 
 public struct Favorite: Codable, Sendable, Hashable {
     public let kind: FavoriteKind
-    /// Lowercased identifier of the referent: the sidecar UUID for a contact,
-    /// event, guide, or place; the Contacts `localID` for a group.
+    /// Lowercased sidecar UUID of the referent. Every favorite kind, including
+    /// groups, uses a durable GuessWho-owned UUID rather than an OS-local id.
     public let id: String
     public let addedAt: Date
 

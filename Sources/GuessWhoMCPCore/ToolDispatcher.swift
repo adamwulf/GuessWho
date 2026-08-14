@@ -873,9 +873,7 @@ public actor ToolDispatcher {
             try await contacts.deleteGroup(group)
             // Match the app's delete path: the Contacts deletion is the primary
             // operation, and stale favorite cleanup is best-effort afterwards.
-            _ = try? await MainActor.run {
-                try contacts.setGroupFavorite(false, for: group)
-            }
+            _ = try? await contacts.setGroupFavorite(false, for: group)
             await recordAudit(
                 .deleteGroup, kind: .group,
                 subjectID: groupId, subjectName: group.name,
@@ -899,9 +897,7 @@ public actor ToolDispatcher {
         }
         let prior = await MainActor.run { contacts.isGroupFavorite(group) }
         do {
-            let resulting = try await MainActor.run {
-                try contacts.setGroupFavorite(favorite, for: group)
-            }
+            let resulting = try await contacts.setGroupFavorite(favorite, for: group)
             guard resulting == favorite else { throw WriteProblem.verifyFailed }
             if prior != favorite {
                 await recordAudit(
@@ -2099,6 +2095,50 @@ public actor ToolDispatcher {
             return await contactsSetFavorite(
                 helperId: helperId, messageId: messageId,
                 contactId: id, favorite: favorite, genericAcknowledgement: true)
+        }
+
+        // Group favorites also have a repository-owned identity boundary: the
+        // wire id resolves to a live ContactGroup, then the repository mints or
+        // adopts the durable group UUID and persists that UUID in Favorites.
+        // The generic store must never see the device-local group identifier.
+        if kind == .group {
+            if Self.hasObviouslyDifferentFavoriteKind(id, expected: kind) {
+                return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+            }
+            let groups = await contacts.fetchGroups()
+            guard let group = WireRecordID.group(for: id, in: groups) else {
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                if await isKnownFavoriteID(id, excluding: kind) {
+                    return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+                }
+                return FavoriteResolutionFailure
+                    .notFound(WireErrorMessage.notFoundGroup)
+                    .response(helperId: helperId, messageId: messageId)
+            }
+
+            let prior = await MainActor.run { contacts.isGroupFavorite(group) }
+            do {
+                let resulting = try await contacts.setGroupFavorite(favorite, for: group)
+                if prior != resulting {
+                    await recordAudit(
+                        .setFavorite, kind: .group,
+                        subjectID: WireRecordID.groupID(for: group), subjectName: group.name,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: prior ? "true" : "false",
+                        newValue: resulting ? "true" : "false")
+                }
+                return .acknowledged(
+                    helperId: helperId, messageId: messageId,
+                    message: favorite
+                        ? WireAckMessage.genericFavoriteSet
+                        : WireAckMessage.genericFavoriteCleared)
+            } catch {
+                return writeFailure(error, helperId: helperId, messageId: messageId)
+            }
         }
 
         switch await resolveFavoriteInput(kind: kind, id: id) {
@@ -4603,8 +4643,8 @@ public actor ToolDispatcher {
                 available = true
             }
         case .group:
-            if let group = groups.first(where: {
-                $0.localID.lowercased() == favorite.id.lowercased()
+            if let group = await MainActor.run(body: {
+                contacts.group(forFavoriteID: favorite.id)
             }) {
                 id = WireRecordID.groupID(for: group)
                 name = group.name

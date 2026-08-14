@@ -38,6 +38,10 @@ public protocol MCPContactSource: AnyObject {
     func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto?
     func groups(containing contact: Contact) async -> [ContactGroup]
     func isGroupFavorite(_ group: ContactGroup) -> Bool
+    /// Resolves a stored group-favorite UUID through the repository's
+    /// device-local adoption cache. Raw Contacts identifiers are never
+    /// accepted as favorite identity here.
+    func group(forFavoriteID id: String) -> ContactGroup?
 
     // Writes (plans/cli-mcp.md Phase 2) — the SAME repository entry points
     // the UI uses (INV-2), so the change-watcher, iCloud push, and UI
@@ -75,7 +79,7 @@ public protocol MCPContactSource: AnyObject {
     func addContacts(_ contacts: [Contact], toGroup group: ContactGroup) async throws
     func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws
     @discardableResult
-    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) async throws -> Bool
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus
 
     // Tombstone-inclusive reads for the write-side audit (post-write

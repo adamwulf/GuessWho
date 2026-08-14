@@ -278,6 +278,13 @@ final class LegacyScriptedContactSource: MCPContactSource {
         return scriptedGroupFavoriteReadResults.removeFirst()
     }
 
+    func group(forFavoriteID id: String) -> ContactGroup? {
+        // This generic fake has no group-identity sidecar model. A seeded raw
+        // group identifier therefore models a legacy favorite and is correctly
+        // unavailable after the durable group-UUID change.
+        nil
+    }
+
     // MARK: Writes
 
     func createGroup(name: String) async throws -> ContactGroup {
@@ -322,7 +329,7 @@ final class LegacyScriptedContactSource: MCPContactSource {
             "ContactsRepository group membership mutation")
     }
 
-    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) async throws -> Bool {
         try throwUnexpectedLegacySemanticPath(
             "ContactsRepository.setGroupFavorite")
     }
