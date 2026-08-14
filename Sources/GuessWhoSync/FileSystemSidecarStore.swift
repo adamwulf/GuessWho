@@ -197,6 +197,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("links"), kind: .link))
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("guides"), kind: .guide))
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("places"), kind: .place))
+        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("groups"), kind: .group))
         return result
     }
 
@@ -532,12 +533,13 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         case .link: return "links"
         case .guide: return "guides"
         case .place: return "places"
+        case .group: return "groups"
         }
     }
 
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
-        case .contact, .link, .event, .guide, .place:
+        case .contact, .link, .event, .guide, .place, .group:
             // All sidecar kinds are UUID-keyed and canonicalized to lowercase at
             // every boundary so case-folding filesystems (iCloud Drive on APFS)
             // can't desync the on-disk name from the in-memory key. (A UUID
@@ -577,7 +579,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
-            case .contact, .link, .guide, .place:
+            case .contact, .link, .guide, .place, .group:
                 result.append(SidecarKey(kind: kind, id: basename.lowercased()))
             case .event:
                 let decoded = basename.removingPercentEncoding ?? basename
