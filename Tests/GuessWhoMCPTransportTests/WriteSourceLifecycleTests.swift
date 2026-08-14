@@ -89,8 +89,8 @@ final class WriteSourceLifecycleTests: XCTestCase {
     /// cancelled child on scope exit, and `Task.value` does not return on the
     /// awaiter's cancellation — so a parked writer would still hang). Returns
     /// true if the flag was set within the deadline. On false, the caller
-    /// cancels the writer (PipeSignal's `onCancel` wakes a parked wait) and
-    /// fails fast.
+    /// unwinds the wedged writer with `await pipe.close()` (which signals the
+    /// parked wait so its inner task can finish) and fails fast.
     private func awaitFlag(_ flag: Counter,
                            deadlineSeconds: Double = 10) async throws -> Bool {
         let iterations = max(1, Int(deadlineSeconds * 100))
