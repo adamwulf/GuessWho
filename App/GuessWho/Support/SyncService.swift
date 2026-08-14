@@ -1032,12 +1032,13 @@ final class SyncService {
         return dir
     }
 
-    /// Device-local file backing the contact change-history cursor. Always in the
-    /// container's Application Support (`.userDomainMask`), independent of the
-    /// sidecar root — the cursor must never ride iCloud. Falls back to a temp-dir
-    /// path if Application Support can't be resolved, so the store is always
-    /// constructible; a lost cursor just forces one safe full reload.
-    private static func contactCursorURL() -> URL {
+    /// The device-local `GuessWhoSync` directory in the container's Application
+    /// Support (`.userDomainMask`), independent of the (possibly iCloud-backed)
+    /// sidecar root. Holds device-local, safe-to-lose state that must never ride
+    /// iCloud: the contact change-history cursor and the stable device id. Falls
+    /// back to a temp dir if Application Support can't be resolved, so the stores
+    /// below are always constructible.
+    private static func deviceLocalSyncDirectory() -> URL {
         let fm = FileManager.default
         let base = (try? fm.url(
             for: .applicationSupportDirectory,
@@ -1045,19 +1046,29 @@ final class SyncService {
             appropriateFor: nil,
             create: true
         )) ?? fm.temporaryDirectory
-        let dir = base.appendingPathComponent("GuessWhoSync", isDirectory: true)
-        return dir.appendingPathComponent("contacts-change-cursor")
+        return base.appendingPathComponent("GuessWhoSync", isDirectory: true)
     }
 
+    /// Device-local file backing the contact change-history cursor. The cursor
+    /// must never ride iCloud (a CNContactStore history token is per-device);
+    /// a lost cursor just forces one safe full reload.
+    private static func contactCursorURL() -> URL {
+        deviceLocalSyncDirectory().appendingPathComponent("contacts-change-cursor")
+    }
+
+    /// Device-local file backing the stable device id, beside the change cursor.
+    /// Same device-local, safe-to-lose contract — a lost file mints a fresh id.
+    private static func deviceIDURL() -> URL {
+        deviceLocalSyncDirectory().appendingPathComponent("device-id")
+    }
+
+    /// Loads (or mints) the stable device id from a device-local file beside the
+    /// change cursor, via the package's `DeviceIDStore`. Replaces the former
+    /// `UserDefaults`-backed id: the file-backed store applies the same
+    /// backup-excluded, safe-to-lose discipline as the cursor and keeps the
+    /// UIKit-free `identifierForVendor` alternative off the table.
     private static func stableDeviceID() -> String {
-        let defaults = UserDefaults.standard
-        let key = "com.milestonemade.guesswho.deviceID"
-        if let existing = defaults.string(forKey: key) {
-            return existing
-        }
-        let fresh = UUID().uuidString.lowercased()
-        defaults.set(fresh, forKey: key)
-        return fresh
+        DeviceIDStore(url: deviceIDURL()).stableDeviceID()
     }
 }
 
