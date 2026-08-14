@@ -20,9 +20,25 @@ public struct DeviceIDStore: Sendable {
 
     /// Serializes load-or-mint across every store in the process so two
     /// concurrent callers — even over the same path — can never mint and persist
-    /// divergent ids. Mints are rare (once per device), so a single
-    /// process-wide lock is more than cheap enough.
+    /// divergent ids. Also guards `cache` below; every read and write of it
+    /// happens while this lock is held. Mints are rare (once per device), so a
+    /// single process-wide lock is more than cheap enough.
     private static let mintLock = NSLock()
+
+    /// Process-local id cache, keyed by the standardized file path. Populated for
+    /// both loaded and freshly minted ids so a caller always sees the SAME id for
+    /// a given path within the process — even when persisting failed (a read-only
+    /// volume, an uncreatable parent) and the file therefore holds nothing. Only
+    /// touched under `mintLock`; `nonisolated(unsafe)` documents that manual
+    /// synchronization rather than compiler isolation makes it safe.
+    nonisolated(unsafe) private static var cache: [String: String] = [:]
+
+    /// The cache key for `url` — its standardized filesystem path, so different
+    /// spellings of the same file (`.`/`..` segments, trailing slash) share one
+    /// entry.
+    private static func cacheKey(for url: URL) -> String {
+        url.standardizedFileURL.path
+    }
 
     /// - Parameter url: the device-local file the id is stored at. The caller
     ///   owns the path; the parent directory is created on write if needed.
@@ -32,20 +48,29 @@ public struct DeviceIDStore: Sendable {
 
     /// Returns the stable device id, minting and persisting one if needed.
     ///
-    /// Always yields a usable lowercased UUID string. Persisting is best-effort:
-    /// if the write fails (e.g. a read-only volume) the returned id is still
-    /// valid for this process — it just won't survive a relaunch, which is the
-    /// same "safe to lose" degradation as the change cursor.
+    /// Always yields a usable lowercased UUID string, and always the SAME one for
+    /// a given path within the process. Persisting is best-effort: if the write
+    /// fails (e.g. a read-only volume) the id is held in `cache` so repeat calls
+    /// still reuse it — it just won't survive a relaunch, the same "safe to lose"
+    /// degradation as the change cursor.
     public func stableDeviceID() -> String {
         Self.mintLock.lock()
         defer { Self.mintLock.unlock() }
 
-        if let canonical = loadCanonical() {
-            return canonical
+        let key = Self.cacheKey(for: url)
+        if let cached = Self.cache[key] {
+            return cached
         }
-        let fresh = UUID().uuidString.lowercased()
-        try? persist(fresh)
-        return fresh
+        let id: String
+        if let canonical = loadCanonical() {
+            id = canonical
+        } else {
+            let fresh = UUID().uuidString.lowercased()
+            try? persist(fresh)
+            id = fresh
+        }
+        Self.cache[key] = id
+        return id
     }
 
     /// Reads the persisted id, returning it in canonical lowercase form, or

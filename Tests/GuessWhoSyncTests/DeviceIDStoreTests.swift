@@ -37,10 +37,38 @@ struct DeviceIDStoreTests {
         let first = store.stableDeviceID()
         #expect(store.stableDeviceID() == first)
 
+        // ...the value is genuinely on disk (not merely cached in-process)...
+        #expect(FileManager.default.fileExists(atPath: url.path))
+
         // ...and a fresh instance over the same path reads the persisted value
         // rather than minting a new one.
         let reopened = DeviceIDStore(url: url).stableDeviceID()
         #expect(reopened == first)
+    }
+
+    @Test
+    func reusesMintedIDInProcessWhenPersistFails() throws {
+        // Make the destination genuinely unwritable: a regular file stands in for
+        // a directory component, so createDirectory(at:) — and thus every
+        // persist() — throws. The id then lives only in the process cache.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-deviceid-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let blocker = root.appendingPathComponent("blocker")
+        try Data("x".utf8).write(to: blocker, options: .atomic)  // a FILE, not a dir
+        let url = blocker.appendingPathComponent("child").appendingPathComponent("device-id")
+
+        let store = DeviceIDStore(url: url)
+        let first = store.stableDeviceID()
+        #expect(isCanonicalUUID(first))
+        // Persist failed, so nothing reached disk...
+        #expect(FileManager.default.fileExists(atPath: url.path) == false)
+        // ...yet the in-memory cache keeps the id stable across calls and across
+        // fresh instances over the same path.
+        #expect(store.stableDeviceID() == first)
+        #expect(DeviceIDStore(url: url).stableDeviceID() == first)
     }
 
     @Test
