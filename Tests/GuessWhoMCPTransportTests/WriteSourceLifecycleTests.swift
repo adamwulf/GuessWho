@@ -165,10 +165,13 @@ final class WriteSourceLifecycleTests: XCTestCase {
         let payload = Data((0..<total).map { UInt8(truncatingIfNeeded: $0) })
 
         // Write concurrently; do NOT drain yet, so the buffer fills and the
-        // writer parks on EAGAIN (deterministic first block).
+        // writer parks on EAGAIN (deterministic first block). Fire-and-forget:
+        // pipe.write() parks inside its OWN inner serialization Task, so
+        // cancelling this outer Task would not reach it — we bound completion
+        // via `done`/awaitFlag and unwind with close() if it ever wedges.
         let done = Counter()
         let errorBox = ErrorBox()
-        let writeTask = Task {
+        Task {
             do { try await pipe.write(payload) } catch { errorBox.set(error) }
             done.increment()
         }
@@ -193,7 +196,8 @@ final class WriteSourceLifecycleTests: XCTestCase {
         // Deadline-bounded via a completion flag (never a structured await of
         // the writer), so a lost wake fails fast instead of hanging the suite.
         if try await awaitFlag(done) == false {
-            writeTask.cancel()   // PipeSignal's onCancel wakes a parked writer
+            // Unwind the wedged writer: close() signals writableSignal, waking
+            // the parked wait so its inner task can throw and finish.
             await pipe.close()
             return XCTFail("writer did not complete within the deadline — lost wake?")
         }
@@ -232,7 +236,7 @@ final class WriteSourceLifecycleTests: XCTestCase {
         let payload = Data(repeating: 0x41, count: 512 * 1024)
         let done = Counter()
         let errorBox = ErrorBox()
-        let writeTask = Task {
+        Task {
             do { try await pipe.write(payload) } catch { errorBox.set(error) }
             done.increment()
         }
@@ -248,7 +252,7 @@ final class WriteSourceLifecycleTests: XCTestCase {
         // Deadline-bounded on a completion flag so a lost close-signal fails
         // fast instead of hanging.
         if try await awaitFlag(done) == false {
-            writeTask.cancel()
+            await pipe.close()   // re-signal the parked wait; the pipe is already closed
             return XCTFail("parked writer did not unwind after close — lost close signal?")
         }
         let result = errorBox.get()
