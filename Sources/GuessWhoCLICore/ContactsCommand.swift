@@ -19,6 +19,8 @@ public struct ContactsCommand: AsyncParsableCommand {
             ContactsSetFavorite.self,
             // Phase 4 — contact-store card writes.
             ContactsCreate.self, ContactsUpdate.self, ContactsDeletePhoto.self,
+            // Phase 5 — the confirmation-gated contact delete.
+            ContactsDelete.self,
             // Phase 4 — single-entry list value edits.
             ContactsAddValue.self, ContactsDeleteValue.self, ContactsEditValue.self,
             // Phase 4 — structured single entries.

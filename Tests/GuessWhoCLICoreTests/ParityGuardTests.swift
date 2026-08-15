@@ -8,23 +8,22 @@ import XCTest
 /// tool. `pending` is the EXPLICIT set of not-yet-implemented tools — it landed
 /// in Phase 1 with 60 entries, shrank to 40 when Phase 2's 20 reads landed,
 /// then by Phase 3's 17 GuessWho-data writes, then by Phase 4's 22 Contact Store
-/// writes, and reaches empty at Phase 5, so the guard both exerts pressure during
-/// the build-out AND catches future drift.
+/// writes, and reached empty at Phase 5 with the confirmation-gated
+/// `contacts delete`. The guard is now STRICT: all 63 tools are registered, so
+/// it proves full parity with `MCPTool.allCases` and catches any future drift —
+/// a new tool without a command, a command without a tool, a non-derived name.
 ///
 /// The field-level schema-parity check (§3.4) is `ContactScalarFieldParityTests`:
 /// scoped to the contact scalar flags, the only large per-field surface.
 final class ParityGuardTests: XCTestCase {
 
-    /// The tools without a CLI command yet. Only the Phase 5 confirmation-gated
-    /// delete remains; `expectedPendingCount` pins the current size.
-    static let pending: Set<MCPTool> = [
-        // Confirmation-gated delete (Phase 5).
-        .contactsDelete,
-    ]
+    /// The tools without a CLI command. Empty at Phase 5: every `MCPTool` case
+    /// now has a registered command.
+    static let pending: Set<MCPTool> = []
 
-    /// The current expected size of `pending`. Phase 4 leaves exactly one tool
-    /// pending: the Phase 5 confirmation-gated delete.
-    static let expectedPendingCount = 1
+    /// The current expected size of `pending`. Phase 5 registers the last tool
+    /// (the confirmation-gated delete), so full parity means zero pending.
+    static let expectedPendingCount = 0
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)

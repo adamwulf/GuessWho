@@ -80,6 +80,8 @@ public enum CLICommandRegistry {
         ContactsCreate.self,
         ContactsUpdate.self,
         ContactsDeletePhoto.self,
+        // Phase 5 write — the confirmation-gated contact delete.
+        ContactsDelete.self,
         // Phase 4 writes — contacts value edits.
         ContactsAddValue.self,
         ContactsDeleteValue.self,

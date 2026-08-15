@@ -30,9 +30,19 @@ public protocol CLIToolCommand: AsyncParsableCommand {
     /// via `WireResponse.asCallToolResult()`; photo commands override for the
     /// bespoke byte path.
     func renderResponse(_ response: WireResponse, to sink: any CLIOutput) throws
+
+    /// An optional note written to STDERR just before the (potentially long-
+    /// blocking) send, so an interactive user knows why the command is
+    /// waiting. Default nil; `contacts delete` overrides it to explain the
+    /// in-app confirmation wait. stderr-only, so stdout stays clean for data.
+    var preSendNote: String? { get }
 }
 
 extension CLIToolCommand {
+    /// Default: no note. Only `contacts delete` blocks on a human, so only it
+    /// overrides this — the other 62 commands inherit nil and are unchanged.
+    public var preSendNote: String? { nil }
+
     /// Default rendering: the shared JSON/ack/error renderer. Throws
     /// `ExitCode` for a non-success outcome so ArgumentParser exits with the
     /// right code (the message is already on stderr).
@@ -77,7 +87,10 @@ extension CLIToolCommand {
         let transport = runtime.makeTransport(container)
 
         // 3. Send through the shared transport with the tool's own timeout
-        //    (which gives contacts_delete its 300 s human window for free).
+        //    (which gives contacts_delete its 300 s human window for free). A
+        //    command that blocks on a human first prints its wait note to
+        //    stderr so an interactive user knows why it's waiting, not hung.
+        if let preSendNote { sink.writeError(preSendNote) }
         let response: WireResponse
         do {
             response = try await transport.send(request, timeout: Self.tool.timeout)
