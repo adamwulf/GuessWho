@@ -118,14 +118,44 @@ plain repair hint ("GuessWho has moved…") when they differ. Sandbox limits
 mean the app cannot read a client's config directly — the stamp is the
 signal.
 
-## Terminal contact commands
+## Terminal commands
 
-The terminal surface currently provides three ergonomic contact commands.
-GuessWho must be open, and Terminal Access in Settings controls whether reads
-and writes are allowed.
+Every MCP tool has an equivalent `guesswho` terminal command — full 63-command
+parity, kept honest by the parity guard in
+`Tests/GuessWhoCLICoreTests/ParityGuardTests.swift`. GuessWho must be open, and
+Terminal Access in Settings controls whether reads and writes are allowed,
+exactly as for MCP clients. Do NOT re-list every command here: the authoritative
+inventory is `MCPTool` in `Sources/GuessWhoMCPWire/MCPTool.swift`, and the
+command build-out is documented in `plans/cli-command-parity.md`.
+
+**Command shape.** Commands are a noun group plus a hyphenated verb, derived
+mechanically from the tool name (`contacts_list_custom_fields` →
+`guesswho contacts list-custom-fields`). The noun groups are `contacts`,
+`organizations`, `groups`, `events`, `guides`, `places`, `links`, and
+`favorites`. Two non-tool commands live alongside them: `run` (the MCP stdio
+relay) and `probe` (a packaging diagnostic).
+
+**Argument conventions.**
+
+- **Ids are positional**, in the tool schema's `required` order (`guesswho
+  contacts get <contact-id>`); arrays of ids are variadic positionals
+  (`guesswho groups add-members <group-id> <contact-id> ...`).
+- **Reads page** with `--limit` (server default 50, max 200) and `--cursor`;
+  the CLI passes both through verbatim and never interprets them.
+- **Writes** take `--idempotency-token <token>` so a retried write applies once.
+- **Structured objects use per-field flags by default** — one `--kebab-case`
+  flag per wire field (an omitted flag leaves that key unchanged; an explicit
+  empty string clears it). `--json`/`--json-file <path>` (or `--json -` for
+  stdin) is an optional alternative on `contacts create` and the structured
+  add/delete tools, and the primary path for the structured *edit* tools, which
+  must supply two full objects. A key given both by flag and by `--json` is a
+  usage error, never a silent merge.
+- **Note text** is `--body <text>`, `--body -` (stdin), or `--body-file <path>`.
+- **Booleans are desired-state, not toggles**: the favorite commands take a
+  required `--favorite` / `--no-favorite` pair and error when neither is given.
 
 ```sh
-# Search prints a JSON page of contact summaries.
+# Reads print the same sorted-keys JSON the MCP surface returns.
 guesswho contacts search "Ada Lovelace" --limit 20
 
 # Photo bytes go to stdout by default, or to -o/--output.
@@ -138,10 +168,32 @@ guesswho contacts set-photo <contact-id> < contact.jpg
 ```
 
 `set-photo` detects JPEG, PNG, GIF, HEIC, and WebP from the bytes rather than
-the filename. Images may be at most 180 KiB. Use `--idempotency-token <token>`
-when a caller needs an explicit retry identity. `get-photo` exits with an
-error when the contact has no photo; diagnostics always go to stderr so
-redirected image output stays clean.
+the filename. Images may be at most 180 KiB.
+
+**stdout is data, stderr is everything else.** Data payloads (JSON), photo
+bytes, and ack lines go to stdout; every diagnostic, error, and progress
+message goes to stderr, so redirected/piped output stays clean.
+
+**Exit codes** let a script branch on the outcome:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success, including "no data" results the wire defines as normal. |
+| `1` | The app answered with a typed error (the plain message is on stderr; the internal code name is never printed). |
+| `10` | The user declined the `contacts delete` confirmation (see below). |
+| `64` | A genuine usage error — an unparsable command line, malformed `--json`, or an argument the wire builder rejected. |
+| `69` | A transport-level failure — GuessWho isn't open, isn't ready, or didn't answer in time. |
+
+**`contacts delete` is confirmation-gated.** It is the only command that blocks
+on a human: the app shows the user a Delete/Cancel dialog naming the specific
+contact, and the command waits up to 300 s for the answer. While it waits it
+prints a short note to stderr so an interactive caller knows why. If the user
+approves, the deleted acknowledgement goes to stdout and the command exits `0`;
+if the user cancels, the declined message goes to stderr and the command exits
+`10` with empty stdout — a terminal, non-retryable outcome a script can branch
+on. Deleting is the only removal the terminal offers: the user's data for a
+record is removed by deleting the record outright, never by any separate
+detach or disconnect affordance.
 
 ## Tools
 
