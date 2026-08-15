@@ -37,10 +37,20 @@ public protocol AppKitPlugin: NSObjectProtocol {
     )
 
     /// Creates the `/usr/local/bin` symlink for the embedded command-line
-    /// helper behind the system admin-authorization panel (the Muse-proven
-    /// mechanism: `NSWorkspace.requestAuthorization(to: .createSymbolicLink)`
-    /// + `FileManager(authorization:)` — a runtime auth API, no bespoke
-    /// entitlement). AppKit-side because both APIs are AppKit/macOS-only.
+    /// helper behind the system admin-authorization panel
+    /// (`NSWorkspace.requestAuthorization(to: .createSymbolicLink)` +
+    /// `FileManager(authorization:)`). AppKit-side because both APIs are
+    /// AppKit/macOS-only.
+    ///
+    /// REQUIRES the `com.apple.developer.security.privileged-file-operations`
+    /// entitlement on the app. It is a Mac-App-Store, manually-approved
+    /// (request-form) entitlement, and it is what lets `requestAuthorization`
+    /// present the admin panel and elevate. WITHOUT it the call returns a
+    /// non-privileged authorization, shows NO panel, and the write into a
+    /// root-owned `/usr/local/bin` fails with `NSCocoaErrorDomain` 513
+    /// ("you don't have permission"). An un-entitled build only appears to
+    /// work where `/usr/local/bin` is already user-writable (Homebrew). See
+    /// `plans/cli-install-privileged-file-operations.md`.
     ///
     /// - Parameters:
     ///   - targetPath: the bundle's helper binary (the symlink destination).

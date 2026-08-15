@@ -86,8 +86,13 @@ into their client's config, e.g. `.mcp.json`:
 **Terminal install** creates the symlink `/usr/local/bin/guesswho →
 …/Contents/MacOS/guesswho-cli` through the system admin-authorization
 panel (`NSWorkspace.requestAuthorization(to: .createSymbolicLink)` +
-`FileManager(authorization:)`, driven from the AppKit bridge bundle — a
-runtime auth API, no bespoke entitlement; the Muse-shipped mechanism).
+`FileManager(authorization:)`, driven from the AppKit bridge bundle). This
+REQUIRES the `com.apple.developer.security.privileged-file-operations`
+entitlement on the app (a Mac-App-Store, request-form entitlement); without it
+the call returns a non-privileged authorization, shows no panel, and the write
+into a root-owned `/usr/local/bin` fails with `NSCocoaErrorDomain` 513 — the
+copy-path install and the manual `sudo ln -s` fallback stay available in that
+case. See [`plans/cli-install-privileged-file-operations.md`](../plans/cli-install-privileged-file-operations.md).
 `CLISymlinkResolver` (GuessWhoMCPCore, unit-tested) classifies the path
 into four states before offering anything:
 
