@@ -70,14 +70,6 @@ public struct Run: AsyncParsableCommand {
     }
 }
 
-/// Constants shared with the app side of the packaging diagnostic. The app's
-/// `CLIProbeListener` (App/GuessWho/Support/CLIProbeListener.swift) creates
-/// the diagnostic pipe at the same container-relative path.
-public enum ProbeConstants {
-    /// Container-relative path of the app's diagnostic pipe.
-    public static let fifoRelativePath = "Diagnostics/cli-probe.fifo"
-}
-
 public struct Probe: ParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "probe",
@@ -113,7 +105,7 @@ public struct Probe: ParsableCommand {
         // only if a reader (the running app, with its diagnostic listener
         // enabled) holds the other end — and write ONE line. The line is
         // well under PIPE_BUF (512 B on Darwin), so the write is atomic.
-        let fifo = container.appendingPathComponent(ProbeConstants.fifoRelativePath)
+        let fifo = container.appendingPathComponent(WireEnvironment.probeFIFORelativePath)
         let fd = open(fifo.path, O_WRONLY | O_NONBLOCK)
         guard fd >= 0 else {
             let reason = String(cString: strerror(errno))

@@ -74,6 +74,12 @@ public enum WireEnvironment {
     /// failure — see the reconnect design in GuessWhoMCPTransport.
     public static let perHelperPipePrefixes = ["mcp_request_pipe_", "mcp_response_pipe_"]
 
+    /// Container-relative path of the packaging-diagnostic FIFO. The single
+    /// home for this path: the app's `CLIProbeListener` (which cannot link
+    /// `GuessWhoCLICore` — INV-1) and the `probe` command both read it here,
+    /// so the two ends can never drift.
+    public static let probeFIFORelativePath = "Diagnostics/cli-probe.fifo"
+
     /// Resolves the shared container for a given group id.
     public static func containerURL(groupID: String) -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID)

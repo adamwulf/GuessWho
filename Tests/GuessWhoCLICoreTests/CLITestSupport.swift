@@ -68,6 +68,18 @@ final class RecordingCLITransport: CLITransport, @unchecked Sendable {
     }
 }
 
+/// Base class for tests that install a fake `CLIRuntime`. `tearDown` restores
+/// the unconfigured runtime so no fake leaks into the next test — belt-and-
+/// suspenders on top of every command test installing its own first. Any test
+/// that does NOT install a runtime therefore sees the throwing default, not a
+/// prior test's fake.
+class CLICommandTestCase: XCTestCase {
+    override func tearDown() {
+        CLIRuntime.current = .unconfigured()
+        super.tearDown()
+    }
+}
+
 extension XCTestCase {
     /// Install a fake runtime for the duration of a test. Every test that runs
     /// a command sets this first; XCTest runs methods serially, so the shared

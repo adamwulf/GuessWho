@@ -7,7 +7,7 @@ import XCTest
 @testable import GuessWhoCLICore
 
 /// The typed exit-code mapping (§4) and the shared renderer's own outputs.
-final class ExitCodeAndRenderTests: XCTestCase {
+final class ExitCodeAndRenderTests: CLICommandTestCase {
 
     // MARK: Exit-code constants (§4)
 

@@ -6,7 +6,7 @@ import XCTest
 @testable import GuessWhoCLICore
 
 /// Parse → request-build → render for `contacts search`, the read command.
-final class ContactsSearchTests: XCTestCase {
+final class ContactsSearchTests: CLICommandTestCase {
 
     // MARK: Parse
 

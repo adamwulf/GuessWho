@@ -48,12 +48,20 @@ public struct CLIRuntime: Sendable {
     /// concurrent access to protect against, so the manual opt-out is correct
     /// and keeps the Swift 6 app target (which consumes this from strict-
     /// concurrency code) building.
-    nonisolated(unsafe) public static var current = CLIRuntime(
-        containerURL: { throw CLIRuntimeError.notConfigured },
-        groupID: { throw CLIRuntimeError.notConfigured },
-        makeTransport: { _ in UnconfiguredCLITransport() },
-        output: StandardCLIOutput()
-    )
+    nonisolated(unsafe) public static var current = CLIRuntime.unconfigured()
+
+    /// The unconfigured runtime: environment closures throw and the transport
+    /// factory yields a throwing transport, so a command that runs before the
+    /// `@main` shim installs the live values surfaces a clear error rather than
+    /// silent misbehavior. It is also the value tests restore in `tearDown`.
+    public static func unconfigured() -> CLIRuntime {
+        CLIRuntime(
+            containerURL: { throw CLIRuntimeError.notConfigured },
+            groupID: { throw CLIRuntimeError.notConfigured },
+            makeTransport: { _ in UnconfiguredCLITransport() },
+            output: StandardCLIOutput()
+        )
+    }
 }
 
 /// Raised when a command runs before the runtime is installed — only possible

@@ -7,7 +7,7 @@ import XCTest
 
 /// The photo byte path: CLIPhotoInput bounds/sniff, CLIPhotoOutput integrity,
 /// and the two photo commands' parse / request-build / render.
-final class PhotoCommandTests: XCTestCase {
+final class PhotoCommandTests: CLICommandTestCase {
 
     private let pngHeader = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -33,6 +33,44 @@ final class PhotoCommandTests: XCTestCase {
         XCTAssertThrowsError(try CLIPhotoInput.read(path: "/no/such/file.png")) { error in
             XCTAssertTrue(error is CLIUsageError)
         }
+    }
+
+    func testReadBoundedReturnsExactlyCapWhole() throws {
+        let cap = WireEnvironment.maxContactPhotoBytes
+        let atCap = Data(repeating: 0x41, count: cap)
+        let path = try makeTempFile(atCap)
+        let data = try CLIPhotoInput.read(path: path)
+        // Exactly the cap reads back whole (cap bytes, NOT cap + 1): the wire
+        // limit is `<= maxContactPhotoBytes`, so the boundary value is accepted.
+        XCTAssertEqual(data.count, cap)
+    }
+
+    func testReadBoundedReadsWholeInputFromStreamingHandle() throws {
+        // stdin (`-i -` / omitted) is a streaming, non-seekable FileHandle; a
+        // Pipe stands in. A small payload fits the pipe buffer, so writing then
+        // closing on this thread cannot deadlock the read.
+        let pipe = Pipe()
+        let payload = Data(repeating: 0x42, count: 4_096)
+        try pipe.fileHandleForWriting.write(contentsOf: payload)
+        try pipe.fileHandleForWriting.close()
+        let data = try CLIPhotoInput.readBounded(from: pipe.fileHandleForReading, source: "stdin")
+        XCTAssertEqual(data, payload)
+        try? pipe.fileHandleForReading.close()
+    }
+
+    func testSetPhotoAcceptsInputExactlyAtCap() async throws {
+        // A PNG-headed blob of exactly the cap: the media sniff reads the
+        // header and `data.count == cap` is within the `<= cap` limit, so
+        // set-photo builds the request and renders the ack — no rejection.
+        let cap = WireEnvironment.maxContactPhotoBytes
+        var atCap = pngHeader
+        atCap.append(Data(repeating: 0x00, count: cap - pngHeader.count))
+        let path = try makeTempFile(atCap)
+        let output = installRuntime(transport: StubCLITransport(response: ack("The photo was set.")))
+        let command = try ContactsSetPhoto.parse(["c1", "-i", path])
+        let code = await exitCode { try await command.run() }
+        XCTAssertNil(code)
+        XCTAssertEqual(output.stdoutString, "The photo was set.\n")
     }
 
     // MARK: CLIPhotoInput — media sniff (via set-photo argumentBag)
