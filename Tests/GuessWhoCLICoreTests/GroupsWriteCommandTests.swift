@@ -133,6 +133,33 @@ final class GroupsWriteCommandTests: CLICommandTestCase {
         XCTAssertEqual(output.stdoutString, expected)
     }
 
+    func testAddMembersRendersPartialMembershipResult() async throws {
+        // A partial batch (some applied, some failed) is a data result, not an
+        // error: it renders to stdout with exit 0, failures and all.
+        let result = WireGroupMembershipResult(
+            groupId: "g1", appliedContactIds: ["c1"],
+            failures: [WireGroupMembershipFailure(
+                contactId: "c2", code: .writeFailed, message: "That change couldn't be saved.")])
+        let response = WireResponse.groupMembership(helperId: "h", messageId: "m", result: result)
+        let output = installRuntime(transport: StubCLITransport(response: response))
+
+        let command = try GroupsAddMembers.parse(["g1", "c1", "c2"])
+        let code = await exitCode { try await command.run() }
+
+        XCTAssertNil(code)
+        let expected = CLIResponseRenderer.textContent(of: response.asCallToolResult()) + "\n"
+        XCTAssertEqual(output.stdoutString, expected)
+        XCTAssertTrue(output.stdoutString.contains("c2"))
+    }
+
+    func testAddMembersRequiresAtLeastOneId() {
+        // The CLI requires at least one contact id: `groups add-members g1`
+        // with no ids is a parse error, so an empty-array batch can never
+        // reach the wire from the terminal. The 1–200 upper bound stays the
+        // wire/app's to enforce (covered by the MCP dispatcher tests).
+        XCTAssertThrowsError(try GroupsAddMembers.parse(["g1"]))
+    }
+
     func testDeleteRendersAck() async throws {
         let response = WireResponse.acknowledged(
             helperId: "h", messageId: "m", message: WireAckMessage.groupDeleted)

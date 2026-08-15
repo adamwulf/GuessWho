@@ -111,6 +111,21 @@ final class ContactsCardWriteCommandTests: CLICommandTestCase {
         }
     }
 
+    func testCreateRejectsNoteShapedJSON() throws {
+        // The Apple note is the hard exclusion line. A note-shaped key smuggled
+        // through --json reaches the bag, but the production wire builder
+        // rejects it — the CLI adds no bypass, so no note is ever written.
+        let command = try ContactsCreate.parse(["--json", "{\"note\":\"do not persist\"}"])
+        XCTAssertThrowsError(
+            try WireRequest.create(
+                helperId: "cli-test", messageId: "m1",
+                parameters: MCP.CallTool.Parameters(
+                    name: MCPTool.contactsCreate.rawValue, arguments: command.argumentBag()))
+        ) { error in
+            XCTAssertTrue(error is WireRequestError)
+        }
+    }
+
     // MARK: contacts delete-photo
 
     func testDeletePhotoBuildsExpectedRequest() throws {

@@ -78,6 +78,19 @@ final class ContactsStructuredCommandTests: CLICommandTestCase {
         }
     }
 
+    func testAddPostalWithNoFieldsIsRejected() throws {
+        // No field flags and no --json: no address object is built, so no
+        // empty write can slip through — the request cannot be formed. Whether
+        // the CLI or the production wire builder catches it, the build path
+        // throws and nothing is sent.
+        let command = try ContactsAddPostalAddress.parse(["c1"])
+        XCTAssertThrowsError(
+            try WireRequest.create(
+                helperId: "cli-test", messageId: "m1",
+                parameters: MCP.CallTool.Parameters(
+                    name: MCPTool.contactsAddPostalAddress.rawValue, arguments: command.argumentBag())))
+    }
+
     // MARK: postal edit — --json pair and per-field build the same request
 
     func testEditPostalPerFieldAndJSONBuildSameRequest() throws {
