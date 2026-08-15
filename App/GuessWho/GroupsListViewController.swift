@@ -5,19 +5,19 @@ import GuessWhoLogging
 @MainActor
 struct GroupDeletionOperation {
     let deleteFromContacts: (ContactGroup) async throws -> Void
-    let removeFromFavorites: (ContactGroup) throws -> Void
+    let removeFromFavorites: (ContactGroup) async throws -> Void
 
     /// Returns a cleanup error only after Contacts deletion succeeded. Favorite
     /// removal is deliberately unconditional and idempotent; no UI cache is
     /// consulted before touching persistent favorites.
     func delete(_ group: ContactGroup) async throws -> Error? {
         try await deleteFromContacts(group)
-        return cleanupFavorite(for: group)
+        return await cleanupFavorite(for: group)
     }
 
-    func cleanupFavorite(for group: ContactGroup) -> Error? {
+    func cleanupFavorite(for group: ContactGroup) async -> Error? {
         do {
-            try removeFromFavorites(group)
+            try await removeFromFavorites(group)
             return nil
         } catch {
             return error
@@ -37,10 +37,11 @@ struct GroupDeletionOperation {
 /// Unlike `ContactsListViewController` / `OrganizationsListViewController`,
 /// groups need no A–Z sectioning or photo prefetch — a group is just a name —
 /// so this is a plain single-section `UITableViewDiffableDataSource` keyed on
-/// the group's `localID` (Contacts' `CNGroup.identifier`, the correct group
-/// key; groups are not GuessWho-ID'd). The repository's `loadGroups()` fills
-/// the cache and posts `.contactsRepositoryDidReload`, the same notification
-/// the contact lists observe, so this list refreshes through one shared path.
+/// the group's transient `localID` for the lifetime of the Contacts snapshot.
+/// Durable favorite identity is separate and stays behind the repository's
+/// `GroupIdentity` resolver. The repository's `loadGroups()` fills the cache
+/// and posts `.contactsRepositoryDidReload`, the same notification the contact
+/// lists observe, so this list refreshes through one shared path.
 final class GroupsListViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can push (iPhone)
     /// or push-onto-supplementary (Catalyst) a `GroupMembersListViewController`
@@ -110,7 +111,8 @@ final class GroupsListViewController: UIViewController {
                 try await repository.deleteGroup(group)
             },
             removeFromFavorites: { group in
-                try favoritesStore.remove(kind: .group, id: group.localID)
+                _ = try await repository.setGroupFavorite(false, for: group)
+                favoritesStore.reload()
             }
         )
         super.init(nibName: nil, bundle: nil)
@@ -251,7 +253,7 @@ final class GroupsListViewController: UIViewController {
             guard let self, let group = self.groupsByLocalID[localID] else { return cell }
             (cell as? GroupCell)?.configure(
                 with: group,
-                isFavorite: self.favoritesStore.isFavorite(kind: .group, id: group.localID)
+                isFavorite: self.repository.isGroupFavorite(group)
             )
             return cell
         }
@@ -513,11 +515,13 @@ final class GroupsListViewController: UIViewController {
         )
         alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
         alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
-            guard let self,
-                  let retryError = self.deletionOperation.cleanupFavorite(for: group) else {
-                return
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let retryError = await self.deletionOperation.cleanupFavorite(for: group) else {
+                    return
+                }
+                self.presentFavoriteCleanupError(retryError, for: group)
             }
-            self.presentFavoriteCleanupError(retryError, for: group)
         })
         presentAlertWhenReady(alert)
     }
@@ -572,13 +576,24 @@ extension GroupsListViewController: UITableViewDelegate {
     ) -> UISwipeActionsConfiguration? {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return nil }
-        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
+        let isFavorited = repository.isGroupFavorite(group)
         let favoriteAction = UIContextualAction(
             style: .normal,
             title: isFavorited ? "Unfavorite" : "Favorite"
         ) { [weak self] _, _, completion in
-            self?.favoritesStore.toggle(kind: .group, id: group.localID)
-            completion(true)
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    completion(false)
+                    return
+                }
+                do {
+                    _ = try await self.repository.setGroupFavorite(!isFavorited, for: group)
+                    self.favoritesStore.reload()
+                    completion(true)
+                } catch {
+                    completion(false)
+                }
+            }
         }
         favoriteAction.image = UIImage(systemName: isFavorited ? "star.slash" : "star")
         favoriteAction.backgroundColor = .systemYellow

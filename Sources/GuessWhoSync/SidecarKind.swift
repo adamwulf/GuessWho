@@ -4,6 +4,11 @@ public enum SidecarKind: String, Sendable, Codable {
     case link
     case guide
     case place
+    /// A favorited Contacts group's durable cross-device identity record
+    /// (`GroupIdentity`). Keyed by a minted UUID, like every other kind here
+    /// except `.link`; the favorite references that UUID rather than the
+    /// device-local `CNGroup.identifier`. See `plans/group-favorite-identity.md`.
+    case group
 }
 
 /// Shared list-filter state for sidecar-backed relationships. Individual list

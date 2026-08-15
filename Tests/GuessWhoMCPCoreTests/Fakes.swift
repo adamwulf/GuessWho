@@ -90,6 +90,11 @@ final class LegacyScriptedContactSource: MCPContactSource {
     /// Explicit results used only when a scripted CRUD gate/error test needs
     /// the dispatcher to decorate a returned group. Unconfigured reads fail.
     var scriptedGroupFavoriteReadResults: [Bool] = []
+    /// Minimal stand-in for the durable group-identity model: durable favorite
+    /// UUID -> the live group it resolves to. A seeded entry makes a group
+    /// favorite AVAILABLE (as after adoption on the real repository); an unseeded
+    /// id stays unavailable (a legacy raw-id favorite).
+    var groupFavoriteResolutions: [String: ContactGroup] = [:]
     var notesByEffectiveID: [String: [ContactNote]] = [:]
     var fieldsByEffectiveID: [String: [SidecarField]] = [:]
     var linksByID: [UUID: Link] = [:]
@@ -278,6 +283,23 @@ final class LegacyScriptedContactSource: MCPContactSource {
         return scriptedGroupFavoriteReadResults.removeFirst()
     }
 
+    func group(forFavoriteID id: String) -> ContactGroup? {
+        // Resolve a seeded durable favorite UUID to its live group; an unseeded
+        // id (e.g. a raw legacy identifier) stays unavailable — the real
+        // repository behaves the same for a group with no identity sidecar.
+        // Lowercase the lookup for parity with
+        // ContactsRepository.group(forFavoriteID:), which canonicalizes first.
+        groupFavoriteResolutions[id.lowercased()]
+    }
+
+    func groupFavoriteIdentityIDs() -> [String] {
+        // Only resolvable (available) identities are modeled here; this fake
+        // does not reproduce an orphaned identity — a durable UUID present in
+        // the identity list but with no live group — which no current test
+        // needs. Seed such an id separately if a future test requires it.
+        Array(groupFavoriteResolutions.keys)
+    }
+
     // MARK: Writes
 
     func createGroup(name: String) async throws -> ContactGroup {
@@ -322,7 +344,7 @@ final class LegacyScriptedContactSource: MCPContactSource {
             "ContactsRepository group membership mutation")
     }
 
-    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) throws -> Bool {
+    func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) async throws -> Bool {
         try throwUnexpectedLegacySemanticPath(
             "ContactsRepository.setGroupFavorite")
     }

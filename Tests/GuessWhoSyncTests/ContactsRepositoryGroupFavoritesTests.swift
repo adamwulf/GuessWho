@@ -3,201 +3,347 @@ import Testing
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
 
-@Suite("ContactsRepository — group favorites projection")
+@Suite("ContactsRepository — durable group favorites", .serialized)
 struct ContactsRepositoryGroupFavoritesTests {
-    // MARK: - Projection against the cache (pure, no favorites store)
+    private static let deviceID = "device-A"
 
     @Test @MainActor
-    func favoriteListItemsResolvesGroupFavoriteAgainstCache() async throws {
-        let store = InMemoryContactStore()
-        let family = try await store.createGroup(name: "Family")
-        let repository = ContactsRepository(contacts: store)
-        await repository.loadGroups()
+    func favoriteRoundTripsThroughGroupIdentityUUID() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Work")
+        await fixture.repository.loadGroups()
 
-        let favorite = Favorite(kind: .group, id: family.localID, addedAt: Date())
-        let items = repository.favoriteListItems(from: [favorite]) { _ in nil }
+        #expect(try await fixture.repository.setGroupFavorite(true, for: group))
+        #expect(fixture.repository.isGroupFavorite(group))
 
-        let item = try #require(items.first)
-        #expect(items.count == 1)
-        #expect(item.kind == .group)
-        #expect(item.group?.localID == family.localID)
-        #expect(item.group?.name == "Family")
+        let favorite = try #require(fixture.favorites.loadAll().first)
+        #expect(favorite.kind == .group)
+        #expect(UUID(uuidString: favorite.id) != nil)
+        #expect(favorite.id != group.localID.lowercased())
+
+        let loadedIdentity = try fixture.sync.groupIdentity(id: favorite.id)
+        let identity = try #require(loadedIdentity)
+        #expect(identity.deviceLocalIDs[Self.deviceID] == group.localID)
+        let item = try #require(fixture.repository.favoriteListItems(from: [favorite]) { _ in nil }.first)
+        #expect(item.group == group)
+
+        #expect(try await fixture.repository.setGroupFavorite(false, for: group) == false)
+        #expect(fixture.repository.isGroupFavorite(group) == false)
+        #expect(try fixture.favorites.loadAll().isEmpty)
     }
 
     @Test @MainActor
-    func favoriteListItemsLeavesUnknownGroupUnresolved() async {
-        // No matching group in the cache → the row projects `group: nil`, which
-        // the Favorites list renders as "Unavailable".
-        let repository = ContactsRepository(contacts: InMemoryContactStore())
-        let favorite = Favorite(kind: .group, id: "no-such-group", addedAt: Date())
+    func resolveUsesLiveCurrentDeviceSlotWithoutFallbackMatching() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Current Name")
+        await fixture.repository.loadGroups()
+        let identity = GroupIdentity(
+            id: UUID().uuidString,
+            name: "a different name",
+            memberCount: 99,
+            memberHash: "stale",
+            hashedMemberCount: 99,
+            deviceLocalIDs: [Self.deviceID: group.localID])
+        try fixture.sync.writeGroupIdentity(identity)
 
-        let items = repository.favoriteListItems(from: [favorite]) { _ in nil }
+        #expect(try await fixture.repository.resolveGroupIdentity(id: identity.id) == group)
+        let loadedIdentity = try fixture.sync.groupIdentity(id: identity.id)
+        let stored = try #require(loadedIdentity)
+        #expect(stored.name == "a different name")
+        #expect(stored.memberCount == 99)
+    }
 
-        guard let item = items.first else {
-            Issue.record("expected the unresolved favorite projection")
-            return
-        }
-        #expect(items.count == 1)
-        #expect(item.kind == .group)
+    @Test @MainActor
+    func resolvePrunesDeadOwnSlotThenAdoptsAndPreservesPeerSlot() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Family")
+        await fixture.repository.loadGroups()
+        let identity = GroupIdentity(
+            id: UUID().uuidString,
+            name: GroupIdentity.normalizedName(group.name),
+            memberCount: 0,
+            memberHash: emptyHash,
+            hashedMemberCount: 0,
+            deviceLocalIDs: [Self.deviceID: "deleted-local-id", "device-B": "peer-local-id"])
+        try fixture.sync.writeGroupIdentity(identity)
+        let peerSync = GuessWhoSync(
+            contacts: fixture.contacts,
+            events: InMemoryEventStore(),
+            sidecars: fixture.sidecars,
+            deviceID: "device-B")
+        try peerSync.writeGroupIdentity(identity)
+
+        #expect(try await fixture.repository.resolveGroupIdentity(id: identity.id) == group)
+        let loadedIdentity = try fixture.sync.groupIdentity(id: identity.id)
+        let stored = try #require(loadedIdentity)
+        #expect(stored.deviceLocalIDs[Self.deviceID] == group.localID)
+        #expect(stored.deviceLocalIDs["device-B"] == "peer-local-id")
+    }
+
+    @Test @MainActor
+    func resolveAdoptsSoleNameMatchDespiteFingerprintMismatch() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "  Friends  ")
+        await fixture.repository.loadGroups()
+        let identity = GroupIdentity(
+            id: UUID().uuidString,
+            name: "friends",
+            memberCount: 42,
+            memberHash: "does-not-match",
+            hashedMemberCount: 17,
+            deviceLocalIDs: ["device-B": "remote"])
+        try fixture.sync.writeGroupIdentity(identity)
+
+        #expect(try await fixture.repository.resolveGroupIdentity(id: identity.id) == group)
+        #expect(try fixture.sync.groupIdentity(id: identity.id)?.deviceLocalIDs[Self.deviceID] == group.localID)
+    }
+
+    @Test @MainActor
+    func resolveDisambiguatesDuplicateNamesByCountAndHash() async throws {
+        let firstContact = contact(localID: "contact-1", guessWhoID: "11111111-1111-1111-8111-111111111111")
+        let secondContact = contact(localID: "contact-2", guessWhoID: "22222222-2222-2222-8222-222222222222")
+        let fixture = try makeFixture(contacts: [firstContact, secondContact])
+        defer { cleanup(fixture.root) }
+        let first = try await fixture.contacts.createGroup(name: "Team")
+        let second = try await fixture.contacts.createGroup(name: "team")
+        try await fixture.contacts.addMember(contactLocalID: firstContact.localID, toGroup: first.localID)
+        try await fixture.contacts.addMember(contactLocalID: secondContact.localID, toGroup: second.localID)
+        await fixture.repository.reload()
+        await fixture.repository.loadGroups()
+        let expected = GroupIdentity.fingerprint(forGuessWhoIDs: ["22222222-2222-2222-8222-222222222222"])
+        let identity = GroupIdentity(
+            id: UUID().uuidString,
+            name: "team",
+            memberCount: 1,
+            memberHash: expected.memberHash,
+            hashedMemberCount: expected.hashedMemberCount,
+            deviceLocalIDs: [:])
+        try fixture.sync.writeGroupIdentity(identity)
+
+        #expect(try await fixture.repository.resolveGroupIdentity(id: identity.id) == second)
+        #expect(try fixture.sync.groupIdentity(id: identity.id)?.deviceLocalIDs[Self.deviceID] == second.localID)
+    }
+
+    @Test @MainActor
+    func resolveDuplicateTieChoosesLowestLocalIdentifier() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let first = try await fixture.contacts.createGroup(name: "Team")
+        let second = try await fixture.contacts.createGroup(name: "team")
+        await fixture.repository.loadGroups()
+        let identity = GroupIdentity(
+            id: UUID().uuidString,
+            name: "team",
+            memberCount: 0,
+            memberHash: emptyHash,
+            hashedMemberCount: 0,
+            deviceLocalIDs: [:])
+        try fixture.sync.writeGroupIdentity(identity)
+
+        let expected = [first, second].min { $0.localID < $1.localID }
+        #expect(try await fixture.repository.resolveGroupIdentity(id: identity.id) == expected)
+    }
+
+    @Test @MainActor
+    func resolveWithNoNameMatchProjectsUnavailable() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        _ = try await fixture.contacts.createGroup(name: "Present")
+        await fixture.repository.loadGroups()
+        let identity = GroupIdentity(
+            id: UUID().uuidString,
+            name: "missing",
+            memberCount: 0,
+            memberHash: emptyHash,
+            hashedMemberCount: 0,
+            deviceLocalIDs: [:])
+        try fixture.sync.writeGroupIdentity(identity)
+
+        #expect(try await fixture.repository.resolveGroupIdentity(id: identity.id) == nil)
+        let favorite = Favorite(kind: .group, id: identity.id, addedAt: Date())
+        let item = try #require(fixture.repository.favoriteListItems(from: [favorite]) { _ in nil }.first)
         #expect(item.group == nil)
     }
 
     @Test @MainActor
-    func groupLookupIsCaseInsensitive() async throws {
-        let store = InMemoryContactStore()
-        let group = try await store.createGroup(name: "Work")
-        let repository = ContactsRepository(contacts: store)
-        await repository.loadGroups()
+    func legacyRawLocalIDFavoriteRemainsUnavailable() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Legacy")
+        await fixture.repository.loadGroups()
+        let legacy = Favorite(kind: .group, id: group.localID, addedAt: Date())
 
-        // Favorites persist the localID lowercased; the lookup must still match a
-        // mixed/upper-case query against the stored `CNGroup.identifier`.
-        #expect(repository.group(localID: group.localID.uppercased())?.localID == group.localID)
-        #expect(repository.group(localID: "missing") == nil)
-    }
-
-    // MARK: - isGroupFavorite / setGroupFavorite against a REAL on-disk store
-    //
-    // These exercise the production `ContactsRepository.isGroupFavorite` /
-    // `setGroupFavorite` over a REAL on-disk `FavoritesStore` — the same store
-    // the app wires and the same store the MCP group favorite tools read. No
-    // canonicalization, idempotency, or persistence is re-implemented here; the
-    // tests only seed/inspect through the real store and assert its behavior.
-
-    @Test @MainActor
-    func setGroupFavoritePersistsCanonicalLowercasedKey() throws {
-        let root = try makeRoot()
-        defer { cleanup(root) }
-        let store = FavoritesStore(root: root)
-        let repository = makeRepository(favorites: store)
-        // `CNGroup.identifier` values are mixed-case; the persisted favorite key
-        // must be the lowercased local id — production canonicalization.
-        let group = ContactGroup(localID: "CNGroup-UPPER-ABC", name: "Work")
-
-        #expect(try repository.setGroupFavorite(true, for: group) == true)
-        #expect(repository.isGroupFavorite(group) == true)
-
-        let stored = try store.loadAll()
-        let persisted = try #require(stored.first)
-        #expect(stored.count == 1)
-        #expect(persisted.kind == .group)
-        #expect(persisted.id == "cngroup-upper-abc")
-        // The raw mixed-case Contacts identifier is never what lands on disk.
-        #expect(persisted.id != group.localID)
+        let item = try #require(fixture.repository.favoriteListItems(from: [legacy]) { _ in nil }.first)
+        #expect(item.group == nil)
     }
 
     @Test @MainActor
-    func setGroupFavoriteIdempotentTrueDoesNotRewriteFile() throws {
-        let root = try makeRoot()
-        defer { cleanup(root) }
-        let store = FavoritesStore(root: root)
-        let repository = makeRepository(favorites: store)
-        let group = ContactGroup(localID: "in-memory-group-1", name: "Work")
+    func membershipWriteRefreshesExistingIdentityWithoutMintingMemberID() async throws {
+        let reconciled = contact(localID: "contact-1", guessWhoID: "11111111-1111-1111-8111-111111111111")
+        let unreconciled = Contact(localID: "contact-2", givenName: "No ID")
+        let fixture = try makeFixture(contacts: [reconciled, unreconciled])
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Members")
+        await fixture.repository.reload()
+        await fixture.repository.loadGroups()
+        let initialFingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
+        let identity = try fixture.sync.mintGroupIdentity(
+            name: group.name,
+            account: nil,
+            memberCount: 0,
+            memberHash: initialFingerprint.memberHash,
+            hashedMemberCount: 0,
+            localID: group.localID)
+        _ = try await fixture.repository.resolveGroupIdentity(id: identity.id)
 
-        #expect(try repository.setGroupFavorite(true, for: group) == true)
-        let before = try fileSnapshot(store.fileURL)
-
-        // Already favorited: an idempotent set returns the current state and
-        // performs NO write. The early-return lives in production, not this test.
-        #expect(try repository.setGroupFavorite(true, for: group) == true)
-
-        let after = try fileSnapshot(store.fileURL)
-        #expect(after == before) // bytes, date, and inode unchanged → no replacement
-        #expect(try store.loadAll().filter { $0.kind == .group }.count == 1)
+        try await fixture.repository.addContacts([reconciled, unreconciled], toGroup: group)
+        let loadedIdentity = try fixture.sync.groupIdentity(id: identity.id)
+        let stored = try #require(loadedIdentity)
+        let expected = GroupIdentity.fingerprint(forGuessWhoIDs: ["11111111-1111-1111-8111-111111111111"])
+        #expect(stored.memberCount == 2)
+        #expect(stored.memberHash == expected.memberHash)
+        #expect(stored.hashedMemberCount == 1)
+        #expect(try await fixture.contacts.fetch(localID: unreconciled.localID)?.contactID.guessWhoID == nil)
     }
 
     @Test @MainActor
-    func groupFavoriteSharesGenericStoreState() throws {
-        let root = try makeRoot()
-        defer { cleanup(root) }
-        let store = FavoritesStore(root: root)
-        let repository = makeRepository(favorites: store)
-        let group = ContactGroup(localID: "in-memory-group-7", name: "Work")
+    func loadGroupsRefreshesFingerprintForExistingIdentity() async throws {
+        let member = contact(localID: "contact-1", guessWhoID: "11111111-1111-1111-8111-111111111111")
+        let fixture = try makeFixture(contacts: [member])
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Members")
+        await fixture.repository.reload()
+        await fixture.repository.loadGroups()
+        let initialFingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
+        let identity = try fixture.sync.mintGroupIdentity(
+            name: group.name,
+            account: nil,
+            memberCount: 0,
+            memberHash: initialFingerprint.memberHash,
+            hashedMemberCount: 0,
+            localID: group.localID)
+        // loadGroups() refreshes the fingerprint ONLY for identities that back a
+        // live favorite; an orphan (un-favorited) record is left untouched so it
+        // never churns iCloud. In real use an identity is always minted through a
+        // favorite, so favorite this one to represent that.
+        try fixture.favorites.set(kind: .group, id: identity.id, favorite: true, now: Date())
 
-        // A repository write is visible to the generic store...
-        #expect(try repository.setGroupFavorite(true, for: group) == true)
-        #expect(try store.isFavorite(kind: .group, id: group.localID) == true)
-        #expect(try store.loadAll().contains { $0.kind == .group && $0.id == group.localID })
+        try await fixture.contacts.addMember(contactLocalID: member.localID, toGroup: group.localID)
+        await fixture.repository.loadGroups()
 
-        // ...and a generic-store clear is visible to the repository — one store,
-        // one canonical key, shared by the group-specific and generic surfaces.
-        #expect(try store.set(kind: .group, id: group.localID, favorite: false, now: Date()) == true)
-        #expect(repository.isGroupFavorite(group) == false)
+        let loadedIdentity = try fixture.sync.groupIdentity(id: identity.id)
+        let stored = try #require(loadedIdentity)
+        let expected = GroupIdentity.fingerprint(forGuessWhoIDs: ["11111111-1111-1111-8111-111111111111"])
+        #expect(stored.memberCount == 1)
+        #expect(stored.memberHash == expected.memberHash)
+        #expect(stored.hashedMemberCount == 1)
     }
 
     @Test @MainActor
-    func setGroupFavoriteFalseClearsPersistedRow() throws {
-        let root = try makeRoot()
-        defer { cleanup(root) }
-        let store = FavoritesStore(root: root)
-        let repository = makeRepository(favorites: store)
-        let group = ContactGroup(localID: "in-memory-group-3", name: "Work")
+    func concurrentFirstFavoritesMintExactlyOneIdentity() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Team")
+        await fixture.repository.loadGroups()
 
-        #expect(try repository.setGroupFavorite(true, for: group) == true)
-        #expect(try repository.setGroupFavorite(false, for: group) == false)
-        #expect(repository.isGroupFavorite(group) == false)
-        #expect(try store.loadAll().contains { $0.kind == .group } == false)
+        // Two first-favorites of the same group race. Serialization must make the
+        // second reuse the first's freshly-minted identity instead of each
+        // minting its own duplicate GroupIdentity + duplicate favorite.
+        async let first = fixture.repository.setGroupFavorite(true, for: group)
+        async let second = fixture.repository.setGroupFavorite(true, for: group)
+        _ = try await (first, second)
+
+        let identities = try fixture.sync.allGroupIdentities()
+        #expect(identities.count == 1)
+        let groupFavorites = try fixture.favorites.loadAll().filter { $0.kind == .group }
+        #expect(groupFavorites.count == 1)
+        #expect(groupFavorites.first?.id == identities.first?.id)
     }
 
     @Test @MainActor
-    func repeatedGroupFavoriteClearIsANoWrite() throws {
-        let root = try makeRoot()
-        defer { cleanup(root) }
-        let store = FavoritesStore(root: root)
-        let repository = makeRepository(favorites: store)
-        let group = ContactGroup(localID: "in-memory-group-9", name: "Work")
+    func loadGroupsLeavesOrphanIdentityUntouched() async throws {
+        let member = contact(localID: "contact-1", guessWhoID: "11111111-1111-1111-8111-111111111111")
+        let fixture = try makeFixture(contacts: [member])
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Members")
+        await fixture.repository.reload()
+        await fixture.repository.loadGroups()
+        let initialFingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
+        // Minted but never favorited → an orphan record (as after an un-favorite).
+        let identity = try fixture.sync.mintGroupIdentity(
+            name: group.name,
+            account: nil,
+            memberCount: 0,
+            memberHash: initialFingerprint.memberHash,
+            hashedMemberCount: 0,
+            localID: group.localID)
 
-        // Establish the file (favorite then clear) so a subsequent no-write is
-        // observable against a file that actually exists.
-        #expect(try repository.setGroupFavorite(true, for: group) == true)
-        #expect(try repository.setGroupFavorite(false, for: group) == false)
-        let before = try fileSnapshot(store.fileURL)
+        try await fixture.contacts.addMember(contactLocalID: member.localID, toGroup: group.localID)
+        await fixture.repository.loadGroups()
 
-        // Already cleared: the repeated clear returns the current state and
-        // writes nothing.
-        #expect(try repository.setGroupFavorite(false, for: group) == false)
-
-        let after = try fileSnapshot(store.fileURL)
-        #expect(after == before)
+        // loadGroups() must NOT refresh an orphan: its fingerprint stays at the
+        // minted (empty) values, so an un-favorited record never churns iCloud.
+        let stored = try #require(try fixture.sync.groupIdentity(id: identity.id))
+        #expect(stored.memberCount == 0)
+        #expect(stored.memberHash == initialFingerprint.memberHash)
+        #expect(stored.hashedMemberCount == 0)
     }
 
-    // MARK: - Helpers
+    private struct Fixture {
+        let root: URL
+        let contacts: InMemoryContactStore
+        let sidecars: InMemorySidecarStore
+        let sync: GuessWhoSync
+        let favorites: FavoritesStore
+        let repository: ContactsRepository
+    }
 
-    private func makeRoot() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
+    @MainActor
+    private func makeFixture(contacts initialContacts: [Contact] = []) throws -> Fixture {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/TestTemp", isDirectory: true)
             .appendingPathComponent("guesswho-repo-groupfav-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let contacts = InMemoryContactStore(contacts: initialContacts)
+        let sidecars = InMemorySidecarStore()
+        let sync = GuessWhoSync(
+            contacts: contacts,
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
+            deviceID: Self.deviceID)
+        let favorites = FavoritesStore(root: root)
+        let repository = ContactsRepository(
+            contacts: contacts,
+            sync: sync,
+            favorites: favorites,
+            notificationCenter: NotificationCenter())
+        return Fixture(
+            root: root,
+            contacts: contacts,
+            sidecars: sidecars,
+            sync: sync,
+            favorites: favorites,
+            repository: repository)
     }
 
     private func cleanup(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
     }
 
-    @MainActor
-    private func makeRepository(favorites: FavoritesStore) -> ContactsRepository {
-        // A fresh NotificationCenter isolates this repository's observers from any
-        // other repository sharing `.default` in a parallel test.
-        ContactsRepository(
-            contacts: InMemoryContactStore(),
-            favorites: favorites,
-            notificationCenter: NotificationCenter())
+    private func contact(localID: String, guessWhoID: String) -> Contact {
+        Contact(
+            localID: localID,
+            givenName: localID,
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: SidecarKey.guessWhoContactURLPrefix + guessWhoID)
+            ])
     }
 
-    /// The on-disk bytes, modification date, and inode of a file. Production
-    /// writes replace the file atomically, so the inode makes a same-content
-    /// rewrite observable even when the filesystem timestamp resolution does not.
-    private struct FileSnapshot: Equatable {
-        let bytes: Data
-        let modificationDate: Date?
-        let systemFileNumber: UInt64?
-    }
-
-    private func fileSnapshot(_ url: URL) throws -> FileSnapshot {
-        let bytes = try Data(contentsOf: url)
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        return FileSnapshot(
-            bytes: bytes,
-            modificationDate: attributes[.modificationDate] as? Date,
-            systemFileNumber: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
+    private var emptyHash: String {
+        GroupIdentity.fingerprint(forGuessWhoIDs: []).memberHash
     }
 }

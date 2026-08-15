@@ -873,9 +873,7 @@ public actor ToolDispatcher {
             try await contacts.deleteGroup(group)
             // Match the app's delete path: the Contacts deletion is the primary
             // operation, and stale favorite cleanup is best-effort afterwards.
-            _ = try? await MainActor.run {
-                try contacts.setGroupFavorite(false, for: group)
-            }
+            _ = try? await contacts.setGroupFavorite(false, for: group)
             await recordAudit(
                 .deleteGroup, kind: .group,
                 subjectID: groupId, subjectName: group.name,
@@ -899,9 +897,7 @@ public actor ToolDispatcher {
         }
         let prior = await MainActor.run { contacts.isGroupFavorite(group) }
         do {
-            let resulting = try await MainActor.run {
-                try contacts.setGroupFavorite(favorite, for: group)
-            }
+            let resulting = try await contacts.setGroupFavorite(favorite, for: group)
             guard resulting == favorite else { throw WriteProblem.verifyFailed }
             if prior != favorite {
                 await recordAudit(
@@ -2101,6 +2097,81 @@ public actor ToolDispatcher {
                 contactId: id, favorite: favorite, genericAcknowledgement: true)
         }
 
+        // Group favorites also have a repository-owned identity boundary: the
+        // wire id resolves to a live ContactGroup, then the repository mints or
+        // adopts the durable group UUID and persists that UUID in Favorites.
+        // The generic store must never see the device-local group identifier.
+        if kind == .group {
+            if Self.hasObviouslyDifferentFavoriteKind(id, expected: kind) {
+                return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+            }
+            let groups = await contacts.fetchGroups()
+            // Accept BOTH group wire ids: the groups-list id (digest of the live
+            // group's localID) for favoriting a group seen in the groups list,
+            // AND the favorites-list id (digest of the durable GroupIdentity
+            // UUID) for re-setting/clearing a group seen in the favorites list.
+            // The favorites-list id stays stable across availability, so it is
+            // NOT the localID digest and would otherwise fail to resolve here.
+            let matchedGroup: ContactGroup?
+            if let liveMatch = WireRecordID.group(for: id, in: groups) {
+                matchedGroup = liveMatch
+            } else {
+                matchedGroup = await durableGroup(forFavoriteWireID: id)
+            }
+            guard let group = matchedGroup else {
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                if await isKnownFavoriteID(id, excluding: kind) {
+                    return favoriteKindMismatch(helperId: helperId, messageId: messageId)
+                }
+                return FavoriteResolutionFailure
+                    .notFound(WireErrorMessage.notFoundGroup)
+                    .response(helperId: helperId, messageId: messageId)
+            }
+
+            let prior = await MainActor.run { contacts.isGroupFavorite(group) }
+            do {
+                let resulting = try await contacts.setGroupFavorite(favorite, for: group)
+                if prior != resulting {
+                    await recordAudit(
+                        .setFavorite, kind: .group,
+                        subjectID: WireRecordID.groupID(for: group), subjectName: group.name,
+                        instanceID: nil, postModifiedAt: nil,
+                        priorValue: prior ? "true" : "false",
+                        newValue: resulting ? "true" : "false")
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: favorite
+                            ? WireAckMessage.genericFavoriteSet
+                            : WireAckMessage.genericFavoriteCleared)
+                }
+
+                // Nothing changed through the durable-identity path. When
+                // clearing, this may be a LEGACY favorite whose stored id is the
+                // raw CNGroup.identifier: on the device that created it the live
+                // group still carries that identifier, so `WireRecordID.group`
+                // matched here instead of falling to `clearStoredFavorite` above,
+                // yet the live group has no GroupIdentity and `setGroupFavorite`
+                // deliberately leaves the raw row untouched. Clear it directly so
+                // the row actually goes — never ack a no-op clear as success.
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                return .acknowledged(
+                    helperId: helperId, messageId: messageId,
+                    message: favorite
+                        ? WireAckMessage.genericFavoriteSet
+                        : WireAckMessage.genericFavoriteCleared)
+            } catch {
+                return writeFailure(error, helperId: helperId, messageId: messageId)
+            }
+        }
+
         switch await resolveFavoriteInput(kind: kind, id: id) {
         case .failure(let failure):
             if !favorite, let cleared = await clearStoredFavorite(
@@ -2140,6 +2211,22 @@ public actor ToolDispatcher {
     /// projection, whose opaque stale id is exactly what favorites_list
     /// exposes, then remove the underlying storage identity. Adding still
     /// always requires a live referent.
+    /// Resolve a favorites-list group wire id — a one-way digest of the durable
+    /// `GroupIdentity` UUID (see `safeStoredFavoriteID`) — to the live group
+    /// behind it, or nil. `WireRecordID.group` already handles the groups-list
+    /// id (digest of the live `localID`); this covers the id an agent reads from
+    /// `favorites_list`, which stays stable across availability and therefore is
+    /// NOT the localID digest. The UUID cannot be inverted from its digest, so we
+    /// scan the known identity UUIDs and match by re-deriving each one's wire id.
+    private func durableGroup(forFavoriteWireID id: String) async -> ContactGroup? {
+        await MainActor.run {
+            guard let uuid = contacts.groupFavoriteIdentityIDs().first(where: {
+                WireRecordID.groupID(localID: $0) == id
+            }) else { return nil }
+            return contacts.group(forFavoriteID: uuid)
+        }
+    }
+
     private func clearStoredFavorite(
         kind: WireFavoriteKind, id: String, helperId: String, messageId: String
     ) async -> WireResponse? {
@@ -3923,7 +4010,7 @@ public actor ToolDispatcher {
                 $0.id.uuidString.lowercased() == endpoint.id
             }) else { return nil }
             return ("place", place.id.uuidString.lowercased())
-        case .link, .guide:
+        case .link, .guide, .group:
             return nil
         }
     }
@@ -4196,7 +4283,7 @@ public actor ToolDispatcher {
                 return await guides.allPlaces().first {
                     $0.id.uuidString.lowercased() == endpoint.id
                 }?.name
-            case .link, .guide:
+            case .link, .guide, .group:
                 return nil
             }
         }
@@ -4603,10 +4690,9 @@ public actor ToolDispatcher {
                 available = true
             }
         case .group:
-            if let group = groups.first(where: {
-                $0.localID.lowercased() == favorite.id.lowercased()
+            if let group = await MainActor.run(body: {
+                contacts.group(forFavoriteID: favorite.id)
             }) {
-                id = WireRecordID.groupID(for: group)
                 name = group.name
                 available = true
             }
@@ -4669,16 +4755,17 @@ public actor ToolDispatcher {
                     displayName: event.title))
             }
         case .group:
-            let groups = await contacts.fetchGroups()
-            guard let group = WireRecordID.group(for: id, in: groups) else {
-                return await isKnownFavoriteID(id, excluding: kind)
-                    ? .failure(.kindMismatch)
-                    : .failure(.notFound(WireErrorMessage.notFoundGroup))
-            }
-            return .success(FavoriteInputResolution(
-                identity: WireFavoriteIdentity(kind: kind, id: WireRecordID.groupID(for: group)),
-                storageKind: .group, storageID: group.localID,
-                displayName: group.name))
+            // Unreachable: group favorites are resolved and persisted ENTIRELY
+            // by favoritesSet's dedicated `.group` branch, which mints/adopts the
+            // durable GroupIdentity UUID and stores THAT. This generic resolver
+            // must never run for a group — the only resolution it could build
+            // here would use the device-local CNGroup.identifier as the storage
+            // id, the exact cross-device boundary violation this feature removes.
+            // Fail hard so a future refactor that routes a group through here
+            // trips a test instead of silently persisting a localID.
+            assertionFailure(
+                "resolveFavoriteInput must not be reached for .group; favoritesSet handles groups directly")
+            return .failure(.notFound(WireErrorMessage.notFoundGroup))
         case .guide:
             guard let uuid = WireRecordID.recordUUID(id),
                   let guide = await guides.allGuides().first(where: { $0.id == uuid })

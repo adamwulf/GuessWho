@@ -212,7 +212,7 @@ final class GroupMembersListViewController: UIViewController {
 
     /// Repaint the star to reflect the group's current favorite state.
     private func updateFavoriteButton() {
-        let isFavorited = favoritesStore.isFavorite(kind: .group, id: group.localID)
+        let isFavorited = repository.isGroupFavorite(group)
         favoriteBarButton.image = UIImage(systemName: isFavorited ? "star.fill" : "star")
         favoriteBarButton.accessibilityLabel = isFavorited ? "Unfavorite" : "Favorite"
     }
@@ -221,8 +221,18 @@ final class GroupMembersListViewController: UIViewController {
     /// posts `.favoritesDidChange`, which every other favorites surface (the
     /// Favorites list, the contact detail Groups section) observes to refresh.
     @objc private func toggleGroupFavorite() {
-        favoritesStore.toggle(kind: .group, id: group.localID)
-        updateFavoriteButton()
+        let desired = !repository.isGroupFavorite(group)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.repository.setGroupFavorite(desired, for: self.group)
+            } catch {
+                // Favorite persistence remains best-effort; reload below
+                // reflects the authoritative on-disk state.
+            }
+            self.favoritesStore.reload()
+            self.updateFavoriteButton()
+        }
     }
 
     /// Rebuild the sort button's menu so its checkmark tracks the live global
