@@ -1,6 +1,7 @@
 #if targetEnvironment(macCatalyst)
 import Foundation
 import GuessWhoLogging
+import GuessWhoMCPWire
 
 /// Phase 0 diagnostic hook for the embedded relay CLI (plans/cli-mcp.md).
 ///
@@ -20,11 +21,6 @@ final class CLIProbeListener {
     /// Developer-facing breadcrumbs (debug-mode surface; internal vocabulary
     /// like "FIFO"/"App Group" is fine here per the CLAUDE.md carve-out).
     private static let log = GuessWhoLog.logger("cli.probe")
-
-    /// Container-relative FIFO path. Must match `ProbeConstants
-    /// .fifoRelativePath` in App/guesswho-cli/GuessWhoCLI.swift; the shared
-    /// wire module takes over as the single home for pipe paths in Phase 1.
-    private static let fifoRelativePath = "Diagnostics/cli-probe.fifo"
 
     private var fifoURL: URL?
     private var readFD: Int32 = -1
@@ -62,7 +58,7 @@ final class CLIProbeListener {
             return
         }
 
-        let fifo = container.appendingPathComponent(Self.fifoRelativePath)
+        let fifo = container.appendingPathComponent(WireEnvironment.probeFIFORelativePath)
         do {
             try FileManager.default.createDirectory(
                 at: fifo.deletingLastPathComponent(),

@@ -7,9 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		F400000000000000000000D3 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D2 /* ArgumentParser */; };
 		F400000000000000000000D5 /* GuessWhoMCPWire in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D4 /* GuessWhoMCPWire */; };
-		F400000000000000000000D7 /* GuessWhoMCPTransport in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D6 /* GuessWhoMCPTransport */; };
+		F400000000000000000000E1 /* GuessWhoCLICore in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000E0 /* GuessWhoCLICore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,9 +46,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F400000000000000000000D3 /* ArgumentParser in Frameworks */,
+				F400000000000000000000E1 /* GuessWhoCLICore in Frameworks */,
 				F400000000000000000000D5 /* GuessWhoMCPWire in Frameworks */,
-				F400000000000000000000D7 /* GuessWhoMCPTransport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,9 +90,8 @@
 			);
 			name = "guesswho-cli";
 			packageProductDependencies = (
-				F400000000000000000000D2 /* ArgumentParser */,
+				F400000000000000000000E0 /* GuessWhoCLICore */,
 				F400000000000000000000D4 /* GuessWhoMCPWire */,
-				F400000000000000000000D6 /* GuessWhoMCPTransport */,
 			);
 			productName = "guesswho-cli";
 			productReference = F400000000000000000000C0 /* guesswho-cli */;
@@ -126,7 +123,6 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				F400000000000000000000D8 /* XCLocalSwiftPackageReference ".." */,
-				F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F400000000000000000000A5 /* Products */;
@@ -211,30 +207,14 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/apple/swift-argument-parser";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.5.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
 /* Begin XCSwiftPackageProductDependency section */
-		F400000000000000000000D2 /* ArgumentParser */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F400000000000000000000D1 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
-			productName = ArgumentParser;
-		};
 		F400000000000000000000D4 /* GuessWhoMCPWire */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GuessWhoMCPWire;
 		};
-		F400000000000000000000D6 /* GuessWhoMCPTransport */ = {
+		F400000000000000000000E0 /* GuessWhoCLICore */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = GuessWhoMCPTransport;
+			productName = GuessWhoCLICore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
