@@ -94,6 +94,8 @@ public enum CLICommandRegistry {
         ContactsAddInstantMessage.self,
         ContactsEditInstantMessage.self,
         ContactsDeleteInstantMessage.self,
+        // Phase 4 writes — organizations.
+        OrganizationsRenameDepartment.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate

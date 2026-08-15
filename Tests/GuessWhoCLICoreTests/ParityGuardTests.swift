@@ -20,18 +20,17 @@ final class ParityGuardTests: XCTestCase {
     /// `{ .contactsDelete }` when Phase 4 completes. `expectedPendingCount` pins
     /// the current size.
     static let pending: Set<MCPTool> = [
-        // Contact Store writes (Phase 4) — organizations and groups.
-        .organizationsRenameDepartment,
+        // Contact Store writes (Phase 4) — groups.
         .groupsCreate, .groupsRename, .groupsDelete, .groupsAddMembers, .groupsRemoveMembers,
         .groupsSetFavorite,
         // Confirmation-gated delete (Phase 5).
         .contactsDelete,
     ]
 
-    /// The current expected size of `pending`. The Phase 4 contacts writes (card,
-    /// value edits, and the nine structured entries) are now implemented; the
-    /// organizations/groups writes plus the Phase 5 delete remain.
-    static let expectedPendingCount = 8
+    /// The current expected size of `pending`. The Phase 4 contacts writes and
+    /// the organizations department rename are now implemented; the six groups
+    /// writes plus the Phase 5 delete remain.
+    static let expectedPendingCount = 7
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)
