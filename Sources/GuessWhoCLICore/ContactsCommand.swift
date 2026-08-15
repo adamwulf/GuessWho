@@ -21,6 +21,10 @@ public struct ContactsCommand: AsyncParsableCommand {
             ContactsCreate.self, ContactsUpdate.self, ContactsDeletePhoto.self,
             // Phase 4 — single-entry list value edits.
             ContactsAddValue.self, ContactsDeleteValue.self, ContactsEditValue.self,
+            // Phase 4 — structured single entries.
+            ContactsAddPostalAddress.self, ContactsEditPostalAddress.self, ContactsDeletePostalAddress.self,
+            ContactsAddSocialProfile.self, ContactsEditSocialProfile.self, ContactsDeleteSocialProfile.self,
+            ContactsAddInstantMessage.self, ContactsEditInstantMessage.self, ContactsDeleteInstantMessage.self,
         ]
     )
 
