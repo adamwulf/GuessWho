@@ -51,6 +51,15 @@ public enum CLICommandRegistry {
         LinksList.self,
         // Phase 2 reads — favorites.
         FavoritesList.self,
+        // Phase 3 writes — contacts notes.
+        ContactsAddNote.self,
+        ContactsEditNote.self,
+        ContactsDeleteNote.self,
+        // Phase 3 writes — contacts custom fields.
+        ContactsSetCustomField.self,
+        ContactsDeleteCustomField.self,
+        // Phase 3 writes — contacts favorite.
+        ContactsSetFavorite.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate

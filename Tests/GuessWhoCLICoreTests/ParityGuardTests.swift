@@ -6,9 +6,10 @@ import XCTest
 /// The parity guard (§3.4): every `MCPTool` case has a CLI command whose path
 /// matches the §2 derivation rule, and every registered command names a real
 /// tool. `pending` is the EXPLICIT set of not-yet-implemented tools — it landed
-/// in Phase 1 with 60 entries, shrank to 40 when Phase 2's 20 reads landed, and
-/// must shrink to empty by Phase 5, so the guard both exerts pressure during the
-/// build-out AND catches future drift.
+/// in Phase 1 with 60 entries, shrank to 40 when Phase 2's 20 reads landed,
+/// shrinks by Phase 3's 17 GuessWho-data writes, and must reach empty by Phase 5,
+/// so the guard both exerts pressure during the build-out AND catches future
+/// drift.
 ///
 /// TODO (Phase 4): add the field-level schema-parity check from §3.4 — every
 /// non-object schema property of a tool reachable as a positional/flag, every
@@ -16,27 +17,38 @@ import XCTest
 /// flags land in Phase 4.
 final class ParityGuardTests: XCTestCase {
 
-    /// The 40 tools without a CLI command yet (everything except the three
-    /// shipped Phase 0/1 commands and the 20 Phase 2 reads). Shrinks one phase
-    /// at a time.
+    /// The tools without a CLI command yet — everything except the three shipped
+    /// Phase 0/1 commands, the 20 Phase 2 reads, and the Phase 3 GuessWho-data
+    /// writes landed so far. Shrinks one noun group at a time within Phase 3;
+    /// `expectedPendingCount` pins the current size.
     static let pending: Set<MCPTool> = [
-        // Writes (40)
-        .contactsCreate, .contactsUpdate, .contactsDelete, .contactsDeletePhoto,
+        // Contact Store writes (Phase 4) — create/update/delete-photo, value
+        // edits, structured entries.
+        .contactsCreate, .contactsUpdate, .contactsDeletePhoto,
         .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
         .contactsAddPostalAddress, .contactsEditPostalAddress, .contactsDeletePostalAddress,
         .contactsAddSocialProfile, .contactsEditSocialProfile, .contactsDeleteSocialProfile,
         .contactsAddInstantMessage, .contactsEditInstantMessage, .contactsDeleteInstantMessage,
-        .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
-        .contactsSetCustomField, .contactsDeleteCustomField, .contactsSetFavorite,
-        .favoritesSet, .favoritesReorder, .organizationsRenameDepartment,
+        .organizationsRenameDepartment,
         .groupsCreate, .groupsRename, .groupsDelete, .groupsAddMembers, .groupsRemoveMembers,
-        .groupsSetFavorite, .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
+        .groupsSetFavorite,
+        // Confirmation-gated delete (Phase 5).
+        .contactsDelete,
+        // Phase 3 GuessWho-data writes not yet landed in this build-out.
+        .favoritesSet, .favoritesReorder,
+        .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
         .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
         .linksCreate, .linksDelete,
     ]
 
-    func testPendingHasExactlyFortyEntries() {
-        XCTAssertEqual(Self.pending.count, 40)
+    /// The current expected size of `pending`, updated as each noun group lands.
+    /// Phase 3 ends at 23 (22 Phase 4 Contact Store writes + the Phase 5
+    /// confirmation-gated delete); this step still has the other Phase 3 writes
+    /// pending.
+    static let expectedPendingCount = 34
+
+    func testPendingHasExpectedCount() {
+        XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)
     }
 
     /// tool → command: every non-pending tool has a registered command whose

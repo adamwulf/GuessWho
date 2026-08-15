@@ -9,11 +9,14 @@ import MCP
 public struct ContactsCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "contacts",
-        abstract: "Search, list, and read contacts, their notes, custom fields, and groups, and transfer contact photos.",
+        abstract: "Search, list, and read contacts and their notes, custom fields, and groups; transfer contact photos; and add, edit, or delete a contact's notes, custom fields, and favorite flag.",
         subcommands: [
             ContactsSearch.self, ContactsList.self, ContactsGet.self,
             ContactsGetPhoto.self, ContactsSetPhoto.self,
             ContactsListNotes.self, ContactsListCustomFields.self, ContactsListGroups.self,
+            ContactsAddNote.self, ContactsEditNote.self, ContactsDeleteNote.self,
+            ContactsSetCustomField.self, ContactsDeleteCustomField.self,
+            ContactsSetFavorite.self,
         ]
     )
 
@@ -276,6 +279,222 @@ public struct ContactsListGroups: CLIToolCommand {
         var bag: [String: Value] = [:]
         if let limit { bag["limit"] = .int(limit) }
         if let cursor { bag["cursor"] = .string(cursor) }
+        return bag
+    }
+}
+
+/// `contacts add-note` → `contacts_add_note`. The body arrives via `--body`
+/// (inline / `-` stdin / `--body-file`); the new note echoes back as JSON.
+public struct ContactsAddNote: CLIToolCommand {
+    public static let tool: MCPTool = .contactsAddNote
+
+    public static let configuration = CommandConfiguration(
+        commandName: "add-note",
+        abstract: "Add a dated note about a contact."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Option(help: "The note's text. Use '-' to read the text from stdin.")
+    public var body: String?
+
+    @Option(help: "Read the note's text from this file instead of --body.")
+    public var bodyFile: String?
+
+    @Option(help: "Token that makes a retried add apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "contactId": .string(contactId),
+            "body": .string(try CLITextInput.read(inline: body, file: bodyFile)),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `contacts edit-note` → `contacts_edit_note`. Replaces one note's text; the
+/// body arrives via `--body` (inline / `-` stdin / `--body-file`).
+public struct ContactsEditNote: CLIToolCommand {
+    public static let tool: MCPTool = .contactsEditNote
+
+    public static let configuration = CommandConfiguration(
+        commandName: "edit-note",
+        abstract: "Replace the text of one of the user's notes about a contact."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Argument(help: "Note id returned by contacts list-notes.")
+    public var noteId: String
+
+    @Option(help: "The note's new text. Use '-' to read the text from stdin.")
+    public var body: String?
+
+    @Option(help: "Read the note's new text from this file instead of --body.")
+    public var bodyFile: String?
+
+    @Option(help: "Token that makes a retried edit apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "contactId": .string(contactId),
+            "noteId": .string(noteId),
+            "body": .string(try CLITextInput.read(inline: body, file: bodyFile)),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `contacts delete-note` → `contacts_delete_note`. Answers with a fixed ack.
+public struct ContactsDeleteNote: CLIToolCommand {
+    public static let tool: MCPTool = .contactsDeleteNote
+
+    public static let configuration = CommandConfiguration(
+        commandName: "delete-note",
+        abstract: "Delete one of the user's notes about a contact."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Argument(help: "Note id returned by contacts list-notes.")
+    public var noteId: String
+
+    @Option(help: "Token that makes a retried delete apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "contactId": .string(contactId),
+            "noteId": .string(noteId),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// The custom-field types a caller may set. Raw values match the wire enum
+/// (`contacts_set_custom_field`'s `type`); ArgumentParser validates the flag
+/// against these and lists them in `--help`.
+public enum CLICustomFieldType: String, ExpressibleByArgument, CaseIterable {
+    case text
+    case multilineNote
+    case date
+    case checkbox
+}
+
+/// `contacts set-custom-field` → `contacts_set_custom_field`. Upserts a named
+/// field; the field echoes back as JSON.
+public struct ContactsSetCustomField: CLIToolCommand {
+    public static let tool: MCPTool = .contactsSetCustomField
+
+    public static let configuration = CommandConfiguration(
+        commandName: "set-custom-field",
+        abstract: "Add or update a named custom field on a contact. An existing field with that name has its value replaced."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Argument(help: "The field's name, e.g. \"Coffee order\".")
+    public var name: String
+
+    @Argument(help: "The field's value: text; an ISO 8601 date for a date field; \"true\" or \"false\" for a checkbox.")
+    public var value: String
+
+    @Option(help: "The field's type: text, multilineNote, date, or checkbox. Defaults to text.")
+    public var type: CLICustomFieldType?
+
+    @Option(help: "Token that makes a retried update apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "contactId": .string(contactId),
+            "name": .string(name),
+            "value": .string(value),
+        ]
+        if let type { bag["type"] = .string(type.rawValue) }
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `contacts delete-custom-field` → `contacts_delete_custom_field`. Answers with
+/// a fixed ack.
+public struct ContactsDeleteCustomField: CLIToolCommand {
+    public static let tool: MCPTool = .contactsDeleteCustomField
+
+    public static let configuration = CommandConfiguration(
+        commandName: "delete-custom-field",
+        abstract: "Delete a custom field from a contact."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Argument(help: "Field id returned by contacts list-custom-fields.")
+    public var fieldId: String
+
+    @Option(help: "Token that makes a retried delete apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "contactId": .string(contactId),
+            "fieldId": .string(fieldId),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `contacts set-favorite` → `contacts_set_favorite`. Desired-state, not a
+/// toggle: `--favorite` / `--no-favorite` is required. Answers with a fixed ack.
+public struct ContactsSetFavorite: CLIToolCommand {
+    public static let tool: MCPTool = .contactsSetFavorite
+
+    public static let configuration = CommandConfiguration(
+        commandName: "set-favorite",
+        abstract: "Mark a contact as a favorite, or remove it from favorites."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Flag(inversion: .prefixedNo, help: "Whether the contact is a favorite. Required: pass --favorite or --no-favorite.")
+    public var favorite: Bool?
+
+    @Option(help: "Token that makes a retried change apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        guard let favorite else {
+            throw CLIUsageError("Pass --favorite or --no-favorite.")
+        }
+        var bag: [String: Value] = [
+            "contactId": .string(contactId),
+            "favorite": .bool(favorite),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
         return bag
     }
 }

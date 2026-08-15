@@ -50,8 +50,10 @@ final class VocabularyTests: XCTestCase {
     /// that the walk isn't silently empty).
     func testScanCoversEveryCommand() {
         // run + probe (2), eight noun groups (contacts, organizations, groups,
-        // events, guides, places, links, favorites), and the 23 tool commands
-        // beneath them (3 shipped + 20 Phase 2 reads) = 2 + 8 + 23 = 33.
-        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 33)
+        // events, guides, places, links, favorites), and the tool commands
+        // beneath them: 3 shipped + 20 Phase 2 reads + 6 Phase 3 contacts writes
+        // (add-note, edit-note, delete-note, set-custom-field,
+        // delete-custom-field, set-favorite) = 29. 2 + 8 + 29 = 39.
+        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 39)
     }
 }
