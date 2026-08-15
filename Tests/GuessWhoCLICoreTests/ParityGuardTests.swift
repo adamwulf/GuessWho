@@ -7,30 +7,24 @@ import XCTest
 /// matches the §2 derivation rule, and every registered command names a real
 /// tool. `pending` is the EXPLICIT set of not-yet-implemented tools — it landed
 /// in Phase 1 with 60 entries, shrank to 40 when Phase 2's 20 reads landed,
-/// shrinks by Phase 3's 17 GuessWho-data writes, and must reach empty by Phase 5,
-/// so the guard both exerts pressure during the build-out AND catches future
-/// drift.
+/// then by Phase 3's 17 GuessWho-data writes, then by Phase 4's 22 Contact Store
+/// writes, and reaches empty at Phase 5, so the guard both exerts pressure during
+/// the build-out AND catches future drift.
 ///
 /// The field-level schema-parity check (§3.4) is `ContactScalarFieldParityTests`:
-/// scoped to the contact scalar flags, the one large per-field surface.
+/// scoped to the contact scalar flags, the only large per-field surface.
 final class ParityGuardTests: XCTestCase {
 
-    /// The tools without a CLI command yet. Phase 4 is landing incrementally;
-    /// this shrinks as each group of writes registers and reaches
-    /// `{ .contactsDelete }` when Phase 4 completes. `expectedPendingCount` pins
-    /// the current size.
+    /// The tools without a CLI command yet. Only the Phase 5 confirmation-gated
+    /// delete remains; `expectedPendingCount` pins the current size.
     static let pending: Set<MCPTool> = [
-        // Contact Store writes (Phase 4) — groups.
-        .groupsCreate, .groupsRename, .groupsDelete, .groupsAddMembers, .groupsRemoveMembers,
-        .groupsSetFavorite,
         // Confirmation-gated delete (Phase 5).
         .contactsDelete,
     ]
 
-    /// The current expected size of `pending`. The Phase 4 contacts writes and
-    /// the organizations department rename are now implemented; the six groups
-    /// writes plus the Phase 5 delete remain.
-    static let expectedPendingCount = 7
+    /// The current expected size of `pending`. Phase 4 leaves exactly one tool
+    /// pending: the Phase 5 confirmation-gated delete.
+    static let expectedPendingCount = 1
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)
