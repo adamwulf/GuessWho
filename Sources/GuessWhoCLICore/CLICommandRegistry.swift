@@ -16,11 +16,41 @@ public enum CLICommandRegistry {
     public static let rootCommand: ParsableCommand.Type = GuessWhoCLIRoot.self
 
     /// Every registered tool command. Grows one entry per command as the later
-    /// phases land; Phase 1 ships the three Phase 0/1 commands.
+    /// phases land; Phase 1 shipped the three Phase 0/1 commands, Phase 2 adds
+    /// the 20 remaining reads.
     public static let toolCommands: [any CLIToolCommand.Type] = [
+        // Phase 0/1 (shipped).
         ContactsSearch.self,
         ContactsGetPhoto.self,
         ContactsSetPhoto.self,
+        // Phase 2 reads — contacts.
+        ContactsList.self,
+        ContactsGet.self,
+        ContactsListNotes.self,
+        ContactsListCustomFields.self,
+        ContactsListGroups.self,
+        // Phase 2 reads — organizations.
+        OrganizationsListMembers.self,
+        OrganizationsListDepartments.self,
+        OrganizationsListDepartmentMembers.self,
+        // Phase 2 reads — groups.
+        GroupsListForContact.self,
+        // Phase 2 reads — events.
+        EventsList.self,
+        EventsGet.self,
+        EventsListTags.self,
+        // Phase 2 reads — guides.
+        GuidesList.self,
+        GuidesGet.self,
+        GuidesListForPlace.self,
+        // Phase 2 reads — places.
+        PlacesList.self,
+        PlacesSearch.self,
+        PlacesGet.self,
+        // Phase 2 reads — links.
+        LinksList.self,
+        // Phase 2 reads — favorites.
+        FavoritesList.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate

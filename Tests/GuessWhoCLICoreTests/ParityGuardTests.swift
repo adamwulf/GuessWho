@@ -5,25 +5,21 @@ import XCTest
 
 /// The parity guard (§3.4): every `MCPTool` case has a CLI command whose path
 /// matches the §2 derivation rule, and every registered command names a real
-/// tool. `pending` is the EXPLICIT set of not-yet-implemented tools — it lands
-/// in Phase 1 with 60 entries and must shrink to empty by Phase 5, so the
-/// guard both exerts pressure during the build-out AND catches future drift.
+/// tool. `pending` is the EXPLICIT set of not-yet-implemented tools — it landed
+/// in Phase 1 with 60 entries, shrank to 40 when Phase 2's 20 reads landed, and
+/// must shrink to empty by Phase 5, so the guard both exerts pressure during the
+/// build-out AND catches future drift.
 ///
 /// TODO (Phase 4): add the field-level schema-parity check from §3.4 — every
 /// non-object schema property of a tool reachable as a positional/flag, every
-/// scalar flag naming a real property. Deferred because only 3 commands exist
-/// now and the structured/per-field flags land in Phase 4.
+/// scalar flag naming a real property. Deferred because the structured/per-field
+/// flags land in Phase 4.
 final class ParityGuardTests: XCTestCase {
 
-    /// The 60 tools without a CLI command yet (everything except the three
-    /// shipped Phase 0/1 commands). Shrinks one phase at a time.
+    /// The 40 tools without a CLI command yet (everything except the three
+    /// shipped Phase 0/1 commands and the 20 Phase 2 reads). Shrinks one phase
+    /// at a time.
     static let pending: Set<MCPTool> = [
-        // Reads (20)
-        .contactsList, .contactsGet, .contactsListNotes, .contactsListCustomFields,
-        .contactsListGroups, .organizationsListMembers, .organizationsListDepartments,
-        .organizationsListDepartmentMembers, .groupsListForContact, .eventsList, .eventsGet,
-        .eventsListTags, .guidesList, .guidesGet, .guidesListForPlace, .placesList,
-        .placesSearch, .placesGet, .linksList, .favoritesList,
         // Writes (40)
         .contactsCreate, .contactsUpdate, .contactsDelete, .contactsDeletePhoto,
         .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
@@ -39,8 +35,8 @@ final class ParityGuardTests: XCTestCase {
         .linksCreate, .linksDelete,
     ]
 
-    func testPendingHasExactlySixtyEntries() {
-        XCTAssertEqual(Self.pending.count, 60)
+    func testPendingHasExactlyFortyEntries() {
+        XCTAssertEqual(Self.pending.count, 40)
     }
 
     /// tool → command: every non-pending tool has a registered command whose

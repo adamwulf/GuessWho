@@ -24,7 +24,12 @@ public struct GuessWhoCLIRoot: AsyncParsableCommand {
         commandName: "guesswho-cli",
         abstract: "Command-line access to GuessWho.",
         version: "0.1.0",
-        subcommands: [Run.self, Probe.self, ContactsCommand.self]
+        subcommands: [
+            Run.self, Probe.self,
+            ContactsCommand.self, OrganizationsCommand.self, GroupsCommand.self,
+            EventsCommand.self, GuidesCommand.self, PlacesCommand.self,
+            LinksCommand.self, FavoritesCommand.self,
+        ]
     )
 
     public init() {}

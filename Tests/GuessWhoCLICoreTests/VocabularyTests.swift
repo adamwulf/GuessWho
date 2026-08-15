@@ -49,7 +49,9 @@ final class VocabularyTests: XCTestCase {
     /// The scan reaches every command reachable from the root (a sanity check
     /// that the walk isn't silently empty).
     func testScanCoversEveryCommand() {
-        // run, probe, contacts, and the three contacts subcommands = 6.
-        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 6)
+        // run + probe (2), eight noun groups (contacts, organizations, groups,
+        // events, guides, places, links, favorites), and the 23 tool commands
+        // beneath them (3 shipped + 20 Phase 2 reads) = 2 + 8 + 23 = 33.
+        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 33)
     }
 }

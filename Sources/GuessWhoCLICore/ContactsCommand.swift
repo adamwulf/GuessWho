@@ -4,12 +4,17 @@ import GuessWhoMCPWire
 import MCP
 
 /// The `contacts` noun group. Its subcommands are the shipped Phase 0/1 tool
-/// commands; Phase 2+ adds the rest under the same group.
+/// commands plus the Phase 2 reads; later phases add the writes under the same
+/// group.
 public struct ContactsCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "contacts",
-        abstract: "Search contacts and transfer contact photos.",
-        subcommands: [ContactsSearch.self, ContactsGetPhoto.self, ContactsSetPhoto.self]
+        abstract: "Search, list, and read contacts, their notes, custom fields, and groups, and transfer contact photos.",
+        subcommands: [
+            ContactsSearch.self, ContactsList.self, ContactsGet.self,
+            ContactsGetPhoto.self, ContactsSetPhoto.self,
+            ContactsListNotes.self, ContactsListCustomFields.self, ContactsListGroups.self,
+        ]
     )
 
     public init() {}
@@ -131,6 +136,146 @@ public struct ContactsSetPhoto: CLIToolCommand {
             "dataBase64": .string(data.base64EncodedString()),
         ]
         if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `contacts list` → `contacts_list`. No positional; the filters combine.
+/// JSON page of contact summaries on stdout.
+public struct ContactsList: CLIToolCommand {
+    public static let tool: MCPTool = .contactsList
+
+    public static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List contacts ordered by name, optionally filtered by kind, favorites, or group."
+    )
+
+    @Option(help: "Only \"person\" or only \"organization\" contacts. Omit for both.")
+    public var kind: String?
+
+    @Flag(help: "Only contacts the user has marked favorite.")
+    public var favoritesOnly = false
+
+    @Option(help: "Only members of this group id, from contacts list-groups.")
+    public var groupId: String?
+
+    @Option(help: "Maximum contacts to return (default 50, max 200).")
+    public var limit: Int?
+
+    @Option(help: "Paging cursor returned by a previous page.")
+    public var cursor: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [:]
+        if let kind { bag["kind"] = .string(kind) }
+        if favoritesOnly { bag["favoritesOnly"] = .bool(true) }
+        if let groupId { bag["groupId"] = .string(groupId) }
+        if let limit { bag["limit"] = .int(limit) }
+        if let cursor { bag["cursor"] = .string(cursor) }
+        return bag
+    }
+}
+
+/// `contacts get` → `contacts_get`. Full contact card as JSON on stdout.
+public struct ContactsGet: CLIToolCommand {
+    public static let tool: MCPTool = .contactsGet
+
+    public static let configuration = CommandConfiguration(
+        commandName: "get",
+        abstract: "Get a contact's full card by id."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        ["contactId": .string(contactId)]
+    }
+}
+
+/// `contacts list-notes` → `contacts_list_notes`. JSON page of notes on stdout.
+public struct ContactsListNotes: CLIToolCommand {
+    public static let tool: MCPTool = .contactsListNotes
+
+    public static let configuration = CommandConfiguration(
+        commandName: "list-notes",
+        abstract: "List the dated notes the user has written about a contact."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Option(help: "Maximum notes to return (default 50, max 200).")
+    public var limit: Int?
+
+    @Option(help: "Paging cursor returned by a previous page.")
+    public var cursor: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = ["contactId": .string(contactId)]
+        if let limit { bag["limit"] = .int(limit) }
+        if let cursor { bag["cursor"] = .string(cursor) }
+        return bag
+    }
+}
+
+/// `contacts list-custom-fields` → `contacts_list_custom_fields`. JSON page of
+/// custom fields on stdout.
+public struct ContactsListCustomFields: CLIToolCommand {
+    public static let tool: MCPTool = .contactsListCustomFields
+
+    public static let configuration = CommandConfiguration(
+        commandName: "list-custom-fields",
+        abstract: "List the custom fields the user has added to a contact."
+    )
+
+    @Argument(help: "Contact id returned by contacts search or contacts list.")
+    public var contactId: String
+
+    @Option(help: "Maximum fields to return (default 50, max 200).")
+    public var limit: Int?
+
+    @Option(help: "Paging cursor returned by a previous page.")
+    public var cursor: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = ["contactId": .string(contactId)]
+        if let limit { bag["limit"] = .int(limit) }
+        if let cursor { bag["cursor"] = .string(cursor) }
+        return bag
+    }
+}
+
+/// `contacts list-groups` → `contacts_list_groups`. No positional. JSON page of
+/// groups on stdout.
+public struct ContactsListGroups: CLIToolCommand {
+    public static let tool: MCPTool = .contactsListGroups
+
+    public static let configuration = CommandConfiguration(
+        commandName: "list-groups",
+        abstract: "List the user's contact groups, including whether each is a favorite."
+    )
+
+    @Option(help: "Maximum groups to return (default 50, max 200).")
+    public var limit: Int?
+
+    @Option(help: "Paging cursor returned by a previous page.")
+    public var cursor: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [:]
+        if let limit { bag["limit"] = .int(limit) }
+        if let cursor { bag["cursor"] = .string(cursor) }
         return bag
     }
 }
