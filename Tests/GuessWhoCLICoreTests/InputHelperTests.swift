@@ -103,6 +103,42 @@ final class InputHelperTests: XCTestCase {
         }
     }
 
+    func testJSONEmptyInlineIsUsageError() {
+        // An empty string is present (not `-`, not omitted), so it is parsed —
+        // and the empty document is not valid JSON, so it is a usage error, not
+        // a "neither source" nil.
+        XCTAssertThrowsError(try CLIJSONInput.read(inline: "", file: nil)) { error in
+            XCTAssertTrue(error is CLIUsageError)
+        }
+    }
+
+    func testJSONEmptyStdinIsUsageError() throws {
+        // `--json -` with nothing on stdin: the bounded read returns "", which
+        // decode rejects as invalid JSON (a usage error), never a crash.
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.close()
+        let text = try CLIJSONInput.readBounded(from: pipe.fileHandleForReading, source: "stdin")
+        XCTAssertEqual(text, "")
+        XCTAssertThrowsError(try CLIJSONInput.decode(text)) { error in
+            XCTAssertTrue(error is CLIUsageError)
+        }
+        try? pipe.fileHandleForReading.close()
+    }
+
+    func testJSONMalformedUTF8IsUsageError() throws {
+        // 0xFF is never valid UTF-8; the bounded read maps it to U+FFFD, which
+        // is not valid JSON, so decode reports a usage error rather than
+        // trapping on a bad-bytes String init.
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: Data([0xFF, 0xFE, 0xFF]))
+        try pipe.fileHandleForWriting.close()
+        let text = try CLIJSONInput.readBounded(from: pipe.fileHandleForReading, source: "stdin")
+        XCTAssertThrowsError(try CLIJSONInput.decode(text)) { error in
+            XCTAssertTrue(error is CLIUsageError)
+        }
+        try? pipe.fileHandleForReading.close()
+    }
+
     func testJSONOverCapIsUsageError() throws {
         // A structurally-valid but oversize payload (one very long JSON string)
         // is rejected on size before it is ever parsed.

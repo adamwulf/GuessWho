@@ -95,6 +95,18 @@ final class FavoritesWriteCommandTests: CLICommandTestCase {
         XCTAssertTrue(output.stdoutString.isEmpty)
     }
 
+    func testReorderNonArrayJSONIsRejectedByTheWireBuilder() async throws {
+        // Structurally valid JSON of the WRONG shape (an object, not the
+        // favorites array): the input helper decodes it, and the wire builder
+        // is the shape validator — it rejects the mismatched `favorites`,
+        // mapped to usage exit 64. Nothing is sent.
+        let output = installRuntime(transport: StubCLITransport(response: ack("unused")))
+        let command = try FavoritesReorder.parse(["--json", "{\"kind\":\"contact\",\"id\":\"c1\"}"])
+        let code = await exitCode { try await command.run() }
+        XCTAssertEqual(code, CLIExitCode.usage.rawValue)
+        XCTAssertTrue(output.stdoutString.isEmpty)
+    }
+
     // MARK: Render — fixed acks
 
     func testSetRendersAck() async throws {
