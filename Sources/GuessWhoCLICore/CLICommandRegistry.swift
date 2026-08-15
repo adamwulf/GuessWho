@@ -73,6 +73,9 @@ public enum CLICommandRegistry {
         GuidesReorderPlaces.self,
         // Phase 3 writes — places.
         PlacesDelete.self,
+        // Phase 3 writes — links.
+        LinksCreate.self,
+        LinksDelete.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate

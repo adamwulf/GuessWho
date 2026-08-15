@@ -18,9 +18,9 @@ import XCTest
 final class ParityGuardTests: XCTestCase {
 
     /// The tools without a CLI command yet — everything except the three shipped
-    /// Phase 0/1 commands, the 20 Phase 2 reads, and the Phase 3 GuessWho-data
-    /// writes landed so far. Shrinks one noun group at a time within Phase 3;
-    /// `expectedPendingCount` pins the current size.
+    /// Phase 0/1 commands, the 20 Phase 2 reads, and the 17 Phase 3 GuessWho-data
+    /// writes. What remains is the Phase 4 Contact Store writes and the Phase 5
+    /// confirmation-gated delete; `expectedPendingCount` pins the current size.
     static let pending: Set<MCPTool> = [
         // Contact Store writes (Phase 4) — create/update/delete-photo, value
         // edits, structured entries.
@@ -34,15 +34,11 @@ final class ParityGuardTests: XCTestCase {
         .groupsSetFavorite,
         // Confirmation-gated delete (Phase 5).
         .contactsDelete,
-        // Phase 3 GuessWho-data writes not yet landed in this build-out.
-        .linksCreate, .linksDelete,
     ]
 
-    /// The current expected size of `pending`, updated as each noun group lands.
-    /// Phase 3 ends at 23 (22 Phase 4 Contact Store writes + the Phase 5
-    /// confirmation-gated delete); this step still has the other Phase 3 writes
-    /// pending.
-    static let expectedPendingCount = 25
+    /// The current expected size of `pending`. Phase 3 leaves 23 tools pending:
+    /// 22 Phase 4 Contact Store writes + the Phase 5 confirmation-gated delete.
+    static let expectedPendingCount = 23
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)
