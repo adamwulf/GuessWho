@@ -88,9 +88,14 @@ MUST use the TestFlight/MAS-installed artifact.
 ## 5. Symlink admin-auth panel — NOT Phase 0 work
 
 The `/usr/local/bin/guesswho` symlink install code
-(`NSWorkspace.requestAuthorization(.createSymbolicLink)`) is Phase 3 work;
-the entitlement question is CLOSED (Muse ships it with no special key).
-Nothing to verify until Phase 3 writes that code.
+(`NSWorkspace.requestAuthorization(.createSymbolicLink)`) is Phase 3 work.
+⚠️ **REOPENED 2026-08-14 — the entitlement question is NOT closed.** The old
+note ("CLOSED — Muse ships it with no special key") was wrong: verified live on
+GuessWho + shipping Muse/Allume, the un-entitled install fails
+`NSCocoaErrorDomain` 513 on a root-owned `/usr/local/bin`. The install REQUIRES
+`com.apple.developer.security.privileged-file-operations` (Mac-App-Store,
+request-form entitlement). Full findings + fix:
+[`plans/cli-install-privileged-file-operations.md`](cli-install-privileged-file-operations.md).
 
 ## 6. Setapp channel — DEFERRED (tracked)
 

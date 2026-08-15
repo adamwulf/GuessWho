@@ -62,10 +62,16 @@ public final class GuessWhoAppKitBridge: NSObject, AppKitPlugin {
         symlinkPath: String,
         completion: @escaping (NSError?) -> Void
     ) {
-        // The Muse-shipped mechanism verbatim: the system admin-auth panel
-        // vends a short-lived authorization, and a FileManager constructed
-        // from it may create exactly the symlink the user approved. There
-        // is no authorized-DELETE counterpart, so replacing an existing
+        // The system admin-auth panel vends a short-lived authorization, and
+        // a FileManager constructed from it may create exactly the symlink the
+        // user approved. This ONLY elevates when the app carries the
+        // `com.apple.developer.security.privileged-file-operations`
+        // entitlement; without it `requestAuthorization` returns a
+        // non-privileged auth, shows no panel, and `createSymbolicLink` into a
+        // root-owned `/usr/local/bin` throws `NSCocoaErrorDomain` 513. See
+        // `plans/cli-install-privileged-file-operations.md`.
+        //
+        // There is no authorized-DELETE counterpart, so replacing an existing
         // path (conflict / broken-link states) stays a user-pasted `rm`.
         NSWorkspace().requestAuthorization(to: .createSymbolicLink) { auth, error in
             if let error = error {
