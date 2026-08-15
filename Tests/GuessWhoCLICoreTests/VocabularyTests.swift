@@ -52,8 +52,7 @@ final class VocabularyTests: XCTestCase {
         // run + probe (2), eight noun groups (contacts, organizations, groups,
         // events, guides, places, links, favorites), and the tool commands
         // beneath them: 3 shipped + 20 Phase 2 reads + 6 Phase 3 contacts writes
-        // (add-note, edit-note, delete-note, set-custom-field,
-        // delete-custom-field, set-favorite) = 29. 2 + 8 + 29 = 39.
-        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 39)
+        // + 2 Phase 3 favorites writes (set, reorder) = 31. 2 + 8 + 31 = 41.
+        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 41)
     }
 }

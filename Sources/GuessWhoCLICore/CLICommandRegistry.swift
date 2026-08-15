@@ -60,6 +60,9 @@ public enum CLICommandRegistry {
         ContactsDeleteCustomField.self,
         // Phase 3 writes — contacts favorite.
         ContactsSetFavorite.self,
+        // Phase 3 writes — favorites.
+        FavoritesSet.self,
+        FavoritesReorder.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate
