@@ -9,7 +9,7 @@ import MCP
 public struct ContactsCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "contacts",
-        abstract: "Search, list, and read contacts and their notes, custom fields, and groups; transfer contact photos; and add, edit, or delete a contact's notes, custom fields, and favorite flag.",
+        abstract: "Search, list, read, create, and update contacts and their fields, notes, custom fields, groups, and photos.",
         subcommands: [
             ContactsSearch.self, ContactsList.self, ContactsGet.self,
             ContactsGetPhoto.self, ContactsSetPhoto.self,
@@ -17,6 +17,8 @@ public struct ContactsCommand: AsyncParsableCommand {
             ContactsAddNote.self, ContactsEditNote.self, ContactsDeleteNote.self,
             ContactsSetCustomField.self, ContactsDeleteCustomField.self,
             ContactsSetFavorite.self,
+            // Phase 4 — contact-store card writes.
+            ContactsCreate.self, ContactsUpdate.self, ContactsDeletePhoto.self,
         ]
     )
 

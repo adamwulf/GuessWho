@@ -11,20 +11,16 @@ import XCTest
 /// so the guard both exerts pressure during the build-out AND catches future
 /// drift.
 ///
-/// TODO (Phase 4): add the field-level schema-parity check from §3.4 — every
-/// non-object schema property of a tool reachable as a positional/flag, every
-/// scalar flag naming a real property. Deferred because the structured/per-field
-/// flags land in Phase 4.
+/// The field-level schema-parity check (§3.4) is `ContactScalarFieldParityTests`:
+/// scoped to the contact scalar flags, the one large per-field surface.
 final class ParityGuardTests: XCTestCase {
 
-    /// The tools without a CLI command yet — everything except the three shipped
-    /// Phase 0/1 commands, the 20 Phase 2 reads, and the 17 Phase 3 GuessWho-data
-    /// writes. What remains is the Phase 4 Contact Store writes and the Phase 5
-    /// confirmation-gated delete; `expectedPendingCount` pins the current size.
+    /// The tools without a CLI command yet. Phase 4 is landing incrementally;
+    /// this shrinks as each group of writes registers and reaches
+    /// `{ .contactsDelete }` when Phase 4 completes. `expectedPendingCount` pins
+    /// the current size.
     static let pending: Set<MCPTool> = [
-        // Contact Store writes (Phase 4) — create/update/delete-photo, value
-        // edits, structured entries.
-        .contactsCreate, .contactsUpdate, .contactsDeletePhoto,
+        // Contact Store writes (Phase 4) — value edits, structured entries.
         .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
         .contactsAddPostalAddress, .contactsEditPostalAddress, .contactsDeletePostalAddress,
         .contactsAddSocialProfile, .contactsEditSocialProfile, .contactsDeleteSocialProfile,
@@ -36,9 +32,10 @@ final class ParityGuardTests: XCTestCase {
         .contactsDelete,
     ]
 
-    /// The current expected size of `pending`. Phase 3 leaves 23 tools pending:
-    /// 22 Phase 4 Contact Store writes + the Phase 5 confirmation-gated delete.
-    static let expectedPendingCount = 23
+    /// The current expected size of `pending`. The three Phase 4 card writes
+    /// (create/update/delete-photo) are now implemented; 19 Contact Store writes
+    /// plus the Phase 5 delete remain.
+    static let expectedPendingCount = 20
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)

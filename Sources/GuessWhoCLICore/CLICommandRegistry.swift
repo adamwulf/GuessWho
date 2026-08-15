@@ -76,6 +76,10 @@ public enum CLICommandRegistry {
         // Phase 3 writes — links.
         LinksCreate.self,
         LinksDelete.self,
+        // Phase 4 writes — contacts card.
+        ContactsCreate.self,
+        ContactsUpdate.self,
+        ContactsDeletePhoto.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate
