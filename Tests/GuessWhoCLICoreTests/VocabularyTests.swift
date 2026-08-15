@@ -52,8 +52,8 @@ final class VocabularyTests: XCTestCase {
         // run + probe (2), eight noun groups (contacts, organizations, groups,
         // events, guides, places, links, favorites), and the tool commands
         // beneath them: 3 shipped + 20 Phase 2 reads + 17 Phase 3 GuessWho-data
-        // writes + 3 Phase 4 card writes (create/update/delete-photo) = 43.
-        // 2 + 8 + 43 = 53.
-        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 53)
+        // writes + 3 Phase 4 card writes + 3 Phase 4 value edits
+        // (add/delete/edit-value) = 46. 2 + 8 + 46 = 56.
+        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 56)
     }
 }

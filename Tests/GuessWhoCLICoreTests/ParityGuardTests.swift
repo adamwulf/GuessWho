@@ -20,8 +20,7 @@ final class ParityGuardTests: XCTestCase {
     /// `{ .contactsDelete }` when Phase 4 completes. `expectedPendingCount` pins
     /// the current size.
     static let pending: Set<MCPTool> = [
-        // Contact Store writes (Phase 4) — value edits, structured entries.
-        .contactsAddValue, .contactsDeleteValue, .contactsEditValue,
+        // Contact Store writes (Phase 4) — structured entries.
         .contactsAddPostalAddress, .contactsEditPostalAddress, .contactsDeletePostalAddress,
         .contactsAddSocialProfile, .contactsEditSocialProfile, .contactsDeleteSocialProfile,
         .contactsAddInstantMessage, .contactsEditInstantMessage, .contactsDeleteInstantMessage,
@@ -32,10 +31,10 @@ final class ParityGuardTests: XCTestCase {
         .contactsDelete,
     ]
 
-    /// The current expected size of `pending`. The three Phase 4 card writes
-    /// (create/update/delete-photo) are now implemented; 19 Contact Store writes
-    /// plus the Phase 5 delete remain.
-    static let expectedPendingCount = 20
+    /// The current expected size of `pending`. The Phase 4 card writes and the
+    /// three single-entry value edits are now implemented; 16 Contact Store
+    /// writes plus the Phase 5 delete remain.
+    static let expectedPendingCount = 17
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)

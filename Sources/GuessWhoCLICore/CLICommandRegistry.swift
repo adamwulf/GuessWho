@@ -80,6 +80,10 @@ public enum CLICommandRegistry {
         ContactsCreate.self,
         ContactsUpdate.self,
         ContactsDeletePhoto.self,
+        // Phase 4 writes — contacts value edits.
+        ContactsAddValue.self,
+        ContactsDeleteValue.self,
+        ContactsEditValue.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate
