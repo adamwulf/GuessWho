@@ -63,6 +63,10 @@ public enum CLICommandRegistry {
         // Phase 3 writes — favorites.
         FavoritesSet.self,
         FavoritesReorder.self,
+        // Phase 3 writes — event tags.
+        EventsAddTag.self,
+        EventsEditTag.self,
+        EventsDeleteTag.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate

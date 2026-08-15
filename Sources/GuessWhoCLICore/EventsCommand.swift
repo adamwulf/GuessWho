@@ -8,8 +8,11 @@ import MCP
 public struct EventsCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "events",
-        abstract: "List events within a date window, read one event, and list its tags.",
-        subcommands: [EventsList.self, EventsGet.self, EventsListTags.self]
+        abstract: "List events within a date window, read one event, and list, add, edit, or delete its tags.",
+        subcommands: [
+            EventsList.self, EventsGet.self, EventsListTags.self,
+            EventsAddTag.self, EventsEditTag.self, EventsDeleteTag.self,
+        ]
     )
 
     public init() {}
@@ -92,6 +95,100 @@ public struct EventsListTags: CLIToolCommand {
         var bag: [String: Value] = ["eventId": .string(eventId)]
         if let limit { bag["limit"] = .int(limit) }
         if let cursor { bag["cursor"] = .string(cursor) }
+        return bag
+    }
+}
+
+/// `events add-tag` → `events_add_tag`. The new tag echoes back as JSON.
+public struct EventsAddTag: CLIToolCommand {
+    public static let tool: MCPTool = .eventsAddTag
+
+    public static let configuration = CommandConfiguration(
+        commandName: "add-tag",
+        abstract: "Put a tag on an event."
+    )
+
+    @Argument(help: "Event id returned by events list.")
+    public var eventId: String
+
+    @Argument(help: "The tag's text, e.g. \"fundraiser\".")
+    public var text: String
+
+    @Option(help: "Token that makes a retried add apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "eventId": .string(eventId),
+            "text": .string(text),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `events edit-tag` → `events_edit_tag`. The updated tag echoes back as JSON.
+public struct EventsEditTag: CLIToolCommand {
+    public static let tool: MCPTool = .eventsEditTag
+
+    public static let configuration = CommandConfiguration(
+        commandName: "edit-tag",
+        abstract: "Replace the text of a tag on an event."
+    )
+
+    @Argument(help: "Event id returned by events list.")
+    public var eventId: String
+
+    @Argument(help: "Tag id returned by events list-tags.")
+    public var tagId: String
+
+    @Argument(help: "The tag's new text.")
+    public var text: String
+
+    @Option(help: "Token that makes a retried edit apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "eventId": .string(eventId),
+            "tagId": .string(tagId),
+            "text": .string(text),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `events delete-tag` → `events_delete_tag`. Answers with a fixed ack.
+public struct EventsDeleteTag: CLIToolCommand {
+    public static let tool: MCPTool = .eventsDeleteTag
+
+    public static let configuration = CommandConfiguration(
+        commandName: "delete-tag",
+        abstract: "Delete a tag from an event."
+    )
+
+    @Argument(help: "Event id returned by events list.")
+    public var eventId: String
+
+    @Argument(help: "Tag id returned by events list-tags.")
+    public var tagId: String
+
+    @Option(help: "Token that makes a retried delete apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "eventId": .string(eventId),
+            "tagId": .string(tagId),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
         return bag
     }
 }
