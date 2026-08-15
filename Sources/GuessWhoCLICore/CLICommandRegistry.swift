@@ -67,6 +67,12 @@ public enum CLICommandRegistry {
         EventsAddTag.self,
         EventsEditTag.self,
         EventsDeleteTag.self,
+        // Phase 3 writes — guides.
+        GuidesCreate.self,
+        GuidesDelete.self,
+        GuidesReorderPlaces.self,
+        // Phase 3 writes — places.
+        PlacesDelete.self,
     ]
 
     /// The tool commands keyed by the `MCPTool` each one sends. A duplicate

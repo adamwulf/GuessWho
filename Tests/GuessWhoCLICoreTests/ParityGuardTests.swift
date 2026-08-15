@@ -35,7 +35,6 @@ final class ParityGuardTests: XCTestCase {
         // Confirmation-gated delete (Phase 5).
         .contactsDelete,
         // Phase 3 GuessWho-data writes not yet landed in this build-out.
-        .guidesCreate, .guidesDelete, .guidesReorderPlaces, .placesDelete,
         .linksCreate, .linksDelete,
     ]
 
@@ -43,7 +42,7 @@ final class ParityGuardTests: XCTestCase {
     /// Phase 3 ends at 23 (22 Phase 4 Contact Store writes + the Phase 5
     /// confirmation-gated delete); this step still has the other Phase 3 writes
     /// pending.
-    static let expectedPendingCount = 29
+    static let expectedPendingCount = 25
 
     func testPendingHasExpectedCount() {
         XCTAssertEqual(Self.pending.count, Self.expectedPendingCount)

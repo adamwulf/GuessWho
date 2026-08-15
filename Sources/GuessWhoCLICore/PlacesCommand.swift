@@ -8,8 +8,8 @@ import MCP
 public struct PlacesCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "places",
-        abstract: "List and search saved places, and read one by id.",
-        subcommands: [PlacesList.self, PlacesSearch.self, PlacesGet.self]
+        abstract: "List and search saved places, read one by id, and delete one.",
+        subcommands: [PlacesList.self, PlacesSearch.self, PlacesGet.self, PlacesDelete.self]
     )
 
     public init() {}
@@ -88,5 +88,29 @@ public struct PlacesGet: CLIToolCommand {
 
     public func argumentBag() throws -> [String: Value] {
         ["placeId": .string(placeId)]
+    }
+}
+
+/// `places delete` → `places_delete`. Answers with a fixed ack.
+public struct PlacesDelete: CLIToolCommand {
+    public static let tool: MCPTool = .placesDelete
+
+    public static let configuration = CommandConfiguration(
+        commandName: "delete",
+        abstract: "Delete one place from a guide."
+    )
+
+    @Argument(help: "Place id returned by places list or places search.")
+    public var placeId: String
+
+    @Option(help: "Token that makes a retried delete apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = ["placeId": .string(placeId)]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
     }
 }

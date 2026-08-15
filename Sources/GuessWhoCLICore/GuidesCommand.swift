@@ -8,8 +8,11 @@ import MCP
 public struct GuidesCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "guides",
-        abstract: "List saved place guides, read one, and find the guides that contain a place.",
-        subcommands: [GuidesList.self, GuidesGet.self, GuidesListForPlace.self]
+        abstract: "List saved place guides, read one, find the guides that contain a place, and create, delete, or reorder the places in a guide.",
+        subcommands: [
+            GuidesList.self, GuidesGet.self, GuidesListForPlace.self,
+            GuidesCreate.self, GuidesDelete.self, GuidesReorderPlaces.self,
+        ]
     )
 
     public init() {}
@@ -84,6 +87,98 @@ public struct GuidesListForPlace: CLIToolCommand {
         var bag: [String: Value] = ["placeId": .string(placeId)]
         if let limit { bag["limit"] = .int(limit) }
         if let cursor { bag["cursor"] = .string(cursor) }
+        return bag
+    }
+}
+
+/// `guides create` → `guides_create`. The optional initial `places` array
+/// arrives via `--json` (inline / `-` stdin / `--json-file`) and goes straight
+/// into the bag under the `places` key, so the wire builder is the single
+/// validator. The new guide echoes back as JSON.
+public struct GuidesCreate: CLIToolCommand {
+    public static let tool: MCPTool = .guidesCreate
+
+    public static let configuration = CommandConfiguration(
+        commandName: "create",
+        abstract: "Create a new place guide, optionally with an initial list of places."
+    )
+
+    @Argument(help: "The guide's name, e.g. \"Coffee Crawl\".")
+    public var name: String
+
+    @Option(help: "Optional JSON array of the guide's initial places, each {\"address\", optional \"latitude\", \"longitude\"}. Use '-' to read the JSON from stdin.")
+    public var json: String?
+
+    @Option(help: "Read the places JSON array from this file instead of --json.")
+    public var jsonFile: String?
+
+    @Option(help: "Token that makes a retried create apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = ["name": .string(name)]
+        if let value = try CLIJSONInput.read(inline: json, file: jsonFile) {
+            try CLIJSONInput.assign(value, toKey: "places", in: &bag)
+        }
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `guides delete` → `guides_delete`. Answers with a fixed ack.
+public struct GuidesDelete: CLIToolCommand {
+    public static let tool: MCPTool = .guidesDelete
+
+    public static let configuration = CommandConfiguration(
+        commandName: "delete",
+        abstract: "Delete a place guide and the places in it."
+    )
+
+    @Argument(help: "Guide id returned by guides list.")
+    public var guideId: String
+
+    @Option(help: "Token that makes a retried delete apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = ["guideId": .string(guideId)]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+/// `guides reorder-places` → `guides_reorder_places`. Every place id in the
+/// guide, in the new order, as variadic positionals → the `placeIds` key.
+/// Answers with a fixed ack.
+public struct GuidesReorderPlaces: CLIToolCommand {
+    public static let tool: MCPTool = .guidesReorderPlaces
+
+    public static let configuration = CommandConfiguration(
+        commandName: "reorder-places",
+        abstract: "Reorder the places in a guide. Pass every place id in the guide, in the new order."
+    )
+
+    @Argument(help: "Guide id returned by guides list.")
+    public var guideId: String
+
+    @Argument(help: "Every place id in the guide (from places list), in the desired order.")
+    public var placeIds: [String]
+
+    @Option(help: "Token that makes a retried reorder apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = [
+            "guideId": .string(guideId),
+            "placeIds": .array(placeIds.map { .string($0) }),
+        ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
         return bag
     }
 }
