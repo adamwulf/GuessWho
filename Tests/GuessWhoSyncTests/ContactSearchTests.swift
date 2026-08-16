@@ -134,4 +134,39 @@ struct ContactSearchTests {
         let c = person(emails: ["jane.doe.789@example.com"])
         #expect(c.matches(searchQuery: "doe.789"))
     }
+
+    // MARK: - Multi-term queries (AND across fields)
+
+    @Test
+    func multiTermMatchesTermsInSeparateNameFields() {
+        // Neither field contains the whole phrase, but "adam" is in the given
+        // name and "wulf" is in the family name — the contact should match.
+        let c = person(given: "Adam", family: "Wulf")
+        #expect(c.matches(searchQuery: "Adam Wulf"))
+        #expect(c.matches(searchQuery: "wulf adam"))
+        #expect(c.matches(searchQuery: "adam"))
+        #expect(c.matches(searchQuery: "wulf"))
+    }
+
+    @Test
+    func multiTermRequiresEveryTermToMatch() {
+        let c = person(given: "Adam", family: "Wulf")
+        // "smith" appears in no field, so the whole query fails.
+        #expect(!c.matches(searchQuery: "Adam Smith"))
+    }
+
+    @Test
+    func multiTermSpansDifferentFieldKinds() {
+        // One term hits the given name, the other hits the organization.
+        let c = person(given: "Alice", organization: "Globex")
+        #expect(c.matches(searchQuery: "alice globex"))
+        #expect(!c.matches(searchQuery: "alice acme"))
+    }
+
+    @Test
+    func multiTermCollapsesRepeatedWhitespace() {
+        let c = person(given: "Adam", family: "Wulf")
+        #expect(c.matches(searchQuery: "  Adam    Wulf  "))
+        #expect(c.matches(searchQuery: "Adam\tWulf"))
+    }
 }
