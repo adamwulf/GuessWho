@@ -58,13 +58,20 @@ extension Contact {
     /// organization/department/job, and the raw values of every email,
     /// phone number, and URL.
     ///
+    /// The query is split on whitespace into terms, and the contact matches
+    /// only when **every** term is found in **some** field — the fields need
+    /// not be the same. This lets "Adam Wulf" match a contact whose given name
+    /// is "Adam" and family name is "Wulf", where neither field on its own
+    /// contains the whole phrase.
+    ///
     /// Whitespace-only queries match every contact (treated as no filter).
     /// Used by the UI layer to filter the People and Organizations tabs.
     public func matches(searchQuery query: String) -> Bool {
-        let needle = query
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let terms = query
             .lowercased()
-        if needle.isEmpty { return true }
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        if terms.isEmpty { return true }
 
         let scalarFields: [String] = [
             namePrefix, givenName, middleName,
@@ -74,18 +81,15 @@ extension Contact {
             jobTitle, departmentName,
             organizationName, phoneticOrganizationName,
         ]
-        for hay in scalarFields where hay.lowercased().contains(needle) {
-            return true
+        let haystacks: [String] =
+            scalarFields.map { $0.lowercased() }
+            + emailAddresses.map { $0.value.lowercased() }
+            + phoneNumbers.map { $0.value.lowercased() }
+            + urlAddresses.map { $0.value.lowercased() }
+
+        // AND across terms: every term must appear in at least one field.
+        return terms.allSatisfy { term in
+            haystacks.contains { $0.contains(term) }
         }
-        for labeled in emailAddresses where labeled.value.lowercased().contains(needle) {
-            return true
-        }
-        for labeled in phoneNumbers where labeled.value.lowercased().contains(needle) {
-            return true
-        }
-        for labeled in urlAddresses where labeled.value.lowercased().contains(needle) {
-            return true
-        }
-        return false
     }
 }
