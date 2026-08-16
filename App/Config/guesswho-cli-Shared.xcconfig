@@ -57,10 +57,23 @@ OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)
 REGISTER_APP_GROUPS = YES
 
 // A real Info.plist (not a generated one) embedded into the binary's
-// __TEXT,__info_plist section, so the bare Mach-O can read
-// GuessWhoCLIAppGroup via Bundle.main at runtime — the same
-// xcconfig → Info.plist → Bundle.main pipeline the app uses (and the plan's
-// stated alternative to Muse/EssentialMCP's generated-BuildSettings.swift).
+// __TEXT,__info_plist section, carrying the CFBundle basics (version,
+// identifier) for the bare Mach-O.
+//
+// The App Group id is NOT read from this Info.plist. The original design read
+// GuessWhoCLIAppGroup via Bundle.main at runtime (the xcconfig → Info.plist →
+// Bundle.main pipeline, chosen as the plan's alternative to Muse/EssentialMCP's
+// generated-BuildSettings.swift). That alternative FAILED: the user-facing
+// `guesswho` command runs through the /usr/local/bin symlink, and under a
+// symlinked launch Bundle.main mis-resolves the main bundle, so the embedded
+// Info.plist key came back nil ("GuessWhoCLIAppGroup is missing from the
+// embedded Info.plist"). We now follow the proven Muse/EssentialMCP pattern:
+// the "Generate BuildSettings.swift" run-script phase (guesswho-cli.xcodeproj,
+// before Compile Sources) writes guesswho-cli/BuildSettings.swift from
+// $(GUESSWHO_CLI_APP_GROUP), so the id is a compiled-in constant invariant to
+// the launch path. The committed BuildSettings.swift holds the Release value
+// as a build-time snapshot; the phase regenerates it per configuration on
+// every build, so it can never drift from this xcconfig (INV-4).
 GENERATE_INFOPLIST_FILE = NO
 INFOPLIST_FILE = guesswho-cli/Info.plist
 CREATE_INFOPLIST_SECTION_IN_BINARY = YES

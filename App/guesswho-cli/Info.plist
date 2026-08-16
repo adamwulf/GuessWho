@@ -16,12 +16,13 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<!-- The CLI/MCP App Group id, derived from the ONE shared per-channel
-	     build var (Config/CLIAppGroup-*.xcconfig, INV-4). This plist is
-	     embedded into the bare Mach-O's __TEXT,__info_plist section
-	     (CREATE_INFOPLIST_SECTION_IN_BINARY), so the helper reads the id via
-	     Bundle.main at runtime and never carries a hardcoded group string. -->
-	<key>GuessWhoCLIAppGroup</key>
-	<string>$(GUESSWHO_CLI_APP_GROUP)</string>
+	<!-- The CLI/MCP App Group id is NOT carried here. It used to live in this
+	     plist and be read at runtime via Bundle.main, but under the
+	     /usr/local/bin symlink launch Bundle.main mis-resolves and the key
+	     came back nil. The id is now a compiled-in constant generated from
+	     $(GUESSWHO_CLI_APP_GROUP) — see guesswho-cli/BuildSettings.swift and
+	     the "Generate BuildSettings.swift" run-script phase. This plist stays
+	     for the CFBundle basics (version, identifier) embedded into the bare
+	     Mach-O's __TEXT,__info_plist section (CREATE_INFOPLIST_SECTION_IN_BINARY). -->
 </dict>
 </plist>

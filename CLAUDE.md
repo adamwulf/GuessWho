@@ -165,6 +165,22 @@ Run a single test or suite with `swift test --filter <name>`. The same
 targets are also exposed as the `GuessWhoSync` / `GuessWhoSyncTesting`
 Xcode schemes.
 
+### `guesswho-cli` helper: generated `BuildSettings.swift`
+
+The helper reads its CLI/MCP App Group id from a compiled-in constant,
+`BuildSettings.GUESSWHO_CLI_APP_GROUP` in `App/guesswho-cli/BuildSettings.swift`.
+That file is regenerated on every build by the `Generate BuildSettings.swift`
+Run Script phase in `guesswho-cli.xcodeproj`, from `$(GUESSWHO_CLI_APP_GROUP)`
+(`Config/CLIAppGroup-*.xcconfig`, INV-4). Never hand-edit it, and never read
+the id from the `Info.plist` via `Bundle.main` — under the `/usr/local/bin`
+symlink launch `Bundle.main` mis-resolves and the key comes back `nil` (this
+was the original bug).
+
+**Git:** the file is committed holding the **Release** value, so Release/CI
+builds regenerate it identically and leave the tree clean. A **Debug** build
+rewrites it to the `.debug` value; never commit that, and silence the churn
+with `git update-index --assume-unchanged App/guesswho-cli/BuildSettings.swift`.
+
 ## Identity: the GuessWho URL and unified contacts
 
 A contact is identified **only** by its GuessWho ID — a UUID the package mints
