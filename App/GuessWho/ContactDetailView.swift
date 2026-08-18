@@ -632,9 +632,12 @@ struct ContactDetailView: View {
         }
     }
 
-    /// A zero-size, accessibility-hidden button that binds ⌘Return to the same
-    /// `commitActiveEdit()` the checkmark "Done" button runs (that button uses
-    /// ⌘S). The note field is multi-line (`axis: .vertical`), so a bare Return
+    /// A zero-size, accessibility-hidden button that binds ⌘Return to
+    /// `commitActiveEdit()` — the note-commit step of the checkmark "Done"
+    /// button (that button uses ⌘S). In read-mode note editing this is exactly
+    /// the inline Done checkmark; in edit-contact mode Done also saves+dismisses
+    /// the contact, whereas ⌘Return commits only the note and keeps you editing.
+    /// The note field is multi-line (`axis: .vertical`), so a bare Return
     /// inserts a newline — ⌘Return is the save gesture. Hosted in `.background`
     /// and present only while a note/link editor is open, so the shortcut isn't
     /// stolen from other contexts. Lives in its own property to keep `body`
@@ -645,6 +648,8 @@ struct ContactDetailView: View {
             Button(action: commitActiveEdit) { Color.clear }
                 .frame(width: 0, height: 0)
                 .keyboardShortcut(.return, modifiers: .command)
+                // Match the Done checkmark's disabled state: no commit mid-save.
+                .disabled(isSavingEdit)
                 .accessibilityHidden(true)
         }
     }
