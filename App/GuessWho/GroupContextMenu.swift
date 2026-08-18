@@ -87,6 +87,14 @@ final class GroupContextMenu {
     /// a second create/rename/delete is refused while one is in flight.
     private var isMutating = false
 
+    /// The group whose context menu was most recently built — a fallback identity
+    /// for the Catalyst Email command. A `UICommandAlternate` carries no
+    /// `propertyList` of its own, so should the "Email Members Separately"
+    /// alternate ever fire with a sender that lacks the base command's `localID`,
+    /// the group is resolved from here instead of silently no-op'ing. Correct
+    /// because only one context menu is open at a time.
+    private var lastMenuGroupLocalID: String?
+
     private static let log = GuessWhoLog.logger("app.groups.contextmenu")
 
     /// Above this many recipients, "Email Members Separately" asks first — a
@@ -132,6 +140,9 @@ final class GroupContextMenu {
     }
 
     private func menu(for group: ContactGroup) -> UIMenu {
+        // Remember which group this menu is for, so the Catalyst Email alternate
+        // can fall back to it if its command sender lacks the `localID`.
+        lastMenuGroupLocalID = group.localID
         let email = UIMenu(title: "", options: .displayInline, children: emailElements(for: group))
         let rename = UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { [weak self] _ in
             self?.rename(group)
@@ -190,20 +201,22 @@ final class GroupContextMenu {
     // MARK: - Email
 
     /// Responder-chain entry point for the Catalyst `UICommand` and its Option
-    /// alternate. The group rides in as its `localID`; its display name is
-    /// resolved from the repository's warm groups cache (filled by whichever list
-    /// showed the row) for the alert copy, falling back gracefully if it isn't
-    /// there. The member fetch keys on the `localID` regardless, so email still
-    /// works even if the name can't be resolved.
+    /// alternate. The group rides in as its `localID` (the base command's
+    /// `propertyList`); the alternate carries none of its own, so it falls back to
+    /// the group whose menu is currently open. Its display name is resolved from
+    /// the repository's warm groups cache (filled by whichever list showed the
+    /// row) for the alert copy, falling back gracefully if it isn't there. The
+    /// member fetch keys on the `localID` regardless, so email still works even if
+    /// the name can't be resolved.
     func handleEmailCommand(_ sender: UICommand, individually: Bool) {
-        guard let localID = sender.propertyList as? String else { return }
+        guard let localID = (sender.propertyList as? String) ?? lastMenuGroupLocalID else { return }
         let name = repository.groups.first { $0.localID == localID }?.displayName
         emailMembers(localID: localID, displayName: name, individually: individually)
     }
 
     /// Closure entry point for the iPhone/iPad actions, which capture the whole
     /// group directly.
-    func emailMembers(of group: ContactGroup, individually: Bool) {
+    private func emailMembers(of group: ContactGroup, individually: Bool) {
         emailMembers(localID: group.localID, displayName: group.displayName, individually: individually)
     }
 
@@ -238,13 +251,15 @@ final class GroupContextMenu {
 
     /// Open one compose window per recipient, in order. Sequential rather than a
     /// burst so the mail app receives them cleanly instead of racing a dozen
-    /// simultaneous `open` calls.
+    /// simultaneous `open` calls. The "no mail app" alert shows only when NOTHING
+    /// opened — once some drafts are up, the user sees them, and warning about a
+    /// stray later failure would just be noise.
     private func openIndividual(_ recipients: [String]) async {
-        var anyFailed = false
+        var anyOpened = false
         for url in GroupEmailComposer.individualMailtoURLs(recipients: recipients) {
-            if !(await open(url)) { anyFailed = true }
+            if await open(url) { anyOpened = true }
         }
-        if anyFailed { presentMailUnavailableAlert() }
+        if !anyOpened { presentMailUnavailableAlert() }
     }
 
     /// `UIApplication.open` bridged to async via a continuation — the completion
