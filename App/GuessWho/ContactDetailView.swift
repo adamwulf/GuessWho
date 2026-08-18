@@ -421,6 +421,11 @@ struct ContactDetailView: View {
                 Section { activityFooter }
             }
         }
+        // ⌘Return commits the active note editor from the keyboard, mirroring
+        // the checkmark "Done" button. Attached here rather than on `body` to
+        // keep that already-maxed modifier chain within the type-checker's
+        // budget; covers both platform branches below, which reuse `list`.
+        .background { noteCommitShortcut }
         // Inject the owned editMode binding so EditButton drives this view's own
         // .editMode state, not an ambient one we can't tear down. Reset to
         // .inactive on every contact-edit exit path.
@@ -624,6 +629,23 @@ struct ContactDetailView: View {
             .disabled(isSavingEdit)
             .keyboardShortcut("s", modifiers: .command)
             .accessibilityLabel("Done")
+        }
+    }
+
+    /// A zero-size, accessibility-hidden button that binds ⌘Return to the same
+    /// `commitActiveEdit()` the checkmark "Done" button runs (that button uses
+    /// ⌘S). The note field is multi-line (`axis: .vertical`), so a bare Return
+    /// inserts a newline — ⌘Return is the save gesture. Hosted in `.background`
+    /// and present only while a note/link editor is open, so the shortcut isn't
+    /// stolen from other contexts. Lives in its own property to keep `body`
+    /// within the type-checker's budget.
+    @ViewBuilder
+    private var noteCommitShortcut: some View {
+        if isEditingAnything {
+            Button(action: commitActiveEdit) { Color.clear }
+                .frame(width: 0, height: 0)
+                .keyboardShortcut(.return, modifiers: .command)
+                .accessibilityHidden(true)
         }
     }
 
