@@ -105,6 +105,24 @@ final class SidebarViewController: UIViewController {
     private nonisolated(unsafe) var eventsChangedObserver: NSObjectProtocol?
     private nonisolated(unsafe) var guidesChangedObserver: NSObjectProtocol?
 
+    /// The right-click menu for a favorite CHILD row, routed by kind through the
+    /// same `FavoriteContextMenuRouter` the Favorites list uses: a favorited
+    /// person/organization gets "Add to Group", a favorited group gets Email All
+    /// Members / Rename / Delete, and events/guides/places get none. Parent
+    /// (section) rows have no menu. Lazy so it can capture `self` for the host and
+    /// the row resolver.
+    private lazy var favoriteContextMenus = FavoriteContextMenuRouter(
+        repository: repository,
+        favoritesStore: store,
+        host: self,
+        itemForRow: { [weak self] indexPath in
+            guard let self,
+                  let item = self.dataSource.itemIdentifier(for: indexPath),
+                  case .favorite(let id) = item else { return nil }
+            return self.favoriteItemsByID[id]
+        }
+    )
+
     init(
         store: FavoritesListStore,
         service: SyncService,
@@ -834,6 +852,33 @@ extension SidebarViewController: UICollectionViewDelegate {
             guard let favorite = favoriteItemsByID[id], let tab = favoriteSections[id] else { return }
             didSelect(.favorite(favorite, in: tab))
         }
+    }
+
+    /// Right-click a favorite child to get the same menu that record has in its
+    /// own list — the router returns nil for a parent (section) row and for kinds
+    /// with no menu, so those are unaffected. Opening the menu never changes the
+    /// sidebar selection.
+    func collectionView(
+        _ collectionView: UICollectionView,
+        contextMenuConfigurationForItemAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        favoriteContextMenus.configuration(forRowAt: indexPath)
+    }
+}
+
+// MARK: - GroupContextMenuEmailResponder
+
+extension SidebarViewController: GroupContextMenuEmailResponder {
+    // A favorited group's Catalyst Email command fires down the responder chain
+    // (see `GroupContextMenu.emailElements`); forward it to the router that built
+    // it. `individually` is what the Option alternate selects.
+    func emailGroupMembers(_ sender: UICommand) {
+        favoriteContextMenus.handleGroupEmailCommand(sender, individually: false)
+    }
+
+    func emailGroupMembersSeparately(_ sender: UICommand) {
+        favoriteContextMenus.handleGroupEmailCommand(sender, individually: true)
     }
 }
 

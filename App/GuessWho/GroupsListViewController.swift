@@ -2,32 +2,10 @@ import UIKit
 import GuessWhoSync
 import GuessWhoLogging
 
-@MainActor
-struct GroupDeletionOperation {
-    let deleteFromContacts: (ContactGroup) async throws -> Void
-    let removeFromFavorites: (ContactGroup) async throws -> Void
-
-    /// Returns a cleanup error only after Contacts deletion succeeded. Favorite
-    /// removal is deliberately unconditional and idempotent; no UI cache is
-    /// consulted before touching persistent favorites.
-    func delete(_ group: ContactGroup) async throws -> Error? {
-        try await deleteFromContacts(group)
-        return await cleanupFavorite(for: group)
-    }
-
-    func cleanupFavorite(for group: ContactGroup) async -> Error? {
-        do {
-            try await removeFromFavorites(group)
-            return nil
-        } catch {
-            return error
-        }
-    }
-}
-
-// `GroupMutationErrorPresentation`, `GroupNameInput`, and the name-entry prompt
-// live in `GroupPresentation.swift` — the "Add to Group" context menu on the
-// contact lists needs the same validation and the same error copy.
+// The group create/rename/delete/email flows and their error copy live in
+// `GroupContextMenu` (backed by `GroupPresentation.swift`'s `GroupNamePrompt`,
+// `GroupMutationErrorPresentation`, and `GroupDeletionOperation`) so the Groups
+// list, the Favorites list, and the sidebar share one implementation.
 
 /// UIKit Groups list. Used by both the Catalyst 3-column shell (as the
 /// supplementary column for `.groups`) and the iPhone tab shell (rooted in
@@ -50,8 +28,21 @@ final class GroupsListViewController: UIViewController {
 
     private let repository: ContactsRepository
     private let favoritesStore: FavoritesListStore
-    private let deletionOperation: GroupDeletionOperation
     private static let log = GuessWhoLog.logger("app.groups.list")
+
+    /// The shared group context menu + create/rename/delete/email coordinator.
+    /// Lazy so it can capture `self` for its presenter and mutation callbacks —
+    /// the same pattern as `AddToGroupMenu` on the contact lists. Its alerts go
+    /// through this VC's queue-until-visible `presentAlertWhenReady`, and it
+    /// disables the "＋" button and table while a mutation is in flight.
+    private lazy var groupContextMenu = GroupContextMenu(
+        repository: repository,
+        favoritesStore: favoritesStore,
+        host: self,
+        presentAlert: { [weak self] alert in self?.presentAlertWhenReady(alert) },
+        willBeginMutation: { [weak self] in self?.setGroupMutationUI(enabled: false) },
+        didEndMutation: { [weak self] in self?.setGroupMutationUI(enabled: true) }
+    )
 
     private enum CellID: String {
         case group
@@ -82,7 +73,6 @@ final class GroupsListViewController: UIViewController {
     private let retryButton = UIButton(type: .system)
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
     private var pendingAlert: UIAlertController?
-    private var isMutatingGroup = false
 
     /// Flips true once the first `loadGroups()` completes. Drives the
     /// spinner-vs-empty-label choice in `updateEmptyState()` — a LOCAL flag
@@ -106,15 +96,6 @@ final class GroupsListViewController: UIViewController {
     init(repository: ContactsRepository, favoritesStore: FavoritesListStore) {
         self.repository = repository
         self.favoritesStore = favoritesStore
-        self.deletionOperation = GroupDeletionOperation(
-            deleteFromContacts: { group in
-                try await repository.deleteGroup(group)
-            },
-            removeFromFavorites: { group in
-                _ = try await repository.setGroupFavorite(false, for: group)
-                favoritesStore.reload()
-            }
-        )
         super.init(nibName: nil, bundle: nil)
         title = "Groups"
     }
@@ -395,135 +376,15 @@ final class GroupsListViewController: UIViewController {
     // MARK: - Group mutations
 
     @objc private func addGroup() {
-        presentNameAlert(
-            title: "New Group",
-            actionTitle: "Add",
-            initialName: nil
-        ) { [weak self] name in
-            guard let self else { return }
-            Task {
-                guard self.beginGroupMutation() else { return }
-                defer { self.endGroupMutation() }
-                do {
-                    _ = try await self.repository.createGroup(name: name)
-                } catch {
-                    await self.presentMutationError(action: "create", error: error)
-                }
-            }
-        }
+        groupContextMenu.promptForNewGroup()
     }
 
-    private func rename(_ group: ContactGroup) {
-        presentNameAlert(
-            title: "Rename Group",
-            actionTitle: "Rename",
-            initialName: group.name
-        ) { [weak self] name in
-            guard let self, name != group.name else { return }
-            Task {
-                guard self.beginGroupMutation() else { return }
-                defer { self.endGroupMutation() }
-                do {
-                    try await self.repository.renameGroup(group, to: name)
-                } catch {
-                    await self.presentMutationError(action: "rename", error: error)
-                }
-            }
-        }
-    }
-
-    private func confirmDelete(_ group: ContactGroup) {
-        let name = GroupCell.displayName(for: group)
-        let alert = UIAlertController(
-            title: "Delete “\(name)”?",
-            message: "Contacts in this group will not be deleted.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
-            guard let self else { return }
-            Task {
-                guard self.beginGroupMutation() else { return }
-                defer { self.endGroupMutation() }
-                do {
-                    if let cleanupError = try await self.deletionOperation.delete(group) {
-                        self.presentFavoriteCleanupError(cleanupError, for: group)
-                    }
-                } catch {
-                    await self.presentMutationError(action: "delete", error: error)
-                }
-            }
-        })
-        presentAlertWhenReady(alert)
-    }
-
-    private func presentNameAlert(
-        title: String,
-        actionTitle: String,
-        initialName: String?,
-        completion: @escaping (String) -> Void
-    ) {
-        presentAlertWhenReady(
-            GroupNamePrompt.makeAlert(
-                title: title,
-                actionTitle: actionTitle,
-                initialName: initialName,
-                completion: completion
-            )
-        )
-    }
-
-    private func presentMutationError(action: String, error: Error) async {
-        Self.log.error("couldn't \(action) group: \(error.localizedDescription)")
-        let presentation = GroupMutationErrorPresentation.make(
-            error: error,
-            authorization: await repository.contactsAuthorizationStatus()
-        )
-        if presentation.shouldRefreshGroups {
-            await repository.loadGroups()
-        }
-
-        let alert = UIAlertController(
-            title: "Couldn’t \(action) group",
-            message: presentation.message,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        presentAlertWhenReady(alert)
-    }
-
-    private func beginGroupMutation() -> Bool {
-        guard !isMutatingGroup else { return false }
-        isMutatingGroup = true
-        navigationItem.rightBarButtonItem?.isEnabled = false
-        tableView.isUserInteractionEnabled = false
-        return true
-    }
-
-    private func endGroupMutation() {
-        isMutatingGroup = false
-        navigationItem.rightBarButtonItem?.isEnabled = true
-        tableView.isUserInteractionEnabled = true
-    }
-
-    private func presentFavoriteCleanupError(_ error: Error, for group: ContactGroup) {
-        Self.log.error("couldn't remove deleted group from favorites: \(error.localizedDescription)")
-        let alert = UIAlertController(
-            title: "Group Deleted",
-            message: "The group was deleted, but it couldn’t be removed from Favorites.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let retryError = await self.deletionOperation.cleanupFavorite(for: group) else {
-                    return
-                }
-                self.presentFavoriteCleanupError(retryError, for: group)
-            }
-        })
-        presentAlertWhenReady(alert)
+    /// Disable (or re-enable) the "＋" button and the table while a group
+    /// create/rename/delete is in flight. Driven by `GroupContextMenu`'s
+    /// mutation callbacks, which also enforce the one-at-a-time guard.
+    private func setGroupMutationUI(enabled: Bool) {
+        navigationItem.rightBarButtonItem?.isEnabled = enabled
+        tableView.isUserInteractionEnabled = enabled
     }
 
     /// Alerts can complete their action before UIKit finishes dismissing them.
@@ -602,7 +463,7 @@ extension GroupsListViewController: UITableViewDelegate {
             style: .destructive,
             title: "Delete"
         ) { [weak self] _, _, completion in
-            self?.confirmDelete(group)
+            self?.groupContextMenu.confirmDelete(group)
             completion(true)
         }
         deleteAction.image = UIImage(systemName: "trash")
@@ -617,7 +478,7 @@ extension GroupsListViewController: UITableViewDelegate {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return nil }
         let renameAction = UIContextualAction(style: .normal, title: "Rename") { [weak self] _, _, completion in
-            self?.rename(group)
+            self?.groupContextMenu.rename(group)
             completion(true)
         }
         renameAction.image = UIImage(systemName: "pencil")
@@ -632,19 +493,22 @@ extension GroupsListViewController: UITableViewDelegate {
     ) -> UIContextMenuConfiguration? {
         guard let localID = dataSource.itemIdentifier(for: indexPath),
               let group = groupsByLocalID[localID] else { return nil }
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            let rename = UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in
-                self?.rename(group)
-            }
-            let delete = UIAction(
-                title: "Delete",
-                image: UIImage(systemName: "trash"),
-                attributes: .destructive
-            ) { _ in
-                self?.confirmDelete(group)
-            }
-            return UIMenu(children: [rename, delete])
-        }
+        return groupContextMenu.configuration(for: group)
+    }
+}
+
+// MARK: - GroupContextMenuEmailResponder
+
+extension GroupsListViewController: GroupContextMenuEmailResponder {
+    // The Catalyst group Email command fires down the responder chain (see
+    // `GroupContextMenu.emailElements`); forward it to the coordinator that
+    // built it. `individually` is what the Option alternate selects.
+    func emailGroupMembers(_ sender: UICommand) {
+        groupContextMenu.handleEmailCommand(sender, individually: false)
+    }
+
+    func emailGroupMembersSeparately(_ sender: UICommand) {
+        groupContextMenu.handleEmailCommand(sender, individually: true)
     }
 }
 

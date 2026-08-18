@@ -182,13 +182,28 @@ final class AddToGroupMenu {
         self.selection = selection
     }
 
+    /// For hosts that already have the target contact(s) in hand and only need
+    /// `configuration(for:)` — e.g. the sidebar's favorited-contact rows, routed
+    /// through `FavoriteContextMenuRouter`. The row-based resolvers are unused on
+    /// this path, so they no-op.
+    convenience init(repository: ContactsRepository, host: UIViewController) {
+        self.init(repository: repository, host: host, contactAt: { _ in nil }, selection: { [] })
+    }
+
     // MARK: - Menu construction
 
     /// The configuration to return from
     /// `tableView(_:contextMenuConfigurationForRowAt:point:)`. Nil when the row
     /// resolves to no contact, so UIKit shows no menu rather than an empty one.
     func configuration(forRowAt indexPath: IndexPath) -> UIContextMenuConfiguration? {
-        let contacts = targets(forRowAt: indexPath)
+        configuration(for: targets(forRowAt: indexPath))
+    }
+
+    /// The configuration for an explicit set of target contacts. Nil for an empty
+    /// set, so UIKit shows no menu rather than an empty one — which is also what
+    /// gates a non-contact row (a favorited event/group/place resolves to no
+    /// contact, so the router hands over `[]`).
+    func configuration(for contacts: [Contact]) -> UIContextMenuConfiguration? {
         guard !contacts.isEmpty else { return nil }
         // No `previewProvider`: UIKit previews the row itself, which is the only
         // indication of the menu's target on iPhone/iPad. (Catalyst shows a

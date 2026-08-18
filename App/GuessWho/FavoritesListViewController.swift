@@ -333,29 +333,28 @@ final class FavoritesListViewController: UIViewController {
         emptyLabel.isHidden = !items.isEmpty
     }
 
-    /// The row context menu ("Add to Group") — see
-    /// `ContactsListViewController.addToGroupMenu`.
+    /// The row context menu, routed by kind through `FavoriteContextMenuRouter`.
     ///
-    /// Favorites is the one list whose rows are NOT all contacts: it mixes
-    /// people, organizations, events, groups, guides, and places. `contactAt`
-    /// resolves only the contact-backed rows (a favorited organization IS a
-    /// `Contact`, so it is included, and both can hold group membership); every
-    /// other kind resolves to nil, which `AddToGroupMenu` already turns into no
-    /// menu at all. That nil is the whole gate — there is no second kind check
-    /// to keep in sync with `FavoriteKind`.
+    /// Favorites is a list whose rows are NOT all contacts: it mixes people,
+    /// organizations, events, groups, guides, and places. The router hands a
+    /// favorited person or organization the "Add to Group" menu (both are
+    /// `Contact`s and both can hold group membership), a favorited group the
+    /// Email All Members / Rename / Delete menu, and everything else no menu at
+    /// all. The SAME router backs the Catalyst sidebar's favorite children, so a
+    /// favorite reads identically in both surfaces — which is the whole reason it
+    /// is factored out.
     ///
-    /// The selection is deliberately empty rather than read off the table: this
-    /// list is single-selection (it never calls
-    /// `ContactMultiSelectionSupport.configure`), so a menu here always acts on
-    /// exactly the row it was opened on.
-    private lazy var addToGroupMenu = AddToGroupMenu(
+    /// A menu here always acts on exactly the row it was opened on: this list is
+    /// single-selection (it never calls `ContactMultiSelectionSupport.configure`),
+    /// so the "Add to Group" path never sweeps in an offscreen selection.
+    private lazy var favoriteContextMenus = FavoriteContextMenuRouter(
         repository: repository,
+        favoritesStore: store,
         host: self,
-        contactAt: { [weak self] indexPath in
+        itemForRow: { [weak self] indexPath in
             guard let self, let itemID = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
-            return self.favoriteItemsByID[itemID]?.contact
-        },
-        selection: { [] }
+            return self.favoriteItemsByID[itemID]
+        }
     )
 }
 
@@ -393,15 +392,15 @@ extension FavoritesListViewController: UITableViewDelegate {
         (cell as? FavoriteCell)?.cancelPhotoLoad()
     }
 
-    /// Right-click / long-press menu, on the contact-backed rows only — see
-    /// `addToGroupMenu`. Event, group, guide, and place rows return no
+    /// Right-click / long-press menu, routed by the favorited row's kind — see
+    /// `favoriteContextMenus`. Event, guide, and place rows return no
     /// configuration, so they keep the behavior they have today (no menu).
     func tableView(
         _ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        addToGroupMenu.configuration(forRowAt: indexPath)
+        favoriteContextMenus.configuration(forRowAt: indexPath)
     }
 
     func tableView(
@@ -427,6 +426,21 @@ extension FavoritesListViewController: UITableViewDelegate {
 extension FavoritesListViewController: ScrollsToTop {
     func scrollToTop(animated: Bool) {
         tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
+// MARK: - GroupContextMenuEmailResponder
+
+extension FavoritesListViewController: GroupContextMenuEmailResponder {
+    // A favorited group's Catalyst Email command fires down the responder chain
+    // (see `GroupContextMenu.emailElements`); forward it to the router that
+    // built it. `individually` is what the Option alternate selects.
+    func emailGroupMembers(_ sender: UICommand) {
+        favoriteContextMenus.handleGroupEmailCommand(sender, individually: false)
+    }
+
+    func emailGroupMembersSeparately(_ sender: UICommand) {
+        favoriteContextMenus.handleGroupEmailCommand(sender, individually: true)
     }
 }
 

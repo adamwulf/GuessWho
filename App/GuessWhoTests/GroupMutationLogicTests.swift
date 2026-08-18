@@ -6,9 +6,14 @@ import GuessWhoSync
 
 private struct InjectedGroupUIFailure: Error {}
 
+/// The shared group-mutation building blocks — `GroupDeletionOperation` (now
+/// owned by `GroupContextMenu`), and the `GroupPresentation` helpers
+/// (`GroupMutationErrorPresentation`, `GroupNamePrompt`, `GroupNameInput`). These
+/// used to live on `GroupsListViewController`; the coordinator that now backs the
+/// Groups list, the Favorites list, and the sidebar reuses them.
 @MainActor
-@Suite("Groups list mutation logic")
-struct GroupsListViewControllerLogicTests {
+@Suite("Group mutation logic")
+struct GroupMutationLogicTests {
     @Test
     func deletionAlwaysRemovesPersistentFavoriteWithoutConsultingCache() async throws {
         let group = ContactGroup(localID: "group-id", name: "Family")
