@@ -5,8 +5,10 @@ import GuessWhoSync
 /// tapped in `GroupsListViewController` — on iPhone onto the Groups tab's nav
 /// stack, on Catalyst onto the supplementary column's nav. Renders members
 /// EXACTLY like `ContactsListViewController`: A–Z sectioning, the same two-line
-/// `ContactCell` (icon + bold-family-name + caption subtitle), and lazy photo
-/// loading + prefetch via `ContactPhotoLoader`.
+/// `ContactCell` (icon + bold-family-name + caption subtitle), lazy photo
+/// loading + prefetch via `ContactPhotoLoader`, and a search bar that filters
+/// the members with the same field coverage as the People list
+/// (`Contact.matches(searchQuery:)`).
 ///
 /// A group's members are a FLAT mix of people and organizations — the user
 /// asked for "all the people/orgs in the group" with no person/org split — so
@@ -35,7 +37,18 @@ final class GroupMembersListViewController: UIViewController {
     }
 
     private var tableView: UITableView!
+    private var searchController: UISearchController!
     private var dataSource: SectionedDataSource!
+
+    /// The live search text from this list's OWN search bar. Unlike the People
+    /// list — which stores its query on the shared, app-wide
+    /// `repository.peopleSearch` — a group member list holds its own member set
+    /// (`membersByID`) and sections it locally via `sectionedIDs(forMembers:)`,
+    /// so its filter is local per-VC state. That deliberately sidesteps the
+    /// stale-shared-query hazard `ContactsListViewController.configureSearch`
+    /// documents: a freshly built member list starts with an empty bar AND an
+    /// empty query, always in agreement, with nothing app-wide to drift from.
+    private var searchQuery = ""
 
     /// Nav-bar star that favorites/unfavorites THIS group — the group's
     /// equivalent of the contact/event detail screen's favorite toolbar button
@@ -115,6 +128,7 @@ final class GroupMembersListViewController: UIViewController {
         view.backgroundColor = .systemBackground
 
         configureTableView()
+        configureSearch()
         configureSortMenu()
         configureEmptyState()
         configureDataSource()
@@ -329,8 +343,26 @@ final class GroupMembersListViewController: UIViewController {
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            // Keyboard guide, not safe area: rows stay above the search keyboard
+            // instead of hiding under it. With no keyboard the guide rests at the
+            // safe-area bottom, so this is the same constraint the rest of the
+            // time (see ContactsListViewController.configureTableView).
+            tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+    }
+
+    /// Install the search bar and bind it to this list. Unlike the People list,
+    /// there is no shared repository query to republish here — the bar drives
+    /// this VC's local `searchQuery` through `updateSearchResults(for:)`, so
+    /// mount-time seeding isn't needed (the query starts empty with the bar).
+    private func configureSearch() {
+        searchController = UISearchController(searchResultsController: nil)
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchResultsUpdater = self
+        searchController.searchBar.placeholder = "Search members"
+        searchController.installKeyboardDismissal(for: tableView)
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
     }
 
     private func configureEmptyState() {
@@ -376,12 +408,22 @@ final class GroupMembersListViewController: UIViewController {
 
     // MARK: - Snapshot wiring
 
+    /// This group's members narrowed to the live `searchQuery`, matched with the
+    /// same field coverage the People list uses (`Contact.matches(searchQuery:)`
+    /// — every name component, org/department/job, and raw email/phone/URL
+    /// values). A whitespace-only query matches every member (treated as no
+    /// filter by `matches`), so an empty bar shows the full set.
+    private func filteredMembers() -> [Contact] {
+        Array(membersByID.values).filter { $0.matches(searchQuery: searchQuery) }
+    }
+
     private func applySnapshot(animated: Bool) {
         // Sort + section this group's members by the CURRENT global sort order
         // via the package, so the member list honors the same picker as the
         // People / Organizations lists (name A–Z or a relative-time bucket
-        // order).
-        let sections = repository.sectionedIDs(forMembers: Array(membersByID.values))
+        // order). Filter to the live search query first so search, sort, and
+        // sectioning all compose.
+        let sections = repository.sectionedIDs(forMembers: filteredMembers())
         sectionLetters = sections.map { $0.0 }
         // Hide the A–Z scrubber for time orders (bucket-name sections) — see
         // ContactsListViewController.applySnapshot.
@@ -408,14 +450,21 @@ final class GroupMembersListViewController: UIViewController {
     private func updateEmptyState() {
         let isEmpty = sectionLetters.isEmpty
         // Show the spinner only while the first fetch is in flight; once it lands
-        // (`hasLoaded`), an empty member set surfaces the "No Members" label. The
-        // label text is fixed (set in configureEmptyState) and has no search-empty
-        // variant, so it never needs re-assigning here.
+        // (`hasLoaded`), an empty member set surfaces the empty-state label.
         emptyLabel.isHidden = !isEmpty || !hasLoaded
         if isEmpty && !hasLoaded {
             activityIndicator.startAnimating()
         } else {
             activityIndicator.stopAnimating()
+        }
+        // Name the query when a search filtered every member out, so an empty
+        // list reads as "nothing matched" rather than "empty group" (mirrors
+        // ContactsListViewController.updateEmptyState).
+        let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isEmpty && hasLoaded && !trimmedQuery.isEmpty {
+            emptyLabel.text = "No members match \"\(trimmedQuery)\"."
+        } else {
+            emptyLabel.text = "No Members"
         }
     }
 }
@@ -484,6 +533,20 @@ extension GroupMembersListViewController: UITableViewDataSourcePrefetching {
 extension GroupMembersListViewController: ScrollsToTop {
     func scrollToTop(animated: Bool) {
         tableView.scrollToTopRespectingAdjustedInset(animated: animated)
+    }
+}
+
+// MARK: - UISearchResultsUpdating
+
+extension GroupMembersListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let text = searchController.searchBar.text ?? ""
+        guard searchQuery != text else { return }
+        searchQuery = text
+        // The query only narrows `filteredMembers()`; nothing republishes on its
+        // own, so re-apply a fresh snapshot here (unanimated, like the People
+        // list, so keystroke filtering doesn't churn row animations).
+        applySnapshot(animated: false)
     }
 }
 
