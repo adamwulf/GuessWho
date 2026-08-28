@@ -2,18 +2,23 @@ import SwiftUI
 import GuessWhoSync
 import GuessWhoLogging
 
-/// Read-only page for a "phantom" organization — a company named on people's
-/// cards that has no organization record of its own yet (see
-/// `PhantomOrganization`). It shows the company name, the people who name it,
-/// and the departments they list, plus a single action to CREATE a real
-/// organization card. Nothing here mutates Contacts until the user taps that
-/// button: opening a phantom never mints a record (product decision — phantoms
-/// stay virtual until asked for).
+/// Page for a "phantom" organization — a company named on people's cards that
+/// has no organization record of its own yet (see `PhantomOrganization`). While
+/// it is still a phantom it shows the company name, the people who name it, and
+/// the departments they list, plus a single action to CREATE a real organization
+/// card. Nothing here mutates Contacts until the user taps that button: opening
+/// a phantom never mints a record (product decision — phantoms stay virtual
+/// until asked for).
 ///
-/// Identity is the normalized `key`; `displayName` is the spelling shown. The
-/// associated people and departments are read live from the repository (an
-/// `@Observable`), so an edit elsewhere repaints this page, and creating the
-/// card navigates straight to the now-real record.
+/// The moment a record with this name exists — this page created one, or one
+/// appeared elsewhere — the page BECOMES that organization's real card in place
+/// by rendering `ContactDetailView`. So "Create organization card" turns this
+/// very card into the real, editable org right where the user is looking,
+/// without a separate navigation step.
+///
+/// Identity is the normalized `key`; `displayName` is the spelling shown. All
+/// content is read live from the repository (an `@Observable`), so an edit — or
+/// the create — repaints the page.
 @MainActor
 struct PhantomOrganizationDetailView: View {
     @Environment(ContactsRepository.self) private var repository
@@ -37,17 +42,27 @@ struct PhantomOrganizationDetailView: View {
         // Resolve the CANONICAL name from the phantom projection by `key`, so the
         // title/header read the same whether this page was reached from the
         // Organizations list (which passes the canonical spelling) or a person's
-        // card (their own spelling). `phantom` is nil once a record exists
-        // (post-create, or one appeared elsewhere) — fall back to the passed name.
+        // card (their own spelling). `phantom` is nil once a record exists — fall
+        // back to the passed name.
         let phantom = repository.phantomOrganization(key: key)
         let name = phantom?.displayName ?? displayName
+
+        // The instant a record with this name exists (this page created it, or
+        // one appeared elsewhere), BECOME its real card in place — reading it back
+        // through the repository is @Observable, so the create re-renders here and
+        // swaps the phantom UI for the real ContactDetailView with no navigation.
+        if let record = repository.organizationContact(named: name) {
+            ContactDetailView(id: record.contactID)
+        } else {
+            phantomBody(name: name, associatedCount: phantom?.associatedCount)
+        }
+    }
+
+    @ViewBuilder
+    private func phantomBody(name: String, associatedCount: Int?) -> some View {
         let people = repository.contactsAssociated(withOrganizationNamed: name)
         let departments = repository.departments(inOrganizationNamed: name)
-        // Read live so the page self-corrects: if a record with this name comes
-        // to exist, the action switches from "Create" to "Open" and no duplicate
-        // can be made.
-        let existingRecord = repository.organizationContact(named: name)
-        let associatedCount = phantom?.associatedCount ?? people.count
+        let count = associatedCount ?? people.count
 
         let list = List {
             Section {
@@ -60,12 +75,10 @@ struct PhantomOrganizationDetailView: View {
             }
 
             Section {
-                actionRow(existingRecord: existingRecord, name: name)
+                createCardRow(name: name)
                     .centeredRowContent()
             } footer: {
-                Text(existingRecord == nil
-                    ? "This company appears on \(peopleCountText(associatedCount)), but has no contact of its own. Create one to add notes, a photo, and more."
-                    : "This company now has a contact of its own.")
+                Text("This company appears on \(peopleCountText(count)), but has no contact of its own. Create one to add notes, a photo, and more.")
                     .centeredRowContent()
             }
 
@@ -111,37 +124,26 @@ struct PhantomOrganizationDetailView: View {
         }
     }
 
-    /// The single action row: create a real organization card, or — once one
-    /// exists — open it. `existingRecord` / `name` are resolved live in `body`.
-    @ViewBuilder
-    private func actionRow(existingRecord: Contact?, name: String) -> some View {
-        if let existingRecord {
-            Button {
-                pushContactReference(ContactReference(id: existingRecord.contactID))
-            } label: {
-                Label("Open organization card", systemImage: "arrow.right.circle")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.tint)
-        } else {
-            Button {
-                createCard(name: name)
-            } label: {
-                HStack {
-                    Label("Create organization card", systemImage: "plus.circle")
-                    Spacer()
-                    if isCreating {
-                        ProgressView()
-                    }
+    /// The create action. On tap it creates the real record; `body` then re-reads
+    /// the repository, finds the record, and swaps this whole page for the real
+    /// `ContactDetailView` in place — no separate navigation. Shown only while the
+    /// company is still a phantom (the record-exists branch never renders this).
+    private func createCardRow(name: String) -> some View {
+        Button {
+            createCard(name: name)
+        } label: {
+            HStack {
+                Label("Create organization card", systemImage: "plus.circle")
+                Spacer()
+                if isCreating {
+                    ProgressView()
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.tint)
-            .disabled(isCreating)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+        .disabled(isCreating)
     }
 
     private func personRow(_ person: Contact) -> some View {
@@ -171,21 +173,20 @@ struct PhantomOrganizationDetailView: View {
         count == 1 ? "1 contact" : "\(count) contacts"
     }
 
-    /// Create a real organization record carrying this company's name, then
-    /// navigate to it. Once the record exists the name is no longer a phantom —
-    /// the people who named it associate with the real card automatically — so
-    /// this page is left behind for the record's own detail.
+    /// Create a real organization record carrying this company's name. No
+    /// navigation: once the record exists the people who named it associate with
+    /// it automatically, and `body` re-renders this page AS the real card in
+    /// place (see the type doc). The `@Observable` repository drives that swap.
     private func createCard(name: String) {
         guard !isCreating else { return }
         isCreating = true
         Task { @MainActor in
             defer { isCreating = false }
             do {
-                let created = try await repository.createContact(
+                _ = try await repository.createContact(
                     Contact(contactType: .organization, organizationName: name)
                 )
                 Self.log.notice("phantom-org: created organization card for \(name)")
-                pushContactReference(ContactReference(id: created.contactID))
             } catch {
                 Self.log.error("phantom-org: create failed: \(error.localizedDescription)")
             }
