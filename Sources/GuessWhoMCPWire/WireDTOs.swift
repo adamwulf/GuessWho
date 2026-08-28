@@ -506,11 +506,12 @@ public struct WireNote: Codable, Sendable {
 }
 
 /// A custom field on a contact. `value` is a string ("true"/"false" for
-/// checkboxes, ISO 8601 for dates). Attachment-typed fields never cross.
+/// checkboxes, ISO 8601 for dates, an http/https address for urls).
+/// Attachment-typed fields never cross.
 public struct WireCustomField: Codable, Sendable {
     public let id: String
     public let name: String
-    /// "text", "multilineNote", "date", or "checkbox".
+    /// "text", "multilineNote", "date", "checkbox", or "url".
     public let type: String
     public let value: String
     public let modifiedAt: String

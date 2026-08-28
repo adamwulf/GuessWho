@@ -1177,9 +1177,21 @@ struct ContactDetailView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(field.field)
                             .font(.caption).foregroundStyle(.secondary)
-                        Text(Self.fieldDisplayValue(field))
-                            .font(.body)
-                            .textSelection(.enabled)
+                        if let url = Self.fieldURL(field) {
+                            // A `.url` custom field renders as a tinted, tappable
+                            // link that opens its web address. Non-url fields (and
+                            // any unparseable value) fall back to plain selectable
+                            // text below.
+                            Link(destination: url) {
+                                Text(Self.fieldDisplayValue(field))
+                                    .font(.body)
+                                    .foregroundStyle(.tint)
+                            }
+                        } else {
+                            Text(Self.fieldDisplayValue(field))
+                                .font(.body)
+                                .textSelection(.enabled)
+                        }
                     }
                     .centeredRowContent()
                     .contextMenu {
@@ -1196,6 +1208,16 @@ struct ContactDetailView: View {
                 }
             }
         }
+    }
+
+    /// The tappable target for a `.url`-type custom field: the stored value
+    /// parsed as an absolute http/https web URL, or nil for any other type or
+    /// an unparseable value (which then renders as plain text). Reuses the
+    /// package's canonicalizer so the app and the write path agree on shape.
+    private static func fieldURL(_ field: SidecarField) -> URL? {
+        guard field.type == .url, case .string(let raw) = field.value,
+              let canonical = SidecarField.canonicalWebURL(from: raw) else { return nil }
+        return URL(string: canonical)
     }
 
     /// Render a sidecar field's value for display. `.note`-type fields hold a

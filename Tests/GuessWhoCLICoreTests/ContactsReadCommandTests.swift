@@ -189,6 +189,21 @@ final class ContactsReadCommandTests: CLICommandTestCase {
         XCTAssertEqual(output.stdoutString, try expectedJSONText(page) + "\n")
     }
 
+    func testListCustomFieldsRendersURLTypedFieldAsJSON() async throws {
+        let page = WirePage(items: [
+            WireCustomField(id: "f1", name: "Website", type: "url",
+                            value: "https://example.com/path", modifiedAt: "2026-01-02T00:00:00Z"),
+        ], nextCursor: nil)
+        let response = WireResponse.customFieldPage(helperId: "h", messageId: "m", page: page)
+        let output = installRuntime(transport: StubCLITransport(response: response))
+
+        let command = try ContactsListCustomFields.parse(["c1"])
+        let code = await exitCode { try await command.run() }
+
+        XCTAssertNil(code)
+        XCTAssertEqual(output.stdoutString, try expectedJSONText(page) + "\n")
+    }
+
     // MARK: Render — groups page
 
     func testListGroupsRendersGroupPageAsJSON() async throws {

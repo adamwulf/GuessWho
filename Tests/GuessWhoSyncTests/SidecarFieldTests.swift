@@ -175,6 +175,151 @@ struct SidecarFieldTests {
         }
     }
 
+    // MARK: - URL (.url type)
+
+    @Test
+    func addFieldURLRoundTrip() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "website", type: .url, value: .string("https://example.com/path"))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.id == id)
+        #expect(f.type == .url)
+        #expect(f.value == .string("https://example.com/path"))
+        #expect(f.field == "website")
+        #expect(f.deletedAt == nil)
+        #expect(f.createdAt != nil)
+    }
+
+    @Test
+    func addFieldURLAcceptsHTTP() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "site", type: .url, value: .string("http://example.com"))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.type == .url)
+    }
+
+    @Test
+    func addFieldURLRejectsNonStringValue() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "u", type: .url, value: .bool(true))
+        }
+    }
+
+    @Test
+    func addFieldURLRejectsMissingScheme() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "u", type: .url, value: .string("example.com"))
+        }
+    }
+
+    @Test
+    func addFieldURLRejectsNonWebScheme() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "u", type: .url, value: .string("ftp://example.com"))
+        }
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "u", type: .url, value: .string("mailto:a@example.com"))
+        }
+    }
+
+    @Test
+    func addFieldURLRejectsMissingHost() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "u", type: .url, value: .string("https://"))
+        }
+    }
+
+    @Test
+    func addFieldURLRejectsGarbage() {
+        let (sync, _) = makeOrchestrator()
+        #expect(throws: SidecarStoreError.self) {
+            try sync.addField(at: contactKey, field: "u", type: .url, value: .string("not a url"))
+        }
+    }
+
+    @Test
+    func setFieldURLRejectsInvalidURL() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "u", type: .url, value: .string("https://example.com"))
+        #expect(throws: SidecarStoreError.self) {
+            try sync.setField(at: contactKey, id: id, field: "u", value: .string("nope"))
+        }
+    }
+
+    @Test
+    func urlFieldEncodeDecodeRoundTripThroughEnvelopeJSON() throws {
+        // A .url cell survives a full JSON envelope encode/decode unchanged —
+        // it is a plain JSON string, so the envelope coder needs no special
+        // handling and the type discriminator round-trips.
+        let (sync, sidecars) = makeOrchestrator()
+        let id = try sync.addField(at: contactKey, field: "website", type: .url, value: .string("https://example.com/x"))
+        let envelope = try #require(try sidecars.read(contactKey))
+        let data = try JSONEncoder().encode(envelope)
+        let roundTripped = try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+        let cell = try #require(roundTripped.fields[id.uuidString])
+        let decoded = try #require(SidecarField.decode(id: id, from: cell))
+        #expect(decoded.type == .url)
+        #expect(decoded.value == .string("https://example.com/x"))
+    }
+
+    @Test
+    func canonicalWebURLAcceptsAndTrims() {
+        #expect(SidecarField.canonicalWebURL(from: "https://example.com") == "https://example.com")
+        #expect(SidecarField.canonicalWebURL(from: "  https://example.com/p?q=1  ") == "https://example.com/p?q=1")
+        #expect(SidecarField.canonicalWebURL(from: "HTTP://Example.com") == "HTTP://Example.com")
+    }
+
+    @Test
+    func canonicalWebURLRejectsNonWebAddresses() {
+        #expect(SidecarField.canonicalWebURL(from: "") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "   ") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "example.com") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "ftp://example.com") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "mailto:a@example.com") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "not a url") == nil)
+    }
+
+    @Test
+    func canonicalWebURLRejectsUserinfoAndInteriorGarbage() {
+        // Userinfo before the host: reads as apple.com but resolves to
+        // evil.example — refused so a stored link cannot masquerade.
+        #expect(SidecarField.canonicalWebURL(from: "https://apple.com@evil.example") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://user:pass@example.com") == nil)
+        // Interior whitespace / control characters: a real address has none.
+        #expect(SidecarField.canonicalWebURL(from: "https://exa mple.com") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://example.com/a\tb") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://example.com/a\nb") == nil)
+    }
+
+    @Test
+    func addFieldURLStoresCanonicalTrimmedForm() throws {
+        // The engine's own write path stores the canonical (trimmed) form, so a
+        // value passed with surrounding whitespace persists clean — matching
+        // the wire path and the "canonical stored form" promise.
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(
+            at: contactKey, field: "website", type: .url,
+            value: .string("  https://example.com/x  "))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.value == .string("https://example.com/x"))
+    }
+
+    @Test
+    func setFieldURLStoresCanonicalTrimmedForm() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(
+            at: contactKey, field: "website", type: .url, value: .string("https://example.com"))
+        try sync.setField(
+            at: contactKey, id: id, field: "website", value: .string("  https://example.com/y  "))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.value == .string("https://example.com/y"))
+    }
+
     // MARK: - Blob (.blob type)
 
     private func blobPointer(

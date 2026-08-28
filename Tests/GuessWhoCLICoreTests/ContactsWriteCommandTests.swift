@@ -123,6 +123,28 @@ final class ContactsWriteCommandTests: CLICommandTestCase {
         XCTAssertEqual(try canonicalEncoding(built), try canonicalEncoding(expected))
     }
 
+    func testSetCustomFieldParsesURLType() throws {
+        let command = try ContactsSetCustomField.parse([
+            "c1", "Website", "https://example.com", "--type", "url",
+        ])
+        XCTAssertEqual(command.type, .url)
+        XCTAssertEqual(command.value, "https://example.com")
+    }
+
+    func testSetCustomFieldBuildsExpectedRequestWithURLType() throws {
+        let command = try ContactsSetCustomField.parse([
+            "c1", "Website", "https://example.com", "--type", "url", "--idempotency-token", "tok",
+        ])
+        let built = try WireRequest.create(
+            helperId: "cli-test", messageId: "m1",
+            parameters: MCP.CallTool.Parameters(
+                name: MCPTool.contactsSetCustomField.rawValue, arguments: command.argumentBag()))
+        let expected = WireRequest.contactsSetCustomField(
+            helperId: "cli-test", messageId: "m1", contactId: "c1", name: "Website",
+            type: "url", value: "https://example.com", idempotencyToken: "tok")
+        XCTAssertEqual(try canonicalEncoding(built), try canonicalEncoding(expected))
+    }
+
     // MARK: contacts delete-custom-field — parse + request build
 
     func testDeleteCustomFieldBuildsExpectedRequest() throws {

@@ -2,8 +2,7 @@ import Foundation
 
 /// The `--body` text-input side, shared by the note write commands and reused by
 /// later phases. A body comes from exactly one of three sources — an inline
-/// `--body <text>`, `--body -` (stdin), or a `--body-file <path>` companion —
-/// mirroring the photo commands' `<file | ->` convention (`CLIPhotoInput`).
+/// `--body <text>`, `--body -` (stdin), or a `--body-file <path>` companion.
 ///
 /// Bounded like the photo read so a runaway stdin/file stream can't exhaust
 /// memory: it reads one byte past the cap and rejects anything over the cap as a

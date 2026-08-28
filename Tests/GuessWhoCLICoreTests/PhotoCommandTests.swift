@@ -12,43 +12,38 @@ final class PhotoCommandTests: CLICommandTestCase {
     private let pngHeader = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
     // MARK: CLIPhotoInput — bounds
+    //
+    // stdin is the only source in production; `readBounded(from:)` is driven
+    // here over a seekable temp-file handle (sized cases) and a Pipe (the
+    // streaming case), which is exactly the handle shape stdin presents.
 
     func testReadBoundedReturnsSmallInputWhole() throws {
-        let path = try makeTempFile(pngHeader)
-        let data = try CLIPhotoInput.read(path: path)
+        let data = try CLIPhotoInput.readBounded(from: try handle(over: pngHeader), source: "stdin")
         XCTAssertEqual(data, pngHeader)
     }
 
     func testReadBoundedStopsOneByteOverTheCap() throws {
         let cap = WireEnvironment.maxContactPhotoBytes
         let oversize = Data(repeating: 0x41, count: cap + 100)
-        let path = try makeTempFile(oversize)
-        let data = try CLIPhotoInput.read(path: path)
+        let data = try CLIPhotoInput.readBounded(from: try handle(over: oversize), source: "stdin")
         // Reads at most cap + 1, so the caller can tell "over the cap" apart
         // from "exactly the cap".
         XCTAssertEqual(data.count, cap + 1)
     }
 
-    func testReadFromMissingFileThrowsUsageError() {
-        XCTAssertThrowsError(try CLIPhotoInput.read(path: "/no/such/file.png")) { error in
-            XCTAssertTrue(error is CLIUsageError)
-        }
-    }
-
     func testReadBoundedReturnsExactlyCapWhole() throws {
         let cap = WireEnvironment.maxContactPhotoBytes
         let atCap = Data(repeating: 0x41, count: cap)
-        let path = try makeTempFile(atCap)
-        let data = try CLIPhotoInput.read(path: path)
+        let data = try CLIPhotoInput.readBounded(from: try handle(over: atCap), source: "stdin")
         // Exactly the cap reads back whole (cap bytes, NOT cap + 1): the wire
         // limit is `<= maxContactPhotoBytes`, so the boundary value is accepted.
         XCTAssertEqual(data.count, cap)
     }
 
     func testReadBoundedReadsWholeInputFromStreamingHandle() throws {
-        // stdin (`-i -` / omitted) is a streaming, non-seekable FileHandle; a
-        // Pipe stands in. A small payload fits the pipe buffer, so writing then
-        // closing on this thread cannot deadlock the read.
+        // stdin is a streaming, non-seekable FileHandle; a Pipe stands in. A
+        // small payload fits the pipe buffer, so writing then closing on this
+        // thread cannot deadlock the read.
         let pipe = Pipe()
         let payload = Data(repeating: 0x42, count: 4_096)
         try pipe.fileHandleForWriting.write(contentsOf: payload)
@@ -58,48 +53,43 @@ final class PhotoCommandTests: CLICommandTestCase {
         try? pipe.fileHandleForReading.close()
     }
 
-    func testSetPhotoAcceptsInputExactlyAtCap() async throws {
+    // MARK: set-photo — media sniff + validation (photoArgumentBag)
+
+    func testSetPhotoAcceptsInputExactlyAtCap() throws {
         // A PNG-headed blob of exactly the cap: the media sniff reads the
-        // header and `data.count == cap` is within the `<= cap` limit, so
-        // set-photo builds the request and renders the ack — no rejection.
+        // header and `data.count == cap` is within the `<= cap` limit, so the
+        // bag is built — no rejection.
         let cap = WireEnvironment.maxContactPhotoBytes
         var atCap = pngHeader
         atCap.append(Data(repeating: 0x00, count: cap - pngHeader.count))
-        let path = try makeTempFile(atCap)
-        let output = installRuntime(transport: StubCLITransport(response: ack("The photo was set.")))
-        let command = try ContactsSetPhoto.parse(["c1", "-i", path])
-        let code = await exitCode { try await command.run() }
-        XCTAssertNil(code)
-        XCTAssertEqual(output.stdoutString, "The photo was set.\n")
+        let command = try ContactsSetPhoto.parse(["c1"])
+        let bag = try command.photoArgumentBag(from: atCap)
+        XCTAssertEqual(bag["mediaType"], .string("image/png"))
+        XCTAssertEqual(bag["dataBase64"], .string(atCap.base64EncodedString()))
     }
 
-    // MARK: CLIPhotoInput — media sniff (via set-photo argumentBag)
-
-    func testSetPhotoRejectsEmptyInput() async throws {
-        let path = try makeTempFile(Data())
-        let output = installRuntime(transport: StubCLITransport(response: ack("photoSet")))
-        let command = try ContactsSetPhoto.parse(["c1", "-i", path])
-        let code = await exitCode { try await command.run() }
-        XCTAssertEqual(code, CLIExitCode.usage.rawValue)
-        XCTAssertEqual(output.stderr, "The input image is empty.\n")
+    func testSetPhotoRejectsEmptyInput() throws {
+        let command = try ContactsSetPhoto.parse(["c1"])
+        XCTAssertThrowsError(try command.photoArgumentBag(from: Data())) { error in
+            XCTAssertEqual((error as? CLIUsageError)?.message, "The input image is empty.")
+        }
     }
 
-    func testSetPhotoRejectsOversizeInput() async throws {
-        let path = try makeTempFile(Data(repeating: 0x41, count: WireEnvironment.maxContactPhotoBytes + 1))
-        let output = installRuntime(transport: StubCLITransport(response: ack("photoSet")))
-        let command = try ContactsSetPhoto.parse(["c1", "-i", path])
-        let code = await exitCode { try await command.run() }
-        XCTAssertEqual(code, CLIExitCode.usage.rawValue)
-        XCTAssertEqual(output.stderr, "The input image is larger than 180 KiB.\n")
+    func testSetPhotoRejectsOversizeInput() throws {
+        let oversize = Data(repeating: 0x41, count: WireEnvironment.maxContactPhotoBytes + 1)
+        let command = try ContactsSetPhoto.parse(["c1"])
+        XCTAssertThrowsError(try command.photoArgumentBag(from: oversize)) { error in
+            XCTAssertEqual((error as? CLIUsageError)?.message, "The input image is larger than 180 KiB.")
+        }
     }
 
-    func testSetPhotoRejectsNonImageInput() async throws {
-        let path = try makeTempFile(Data("not an image".utf8))
-        let output = installRuntime(transport: StubCLITransport(response: ack("photoSet")))
-        let command = try ContactsSetPhoto.parse(["c1", "-i", path])
-        let code = await exitCode { try await command.run() }
-        XCTAssertEqual(code, CLIExitCode.usage.rawValue)
-        XCTAssertEqual(output.stderr, "The input must be a JPEG, PNG, GIF, HEIC, or WebP image.\n")
+    func testSetPhotoRejectsNonImageInput() throws {
+        let command = try ContactsSetPhoto.parse(["c1"])
+        XCTAssertThrowsError(try command.photoArgumentBag(from: Data("not an image".utf8))) { error in
+            XCTAssertEqual(
+                (error as? CLIUsageError)?.message,
+                "The input must be a JPEG, PNG, GIF, HEIC, or WebP image.")
+        }
     }
 
     // MARK: CLIPhotoOutput — integrity
@@ -222,22 +212,21 @@ final class PhotoCommandTests: CLICommandTestCase {
         XCTAssertEqual(output.stderr, WireErrorMessage.notFoundContact + "\n")
     }
 
-    // MARK: set-photo — parse, request-build, render
+    // MARK: set-photo — parse, request-build
 
-    func testSetPhotoParsesFlags() throws {
-        let command = try ContactsSetPhoto.parse(["c1", "-i", "/tmp/x", "--idempotency-token", "tok"])
+    func testSetPhotoParsesContactAndToken() throws {
+        let command = try ContactsSetPhoto.parse(["c1", "--idempotency-token", "tok"])
         XCTAssertEqual(command.contactId, "c1")
-        XCTAssertEqual(command.input, "/tmp/x")
         XCTAssertEqual(command.idempotencyToken, "tok")
     }
 
-    func testSetPhotoBuildsExpectedRequest() async throws {
-        let path = try makeTempFile(pngHeader)
-        let command = try ContactsSetPhoto.parse(["c1", "-i", path, "--idempotency-token", "tok"])
+    func testSetPhotoBuildsExpectedRequest() throws {
+        let command = try ContactsSetPhoto.parse(["c1", "--idempotency-token", "tok"])
         let built = try WireRequest.create(
             helperId: "cli-test", messageId: "m1",
             parameters: MCP.CallTool.Parameters(
-                name: MCPTool.contactsSetPhoto.rawValue, arguments: command.argumentBag()))
+                name: MCPTool.contactsSetPhoto.rawValue,
+                arguments: command.photoArgumentBag(from: pngHeader)))
         let expected = WireRequest.contactsSetPhoto(
             helperId: "cli-test", messageId: "m1", contactId: "c1",
             mediaType: "image/png", dataBase64: pngHeader.base64EncodedString(),
@@ -245,25 +234,15 @@ final class PhotoCommandTests: CLICommandTestCase {
         XCTAssertEqual(try canonicalEncoding(built), try canonicalEncoding(expected))
     }
 
-    func testSetPhotoRendersAckToStdout() async throws {
-        let path = try makeTempFile(pngHeader)
-        let output = installRuntime(transport: StubCLITransport(response: ack("The photo was set.")))
-        let command = try ContactsSetPhoto.parse(["c1", "-i", path])
-        let code = await exitCode { try await command.run() }
-        XCTAssertNil(code)
-        XCTAssertEqual(output.stdoutString, "The photo was set.\n")
-        XCTAssertTrue(output.stderr.isEmpty)
-    }
-
     // MARK: helpers
 
-    private func makeTempFile(_ data: Data) throws -> String {
+    /// A readable FileHandle over `data` (a temp file), the seekable-handle
+    /// shape `readBounded` sees when stdin is redirected from a file.
+    private func handle(over data: Data) throws -> FileHandle {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try data.write(to: url)
-        return url.path
-    }
-
-    private func ack(_ message: String) -> WireResponse {
-        .acknowledged(helperId: "h", messageId: "m", message: message)
+        let handle = try FileHandle(forReadingFrom: url)
+        addTeardownBlock { try? handle.close() }
+        return handle
     }
 }

@@ -1,5 +1,11 @@
 import Foundation
 
+/// Merge two envelopes cell-by-cell, keyed by UUID, whole-cell LWW.
+///
+/// Merge operates on RAW cells and never inspects a cell's inner `type`, so a
+/// cell this build cannot decode is carried through like any other. Keep it
+/// that way — do not decode-then-remerge — see the contract [^1].
+/// [^1]: [Sidecar forward-compatibility contract](../../docs/sidecar-compatibility.md)
 func merge(
     _ a: SidecarEnvelope,
     _ b: SidecarEnvelope

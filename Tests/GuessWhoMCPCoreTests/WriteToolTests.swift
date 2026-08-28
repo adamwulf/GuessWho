@@ -253,6 +253,45 @@ final class WriteToolTests: XCTestCase {
         XCTAssertEqual(readBack.value, "Genmaicha")
     }
 
+    func testURLFieldRoundTripsAndValidates() async {
+        let fixture = await writableFixture()
+        guard let jane = await janeHandle(fixture) else { return XCTFail("no jane") }
+
+        // Write type "url" with surrounding whitespace — the value stores
+        // trimmed and the write echo reads back type "url".
+        let write = await fixture.dispatcher.handle(.contactsSetCustomField(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, name: "Website", type: "url",
+            value: "  https://example.com/path  ", idempotencyToken: nil))
+        guard case .customField(_, _, let written) = write else {
+            return XCTFail("expected field echo, got \(write)")
+        }
+        XCTAssertEqual(written.type, "url")
+        XCTAssertEqual(written.value, "https://example.com/path", "url values store trimmed")
+
+        // A fresh read of the same field over the read tool agrees — write
+        // "url" must read back "url" (guards the historical text/note bug).
+        let read = await fixture.dispatcher.handle(.contactsListCustomFields(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, limit: nil, cursor: nil))
+        guard case .customFieldPage(_, _, let page) = read else {
+            return XCTFail("expected custom-field page, got \(read)")
+        }
+        guard let readBack = page.items.first(where: { $0.name == "Website" }) else {
+            return XCTFail("wrote a field but it wasn't read back")
+        }
+        XCTAssertEqual(readBack.type, "url", "write \"url\" must read back \"url\"")
+        XCTAssertEqual(readBack.value, "https://example.com/path")
+
+        // An invalid web address returns the typed url error and writes nothing.
+        let bad = await fixture.dispatcher.handle(.contactsSetCustomField(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            contactId: jane, name: "Website 2", type: "url",
+            value: "not a url", idempotencyToken: nil))
+        expectError(bad, code: .invalidParams)
+        XCTAssertEqual(bad?.errorPayload?.message, WireErrorMessage.invalidURLFieldValue)
+    }
+
     // MARK: - Event-tag Option B
 
     func testTagWriteOnUnadoptedEventReturnsTypedErrorAndMintsNothing() async throws {

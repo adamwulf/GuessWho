@@ -122,6 +122,13 @@ public final class GuessWhoSync: @unchecked Sendable {
     // Every cell is keyed by a per-instance UUID and carries an inner
     // value object { field, type, value, createdAt } per §5.2. A contact
     // or event may carry zero-to-many instances of any type.
+    //
+    // Each mutation below is a raw read-modify-write of the whole
+    // `[String: SidecarCell]` map — change the ONE cell being written and
+    // write the map back — so cells this build cannot decode ride along
+    // untouched. Never rebuild the envelope from the decoded field list; see
+    // the contract [^1].
+    // [^1]: [Sidecar forward-compatibility contract](../../docs/sidecar-compatibility.md)
 
     /// Adds a new field instance. Mints a UUID, writes a cell whose inner
     /// value object is { field, type, value, createdAt }. Returns the
@@ -137,6 +144,7 @@ public final class GuessWhoSync: @unchecked Sendable {
         createdAt: Date = Date()
     ) throws -> UUID {
         try SidecarField.validate(value: value, against: type)
+        let storedValue = SidecarField.storableValue(value, for: type)
         return try withKeyLocked(key) { ctx in
             let existing = try ctx.read()
             let id = UUID()
@@ -144,7 +152,7 @@ public final class GuessWhoSync: @unchecked Sendable {
             let inner = SidecarField.makeInnerValue(
                 field: field,
                 type: type,
-                value: value,
+                value: storedValue,
                 createdAt: createdAt
             )
             let cell = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
@@ -181,11 +189,12 @@ public final class GuessWhoSync: @unchecked Sendable {
             else { return }
             guard let type = SidecarField.type(of: existingCell) else { return }
             try SidecarField.validate(value: value, against: type)
+            let storedValue = SidecarField.storableValue(value, for: type)
 
             guard let inner = SidecarField.makeInnerValueForEdit(
                 existingCell: existingCell,
                 newField: field,
-                newValue: value,
+                newValue: storedValue,
                 newCreatedAt: createdAt
             ) else { return }
 
@@ -246,8 +255,11 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     /// Returns every decoded field in the entity's sidecar, in unspecified
-    /// order. Soft-deleted fields are returned. Cells whose `type` is
-    /// unknown to this package version are omitted (forward-compatibility).
+    /// order. Soft-deleted fields are returned. Cells whose `type` is unknown
+    /// to this build are omitted FROM THIS LIST only; the raw cell stays in the
+    /// envelope. Callers that persist MUST NOT rebuild the envelope from this
+    /// list — see the contract [^2].
+    /// [^2]: [Sidecar forward-compatibility contract](../../docs/sidecar-compatibility.md)
     public func fields(at key: SidecarKey) throws -> [SidecarField] {
         guard let envelope = try sidecars.read(key) else { return [] }
         var result: [SidecarField] = []

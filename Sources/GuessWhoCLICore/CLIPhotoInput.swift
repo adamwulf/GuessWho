@@ -2,26 +2,21 @@ import Foundation
 import GuessWhoMCPWire
 
 /// The `contacts set-photo` input side, as a pure helper so `swift test` can
-/// exercise the bounds/read logic over in-memory handles. Reads from a file
-/// path or stdin (path `nil` or `"-"`), bounded so a runaway stream can't
-/// exhaust memory: it stops one byte past the wire cap, and the caller rejects
-/// anything over the cap. Moved verbatim in behavior from the retired
-/// `CLIPhotoInput` (App/guesswho-cli/ContactsCommand.swift).
+/// exercise the bounds/read logic over in-memory handles. Reads image bytes
+/// from stdin, bounded so a runaway stream can't exhaust memory: it stops one
+/// byte past the wire cap, and the caller rejects anything over the cap.
+///
+/// stdin is the ONLY source. A `--input <path>` option was removed: the
+/// sandboxed CLI helper cannot open files outside its container, so a path
+/// failed for ordinary locations (e.g. /private/tmp) with a misleading
+/// "permission to save the file" error. Callers pass a file with shell
+/// redirection or a pipe (`... set-photo <id> < file`, `cat file | ...`),
+/// which the shell opens and hands to the helper as an inherited descriptor —
+/// the sandbox does not re-check it.
 public enum CLIPhotoInput {
-    /// Read image bytes from `path` (a file) or, when `path` is `nil` or
-    /// `"-"`, from `stdin`. Throws `CLIUsageError` on an unreadable source.
-    public static func read(path: String?) throws -> Data {
-        if let path, path != "-" {
-            let expandedPath = (path as NSString).expandingTildeInPath
-            let handle: FileHandle
-            do {
-                handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: expandedPath))
-            } catch {
-                throw CLIUsageError("Could not open \(expandedPath): \(error.localizedDescription)")
-            }
-            defer { try? handle.close() }
-            return try readBounded(from: handle, source: expandedPath)
-        }
+    /// Read image bytes from `stdin`, bounded. Throws `CLIUsageError` on a
+    /// read error.
+    public static func read() throws -> Data {
         return try readBounded(from: .standardInput, source: "stdin")
     }
 
