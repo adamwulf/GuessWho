@@ -5,10 +5,12 @@ import GuessWhoSyncTesting
 
 /// Proves the sidecar forward-compatibility contract directly: a cell whose
 /// inner `type` string this build does not know is HIDDEN from the decoded
-/// field list but PRESERVED verbatim in storage — it survives the store's
-/// read-modify-write and a whole-cell merge. If a future change breaks a leg of
-/// the contract (rebuilds the envelope from decoded fields, drops undecodable
-/// cells, or decode-then-remerges), one of these tests fails.
+/// field list but PRESERVED in storage — it survives the store's
+/// read-modify-write, a whole-cell merge, and a real envelope JSON round-trip.
+/// (Exactness is asserted with string values; the doc's numeric-precision
+/// caveat is the one thing not claimed byte-for-byte.) If a future change breaks
+/// a leg of the contract (rebuilds the envelope from decoded fields, drops
+/// undecodable cells, or decode-then-remerges), one of these tests fails.
 ///
 /// The contract and its rules live in `docs/sidecar-compatibility.md`.
 @Suite("Sidecar forward-compatibility: unknown-typed cells survive")
@@ -66,8 +68,8 @@ struct SidecarForwardCompatTests {
         #expect(visible.contains { $0.id == knownID })
         #expect(visible.contains { $0.id == unknownID } == false)
 
-        // STORAGE leg: the unknown cell is still in the raw envelope, byte for
-        // byte — value, author, and undeleted state all intact.
+        // STORAGE leg: the unknown cell is still in the raw envelope, with its
+        // value (a string, so exactly equal), author, and undeleted state intact.
         let raw = try #require(try sidecars.read(key))
         let preserved = try #require(raw.fields[unknownID.uuidString])
         #expect(preserved.value == seededValue)

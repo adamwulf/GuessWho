@@ -13,7 +13,8 @@ Read this before you touch `SidecarCell`, `SidecarEnvelope`, `SidecarMerge`,
 
 > A field whose `type` a build does not understand is **hidden, not deleted**.
 > The build keeps the cell, merges it, and writes it back; the field reappears
-> intact on any peer new enough to decode it. No data is lost.
+> on any peer new enough to decode it. The field is not lost (with one numeric
+> caveat spelled out below).
 
 Concretely: a `url`-typed custom field written by a newer build is invisible on
 an older build that predates the `url` type, but the older build stores it,
@@ -31,14 +32,16 @@ The unit that round-trips is the raw `SidecarCell` — its `value` (an opaque
 `JSONValue`) plus the `modifiedAt` / `modifiedBy` / `deletedAt` stamps. A
 cell's `type`, `field` name, payload, `createdAt`, and any *other keys a newer
 build adds inside that value object* all live within the opaque `value`, so
-they are carried through untouched even when this build cannot interpret them.
+their structure is carried through even when this build cannot interpret them —
+with the one numeric caveat below.
 
 **Preserved** (safe to add in a newer build):
 
 - A new `SidecarFieldType` raw value (a new field `type`) — the case this
   guarantee exists for.
 - A new key **inside** a cell's inner value object — it sits within the opaque
-  `value` and round-trips.
+  `value` and round-trips. String and boolean values are exact; a *number*
+  value is subject to the numeric caveat below.
 
 **NOT preserved** — do not rely on these surviving an older build:
 
@@ -49,14 +52,20 @@ they are carried through untouched even when this build cannot interpret them.
   `value` that is not decodable) — the envelope decoder skips it by design and
   counts it in `cellsDroppedOnDecode`. Only an unknown **inner `type`** is
   preserved; a structurally broken cell is not.
-- Byte-for-byte JSON. `JSONValue` decodes every number as `Double`, so an
-  integer beyond 2^53 or an exotic float is not guaranteed to re-encode
-  identically. Sidecar values in practice are strings and booleans (URLs,
-  notes, dates-as-ISO-strings, checkbox bools), which round-trip exactly; the
-  guarantee is about the field surviving, not about byte-identical JSON.
+- **Exact numeric values outside `Double`'s range.** `JSONValue` decodes every
+  number as `Double`, so an inner-value *number* is round-tripped through a
+  `Double`. Integers with magnitude ≤ 2^53 (and values a `Double` represents
+  exactly) survive unchanged; an integer beyond 2^53 (e.g.
+  `9007199254740993` → `9007199254740992`) or a high-precision float is
+  silently rounded — real value loss, not just a different byte spelling.
+  Today's sidecar values are strings, booleans, and small numbers (a `.blob`
+  pointer's `byteCount`, well under 2^53), so this bites nothing shipping; a
+  future writer must not stash a large-magnitude number inside a value object
+  and expect an older peer to return it exactly.
 
-Anything in the NOT-preserved list is a genuine schema change that needs its
-own migration (see the `schemaVersion` rule below), not this guarantee.
+The first two NOT-preserved items are genuine schema changes that need their own
+migration (see the `schemaVersion` rule below); the third is a limit on what
+kind of *value* you may safely add inside a cell.
 
 ## Why it holds — three legs
 

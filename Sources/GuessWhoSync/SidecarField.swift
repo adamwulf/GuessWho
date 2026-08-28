@@ -49,7 +49,7 @@ extension SidecarField {
     /// per §5.3.
     ///
     /// Returning nil is a DISPLAY-layer decision only — it hides the field, it
-    /// is NOT permission to delete the cell, which round-trips verbatim. Never
+    /// is NOT permission to delete the cell, which round-trips unchanged. Never
     /// persist only the fields that decode — see the contract [^1].
     /// [^1]: [Sidecar forward-compatibility contract](../../docs/sidecar-compatibility.md)
     static func decode(id: UUID, from cell: SidecarCell) -> SidecarField? {
