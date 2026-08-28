@@ -63,6 +63,21 @@ struct PhantomOrganizationsTests {
     }
 
     @Test @MainActor
+    func matchingAccessorIsIndependentOfListSearchAndFilter() async {
+        let repository = await seededRepository()
+        // Put the Organizations LIST into a state that would hide phantoms.
+        repository.organizationsFilter = .linked
+        repository.organizationsSearch = "zeta"
+
+        // The query-only accessor ignores both: all phantoms with blank query.
+        #expect(repository.phantomOrganizations(matching: "").map(\.key) == ["bletchley park", "zeta corp"])
+        // And honors ONLY its own query, not the list's search.
+        #expect(repository.phantomOrganizations(matching: "bletchley").map(\.key) == ["bletchley park"])
+        // The single-key lookup is likewise decoupled from the list state.
+        #expect(repository.phantomOrganization(key: "bletchley park")?.associatedCount == 2)
+    }
+
+    @Test @MainActor
     func mergedRowsInterleaveRecordsAndPhantomsByName() async {
         let repository = await seededRepository()
         repository.sortOrder = .lastFirst

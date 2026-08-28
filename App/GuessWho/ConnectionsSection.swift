@@ -253,12 +253,21 @@ struct AddLinkSheet: View {
     let onSave: (_ other: ContactID, _ note: String) -> Void
 
     @State private var noteText: String = ""
-    // Picker selection keyed on the opaque ContactID, not a raw localID — the
-    // app never uses localID as an identity/selection token.
-    @State private var selectedContactID: ContactID?
+    // Picker selection. A `.record` points at a real contact's ContactID; a
+    // `.phantom` points at a company that has no record yet (the org picker only)
+    // — its record is created on save so the link has a real endpoint. Never a
+    // raw localID: the app never uses localID as an identity/selection token.
+    @State private var selection: Selection?
     @State private var pickerSearch: String = ""
     @State private var eligible: [EligibleContact] = []
     @State private var didLoad = false
+    // Guards the async create-then-link path so Save can't fire twice.
+    @State private var isSaving = false
+
+    private enum Selection: Hashable {
+        case record(ContactID)
+        case phantom(key: String)
+    }
 
     var body: some View {
         NavigationStack {
@@ -285,13 +294,13 @@ struct AddLinkSheet: View {
                     } else {
                         ForEach(filtered(eligible: eligible), id: \.id) { entry in
                             Button {
-                                selectedContactID = entry.id
+                                selection = entry.selection
                             } label: {
                                 HStack {
                                     Text(entry.contact.displayName)
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    if selectedContactID == entry.id {
+                                    if selection == entry.selection {
                                         Image(systemName: "checkmark")
                                             .foregroundStyle(.tint)
                                     }
@@ -316,7 +325,7 @@ struct AddLinkSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(selectedContactID == nil)
+                        .disabled(selection == nil || isSaving)
                 }
             }
             .task {
@@ -329,8 +338,11 @@ struct AddLinkSheet: View {
     }
 
     private struct EligibleContact {
+        /// The row's display + search contact: a real record, or a name-only
+        /// synthesized organization for a phantom entry.
         let contact: Contact
-        let id: ContactID
+        let selection: Selection
+        var id: Selection { selection }
     }
 
     private func loadEligibleContacts() async -> [EligibleContact] {
@@ -345,7 +357,18 @@ struct AddLinkSheet: View {
             guard contact.contactType == kind else { continue }
             let id = contact.contactID
             if id == currentContactID { continue }
-            result.append(EligibleContact(contact: contact, id: id))
+            result.append(EligibleContact(contact: contact, selection: .record(id)))
+        }
+        // The org picker ALSO offers phantom organizations — companies named on
+        // people that have no record of their own yet. A link needs a real
+        // endpoint, so selecting one creates the record on save (see `save()`).
+        // Read the query-independent accessor so the list's own search/filter
+        // can't hide entries; this sheet applies its own `filtered(...)`.
+        if kind == .organization {
+            for phantom in repository.phantomOrganizations(matching: "") {
+                let synthetic = Contact(contactType: .organization, organizationName: phantom.displayName)
+                result.append(EligibleContact(contact: synthetic, selection: .phantom(key: phantom.key)))
+            }
         }
         return result.sorted { lhs, rhs in
             lhs.contact.displayName.localizedCaseInsensitiveCompare(rhs.contact.displayName) == .orderedAscending
@@ -359,12 +382,42 @@ struct AddLinkSheet: View {
     }
 
     private func save() {
-        guard let selectedContactID else { return }
-        // Hand the far endpoint's ContactID straight back — the link WRITE
-        // (`ContactsRepository.addLink`) resolves-or-mints BOTH endpoints
-        // internally, so there is no app-side reconcile here. Any write failure
-        // surfaces through the store's reload, not this sheet.
-        onSave(selectedContactID, noteText)
-        dismiss()
+        guard let selection, !isSaving else { return }
+        switch selection {
+        case .record(let id):
+            // Hand the far endpoint's ContactID straight back — the link WRITE
+            // (`ContactsRepository.addLink`) resolves-or-mints BOTH endpoints
+            // internally, so there is no app-side reconcile here. Any write
+            // failure surfaces through the store's reload, not this sheet.
+            onSave(id, noteText)
+            dismiss()
+        case .phantom(let key):
+            // A phantom has no record to point a link at, so create the
+            // organization first, then link to the real record it mints. The
+            // display name comes from the eligible row (canonical spelling).
+            let name = eligible.first { $0.selection == selection }?.contact.displayName ?? key
+            isSaving = true
+            Task { @MainActor in
+                do {
+                    // Reuse a record if one appeared since the picker loaded,
+                    // else create it — either way the link gets a real endpoint
+                    // and no duplicate org is minted on that race.
+                    let target: ContactID
+                    if let existing = repository.organizationContact(named: name) {
+                        target = existing.contactID
+                    } else {
+                        target = try await repository.createContact(
+                            Contact(contactType: .organization, organizationName: name)
+                        ).contactID
+                    }
+                    onSave(target, noteText)
+                    dismiss()
+                } catch {
+                    // Keep the sheet open so the user can retry; the failure
+                    // surfaces through the store's own error path.
+                    isSaving = false
+                }
+            }
+        }
     }
 }

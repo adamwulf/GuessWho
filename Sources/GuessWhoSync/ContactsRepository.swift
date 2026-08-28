@@ -2596,7 +2596,16 @@ public final class ContactsRepository: NSObject {
     public var phantomOrganizations: [PhantomOrganization] {
         // A phantom holds no link, so the Linked filter excludes every phantom.
         guard organizationsFilter != .linked else { return [] }
+        return phantomOrganizations(matching: organizationsSearch)
+    }
 
+    /// Every phantom organization whose name matches `query` (blank = all),
+    /// sorted by normalized `key`. Unlike the `phantomOrganizations` property
+    /// this ignores the Organizations list's Linked filter and reads ONLY the
+    /// passed query — callers with their own search box (the link picker) or a
+    /// single-key lookup use it so the list's transient search/filter state can
+    /// never leak into them.
+    public func phantomOrganizations(matching query: String) -> [PhantomOrganization] {
         // Names that already have a real organization record are NOT phantoms.
         // Precompute the record-name set once (O(n)) so the per-person check is
         // O(1) rather than a nested `organizationContact(named:)` scan.
@@ -2616,7 +2625,7 @@ public final class ContactsRepository: NSObject {
             spellings[key, default: []].insert(spelling)
         }
 
-        let query = organizationsSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         // Sort keys so the projection is DETERMINISTIC regardless of cache
         // iteration order (the list re-sorts by `sortOrder`, but a public API
         // must not depend on hash-order). When people spell one company several
@@ -2624,24 +2633,25 @@ public final class ContactsRepository: NSObject {
         // capitalized "Acme" wins over an all-lowercase "acme".
         return counts.keys.sorted().compactMap { key -> PhantomOrganization? in
             let name = spellings[key]?.sorted().first ?? key
-            // Honor the search box by matching a name-only synthesized org
-            // against the same query path the real records use.
-            if !query.isEmpty {
+            // Honor the query by matching a name-only synthesized org against the
+            // same search path the real records use.
+            if !trimmedQuery.isEmpty {
                 let probe = Contact(contactType: .organization, organizationName: name)
-                guard probe.matches(searchQuery: organizationsSearch) else { return nil }
+                guard probe.matches(searchQuery: query) else { return nil }
             }
             return PhantomOrganization(key: key, displayName: name, associatedCount: counts[key] ?? 0)
         }
     }
 
     /// The phantom organization identified by `key` (normalized on the way in,
-    /// so a raw name works too), or nil when no such phantom exists under the
-    /// current search/filter. Recomputes the phantom set — fine for a one-shot
-    /// detail open; the list caches its own map for per-row rendering.
+    /// so a raw name works too), or nil when no such phantom exists. Looks up
+    /// among ALL phantoms — independent of the list's search/filter — so a stale
+    /// Organizations-list search can't hide the match. Recomputes the phantom set;
+    /// fine for a one-shot detail open (the list caches its own map per reload).
     public func phantomOrganization(key: String) -> PhantomOrganization? {
         let needle = normalizedOrgKey(key)
         guard !needle.isEmpty else { return nil }
-        return phantomOrganizations.first { $0.key == needle }
+        return phantomOrganizations(matching: "").first { $0.key == needle }
     }
 
     /// The merged Organizations list — real records AND phantom organizations —
