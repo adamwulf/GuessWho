@@ -321,7 +321,12 @@ struct AddLinkSheet: View {
             .navigationTitle("Add Link")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+                    // Disabled during the async phantom create-then-link so a
+                    // late Cancel can't dismiss while that write is still in
+                    // flight (the Task would otherwise finish the create + link
+                    // anyway — Cancel would not actually cancel).
                     Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
