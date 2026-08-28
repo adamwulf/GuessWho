@@ -19,14 +19,13 @@ struct PhantomOrganizationDetailView: View {
     @Environment(ContactsRepository.self) private var repository
     @Environment(\.pushContactReference) private var pushContactReference
 
+    /// Normalized identity of the phantom (see `PhantomOrganization.key`). Used
+    /// to resolve the canonical display name + count from the repository, so the
+    /// page reads identically from either entry point.
     let key: String
+    /// The spelling the entry point had on hand — a fallback for the header/title
+    /// once a record exists and `key` no longer resolves to a phantom.
     let displayName: String
-
-    /// The synthesized, name-only organization used purely to render the avatar
-    /// monogram + color the same way a real organization row would.
-    private var avatarContact: Contact {
-        Contact(contactType: .organization, organizationName: displayName)
-    }
 
     /// True while the create-card write is in flight, so the button shows
     /// progress and can't be tapped twice.
@@ -35,16 +34,24 @@ struct PhantomOrganizationDetailView: View {
     private static let log = GuessWhoLog.logger("app.phantom-org")
 
     var body: some View {
-        let people = repository.contactsAssociated(withOrganizationNamed: displayName)
-        let departments = repository.departments(inOrganizationNamed: displayName)
+        // Resolve the CANONICAL name from the phantom projection by `key`, so the
+        // title/header read the same whether this page was reached from the
+        // Organizations list (which passes the canonical spelling) or a person's
+        // card (their own spelling). `phantom` is nil once a record exists
+        // (post-create, or one appeared elsewhere) — fall back to the passed name.
+        let phantom = repository.phantomOrganization(key: key)
+        let name = phantom?.displayName ?? displayName
+        let people = repository.contactsAssociated(withOrganizationNamed: name)
+        let departments = repository.departments(inOrganizationNamed: name)
         // Read live so the page self-corrects: if a record with this name comes
-        // to exist (this page created one, or one appeared elsewhere), the action
-        // switches from "Create" to "Open" and no duplicate can be made.
-        let existingRecord = repository.organizationContact(named: displayName)
+        // to exist, the action switches from "Create" to "Open" and no duplicate
+        // can be made.
+        let existingRecord = repository.organizationContact(named: name)
+        let associatedCount = phantom?.associatedCount ?? people.count
 
         let list = List {
             Section {
-                header
+                header(name: name)
                     .frame(maxWidth: .infinity)
                     .centeredRowContent(alignment: .center)
                     .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 16, trailing: 0))
@@ -53,11 +60,11 @@ struct PhantomOrganizationDetailView: View {
             }
 
             Section {
-                actionRow(existingRecord: existingRecord)
+                actionRow(existingRecord: existingRecord, name: name)
                     .centeredRowContent()
             } footer: {
                 Text(existingRecord == nil
-                    ? "This company appears on \(peopleCountText(people.count)), but has no contact of its own. Create one to add notes, a photo, and more."
+                    ? "This company appears on \(peopleCountText(associatedCount)), but has no contact of its own. Create one to add notes, a photo, and more."
                     : "This company now has a contact of its own.")
                     .centeredRowContent()
             }
@@ -84,7 +91,7 @@ struct PhantomOrganizationDetailView: View {
                 }
             }
         }
-        .navigationTitle(displayName)
+        .navigationTitle(name)
 
         #if targetEnvironment(macCatalyst)
         list.listStyle(.inset)
@@ -93,19 +100,21 @@ struct PhantomOrganizationDetailView: View {
         #endif
     }
 
-    private var header: some View {
+    private func header(name: String) -> some View {
         VStack(spacing: 10) {
-            ContactAvatar(contact: avatarContact, diameter: 96)
-            Text(displayName)
+            // Name-only synthesized org so the monogram initials + color match a
+            // real organization row's placeholder.
+            ContactAvatar(contact: Contact(contactType: .organization, organizationName: name), diameter: 96)
+            Text(name)
                 .font(.title2).bold()
                 .multilineTextAlignment(.center)
         }
     }
 
     /// The single action row: create a real organization card, or — once one
-    /// exists — open it. `existingRecord` is resolved live in `body`.
+    /// exists — open it. `existingRecord` / `name` are resolved live in `body`.
     @ViewBuilder
-    private func actionRow(existingRecord: Contact?) -> some View {
+    private func actionRow(existingRecord: Contact?, name: String) -> some View {
         if let existingRecord {
             Button {
                 pushContactReference(ContactReference(id: existingRecord.contactID))
@@ -118,7 +127,7 @@ struct PhantomOrganizationDetailView: View {
             .foregroundStyle(.tint)
         } else {
             Button {
-                createCard()
+                createCard(name: name)
             } label: {
                 HStack {
                     Label("Create organization card", systemImage: "plus.circle")
@@ -166,16 +175,16 @@ struct PhantomOrganizationDetailView: View {
     /// navigate to it. Once the record exists the name is no longer a phantom —
     /// the people who named it associate with the real card automatically — so
     /// this page is left behind for the record's own detail.
-    private func createCard() {
+    private func createCard(name: String) {
         guard !isCreating else { return }
         isCreating = true
         Task { @MainActor in
             defer { isCreating = false }
             do {
                 let created = try await repository.createContact(
-                    Contact(contactType: .organization, organizationName: displayName)
+                    Contact(contactType: .organization, organizationName: name)
                 )
-                Self.log.notice("phantom-org: created organization card for \(displayName)")
+                Self.log.notice("phantom-org: created organization card for \(name)")
                 pushContactReference(ContactReference(id: created.contactID))
             } catch {
                 Self.log.error("phantom-org: create failed: \(error.localizedDescription)")

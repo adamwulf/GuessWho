@@ -355,6 +355,10 @@ final class OrganizationsListViewController: UIViewController {
         sectionLetters = sections.map { $0.0 }
         // Cache the phantom set for this snapshot so the cell provider and the
         // row-tap handler resolve `.phantom` rows without recomputing it per row.
+        // This recomputes `phantomOrganizations` a second time (the merged-rows
+        // accessor above computes it internally); both are O(cache) and run only
+        // per reload — not per cell — so the second pass is deliberately kept for
+        // a single-purpose accessor rather than folding both into a tuple return.
         phantomsByKey = Dictionary(
             repository.phantomOrganizations.map { ($0.key, $0) },
             uniquingKeysWith: { first, _ in first }

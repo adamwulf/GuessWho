@@ -2841,11 +2841,11 @@ public final class ContactsRepository: NSObject {
     /// the name) resolves to the first in cache order, mirroring the
     /// relation-row lookup. nil when `name` is blank or nothing matches.
     public func organizationContact(named name: String) -> Contact? {
-        let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let needle = normalizedOrgKey(name)
         guard !needle.isEmpty else { return nil }
         return contacts.first { other in
             other.contactType == .organization &&
-                other.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+                normalizedOrgKey(other.displayName) == needle
         }
     }
 
