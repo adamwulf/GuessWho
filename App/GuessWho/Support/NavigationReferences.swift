@@ -32,6 +32,26 @@ struct GroupReference: Hashable {
     let group: ContactGroup
 }
 
+/// Navigation payload for "show this phantom organization" — a company named on
+/// people's cards that has no organization record of its own yet. Carries the
+/// normalized `key` (identity — equal keys are the same phantom) plus the
+/// `displayName` for the page title, so the destination renders its header
+/// without a repository round-trip. The scene delegate builds a read-only
+/// `PhantomOrganizationDetailView`. Identity is the key alone: the same phantom
+/// pushed from two spellings is one stack entry.
+struct PhantomOrganizationReference: Hashable {
+    let key: String
+    let displayName: String
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(key)
+    }
+
+    static func == (lhs: PhantomOrganizationReference, rhs: PhantomOrganizationReference) -> Bool {
+        lhs.key == rhs.key
+    }
+}
+
 /// Navigation payload for "open this imported guide's places." Carries the
 /// guide itself (like `GroupReference` carries its `ContactGroup`) so the scene
 /// delegate can build the destination `GuidePlacesListViewController` without a

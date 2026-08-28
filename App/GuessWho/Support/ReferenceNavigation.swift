@@ -16,6 +16,7 @@ extension EnvironmentValues {
     @Entry var pushContactReference: (ContactReference) -> Void = { _ in }
     @Entry var pushEventReference: (EventReference) -> Void = { _ in }
     @Entry var pushDepartmentReference: (DepartmentReference) -> Void = { _ in }
+    @Entry var pushPhantomOrganizationReference: (PhantomOrganizationReference) -> Void = { _ in }
     @Entry var pushGroupReference: (GroupReference) -> Void = { _ in }
     @Entry var pushGuideReference: (GuideReference) -> Void = { _ in }
     @Entry var pushPlaceReference: (PlaceReference) -> Void = { _ in }

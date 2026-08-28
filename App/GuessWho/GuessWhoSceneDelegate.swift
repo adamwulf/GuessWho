@@ -518,6 +518,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectContacts = { [weak self] contacts in
             self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
         }
+        list.didSelectPhantomOrganization = { [weak self] phantom in
+            self?.showPhantomOrganizationDetail(phantom: phantom, appDelegate: appDelegate)
+        }
         list.didRequestAddOrganization = { [weak self] in
             self?.createNewContact(
                 appDelegate: appDelegate,
@@ -772,6 +775,59 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         noteSelectionShown(.event(eventUUID: eventUUID, eventKitID: eventKitID), stampedOn: hosting)
     }
 
+    /// Catalyst: REPLACE the secondary column with a phantom-organization page,
+    /// entered by selecting a phantom row in the Organizations list — the same
+    /// fresh-nav-at-entry-point contract as `showContactDetail`. Its own state is
+    /// not restored (a phantom has no durable token), so reopening the scene
+    /// returns to the list; drill-downs (associated people, the created card)
+    /// push onto this same nav via the injected env closures.
+    private func showPhantomOrganizationDetail(phantom: PhantomOrganization, appDelegate: GuessWhoAppDelegate) {
+        guard let split else { return }
+        let nav = UINavigationController()
+        let hosting = makeCatalystPhantomOrganizationHosting(
+            key: phantom.key, displayName: phantom.displayName, on: nav, appDelegate: appDelegate
+        )
+        nav.viewControllers = [hosting]
+        nav.delegate = self
+        split.setViewController(nav, for: .secondary)
+    }
+
+    /// Catalyst: PUSH a phantom-organization page onto the secondary-column
+    /// `nav` — the in-detail drill-down from a person's "Associated Organization"
+    /// row, mirroring `pushCatalystDepartmentMembers`. Back-swipe returns to the
+    /// person.
+    private func pushCatalystPhantomOrganization(
+        ref: PhantomOrganizationReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let hosting = makeCatalystPhantomOrganizationHosting(
+            key: ref.key, displayName: ref.displayName, on: nav, appDelegate: appDelegate
+        )
+        nav.pushViewController(hosting, animated: true)
+    }
+
+    private func makeCatalystPhantomOrganizationHosting(
+        key: String,
+        displayName: String,
+        on nav: UINavigationController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> UIHostingController<some View> {
+        let detail = PhantomOrganizationDetailView(key: key, displayName: displayName)
+            .environment(appDelegate.service)
+            .environment(appDelegate.contactsRepository)
+            .environment(appDelegate.contactPhotoLoader)
+            .environment(appDelegate.favoritesStore)
+        let hosting = UIHostingController(
+            rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
+        )
+        // The SwiftUI navigationTitle bridges to the nav item, but set the title
+        // explicitly too so the column header is right before the first layout.
+        hosting.title = displayName
+        return hosting
+    }
+
     /// Replace the secondary column with one place's detail — the Places tab's
     /// selection handler. Same wiring as `showEventDetail`; place selections
     /// are not persisted for restoration (like the Guides tab's place pushes),
@@ -932,6 +988,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
                 self?.pushCatalystDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushPhantomOrganizationReference) { [weak self, weak nav] ref in
+                self?.pushCatalystPhantomOrganization(ref: ref, on: nav, appDelegate: appDelegate)
             }
             .environment(\.pushGroupReference) { [weak self, weak nav] ref in
                 self?.pushCatalystGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
@@ -1305,6 +1364,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 contacts: contacts, on: list.navigationController, appDelegate: appDelegate
             )
         }
+        list.didSelectPhantomOrganization = { [weak self, weak list] phantom in
+            self?.pushPhantomOrganizationDetail(
+                ref: PhantomOrganizationReference(key: phantom.key, displayName: phantom.displayName),
+                on: list?.navigationController,
+                appDelegate: appDelegate
+            )
+        }
         list.didRequestAddOrganization = { [weak self, weak list] in
             self?.createNewContact(
                 appDelegate: appDelegate,
@@ -1631,6 +1697,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
+    /// Push a read-only `PhantomOrganizationDetailView` for `ref` onto the owning
+    /// tab's `nav` stack — the iPhone entry point shared by the Organizations
+    /// list's phantom row and a person's "Associated Organization" row. Its own
+    /// drill-downs (associated people, the created card) push onto the same stack.
+    private func pushPhantomOrganizationDetail(
+        ref: PhantomOrganizationReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav else { return }
+        let detail = injectIPhonePushHandlers(
+            PhantomOrganizationDetailView(key: ref.key, displayName: ref.displayName)
+                .environment(appDelegate.service)
+                .environment(appDelegate.contactsRepository)
+                .environment(appDelegate.contactPhotoLoader)
+                .environment(appDelegate.favoritesStore),
+            on: nav,
+            appDelegate: appDelegate
+        )
+        let hosting = UIHostingController(rootView: detail)
+        hosting.title = ref.displayName
+        nav.pushViewController(hosting, animated: true)
+    }
+
     /// Bind `pushContactReference` / `pushEventReference` to the SAME nav this
     /// view is pushed onto. Both closures capture `nav` weakly so popping the
     /// stack tears down cleanly, and `self` weakly so they can't keep the
@@ -1649,6 +1739,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             .environment(\.pushDepartmentReference) { [weak self, weak nav] ref in
                 self?.pushDepartmentMembers(ref: ref, on: nav, appDelegate: appDelegate)
+            }
+            .environment(\.pushPhantomOrganizationReference) { [weak self, weak nav] ref in
+                self?.pushPhantomOrganizationDetail(ref: ref, on: nav, appDelegate: appDelegate)
             }
             .environment(\.pushGroupReference) { [weak self, weak nav] ref in
                 self?.pushGroupMembers(ref: ref, on: nav, appDelegate: appDelegate)
