@@ -167,8 +167,8 @@ guesswho contacts search "Ada Lovelace" --limit 20
 guesswho contacts get-photo <contact-id> -o contact.jpg
 guesswho contacts get-photo <contact-id> > contact.jpg
 
-# Photo bytes come from stdin by default, or from -i/--input.
-guesswho contacts set-photo <contact-id> -i contact.jpg
+# Photo bytes are read from stdin — pipe them, or redirect a file.
+cat contact.jpg | guesswho contacts set-photo <contact-id>
 guesswho contacts set-photo <contact-id> < contact.jpg
 ```
 

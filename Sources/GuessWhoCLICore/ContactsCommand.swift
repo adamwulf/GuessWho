@@ -111,21 +111,26 @@ public struct ContactsGetPhoto: CLIToolCommand {
 }
 
 /// `contacts set-photo` → `contacts_set_photo`. Reads bounded image bytes from
-/// stdin or a file, sniffs the media type, then rides the shared funnel; the
-/// ack renders through the default renderer.
+/// stdin, sniffs the media type, then rides the shared funnel; the ack renders
+/// through the default renderer.
 public struct ContactsSetPhoto: CLIToolCommand {
     public static let tool: MCPTool = .contactsSetPhoto
 
     public static let configuration = CommandConfiguration(
         commandName: "set-photo",
-        abstract: "Set a contact's photo from stdin or an image file."
+        abstract: "Set a contact's photo from image bytes on stdin.",
+        discussion: """
+            The image is read from stdin. Send the bytes in, or redirect a file:
+
+              cat headshot.jpg | guesswho contacts set-photo <contact-id>
+              guesswho contacts set-photo <contact-id> < headshot.jpg
+
+            JPEG, PNG, GIF, HEIC, or WebP, up to 180 KiB.
+            """
     )
 
     @Argument(help: "Contact id returned by contacts search.")
     public var contactId: String
-
-    @Option(name: [.short, .long], help: "Input image file. Omit, or use '-', to read image bytes from stdin.")
-    public var input: String?
 
     @Option(help: "Token that makes a retried update apply only once.")
     public var idempotencyToken: String?
@@ -133,7 +138,14 @@ public struct ContactsSetPhoto: CLIToolCommand {
     public init() {}
 
     public func argumentBag() throws -> [String: Value] {
-        let data = try CLIPhotoInput.read(path: input)
+        try photoArgumentBag(from: CLIPhotoInput.read())
+    }
+
+    /// Validate already-read image bytes (non-empty, within the cap, a
+    /// recognized media type) and build the request bag. Split from
+    /// `argumentBag()` so tests exercise the validation over in-memory data
+    /// without driving stdin.
+    func photoArgumentBag(from data: Data) throws -> [String: Value] {
         guard !data.isEmpty else {
             throw CLIUsageError("The input image is empty.")
         }
