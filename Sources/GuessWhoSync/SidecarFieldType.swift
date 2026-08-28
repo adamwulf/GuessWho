@@ -19,4 +19,5 @@ public enum SidecarFieldType: String, Sendable, Codable, Equatable {
     // The bytes live in `root/<kind>/<id>.<blobId>.dat`; the cell carries only
     // this small pointer so the synced envelope JSON stays small.
     case blob
+    case url            // payload is a JSON string (an absolute http/https web address)
 }

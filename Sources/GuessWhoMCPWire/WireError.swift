@@ -120,7 +120,7 @@ public enum WireErrorMessage {
         "That field name is reserved for the app's own use. Choose a different name."
     /// The custom-field type isn't one an assistant may write.
     public static let invalidFieldType =
-        "The type argument must be \"text\", \"multilineNote\", \"date\", or \"checkbox\"."
+        "The type argument must be \"text\", \"multilineNote\", \"date\", \"checkbox\", or \"url\"."
     // Write-path argument errors, centralized here (rather than inline in
     // the dispatcher) so the banned-vocabulary test scans them.
     public static let emptyNameArgument =
@@ -129,6 +129,8 @@ public enum WireErrorMessage {
         "The value argument for a date field must be an ISO 8601 date, like 2026-07-01."
     public static let invalidCheckboxFieldValue =
         "The value argument for a checkbox field must be \"true\" or \"false\"."
+    public static let invalidURLFieldValue =
+        "The value argument for a url field must be an http or https web address, like https://example.com."
     public static let reorderMustCoverEveryPlace =
         "The placeIds argument must contain every place in the guide exactly once, in the desired order."
     public static let invalidFavoriteKindArgument =
@@ -302,7 +304,7 @@ public enum WireErrorMessage {
             eventNeedsAppFirstToFavorite,
             invalidFieldType,
             emptyNameArgument,
-            invalidDateFieldValue, invalidCheckboxFieldValue,
+            invalidDateFieldValue, invalidCheckboxFieldValue, invalidURLFieldValue,
             reorderMustCoverEveryPlace, invalidFavoriteKindArgument,
             favoriteKindMismatch, staleFavorite, reorderMustCoverEveryFavorite,
             favoritesChangedDuringReorder, favoritesReadFailed,

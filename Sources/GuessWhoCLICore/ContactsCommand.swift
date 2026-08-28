@@ -415,6 +415,7 @@ public enum CLICustomFieldType: String, ExpressibleByArgument, CaseIterable {
     case multilineNote
     case date
     case checkbox
+    case url
 }
 
 /// `contacts set-custom-field` → `contacts_set_custom_field`. Upserts a named
@@ -433,10 +434,10 @@ public struct ContactsSetCustomField: CLIToolCommand {
     @Argument(help: "The field's name, e.g. \"Coffee order\".")
     public var name: String
 
-    @Argument(help: "The field's value: text; an ISO 8601 date for a date field; \"true\" or \"false\" for a checkbox.")
+    @Argument(help: "The field's value: text; an ISO 8601 date for a date field; \"true\" or \"false\" for a checkbox; an http or https web address for a url field.")
     public var value: String
 
-    @Option(help: "The field's type: text, multilineNote, date, or checkbox. Defaults to text.")
+    @Option(help: "The field's type: text, multilineNote, date, checkbox, or url. Defaults to text.")
     public var type: CLICustomFieldType?
 
     @Option(help: "Token that makes a retried update apply only once.")

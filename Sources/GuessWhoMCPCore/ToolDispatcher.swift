@@ -1864,9 +1864,12 @@ public actor ToolDispatcher {
                 code: .invalidParams, message: WireErrorMessage.invalidFieldType)
         }
         guard let payload = Self.fieldPayload(value, for: fieldType) else {
-            let expected = fieldType == .date
-                ? WireErrorMessage.invalidDateFieldValue
-                : WireErrorMessage.invalidCheckboxFieldValue
+            let expected: String
+            switch fieldType {
+            case .date: expected = WireErrorMessage.invalidDateFieldValue
+            case .url: expected = WireErrorMessage.invalidURLFieldValue
+            default: expected = WireErrorMessage.invalidCheckboxFieldValue
+            }
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: expected)
@@ -4461,6 +4464,7 @@ public actor ToolDispatcher {
         case "multilineNote": return .multilineNote
         case "date": return .date
         case "checkbox": return .checkbox
+        case "url": return .url
         default: return nil
         }
     }
@@ -4481,6 +4485,12 @@ public actor ToolDispatcher {
             case "false": return .bool(false)
             default: return nil
             }
+        case .url:
+            // Store the trimmed URL string. Returns nil for anything that is
+            // not an absolute http/https web address so the caller emits a
+            // typed error, mirroring how a bad date is rejected above.
+            guard let trimmed = SidecarField.canonicalWebURL(from: value) else { return nil }
+            return .string(trimmed)
         case .blob:
             return nil
         }

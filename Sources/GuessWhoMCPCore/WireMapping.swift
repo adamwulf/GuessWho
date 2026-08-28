@@ -179,7 +179,7 @@ enum WireMapping {
     private static func wireFieldType(_ type: SidecarFieldType) -> String {
         switch type {
         case .note: return "text"
-        case .multilineNote, .date, .checkbox, .blob: return type.rawValue
+        case .multilineNote, .date, .checkbox, .blob, .url: return type.rawValue
         }
     }
 

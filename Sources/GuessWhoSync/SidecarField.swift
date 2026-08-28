@@ -74,9 +74,31 @@ extension SidecarField {
         )
     }
 
+    /// Validate and canonicalize a web-address string for a `.url` field.
+    /// Returns the trimmed string when it parses as an absolute http/https
+    /// URL with a non-empty host; nil otherwise.
+    ///
+    /// The canonical stored form of a `.url` field is this trimmed string —
+    /// surrounding whitespace removed, no scheme rewriting, no percent
+    /// re-encoding. The wire write path stores exactly this canonical form
+    /// (`ToolDispatcher.fieldPayload`); `validate` mirrors `.date` and accepts
+    /// any string this canonicalizer approves.
+    public static func canonicalWebURL(from raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host(), !host.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
     /// Validate that `value`'s JSON shape matches `type`'s required shape
     /// per the §7.3 table. Throws `typeValueMismatch` on shape failure.
-    /// For `.date`, the value must additionally be ISO8601-parseable.
+    /// For `.date`, the value must additionally be ISO8601-parseable; for
+    /// `.url`, it must additionally be an absolute http/https web address.
     static func validate(value: JSONValue, against type: SidecarFieldType) throws {
         switch type {
         case .note, .multilineNote:
@@ -85,6 +107,13 @@ extension SidecarField {
             }
         case .date:
             guard case .string(let raw) = value, SidecarISO8601.date(from: raw) != nil else {
+                throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
+            }
+        case .url:
+            // The value is a JSON string holding an absolute http/https web
+            // address with a non-empty host. Mirrors how `.date` additionally
+            // requires an ISO8601-parseable string.
+            guard case .string(let raw) = value, canonicalWebURL(from: raw) != nil else {
                 throw SidecarStoreError.typeValueMismatch(expected: type, got: value)
             }
         case .checkbox:

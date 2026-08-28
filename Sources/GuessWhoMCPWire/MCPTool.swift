@@ -576,7 +576,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
             props["contactId"] = Self.string(Self.contactIdDoc)
             return ToolMetadata(
                 name: rawValue,
-                description: "List the custom fields the user has added to a contact (text, dates, and checkboxes).",
+                description: "List the custom fields the user has added to a contact (text, dates, checkboxes, and URLs).",
                 inputSchema: Self.schema(props, required: ["contactId"]))
         case .contactsListGroups:
             return ToolMetadata(
@@ -816,9 +816,9 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     "contactId": Self.string(Self.contactIdDoc),
                     "name": Self.string("The field's name, e.g. \"Coffee order\". Some names are reserved for the app's own use and are rejected."),
                     "type": Self.stringEnum(
-                        ["text", "multilineNote", "date", "checkbox"],
-                        description: "The field's type. \"text\" is a single line; \"multilineNote\" is a longer note. Defaults to \"text\"."),
-                    "value": Self.string("The field's value: text for text fields, an ISO 8601 date for date fields, \"true\" or \"false\" for checkboxes."),
+                        ["text", "multilineNote", "date", "checkbox", "url"],
+                        description: "The field's type. \"text\" is a single line; \"multilineNote\" is a longer note; \"url\" is a web address. Defaults to \"text\"."),
+                    "value": Self.string("The field's value: text for text fields, an ISO 8601 date for date fields, \"true\" or \"false\" for checkboxes, an http or https web address for url fields."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["contactId", "name", "value"]))
         case .contactsDeleteCustomField:
