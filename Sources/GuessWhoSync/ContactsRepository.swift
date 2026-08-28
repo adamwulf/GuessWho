@@ -2298,8 +2298,8 @@ public final class ContactsRepository: NSObject {
     /// `.blob` fields are EXCLUDED: they are internal infrastructure (e.g. the
     /// `previousPhoto` snapshot), not user-editable fields. Surfacing one would
     /// render a phantom row (literally "previousPhoto") in the custom-fields UI
-    /// — a product-principle violation. The surface is text/date/checkbox only;
-    /// blobs are read through their own typed accessors
+    /// — a product-principle violation. The surface is text/date/checkbox/url
+    /// only; blobs are read through their own typed accessors
     /// (`GuessWhoSync.blobFieldData`).
     ///
     /// Fields whose NAME is reserved are likewise EXCLUDED. A user note is

@@ -284,6 +284,42 @@ struct SidecarFieldTests {
         #expect(SidecarField.canonicalWebURL(from: "not a url") == nil)
     }
 
+    @Test
+    func canonicalWebURLRejectsUserinfoAndInteriorGarbage() {
+        // Userinfo before the host: reads as apple.com but resolves to
+        // evil.example — refused so a stored link cannot masquerade.
+        #expect(SidecarField.canonicalWebURL(from: "https://apple.com@evil.example") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://user:pass@example.com") == nil)
+        // Interior whitespace / control characters: a real address has none.
+        #expect(SidecarField.canonicalWebURL(from: "https://exa mple.com") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://example.com/a\tb") == nil)
+        #expect(SidecarField.canonicalWebURL(from: "https://example.com/a\nb") == nil)
+    }
+
+    @Test
+    func addFieldURLStoresCanonicalTrimmedForm() throws {
+        // The engine's own write path stores the canonical (trimmed) form, so a
+        // value passed with surrounding whitespace persists clean — matching
+        // the wire path and the "canonical stored form" promise.
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(
+            at: contactKey, field: "website", type: .url,
+            value: .string("  https://example.com/x  "))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.value == .string("https://example.com/x"))
+    }
+
+    @Test
+    func setFieldURLStoresCanonicalTrimmedForm() throws {
+        let (sync, _) = makeOrchestrator()
+        let id = try sync.addField(
+            at: contactKey, field: "website", type: .url, value: .string("https://example.com"))
+        try sync.setField(
+            at: contactKey, id: id, field: "website", value: .string("  https://example.com/y  "))
+        let f = try #require(try sync.field(at: contactKey, id: id))
+        #expect(f.value == .string("https://example.com/y"))
+    }
+
     // MARK: - Blob (.blob type)
 
     private func blobPointer(

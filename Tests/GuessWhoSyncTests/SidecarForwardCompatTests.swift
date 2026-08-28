@@ -76,6 +76,43 @@ struct SidecarForwardCompatTests {
     }
 
     @Test
+    func unknownTypedCellWithUnknownInnerKeySurvivesEnvelopeJSONRoundTrip() throws {
+        // A cell a NEWER build wrote: an unknown inner `type` AND an extra key
+        // this build does not know, placed INSIDE the opaque inner value
+        // object. Both must survive a real JSON envelope encode/decode — the
+        // serialization leg the in-memory tests above do not exercise. (An
+        // unknown key at the CELL or ENVELOPE level would NOT survive; the
+        // guarantee covers only what rides inside the value object.)
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var innerObject: [String: JSONValue]
+        if case .object(let base) = unknownInner(url: "https://example.com/x", at: stamp) {
+            innerObject = base
+        } else {
+            innerObject = [:]
+        }
+        innerObject["futureInnerKey"] = .string("keep me")
+        let inner = JSONValue.object(innerObject)
+
+        let envelope = SidecarEnvelope(entityID: key.id, fields: [
+            unknownID.uuidString: SidecarCell(
+                value: inner, modifiedAt: stamp, modifiedBy: "future-device"),
+        ])
+
+        let data = try JSONEncoder().encode(envelope)
+        let decoded = try JSONDecoder().decode(SidecarEnvelope.self, from: data)
+
+        // The cell survived serialization, with its whole opaque inner value —
+        // including the unknown inner key — intact.
+        let cell = try #require(decoded.fields[unknownID.uuidString])
+        #expect(cell.value == inner)
+        #expect(cell.modifiedBy == "future-device")
+        #expect(decoded.cellsDroppedOnDecode == 0)
+
+        // And it is still hidden from the decoded field view.
+        #expect(SidecarField.decode(id: unknownID, from: cell) == nil)
+    }
+
+    @Test
     func unknownTypedCellSurvivesWholeCellMerge() throws {
         let stamp = Date(timeIntervalSince1970: 1_700_000_000)
         let unknownValue = unknownInner(url: "https://example.com/y", at: stamp)

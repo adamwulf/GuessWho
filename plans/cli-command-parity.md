@@ -141,7 +141,7 @@ on stdout; **bytes** = raw photo bytes on stdout; **ack** = the fixed
 | `contacts_create` | `contacts create` | — | `--kind` + one flag per scalar field (`--given-name`, `--family-name`, `--organization`, `--job-title`, `--birthday`, …) + `--json`/`--json-file` for the list fields + `--idempotency-token` | flags (+ optional `--json` for lists) | JSON contact card (echo) |
 | `contacts_update` | `contacts update` | `<contact-id>` | `--kind` + the same scalar flags (scalars-only by wire construction — `WireContactScalarFields`, `WireDTOs.swift:315-336`) + `--idempotency-token` | args | JSON contact card (echo) |
 | `contacts_delete` | `contacts delete` | `<contact-id>` | `--idempotency-token` | args | waits on the in-app confirmation, up to the tool's 300 s timeout (`MCPTool.timeout`, `MCPTool.swift:200-205`); approved → ack `contactDeleted` on stdout, exit 0; declined → stderr note, **exit 10** (§4, §6 #1) |
-| `contacts_set_photo` | `contacts set-photo` ✅ shipped | `<contact-id>` | `-i/--input <file\|->` `--idempotency-token` | bytes ← stdin or file | ack (`photoSet`) |
+| `contacts_set_photo` | `contacts set-photo` ✅ shipped | `<contact-id>` | `--idempotency-token` | bytes ← stdin (pipe or `< file`) | ack (`photoSet`) |
 | `contacts_delete_photo` | `contacts delete-photo` | `<contact-id>` | `--idempotency-token` | args | ack (`photoDeleted`) |
 | `contacts_add_value` | `contacts add-value` | `<contact-id> <field> <value>` (`field` ∈ `phone email url related_name date` — `WireContactListField`, `WireRequest.swift:7-13`) | `--label --idempotency-token` | args | JSON contact card (echo) |
 | `contacts_delete_value` | `contacts delete-value` | `<contact-id> <field> <value>` | `--idempotency-token` | args | JSON contact card (echo) |

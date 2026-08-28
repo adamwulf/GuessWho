@@ -3,26 +3,60 @@
 The sidecar is JSON-in-iCloud (see the storage/sync decision). Peers on
 **different app versions** read, merge, and write the **same** synced
 envelopes. This document states the guarantee that makes that safe — and the
-rules a future change must keep — so that adding a new field `type` (or any
-other additive schema change) never destroys data on a peer that does not yet
-understand it.
+rules a future change must keep — so that adding a new field `type` never
+destroys data on a peer that does not yet understand it.
 
 Read this before you touch `SidecarCell`, `SidecarEnvelope`, `SidecarMerge`,
 `SidecarField`, `SidecarFieldType`, or the store's read-modify-write.
 
 ## The guarantee
 
-> A peer that cannot decode a cell **preserves it verbatim**. It does not show
-> the field, but it keeps the bytes and syncs them back unchanged. The field
-> reappears intact on any peer new enough to decode it. No data is lost.
+> A field whose `type` a build does not understand is **hidden, not deleted**.
+> The build keeps the cell, merges it, and writes it back; the field reappears
+> intact on any peer new enough to decode it. No data is lost.
 
 Concretely: a `url`-typed custom field written by a newer build is invisible on
 an older build that predates the `url` type, but the older build stores it,
 merges it, and writes it back. When the envelope reaches an up-to-date build
-again, the field is exactly as written.
+again, the field is there with the same `type`, `field` name, value, and dates.
 
-"Unknown to this build" is always a **display** state, never a **storage**
-state.
+"Unknown to this build" is a **display** state, never a **storage** state — for
+the things this guarantee covers. It covers exactly what rides *inside* a
+cell's opaque inner value object; the boundary below says what that is and,
+just as importantly, what it is not.
+
+## What is and is not preserved
+
+The unit that round-trips is the raw `SidecarCell` — its `value` (an opaque
+`JSONValue`) plus the `modifiedAt` / `modifiedBy` / `deletedAt` stamps. A
+cell's `type`, `field` name, payload, `createdAt`, and any *other keys a newer
+build adds inside that value object* all live within the opaque `value`, so
+they are carried through untouched even when this build cannot interpret them.
+
+**Preserved** (safe to add in a newer build):
+
+- A new `SidecarFieldType` raw value (a new field `type`) — the case this
+  guarantee exists for.
+- A new key **inside** a cell's inner value object — it sits within the opaque
+  `value` and round-trips.
+
+**NOT preserved** — do not rely on these surviving an older build:
+
+- A new key at the **`SidecarCell`** level (a sibling of `value` /
+  `modifiedAt`) or at the **`SidecarEnvelope`** level. Both decode with fixed
+  `CodingKeys`, so an unknown key there is dropped on re-encode.
+- A cell that is malformed at the **cell** level (e.g. a bad `modifiedAt`, or a
+  `value` that is not decodable) — the envelope decoder skips it by design and
+  counts it in `cellsDroppedOnDecode`. Only an unknown **inner `type`** is
+  preserved; a structurally broken cell is not.
+- Byte-for-byte JSON. `JSONValue` decodes every number as `Double`, so an
+  integer beyond 2^53 or an exotic float is not guaranteed to re-encode
+  identically. Sidecar values in practice are strings and booleans (URLs,
+  notes, dates-as-ISO-strings, checkbox bools), which round-trip exactly; the
+  guarantee is about the field surviving, not about byte-identical JSON.
+
+Anything in the NOT-preserved list is a genuine schema change that needs its
+own migration (see the `schemaVersion` rule below), not this guarantee.
 
 ## Why it holds — three legs
 
@@ -71,15 +105,20 @@ list a caller sees. They remove the field from view, never from the envelope.
 - **Keep merge operating on raw cells.** Do not decode-then-remerge; do not
   merge field-by-decoded-field. Whole-cell LWW by UUID is what carries unknown
   cells through.
-- **Keep changes additive.** Add a new `SidecarFieldType` case; do not
-  repurpose or remove an existing raw value, and do not change an existing
-  type's stored payload shape. A removed/renamed raw value turns existing
-  stored cells into "unknown" on the very build that wrote them.
-- **Do not bump `schemaVersion` for an additive change.** Merge refuses a
-  version mismatch (`SidecarMerge.swift`), which would *stop* peers from
-  converging — the opposite of what forward-compatibility needs. `schemaVersion`
-  is reserved for a genuinely breaking envelope-shape change, which needs its
-  own migration design and is out of scope here.
+- **Keep additions inside the cell value.** The safe additions are a new
+  `SidecarFieldType` case and a new key **inside** a cell's inner value object
+  (see the boundary above). Do not repurpose or remove an existing raw value,
+  and do not change an existing type's stored payload shape — a removed/renamed
+  raw value turns existing stored cells into "unknown" on the very build that
+  wrote them. Adding a key at the `SidecarCell` or `SidecarEnvelope` level is
+  NOT forward-compatible; older builds drop it. That is a `schemaVersion`
+  migration, not this guarantee.
+- **Do not bump `schemaVersion` for an in-cell additive change.** Merge refuses
+  a version mismatch[^3], which would *stop* peers from converging — the
+  opposite of what forward-compatibility needs. `schemaVersion` is reserved for
+  a genuinely breaking envelope-shape change (a new cell/envelope-level key you
+  need older peers to preserve, a payload-shape change), which needs its own
+  migration design and is out of scope here.
 
 ## Adding a new field `type` (worked example)
 
@@ -99,7 +138,13 @@ list a caller sees. They remove the field from view, never from the envelope.
 ## Regression coverage
 
 `Tests/GuessWhoSyncTests/SidecarForwardCompatTests.swift` proves the guarantee
-directly: a cell with a `type` string this build does not know survives a full
-load → mutate-a-neighbor → save → reload cycle, and survives a merge, with its
-bytes intact — while `fields(at:)` omits it from the decoded list. If you break
-a leg of the contract, that test fails.
+directly. A cell with a `type` string this build does not know:
+
+- survives the store's read-modify-write (adding a neighbor field leaves it
+  untouched) and a whole-cell merge, in-memory; and
+- survives a real `JSONEncoder`/`JSONDecoder` round-trip of the envelope —
+  including an extra unknown key placed *inside* its value object — proving the
+  serialization leg, not just the in-memory objects;
+
+while `fields(at:)` omits it from the decoded list throughout. If you break a
+leg of the contract, one of these tests fails.

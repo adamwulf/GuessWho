@@ -75,24 +75,50 @@ extension SidecarField {
     }
 
     /// Validate and canonicalize a web-address string for a `.url` field.
-    /// Returns the trimmed string when it parses as an absolute http/https
-    /// URL with a non-empty host; nil otherwise.
+    /// Returns the trimmed string when it is an absolute http/https URL with a
+    /// non-empty host and NO embedded userinfo; nil otherwise.
     ///
-    /// The canonical stored form of a `.url` field is this trimmed string —
-    /// surrounding whitespace removed, no scheme rewriting, no percent
-    /// re-encoding. The wire write path stores exactly this canonical form
-    /// (`ToolDispatcher.fieldPayload`); `validate` mirrors `.date` and accepts
-    /// any string this canonicalizer approves.
+    /// The canonical stored form is this trimmed string — surrounding
+    /// whitespace removed, no scheme rewriting, no percent re-encoding. Every
+    /// write path stores exactly this form: the wire path
+    /// (`ToolDispatcher.fieldPayload`) and the engine's own `addField` /
+    /// `setField` both run the stored value through `storableValue`, and
+    /// `validate` accepts only strings this canonicalizer approves.
+    ///
+    /// Rejections beyond scheme/host guard against a spoofed link label:
+    ///  - interior whitespace or control characters (a real address has none,
+    ///    and they let a value be dressed up to read as another site);
+    ///  - userinfo before the host — "https://apple.com@evil.example" resolves
+    ///    to host "evil.example" but reads as apple.com, so it is refused.
     public static func canonicalWebURL(from raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              let url = URL(string: trimmed),
-              let scheme = url.scheme?.lowercased(),
+              trimmed.rangeOfCharacter(from: urlForbiddenCharacters) == nil,
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              let host = url.host(), !host.isEmpty else {
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil else {
             return nil
         }
         return trimmed
+    }
+
+    /// Whitespace and control characters a `.url` value must not contain
+    /// (after trimming the ends). Kept as one set so the intent is named.
+    private static let urlForbiddenCharacters: CharacterSet =
+        CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+
+    /// The value to STORE for `type`, applied AFTER `validate` accepts it. For
+    /// `.url` this is the canonical (trimmed, clean) address, so every write
+    /// path — the wire tools and the app's direct `upsertField` — persists the
+    /// same form; all other types store the value unchanged. Keeping this next
+    /// to `canonicalWebURL` is why the "canonical stored form" promise holds
+    /// regardless of which entry point wrote the field.
+    static func storableValue(_ value: JSONValue, for type: SidecarFieldType) -> JSONValue {
+        guard type == .url, case .string(let raw) = value,
+              let canonical = canonicalWebURL(from: raw) else { return value }
+        return .string(canonical)
     }
 
     /// Validate that `value`'s JSON shape matches `type`'s required shape

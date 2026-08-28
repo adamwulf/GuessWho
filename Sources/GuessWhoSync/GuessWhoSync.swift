@@ -144,6 +144,7 @@ public final class GuessWhoSync: @unchecked Sendable {
         createdAt: Date = Date()
     ) throws -> UUID {
         try SidecarField.validate(value: value, against: type)
+        let storedValue = SidecarField.storableValue(value, for: type)
         return try withKeyLocked(key) { ctx in
             let existing = try ctx.read()
             let id = UUID()
@@ -151,7 +152,7 @@ public final class GuessWhoSync: @unchecked Sendable {
             let inner = SidecarField.makeInnerValue(
                 field: field,
                 type: type,
-                value: value,
+                value: storedValue,
                 createdAt: createdAt
             )
             let cell = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
@@ -188,11 +189,12 @@ public final class GuessWhoSync: @unchecked Sendable {
             else { return }
             guard let type = SidecarField.type(of: existingCell) else { return }
             try SidecarField.validate(value: value, against: type)
+            let storedValue = SidecarField.storableValue(value, for: type)
 
             guard let inner = SidecarField.makeInnerValueForEdit(
                 existingCell: existingCell,
                 newField: field,
-                newValue: value,
+                newValue: storedValue,
                 newCreatedAt: createdAt
             ) else { return }
 
