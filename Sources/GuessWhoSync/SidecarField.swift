@@ -47,6 +47,11 @@ extension SidecarField {
     /// Decode a cell into a SidecarField. Returns nil if the inner-value
     /// object is malformed (missing `field`/`type`, unknown `type`, etc.)
     /// per §5.3.
+    ///
+    /// Returning nil is a DISPLAY-layer decision only — it hides the field, it
+    /// is NOT permission to delete the cell, which round-trips verbatim. Never
+    /// persist only the fields that decode — see the contract [^1].
+    /// [^1]: [Sidecar forward-compatibility contract](../../docs/sidecar-compatibility.md)
     static func decode(id: UUID, from cell: SidecarCell) -> SidecarField? {
         guard case .object(let inner) = cell.value else { return nil }
         guard case .string(let fieldName) = inner[innerFieldKey] ?? .null else { return nil }
