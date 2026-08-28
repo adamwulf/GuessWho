@@ -2301,10 +2301,22 @@ public final class ContactsRepository: NSObject {
     /// — a product-principle violation. The surface is text/date/checkbox only;
     /// blobs are read through their own typed accessors
     /// (`GuessWhoSync.blobFieldData`).
+    ///
+    /// Fields whose NAME is reserved are likewise EXCLUDED. A user note is
+    /// physically a cell named `contactNoteFieldName` ("note") and an event
+    /// tag one named `eventTagFieldName` — they share this store but are their
+    /// own concept, read through `notes(for:)` / the tag accessors. Surfacing
+    /// them here would show a dated note a SECOND time as a "note" custom
+    /// field (same UUID), the read-side mirror of the write-side reserved-name
+    /// rejection in `set-custom-field`. Excluding by name keeps custom fields
+    /// and notes one concept each — for the app UI and the CLI/MCP surface both.
     public func fields(for id: ContactID) -> [SidecarField] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let all = (try? sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))) ?? []
-        return all.filter { $0.deletedAt == nil && $0.type != .blob }
+        return all.filter {
+            $0.deletedAt == nil && $0.type != .blob
+                && !Self.isReservedFieldName($0.field)
+        }
     }
 
     /// Upsert a named free-text sidecar field on the contact, by `field` name:
