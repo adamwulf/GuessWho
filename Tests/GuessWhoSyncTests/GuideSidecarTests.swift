@@ -150,6 +150,62 @@ struct GuideSidecarTests {
         #expect(store.placeReadCount == 3)
     }
 
+    @Test func invalidationDuringWalkDiscardsCapturedSnapshotAndRewalks() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        let guideID = try sync.createGuide(
+            from: MapsGuideURL.Snapshot(
+                name: "Berlin",
+                entries: [MapsGuideURL.Entry(mapsPlaceID: "IABC123")]
+            ),
+            sourceURL: nil
+        )
+        let placeKey = try #require(try store.allKeys().first { $0.kind == .place })
+        let original = try #require(try sync.place(at: placeKey))
+        store.resetCounts(blockNextPlaceReadAfterCapture: true)
+
+        let result = LockedResult<[MapsPlace]>()
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            result.store(Result { try sync.allPlaces() })
+            finished.signal()
+        }
+
+        // The first walk has captured the old envelope but cannot return it.
+        #expect(store.waitUntilWalkIsBlocked() == .success)
+        try sync.markPlaceResolved(
+            at: SidecarKey(kind: .place, id: original.id.uuidString),
+            name: "Post-invalidation Name",
+            address: nil,
+            latitude: nil,
+            longitude: nil
+        )
+        store.resumeBlockedWalk()
+
+        #expect(finished.wait(timeout: .now() + .seconds(2)) == .success)
+        let stored = try #require(result.load())
+        let places = try stored.get()
+        #expect(places.first?.guideID == guideID)
+        #expect(places.first?.name == "Post-invalidation Name")
+        #expect(store.allKeysCallCount == 2)
+
+        // The retry, not the captured old envelope, is the cached snapshot.
+        #expect(try sync.allPlaces().first?.name == "Post-invalidation Name")
+        #expect(store.allKeysCallCount == 2)
+    }
+
+    @Test func failedWalkClearsSingleFlightSoNextCallCanRetry() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        _ = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        store.resetCounts(failNextWalk: true)
+
+        #expect(throws: PlaceCorpusTestError.self) {
+            _ = try sync.allPlaces()
+        }
+        #expect(try sync.allPlaces().count == 3)
+        #expect(store.allKeysCallCount == 2)
+        #expect(store.placeReadCount == 3)
+    }
+
     @Test func localPlaceCreateUpdateAndDeleteInvalidateCachedCorpus() throws {
         let (sync, store) = makeCountingOrchestrator()
         #expect(try sync.allPlaces().isEmpty)
@@ -595,6 +651,8 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
     private let walkStarted = DispatchSemaphore(value: 0)
     private let walkMayContinue = DispatchSemaphore(value: 0)
     private var shouldBlockNextWalk = false
+    private var shouldBlockNextPlaceReadAfterCapture = false
+    private var shouldFailNextWalk = false
     private var storedAllKeysCallCount = 0
     private var storedPlaceReadCount = 0
 
@@ -610,11 +668,17 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
         return storedPlaceReadCount
     }
 
-    func resetCounts(blockNextWalk: Bool = false) {
+    func resetCounts(
+        blockNextWalk: Bool = false,
+        blockNextPlaceReadAfterCapture: Bool = false,
+        failNextWalk: Bool = false
+    ) {
         lock.lock()
         storedAllKeysCallCount = 0
         storedPlaceReadCount = 0
         shouldBlockNextWalk = blockNextWalk
+        shouldBlockNextPlaceReadAfterCapture = blockNextPlaceReadAfterCapture
+        shouldFailNextWalk = failNextWalk
         lock.unlock()
     }
 
@@ -627,12 +691,20 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
     }
 
     func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
+        let envelope = try inner.read(key)
         if key.kind == .place {
             lock.lock()
             storedPlaceReadCount += 1
+            let shouldBlock = shouldBlockNextPlaceReadAfterCapture
+            shouldBlockNextPlaceReadAfterCapture = false
             lock.unlock()
+
+            if shouldBlock {
+                walkStarted.signal()
+                walkMayContinue.wait()
+            }
         }
-        return try inner.read(key)
+        return envelope
     }
 
     func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
@@ -647,9 +719,14 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
         lock.lock()
         storedAllKeysCallCount += 1
         let shouldBlock = shouldBlockNextWalk
+        let shouldFail = shouldFailNextWalk
         shouldBlockNextWalk = false
+        shouldFailNextWalk = false
         lock.unlock()
 
+        if shouldFail {
+            throw PlaceCorpusTestError.injectedWalkFailure
+        }
         if shouldBlock {
             walkStarted.signal()
             walkMayContinue.wait()
@@ -664,6 +741,10 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
     func requestDownload(_ key: SidecarKey) throws {
         try inner.requestDownload(key)
     }
+}
+
+private enum PlaceCorpusTestError: Error {
+    case injectedWalkFailure
 }
 
 private final class LockedResult<Value>: @unchecked Sendable {
