@@ -55,6 +55,31 @@ public struct SidecarChangeSet: Sendable, Equatable {
     }
 }
 
+/// The files reconciliation must probe after one coalesced metadata burst.
+/// Unlike `SidecarChangeSet`, an empty key set is meaningful here: every
+/// metadata item was definitively flagged conflict-free, so there is no file
+/// to probe. `.all` is the fail-closed fallback whenever metadata is missing.
+enum SidecarConflictScanScope: Sendable, Equatable {
+    case all
+    case keys(Set<SidecarKey>)
+
+    func merging(_ other: SidecarConflictScanScope) -> SidecarConflictScanScope {
+        switch (self, other) {
+        case (.all, _), (_, .all):
+            return .all
+        case (.keys(let keys), .keys(let otherKeys)):
+            return .keys(keys.union(otherKeys))
+        }
+    }
+}
+
+/// Value-only projection of an `NSMetadataItem`, kept independent from a live
+/// `NSMetadataQuery` so conflict-flag decisions are deterministic in tests.
+struct SidecarMetadataConflictItem: Sendable, Equatable {
+    let path: String?
+    let hasUnresolvedConflicts: Bool?
+}
+
 public extension Notification {
     /// Typed payload for `.guessWhoSidecarsDidChange`. A missing or malformed
     /// payload preserves compatibility with coarse legacy/test posts by
@@ -116,17 +141,20 @@ public final class SidecarFileWatcher: NSObject {
         var changed: Int
         var removed: Int
         var changeSet: SidecarChangeSet
+        var conflictScanScope: SidecarConflictScanScope
 
         mutating func merge(
             added: Int,
             changed: Int,
             removed: Int,
-            changeSet: SidecarChangeSet
+            changeSet: SidecarChangeSet,
+            conflictScanScope: SidecarConflictScanScope
         ) {
             self.added += added
             self.changed += changed
             self.removed += removed
             self.changeSet = self.changeSet.merging(changeSet)
+            self.conflictScanScope = self.conflictScanScope.merging(conflictScanScope)
         }
 
         mutating func merge(_ other: ChangeBatch) {
@@ -134,7 +162,8 @@ public final class SidecarFileWatcher: NSObject {
                 added: other.added,
                 changed: other.changed,
                 removed: other.removed,
-                changeSet: other.changeSet
+                changeSet: other.changeSet,
+                conflictScanScope: other.conflictScanScope
             )
         }
     }
@@ -232,15 +261,26 @@ public final class SidecarFileWatcher: NSObject {
     private nonisolated func queryDidFinishGathering(_ note: Notification) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Snapshot the gathered result set atomically with respect to
+            // subsequent metadata updates. Those updates queue while disabled
+            // and are delivered after `enableUpdates()`.
+            self.query.disableUpdates()
+            let gatheredItems = self.query.results
+            self.query.enableUpdates()
             Self.log.info(
                 "sidecar metadata query gathered",
-                metadata: ["results": .stringConvertible(self.query.resultCount)]
+                metadata: ["results": .stringConvertible(gatheredItems.count)]
             )
+            let metadataItems = gatheredItems.map(Self.metadataConflictItem)
             self.scheduleChangeProcessing(
-                added: self.query.resultCount,
+                added: gatheredItems.count,
                 changed: 0,
                 removed: 0,
-                changedKeys: nil
+                changedKeys: nil,
+                conflictScanScope: self.conflictScanScope(
+                    for: metadataItems,
+                    emptyItemsAreComplete: true
+                )
             )
         }
     }
@@ -254,7 +294,9 @@ public final class SidecarFileWatcher: NSObject {
         let addedItems = note.userInfo?[NSMetadataQueryUpdateAddedItemsKey] as? [Any] ?? []
         let changedItems = note.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [Any] ?? []
         let removedItems = note.userInfo?[NSMetadataQueryUpdateRemovedItemsKey] as? [Any] ?? []
-        let paths = (addedItems + changedItems + removedItems).compactMap(Self.metadataPath)
+        let deliveredItems = addedItems + changedItems + removedItems
+        let paths = deliveredItems.compactMap(Self.metadataPath)
+        let metadataItems = deliveredItems.map(Self.metadataConflictItem)
         let itemCount = addedItems.count + changedItems.count + removedItems.count
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -271,7 +313,8 @@ public final class SidecarFileWatcher: NSObject {
                 added: addedItems.count,
                 changed: changedItems.count,
                 removed: removedItems.count,
-                changedKeys: changedKeys
+                changedKeys: changedKeys,
+                conflictScanScope: self.conflictScanScope(for: metadataItems)
             )
         }
     }
@@ -282,6 +325,61 @@ public final class SidecarFileWatcher: NSObject {
         }
         if let url = item as? URL { return url.path }
         return item as? String
+    }
+
+    /// Project the two metadata attributes conflict planning needs. A URL or
+    /// String remains useful for delta key mapping, but has no iCloud conflict
+    /// flag and therefore deliberately produces an unavailable flag.
+    nonisolated static func metadataConflictItem(from item: Any) -> SidecarMetadataConflictItem {
+        guard let metadataItem = item as? NSMetadataItem else {
+            return SidecarMetadataConflictItem(
+                path: metadataPath(from: item),
+                hasUnresolvedConflicts: nil
+            )
+        }
+
+        let rawFlag = metadataItem.value(
+            forAttribute: NSMetadataUbiquitousItemHasUnresolvedConflictsKey
+        )
+        let flag: Bool?
+        if let bool = rawFlag as? Bool {
+            flag = bool
+        } else if let number = rawFlag as? NSNumber {
+            flag = number.boolValue
+        } else {
+            flag = nil
+        }
+        return SidecarMetadataConflictItem(
+            path: metadataPath(from: metadataItem),
+            hasUnresolvedConflicts: flag
+        )
+    }
+
+    /// Build the narrowest provably safe conflict scan. A false flag is OS
+    /// proof that the item has no unresolved versions. A true flag must map to
+    /// a sidecar key and remains a normal per-file probe. Missing flags or an
+    /// unrouteable flagged item make the entire batch fall back to `.all`.
+    func conflictScanScope(
+        for metadataItems: [SidecarMetadataConflictItem],
+        emptyItemsAreComplete: Bool = false
+    ) -> SidecarConflictScanScope {
+        guard !metadataItems.isEmpty else {
+            return emptyItemsAreComplete ? .keys([]) : .all
+        }
+
+        var conflictedKeys: Set<SidecarKey> = []
+        for item in metadataItems {
+            guard let hasUnresolvedConflicts = item.hasUnresolvedConflicts else {
+                return .all
+            }
+            guard hasUnresolvedConflicts else { continue }
+            guard let path = item.path,
+                  let key = sidecarKey(forMetadataPath: path) else {
+                return .all
+            }
+            conflictedKeys.insert(key)
+        }
+        return .keys(conflictedKeys)
     }
 
     /// Internal so the external-input parser can be covered without requiring
@@ -332,22 +430,35 @@ public final class SidecarFileWatcher: NSObject {
         added: Int,
         changed: Int,
         removed: Int,
-        changedKeys: Set<SidecarKey>?
+        changedKeys: Set<SidecarKey>?,
+        conflictScanScope: SidecarConflictScanScope? = nil
     ) {
         let changeSet = SidecarChangeSet(changedKeys: changedKeys)
+        let effectiveConflictScanScope: SidecarConflictScanScope
+        if let conflictScanScope {
+            effectiveConflictScanScope = conflictScanScope
+        } else if let changedKeys, !changedKeys.isEmpty {
+            // Internal/test callers without metadata items still get the
+            // delta-scoped fallback from opportunity #1's typed change set.
+            effectiveConflictScanScope = .keys(changedKeys)
+        } else {
+            effectiveConflictScanScope = .all
+        }
         if pendingBatch == nil {
             pendingBatch = ChangeBatch(
                 added: added,
                 changed: changed,
                 removed: removed,
-                changeSet: changeSet
+                changeSet: changeSet,
+                conflictScanScope: effectiveConflictScanScope
             )
         } else {
             pendingBatch?.merge(
                 added: added,
                 changed: changed,
                 removed: removed,
-                changeSet: changeSet
+                changeSet: changeSet,
+                conflictScanScope: effectiveConflictScanScope
             )
         }
 
@@ -392,7 +503,8 @@ public final class SidecarFileWatcher: NSObject {
                     added: batch.added,
                     changed: batch.changed,
                     removed: batch.removed,
-                    changedKeys: batch.changeSet.changedKeys
+                    changedKeys: batch.changeSet.changedKeys,
+                    conflictScanScope: batch.conflictScanScope
                 )
             } while self.needsAnotherPass && self.readyBatch != nil
             self.isProcessingChanges = false
@@ -409,7 +521,8 @@ public final class SidecarFileWatcher: NSObject {
         added: Int,
         changed: Int,
         removed: Int,
-        changedKeys: Set<SidecarKey>? = nil
+        changedKeys: Set<SidecarKey>? = nil,
+        conflictScanScope: SidecarConflictScanScope? = nil
     ) async {
         Self.log.info(
             "sidecar files changed",
@@ -421,8 +534,22 @@ public final class SidecarFileWatcher: NSObject {
         )
 
         do {
-            // Opportunity #4 owns making this corpus-wide conflict scan incremental.
-            let report = try await sync.reconcileSidecars()
+            let effectiveConflictScanScope: SidecarConflictScanScope
+            if let conflictScanScope {
+                effectiveConflictScanScope = conflictScanScope
+            } else if let changedKeys, !changedKeys.isEmpty {
+                effectiveConflictScanScope = .keys(changedKeys)
+            } else {
+                effectiveConflictScanScope = .all
+            }
+
+            let report: SidecarReconcileReport
+            switch effectiveConflictScanScope {
+            case .all:
+                report = try await sync.reconcileSidecars()
+            case .keys(let keys):
+                report = try await sync.reconcileSidecars(keys: keys)
+            }
             if !report.fileOutcomes.isEmpty {
                 let skipped = report.fileOutcomes.reduce(0) { $0 + $1.skippedReasons.count }
                 Self.log.notice(

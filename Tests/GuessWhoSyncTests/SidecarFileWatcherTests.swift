@@ -17,13 +17,37 @@ import GuessWhoSyncTesting
 @MainActor
 @Suite("SidecarFileWatcher")
 struct SidecarFileWatcherTests {
-    private func makeSync(sidecars: InMemorySidecarStore = InMemorySidecarStore()) -> GuessWhoSync {
+    private func makeSync(
+        sidecars: SidecarStoreProtocol = InMemorySidecarStore()
+    ) -> GuessWhoSync {
         GuessWhoSync(
             contacts: InMemoryContactStore(),
             events: InMemoryEventStore(),
             sidecars: sidecars,
             deviceID: "watcher-test-device"
         )
+    }
+
+    private func makeRoot() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("guesswho-watcher-conflict-tests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func fileURL(for key: SidecarKey, in root: URL) -> URL {
+        root.appendingPathComponent("\(key.kind.rawValue)s")
+            .appendingPathComponent("\(key.id).json")
+    }
+
+    private func seedEnvelopeFile(for key: SidecarKey, in root: URL) throws {
+        let url = fileURL(for: key, in: root)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(SidecarEnvelope(entityID: key.id, fields: [:]))
+            .write(to: url)
     }
 
     /// Collects posts of one notification name on an isolated center.
@@ -194,6 +218,146 @@ struct SidecarFileWatcherTests {
         #expect(watcher.sidecarKey(forMetadataPath:
             root.appendingPathComponent("contacts/nested/\(contactID).json").path
         ) == nil)
+    }
+
+    @Test
+    func conflictFreeMetadataCorpusPerformsZeroConflictVersionProbes() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keys = [
+            SidecarKey(kind: .contact, id: "clear-a"),
+            SidecarKey(kind: .contact, id: "clear-b"),
+        ]
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        for key in keys {
+            try seedEnvelopeFile(for: key, in: root)
+        }
+        let watcher = SidecarFileWatcher(root: root, sync: makeSync(sidecars: store))
+        let scope = watcher.conflictScanScope(for: keys.map {
+            SidecarMetadataConflictItem(
+                path: fileURL(for: $0, in: root).path,
+                hasUnresolvedConflicts: false
+            )
+        })
+
+        #expect(scope == .keys([]))
+        await watcher.processSidecarChanges(
+            added: keys.count,
+            changed: 0,
+            removed: 0,
+            conflictScanScope: scope
+        )
+
+        #expect(fake.unresolvedConflictVersionCalls.isEmpty)
+    }
+
+    @Test
+    func flaggedConflictIsProbedAndResolvedThroughWatcherPath() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let key = SidecarKey(kind: .contact, id: "flagged")
+        let url = fileURL(for: key, in: root)
+        let earlier = Date(timeIntervalSince1970: 1_700_000_000)
+        let later = Date(timeIntervalSince1970: 1_700_000_500)
+        let current = SidecarEnvelope(entityID: key.id, fields: [
+            "nickname": SidecarCell(
+                value: .string("Current"),
+                modifiedAt: earlier,
+                modifiedBy: "device-A"
+            )
+        ])
+        let conflict = SidecarEnvelope(entityID: key.id, fields: [
+            "nickname": SidecarCell(
+                value: .string("Conflict"),
+                modifiedAt: later,
+                modifiedBy: "device-B"
+            )
+        ])
+        let inner = InMemorySidecarStore()
+        try inner.write(current, at: key)
+        inner.scriptConflict(at: key, versions: [try JSONEncoder().encode(conflict)])
+        let spy = CountingSidecarStore(wrapping: inner)
+        let watcher = SidecarFileWatcher(root: root, sync: makeSync(sidecars: spy))
+        let scope = watcher.conflictScanScope(for: [
+            SidecarMetadataConflictItem(
+                path: url.path,
+                hasUnresolvedConflicts: true
+            )
+        ])
+
+        #expect(scope == .keys([key]))
+        await watcher.processSidecarChanges(
+            added: 0,
+            changed: 1,
+            removed: 0,
+            changedKeys: [key],
+            conflictScanScope: scope
+        )
+
+        #expect(spy.keysWithUnresolvedConflictsCallCount == 0)
+        #expect(spy.reconcileConflictCalls == [key])
+        #expect(try inner.keysWithUnresolvedConflicts().isEmpty)
+        let merged = try #require(try inner.read(key))
+        #expect(merged.fields["nickname"]?.value == .string("Conflict"))
+    }
+
+    @Test
+    func knownChangedKeysProbeOnlyIncrementalScope() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unchanged = SidecarKey(kind: .contact, id: "unchanged")
+        let changed = SidecarKey(kind: .contact, id: "changed")
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        for key in [unchanged, changed] {
+            try seedEnvelopeFile(for: key, in: root)
+        }
+        let watcher = SidecarFileWatcher(root: root, sync: makeSync(sidecars: store))
+
+        await watcher.processSidecarChanges(
+            added: 0,
+            changed: 1,
+            removed: 0,
+            changedKeys: [changed]
+        )
+
+        #expect(fake.unresolvedConflictVersionCalls == [fileURL(for: changed, in: root)])
+    }
+
+    @Test
+    func unavailableMetadataFlagFallsBackToFullCorpusProbe() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keys = [
+            SidecarKey(kind: .contact, id: "fallback-a"),
+            SidecarKey(kind: .event, id: "fallback-b"),
+        ]
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        for key in keys {
+            try seedEnvelopeFile(for: key, in: root)
+        }
+        let watcher = SidecarFileWatcher(root: root, sync: makeSync(sidecars: store))
+        let scope = watcher.conflictScanScope(for: [
+            SidecarMetadataConflictItem(
+                path: fileURL(for: keys[0], in: root).path,
+                hasUnresolvedConflicts: nil
+            )
+        ])
+
+        #expect(scope == .all)
+        await watcher.processSidecarChanges(
+            added: 0,
+            changed: 1,
+            removed: 0,
+            conflictScanScope: scope
+        )
+
+        #expect(
+            Set(fake.unresolvedConflictVersionCalls)
+                == Set(keys.map { fileURL(for: $0, in: root) })
+        )
     }
 
     @Test

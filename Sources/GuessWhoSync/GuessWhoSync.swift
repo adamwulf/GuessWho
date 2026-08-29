@@ -912,6 +912,20 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     public func reconcileSidecars() throws -> SidecarReconcileReport {
+        try reconcileSidecars(candidateKeys: nil)
+    }
+
+    /// Reconcile unresolved versions only for `keys`. This is the watcher
+    /// delta/metadata-flag path: each named key is still checked by the
+    /// store's normal per-file conflict probe, while every key outside the
+    /// proven scope avoids an `NSFileVersion` lookup entirely.
+    public func reconcileSidecars(keys: Set<SidecarKey>) throws -> SidecarReconcileReport {
+        try reconcileSidecars(candidateKeys: keys)
+    }
+
+    private func reconcileSidecars(
+        candidateKeys: Set<SidecarKey>?
+    ) throws -> SidecarReconcileReport {
         // A third-party SidecarStoreProtocol conformer with no concept of
         // multi-version conflicts has nothing to reconcile.
         guard let conflictStore = sidecars as? SidecarConflictReconciling else {
@@ -924,7 +938,20 @@ public final class GuessWhoSync: @unchecked Sendable {
         // (resolver invocation through the store's merged-write). Otherwise a
         // concurrent setField on the same key would slip a write between the
         // store's read-versions and its merged-write and be silently clobbered.
-        for key in try conflictStore.keysWithUnresolvedConflicts() {
+        let keys: [SidecarKey]
+        if let candidateKeys {
+            // Stable ordering keeps report output deterministic even though
+            // metadata-query and coalesced watcher scopes are sets.
+            keys = candidateKeys.sorted {
+                ($0.kind.rawValue, $0.id) < ($1.kind.rawValue, $1.id)
+            }
+        } else {
+            // Unknown scope deliberately retains the existing corpus-wide
+            // probe and all of its fallback behavior.
+            keys = try conflictStore.keysWithUnresolvedConflicts()
+        }
+
+        for key in keys {
             var reasons: [String] = []
             let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
                 try conflictStore.reconcileConflict(at: key) { currentBytes, conflictBytes in
@@ -1011,6 +1038,25 @@ public final class GuessWhoSync: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result: SidecarReconcileReport = try self.reconcileSidecars()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Async scoped overload used by `SidecarFileWatcher`. It keeps the same
+    /// background hop as the full reconcile while preserving the exact merge
+    /// and reporting path of the synchronous implementation.
+    @discardableResult
+    public func reconcileSidecars(
+        keys: Set<SidecarKey>
+    ) async throws -> SidecarReconcileReport {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: SidecarReconcileReport = try self.reconcileSidecars(keys: keys)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)

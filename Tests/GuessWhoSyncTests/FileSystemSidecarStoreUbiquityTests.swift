@@ -37,6 +37,7 @@ final class FakeVersionHandle: SidecarVersionHandle, @unchecked Sendable {
 final class FakeUbiquityProvider: SidecarUbiquityProvider, @unchecked Sendable {
     // Conflict versions keyed by sidecar file URL.
     var conflicts: [URL: [FakeVersionHandle]] = [:]
+    private(set) var unresolvedConflictVersionCalls: [URL] = []
 
     // Current bytes keyed by sidecar file URL. nil means "no current
     // version exists" (the resolver receives nil); not setting an entry
@@ -59,6 +60,7 @@ final class FakeUbiquityProvider: SidecarUbiquityProvider, @unchecked Sendable {
     var startDownloadingCalls: [URL] = []
 
     func unresolvedConflictVersions(at url: URL) -> [SidecarVersionHandle]? {
+        unresolvedConflictVersionCalls.append(url)
         guard let list = conflicts[url], !list.isEmpty else { return nil }
         return list.map { $0 as SidecarVersionHandle }
     }
