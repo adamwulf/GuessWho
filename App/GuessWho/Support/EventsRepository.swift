@@ -1,6 +1,7 @@
 import Foundation
 import EventKit
 import GuessWhoSync
+import Logging
 
 extension Notification.Name {
     /// Posted by `EventsRepository.reload()` after a fetch completes.
@@ -31,6 +32,8 @@ enum EventListFilter: CaseIterable, Sendable {
 @MainActor
 @Observable
 final class EventsRepository: NSObject {
+    private static let reloadLog = Logger(label: "app.events-reload")
+
     private let service: SyncService
 
     private(set) var events: [Event] = []
@@ -59,7 +62,7 @@ final class EventsRepository: NSObject {
             hasLoadedOnce = false
             notificationCenter.post(name: .eventsRepositoryDidReload, object: self)
             Task { [weak self] in
-                await self?.reload()
+                await self?.reload(trigger: "filter-change")
             }
         }
     }
@@ -132,8 +135,9 @@ final class EventsRepository: NSObject {
         let changeSet = note.name == .guessWhoSidecarsDidChange
             ? note.guessWhoSidecarChangeSet
             : .fullRefresh
+        let trigger = note.name.rawValue
         Task { @MainActor [weak self] in
-            self?.scheduleDebouncedReload(changeSet)
+            self?.scheduleDebouncedReload(changeSet, trigger: trigger)
         }
     }
 
@@ -141,6 +145,7 @@ final class EventsRepository: NSObject {
     /// cancelled) on every notification, so only the trailing edge fires.
     private var pendingReload: Task<Void, Never>?
     private var pendingChangeSet: SidecarChangeSet?
+    private var pendingReloadTriggers: Set<String> = []
     /// Scoped keys currently being read. A newer scoped schedule must inherit
     /// them: invalidating the running token means its result will be discarded,
     /// so the successor is now responsible for both sets of keys.
@@ -208,7 +213,7 @@ final class EventsRepository: NSObject {
     /// synchronously — the notification path hops through a `Task`, which makes
     /// "a scoped change is already pending" impossible to set up deterministically
     /// otherwise. Production callers are unchanged.
-    func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
+    func scheduleDebouncedReload(_ changeSet: SidecarChangeSet, trigger: String = "direct-schedule") {
         // Drop a scoped change that names no kind this list projects BEFORE any
         // merge, generation bump, or cancellation — an irrelevant delivery must
         // not supersede a pending/parked reload it cannot affect.
@@ -221,6 +226,7 @@ final class EventsRepository: NSObject {
         } else {
             pendingChangeSet = (pendingChangeSet ?? .fullRefresh).merging(changeSet)
         }
+        pendingReloadTriggers.insert(trigger)
         // A newer change supersedes any in-flight read: bump the generation now
         // and capture the token for the single task that survives the debounce.
         let token = nextRefreshToken()
@@ -239,10 +245,16 @@ final class EventsRepository: NSObject {
             guard token == self.refreshGeneration else { return }
             // Only this (current, newest) task consumes the merged change set.
             let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
+            let coalescedTriggers = self.pendingReloadTriggers.sorted().joined(separator: ",")
             self.pendingChangeSet = nil
+            self.pendingReloadTriggers = []
             self.pendingReload = nil
             self.inFlightChangeSet = (token, coalescedChangeSet)
-            await self.refresh(for: coalescedChangeSet, token: token)
+            await self.refresh(
+                for: coalescedChangeSet,
+                token: token,
+                trigger: "notifications:\(coalescedTriggers)"
+            )
             if self.inFlightChangeSet?.token == token {
                 self.inFlightChangeSet = nil
             }
@@ -253,11 +265,11 @@ final class EventsRepository: NSObject {
     /// corpus walk. Unknown scope and linked-filter membership changes retain
     /// the existing full reload. Link changes in the ordinary date-window
     /// filters refresh only link counts.
-    private func refresh(for changeSet: SidecarChangeSet, token: Int) async {
+    private func refresh(for changeSet: SidecarChangeSet, token: Int, trigger: String) async {
         guard let changedKeys = changeSet.changedKeys else {
             // Fallback full reload reuses this token so it does not supersede the
             // very refresh intent that delegated to it.
-            await reload(token: token)
+            await reload(token: token, trigger: trigger)
             return
         }
 
@@ -275,12 +287,12 @@ final class EventsRepository: NSObject {
         // (e.g. a sidecar change raced the launch reload), upgrade to a full
         // reload under the same token instead of stranding a partial list.
         guard hasLoadedOnce else {
-            await reload(token: token)
+            await reload(token: token, trigger: trigger)
             return
         }
 
         if filter == .linked {
-            await reload(token: token)
+            await reload(token: token, trigger: trigger)
             return
         }
 
@@ -292,7 +304,7 @@ final class EventsRepository: NSObject {
             guard let fetched = await service.sidecarEvents(
                 uuids: eventIDs, from: requestedStart, to: requestedEnd
             ) else {
-                await reload(token: token)
+                await reload(token: token, trigger: trigger)
                 return
             }
             projectedEvents = fetched
@@ -368,7 +380,7 @@ final class EventsRepository: NSObject {
     /// Full reload as a fresh authoritative refresh intent — the entry point
     /// every direct caller (launch, paging, filter change, list mount) uses. It
     /// mints a new generation token so any older in-flight read is superseded.
-    func reload() async {
+    func reload(trigger: String = "direct") async {
         // A full read subsumes any pending scoped delta, so cancel and clear it.
         // The token bump below then supersedes any debounce task already past
         // its sleep (its pre-consume guard sees the newer generation). Only this
@@ -377,6 +389,7 @@ final class EventsRepository: NSObject {
         pendingReload?.cancel()
         pendingReload = nil
         pendingChangeSet = nil
+        pendingReloadTriggers = []
         let token = nextRefreshToken()
         // INSTALL full-refresh ownership up front and HOLD it across the read —
         // exactly as `ContactsRepository.reload()` does. A scoped change that
@@ -388,7 +401,7 @@ final class EventsRepository: NSObject {
         // here — the previous behavior — let that successor patch one key onto
         // the stale pre-reload base and silently drop the rest of the projection.
         inFlightChangeSet = (token, .fullRefresh)
-        await reload(token: token)
+        await reload(token: token, trigger: trigger)
         // Release ownership only if it is still ours: a newer refresh that
         // superseded us mid-read installed its own entry and must keep it.
         if inFlightChangeSet?.token == token {
@@ -400,12 +413,22 @@ final class EventsRepository: NSObject {
     /// `reload()`) or handed down from a delta `refresh` that fell back here — in
     /// which case it deliberately reuses that token so the fallback does not
     /// supersede the refresh intent it belongs to.
-    private func reload(token: Int) async {
+    private func reload(token: Int, trigger: String) async {
         // A fallback reload may already be superseded before it even starts;
         // guard before touching `isLoading` or issuing a read.
         guard token == refreshGeneration else { return }
         let requestedFilter = filter
         isLoading = true
+        Self.reloadLog.info(
+            "events window reload started",
+            metadata: [
+                "trigger": .string(trigger),
+                "generation": .stringConvertible(token),
+                "filter": .string(String(describing: requestedFilter)),
+                "from": .stringConvertible(windowStart.timeIntervalSince1970),
+                "to": .stringConvertible(windowEnd.timeIntervalSince1970),
+            ]
+        )
         let fetched: [Event]
         switch requestedFilter {
         case .linked:
@@ -433,6 +456,14 @@ final class EventsRepository: NSObject {
         // post-load state. See ContactsRepository.reload() for the full
         // rationale.
         isLoading = false
+        Self.reloadLog.info(
+            "events window reload published",
+            metadata: [
+                "trigger": .string(trigger),
+                "generation": .stringConvertible(token),
+                "events": .stringConvertible(events.count),
+            ]
+        )
         notificationCenter.post(name: .eventsRepositoryDidReload, object: self)
     }
 
@@ -446,7 +477,7 @@ final class EventsRepository: NSObject {
         // the reload must rebuild rather than patch a base missing the newly
         // revealed month. `reload()` re-arms it on completion.
         hasLoadedOnce = false
-        await reload()
+        await reload(trigger: "paging-older")
     }
 
     /// Extend the loaded window one month further forward and reload.
@@ -455,7 +486,7 @@ final class EventsRepository: NSObject {
     func loadLaterMonth() async {
         windowEnd = Calendar.current.date(byAdding: .month, value: 1, to: windowEnd) ?? windowEnd
         hasLoadedOnce = false
-        await reload()
+        await reload(trigger: "paging-later")
     }
 
     var filtered: [Event] {

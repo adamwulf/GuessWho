@@ -154,7 +154,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             // cannot read pre-migration keys.
             await service.migrateEventsIfNeeded()
             await service.requestEventsAccessIfNeeded()
-            await eventsRepository.reload()
+            await eventsRepository.reload(trigger: "app-launch")
         }
 
         // Start the package-owned external-contact-change watcher. The package

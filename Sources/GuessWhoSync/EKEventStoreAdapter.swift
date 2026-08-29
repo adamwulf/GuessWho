@@ -1,6 +1,7 @@
 #if canImport(EventKit)
 import EventKit
 import Foundation
+import Logging
 
 // `@unchecked Sendable`: the adapter holds a single immutable `let store`,
 // adds no mutable state of its own, and only ever issues read / request / save
@@ -12,6 +13,11 @@ import Foundation
 // `@unchecked Sendable`.
 public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable {
     private let store: EKEventStore
+
+    /// One start/finish pair per underlying EventKit enumeration. The UUID and
+    /// exact interval let a launch log correlate this adapter work with the
+    /// repository's trigger breadcrumbs without relying on a profiler stack.
+    private static let fetchLog = Logger(label: "sync.eventkit-fetch")
 
     public init(store: EKEventStore = EKEventStore()) {
         self.store = store
@@ -81,7 +87,19 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         // boundary (a multi-day event straddling the seam) collapses.
         var seen: Set<String> = []
         var result: [Event] = []
-        for chunk in Self.chunked(interval: interval, maxYears: 4) {
+        let chunks = Self.chunked(interval: interval, maxYears: 4)
+        let fetchID = UUID().uuidString
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.fetchLog.info(
+            "EventKit window fetch started",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "chunks": .stringConvertible(chunks.count),
+            ]
+        )
+        for chunk in chunks {
             let predicate = store.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: nil)
             for event in store.events(matching: predicate).compactMap(Self.toEvent) {
                 let key = "\(event.eventKitID ?? "")|\(event.startDate.timeIntervalSinceReferenceDate)"
@@ -90,6 +108,17 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
                 }
             }
         }
+        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+        Self.fetchLog.info(
+            "EventKit window fetch finished",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "events": .stringConvertible(result.count),
+                "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+            ]
+        )
         return result
     }
 
@@ -162,6 +191,20 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         guard limit > 0, interval.start < interval.end,
               !(normalized.isEmpty && locationNeedles.isEmpty) else { return [] }
 
+        let fetchID = UUID().uuidString
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.fetchLog.info(
+            "EventKit attendee window fetch started",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "emails": .stringConvertible(normalized.count),
+                "locations": .stringConvertible(locationNeedles.count),
+                "limit": .stringConvertible(limit),
+            ]
+        )
+
         // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
         // predicate at a 4-year span; longer windows silently return nothing.
         // Chunk the requested interval into ≤4-year slices, walk each, and
@@ -193,10 +236,22 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             }
         }
 
-        return dedupe.values
+        let result = dedupe.values
             .sorted { $0.startDate > $1.startDate }
             .prefix(limit)
             .map { $0 }
+        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+        Self.fetchLog.info(
+            "EventKit attendee window fetch finished",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "events": .stringConvertible(result.count),
+                "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+            ]
+        )
+        return result
     }
 
     /// Split `interval` into back-to-back slices each no longer than `maxYears`

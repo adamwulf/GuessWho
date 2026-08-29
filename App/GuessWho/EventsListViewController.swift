@@ -122,7 +122,7 @@ final class EventsListViewController: UIViewController {
 
         applySnapshot(animated: false)
 
-        Task { await repository.reload() }
+        Task { await repository.reload(trigger: "events-list-viewDidLoad") }
     }
 
     override func viewWillAppear(_ animated: Bool) {
