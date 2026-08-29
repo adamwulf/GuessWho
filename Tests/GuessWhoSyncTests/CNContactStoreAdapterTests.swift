@@ -411,6 +411,70 @@ struct CNContactStoreAdapterTests {
         #expect(repository.contacts.first?.givenName == "Snapshot 2")
     }
 
+    @Test
+    func fullReloadRecoveryAfterChangeDuringFetchStartsFreshFlight() async throws {
+        // The batch-2 regression: a contact-store change lands DURING an
+        // in-flight fetchAll. The change-driven full-reload recovery must NOT
+        // join the pre-change flight (that would re-serve the stale snapshot) —
+        // it starts a fresh underlying enumeration and observes post-change
+        // contacts. Meanwhile the original in-flight caller finishes its
+        // pre-change flight safely.
+        let spy = BlockingFetchAllSpy()
+        let adapter = CNContactStoreAdapter(fetchAllWork: { _, keys in
+            spy.fetch(keys: keys)
+        })
+
+        // fetchAll #1 begins and parks in the underlying enumeration (the
+        // pre-change flight). It will resolve to "Snapshot 1".
+        let inFlight = Task { try await adapter.fetchAll() }
+        #expect(spy.waitForFetchCount(1))
+        var flightRecorded = false
+        for _ in 0..<1_000 {
+            if await adapter.startedFetchAllCountForTesting == 1,
+               await adapter.inFlightFetchAllCallerCountForTesting == 1 {
+                flightRecorded = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(flightRecorded)
+
+        // An external contact-store change lands DURING the flight; the watcher
+        // forwards it to the adapter as a single-flight invalidation.
+        await adapter.invalidateInFlightFetchAll()
+
+        // The change-driven full-reload recovery must fork a FRESH flight rather
+        // than join the pre-change one. Prove it BEFORE releasing the first
+        // fetch: a second distinct flight was started (startedCount == 2) and
+        // the current flight has exactly one caller (callerCount == 1, i.e. the
+        // recovery did NOT increment the pre-change flight to two). Without the
+        // fix the recovery would join, leaving startedCount == 1 and
+        // callerCount == 2.
+        let recovery = Task { try await adapter.fetchAll() }
+        var forkedFreshFlight = false
+        for _ in 0..<1_000 {
+            if await adapter.startedFetchAllCountForTesting == 2,
+               await adapter.inFlightFetchAllCallerCountForTesting == 1 {
+                forkedFreshFlight = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(forkedFreshFlight)
+
+        // Releasing the first fetch lets the original caller finish its
+        // pre-change flight safely ("Snapshot 1"); the serial work queue then
+        // runs the recovery's own enumeration, which returns the post-change
+        // snapshot ("Snapshot 2").
+        spy.releaseFirstFetch()
+        let inFlightResult = try await inFlight.value
+        let recoveryResult = try await recovery.value
+
+        #expect(inFlightResult.first?.givenName == "Snapshot 1")
+        #expect(recoveryResult.first?.givenName == "Snapshot 2")
+        #expect(spy.fetchCount == 2)
+    }
+
     // MARK: - Save-request author tag
 
     @Test

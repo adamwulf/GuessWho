@@ -51,6 +51,16 @@ public protocol ContactStoreProtocol: Actor {
     // `ContactChangeSet` for the ordering and full-reload contract.
     func changes(since token: Data?) async throws -> ContactChangeSet
 
+    /// Invalidate any in-flight `fetchAll()` coalescing so the NEXT caller starts
+    /// a fresh underlying fetch instead of joining a flight that began before an
+    /// external store change. `ContactChangeWatcher` calls this the moment it
+    /// observes a `.CNContactStoreDidChange`, BEFORE it posts the full-reload
+    /// notification, so the change-driven recovery reload observes post-change
+    /// contacts rather than re-serving the pre-change snapshot. Callers already
+    /// awaiting the pre-change flight finish it safely. Stores without fetch
+    /// coalescing (e.g. the in-memory test store) inherit the no-op default.
+    func invalidateInFlightFetchAll() async
+
     // Image bytes are loaded on demand so bulk fetches don't pay the cost.
     // - Contact does not exist          → throws ContactStoreError.contactNotFound
     // - Contact exists, no image bytes  → returns nil
@@ -114,4 +124,9 @@ public protocol ContactStoreProtocol: Actor {
 public extension ContactStoreProtocol {
     func fetchSources() async throws -> [ContactSource] { [] }
     func sources(forContactLocalID localID: String) async throws -> [ContactSource] { [] }
+
+    /// A store with no `fetchAll()` coalescing has no flight to invalidate, so
+    /// the store-change signal is a harmless no-op. Only `CNContactStoreAdapter`
+    /// (the single-flight adapter) overrides this.
+    func invalidateInFlightFetchAll() async {}
 }

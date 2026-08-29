@@ -241,6 +241,41 @@ struct ContactChangeWatcherTests {
         #expect(cursorStore.load() == priorToken)
     }
 
+    // MARK: - (e2) the watcher invalidates the store's fetch coalescing first
+
+    @Test
+    func forwardsStoreChangeInvalidationBeforeReadingDelta() async throws {
+        let url = try makeTempCursorURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cursorStore = ContactSyncCursorStore(url: url)
+
+        // A store whose changes(since:) reports a full reload, and which records
+        // the order of the invalidate signal vs. the delta read.
+        let store = ScriptableContactStore(outcomes: [
+            .return(ContactChangeSet(changes: [], newToken: Data([0x09]), requiresFullReload: true)),
+        ])
+        let center = NotificationCenter()
+        let recorder = Recorder(center: center)
+        defer { recorder.stop(center: center) }
+
+        let watcher = ContactChangeWatcher(
+            contacts: store,
+            cursorStore: cursorStore,
+            notificationCenter: center
+        )
+        await watcher.processChanges()
+
+        // The watcher forwarded the store-change signal exactly once …
+        #expect(await store.invalidateCount == 1)
+        // … and did so BEFORE reading the delta — and the post follows the read,
+        // so invalidate happens-before the full-reload notification that drives
+        // the recovery reload. That deterministic ordering is what guarantees a
+        // change-driven recovery can never join a pre-change fetch flight.
+        #expect(await store.events == ["invalidate", "changes"])
+        #expect(recorder.posts.count == 1)
+        #expect(recorder.posts.first?.requiresFullReload == true)
+    }
+
     // MARK: - (f) a notification arriving mid-apply drains exactly one extra pass
 
     @Test
@@ -313,6 +348,15 @@ actor ScriptableContactStore: ContactStoreProtocol {
     private var outcomes: [Outcome]
     private(set) var callCount = 0
 
+    /// Number of times the watcher forwarded a store-change invalidation.
+    private(set) var invalidateCount = 0
+
+    /// Ordered log of the two events these tests care about: `"invalidate"` on
+    /// each `invalidateInFlightFetchAll()` and `"changes"` on each
+    /// `changes(since:)`. Lets a test assert the watcher invalidates the store's
+    /// fetch coalescing BEFORE it reads the delta (and thus before it posts).
+    private(set) var events: [String] = []
+
     // Gate plumbing: `parked` resolves when a gated read has suspended; `release`
     // resumes that suspended read.
     private var parkedContinuation: CheckedContinuation<Void, Never>?
@@ -335,8 +379,18 @@ actor ScriptableContactStore: ContactStoreProtocol {
         releaseContinuation = nil
     }
 
+    /// The watcher forwards the store-change signal here before reading the
+    /// delta; record it so a test can assert the invalidate-before-read ordering.
+    /// `async` to exactly witness the protocol requirement (see the adapter's
+    /// implementation for why a synchronous witness would silently no-op).
+    func invalidateInFlightFetchAll() async {
+        invalidateCount += 1
+        events.append("invalidate")
+    }
+
     func changes(since token: Data?) async throws -> ContactChangeSet {
         callCount += 1
+        events.append("changes")
         let outcome = outcomes.isEmpty ? Outcome.return(ContactChangeSet(changes: [], newToken: Data(), requiresFullReload: false)) : outcomes.removeFirst()
         switch outcome {
         case .return(let set):
