@@ -375,15 +375,17 @@ public final class ContactsRepository: NSObject {
         await refreshTimestampCache(generation: generation)
         await refreshLinkedContactIDs(generation: generation)
         await refreshLinkCounts(generation: generation)
-        // NotificationCenter can deliver synchronously. Consumers must observe
-        // the settled loading state when they apply their post-reload snapshot.
-        isLoading = false
         // A sidecar notification scheduled (or a newer reload started) while
         // this one was in flight advanced the token and now owns the refresh;
         // suppress this reload's stale post rather than announcing over it. The
         // guarded helpers above have likewise applied nothing, so no stale
         // projection state was published either.
         guard generation == refreshGeneration else { return }
+        // NotificationCenter can deliver synchronously. Consumers must observe
+        // the settled loading state when they apply their post-reload snapshot.
+        // Check ownership first: a stale reload must mutate nothing, including
+        // loading state. The winning delta settles it on its own completion.
+        isLoading = false
         postDidReload()
     }
 
@@ -3180,6 +3182,11 @@ public final class ContactsRepository: NSObject {
     @ObservationIgnored private var refreshGeneration = 0
 
     private func scheduleSidecarRefresh(_ changeSet: SidecarChangeSet) {
+        // An explicitly scoped empty set changes no projection. Ignore it before
+        // advancing the generation so it cannot supersede and strand a useful
+        // in-flight reload. Unknown scope (`changedKeys == nil`) remains a full
+        // refresh intent.
+        if changeSet.changedKeys?.isEmpty == true { return }
         if pendingSidecarRefresh == nil {
             pendingSidecarChangeSet = changeSet
         } else {
@@ -3258,6 +3265,7 @@ public final class ContactsRepository: NSObject {
         // A newer refresh may have superseded us across the awaits above; only
         // post when this task still owns the current projection.
         guard generation == refreshGeneration else { return }
+        isLoading = false
         postDidReload(contactDataChanged: false)
     }
 
@@ -3272,6 +3280,7 @@ public final class ContactsRepository: NSObject {
         await refreshLinkedContactIDs(generation: generation)
         await refreshLinkCounts(generation: generation)
         guard generation == refreshGeneration else { return }
+        isLoading = false
         postDidReload(contactDataChanged: false)
     }
 

@@ -314,12 +314,14 @@ struct ContactsRepositorySidecarRefreshTests {
         // this observes the reload's own outcome: no state, no post.
         #expect(flags.isEmpty)
         #expect(repo.people.map(\.localID) == ["a", "z"])
+        #expect(repo.isLoading) // stale reload did not mutate loading ownership
 
         // Now let the queued delta run: it owns the token, applies the fresh
         // projection (Zed viewed → first) and posts exactly once.
         try await Task.sleep(for: Self.beyondDebounce)
         #expect(flags == [false])
         #expect(repo.people.map(\.localID) == ["z", "a"])
+        #expect(!repo.isLoading) // the winning delta settled the load
     }
 
     @Test
