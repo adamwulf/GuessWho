@@ -265,15 +265,14 @@ public final class SidecarFileWatcher: NSObject {
             // subsequent metadata updates. Those updates queue while disabled
             // and are delivered after `enableUpdates()`.
             self.query.disableUpdates()
-            let gatheredItems = self.query.results
+            let metadataItems = self.query.results.map(Self.metadataConflictItem)
             self.query.enableUpdates()
             Self.log.info(
                 "sidecar metadata query gathered",
-                metadata: ["results": .stringConvertible(gatheredItems.count)]
+                metadata: ["results": .stringConvertible(metadataItems.count)]
             )
-            let metadataItems = gatheredItems.map(Self.metadataConflictItem)
             self.scheduleChangeProcessing(
-                added: gatheredItems.count,
+                added: metadataItems.count,
                 changed: 0,
                 removed: 0,
                 changedKeys: nil,

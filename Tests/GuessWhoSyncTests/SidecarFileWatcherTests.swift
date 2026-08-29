@@ -71,6 +71,19 @@ struct SidecarFileWatcherTests {
         }
     }
 
+    private final class StubMetadataItem: NSMetadataItem {
+        private let stubValues: [String: Any]
+
+        init(attributes: [String: Any]) {
+            self.stubValues = attributes
+            super.init()
+        }
+
+        override func value(forAttribute key: String) -> Any? {
+            stubValues[key]
+        }
+    }
+
     /// Captures the envelope synchronously at notification delivery time. This
     /// makes the ordering assertion meaningful: it cannot accidentally pass
     /// because the test reads the store only after `processSidecarChanges`
@@ -218,6 +231,25 @@ struct SidecarFileWatcherTests {
         #expect(watcher.sidecarKey(forMetadataPath:
             root.appendingPathComponent("contacts/nested/\(contactID).json").path
         ) == nil)
+    }
+
+    @Test
+    func metadataItemProjectionReadsConflictFlagAndPath() {
+        let path = "/tmp/contacts/flagged.json"
+        let flaggedItem = StubMetadataItem(attributes: [
+            NSMetadataItemPathKey: path,
+            NSMetadataUbiquitousItemHasUnresolvedConflictsKey: NSNumber(value: true),
+        ])
+        let flagged = SidecarFileWatcher.metadataConflictItem(from: flaggedItem)
+
+        #expect(flagged.path == path)
+        #expect(flagged.hasUnresolvedConflicts == true)
+
+        let missingFlag = SidecarFileWatcher.metadataConflictItem(
+            from: StubMetadataItem(attributes: [NSMetadataItemPathKey: path])
+        )
+        #expect(missingFlag.path == path)
+        #expect(missingFlag.hasUnresolvedConflicts == nil)
     }
 
     @Test
