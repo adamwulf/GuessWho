@@ -333,15 +333,27 @@ public final class ContactsRepository: NSObject {
     /// denied permission or a transient Contacts failure.
     public func reload() async {
         // A full reload participates in the shared sidecar-refresh generation
-        // scheme (see `refreshGeneration`): it advances the token up front and
-        // re-checks it before publishing its sidecar-derived projection, so an
-        // older reload and a newer sidecar delta (or vice versa) can never
-        // overwrite each other's fresher state or post a stale reload. The
-        // authoritative Contacts fetch below still publishes unconditionally —
-        // a sidecar delta never touches the `contacts` array, so there is no
-        // fresher contact state for a superseding refresh to protect.
+        // scheme (see `refreshGeneration`): it advances the token up front —
+        // superseding any older in-flight reload AND any queued sidecar delta —
+        // and re-checks it before publishing its sidecar-derived projection, so
+        // an older reload and a newer refresh can never overwrite each other's
+        // state or post a stale reload. The authoritative Contacts fetch below
+        // still publishes unconditionally — a sidecar delta never touches the
+        // `contacts` array, so there is no fresher contact state to protect.
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        // This reload re-reads every sidecar wholesale, so it SUBSUMES any
+        // pending debounced sidecar delta: cancel and clear it. That both
+        // avoids a redundant projection pass 300 ms from now and closes the gap
+        // — without it, a delta queued just before this reload would fire after
+        // it and (correctly, being newer-tokened) redo the work, but the reload
+        // would have discarded its own fresh projection in the meantime. No
+        // change is lost: the reload reads the same on-disk state the delta
+        // would have. A newer notification arriving DURING this reload starts a
+        // fresh pending delta and supersedes us in the normal way.
+        pendingSidecarRefresh?.cancel()
+        pendingSidecarRefresh = nil
+        pendingSidecarChangeSet = nil
         isLoading = true
         var fetchedContacts = false
         do {
@@ -366,11 +378,11 @@ public final class ContactsRepository: NSObject {
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         isLoading = false
-        // If a sidecar refresh (or a newer reload) BEGAN and committed while
-        // this one was in flight, it advanced the token and owns the fresher
-        // projection now; suppress this reload's stale post rather than
-        // announcing over it. A merely-queued sidecar change has not advanced
-        // the token, so it does not trigger this — the reload still publishes.
+        // A sidecar notification scheduled (or a newer reload started) while
+        // this one was in flight advanced the token and now owns the refresh;
+        // suppress this reload's stale post rather than announcing over it. The
+        // guarded helpers above have likewise applied nothing, so no stale
+        // projection state was published either.
         guard generation == refreshGeneration else { return }
         postDidReload()
     }
@@ -3153,26 +3165,18 @@ public final class ContactsRepository: NSObject {
     private var pendingSidecarChangeSet: SidecarChangeSet?
     private static let sidecarRefreshDebounce: Duration = .milliseconds(300)
 
-    /// Advanced by every scheduled sidecar change (in `scheduleSidecarRefresh`).
-    /// A debounced task captures this at schedule time and, when it wakes, only
-    /// consumes the merged pending change set if the value is still current — so
-    /// exactly one task, the latest schedule, owns and drains the merged set.
-    /// This is purely SCHEDULE bookkeeping: it does NOT decide whose projection
-    /// wins (see `refreshGeneration`), so a mere schedule cannot make an
-    /// in-flight `reload()` discard its work.
-    @ObservationIgnored private var pendingSidecarGeneration = 0
-
-    /// Advanced when an operation BEGINS its actual sidecar-projection work — a
-    /// `reload()` at its start, and a debounced sidecar task once it has claimed
-    /// its pending set. The operation captures the new value and re-checks it
-    /// before it mutates the projection or posts `.contactsRepositoryDidReload`;
-    /// a newer operation having begun means this one's result is stale and must
-    /// be discarded, so it can never overwrite fresher COMMITTED state or post a
-    /// stale reload. `reload()` participates too, so a full reload and a sidecar
-    /// delta cannot clobber each other in either order. Deliberately NOT bumped
-    /// at schedule time: a change that is only queued (still inside the debounce)
-    /// has produced no state to defer to, so an in-flight reload keeps and
-    /// commits its own projection with no empty-projection gap.
+    /// Monotonic token advanced whenever a new refresh is SCHEDULED — every
+    /// `scheduleSidecarRefresh(_:)` call AND every `reload()` — so scheduling a
+    /// refresh immediately invalidates every older in-flight one. The scheduling
+    /// operation captures the new value; a running refresh (a debounced sidecar
+    /// task or a `reload()`) re-checks it before it consumes the merged pending
+    /// set, before EACH post-async projection mutation, and before it posts
+    /// `.contactsRepositoryDidReload`. If a newer refresh has since been
+    /// scheduled the captured value is stale, so the running one applies nothing
+    /// and posts nothing — an older refresh can never overwrite fresher state or
+    /// emit a stale reload. `reload()` participates too (and additionally clears
+    /// the pending debounced work it subsumes), so a full reload and a sidecar
+    /// delta cannot clobber each other in either order.
     @ObservationIgnored private var refreshGeneration = 0
 
     private func scheduleSidecarRefresh(_ changeSet: SidecarChangeSet) {
@@ -3182,10 +3186,11 @@ public final class ContactsRepository: NSObject {
             pendingSidecarChangeSet = (pendingSidecarChangeSet ?? .fullRefresh)
                 .merging(changeSet)
         }
-        // Claim ownership of the merged pending set for the task scheduled here;
-        // a later schedule supersedes it. This is schedule bookkeeping only.
-        pendingSidecarGeneration &+= 1
-        let scheduleGeneration = pendingSidecarGeneration
+        // Advance the token at SCHEDULE time: this newly queued change is now
+        // the freshest intent, so any in-flight `reload()` and any earlier
+        // debounced task that captured an older value is immediately superseded.
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         pendingSidecarRefresh?.cancel()
         pendingSidecarRefresh = Task { [weak self] in
             do {
@@ -3194,18 +3199,15 @@ public final class ContactsRepository: NSObject {
                 return   // superseded by a newer notification
             }
             guard let self else { return }
-            // Only the latest-scheduled task drains the merged pending set. An
-            // earlier task that raced past its cancelled sleep sees a newer
-            // schedule generation here and bows out without double-consuming.
-            guard scheduleGeneration == self.pendingSidecarGeneration else { return }
+            // Only the latest-scheduled task drains the merged pending set. A
+            // newer schedule (or a `reload()`) advanced the token; an earlier
+            // task that raced past its cancelled sleep sees the mismatch here
+            // and bows out without double-consuming or refreshing. The pending
+            // set is left for whichever operation now owns the token.
+            guard generation == self.refreshGeneration else { return }
             let coalescedChangeSet = self.pendingSidecarChangeSet ?? .fullRefresh
             self.pendingSidecarChangeSet = nil
             self.pendingSidecarRefresh = nil
-            // Real projection work begins now: claim a run generation so any
-            // reload that starts after this cannot be overwritten by us, and any
-            // reload already committed before this simply gets refreshed again.
-            self.refreshGeneration &+= 1
-            let generation = self.refreshGeneration
             await self.refreshFromSidecarChange(coalescedChangeSet, generation: generation)
         }
     }

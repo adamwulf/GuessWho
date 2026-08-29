@@ -9,9 +9,13 @@ import GuessWhoSyncTesting
 /// Covers FIX 4 (any changed key kind other than `.contact`/`.link` — a
 /// `.group` favorite record in particular — must fall back to the full
 /// sidecar-derived refresh and post, never be silently dropped) and FIX 1 (a
-/// monotonic refresh generation shared with `reload()` so an older refresh
-/// cannot overwrite a newer one's projection or post a stale reload, while the
-/// debounce and the contact-delta scoping are preserved).
+/// monotonic refresh generation advanced whenever a refresh is SCHEDULED —
+/// every notification and every `reload()` — so a newly scheduled refresh
+/// immediately supersedes older in-flight ones: a superseded refresh applies no
+/// projection state and posts nothing, only the latest pending task drains the
+/// merged key set, and a direct `reload()` both supersedes and cancels the
+/// pending debounced work it subsumes. The debounce and contact-delta scoping
+/// are preserved).
 ///
 /// Every test drives the REAL engine over an in-memory sidecar store: an
 /// "external" change is seeded by writing straight through `sync` (as another
@@ -258,17 +262,16 @@ struct ContactsRepositorySidecarRefreshTests {
         #expect(repo.contact(localID: "b") != nil)
     }
 
-    // MARK: - FIX 1: reload participates in the generation scheme
+    // MARK: - FIX 1: schedule-time generation supersedes older running refreshes
 
     @Test
-    func sidecarChangeScheduledMidReload_doesNotDropReloadProjection() async throws {
-        // A sidecar change that is only SCHEDULED (still inside the debounce)
-        // while a reload is in flight must NOT make that reload discard its
-        // projection: a queued change has produced no state to defer to, so the
-        // reload keeps and commits its own read. Otherwise the projection would
-        // blink empty for a whole debounce window before the delta repopulated.
-        let zed = reconciled(localID: "z", uuid: "33333333-0000-0000-0000-000000000001", given: "Zed")
-        let amy = reconciled(localID: "a", uuid: "33333333-0000-0000-0000-000000000002", given: "Amy")
+    func scheduleDuringInFlightReload_makesReloadApplyNothingAndNotPost() async throws {
+        // A sidecar change SCHEDULED while a reload is in flight immediately
+        // advances the token, superseding that reload. When the reload resumes
+        // it must apply NO sidecar-derived state and post NOTHING; the debounced
+        // delta then produces the fresh projection. (Requirement 1.)
+        let zed = reconciled(localID: "z", uuid: "44444444-0000-0000-0000-000000000001", given: "Zed")
+        let amy = reconciled(localID: "a", uuid: "44444444-0000-0000-0000-000000000002", given: "Amy")
         let inner = InMemoryContactStore(contacts: [zed, amy])
         let store = GatedFetchAllContactStore(inner)
         let sync = makeSync(inner)
@@ -285,47 +288,63 @@ struct ContactsRepositorySidecarRefreshTests {
         }
         defer { center.removeObserver(token) }
 
-        // Park the reload in its Contacts fetch, then, WHILE it is parked,
-        // externally view Zed and post a sidecar change. The change is now
-        // queued behind the 300 ms debounce; the reload has not committed yet.
+        // Park a reload in its Contacts fetch. WHILE it is parked, externally
+        // view Zed (on disk) and schedule a sidecar change naming her. The
+        // change advances the token; the reload is now superseded.
         await store.arm()
         let reloadTask = Task { @MainActor in await repo.reload() }
         await store.waitUntilEntered()
         try sync.stampContactTimestamp(
             .viewed,
-            at: SidecarKey(kind: .contact, id: "33333333-0000-0000-0000-000000000001"),
+            at: SidecarKey(kind: .contact, id: "44444444-0000-0000-0000-000000000001"),
             now: Date()
         )
         center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
             GuessWhoSidecarsDidChangeKey.changeSet:
-                SidecarChangeSet(changedKeys: [SidecarKey(kind: .contact, id: "33333333-0000-0000-0000-000000000001")])
+                SidecarChangeSet(changedKeys: [SidecarKey(kind: .contact, id: "44444444-0000-0000-0000-000000000001")])
         ])
 
-        // Release the reload; it reads the sidecars fresh (Zed viewed) and must
-        // commit + post despite the still-queued change.
+        // Release the reload. It reads the sidecars fresh (Zed viewed) but, being
+        // superseded, applies nothing and does not post — so the cache stays
+        // empty and the order is the plain alphabetical [Amy, Zed].
         await store.openGate()
         await reloadTask.value
 
-        // Reload committed its projection (Zed viewed → ahead of the unviewed
-        // Amy, which alphabetically would sort FIRST) and posted. The queued
-        // delta has not fired yet (its debounce is longer than this).
-        #expect(flags == [true])
+        // The debounced delta has NOT fired yet (300 ms > the few ms above), so
+        // this observes the reload's own outcome: no state, no post.
+        #expect(flags.isEmpty)
+        #expect(repo.people.map(\.localID) == ["a", "z"])
+
+        // Now let the queued delta run: it owns the token, applies the fresh
+        // projection (Zed viewed → first) and posts exactly once.
+        try await Task.sleep(for: Self.beyondDebounce)
+        #expect(flags == [false])
         #expect(repo.people.map(\.localID) == ["z", "a"])
     }
 
     @Test
-    func newerSidecarDelta_supersedesInFlightReload_reloadPostSuppressed() async throws {
-        // The mirror case: a reload is in flight (parked in its Contacts fetch)
-        // when a newer sidecar delta lands, completes, and posts. When the
-        // reload resumes it must recognise it is superseded and suppress its own
-        // (now stale) post rather than announce over the delta.
-        let target = reconciled(localID: "t", uuid: "44444444-0000-0000-0000-000000000001", given: "Tess")
-        let inner = InMemoryContactStore(contacts: [target])
-        let store = GatedFetchAllContactStore(inner)
-        let sync = makeSync(inner)
+    func reloadStartedAfterPendingDelta_supersedesItAndPublishesFullProjection() async throws {
+        // A scoped sidecar delta is queued, then a direct reload starts. The
+        // reload advances the token AND cancels the pending debounced work it
+        // subsumes, then publishes its OWN full fresh projection. The superseded
+        // delta must produce nothing — no second, redundant refresh or post.
+        // (Requirement 3.)
+        let anna = reconciled(localID: "a", uuid: "55555555-0000-0000-0000-000000000001", given: "Anna")
+        let bob = reconciled(localID: "b", uuid: "55555555-0000-0000-0000-000000000002", given: "Bob")
+        let cara = reconciled(localID: "c", uuid: "55555555-0000-0000-0000-000000000003", given: "Cara")
+        let store = InMemoryContactStore(contacts: [anna, bob, cara])
+        let sync = makeSync(store)
         let center = NotificationCenter()
         let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
-        await repo.reload()   // gate open (un-armed): normal pass-through
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+
+        // All three viewed externally, Cara newest — so a FULL projection orders
+        // them Cara, Bob, Anna.
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "55555555-0000-0000-0000-000000000001"), now: base.addingTimeInterval(10))
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "55555555-0000-0000-0000-000000000002"), now: base.addingTimeInterval(20))
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "55555555-0000-0000-0000-000000000003"), now: base.addingTimeInterval(30))
 
         nonisolated(unsafe) var flags: [Bool] = []
         let token = center.addObserver(
@@ -335,22 +354,24 @@ struct ContactsRepositorySidecarRefreshTests {
         }
         defer { center.removeObserver(token) }
 
-        // Park the NEXT reload inside its Contacts fetch.
-        await store.arm()
-        let reloadTask = Task { @MainActor in await repo.reload() }
-        await store.waitUntilEntered()   // reload is now parked at fetchAll
+        // Queue a SCOPED delta naming only Anna, let its trampoline schedule the
+        // debounced task, then start a full reload that supersedes it.
+        center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
+            GuessWhoSidecarsDidChangeKey.changeSet:
+                SidecarChangeSet(changedKeys: [SidecarKey(kind: .contact, id: "55555555-0000-0000-0000-000000000001")])
+        ])
+        try await Task.sleep(for: .milliseconds(20))
+        await repo.reload()
 
-        // A newer sidecar delta lands, runs its full debounce, and posts.
-        await postAndAwaitReload(.fullRefresh, center: center, repo: repo)
-
-        // Release the parked reload; its trailing guard must suppress its post.
-        await store.openGate()
-        await reloadTask.value
+        // Wait out the (now cancelled) delta's debounce window; it must stay
+        // silent.
         try await Task.sleep(for: Self.beyondDebounce)
 
-        // Only the delta's presentation-only reload was posted; the superseded
-        // reload's `contactDataChanged: true` post never fired.
-        #expect(flags == [false])
+        // The reload published its FULL fresh projection (all three viewed →
+        // Cara, Bob, Anna) and posted exactly once (contactDataChanged == true).
+        // The superseded, cancelled delta neither refreshed nor posted.
+        #expect(flags == [true])
+        #expect(repo.people.map(\.localID) == ["c", "b", "a"])
     }
 }
 
