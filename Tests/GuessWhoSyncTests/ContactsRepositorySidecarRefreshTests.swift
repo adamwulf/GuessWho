@@ -12,9 +12,9 @@ import GuessWhoSyncTesting
 /// projects and is dropped as a relevance no-op — zero projection work, no
 /// post — mirroring `EventsRepository`. Mixed sets still process their relevant
 /// kinds, and `.group` subsumes any `.contact`/`.link` alongside it with a full
-/// refresh), FIX C (a projection refresh re-checks its generation after EACH
-/// scan and before issuing the next, so a refresh superseded mid-walk does not
-/// fire the remaining link endpoint/count scans), and FIX 1 (a monotonic
+/// refresh), FIX C (a scoped projection refresh re-checks its generation after
+/// the timestamp read and before issuing the combined link scan, so a refresh
+/// superseded mid-walk does not fire that remaining scan), and FIX 1 (a monotonic
 /// refresh generation advanced whenever a refresh is SCHEDULED — every
 /// notification and every `reload()` — so a newly scheduled refresh immediately
 /// supersedes older in-flight ones: a superseded refresh applies no projection
@@ -579,6 +579,72 @@ struct ContactsRepositorySidecarRefreshTests {
         #expect(repo.people.map(\.localID) == ["c", "b", "a"])
     }
 
+    // MARK: - B2-5: fused wholesale projection
+
+    @Test
+    func coldReloadEnumeratesOnceAndReadsEachContactAndLinkSidecarOnce() async throws {
+        let annaUUID = "66666666-0000-0000-0000-000000000001"
+        let zoeUUID = "66666666-0000-0000-0000-000000000002"
+        let anna = reconciled(localID: "a", uuid: annaUUID, given: "Anna")
+        let zoe = reconciled(localID: "z", uuid: zoeUUID, given: "Zoe")
+        let store = InMemoryContactStore(contacts: [anna, zoe])
+        let counting = ScanCountingSidecarStore(wrapping: InMemorySidecarStore())
+        let sync = makeSync(store, sidecars: counting)
+
+        // Seed timestamp envelopes before constructing/reloading the repository,
+        // so its timestamp cache is genuinely cold. Zoe is newer despite
+        // sorting after Anna alphabetically.
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let annaKey = SidecarKey(kind: .contact, id: annaUUID)
+        let zoeKey = SidecarKey(kind: .contact, id: zoeUUID)
+        try sync.stampContactTimestamp(.viewed, at: annaKey, now: base)
+        try sync.stampContactTimestamp(.viewed, at: zoeKey, now: base.addingTimeInterval(10))
+
+        let live = try sync.addLink(from: annaKey, to: zoeKey, note: "live")
+        let deleted = try sync.addLink(from: annaKey, to: zoeKey, note: "deleted")
+        try sync.removeLink(id: deleted.id)
+        let malformedID = UUID()
+        let malformedKey = SidecarKey(kind: .link, id: malformedID.uuidString)
+        try counting.write(
+            SidecarEnvelope(entityID: malformedID.uuidString, fields: [:]),
+            at: malformedKey
+        )
+
+        let allKeysBefore = counting.allKeysCount
+        let readsBefore = counting.readCounts
+        let totalReadsBefore = counting.readCount
+
+        let repo = ContactsRepository(
+            contacts: store,
+            sync: sync,
+            notificationCenter: NotificationCenter()
+        )
+        repo.sortOrder = .lastViewed
+        await repo.reload()
+
+        let relevantKeys = [
+            annaKey,
+            zoeKey,
+            SidecarKey(kind: .link, id: live.id.uuidString),
+            SidecarKey(kind: .link, id: deleted.id.uuidString),
+            malformedKey,
+        ]
+        #expect(counting.allKeysCount == allKeysBefore + 1)
+        #expect(counting.readCount == totalReadsBefore + relevantKeys.count)
+        for key in relevantKeys {
+            #expect(counting.readCounts[key, default: 0] == readsBefore[key, default: 0] + 1)
+        }
+
+        // Output proof from the cold load: timestamps were not skipped, the
+        // live link feeds both membership and the badge count, and the deleted
+        // and malformed links feed neither.
+        #expect(repo.people.map(\.localID) == ["z", "a"])
+        repo.peopleFilter = .linked
+        #expect(Set(repo.people.map(\.localID)) == Set(["a", "z"]))
+        #expect(repo.linkCount(for: anna) == 1)
+        #expect(repo.linkCount(for: zoe) == 1)
+    }
+
     // MARK: - FIX C: a refresh superseded mid-walk skips its later scans
 
     @Test
@@ -586,10 +652,9 @@ struct ContactsRepositorySidecarRefreshTests {
         // A scoped {contact, link} refresh starts. The barrier parks it AFTER its
         // scoped timestamp read but BEFORE the generation guard. While parked, a
         // newer {contact} change supersedes it. On resume, FIX C's guard right
-        // after the timestamp scan bails BEFORE issuing the two link-corpus walks
-        // (linkedEndpoints + linkCounts, each an `allKeys` scan). Absent that
-        // guard the superseded refresh would still fire both, only to no-op at its
-        // own guards — the wasted scans FIX C removes.
+        // after the timestamp scan bails BEFORE issuing the combined link-corpus
+        // walk. Absent that guard the superseded refresh would still fire it,
+        // only to no-op at its own guard — the wasted scan FIX C removes.
         let anna = reconciled(localID: "a", uuid: "77777777-0000-0000-0000-000000000001", given: "Anna")
         let bob = reconciled(localID: "b", uuid: "77777777-0000-0000-0000-000000000002", given: "Bob")
         let store = InMemoryContactStore(contacts: [anna, bob])
@@ -600,9 +665,9 @@ struct ContactsRepositorySidecarRefreshTests {
         await repo.reload()
         repo.sortOrder = .lastViewed
 
-        // Count only the link-corpus walks: `linkedEndpoints` / `linkCounts` are
-        // the sole projection reads that call `allKeys`; the scoped timestamp read
-        // (`contactTimestamps(at:)`) reads named keys directly and never does.
+        // Count only the combined link-corpus walks; the scoped timestamp read
+        // (`contactTimestamps(at:)`) reads named keys directly and never calls
+        // `allKeys`.
         let allKeysBefore = counting.allKeysCount
 
         // Park the first ({contact:Anna, link}) refresh inside its timestamp scan.
@@ -629,10 +694,10 @@ struct ContactsRepositorySidecarRefreshTests {
         try await Task.sleep(for: Self.beyondDebounce)
 
         // The newer refresh INHERITS the link key (the in-flight handoff), so it
-        // walks the link corpus exactly once (2 `allKeys`). Absent FIX C the
-        // first, superseded refresh would ALSO have walked it (2 more) → 4 total.
-        // Exactly 2 proves the superseded refresh issued none of its link scans.
-        #expect(counting.allKeysCount == allKeysBefore + 2)
+        // walks the link corpus exactly once (1 `allKeys`). Absent FIX C the
+        // first, superseded refresh would ALSO have walked it → 2 total.
+        // Exactly 1 proves the superseded refresh issued no link scan.
+        #expect(counting.allKeysCount == allKeysBefore + 1)
     }
 }
 
@@ -752,9 +817,10 @@ actor GatedFetchAllContactStore: ContactStoreProtocol {
 /// "zero projection work" (or "the later scans never fired") deterministically
 /// rather than by timing.
 ///
-/// - `allKeysCount` counts `allKeys()` — the corpus-walk primitive that
-///   `allContactTimestamps` / `linkedEndpoints` / `linkCounts` each begin with.
-/// - `readCount` counts `read(_:)` — every scoped or wholesale envelope read.
+/// - `allKeysCount` counts `allKeys()` — the corpus-walk primitive the fused
+///   wholesale projection and the combined link-only projection begin with.
+/// - `readCount` / `readCounts` count total/per-key `read(_:)` calls — every
+///   scoped or wholesale envelope read.
 /// - `scanCount` is their sum: the total projection-read work, which stays flat
 ///   when a change is dropped before any scan.
 ///
@@ -765,15 +831,20 @@ final class ScanCountingSidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
     private var _allKeysCount = 0
     private var _readCount = 0
+    private var _readCounts: [SidecarKey: Int] = [:]
 
     init(wrapping inner: InMemorySidecarStore) { self.inner = inner }
 
     var allKeysCount: Int { lock.lock(); defer { lock.unlock() }; return _allKeysCount }
     var readCount: Int { lock.lock(); defer { lock.unlock() }; return _readCount }
+    var readCounts: [SidecarKey: Int] { lock.lock(); defer { lock.unlock() }; return _readCounts }
     var scanCount: Int { lock.lock(); defer { lock.unlock() }; return _allKeysCount + _readCount }
 
     func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
-        lock.lock(); _readCount += 1; lock.unlock()
+        lock.lock()
+        _readCount += 1
+        _readCounts[key, default: 0] += 1
+        lock.unlock()
         return try inner.read(key)
     }
     func allKeys() throws -> [SidecarKey] {

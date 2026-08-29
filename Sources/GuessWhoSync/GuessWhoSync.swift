@@ -9,6 +9,31 @@ import Logging
 // InMemorySidecarStore both do). Marked @unchecked so the type can be
 // shared across actors without requiring those protocols to be Sendable.
 public final class GuessWhoSync: @unchecked Sendable {
+    /// The two contact-list projections derived from the live link corpus.
+    /// Internal because callers outside the package should consume repository
+    /// projections rather than sidecar-shaped keys.
+    struct LinkEndpointProjection: Sendable, Equatable {
+        var endpoints: Set<SidecarKey>
+        var counts: [SidecarKey: Int]
+    }
+
+    /// Every sidecar-derived value a wholesale contacts reload needs. Keeping
+    /// these together lets the engine enumerate the corpus once and decode each
+    /// relevant envelope once, while the repository still publishes its normal
+    /// contact-shaped caches.
+    struct ContactReloadProjection: Sendable, Equatable {
+        /// Nil means the contact-envelope portion failed and the repository
+        /// should apply its existing empty-cache fallback for timestamps only.
+        let timestamps: [String: ContactTimestamps]?
+        /// Nil means the link-envelope portion failed and the repository should
+        /// empty only the two link-derived caches. Keeping failure independent
+        /// preserves the former three-walk degradation semantics.
+        let links: LinkEndpointProjection?
+        /// Reuses the reload's one corpus enumeration for the pre-existing
+        /// group-identity refresh without reading group envelopes prematurely.
+        let groupKeys: [SidecarKey]
+    }
+
     /// Same label as the adapter/repository save breadcrumbs: every CNContact
     /// write REQUEST logs its initiating operation so a failed save in the log
     /// is attributable (the reconcile writes here were previously silent).
@@ -744,19 +769,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// list filters: one O(N links) pass can identify all linked contacts,
     /// events, or places without performing an O(N endpoints × N links) scan.
     public func linkedEndpoints(ofKind kind: SidecarKind) throws -> Set<SidecarKey> {
-        var result: Set<SidecarKey> = []
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key),
-                  let link = Link(from: envelope),
-                  link.deletedAt == nil else { continue }
-            if link.endpointA.kind == kind {
-                result.insert(link.endpointA)
-            }
-            if link.endpointB.kind == kind {
-                result.insert(link.endpointB)
-            }
-        }
-        return result
+        try linkEndpointProjection(ofKind: kind).endpoints
     }
 
     /// Async overload of `linkedEndpoints(ofKind:)`; the complete link scan
@@ -781,19 +794,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// Counts ALL links touching the endpoint regardless of the far endpoint's
     /// kind, consistent with the Linked filter.
     public func linkCounts(ofKind kind: SidecarKind) throws -> [SidecarKey: Int] {
-        var result: [SidecarKey: Int] = [:]
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key),
-                  let link = Link(from: envelope),
-                  link.deletedAt == nil else { continue }
-            if link.endpointA.kind == kind {
-                result[link.endpointA, default: 0] += 1
-            }
-            if link.endpointB.kind == kind {
-                result[link.endpointB, default: 0] += 1
-            }
-        }
-        return result
+        try linkEndpointProjection(ofKind: kind).counts
     }
 
     /// Async overload of `linkCounts(ofKind:)`; the complete link scan
@@ -808,6 +809,119 @@ public final class GuessWhoSync: @unchecked Sendable {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    /// Computes linked-endpoint membership and per-endpoint counts together.
+    /// Each link envelope is read and decoded exactly once. The accumulation is
+    /// deliberately identical to the former separate methods: malformed and
+    /// soft-deleted links are ignored, both endpoints are considered, and a
+    /// same-key link increments that endpoint twice while membership remains a
+    /// set.
+    func linkEndpointProjection(ofKind kind: SidecarKind) throws -> LinkEndpointProjection {
+        var projection = LinkEndpointProjection(endpoints: [], counts: [:])
+        for key in try sidecars.allKeys() where key.kind == .link {
+            guard let envelope = try sidecars.read(key),
+                  let link = Link(from: envelope),
+                  link.deletedAt == nil else { continue }
+            Self.accumulate(link, ofKind: kind, into: &projection)
+        }
+        return projection
+    }
+
+    /// Async overload used by scoped repository refreshes after a link change.
+    func linkEndpointProjection(ofKind kind: SidecarKind) async throws -> LinkEndpointProjection {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.linkEndpointProjection(ofKind: kind)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Fused wholesale projection for `ContactsRepository.reload()` and its
+    /// full sidecar refresh fallback. `allKeys()` runs once; contact envelopes
+    /// feed timestamps and link envelopes feed BOTH link-derived values.
+    func contactReloadProjection() throws -> ContactReloadProjection {
+        var timestamps: [String: ContactTimestamps] = [:]
+        var links = LinkEndpointProjection(endpoints: [], counts: [:])
+        var groupKeys: [SidecarKey] = []
+        var timestampsFailed = false
+        var linksFailed = false
+
+        for key in try sidecars.allKeys() {
+            switch key.kind {
+            case .contact:
+                guard !timestampsFailed else { continue }
+                do {
+                    guard let envelope = try sidecars.read(key) else { continue }
+                    timestamps[key.id] = ContactTimestamps(from: envelope)
+                } catch {
+                    // The old standalone timestamp walk threw and the repository
+                    // replaced ONLY that cache with empty. Record the same
+                    // per-projection failure while continuing the fused link walk.
+                    timestampsFailed = true
+                    timestamps = [:]
+                }
+            case .link:
+                guard !linksFailed else { continue }
+                do {
+                    guard let envelope = try sidecars.read(key),
+                          let link = Link(from: envelope),
+                          link.deletedAt == nil else { continue }
+                    Self.accumulate(link, ofKind: .contact, into: &links)
+                } catch {
+                    // Both old link walks failed independently on this stable
+                    // read error; discard both derived values but keep scanning
+                    // contacts so a link failure cannot erase valid timestamps.
+                    linksFailed = true
+                    links = LinkEndpointProjection(endpoints: [], counts: [:])
+                }
+            case .group:
+                groupKeys.append(key)
+            default:
+                continue
+            }
+        }
+
+        return ContactReloadProjection(
+            timestamps: timestampsFailed ? nil : timestamps,
+            links: linksFailed ? nil : links,
+            groupKeys: groupKeys
+        )
+    }
+
+    /// Async overload that keeps the single fused corpus walk off the caller's
+    /// actor and the main thread.
+    func contactReloadProjection() async throws -> ContactReloadProjection {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.contactReloadProjection()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func accumulate(
+        _ link: Link,
+        ofKind kind: SidecarKind,
+        into projection: inout LinkEndpointProjection
+    ) {
+        if link.endpointA.kind == kind {
+            projection.endpoints.insert(link.endpointA)
+            projection.counts[link.endpointA, default: 0] += 1
+        }
+        if link.endpointB.kind == kind {
+            projection.endpoints.insert(link.endpointB)
+            projection.counts[link.endpointB, default: 0] += 1
         }
     }
 

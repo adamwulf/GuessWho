@@ -25,8 +25,15 @@ extension GuessWhoSync {
     /// sidecar throws, like `allGuides()`), so the caller sees a transient
     /// iCloud state rather than a silently short list.
     public func allGroupIdentities() throws -> [GroupIdentity] {
+        try groupIdentities(at: sidecars.allKeys())
+    }
+
+    /// Reload-internal form that consumes an already-enumerated corpus key
+    /// snapshot. This preserves `allGroupIdentities()` decoding/filtering while
+    /// avoiding a second `allKeys()` during `ContactsRepository.reload()`.
+    func groupIdentities(at keys: [SidecarKey]) throws -> [GroupIdentity] {
         var result: [GroupIdentity] = []
-        for key in try sidecars.allKeys() where key.kind == .group {
+        for key in keys where key.kind == .group {
             guard let envelope = try sidecars.read(key) else { continue }
             if let record = Self.decodeGroupIdentity(from: envelope) {
                 result.append(record)

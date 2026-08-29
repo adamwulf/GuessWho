@@ -381,28 +381,26 @@ public final class ContactsRepository: NSObject {
         }
         if fetchedContacts {
             await repairPendingCreationTimestamps()
-            // `loadGroups()` and the contact reload race independently at app
-            // start. If groups landed first, refresh their identity
-            // fingerprints now that the contact -> GuessWho-ID cache is full;
-            // if contacts landed first, `loadGroups()` performs the same pass.
+        }
+        // The engine fuses the three wholesale derived values into one corpus
+        // walk: one `allKeys()` enumeration, one read per contact envelope, and
+        // one read per link envelope. A sidecar delta scheduled during the
+        // Contacts fetch (or during that walk) bumps `refreshGeneration`; the
+        // guard inside the refresh helper drops the entire stale projection.
+        // This does NOT abandon the reload — the Contacts result and its
+        // `contactDataChanged: true` post are owned by
+        // `contactReloadGeneration` (a separate domain) and still publish below.
+        if generation == refreshGeneration {
+            await refreshFullSidecarProjectionCaches(
+                generation: generation,
+                refreshGroupIdentities: fetchedContacts
+            )
+        } else if fetchedContacts {
+            // Preserve the independent group-identity refresh even when a
+            // newer sidecar projection superseded this reload before its fused
+            // scan could start. This exceptional path must enumerate for itself;
+            // the winning steady-state reload still enumerates exactly once.
             await refreshAllGroupIdentities()
-        }
-        // FIX C: re-check the projection generation after EACH scan await and
-        // before issuing the next one. A sidecar delta scheduled during the
-        // Contacts fetch (or during an earlier scan) bumps `refreshGeneration`
-        // and owns the projection; once superseded, skip the remaining
-        // wholesale scans rather than issue them only to have each no-op at its
-        // own guard. This does NOT abandon the reload — the Contacts result and
-        // its `contactDataChanged: true` post are owned by `contactReloadGeneration`
-        // (a separate domain) and still publish below.
-        if generation == refreshGeneration {
-            await refreshTimestampCache(generation: generation)
-        }
-        if generation == refreshGeneration {
-            await refreshLinkedContactIDs(generation: generation)
-        }
-        if generation == refreshGeneration {
-            await refreshLinkCounts(generation: generation)
         }
         // A newer direct reload owns the Contacts result and its notification.
         // A sidecar-only refresh does not: even when it superseded the projection
@@ -445,24 +443,67 @@ public final class ContactsRepository: NSObject {
         contactTimestampsByID = refreshed
     }
 
-    private func refreshLinkedContactIDs(generation: Int) async {
+    /// Refresh both link-derived caches from one link-corpus walk. The engine
+    /// decodes each live/malformed/deleted link exactly once and derives the
+    /// endpoint set and counts together, so these projections cannot diverge.
+    private func refreshLinkProjection(generation: Int) async {
         guard let sync else {
             linkedContactIDs = []
-            return
-        }
-        let endpoints = (try? await sync.linkedEndpoints(ofKind: .contact)) ?? []
-        guard generation == refreshGeneration else { return }
-        linkedContactIDs = Set(endpoints.map(\.id))
-    }
-
-    private func refreshLinkCounts(generation: Int) async {
-        guard let sync else {
             linkCountsByID = [:]
             return
         }
-        let counts = (try? await sync.linkCounts(ofKind: .contact)) ?? [:]
+        let projection = try? await sync.linkEndpointProjection(ofKind: .contact)
         guard generation == refreshGeneration else { return }
-        linkCountsByID = Dictionary(uniqueKeysWithValues: counts.map { ($0.key.id, $0.value) })
+        linkedContactIDs = Set((projection?.endpoints ?? []).map(\.id))
+        linkCountsByID = Dictionary(
+            uniqueKeysWithValues: (projection?.counts ?? [:]).map { ($0.key.id, $0.value) }
+        )
+    }
+
+    /// Refresh every wholesale sidecar-derived contact projection from the
+    /// engine's single fused corpus pass. A contact or link read failure
+    /// preserves the existing degrade-gracefully contract independently: only
+    /// that source's derived cache(s) become empty.
+    private func refreshFullSidecarProjectionCaches(
+        generation: Int,
+        refreshGroupIdentities: Bool = false
+    ) async {
+        guard let sync else {
+            contactTimestampsByID = [:]
+            linkedContactIDs = []
+            linkCountsByID = [:]
+            return
+        }
+        let projection = try? await sync.contactReloadProjection()
+        guard generation == refreshGeneration else {
+            // Before B2-5, group identities refreshed before the projection
+            // scans and therefore still ran when a notification arrived during
+            // a scan. Preserve that concurrency behavior; only the superseded
+            // path needs a replacement enumeration.
+            if refreshGroupIdentities { await refreshAllGroupIdentities() }
+            return
+        }
+        if refreshGroupIdentities {
+            // `loadGroups()` and the contact reload race independently at app
+            // start. If groups landed first, refresh their identity
+            // fingerprints now that the contact -> GuessWho-ID cache is full;
+            // if contacts landed first, `loadGroups()` performs the same pass.
+            // Consume the fused reload's group-key snapshot so this pre-existing
+            // work does not re-enumerate the corpus. If enumeration itself
+            // failed, retain the old best-effort independent attempt.
+            if let projection {
+                await refreshAllGroupIdentities(groupKeys: projection.groupKeys)
+            } else {
+                await refreshAllGroupIdentities()
+            }
+            guard generation == refreshGeneration else { return }
+        }
+        contactTimestampsByID = projection?.timestamps ?? [:]
+        let linkProjection = projection?.links
+        linkedContactIDs = Set((linkProjection?.endpoints ?? []).map(\.id))
+        linkCountsByID = Dictionary(
+            uniqueKeysWithValues: (linkProjection?.counts ?? [:]).map { ($0.key.id, $0.value) }
+        )
     }
 
     // MARK: - Groups
@@ -2083,7 +2124,10 @@ public final class ContactsRepository: NSObject {
     /// Re-resolve every stored identity against the current group cache, then
     /// refresh the live scalar fingerprint. Best-effort by design: Contacts or
     /// iCloud failures never prevent the group list itself from loading.
-    private func refreshAllGroupIdentities(resetCache: Bool = false) async {
+    private func refreshAllGroupIdentities(
+        resetCache: Bool = false,
+        groupKeys: [SidecarKey]? = nil
+    ) async {
         guard let sync else {
             if resetCache {
                 resolvedGroupsByIdentityID = [:]
@@ -2096,8 +2140,13 @@ public final class ContactsRepository: NSObject {
             groupIdentityIDByLocalID = [:]
         }
         do {
-            let identities = try sync.allGroupIdentities().sorted { $0.id < $1.id }
-            for identity in identities {
+            let identities: [GroupIdentity]
+            if let groupKeys {
+                identities = try sync.groupIdentities(at: groupKeys)
+            } else {
+                identities = try sync.allGroupIdentities()
+            }
+            for identity in identities.sorted(by: { $0.id < $1.id }) {
                 // Only resolve + refresh identities that still back a live
                 // favorite. An orphan identity — its group was un-favorited but
                 // the sidecar lingers for reuse on re-favorite — needs neither a
@@ -3327,21 +3376,19 @@ public final class ContactsRepository: NSObject {
             return
         }
 
-        // FIX C: re-check the generation after EACH scoped scan await and before
-        // issuing the next expensive one, so a newer refresh that superseded us
-        // mid-walk stops us from firing the remaining link endpoint/count scans.
-        // The per-method guards still gate every state mutation; these add an
-        // early-out before the wasted work, and the last one guards the publish.
+        // FIX C: re-check the generation after the scoped timestamp scan and
+        // before issuing the link scan, so a newer refresh that superseded us
+        // mid-walk stops the remaining work. The link scan itself now derives
+        // endpoint membership and counts together from one read per link.
         if !contactKeys.isEmpty {
             await refreshTimestampCache(for: contactKeys, generation: generation)
             guard generation == refreshGeneration else { return }
         }
         if linksChanged {
-            // Link deletions do not carry their former endpoints, so the two
-            // link-derived projections retain their full-link-scan fallback.
-            await refreshLinkedContactIDs(generation: generation)
-            guard generation == refreshGeneration else { return }
-            await refreshLinkCounts(generation: generation)
+            // Link deletions do not carry their former endpoints, so the
+            // combined link-derived projection retains its full-link-scan
+            // fallback.
+            await refreshLinkProjection(generation: generation)
             guard generation == refreshGeneration else { return }
         }
         isLoading = false
@@ -3349,22 +3396,13 @@ public final class ContactsRepository: NSObject {
     }
 
     /// The full sidecar-derived projection refresh: re-read the bulk timestamp
-    /// cache, the linked-endpoint set, and the link counts wholesale, then post
-    /// a presentation-only reload. Shared by the explicit `changedKeys == nil`
-    /// full-refresh signal and the `.group`-change fallback (FIX D). Every step —
-    /// and the post — is gated on `generation`, so a newer refresh that began
-    /// meanwhile is never overwritten by this one.
+    /// cache, the linked-endpoint set, and the link counts in one fused engine
+    /// pass, then post a presentation-only reload. Shared by the explicit
+    /// `changedKeys == nil` full-refresh signal and the `.group`-change fallback
+    /// (FIX D). The cache replace and post are gated on `generation`, so a newer
+    /// refresh that began meanwhile is never overwritten by this one.
     private func performFullSidecarProjectionRefresh(generation: Int) async {
-        // FIX C: re-check the generation after EACH wholesale scan await and
-        // before issuing the next one. A newer refresh scheduled mid-walk owns
-        // the projection; bail out before firing the remaining link
-        // endpoint/count scans rather than issue them only to no-op at their
-        // guards. The final guard still gates the publish.
-        await refreshTimestampCache(generation: generation)
-        guard generation == refreshGeneration else { return }
-        await refreshLinkedContactIDs(generation: generation)
-        guard generation == refreshGeneration else { return }
-        await refreshLinkCounts(generation: generation)
+        await refreshFullSidecarProjectionCaches(generation: generation)
         guard generation == refreshGeneration else { return }
         isLoading = false
         postDidReload(contactDataChanged: false)

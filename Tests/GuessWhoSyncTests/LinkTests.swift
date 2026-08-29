@@ -202,6 +202,76 @@ struct LinkTests {
         }
     }
 
+    @Test
+    func combinedLinkProjectionExactlyMatchesLegacyResultsAcrossEdgeCases() throws {
+        // Seed the cases whose filtering/counting semantics must not move:
+        // duplicate pairs, mixed kinds, a same-endpoint link (counts twice), a
+        // soft-deleted link, and a malformed link envelope.
+        let (sync, sidecars) = makeOrchestrator()
+        _ = try sync.addLink(from: contactA, to: contactB, note: "first")
+        _ = try sync.addLink(from: contactA, to: contactB, note: "duplicate")
+        _ = try sync.addLink(from: contactA, to: eventX, note: "mixed")
+        _ = try sync.addLink(from: contactB, to: contactB, note: "self")
+        let removed = try sync.addLink(from: contactB, to: eventX, note: "deleted")
+        try sync.removeLink(id: removed.id)
+
+        let malformedID = UUID()
+        let malformedKey = SidecarKey(kind: .link, id: malformedID.uuidString)
+        try sidecars.write(
+            SidecarEnvelope(entityID: malformedID.uuidString, fields: [:]),
+            at: malformedKey
+        )
+
+        let legacyEndpoints = try sync.linkedEndpoints(ofKind: .contact)
+        let legacyCounts = try sync.linkCounts(ofKind: .contact)
+        let combined = try sync.linkEndpointProjection(ofKind: .contact)
+        let reloadProjection = try sync.contactReloadProjection()
+
+        #expect(legacyEndpoints == Set([contactA, contactB]))
+        #expect(legacyCounts == [contactA: 3, contactB: 4])
+        #expect(combined.endpoints == legacyEndpoints)
+        #expect(combined.counts == legacyCounts)
+        #expect(reloadProjection.links == combined)
+    }
+
+    @Test
+    func fusedReloadKeepsTimestampAndLinkReadFailuresIndependent() throws {
+        let inner = InMemorySidecarStore()
+        let healthy = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: inner,
+            deviceID: "device-A"
+        )
+        try healthy.stampContactTimestamp(
+            .viewed,
+            at: contactA,
+            now: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        _ = try healthy.addLink(from: contactA, to: contactB, note: "live")
+
+        let contactFailure = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: ProjectionReadFailingStore(wrapping: inner, failingKind: .contact),
+            deviceID: "device-A"
+        )
+        let withoutTimestamps = try contactFailure.contactReloadProjection()
+        #expect(withoutTimestamps.timestamps == nil)
+        #expect(withoutTimestamps.links?.endpoints == Set([contactA, contactB]))
+        #expect(withoutTimestamps.links?.counts == [contactA: 1, contactB: 1])
+
+        let linkFailure = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: ProjectionReadFailingStore(wrapping: inner, failingKind: .link),
+            deviceID: "device-A"
+        )
+        let withoutLinks = try linkFailure.contactReloadProjection()
+        #expect(withoutLinks.timestamps?[contactA.id]?.lastViewed != nil)
+        #expect(withoutLinks.links == nil)
+    }
+
     // MARK: - Cross-kind endpoints
 
     @Test
@@ -504,4 +574,28 @@ struct LinkTests {
         #expect(stillThere.endpointA == contactA)
         #expect(stillThere.endpointB == contactB)
     }
+}
+
+private struct ProjectionReadFailure: Error {}
+
+private final class ProjectionReadFailingStore: SidecarStoreProtocol {
+    private let inner: InMemorySidecarStore
+    private let failingKind: SidecarKind
+
+    init(wrapping inner: InMemorySidecarStore, failingKind: SidecarKind) {
+        self.inner = inner
+        self.failingKind = failingKind
+    }
+
+    func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
+        if key.kind == failingKind { throw ProjectionReadFailure() }
+        return try inner.read(key)
+    }
+
+    func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
+        try inner.write(envelope, at: key)
+    }
+
+    func delete(_ key: SidecarKey) throws { try inner.delete(key) }
+    func allKeys() throws -> [SidecarKey] { try inner.allKeys() }
 }
