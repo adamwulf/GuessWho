@@ -6,9 +6,9 @@ public extension Notification.Name {
     /// root change on disk — a remote edit or a `notYetDownloaded` file
     /// arriving from another device, or a same-device write echoing back
     /// through the metadata query (see `SidecarFileWatcher` for why echoes
-    /// are accepted rather than filtered). No payload: subscribers treat it
-    /// as a coarse "sidecar-derived state may be stale" signal and run their
-    /// (debounced, read-only) refresh paths.
+    /// are accepted rather than filtered). The notification carries a
+    /// `SidecarChangeSet` when the metadata delivery names concrete files;
+    /// subscribers fall back to their full refresh when it does not.
     ///
     /// This is the missing half of the `SidecarStoreError.notYetDownloaded`
     /// contract: `read()` requests the download and tells the caller to retry
@@ -18,6 +18,51 @@ public extension Notification.Name {
     /// The name is developer/internal-facing; the `guessWho` vocabulary is
     /// intentional and never surfaces in any user-facing string.
     static let guessWhoSidecarsDidChange = Notification.Name("GuessWhoSidecarsDidChange")
+}
+
+/// `userInfo` keys for `.guessWhoSidecarsDidChange`.
+public enum GuessWhoSidecarsDidChangeKey {
+    /// Value: a `SidecarChangeSet`. Its `changedKeys` is nil when the watcher
+    /// cannot safely identify every changed file, including initial gather.
+    public static let changeSet = "changeSet"
+}
+
+/// The sidecar keys named by one coalesced metadata-query burst. A nil key set
+/// is an explicit full-refresh signal. Empty sets are normalized to nil so an
+/// incomplete or synthetic metadata delivery can never suppress a refresh.
+public struct SidecarChangeSet: Sendable, Equatable {
+    public let changedKeys: Set<SidecarKey>?
+
+    public init(changedKeys: Set<SidecarKey>?) {
+        if let changedKeys, !changedKeys.isEmpty {
+            self.changedKeys = changedKeys
+        } else {
+            self.changedKeys = nil
+        }
+    }
+
+    public static let fullRefresh = SidecarChangeSet(changedKeys: nil)
+
+    public var requiresFullRefresh: Bool { changedKeys == nil }
+
+    /// Unknown scope is contagious: if either delivery cannot name every key,
+    /// the combined burst must retain the full-refresh fallback.
+    public func merging(_ other: SidecarChangeSet) -> SidecarChangeSet {
+        guard let changedKeys, let otherKeys = other.changedKeys else {
+            return .fullRefresh
+        }
+        return SidecarChangeSet(changedKeys: changedKeys.union(otherKeys))
+    }
+}
+
+public extension Notification {
+    /// Typed payload for `.guessWhoSidecarsDidChange`. A missing or malformed
+    /// payload preserves compatibility with coarse legacy/test posts by
+    /// returning the guaranteed full-refresh fallback.
+    var guessWhoSidecarChangeSet: SidecarChangeSet {
+        userInfo?[GuessWhoSidecarsDidChangeKey.changeSet] as? SidecarChangeSet
+            ?? .fullRefresh
+    }
 }
 
 /// Watches the sidecar root in the iCloud ubiquity container with an
@@ -44,9 +89,9 @@ public extension Notification.Name {
 /// hatch is store-side write journaling (compare changed paths against
 /// recent local writes), not query-side filtering.
 ///
-/// The query itself batches: `notificationBatchingInterval` collapses rapid
-/// file events into one `didUpdate` per interval, so a multi-file sync
-/// burst reaches subscribers as a single post (which they debounce again).
+/// The query itself batches notifications, and the watcher adds a trailing
+/// quiet period before reconciliation. A burst therefore reaches subscribers
+/// as one reconcile-and-post pass (which they debounce again).
 @MainActor
 public final class SidecarFileWatcher: NSObject {
     /// Breadcrumbs for the arrival pipeline, alongside the rest of the app's
@@ -62,11 +107,49 @@ public final class SidecarFileWatcher: NSObject {
     /// `start()` is idempotent.
     private var isObserving = false
 
+    /// Metadata notifications first collect here until the trailing quiet
+    /// period expires. A separate ready batch is necessary because a new
+    /// delivery can restart the quiet period while an older ready batch is
+    /// waiting for the current reconciliation pass to finish.
+    private struct ChangeBatch {
+        var added: Int
+        var changed: Int
+        var removed: Int
+        var changeSet: SidecarChangeSet
+
+        mutating func merge(
+            added: Int,
+            changed: Int,
+            removed: Int,
+            changeSet: SidecarChangeSet
+        ) {
+            self.added += added
+            self.changed += changed
+            self.removed += removed
+            self.changeSet = self.changeSet.merging(changeSet)
+        }
+
+        mutating func merge(_ other: ChangeBatch) {
+            merge(
+                added: other.added,
+                changed: other.changed,
+                removed: other.removed,
+                changeSet: other.changeSet
+            )
+        }
+    }
+
+    /// Named independently from `notificationBatchingInterval`: batching is
+    /// upstream delivery policy, while this is the trailing-edge quiet period
+    /// that coalesces deliveries before expensive work starts.
+    private static let changeProcessingQuietPeriod: Duration = .milliseconds(500)
+    private var pendingQuietPeriod: Task<Void, Never>?
+    private var pendingBatch: ChangeBatch?
+    private var readyBatch: ChangeBatch?
+
     /// Metadata notifications can arrive while a reconciliation pass is still
-    /// waiting on cloudd. Coalesce them into at most one follow-up pass rather
-    /// than running overlapping whole-tree scans. The reconciler's own writes
-    /// echo through the metadata query; that echo produces one cheap no-conflict
-    /// follow-up and then settles.
+    /// waiting on cloudd. Coalesce quieted batches into at most one follow-up
+    /// pass rather than running overlapping whole-tree scans.
     private var isProcessingChanges = false
     private var needsAnotherPass = false
 
@@ -153,7 +236,12 @@ public final class SidecarFileWatcher: NSObject {
                 "sidecar metadata query gathered",
                 metadata: ["results": .stringConvertible(self.query.resultCount)]
             )
-            self.scheduleChangeProcessing(added: self.query.resultCount, changed: 0, removed: 0)
+            self.scheduleChangeProcessing(
+                added: self.query.resultCount,
+                changed: 0,
+                removed: 0,
+                changedKeys: nil
+            )
         }
     }
 
@@ -163,35 +251,145 @@ public final class SidecarFileWatcher: NSObject {
     /// on the main actor.
     @objc
     private nonisolated func queryDidUpdate(_ note: Notification) {
-        let added = (note.userInfo?[NSMetadataQueryUpdateAddedItemsKey] as? [Any])?.count ?? 0
-        let changed = (note.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [Any])?.count ?? 0
-        let removed = (note.userInfo?[NSMetadataQueryUpdateRemovedItemsKey] as? [Any])?.count ?? 0
+        let addedItems = note.userInfo?[NSMetadataQueryUpdateAddedItemsKey] as? [Any] ?? []
+        let changedItems = note.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [Any] ?? []
+        let removedItems = note.userInfo?[NSMetadataQueryUpdateRemovedItemsKey] as? [Any] ?? []
+        let paths = (addedItems + changedItems + removedItems).compactMap(Self.metadataPath)
+        let itemCount = addedItems.count + changedItems.count + removedItems.count
         Task { @MainActor [weak self] in
-            self?.scheduleChangeProcessing(added: added, changed: changed, removed: removed)
+            guard let self else { return }
+            let changedKeys: Set<SidecarKey>?
+            if paths.count == itemCount {
+                let mappedKeys = paths.compactMap(self.sidecarKey(forMetadataPath:))
+                changedKeys = mappedKeys.count == paths.count ? Set(mappedKeys) : nil
+            } else {
+                changedKeys = nil
+            }
+            // A path that cannot be mapped to a SidecarKey (for example a
+            // directory or root-level support file) makes scope unknown.
+            self.scheduleChangeProcessing(
+                added: addedItems.count,
+                changed: changedItems.count,
+                removed: removedItems.count,
+                changedKeys: changedKeys
+            )
         }
     }
 
-    private func scheduleChangeProcessing(added: Int, changed: Int, removed: Int) {
+    private nonisolated static func metadataPath(from item: Any) -> String? {
+        if let metadataItem = item as? NSMetadataItem {
+            return metadataItem.value(forAttribute: NSMetadataItemPathKey) as? String
+        }
+        if let url = item as? URL { return url.path }
+        return item as? String
+    }
+
+    private func sidecarKey(forMetadataPath path: String) -> SidecarKey? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let itemComponents = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard itemComponents.count == rootComponents.count + 2,
+              Array(itemComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+
+        let kind: SidecarKind
+        switch itemComponents[rootComponents.count] {
+        case "contacts": kind = .contact
+        case "events": kind = .event
+        case "links": kind = .link
+        case "guides": kind = .guide
+        case "places": kind = .place
+        case "groups": kind = .group
+        default: return nil
+        }
+
+        var filename = itemComponents.last ?? ""
+        if filename.hasPrefix("."), filename.hasSuffix(".icloud") {
+            filename.removeFirst()
+            filename.removeLast(".icloud".count)
+        }
+
+        let id: String
+        if filename.hasSuffix(".json") {
+            id = String(filename.dropLast(".json".count))
+        } else if filename.hasSuffix(".dat"), let separator = filename.firstIndex(of: ".") {
+            id = String(filename[..<separator])
+        } else {
+            return nil
+        }
+        guard !id.isEmpty else { return nil }
+        let decodedID = kind == .event ? (id.removingPercentEncoding ?? id) : id
+        return SidecarKey(kind: kind, id: decodedID)
+    }
+
+    /// Internal so tests can drive the production debounce without requiring
+    /// a live ubiquity container.
+    func scheduleChangeProcessing(
+        added: Int,
+        changed: Int,
+        removed: Int,
+        changedKeys: Set<SidecarKey>?
+    ) {
+        let changeSet = SidecarChangeSet(changedKeys: changedKeys)
+        if pendingBatch == nil {
+            pendingBatch = ChangeBatch(
+                added: added,
+                changed: changed,
+                removed: removed,
+                changeSet: changeSet
+            )
+        } else {
+            pendingBatch?.merge(
+                added: added,
+                changed: changed,
+                removed: removed,
+                changeSet: changeSet
+            )
+        }
+
+        pendingQuietPeriod?.cancel()
+        pendingQuietPeriod = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.changeProcessingQuietPeriod)
+            } catch {
+                return
+            }
+            self?.quietPeriodElapsed()
+        }
+    }
+
+    private func quietPeriodElapsed() {
+        pendingQuietPeriod = nil
+        guard let batch = pendingBatch else { return }
+        pendingBatch = nil
+        if readyBatch == nil {
+            readyBatch = batch
+        } else {
+            readyBatch?.merge(batch)
+        }
+
         if isProcessingChanges {
             needsAnotherPass = true
             return
         }
+        startProcessingReadyBatches()
+    }
 
+    private func startProcessingReadyBatches() {
+        guard !isProcessingChanges, readyBatch != nil else { return }
         isProcessingChanges = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            var counts = (added: added, changed: changed, removed: removed)
             repeat {
                 self.needsAnotherPass = false
+                guard let batch = self.readyBatch else { break }
+                self.readyBatch = nil
                 await self.processSidecarChanges(
-                    added: counts.added,
-                    changed: counts.changed,
-                    removed: counts.removed
+                    added: batch.added,
+                    changed: batch.changed,
+                    removed: batch.removed,
+                    changedKeys: batch.changeSet.changedKeys
                 )
-                // A coalesced pass represents an unspecified metadata burst;
-                // counts are diagnostics only, so don't repeat stale values.
-                counts = (0, 0, 0)
-            } while self.needsAnotherPass
+            } while self.needsAnotherPass && self.readyBatch != nil
             self.isProcessingChanges = false
         }
     }
@@ -202,7 +400,12 @@ public final class SidecarFileWatcher: NSObject {
     /// before notification delivery, guaranteeing subscribers read the merged
     /// envelope. A failed pass is logged but still posts: the current version
     /// remains readable, and a later metadata update can retry the conflict.
-    func processSidecarChanges(added: Int, changed: Int, removed: Int) async {
+    func processSidecarChanges(
+        added: Int,
+        changed: Int,
+        removed: Int,
+        changedKeys: Set<SidecarKey>? = nil
+    ) async {
         Self.log.info(
             "sidecar files changed",
             metadata: [
@@ -213,6 +416,7 @@ public final class SidecarFileWatcher: NSObject {
         )
 
         do {
+            // Opportunity #4 owns making this corpus-wide conflict scan incremental.
             let report = try await sync.reconcileSidecars()
             if !report.fileOutcomes.isEmpty {
                 let skipped = report.fileOutcomes.reduce(0) { $0 + $1.skippedReasons.count }
@@ -231,6 +435,13 @@ public final class SidecarFileWatcher: NSObject {
             )
         }
 
-        notificationCenter.post(name: .guessWhoSidecarsDidChange, object: self)
+        notificationCenter.post(
+            name: .guessWhoSidecarsDidChange,
+            object: self,
+            userInfo: [
+                GuessWhoSidecarsDidChangeKey.changeSet:
+                    SidecarChangeSet(changedKeys: changedKeys)
+            ]
+        )
     }
 }

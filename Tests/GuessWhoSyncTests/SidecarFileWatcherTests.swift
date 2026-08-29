@@ -8,8 +8,8 @@ import GuessWhoSyncTesting
 /// Covers the `SidecarFileWatcher` post path and its wiring into
 /// `ContactsRepository`. The live `NSMetadataQuery` half is untestable off a
 /// real ubiquity container (`start()` is never called here — the query would
-/// silently gather nothing), so tests drive `postSidecarsDidChange` directly,
-/// mirroring how `ContactChangeWatcherTests` drives `processChanges()`.
+/// silently gather nothing), so tests drive the watcher's internal production
+/// scheduling and processing entry points directly.
 ///
 /// `@MainActor` because both the watcher and the repository are main-actor
 /// isolated. Each test uses its own `NotificationCenter` so posts never cross
@@ -95,21 +95,69 @@ struct SidecarFileWatcherTests {
     // MARK: - Watcher post path
 
     @Test
-    func postPathPostsOnInjectedCenter() async throws {
+    func changedKeySetReachesSubscribers() async throws {
         let center = NotificationCenter()
         let recorder = Recorder(center: center, name: .guessWhoSidecarsDidChange)
         defer { recorder.stop(center: center) }
+        let keys: Set<SidecarKey> = [
+            SidecarKey(kind: .contact, id: "550e8400-e29b-41d4-a716-446655440000"),
+            SidecarKey(kind: .place, id: "550e8400-e29b-41d4-a716-446655440001"),
+        ]
 
         let watcher = SidecarFileWatcher(
             root: FileManager.default.temporaryDirectory,
             sync: makeSync(),
             notificationCenter: center
         )
-        await watcher.processSidecarChanges(added: 2, changed: 1, removed: 0)
+        await watcher.processSidecarChanges(
+            added: 2,
+            changed: 1,
+            removed: 0,
+            changedKeys: keys
+        )
 
         #expect(recorder.posts.count == 1)
         let post = try #require(recorder.posts.first)
         #expect(post.object as? SidecarFileWatcher === watcher)
+        #expect(post.guessWhoSidecarChangeSet.changedKeys == keys)
+        #expect(!post.guessWhoSidecarChangeSet.requiresFullRefresh)
+    }
+
+    @Test
+    func metadataDeliveryBurstCoalescesIntoOnePass() async throws {
+        let center = NotificationCenter()
+        let recorder = Recorder(center: center, name: .guessWhoSidecarsDidChange)
+        defer { recorder.stop(center: center) }
+        let watcher = SidecarFileWatcher(
+            root: FileManager.default.temporaryDirectory,
+            sync: makeSync(),
+            notificationCenter: center
+        )
+        let expectedKeys = Set((0..<8).map {
+            SidecarKey(
+                kind: .contact,
+                id: String(format: "550e8400-e29b-41d4-a716-%012d", $0)
+            )
+        })
+
+        for key in expectedKeys {
+            watcher.scheduleChangeProcessing(
+                added: 0,
+                changed: 1,
+                removed: 0,
+                changedKeys: [key]
+            )
+        }
+
+        await waitUntil { !recorder.posts.isEmpty }
+        #expect(recorder.posts.count == 1)
+        let post = try #require(recorder.posts.first)
+        #expect(post.guessWhoSidecarChangeSet.changedKeys == expectedKeys)
+
+        // Settle beyond another quiet period: no hidden follow-up pass from
+        // the same burst may remain queued.
+        try? await Task.sleep(for: .milliseconds(700))
+        #expect(recorder.posts.count == 1)
     }
 
     @Test
@@ -150,8 +198,10 @@ struct SidecarFileWatcherTests {
     // MARK: - Repository wiring
 
     @Test
-    func sidecarChangePostTriggersOnePresentationOnlyReload() async throws {
+    func unknownChangedKeysTriggerFullRefreshFallback() async throws {
         let center = NotificationCenter()
+        let noNamedKeys = SidecarChangeSet(changedKeys: [])
+        #expect(noNamedKeys.requiresFullRefresh)
         let repository = ContactsRepository(
             contacts: InMemoryContactStore(),
             sync: nil,
@@ -172,7 +222,13 @@ struct SidecarFileWatcherTests {
         // (a second post landing mid-window) rides the same cancel-and-
         // replace path but is not separately exercised here.
         for _ in 0..<3 {
-            center.post(name: .guessWhoSidecarsDidChange, object: nil)
+            center.post(
+                name: .guessWhoSidecarsDidChange,
+                object: nil,
+                userInfo: [
+                    GuessWhoSidecarsDidChangeKey.changeSet: noNamedKeys
+                ]
+            )
         }
 
         await waitUntil { !recorder.posts.isEmpty }

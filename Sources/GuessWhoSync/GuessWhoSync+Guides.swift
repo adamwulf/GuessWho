@@ -390,6 +390,38 @@ extension GuessWhoSync {
         return decodeGuide(envelope: envelope, key: key)
     }
 
+    /// Async single-key projection for watcher deltas.
+    public func guideForWatcherDelta(at key: SidecarKey) async throws -> MapsGuide? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try self.guide(at: key))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Decode the place at `key`, or nil when missing / soft-deleted.
+    public func place(at key: SidecarKey) throws -> MapsPlace? {
+        guard let envelope = try sidecars.read(key) else { return nil }
+        return decodePlace(envelope: envelope, key: key)
+    }
+
+    /// Async single-key projection for watcher deltas.
+    public func placeForWatcherDelta(at key: SidecarKey) async throws -> MapsPlace? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try self.place(at: key))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// The canonical live guide whose stored source URL exactly equals
     /// `sourceURL`, or nil. Oldest-created wins if legacy data already contains
     /// duplicates; UUID is the deterministic fallback when timestamps tie.

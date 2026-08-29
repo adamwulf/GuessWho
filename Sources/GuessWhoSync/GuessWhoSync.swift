@@ -818,6 +818,27 @@ public final class GuessWhoSync: @unchecked Sendable {
         return ContactTimestamps(from: envelope)
     }
 
+    /// Delta form used by `ContactsRepository` after a scoped file-watcher
+    /// delivery. It reads only the named contact envelopes and hops the
+    /// coordinated I/O off the caller's actor. Missing/deleted envelopes are
+    /// represented by all-nil timestamps so the caller can clear stale cache
+    /// values for that key.
+    func contactTimestamps(at keys: Set<SidecarKey>) async throws -> [String: ContactTimestamps] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    var result: [String: ContactTimestamps] = [:]
+                    for key in keys where key.kind == .contact {
+                        result[key.id] = try self.contactTimestamps(at: key)
+                    }
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Bulk-reads the timestamps for EVERY contact sidecar, keyed by `key.id`
     /// (the lowercased GuessWho UUID). Reads only the `.contact` keys; an
     /// envelope that fails to read is skipped (no entry). O(N contacts).

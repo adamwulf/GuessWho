@@ -3117,8 +3117,9 @@ public final class ContactsRepository: NSObject {
     /// convention; hops to the main actor and debounces there.
     @objc
     private nonisolated func sidecarsDidChange(_ note: Notification) {
+        let changeSet = note.guessWhoSidecarChangeSet
         Task { @MainActor [weak self] in
-            self?.scheduleSidecarRefresh()
+            self?.scheduleSidecarRefresh(changeSet)
         }
     }
 
@@ -3126,9 +3127,16 @@ public final class ContactsRepository: NSObject {
     /// one cancelled) on every notification so only the trailing edge fires —
     /// the same shape as the app's `EventsRepository` reload debounce.
     private var pendingSidecarRefresh: Task<Void, Never>?
+    private var pendingSidecarChangeSet: SidecarChangeSet?
     private static let sidecarRefreshDebounce: Duration = .milliseconds(300)
 
-    private func scheduleSidecarRefresh() {
+    private func scheduleSidecarRefresh(_ changeSet: SidecarChangeSet) {
+        if pendingSidecarRefresh == nil {
+            pendingSidecarChangeSet = changeSet
+        } else {
+            pendingSidecarChangeSet = (pendingSidecarChangeSet ?? .fullRefresh)
+                .merging(changeSet)
+        }
         pendingSidecarRefresh?.cancel()
         pendingSidecarRefresh = Task { [weak self] in
             do {
@@ -3136,7 +3144,11 @@ public final class ContactsRepository: NSObject {
             } catch {
                 return   // superseded by a newer notification
             }
-            await self?.refreshFromSidecarChange()
+            guard let self else { return }
+            let coalescedChangeSet = self.pendingSidecarChangeSet ?? .fullRefresh
+            self.pendingSidecarChangeSet = nil
+            self.pendingSidecarRefresh = nil
+            await self.refreshFromSidecarChange(coalescedChangeSet)
         }
     }
 
@@ -3147,11 +3159,47 @@ public final class ContactsRepository: NSObject {
     /// (`contactDataChanged: false`, so the app's decoded-photo cache
     /// survives). READ-ONLY over sidecars — this path must never write, or a
     /// watcher post would re-trigger itself in a loop.
-    private func refreshFromSidecarChange() async {
-        await refreshTimestampCache()
-        await refreshLinkedContactIDs()
-        await refreshLinkCounts()
+    private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet) async {
+        guard let changedKeys = changeSet.changedKeys else {
+            await refreshTimestampCache()
+            await refreshLinkedContactIDs()
+            await refreshLinkCounts()
+            postDidReload(contactDataChanged: false)
+            return
+        }
+
+        let contactKeys = Set(changedKeys.filter { $0.kind == .contact })
+        let linksChanged = changedKeys.contains { $0.kind == .link }
+        guard !contactKeys.isEmpty || linksChanged else { return }
+
+        if !contactKeys.isEmpty {
+            await refreshTimestampCache(for: contactKeys)
+        }
+        if linksChanged {
+            // Link deletions do not carry their former endpoints, so the two
+            // link-derived projections retain their full-link-scan fallback.
+            await refreshLinkedContactIDs()
+            await refreshLinkCounts()
+        }
         postDidReload(contactDataChanged: false)
+    }
+
+    /// Refresh just the contact timestamp entries named by a watcher delta.
+    /// If a scoped read fails, fall back to the existing wholesale read so a
+    /// transient error can never leave the cache knowingly stale.
+    private func refreshTimestampCache(for keys: Set<SidecarKey>) async {
+        guard let sync else {
+            contactTimestampsByID = [:]
+            return
+        }
+        do {
+            let refreshed = try await sync.contactTimestamps(at: keys)
+            for (id, timestamps) in refreshed {
+                contactTimestampsByID[id] = timestamps
+            }
+        } catch {
+            await refreshTimestampCache()
+        }
     }
 
     private func apply(_ changeSet: ContactChangeSet) async {

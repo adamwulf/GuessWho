@@ -115,17 +115,26 @@ final class EventsRepository: NSObject {
     /// the last notification. Direct `reload()` calls stay immediate.
     @objc
     private nonisolated func storeDidChange(_ note: Notification) {
+        let changeSet = note.name == .guessWhoSidecarsDidChange
+            ? note.guessWhoSidecarChangeSet
+            : .fullRefresh
         Task { @MainActor [weak self] in
-            self?.scheduleDebouncedReload()
+            self?.scheduleDebouncedReload(changeSet)
         }
     }
 
     /// The pending debounced reload, if any. Replaced (and the prior one
     /// cancelled) on every notification, so only the trailing edge fires.
     private var pendingReload: Task<Void, Never>?
+    private var pendingChangeSet: SidecarChangeSet?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
-    private func scheduleDebouncedReload() {
+    private func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
+        if pendingReload == nil {
+            pendingChangeSet = changeSet
+        } else {
+            pendingChangeSet = (pendingChangeSet ?? .fullRefresh).merging(changeSet)
+        }
         pendingReload?.cancel()
         pendingReload = Task { [weak self] in
             do {
@@ -133,8 +142,88 @@ final class EventsRepository: NSObject {
             } catch {
                 return   // superseded by a newer notification
             }
-            await self?.reload()
+            guard let self else { return }
+            let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
+            self.pendingChangeSet = nil
+            self.pendingReload = nil
+            await self.refresh(for: coalescedChangeSet)
         }
+    }
+
+    /// Apply a sidecar watcher delta where the repository can do so without a
+    /// corpus walk. Unknown scope and linked-filter membership changes retain
+    /// the existing full reload. Link changes in the ordinary date-window
+    /// filters refresh only link counts.
+    private func refresh(for changeSet: SidecarChangeSet) async {
+        guard let changedKeys = changeSet.changedKeys else {
+            await reload()
+            return
+        }
+
+        let eventIDs = Set(changedKeys.lazy.filter { $0.kind == .event }.map(\.id))
+        let linksChanged = changedKeys.contains { $0.kind == .link }
+        guard !eventIDs.isEmpty || linksChanged else { return }
+
+        if filter == .linked {
+            await reload()
+            return
+        }
+
+        let requestedFilter = filter
+        let requestedStart = windowStart
+        let requestedEnd = windowEnd
+        var projectedEvents: [String: Event] = [:]
+        if !eventIDs.isEmpty {
+            guard let fetched = await service.sidecarEvents(uuids: eventIDs) else {
+                await reload()
+                return
+            }
+            projectedEvents = fetched
+        }
+
+        let refreshedLinkCounts: [String: Int]?
+        if linksChanged {
+            refreshedLinkCounts = await service.linkCountsByEndpointID(ofKind: .event)
+        } else {
+            refreshedLinkCounts = nil
+        }
+
+        // A filter/window change starts its own full reload. Do not let an
+        // older delta overwrite that newer request's projection.
+        guard requestedFilter == filter,
+              requestedStart == windowStart,
+              requestedEnd == windowEnd
+        else { return }
+
+        for id in eventIDs {
+            let previous = events.first { $0.id.uuidString.lowercased() == id }
+            events.removeAll { $0.id.uuidString.lowercased() == id }
+
+            if let projected = projectedEvents[id] {
+                if let eventKitID = projected.eventKitID {
+                    events.removeAll { $0.eventKitID == eventKitID }
+                }
+                if projected.startDate >= windowStart && projected.startDate <= windowEnd {
+                    events.append(projected)
+                }
+            } else if let eventKitID = previous?.eventKitID,
+                      var live = service.eventKitEvent(eventKitID: eventKitID),
+                      live.startDate >= windowStart,
+                      live.startDate <= windowEnd
+            {
+                // Removing a linked sidecar exposes the underlying EventKit
+                // record as the same ephemeral row a full window read emits.
+                live.id = Event.stableID(forEventKitID: eventKitID)
+                events.removeAll { $0.eventKitID == eventKitID }
+                events.append(live)
+            }
+        }
+
+        events = sortOrder.sorted(events)
+        if let refreshedLinkCounts {
+            linkCountsByID = refreshedLinkCounts
+        }
+        NotificationCenter.default.post(name: .eventsRepositoryDidReload, object: self)
     }
 
     func reload() async {

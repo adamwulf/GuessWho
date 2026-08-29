@@ -195,6 +195,27 @@ final class SyncService {
         }
     }
 
+    /// Read only the event envelopes named by a watcher delta. A nil return
+    /// means at least one scoped read failed and tells the repository to use
+    /// its guaranteed full-refresh fallback; absent dictionary entries are
+    /// successful missing/deleted projections.
+    func sidecarEvents(uuids: Set<String>) async -> [String: Event]? {
+        guard let sync else { return [:] }
+        var result: [String: Event] = [:]
+        do {
+            for uuid in uuids {
+                let key = SidecarKey(kind: .event, id: uuid)
+                if let event = try await sync.eventForWatcherDelta(at: key) {
+                    result[key.id] = event
+                }
+            }
+            return result
+        } catch {
+            lastError = "event delta fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Snapshot of a system calendar event by its EventKit identifier —
     /// read-only, mints nothing. Used by the CLI/MCP read path to resolve
     /// events the user can see but that have no GuessWho record yet
@@ -609,6 +630,25 @@ final class SyncService {
         }
     }
 
+    /// Read only the guide envelopes named by a watcher delta. Nil is the
+    /// error signal that makes the repository fall back to `reload()`.
+    func sidecarGuides(uuids: Set<String>) async -> [String: MapsGuide]? {
+        guard let sync else { return [:] }
+        var result: [String: MapsGuide] = [:]
+        do {
+            for uuid in uuids {
+                let key = SidecarKey(kind: .guide, id: uuid)
+                if let guide = try await sync.guideForWatcherDelta(at: key) {
+                    result[key.id] = guide
+                }
+            }
+            return result
+        } catch {
+            lastError = "guide delta fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Every live place across all guides — the guides list derives its
     /// per-guide place counts from this single walk.
     func allPlaces() async -> [MapsPlace] {
@@ -618,6 +658,25 @@ final class SyncService {
         } catch {
             lastError = "places read failed: \(error.localizedDescription)"
             return []
+        }
+    }
+
+    /// Read only the place envelopes named by a watcher delta. Nil is the
+    /// error signal that makes the repository fall back to `reload()`.
+    func sidecarPlaces(uuids: Set<String>) async -> [String: MapsPlace]? {
+        guard let sync else { return [:] }
+        var result: [String: MapsPlace] = [:]
+        do {
+            for uuid in uuids {
+                let key = SidecarKey(kind: .place, id: uuid)
+                if let place = try await sync.placeForWatcherDelta(at: key) {
+                    result[key.id] = place
+                }
+            }
+            return result
+        } catch {
+            lastError = "place delta fetch failed: \(error.localizedDescription)"
+            return nil
         }
     }
 

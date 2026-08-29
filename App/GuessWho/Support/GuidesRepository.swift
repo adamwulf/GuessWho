@@ -123,15 +123,22 @@ final class GuidesRepository: NSObject {
     /// the posting thread; hop to the main actor and debounce the burst.
     @objc
     private nonisolated func storeDidChange(_ note: Notification) {
+        let changeSet = note.guessWhoSidecarChangeSet
         Task { @MainActor [weak self] in
-            self?.scheduleDebouncedReload()
+            self?.scheduleDebouncedReload(changeSet)
         }
     }
 
     private var pendingReload: Task<Void, Never>?
+    private var pendingChangeSet: SidecarChangeSet?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
-    private func scheduleDebouncedReload() {
+    private func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
+        if pendingReload == nil {
+            pendingChangeSet = changeSet
+        } else {
+            pendingChangeSet = (pendingChangeSet ?? .fullRefresh).merging(changeSet)
+        }
         pendingReload?.cancel()
         pendingReload = Task { [weak self] in
             do {
@@ -139,8 +146,88 @@ final class GuidesRepository: NSObject {
             } catch {
                 return   // superseded by a newer notification
             }
-            await self?.reload()
+            guard let self else { return }
+            let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
+            self.pendingChangeSet = nil
+            self.pendingReload = nil
+            await self.refresh(for: coalescedChangeSet)
         }
+    }
+
+    /// Refresh only the guide/place envelopes named by a watcher delta. Link
+    /// deletions still require the existing full-link scans because the
+    /// notification cannot name their former endpoints. Unknown scope or a
+    /// failed single-key read falls back to the established full reload.
+    private func refresh(for changeSet: SidecarChangeSet) async {
+        guard let changedKeys = changeSet.changedKeys else {
+            await reload()
+            return
+        }
+
+        let guideIDs = Set(changedKeys.lazy.filter { $0.kind == .guide }.map(\.id))
+        let placeIDs = Set(changedKeys.lazy.filter { $0.kind == .place }.map(\.id))
+        let linksChanged = changedKeys.contains { $0.kind == .link }
+        guard !guideIDs.isEmpty || !placeIDs.isEmpty || linksChanged else { return }
+
+        let changedGuides: [String: MapsGuide]
+        if guideIDs.isEmpty {
+            changedGuides = [:]
+        } else {
+            guard let fetched = await service.sidecarGuides(uuids: guideIDs) else {
+                await reload()
+                return
+            }
+            changedGuides = fetched
+        }
+
+        let changedPlaces: [String: MapsPlace]
+        if placeIDs.isEmpty {
+            changedPlaces = [:]
+        } else {
+            guard let fetched = await service.sidecarPlaces(uuids: placeIDs) else {
+                await reload()
+                return
+            }
+            changedPlaces = fetched
+        }
+
+        let refreshedLinkedPlaceIDs: Set<String>?
+        let refreshedLinkCounts: [String: Int]?
+        if linksChanged {
+            refreshedLinkedPlaceIDs = await service.linkedEndpointIDs(ofKind: .place)
+            refreshedLinkCounts = await service.linkCountsByEndpointID(ofKind: .place)
+        } else {
+            refreshedLinkedPlaceIDs = nil
+            refreshedLinkCounts = nil
+        }
+
+        if !guideIDs.isEmpty {
+            guides.removeAll { guideIDs.contains($0.id.uuidString.lowercased()) }
+            guides.append(contentsOf: changedGuides.values)
+        }
+
+        if !placeIDs.isEmpty {
+            for guideID in Array(placesByGuide.keys) {
+                placesByGuide[guideID]?.removeAll {
+                    placeIDs.contains($0.id.uuidString.lowercased())
+                }
+            }
+            for place in changedPlaces.values {
+                placesByGuide[place.guideID, default: []].append(place)
+            }
+            for guideID in Array(placesByGuide.keys) {
+                placesByGuide[guideID] = placeSortOrder.sorted(placesByGuide[guideID] ?? [])
+            }
+        }
+
+        if let refreshedLinkedPlaceIDs {
+            linkedPlaceIDs = refreshedLinkedPlaceIDs
+        }
+        if let refreshedLinkCounts {
+            linkCountsByID = refreshedLinkCounts
+        }
+        guides = sortOrder.sorted(guides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
+        NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
     }
 
     func reload() async {

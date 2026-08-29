@@ -217,6 +217,21 @@ extension GuessWhoSync {
         return overlay(live: live, onto: cached, ekid: ekid)
     }
 
+    /// Async single-key projection for watcher deltas. The coordinated read
+    /// and possible EventKit lookup run off the caller's actor without walking
+    /// unrelated event sidecars.
+    public func eventForWatcherDelta(at key: SidecarKey) async throws -> Event? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try self.event(at: key))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Every sidecar event (`events/<uuid>.json`) projected via Option C.
     /// O(N) + per-linked fetch. Whole-event-deleted envelopes are filtered.
     public func allEvents() throws -> [Event] {
