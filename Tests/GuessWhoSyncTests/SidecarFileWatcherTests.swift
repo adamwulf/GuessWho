@@ -161,6 +161,42 @@ struct SidecarFileWatcherTests {
     }
 
     @Test
+    func metadataPathsMapToKeysOrFailClosed() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watcher-path-parser-root", isDirectory: true)
+        let watcher = SidecarFileWatcher(root: root, sync: makeSync())
+        let contactID = "550e8400-e29b-41d4-a716-446655440000"
+
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("contacts/\(contactID).json").path
+        ) == SidecarKey(kind: .contact, id: contactID))
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("contacts/\(contactID).blob-id.dat").path
+        ) == SidecarKey(kind: .contact, id: contactID))
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("contacts/.\(contactID).json.icloud").path
+        ) == SidecarKey(kind: .contact, id: contactID))
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("contacts/.\(contactID).blob-id.dat.icloud").path
+        ) == SidecarKey(kind: .contact, id: contactID))
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("events/External%2FID.json").path
+        ) == SidecarKey(kind: .event, id: "external/id"))
+
+        // Unrecognized external input must make the delivery fall back to a
+        // full refresh, never crash or invent a key.
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("contacts/.icloud").path
+        ) == nil)
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("unknown/\(contactID).json").path
+        ) == nil)
+        #expect(watcher.sidecarKey(forMetadataPath:
+            root.appendingPathComponent("contacts/nested/\(contactID).json").path
+        ) == nil)
+    }
+
+    @Test
     func productionChangePathReconcilesBeforePosting() async throws {
         let center = NotificationCenter()
         let store = InMemorySidecarStore()

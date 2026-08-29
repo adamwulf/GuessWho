@@ -284,7 +284,9 @@ public final class SidecarFileWatcher: NSObject {
         return item as? String
     }
 
-    private func sidecarKey(forMetadataPath path: String) -> SidecarKey? {
+    /// Internal so the external-input parser can be covered without requiring
+    /// a live metadata query.
+    func sidecarKey(forMetadataPath path: String) -> SidecarKey? {
         let rootComponents = root.standardizedFileURL.pathComponents
         let itemComponents = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
         guard itemComponents.count == rootComponents.count + 2,
@@ -303,7 +305,10 @@ public final class SidecarFileWatcher: NSObject {
         }
 
         var filename = itemComponents.last ?? ""
-        if filename.hasPrefix("."), filename.hasSuffix(".icloud") {
+        if filename.hasPrefix("."),
+           filename.hasSuffix(".icloud"),
+           filename.count > ".icloud".count
+        {
             filename.removeFirst()
             filename.removeLast(".icloud".count)
         }
