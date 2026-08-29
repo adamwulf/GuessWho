@@ -375,7 +375,7 @@ final class EventsRepository: NSObject {
     }
 
     /// Full reload as a fresh authoritative refresh intent — the entry point
-    /// every direct caller (launch, paging, filter change, list mount) uses. It
+    /// every direct caller (launch, paging, and filter change) uses. It
     /// mints a new generation token so any older in-flight read is superseded.
     func reload(trigger: String = "direct") async {
         // A full read subsumes any pending scoped delta, so cancel and clear it.
