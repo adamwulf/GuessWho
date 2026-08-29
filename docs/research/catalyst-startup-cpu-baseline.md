@@ -214,7 +214,11 @@ one is running but has **no quiet period** of its own[^8], and the
 repositories' 300 ms reload debounce[^7] is too short to absorb sustained
 iCloud metadata churn (plausibly including attribute updates caused by the
 app's own reads/downloads) — so the corpus-wide cycle restarts
-back-to-back.
+back-to-back. (The `NSMetadataQuery` does set
+`notificationBatchingInterval = 1.0`[^8], so deliveries are rate-limited to
+~1/s during churn — that is upstream delivery batching, not a quiet period
+on the reconcile pass, and it still delivers during sustained churn, so a
+full corpus pass can run about once a second.)
 
 ---
 
@@ -350,15 +354,17 @@ changes were made — directions are suggestions for follow-up work.
 ### 5. Trim per-read coordination overhead
 
 - **Hotspot:** `FileSystemSidecarStore.read(_:)` scaffolding around the
-  decode: `NSFileCoordinator` per file, two `fileExists` probes, `__open`
-  572 ms, plus `__iopolicysys`/`__mac_syscall` — the read path is 5.1 s
-  total with decode[^2][^9].
+  decode: a fresh `NSFileCoordinator` per file, a `fileExists` probe (a
+  second probe runs only when the materialized file is absent — the hot path
+  with the file present does one), `__open` 572 ms, plus
+  `__iopolicysys`/`__mac_syscall` — the read path is 5.1 s total with
+  decode[^2][^9].
 - **Share:** perhaps **3–5 %** net of decode (bounded by the syscall
   leaves).
 - **Direction:** batch coordination for corpus walks (coordinate the
   directory once per pass instead of per file), skip coordination when the
-  store root is local-only, drop the second `fileExists` probe on the hot
-  path.
+  store root is local-only, and reuse a single `JSONDecoder` instead of
+  allocating one per read.
 
 ### 6. Contacts unified fetch — verify single-flight per window
 
