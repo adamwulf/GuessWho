@@ -86,6 +86,8 @@ struct ContactDetailView: View {
     // Contacts.app groups this record belongs to (people AND organizations — a
     // group holds either). Loaded async via the repository on each contact load.
     @State private var memberGroups: [ContactGroup] = []
+    @State private var storeSourceCount: Int = 0
+    @State private var recordSources: [ContactSource] = []
     // Token bumped at the start of every `reloadGroups` call so a stale in-flight
     // membership scan can't overwrite the freshest result, exactly like
     // `recentEventsLoadID` guards the recent-events fetch.
@@ -420,6 +422,8 @@ struct ContactDetailView: View {
                 }
 
                 Section { activityFooter }
+
+                sourceFooterSection
             }
         }
         // ⌘Return commits the active note editor from the keyboard, mirroring
@@ -1974,6 +1978,25 @@ struct ContactDetailView: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
+    private var sourceFooterSection: some View {
+        if storeSourceCount > 1, !recordSources.isEmpty {
+            Section {
+                Text(sourceFooterText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .centeredRowContent(alignment: .center)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+        }
+    }
+
+    private var sourceFooterText: String {
+        "In \(ListFormatter.localizedString(byJoining: recordSources.map(\.name)))"
+    }
+
     /// The inline new-note editor: body text field plus a date picker so the
     /// user can back-date the note. Shared by the read-mode `notesSection`
     /// and the contact-edit `editableNotesSection`. The picker binding maps
@@ -2267,6 +2290,7 @@ struct ContactDetailView: View {
             let fetchedEventLinks = await repository.eventLinks(for: linkID)
             contact = loaded
             eventLinks = fetchedEventLinks
+            await reloadSources(for: loaded)
             // The EventKit cache refresh stays on SyncService (an
             // event-surface concern). The event UUIDs derive from the links
             // just read (one disk scan, not a second `linkedEventUUIDs`
@@ -2292,6 +2316,8 @@ struct ContactDetailView: View {
             eventLinks = []
             recentEvents = []
             memberGroups = []
+            storeSourceCount = 0
+            recordSources = []
         }
     }
 
@@ -2413,6 +2439,17 @@ struct ContactDetailView: View {
         let fetched = await repository.groups(containing: contact)
         guard memberGroupsLoadID == myLoadID else { return }
         memberGroups = fetched
+    }
+
+    private func reloadSources(for contact: Contact) async {
+        // The footer only shows when the store has more than one account, so
+        // skip the per-record account scan entirely for the common single-
+        // account user: `sources(for:)` runs one whole-address-book unified
+        // fetch per account, and paying that on every card open for a footer
+        // that can never render is pure waste. Gate it on the cheap count.
+        let count = await repository.contactSources().count
+        storeSourceCount = count
+        recordSources = count > 1 ? await repository.sources(for: contact) : []
     }
 
     // MARK: - Notes

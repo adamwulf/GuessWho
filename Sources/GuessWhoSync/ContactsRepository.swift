@@ -857,6 +857,21 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// All Contacts accounts available to the store. Source information is
+    /// optional presentation data, so a failed read quietly hides it.
+    public func contactSources() async -> [ContactSource] {
+        (try? await contactsStore.fetchSources()) ?? []
+    }
+
+    /// The Contacts accounts containing cards that contribute to `contact`.
+    /// The adapter-local identifier stays confined to this package boundary.
+    /// Source information is optional presentation data, so a missing local
+    /// identifier or failed read quietly hides it.
+    public func sources(for contact: Contact) async -> [ContactSource] {
+        guard !contact.localID.isEmpty else { return [] }
+        return (try? await contactsStore.sources(forContactLocalID: contact.localID)) ?? []
+    }
+
     /// Returns a currently-cached contact for an adapter-local refresh token.
     /// `localID` is intentionally confined to this Contacts-boundary API; it
     /// must not be persisted or used as application identity.

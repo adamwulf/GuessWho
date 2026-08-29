@@ -12,6 +12,13 @@ public protocol ContactStoreProtocol: Actor {
     func save(_ contact: Contact) async throws
     func delete(localID: String) async throws
 
+    /// All Contacts accounts available to the store, in store order.
+    func fetchSources() async throws -> [ContactSource]
+
+    /// Every Contacts account containing a card that contributes to the
+    /// unified contact identified by `localID`, in store order.
+    func sources(forContactLocalID localID: String) async throws -> [ContactSource]
+
     /// Create a brand-new record from `contact` (whose `localID` is ignored)
     /// and return the created record re-read from the store, carrying the
     /// store-issued `localID`. `save(_:)` also inserts when the `localID`
@@ -99,4 +106,12 @@ public protocol ContactStoreProtocol: Actor {
     /// forgot to override it would inherit that cost silently, which is the
     /// failure mode we are trying to prevent. Every conformer states its answer.
     func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String]
+}
+
+/// Test and feature-specific stores that do not model Contacts accounts behave
+/// like a store with no configured sources. Production and reusable in-memory
+/// adapters provide concrete implementations.
+public extension ContactStoreProtocol {
+    func fetchSources() async throws -> [ContactSource] { [] }
+    func sources(forContactLocalID localID: String) async throws -> [ContactSource] { [] }
 }

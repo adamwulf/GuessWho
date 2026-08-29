@@ -272,9 +272,12 @@ read returns Apple's **already-unified** contact: [^cnadapter]
 - `fetch`, `save`, `delete`, image/thumbnail loads, and group-membership reads
   use `unifiedContact(withIdentifier:)` / `unifiedContacts(matching:)`.
 
-There is no use of `CNContainer`, `unifyResults`, per-container predicates, or
-the non-unified `contact(withIdentifier:)` anywhere in the package. Containers
-and accounts are simply not part of our identity model. [^cnadapter]
+Containers and accounts are not part of the identity model. The sole container
+inspection is presentation-only: the detail-card source footer queries each
+account's container through `unifiedContacts(matching:)` to learn which
+accounts contribute to the already-unified contact. That inspection still goes
+through the unified API — the package never sets `unifyResults = false` or uses
+the non-unified `contact(withIdentifier:)`. [^cnadapter]
 
 **Consequence:** because we only ever see one unified contact per person, that
 contact carries the union of every linked card's fields — including any

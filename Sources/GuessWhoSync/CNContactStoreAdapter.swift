@@ -183,6 +183,65 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
+    public func fetchSources() async throws -> [ContactSource] {
+        try await runOnWorkQueue { store in
+            try store.containers(matching: nil).map(Self.toContactSource)
+        }
+    }
+
+    public func sources(forContactLocalID localID: String) async throws -> [ContactSource] {
+        try await runOnWorkQueue { store in
+            let containers = try store.containers(matching: nil)
+            let identifierKey = CNContactIdentifierKey as CNKeyDescriptor
+            var sources: [ContactSource] = []
+
+            // `localID` identifies Apple's unified contact, so asking Contacts
+            // for one container directly is unreliable. Query each account's
+            // cards through the unified API instead: the result includes this
+            // identifier when any constituent card lives in that account.
+            for container in containers {
+                let predicate = CNContact.predicateForContactsInContainer(
+                    withIdentifier: container.identifier
+                )
+                let contacts = try store.unifiedContacts(
+                    matching: predicate,
+                    keysToFetch: [identifierKey]
+                )
+                if contacts.contains(where: { $0.identifier == localID }) {
+                    sources.append(Self.toContactSource(container))
+                }
+            }
+            return sources
+        }
+    }
+
+    private static func toContactSource(_ container: CNContainer) -> ContactSource {
+        let name: String
+        if !container.name.isEmpty {
+            name = container.name
+        } else {
+            // CNContainer.name is frequently empty for iCloud and local
+            // accounts, so this best-effort type fallback is load-bearing.
+            switch container.type {
+            case .local:
+                #if targetEnvironment(macCatalyst)
+                name = "On My Mac"
+                #else
+                name = "On My Device"
+                #endif
+            case .cardDAV:
+                name = "iCloud"
+            case .exchange:
+                name = "Exchange"
+            case .unassigned:
+                name = "Other"
+            @unknown default:
+                name = "Other"
+            }
+        }
+        return ContactSource(id: container.identifier, name: name)
+    }
+
     public func save(_ contact: Contact) async throws {
         try await runOnWorkQueue { store in
             let saveRequest = Self.makeSaveRequest()
