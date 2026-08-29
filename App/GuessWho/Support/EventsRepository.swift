@@ -169,7 +169,17 @@ final class EventsRepository: NSObject {
         return refreshGeneration
     }
 
-    private func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
+    /// Test seam (nil in production, no behavior change): a barrier awaited once
+    /// inside `reload(token:)` AFTER its read completes and BEFORE it publishes,
+    /// so a test can hold a stale read in flight while it drives a newer refresh
+    /// and prove the older read cannot overwrite the newer one.
+    var readBarrierForTesting: (@MainActor () async -> Void)?
+
+    /// `internal` (not `private`) so a test can establish a pending debounce
+    /// synchronously — the notification path hops through a `Task`, which makes
+    /// "a scoped change is already pending" impossible to set up deterministically
+    /// otherwise. Production callers are unchanged.
+    func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
         if pendingReload == nil {
             pendingChangeSet = changeSet
         } else {
@@ -186,7 +196,12 @@ final class EventsRepository: NSObject {
                 return   // superseded by a newer notification
             }
             guard let self else { return }
-            // Only this (newest) task consumes the merged pending change set.
+            // Guard BEFORE consuming: a direct reload() or a newer schedule can
+            // supersede this task after its sleep returned (cooperative
+            // cancellation does not unwind a task already past `Task.sleep`). If
+            // so, do NOT consume the merged set — the newer intent owns it now.
+            guard token == self.refreshGeneration else { return }
+            // Only this (current, newest) task consumes the merged change set.
             let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
             self.pendingChangeSet = nil
             self.pendingReload = nil
@@ -288,6 +303,14 @@ final class EventsRepository: NSObject {
     /// every direct caller (launch, paging, filter change, list mount) uses. It
     /// mints a new generation token so any older in-flight read is superseded.
     func reload() async {
+        // A full read subsumes any pending scoped delta, so cancel and clear it.
+        // The token bump below then supersedes any debounce task already past
+        // its sleep (its pre-consume guard sees the newer generation). Only this
+        // DIRECT entry clears pending work — the token-scoped fallback below must
+        // not, or it could wipe a newer schedule it does not own.
+        pendingReload?.cancel()
+        pendingReload = nil
+        pendingChangeSet = nil
         await reload(token: nextRefreshToken())
     }
 
@@ -296,6 +319,9 @@ final class EventsRepository: NSObject {
     /// which case it deliberately reuses that token so the fallback does not
     /// supersede the refresh intent it belongs to.
     private func reload(token: Int) async {
+        // A fallback reload may already be superseded before it even starts;
+        // guard before touching `isLoading` or issuing a read.
+        guard token == refreshGeneration else { return }
         let requestedFilter = filter
         isLoading = true
         let fetched: [Event]
@@ -305,6 +331,8 @@ final class EventsRepository: NSObject {
         case .showAll, .hasAttendees, .physicalLocation:
             fetched = await service.fetchEventsRange(from: windowStart, to: windowEnd)
         }
+
+        if let readBarrierForTesting { await readBarrierForTesting() }
 
         // A newer refresh/reload superseded us, or the filter changed while this
         // read was in flight (that selection started its own reload). Early-out

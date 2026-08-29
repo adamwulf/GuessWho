@@ -222,15 +222,12 @@ extension GuessWhoSync {
     /// scoped delta refresh and a full window reload cannot disagree for the
     /// same event.
     ///
-    /// `eventsWindow` overlays a linked event's live EventKit values only when
-    /// the live event appears in its single `fetchEvents(in:)` batch — i.e.
-    /// when the live event OVERLAPS `[from, to]` (`start <= to && end >= from`,
-    /// the adapter's window predicate). A linked event whose live version sits
-    /// outside the window (e.g. a cached start still inside the window while the
-    /// live start moved past it) keeps its cached projection there, so overlay
-    /// here is gated on that same overlap rather than an unconditional
-    /// `event(at:)`. `includeEventKit` gates the overlay the same way the batch
-    /// is gated on EventKit access.
+    /// Both surfaces overlay a linked event's live EventKit values only when the
+    /// live START falls in the inclusive window (`from <= startDate <= to`); a
+    /// linked event whose live version sits outside the window (a cached start
+    /// still inside the window while the live start has moved out, in either
+    /// direction) keeps its cached projection there. `includeEventKit` gates the
+    /// overlay the same way `eventsWindow`'s batch is gated on EventKit access.
     ///
     /// Returns nil for a missing / whole-event-deleted sidecar (no row). It does
     /// NOT itself apply the window-membership filter — the caller keeps the row
@@ -248,9 +245,9 @@ extension GuessWhoSync {
         guard let cached = decodeCachedEvent(envelope: envelope, key: key) else { return nil }
         guard includeEventKit, let ekid = liveEventKitID(envelope: envelope) else { return cached }
         guard let live = try events.fetch(eventKitID: ekid) else { return cached }
-        // Overlay only when the live event would be in `eventsWindow`'s batch —
-        // i.e. it overlaps the window. Otherwise the cached projection stands.
-        guard live.startDate <= to, live.endDate >= from else { return cached }
+        // Overlay only when the live START is inside the inclusive window — the
+        // exact rule `eventsWindow` uses. Otherwise the cached projection stands.
+        guard live.startDate >= from, live.startDate <= to else { return cached }
         return overlay(live: live, onto: cached, ekid: ekid)
     }
 
@@ -590,7 +587,13 @@ extension GuessWhoSync {
             let projected: Event
             if let ekid = liveEventKitID(envelope: envelope) {
                 seenEKIDs.insert(ekid)
-                if let live = ekIndex[ekid] {
+                // Overlay only when the live START is inside the inclusive
+                // window. `ekIndex` holds every event OVERLAPPING the window, so
+                // an event that overlaps but starts before `from` (or a cached
+                // start inside while the live start moved out) keeps its cached
+                // projection — the same rule `eventForWatcherDelta` applies, so
+                // the delta and this full read agree row-for-row.
+                if let live = ekIndex[ekid], live.startDate >= from, live.startDate <= to {
                     projected = overlay(live: live, onto: cached, ekid: ekid)
                 } else {
                     projected = cached

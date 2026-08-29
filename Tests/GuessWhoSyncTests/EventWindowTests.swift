@@ -245,21 +245,21 @@ struct EventWindowTests {
     }
 
     /// A linked event whose LIVE version overlaps the window but STARTS BEFORE
-    /// it, while its cached start is inside the window. `eventsWindow` overlays
-    /// the live values (the event is in the window batch) and then drops the row
-    /// because the projected (live) start falls before the window. The delta
-    /// projection overlays the same live values, so a caller applying the
-    /// identical membership filter drops it too — delta and full reload agree.
+    /// it, while its cached start is inside the window. Both surfaces gate the
+    /// overlay on the live START, so neither overlays here: the row shows via its
+    /// cached projection (not dropped), and the delta agrees with the full
+    /// reload. This is the exact start-membership rule the review asked for — an
+    /// overlap-but-start-before event is no longer overlaid.
     @Test
-    func watcherDeltaProjectionMatchesEventsWindowForLiveOverlapStartingBeforeWindow() throws {
+    func watcherDeltaAndWindowUseCacheWhenLiveStartsBeforeWindow() throws {
         let (sync, _, events) = makeOrchestrator()
         let now = Date()
         let from = now
         let to = now.addingTimeInterval(3600 * 24)
 
         let live = try events.createEvent(
-            title: "Long meeting",
-            startDate: now.addingTimeInterval(3600),
+            title: "Cached title",
+            startDate: now.addingTimeInterval(3600),   // cached start in window
             endDate: now.addingTimeInterval(7200),
             isAllDay: false,
             location: nil
@@ -268,27 +268,78 @@ struct EventWindowTests {
         let id = try sync.linkEvent(toEventKitID: ekid, snapshot: live)
         let key = eventKey(for: id)
 
-        // Live now starts an hour BEFORE the window but ends inside it (overlaps).
+        // Live now STARTS BEFORE the window but ends inside it (overlaps).
         try events.updateEvent(
             eventKitID: ekid,
-            title: "Long meeting",
+            title: "Live title",
             startDate: from.addingTimeInterval(-3600),
             endDate: from.addingTimeInterval(1800),
             isAllDay: false,
             location: nil
         )
 
-        // Full reload overlays the live values, then filters the row out.
-        let window = try sync.eventsWindow(from: from, to: to)
-        #expect(window.contains(where: { $0.id == id }) == false)
+        // eventsWindow keeps the row via the cache — no overlay, live start out.
+        let full = try #require(try sync.eventsWindow(from: from, to: to).first { $0.id == id })
+        #expect(full.title == "Cached title")
+        #expect(full.startDate >= from && full.startDate <= to)
 
-        // Delta overlays the same live values; its start is before the window,
-        // so the caller's membership filter drops it, matching the full reload.
+        // The delta agrees row-for-row.
         let delta = try #require(
             try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
         )
-        #expect(delta.startDate == from.addingTimeInterval(-3600))
-        #expect((delta.startDate >= from && delta.startDate <= to) == false)
+        #expect(delta.title == full.title)
+        #expect(delta.startDate == full.startDate)
+        #expect(delta.startDate >= from && delta.startDate <= to)
+    }
+
+    /// Inclusive start boundaries: a live start exactly on `from` or `to`
+    /// overlays; a live start one second outside keeps the cache. The delta and
+    /// the full reload agree at every boundary, and the endpoints are inclusive.
+    @Test
+    func watcherDeltaAndWindowShareInclusiveStartBoundary() throws {
+        let (sync, _, events) = makeOrchestrator()
+        let now = Date()
+        let from = now
+        let to = now.addingTimeInterval(3600 * 24)
+
+        func check(liveStart: Date, expectOverlay: Bool, _ label: String) throws {
+            let seed = try events.createEvent(
+                title: "cache-\(label)",
+                startDate: now.addingTimeInterval(3600),   // cached start in window
+                endDate: now.addingTimeInterval(5400),
+                isAllDay: false,
+                location: nil
+            )
+            let ekid = try #require(seed.eventKitID)
+            let id = try sync.linkEvent(toEventKitID: ekid, snapshot: seed)
+            let key = eventKey(for: id)
+            try events.updateEvent(
+                eventKitID: ekid,
+                title: "live-\(label)",
+                startDate: liveStart,
+                endDate: liveStart.addingTimeInterval(1800),
+                isAllDay: false,
+                location: nil
+            )
+
+            let full = try sync.eventsWindow(from: from, to: to).first { $0.id == id }
+            let delta = try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
+            // Delta and full reload agree on presence and values at the boundary.
+            #expect(full?.id == delta?.id)
+            #expect(full?.title == delta?.title)
+            #expect(full?.startDate == delta?.startDate)
+            if expectOverlay {
+                #expect(delta?.title == "live-\(label)")   // live overlaid
+                #expect(delta?.startDate == liveStart)
+            } else {
+                #expect(delta?.title == "cache-\(label)")  // cache retained
+            }
+        }
+
+        try check(liveStart: from, expectOverlay: true, "at-from")
+        try check(liveStart: to, expectOverlay: true, "at-to")
+        try check(liveStart: from.addingTimeInterval(-1), expectOverlay: false, "just-before")
+        try check(liveStart: to.addingTimeInterval(1), expectOverlay: false, "just-after")
     }
 
     /// The positive overlay case: a linked event whose live version is still

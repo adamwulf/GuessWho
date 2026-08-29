@@ -202,6 +202,217 @@ struct RepositoryRefreshGenerationTests {
         await waitUntil { repository.guides.count == 2 }
         #expect(Set(repository.guides.map(\.id)) == afterDelta)
     }
+
+    // MARK: - Reentrancy: direct reload supersedes pending work
+
+    /// A scoped change is pending (debounce scheduled) when a direct reload
+    /// arrives. The direct reload's full read subsumes the pending delta, so it
+    /// cancels and clears it: the list settles once to the full-reload result,
+    /// and the superseded debounce never fires a delayed second refresh.
+    @Test
+    func eventsDirectReloadSupersedesPendingScopedChange() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let now = Date()
+        _ = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+        _ = try service.createManualEvent(
+            title: "B", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(180), isAllDay: false, location: nil
+        )
+
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.events.count == 2 }
+
+        let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
+        counter.reset()
+
+        // A third event exists, and a scoped change naming it is already pending.
+        let c = try service.createManualEvent(
+            title: "C", startDate: now.addingTimeInterval(240), endDate: now.addingTimeInterval(300), isAllDay: false, location: nil
+        )
+        // Establish the pending debounce synchronously (the notification path's
+        // Task hop would make the ordering nondeterministic).
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .event, id: c.uuidString)]))
+
+        // The direct reload must cancel + clear that pending work.
+        await repository.reload()
+
+        // Wait well past the debounce; the cancelled task must NOT fire.
+        try await Task.sleep(for: .milliseconds(600))
+
+        #expect(counter.count == 1)                       // exactly one post
+        #expect(repository.events.count == 3)             // one final state
+        #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])
+    }
+
+    /// The guides twin: a pending scoped change is superseded by a direct reload,
+    /// which posts exactly once with no delayed refresh.
+    @Test
+    func guidesDirectReloadSupersedesPendingScopedChange() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Berlin"), sourceURL: nil)
+
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.guides.count == 1 }
+
+        let counter = ReloadPostCounter(.guidesRepositoryDidReload, on: center)
+        counter.reset()
+
+        let g2 = try service.createGuide(from: sampleGuideSnapshot(name: "Lisbon"), sourceURL: nil)
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .guide, id: g2.uuidString)]))
+
+        await repository.reload()
+
+        try await Task.sleep(for: .milliseconds(600))
+
+        #expect(counter.count == 1)
+        #expect(repository.guides.count == 2)
+        #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
+    }
+
+    // MARK: - Reentrancy: an older read cannot overwrite a newer refresh
+
+    /// An older full read is held mid-flight (after its read, before it
+    /// publishes) while a newer reload — over changed data — completes. When the
+    /// older read is released it must discard, so the newer result stands.
+    @Test
+    func eventsOlderReadCannotOverwriteNewerRefresh() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let now = Date()
+        _ = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+        _ = try service.createManualEvent(
+            title: "B", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(180), isAllDay: false, location: nil
+        )
+
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.events.count == 2 }
+
+        // Hold the NEXT read after it finishes reading but before it publishes.
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+
+        // Start the older read; it reads {A,B} then parks at the gate.
+        let older = Task { await repository.reload() }
+        await gate.waitUntilReached()
+
+        // Let the newer read run unhindered, over changed data.
+        repository.readBarrierForTesting = nil
+        let c = try service.createManualEvent(
+            title: "C", startDate: now.addingTimeInterval(240), endDate: now.addingTimeInterval(300), isAllDay: false, location: nil
+        )
+        _ = c
+        await repository.reload()
+        await waitUntil { repository.events.count == 3 }
+
+        // Release the older read; its stale {A,B} snapshot must not win.
+        gate.release()
+        await older.value
+
+        #expect(repository.events.count == 3)
+        #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])
+    }
+
+    /// The guides twin: an older read held past its data read cannot overwrite a
+    /// newer reload's result.
+    @Test
+    func guidesOlderReadCannotOverwriteNewerRefresh() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Berlin"), sourceURL: nil)
+
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.guides.count == 1 }
+
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+
+        let older = Task { await repository.reload() }
+        await gate.waitUntilReached()
+
+        repository.readBarrierForTesting = nil
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Lisbon"), sourceURL: nil)
+        await repository.reload()
+        await waitUntil { repository.guides.count == 2 }
+
+        gate.release()
+        await older.value
+
+        #expect(repository.guides.count == 2)
+        #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
+    }
+}
+
+// MARK: - Reentrancy test helpers
+
+/// A one-shot barrier for `readBarrierForTesting`: the repository parks at
+/// `arriveAndWait()`, the test waits for it via `waitUntilReached()`, then
+/// frees it with `release()`. Everything runs on the main actor, so the plain
+/// state below is race-free.
+@MainActor
+final class ReadGate {
+    private var reached = false
+    private var released = false
+    private var onReached: CheckedContinuation<Void, Never>?
+    private var onRelease: CheckedContinuation<Void, Never>?
+
+    /// Called by the repository barrier: signal arrival, then wait for release.
+    func arriveAndWait() async {
+        reached = true
+        onReached?.resume()
+        onReached = nil
+        guard !released else { return }
+        await withCheckedContinuation { onRelease = $0 }
+    }
+
+    /// The test waits here until the repository has parked at the barrier.
+    func waitUntilReached() async {
+        guard !reached else { return }
+        await withCheckedContinuation { onReached = $0 }
+    }
+
+    /// The test frees the parked read.
+    func release() {
+        released = true
+        onRelease?.resume()
+        onRelease = nil
+    }
+}
+
+/// Counts posts of a notification on a specific center, on the main actor
+/// (every repository post lands there).
+@MainActor
+final class ReloadPostCounter {
+    private(set) var count = 0
+    private var observer: NSObjectProtocol?
+
+    init(_ name: Notification.Name, on center: NotificationCenter) {
+        observer = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.count += 1 }
+        }
+    }
+
+    func reset() { count = 0 }
 }
 
 // MARK: - Minimal store stubs
