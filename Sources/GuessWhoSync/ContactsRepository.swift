@@ -337,11 +337,18 @@ public final class ContactsRepository: NSObject {
         // superseding any older in-flight reload AND any queued sidecar delta —
         // and re-checks it before publishing its sidecar-derived projection, so
         // an older reload and a newer refresh can never overwrite each other's
-        // state or post a stale reload. The authoritative Contacts fetch below
-        // still publishes unconditionally — a sidecar delta never touches the
-        // `contacts` array, so there is no fresher contact state to protect.
+        // state or post a stale reload. A projection refresh never touches the
+        // authoritative `contacts` array, so only a newer direct reload can
+        // supersede that portion of the work.
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        // Contacts.app data and the sidecar-derived projection have different
+        // supersession domains. A sidecar notification may invalidate this
+        // reload's projection reads, but it cannot replace the Contacts fetch
+        // or its `contactDataChanged: true` notification (cold-launch state
+        // restoration waits for that signal). Only a newer direct reload can.
+        contactReloadGeneration &+= 1
+        let contactGeneration = contactReloadGeneration
         // This reload re-reads every sidecar wholesale, so it SUBSUMES any
         // pending debounced sidecar delta: cancel and clear it. That both
         // avoids a redundant projection pass 300 ms from now and closes the gap
@@ -354,13 +361,21 @@ public final class ContactsRepository: NSObject {
         pendingSidecarRefresh?.cancel()
         pendingSidecarRefresh = nil
         pendingSidecarChangeSet = nil
+        // This wholesale projection supersedes scoped keys already in flight.
+        // Until it publishes, a scoped successor must inherit full-refresh
+        // ownership. Otherwise a change arriving during the first Contacts fetch
+        // could invalidate this read and patch one key into an empty cache.
+        inFlightSidecarChangeSet = (generation, .fullRefresh)
         isLoading = true
         var fetchedContacts = false
         do {
-            setContacts(try await contactsStore.fetchAll())
+            let fetched = try await contactsStore.fetchAll()
+            guard contactGeneration == contactReloadGeneration else { return }
+            setContacts(fetched)
             lastError = nil
             fetchedContacts = true
         } catch {
+            guard contactGeneration == contactReloadGeneration else { return }
             setContacts([])
             lastError = "Contacts fetch failed: \(error.localizedDescription)"
         }
@@ -375,18 +390,20 @@ public final class ContactsRepository: NSObject {
         await refreshTimestampCache(generation: generation)
         await refreshLinkedContactIDs(generation: generation)
         await refreshLinkCounts(generation: generation)
-        // A sidecar notification scheduled (or a newer reload started) while
-        // this one was in flight advanced the token and now owns the refresh;
-        // suppress this reload's stale post rather than announcing over it. The
-        // guarded helpers above have likewise applied nothing, so no stale
-        // projection state was published either.
-        guard generation == refreshGeneration else { return }
+        // A newer direct reload owns the Contacts result and its notification.
+        // A sidecar-only refresh does not: even when it superseded the projection
+        // reads above, the Contacts array was still freshly published and must
+        // announce `contactDataChanged: true` for state restoration and caches.
+        guard contactGeneration == contactReloadGeneration else { return }
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         // Check ownership first: a stale reload must mutate nothing, including
         // loading state. The winning delta settles it on its own completion.
         isLoading = false
         postDidReload()
+        if inFlightSidecarChangeSet?.generation == generation {
+            inFlightSidecarChangeSet = nil
+        }
     }
 
     /// Reload the bulk timestamp cache from the engine, wholesale. ROBUST: a
@@ -3165,21 +3182,31 @@ public final class ContactsRepository: NSObject {
     /// the same shape as the app's `EventsRepository` reload debounce.
     private var pendingSidecarRefresh: Task<Void, Never>?
     private var pendingSidecarChangeSet: SidecarChangeSet?
+    /// Scoped keys currently being read. A newer scoped refresh inherits this
+    /// set because advancing the generation guarantees the old result is thrown
+    /// away; without the handoff, disjoint changes can be lost between tasks.
+    private var inFlightSidecarChangeSet: (generation: Int, value: SidecarChangeSet)?
     private static let sidecarRefreshDebounce: Duration = .milliseconds(300)
 
     /// Monotonic token advanced whenever a new refresh is SCHEDULED — every
     /// `scheduleSidecarRefresh(_:)` call AND every `reload()` — so scheduling a
     /// refresh immediately invalidates every older in-flight one. The scheduling
-    /// operation captures the new value; a running refresh (a debounced sidecar
-    /// task or a `reload()`) re-checks it before it consumes the merged pending
-    /// set, before EACH post-async projection mutation, and before it posts
-    /// `.contactsRepositoryDidReload`. If a newer refresh has since been
-    /// scheduled the captured value is stale, so the running one applies nothing
-    /// and posts nothing — an older refresh can never overwrite fresher state or
-    /// emit a stale reload. `reload()` participates too (and additionally clears
-    /// the pending debounced work it subsumes), so a full reload and a sidecar
-    /// delta cannot clobber each other in either order.
+    /// operation captures the new value; a running projection refresh (including
+    /// the projection half of `reload()`) re-checks it before consuming pending
+    /// keys and before every post-async mutation or presentation-only post. If a
+    /// newer refresh has since been scheduled, the stale projection applies
+    /// nothing and posts nothing. The independent Contacts fetch/completion uses
+    /// `contactReloadGeneration` below because a projection refresh cannot
+    /// replace it. `reload()` also clears pending work it subsumes, so full and
+    /// scoped projection reads cannot clobber each other in either order.
     @ObservationIgnored private var refreshGeneration = 0
+
+    /// Direct Contacts reload ownership, deliberately separate from
+    /// `refreshGeneration`: sidecar work can supersede projection reads but can
+    /// never replace the Contacts fetch or its `contactDataChanged: true` post.
+    /// This prevents an initial watcher gather from swallowing the cold-launch
+    /// notification that restored-contact resolution waits for.
+    @ObservationIgnored private var contactReloadGeneration = 0
 
     private func scheduleSidecarRefresh(_ changeSet: SidecarChangeSet) {
         // An explicitly scoped empty set changes no projection. Ignore it before
@@ -3188,7 +3215,7 @@ public final class ContactsRepository: NSObject {
         // refresh intent.
         if changeSet.changedKeys?.isEmpty == true { return }
         if pendingSidecarRefresh == nil {
-            pendingSidecarChangeSet = changeSet
+            pendingSidecarChangeSet = inFlightSidecarChangeSet?.value.merging(changeSet) ?? changeSet
         } else {
             pendingSidecarChangeSet = (pendingSidecarChangeSet ?? .fullRefresh)
                 .merging(changeSet)
@@ -3215,7 +3242,11 @@ public final class ContactsRepository: NSObject {
             let coalescedChangeSet = self.pendingSidecarChangeSet ?? .fullRefresh
             self.pendingSidecarChangeSet = nil
             self.pendingSidecarRefresh = nil
+            self.inFlightSidecarChangeSet = (generation, coalescedChangeSet)
             await self.refreshFromSidecarChange(coalescedChangeSet, generation: generation)
+            if self.inFlightSidecarChangeSet?.generation == generation {
+                self.inFlightSidecarChangeSet = nil
+            }
         }
     }
 
@@ -3251,7 +3282,10 @@ public final class ContactsRepository: NSObject {
 
         // Every changed key is `.contact` or `.link` — a non-empty key set of
         // scopable kinds always has at least one; the guard is defensive.
-        guard !contactKeys.isEmpty || linksChanged else { return }
+        guard !contactKeys.isEmpty || linksChanged else {
+            if generation == refreshGeneration { isLoading = false }
+            return
+        }
 
         if !contactKeys.isEmpty {
             await refreshTimestampCache(for: contactKeys, generation: generation)
@@ -3294,6 +3328,7 @@ public final class ContactsRepository: NSObject {
         }
         do {
             let refreshed = try await sync.contactTimestamps(at: keys)
+            if let sidecarReadBarrierForTesting { await sidecarReadBarrierForTesting() }
             // Guard before merging the scoped entries: a newer wholesale refresh
             // may already have replaced the cache, and a late scoped write would
             // reintroduce stale cells.
@@ -3305,6 +3340,10 @@ public final class ContactsRepository: NSObject {
             await refreshTimestampCache(generation: generation)
         }
     }
+
+    /// Test seam used to park a scoped projection read after it has captured a
+    /// snapshot but before its generation guard. Nil in production.
+    var sidecarReadBarrierForTesting: (@MainActor () async -> Void)?
 
     private func apply(_ changeSet: ContactChangeSet) async {
         guard !changeSet.changes.isEmpty else { return }

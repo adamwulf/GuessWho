@@ -362,6 +362,79 @@ struct RepositoryRefreshGenerationTests {
         #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
     }
 
+    // MARK: - Reentrancy: a newer scoped refresh inherits running scoped keys
+
+    /// A second scoped change can arrive after the first task consumed its keys
+    /// but before that task publishes. Superseding the first token discards its
+    /// snapshot, so the successor must own both disjoint key sets.
+    @Test
+    func eventsScopedRefreshSupersedingRunningScopedRefreshKeepsBothKeys() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        await repository.reload() // establish a complete, empty base
+
+        let now = Date()
+        let a = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .event, id: a.uuidString)
+        ]))
+        await gate.waitUntilReached() // A's task consumed its set and read A
+
+        repository.readBarrierForTesting = nil
+        let b = try service.createManualEvent(
+            title: "B", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(180), isAllDay: false, location: nil
+        )
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .event, id: b.uuidString)
+        ]))
+
+        await waitUntil { repository.events.count == 2 }
+        gate.release()
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(Set(repository.events.map(\.title)) == ["A", "B"])
+    }
+
+    /// Guides equivalent of the running-scoped handoff. Without inherited
+    /// ownership, the parked Berlin addition is discarded and only Lisbon is
+    /// ever published.
+    @Test
+    func guidesScopedRefreshSupersedingRunningScopedRefreshKeepsBothKeys() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        await repository.reload()
+
+        let berlin = try service.createGuide(from: sampleGuideSnapshot(name: "Berlin"), sourceURL: nil)
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .guide, id: berlin.uuidString)
+        ]))
+        await gate.waitUntilReached()
+
+        repository.readBarrierForTesting = nil
+        let lisbon = try service.createGuide(from: sampleGuideSnapshot(name: "Lisbon"), sourceURL: nil)
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .guide, id: lisbon.uuidString)
+        ]))
+
+        await waitUntil { repository.guides.count == 2 }
+        gate.release()
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
+    }
+
     // MARK: - Reentrancy: a delta that supersedes a loading reload settles isLoading
 
     /// The reported production race: an older reload set `isLoading = true` then

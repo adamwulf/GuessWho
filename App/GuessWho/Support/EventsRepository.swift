@@ -141,6 +141,10 @@ final class EventsRepository: NSObject {
     /// cancelled) on every notification, so only the trailing edge fires.
     private var pendingReload: Task<Void, Never>?
     private var pendingChangeSet: SidecarChangeSet?
+    /// Scoped keys currently being read. A newer scoped schedule must inherit
+    /// them: invalidating the running token means its result will be discarded,
+    /// so the successor is now responsible for both sets of keys.
+    private var inFlightChangeSet: (token: Int, value: SidecarChangeSet)?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
     /// The sidecar kinds whose scoped changes can move the events list. A
@@ -196,7 +200,7 @@ final class EventsRepository: NSObject {
             return
         }
         if pendingReload == nil {
-            pendingChangeSet = changeSet
+            pendingChangeSet = inFlightChangeSet?.value.merging(changeSet) ?? changeSet
         } else {
             pendingChangeSet = (pendingChangeSet ?? .fullRefresh).merging(changeSet)
         }
@@ -220,7 +224,11 @@ final class EventsRepository: NSObject {
             let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
             self.pendingChangeSet = nil
             self.pendingReload = nil
+            self.inFlightChangeSet = (token, coalescedChangeSet)
             await self.refresh(for: coalescedChangeSet, token: token)
+            if self.inFlightChangeSet?.token == token {
+                self.inFlightChangeSet = nil
+            }
         }
     }
 
@@ -280,6 +288,8 @@ final class EventsRepository: NSObject {
             refreshedLinkCounts = nil
         }
 
+        if let readBarrierForTesting { await readBarrierForTesting() }
+
         // A newer refresh/reload (or filter/window change, which starts its own
         // full reload) superseded us while our reads were in flight. Never let an
         // older delta overwrite that newer request's projection.
@@ -338,6 +348,10 @@ final class EventsRepository: NSObject {
         pendingReload?.cancel()
         pendingReload = nil
         pendingChangeSet = nil
+        // The wholesale read also subsumes scoped keys already being read. Its
+        // generation invalidates that result, so no successor needs to inherit
+        // the old scoped ownership.
+        inFlightChangeSet = nil
         await reload(token: nextRefreshToken())
     }
 

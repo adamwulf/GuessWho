@@ -265,10 +265,11 @@ struct ContactsRepositorySidecarRefreshTests {
     // MARK: - FIX 1: schedule-time generation supersedes older running refreshes
 
     @Test
-    func scheduleDuringInFlightReload_makesReloadApplyNothingAndNotPost() async throws {
+    func scheduleDuringInFlightReload_preservesContactReloadSignalAndDefersProjection() async throws {
         // A sidecar change SCHEDULED while a reload is in flight immediately
         // advances the token, superseding that reload. When the reload resumes
-        // it must apply NO sidecar-derived state and post NOTHING; the debounced
+        // it must apply NO stale sidecar-derived state. Its freshly fetched
+        // Contacts data still posts `contactDataChanged: true`; the debounced
         // delta then produces the fresh projection. (Requirement 1.)
         let zed = reconciled(localID: "z", uuid: "44444444-0000-0000-0000-000000000001", given: "Zed")
         let amy = reconciled(localID: "a", uuid: "44444444-0000-0000-0000-000000000002", given: "Amy")
@@ -305,23 +306,75 @@ struct ContactsRepositorySidecarRefreshTests {
         ])
 
         // Release the reload. It reads the sidecars fresh (Zed viewed) but, being
-        // superseded, applies nothing and does not post — so the cache stays
-        // empty and the order is the plain alphabetical [Amy, Zed].
+        // superseded, applies no projection — so the cache stays empty and the
+        // order is the plain alphabetical [Amy, Zed]. Its Contacts fetch still
+        // announces completion for cold-launch state restoration.
         await store.openGate()
         await reloadTask.value
 
         // The debounced delta has NOT fired yet (300 ms > the few ms above), so
-        // this observes the reload's own outcome: no state, no post.
-        #expect(flags.isEmpty)
+        // this observes the reload's own outcome: no projection, but exactly its
+        // contact-data completion signal.
+        #expect(flags == [true])
         #expect(repo.people.map(\.localID) == ["a", "z"])
-        #expect(repo.isLoading) // stale reload did not mutate loading ownership
+        #expect(!repo.isLoading)
 
         // Now let the queued delta run: it owns the token, applies the fresh
         // projection (Zed viewed → first) and posts exactly once.
         try await Task.sleep(for: Self.beyondDebounce)
-        #expect(flags == [false])
+        #expect(flags == [true, false])
         #expect(repo.people.map(\.localID) == ["z", "a"])
         #expect(!repo.isLoading) // the winning delta settled the load
+    }
+
+    @Test
+    func scopedRefreshSupersedingRunningScopedRefreshKeepsBothContactKeys() async throws {
+        let anna = reconciled(localID: "a", uuid: "66666666-0000-0000-0000-000000000001", given: "Anna")
+        let bob = reconciled(localID: "b", uuid: "66666666-0000-0000-0000-000000000002", given: "Bob")
+        let cara = reconciled(localID: "c", uuid: "66666666-0000-0000-0000-000000000003", given: "Cara")
+        let store = InMemoryContactStore(contacts: [anna, bob, cara])
+        let sync = makeSync(store)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try sync.stampContactTimestamp(
+            .viewed,
+            at: SidecarKey(kind: .contact, id: "66666666-0000-0000-0000-000000000001"),
+            now: base
+        )
+
+        let gate = ContactsSidecarReadGate()
+        repo.sidecarReadBarrierForTesting = { await gate.arriveAndWait() }
+        center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
+            GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                SidecarKey(kind: .contact, id: "66666666-0000-0000-0000-000000000001")
+            ])
+        ])
+        await gate.waitUntilReached()
+
+        repo.sidecarReadBarrierForTesting = nil
+        try sync.stampContactTimestamp(
+            .viewed,
+            at: SidecarKey(kind: .contact, id: "66666666-0000-0000-0000-000000000002"),
+            now: base.addingTimeInterval(10)
+        )
+        center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
+            GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                SidecarKey(kind: .contact, id: "66666666-0000-0000-0000-000000000002")
+            ])
+        ])
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while repo.people.map(\.localID) != ["b", "a", "c"], ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        gate.release()
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(repo.people.map(\.localID) == ["b", "a", "c"])
     }
 
     @Test
@@ -374,6 +427,33 @@ struct ContactsRepositorySidecarRefreshTests {
         // The superseded, cancelled delta neither refreshed nor posted.
         #expect(flags == [true])
         #expect(repo.people.map(\.localID) == ["c", "b", "a"])
+    }
+}
+
+@MainActor
+final class ContactsSidecarReadGate {
+    private var reached = false
+    private var released = false
+    private var onReached: CheckedContinuation<Void, Never>?
+    private var onRelease: CheckedContinuation<Void, Never>?
+
+    func arriveAndWait() async {
+        reached = true
+        onReached?.resume()
+        onReached = nil
+        guard !released else { return }
+        await withCheckedContinuation { onRelease = $0 }
+    }
+
+    func waitUntilReached() async {
+        guard !reached else { return }
+        await withCheckedContinuation { onReached = $0 }
+    }
+
+    func release() {
+        released = true
+        onRelease?.resume()
+        onRelease = nil
     }
 }
 

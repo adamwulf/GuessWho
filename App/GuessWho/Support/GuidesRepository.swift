@@ -141,6 +141,9 @@ final class GuidesRepository: NSObject {
 
     private var pendingReload: Task<Void, Never>?
     private var pendingChangeSet: SidecarChangeSet?
+    /// Scoped keys currently being read. If a newer scoped schedule supersedes
+    /// that read, it must inherit these keys because the old result is discarded.
+    private var inFlightChangeSet: (token: Int, value: SidecarChangeSet)?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
     /// The sidecar kinds whose scoped changes can move the guides/places lists.
@@ -196,7 +199,7 @@ final class GuidesRepository: NSObject {
             return
         }
         if pendingReload == nil {
-            pendingChangeSet = changeSet
+            pendingChangeSet = inFlightChangeSet?.value.merging(changeSet) ?? changeSet
         } else {
             pendingChangeSet = (pendingChangeSet ?? .fullRefresh).merging(changeSet)
         }
@@ -220,7 +223,11 @@ final class GuidesRepository: NSObject {
             let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
             self.pendingChangeSet = nil
             self.pendingReload = nil
+            self.inFlightChangeSet = (token, coalescedChangeSet)
             await self.refresh(for: coalescedChangeSet, token: token)
+            if self.inFlightChangeSet?.token == token {
+                self.inFlightChangeSet = nil
+            }
         }
     }
 
@@ -287,6 +294,8 @@ final class GuidesRepository: NSObject {
             refreshedLinkCounts = nil
         }
 
+        if let readBarrierForTesting { await readBarrierForTesting() }
+
         // A newer refresh/reload superseded us while our reads were in flight.
         // Never let an older delta overwrite that newer request's projection.
         guard token == refreshGeneration else { return }
@@ -338,6 +347,9 @@ final class GuidesRepository: NSObject {
         pendingReload?.cancel()
         pendingReload = nil
         pendingChangeSet = nil
+        // This full read subsumes scoped keys already being read. Its new token
+        // invalidates that result, so the old key set must not be carried on.
+        inFlightChangeSet = nil
         await reload(token: nextRefreshToken())
     }
 
