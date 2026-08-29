@@ -1,4 +1,4 @@
-public struct ContactSource: Hashable, Sendable, Identifiable {
+public struct ContactSource: Hashable, Sendable {
     public let id: String
     public let name: String
 

@@ -2442,8 +2442,14 @@ struct ContactDetailView: View {
     }
 
     private func reloadSources(for contact: Contact) async {
-        storeSourceCount = await repository.contactSources().count
-        recordSources = await repository.sources(for: contact)
+        // The footer only shows when the store has more than one account, so
+        // skip the per-record account scan entirely for the common single-
+        // account user: `sources(for:)` runs one whole-address-book unified
+        // fetch per account, and paying that on every card open for a footer
+        // that can never render is pure waste. Gate it on the cheap count.
+        let count = await repository.contactSources().count
+        storeSourceCount = count
+        recordSources = count > 1 ? await repository.sources(for: contact) : []
     }
 
     // MARK: - Notes

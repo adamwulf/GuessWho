@@ -19,7 +19,6 @@ struct ContactsRepositorySourceTests {
         let sources = await repository.contactSources()
 
         #expect(sources.isEmpty)
-        #expect(sources.count <= 1)
     }
 
     @Test @MainActor
@@ -34,7 +33,6 @@ struct ContactsRepositorySourceTests {
         let sources = await repository.contactSources()
 
         #expect(sources == [iCloud])
-        #expect(sources.count <= 1)
     }
 
     @Test @MainActor
