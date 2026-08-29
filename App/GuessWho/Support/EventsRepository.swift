@@ -106,11 +106,10 @@ final class EventsRepository: NSObject {
         self.windowEnd = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
         super.init()
         // Refresh on any external store change that can affect the events list:
-        // a Calendar.app edit (`.EKEventStoreChanged`), a contact change
-        // (`.guessWhoContactsDidChange`, which can alter attendee rendering),
-        // or sidecar files changing on disk (`.guessWhoSidecarsDidChange` —
+        // a Calendar.app edit (`.EKEventStoreChanged`) or sidecar files
+        // changing on disk (`.guessWhoSidecarsDidChange` —
         // an event sidecar arriving from another device, or a
-        // `notYetDownloaded` one materializing). All three funnel through the
+        // `notYetDownloaded` one materializing). Both funnel through the
         // same debounced reload, which is READ-ONLY over sidecars — so a
         // sidecar post can never re-trigger itself.
         // The repo owns its own refresh path; the AppDelegate registers no
@@ -118,7 +117,6 @@ final class EventsRepository: NSObject {
         // cleaned on release (this repo lives for the whole process), so there
         // is no `deinit` or token bookkeeping.
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .EKEventStoreChanged, object: nil)
-        notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoContactsDidChange, object: nil)
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoSidecarsDidChange, object: nil)
     }
 
@@ -126,8 +124,7 @@ final class EventsRepository: NSObject {
     /// on the posting thread; hops to the main actor to do the work.
     ///
     /// Debounced: `.EKEventStoreChanged` fires in bursts during background
-    /// calendar sync (and `.guessWhoContactsDidChange` during contact sync),
-    /// and each reload walks every event sidecar plus an EventKit window
+    /// calendar sync, and each reload walks every event sidecar plus an EventKit window
     /// query. The trailing debounce collapses a burst into one reload after
     /// the last notification. Direct `reload()` calls stay immediate.
     @objc

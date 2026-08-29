@@ -3,9 +3,9 @@ import EventKit
 import Foundation
 import Logging
 
-// `@unchecked Sendable`: the adapter holds a single immutable `let store`,
-// adds no mutable state of its own, and only ever issues read / request / save
-// calls on that store — it never mutates shared adapter state across threads.
+// `@unchecked Sendable`: the adapter holds one immutable, thread-safe EventKit
+// store. Its window-flight/cache state is isolated by one `NSCondition`; the
+// observer token is installed during init and touched again only in deinit.
 // That is the basis for the unchecked conformance; it lets
 // `requestEventsAccess()` be `async` (it awaits EventKit's permission prompt)
 // without the caller's `sending`-check flagging a data race when it hops off
@@ -14,13 +14,65 @@ import Logging
 public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable {
     private let store: EKEventStore
 
+    /// Injectable only so tests can count and gate the exact expensive
+    /// `events(matching:)` boundary without reading the developer's calendars.
+    typealias FetchEventsWork = @Sendable (EKEventStore, DateInterval) throws -> [Event]
+    typealias AuthorizationStatusWork = @Sendable () -> StoreAuthorizationStatus
+    private let fetchEventsWork: FetchEventsWork
+    private let authorizationStatusWork: AuthorizationStatusWork
+    private let windowFetches: EventWindowFetchCoordinator
+    private let notificationCenter: NotificationCenter
+    private var eventStoreChangedObserver: NSObjectProtocol?
+
     /// One start/finish pair per underlying EventKit enumeration. The UUID and
     /// exact interval let a launch log correlate this adapter work with the
     /// repository's trigger breadcrumbs without relying on a profiler stack.
-    private static let fetchLog = Logger(label: "sync.eventkit-fetch")
+    fileprivate static let fetchLog = Logger(label: "sync.eventkit-fetch")
 
-    public init(store: EKEventStore = EKEventStore()) {
+    public convenience init(store: EKEventStore = EKEventStore()) {
+        self.init(
+            store: store,
+            notificationCenter: .default,
+            fetchEventsWork: { store, interval in
+                try Self.fetchEventsDirectly(store: store, interval: interval)
+            },
+            authorizationStatusWork: {
+                Self.mapAuthorization(EKEventStore.authorizationStatus(for: .event))
+            }
+        )
+    }
+
+    /// Store-free test seam for the blocking EventKit enumeration and access
+    /// status. Production always uses the public convenience initializer.
+    init(
+        store: EKEventStore = EKEventStore(),
+        notificationCenter: NotificationCenter,
+        cacheLifetime: TimeInterval = 20,
+        fetchEventsWork: @escaping FetchEventsWork,
+        authorizationStatusWork: @escaping AuthorizationStatusWork
+    ) {
         self.store = store
+        self.fetchEventsWork = fetchEventsWork
+        self.authorizationStatusWork = authorizationStatusWork
+        self.windowFetches = EventWindowFetchCoordinator(
+            cacheLifetime: cacheLifetime,
+            maximumCacheEntries: 4
+        )
+        self.notificationCenter = notificationCenter
+        self.eventStoreChangedObserver = nil
+        self.eventStoreChangedObserver = notificationCenter.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.windowFetches.invalidate(reason: "EKEventStoreChanged")
+        }
+    }
+
+    deinit {
+        if let eventStoreChangedObserver {
+            notificationCenter.removeObserver(eventStoreChangedObserver)
+        }
     }
 
     // MARK: - Authorization
@@ -30,7 +82,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// this does not touch the instance store; it lives here to keep the auth
     /// surface behind the adapter port.
     public func eventsAuthorizationStatus() -> StoreAuthorizationStatus {
-        Self.mapAuthorization(EKEventStore.authorizationStatus(for: .event))
+        let status = authorizationStatusWork()
+        windowFetches.authorizationDidResolve(to: status)
+        return status
     }
 
     /// Prompt for events access on this adapter's store and return the
@@ -40,6 +94,10 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// with a non-nil `failureDescription` (the error's `localizedDescription`)
     /// so the caller can restore its error-state write.
     public func requestEventsAccess() async -> StoreAccessResult {
+        // The prompt can change read access without producing a store-change
+        // notification. Invalidate both before and after it so no pre-prompt
+        // result can mask the new permission state.
+        windowFetches.invalidate(reason: "calendar-access-request")
         let status = EKEventStore.authorizationStatus(for: .event)
         switch status {
         case .notDetermined:
@@ -50,12 +108,18 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
                 } else {
                     granted = try await store.requestAccess(to: .event)
                 }
-                return StoreAccessResult(status: granted ? .authorized : .denied)
+                let result = StoreAccessResult(status: granted ? .authorized : .denied)
+                windowFetches.authorizationDidResolve(to: result.status)
+                return result
             } catch {
-                return StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
+                let result = StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
+                windowFetches.authorizationDidResolve(to: result.status)
+                return result
             }
         default:
-            return StoreAccessResult(status: Self.mapAuthorization(status))
+            let result = StoreAccessResult(status: Self.mapAuthorization(status))
+            windowFetches.authorizationDidResolve(to: result.status)
+            return result
         }
     }
 
@@ -78,6 +142,70 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     // MARK: - Reads
 
     public func fetchEvents(in interval: DateInterval) throws -> [Event] {
+        let authorization = authorizationStatusWork()
+        windowFetches.authorizationDidResolve(to: authorization)
+
+        // Preserve the no-access behavior exactly: without read permission we
+        // always ask EventKit and return what it returns. In particular, an
+        // empty denied/not-determined result never enters the cache and cannot
+        // mask a later permission grant.
+        guard authorization == .authorized else {
+            return try runUnderlyingWindowFetch(in: interval)
+        }
+
+        return try windowFetches.fetch(interval: interval) { [self] in
+            try runUnderlyingWindowFetch(in: interval)
+        }
+    }
+
+    /// The one expensive raw EventKit enumeration. Coalescing surrounds this
+    /// operation; `GuessWhoSync.eventsWindow` still receives the exact same raw
+    /// batch and applies its sidecar overlay/membership rules unchanged.
+    private func runUnderlyingWindowFetch(in interval: DateInterval) throws -> [Event] {
+        let fetchID = UUID().uuidString
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.fetchLog.info(
+            "EventKit window fetch started",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+            ]
+        )
+        do {
+            let result = try fetchEventsWork(store, interval)
+            let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+            Self.fetchLog.info(
+                "EventKit window fetch finished",
+                metadata: [
+                    "fetchID": .string(fetchID),
+                    "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                    "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    "events": .stringConvertible(result.count),
+                    "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+                ]
+            )
+            return result
+        } catch {
+            let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+            Self.fetchLog.error(
+                "EventKit window fetch failed",
+                metadata: [
+                    "fetchID": .string(fetchID),
+                    "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                    "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+                    "error": .string(String(describing: error)),
+                ]
+            )
+            throw error
+        }
+    }
+
+    private static func fetchEventsDirectly(
+        store: EKEventStore,
+        interval: DateInterval
+    ) throws -> [Event] {
         // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
         // predicate at a 4-year span; longer windows silently drop everything
         // past the cap. Chunk like `eventsWithAttendee` does, but dedupe on
@@ -87,19 +215,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         // boundary (a multi-day event straddling the seam) collapses.
         var seen: Set<String> = []
         var result: [Event] = []
-        let chunks = Self.chunked(interval: interval, maxYears: 4)
-        let fetchID = UUID().uuidString
-        let startedAt = DispatchTime.now().uptimeNanoseconds
-        Self.fetchLog.info(
-            "EventKit window fetch started",
-            metadata: [
-                "fetchID": .string(fetchID),
-                "from": .stringConvertible(interval.start.timeIntervalSince1970),
-                "to": .stringConvertible(interval.end.timeIntervalSince1970),
-                "chunks": .stringConvertible(chunks.count),
-            ]
-        )
-        for chunk in chunks {
+        for chunk in Self.chunked(interval: interval, maxYears: 4) {
             let predicate = store.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: nil)
             for event in store.events(matching: predicate).compactMap(Self.toEvent) {
                 let key = "\(event.eventKitID ?? "")|\(event.startDate.timeIntervalSinceReferenceDate)"
@@ -108,17 +224,6 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
                 }
             }
         }
-        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
-        Self.fetchLog.info(
-            "EventKit window fetch finished",
-            metadata: [
-                "fetchID": .string(fetchID),
-                "from": .stringConvertible(interval.start.timeIntervalSince1970),
-                "to": .stringConvertible(interval.end.timeIntervalSince1970),
-                "events": .stringConvertible(result.count),
-                "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
-            ]
-        )
         return result
     }
 
@@ -290,6 +395,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         ekEvent.location = location
         ekEvent.calendar = calendar
         try store.save(ekEvent, span: .thisEvent, commit: true)
+        // Do not wait for EventKit's asynchronous notification: once our own
+        // commit succeeds, no caller may reuse a window captured before it.
+        windowFetches.invalidate(reason: "event-created")
         guard let event = Self.toEvent(ekEvent) else {
             // The just-created EKEvent must have a calendarItemExternalIdentifier
             // — but if it somehow doesn't, surface eventNotFound for safety.
@@ -321,6 +429,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         ekEvent.isAllDay = isAllDay
         ekEvent.location = location
         try store.save(ekEvent, span: .thisEvent, commit: true)
+        windowFetches.invalidate(reason: "event-updated")
     }
 
     // MARK: - Conversion
@@ -411,6 +520,220 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         let decoded = address.removingPercentEncoding ?? address
         let trimmed = decoded.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Test-only observation proving a second identical caller joined the
+    /// existing flight before a gated fake EventKit query is released.
+    func inFlightWindowCallerCountForTesting(_ interval: DateInterval) -> Int {
+        windowFetches.inFlightCallerCount(for: interval)
+    }
+}
+
+/// Synchronous generation cache around EventKit's synchronous window query.
+///
+/// `EventStoreProtocol.fetchEvents(in:)` is intentionally synchronous, while
+/// production callers already move it to a background queue. `NSCondition`
+/// therefore supplies the same single-flight discipline as `PlaceCorpusCache`:
+/// one caller performs a given generation/window query and concurrent callers
+/// wait for its exact `Result`. Different windows remain independent.
+///
+/// Invalidation is linearized under the same condition lock. It advances the
+/// generation and clears every cache entry. A caller arriving afterwards can
+/// neither hit nor join old-generation work. If invalidation races an active
+/// query, that query's result is discarded and all of its callers retry in the
+/// new generation, which is stronger than merely preventing stale cache fill.
+private final class EventWindowFetchCoordinator: @unchecked Sendable {
+    private struct WindowKey: Hashable {
+        let start: Date
+        let end: Date
+
+        init(_ interval: DateInterval) {
+            self.start = interval.start
+            self.end = interval.end
+        }
+    }
+
+    private struct FlightKey: Hashable {
+        let generation: UInt64
+        let window: WindowKey
+    }
+
+    private enum FlightOutcome {
+        case result(Result<[Event], Error>)
+        case invalidated
+    }
+
+    private final class Flight {
+        var callerCount = 1
+        var outcome: FlightOutcome?
+    }
+
+    private struct CacheEntry {
+        let events: [Event]
+        let capturedAt: UInt64
+        var lastUse: UInt64
+    }
+
+    private let condition = NSCondition()
+    private let cacheLifetimeNanos: UInt64
+    private let maximumCacheEntries: Int
+    private var generation: UInt64 = 0
+    private var lastAuthorization: StoreAuthorizationStatus?
+    private var flights: [FlightKey: Flight] = [:]
+    private var cache: [WindowKey: CacheEntry] = [:]
+    private var useCounter: UInt64 = 0
+
+    init(cacheLifetime: TimeInterval, maximumCacheEntries: Int) {
+        self.cacheLifetimeNanos = UInt64(max(0, cacheLifetime) * 1_000_000_000)
+        self.maximumCacheEntries = max(1, maximumCacheEntries)
+    }
+
+    /// Detect TCC changes even when EventKit emits no store-change
+    /// notification. The first observed status establishes the baseline; every
+    /// later transition advances the same generation as a store change.
+    func authorizationDidResolve(to status: StoreAuthorizationStatus) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard let previous = lastAuthorization else {
+            lastAuthorization = status
+            return
+        }
+        guard previous != status else { return }
+        lastAuthorization = status
+        invalidateLocked(reason: "calendar-access-changed")
+    }
+
+    func invalidate(reason: String) {
+        condition.lock()
+        invalidateLocked(reason: reason)
+        condition.unlock()
+    }
+
+    private func invalidateLocked(reason: String) {
+        generation &+= 1
+        cache.removeAll(keepingCapacity: true)
+        condition.broadcast()
+        EKEventStoreAdapter.fetchLog.info(
+            "EventKit window cache invalidated",
+            metadata: [
+                "reason": .string(reason),
+                "generation": .stringConvertible(generation),
+            ]
+        )
+    }
+
+    func fetch(
+        interval: DateInterval,
+        operation: () throws -> [Event]
+    ) throws -> [Event] {
+        let window = WindowKey(interval)
+
+        while true {
+            condition.lock()
+            let activeGeneration = generation
+            let now = DispatchTime.now().uptimeNanoseconds
+            purgeExpiredEntries(now: now)
+
+            if var entry = cache[window] {
+                useCounter &+= 1
+                entry.lastUse = useCounter
+                cache[window] = entry
+                condition.unlock()
+                EKEventStoreAdapter.fetchLog.info(
+                    "EventKit window fetch cache hit",
+                    metadata: [
+                        "generation": .stringConvertible(activeGeneration),
+                        "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                        "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    ]
+                )
+                return entry.events
+            }
+
+            let key = FlightKey(generation: activeGeneration, window: window)
+            if let flight = flights[key] {
+                flight.callerCount += 1
+                let callerCount = flight.callerCount
+                EKEventStoreAdapter.fetchLog.info(
+                    "EventKit window fetch joined",
+                    metadata: [
+                        "generation": .stringConvertible(activeGeneration),
+                        "callers": .stringConvertible(callerCount),
+                        "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                        "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    ]
+                )
+                while flight.outcome == nil && generation == activeGeneration {
+                    condition.wait()
+                }
+                guard generation == activeGeneration,
+                      let outcome = flight.outcome
+                else {
+                    condition.unlock()
+                    continue
+                }
+                condition.unlock()
+                switch outcome {
+                case .result(let result):
+                    return try result.get()
+                case .invalidated:
+                    continue
+                }
+            }
+
+            let flight = Flight()
+            flights[key] = flight
+            condition.unlock()
+
+            let result = Result { try operation() }
+
+            condition.lock()
+            if generation != activeGeneration {
+                flight.outcome = .invalidated
+                flights.removeValue(forKey: key)
+                condition.broadcast()
+                condition.unlock()
+                continue
+            }
+
+            if case .success(let events) = result, cacheLifetimeNanos > 0 {
+                useCounter &+= 1
+                evictLeastRecentlyUsedEntryIfNeeded(for: window)
+                cache[window] = CacheEntry(
+                    events: events,
+                    capturedAt: DispatchTime.now().uptimeNanoseconds,
+                    lastUse: useCounter
+                )
+            }
+            flight.outcome = .result(result)
+            flights.removeValue(forKey: key)
+            condition.broadcast()
+            condition.unlock()
+            return try result.get()
+        }
+    }
+
+    func inFlightCallerCount(for interval: DateInterval) -> Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return flights[FlightKey(generation: generation, window: WindowKey(interval))]?.callerCount ?? 0
+    }
+
+    private func purgeExpiredEntries(now: UInt64) {
+        guard cacheLifetimeNanos > 0 else {
+            cache.removeAll(keepingCapacity: true)
+            return
+        }
+        cache = cache.filter { _, entry in
+            now >= entry.capturedAt && now - entry.capturedAt <= cacheLifetimeNanos
+        }
+    }
+
+    private func evictLeastRecentlyUsedEntryIfNeeded(for window: WindowKey) {
+        guard cache[window] == nil, cache.count >= maximumCacheEntries,
+              let oldest = cache.min(by: { $0.value.lastUse < $1.value.lastUse })?.key
+        else { return }
+        cache.removeValue(forKey: oldest)
     }
 }
 

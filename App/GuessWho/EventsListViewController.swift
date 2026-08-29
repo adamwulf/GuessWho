@@ -120,9 +120,11 @@ final class EventsListViewController: UIViewController {
         observeRepositoryReloads()
         updateHeaderBanners()
 
+        // First paint from the AppDelegate-owned initial reload. Starting a
+        // second full reload here duplicates the same stable repository window
+        // when this controller mounts during launch/restoration; the shared
+        // repository posts when its one authoritative load completes.
         applySnapshot(animated: false)
-
-        Task { await repository.reload(trigger: "events-list-viewDidLoad") }
     }
 
     override func viewWillAppear(_ animated: Bool) {

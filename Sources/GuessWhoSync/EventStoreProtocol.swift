@@ -5,8 +5,9 @@ import Foundation
 /// scan) capture the conformer and drive it from `DispatchQueue.global`, and
 /// `@MainActor` callers (SyncService) hold it across actor boundaries — every
 /// conformer is ALREADY crossing threads. `EKEventStoreAdapter` is
-/// `@unchecked Sendable` over an immutable, thread-safe `EKEventStore`; the
-/// test fakes guard their mutable state with a per-instance `NSLock`.
+/// `@unchecked Sendable` over a thread-safe `EKEventStore` plus lock-isolated
+/// window coalescing state; the test fakes likewise guard mutable state with a
+/// per-instance `NSLock`.
 public protocol EventStoreProtocol: Sendable {
     // MARK: - Authorization
     //
