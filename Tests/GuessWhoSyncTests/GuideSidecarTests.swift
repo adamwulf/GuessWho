@@ -310,7 +310,7 @@ struct GuideSidecarTests {
         #expect(store.placeReadCount == 3)
     }
 
-    @Test func remoteSidecarNotificationInvalidatesCachedCorpus() throws {
+    @Test func remotePlaceNotificationInvalidatesCachedCorpus() throws {
         let notificationCenter = NotificationCenter()
         let (sync, store) = makeCountingOrchestrator(notificationCenter: notificationCenter)
         let remoteSync = GuessWhoSync(
@@ -342,11 +342,84 @@ struct GuideSidecarTests {
         #expect(try sync.allPlaces().first?.name == original.name)
         #expect(store.allKeysCallCount == 0)
 
-        notificationCenter.post(name: .guessWhoSidecarsDidChange, object: nil)
+        notificationCenter.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [
+                GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                    SidecarKey(kind: .place, id: original.id.uuidString)
+                ])
+            ]
+        )
 
         #expect(try sync.allPlaces().first?.name == "Remote Name")
         #expect(store.allKeysCallCount == 1)
         #expect(store.placeReadCount == 1)
+    }
+
+    @Test func remoteGuideNotificationInvalidatesCachedCorpus() throws {
+        let notificationCenter = NotificationCenter()
+        let (sync, store) = makeCountingOrchestrator(notificationCenter: notificationCenter)
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        #expect(try sync.allPlaces().count == 3)
+        store.resetCounts()
+
+        notificationCenter.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [
+                GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                    SidecarKey(kind: .guide, id: guideID.uuidString)
+                ])
+            ]
+        )
+
+        #expect(try sync.allPlaces().count == 3)
+        #expect(store.allKeysCallCount == 1)
+        #expect(store.placeReadCount == 3)
+    }
+
+    @Test func fullRefreshSidecarNotificationInvalidatesCachedCorpus() throws {
+        let notificationCenter = NotificationCenter()
+        let (sync, store) = makeCountingOrchestrator(notificationCenter: notificationCenter)
+        _ = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        #expect(try sync.allPlaces().count == 3)
+        store.resetCounts()
+
+        notificationCenter.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet.fullRefresh]
+        )
+
+        #expect(try sync.allPlaces().count == 3)
+        #expect(store.allKeysCallCount == 1)
+        #expect(store.placeReadCount == 3)
+    }
+
+    @Test func knownNonPlaceNotificationKeepsCachedCorpus() throws {
+        let notificationCenter = NotificationCenter()
+        let (sync, store) = makeCountingOrchestrator(notificationCenter: notificationCenter)
+        _ = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        #expect(try sync.allPlaces().count == 3)
+        store.resetCounts()
+
+        notificationCenter.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [
+                GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                    SidecarKey(kind: .contact, id: "contact-id"),
+                    SidecarKey(kind: .link, id: "link-id"),
+                    SidecarKey(kind: .event, id: "event-id"),
+                    SidecarKey(kind: .group, id: "group-id")
+                ])
+            ]
+        )
+
+        #expect(try sync.allPlaces().count == 3)
+        #expect(store.allKeysCallCount == 0)
+        #expect(store.placeReadCount == 0)
     }
 
     // MARK: - Refresh

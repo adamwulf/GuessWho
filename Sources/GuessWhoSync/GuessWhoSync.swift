@@ -81,8 +81,15 @@ public final class GuessWhoSync: @unchecked Sendable {
             forName: .guessWhoSidecarsDidChange,
             object: nil,
             queue: nil
-        ) { [weak self] _ in
-            self?.invalidatePlaceCorpus()
+        ) { [weak self] note in
+            let changeSet = note.guessWhoSidecarChangeSet
+            if changeSet.requiresFullRefresh
+                || changeSet.changedKeys?.contains(where: {
+                    $0.kind == .place || $0.kind == .guide
+                }) == true
+            {
+                self?.invalidatePlaceCorpus()
+            }
         }
     }
 
