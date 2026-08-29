@@ -1,5 +1,70 @@
 import Foundation
 
+/// A process-local, generation-token cache for the expensive place-sidecar
+/// corpus walk. `NSCondition` both protects the snapshot/generation and lets
+/// overlapping synchronous or async-overload callers share one in-flight
+/// walk. A generation change during a walk discards that result and makes the
+/// owner retry, so an invalidation can never publish or return an old snapshot.
+final class PlaceCorpusCache: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var generation: UInt64 = 0
+    private var cached: (generation: UInt64, places: [MapsPlace])?
+    private var inFlightGeneration: UInt64?
+
+    func invalidate() {
+        condition.lock()
+        generation += 1
+        cached = nil
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func value(walkingCorpus walk: () throws -> [MapsPlace]) throws -> [MapsPlace] {
+        while true {
+            condition.lock()
+            let requestedGeneration = generation
+
+            if let cached, cached.generation == requestedGeneration {
+                condition.unlock()
+                return cached.places
+            }
+
+            if inFlightGeneration != nil {
+                condition.wait()
+                condition.unlock()
+                continue
+            }
+
+            inFlightGeneration = requestedGeneration
+            condition.unlock()
+
+            let result: [MapsPlace]
+            do {
+                result = try walk()
+            } catch {
+                condition.lock()
+                inFlightGeneration = nil
+                condition.broadcast()
+                condition.unlock()
+                throw error
+            }
+
+            condition.lock()
+            let isCurrent = generation == requestedGeneration
+            if isCurrent {
+                cached = (requestedGeneration, result)
+            }
+            inFlightGeneration = nil
+            condition.broadcast()
+            condition.unlock()
+
+            if isCurrent {
+                return result
+            }
+        }
+    }
+}
+
 extension GuessWhoSync {
     // MARK: - Well-known guide / place cell keys
 
@@ -494,16 +559,21 @@ extension GuessWhoSync {
     }
 
     /// Every live place, across all guides. Backs the guides list's per-guide
-    /// place counts with ONE sidecar walk instead of one per guide.
+    /// place counts with ONE sidecar walk instead of one per guide. The engine-
+    /// level generation cache also shares that walk across overlapping callers
+    /// and across CLI/MCP/app call sites until a place/guide change invalidates
+    /// it.
     public func allPlaces() throws -> [MapsPlace] {
-        var result: [MapsPlace] = []
-        for key in try sidecars.allKeys() where key.kind == .place {
-            guard let envelope = try sidecars.read(key) else { continue }
-            if let place = decodePlace(envelope: envelope, key: key) {
-                result.append(place)
+        try placeCorpusCache.value { [self] in
+            var result: [MapsPlace] = []
+            for key in try sidecars.allKeys() where key.kind == .place {
+                guard let envelope = try sidecars.read(key) else { continue }
+                if let place = decodePlace(envelope: envelope, key: key) {
+                    result.append(place)
+                }
             }
+            return result
         }
-        return result
     }
 
     /// Async overload of `allPlaces()` — same background-hop rationale as

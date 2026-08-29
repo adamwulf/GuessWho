@@ -35,6 +35,20 @@ struct GuideSidecarTests {
         )
     }
 
+    private func makeCountingOrchestrator(
+        notificationCenter: NotificationCenter = NotificationCenter()
+    ) -> (GuessWhoSync, PlaceCorpusCountingStore) {
+        let store = PlaceCorpusCountingStore()
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: store,
+            deviceID: "device-A",
+            notificationCenter: notificationCenter
+        )
+        return (sync, store)
+    }
+
     // MARK: - Create + read round-trip
 
     @Test func createGuideRoundTripsGuideAndPlaces() throws {
@@ -92,6 +106,138 @@ struct GuideSidecarTests {
         #expect(try sync.places(inGuide: first).count == 3)
         #expect(try sync.places(inGuide: second).count == 1)
         #expect(try sync.allPlaces().count == 4)
+    }
+
+    // MARK: - Place corpus cache
+
+    @Test func concurrentAllPlacesCallsShareOneCorpusWalk() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        _ = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        store.resetCounts(blockNextWalk: true)
+
+        let firstResult = LockedResult<[MapsPlace]>()
+        let firstFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            firstResult.store(Result { try sync.allPlaces() })
+            firstFinished.signal()
+        }
+
+        #expect(store.waitUntilWalkIsBlocked() == .success)
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(100)) {
+            store.resumeBlockedWalk()
+        }
+
+        let second = try sync.allPlaces()
+        #expect(firstFinished.wait(timeout: .now() + .seconds(2)) == .success)
+        let stored = try #require(firstResult.load())
+        let first = try stored.get()
+
+        #expect(first.count == 3)
+        #expect(second.count == 3)
+        #expect(store.allKeysCallCount == 1)
+        #expect(store.placeReadCount == 3)
+    }
+
+    @Test func cachedAllPlacesDoesNotRewalkUnchangedCorpus() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        _ = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        store.resetCounts()
+
+        #expect(try sync.allPlaces().count == 3)
+        #expect(try sync.allPlaces().count == 3)
+
+        #expect(store.allKeysCallCount == 1)
+        #expect(store.placeReadCount == 3)
+    }
+
+    @Test func localPlaceCreateUpdateAndDeleteInvalidateCachedCorpus() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        #expect(try sync.allPlaces().isEmpty)
+
+        store.resetCounts()
+        let guideID = try sync.createGuide(
+            from: MapsGuideURL.Snapshot(
+                name: "Berlin",
+                entries: [MapsGuideURL.Entry(mapsPlaceID: "IABC123")]
+            ),
+            sourceURL: nil
+        )
+        let created = try #require(try sync.allPlaces().first)
+        #expect(created.guideID == guideID)
+        #expect(store.allKeysCallCount == 1)
+
+        store.resetCounts()
+        let key = SidecarKey(kind: .place, id: created.id.uuidString)
+        try sync.markPlaceResolved(
+            at: key,
+            name: "Updated Place",
+            address: "123 Test Street, Berlin",
+            latitude: 52.5,
+            longitude: 13.4
+        )
+        let updated = try #require(try sync.allPlaces().first)
+        #expect(updated.name == "Updated Place")
+        #expect(store.allKeysCallCount == 1)
+
+        store.resetCounts()
+        try sync.deletePlace(at: key)
+        #expect(try sync.allPlaces().isEmpty)
+        #expect(store.allKeysCallCount == 1)
+    }
+
+    @Test func localGuideWriteInvalidatesCachedCorpusGeneration() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        #expect(try sync.allPlaces().count == 3)
+        store.resetCounts()
+
+        try sync.stampGuideViewed(
+            at: SidecarKey(kind: .guide, id: guideID.uuidString),
+            now: Date(timeIntervalSinceReferenceDate: 123)
+        )
+
+        #expect(try sync.allPlaces().count == 3)
+        #expect(store.allKeysCallCount == 1)
+        #expect(store.placeReadCount == 3)
+    }
+
+    @Test func remoteSidecarNotificationInvalidatesCachedCorpus() throws {
+        let notificationCenter = NotificationCenter()
+        let (sync, store) = makeCountingOrchestrator(notificationCenter: notificationCenter)
+        let remoteSync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: store,
+            deviceID: "remote-device",
+            notificationCenter: NotificationCenter()
+        )
+        let guideID = try sync.createGuide(
+            from: MapsGuideURL.Snapshot(
+                name: "Berlin",
+                entries: [MapsGuideURL.Entry(mapsPlaceID: "IABC123")]
+            ),
+            sourceURL: nil
+        )
+        let original = try #require(try sync.places(inGuide: guideID).first)
+
+        try remoteSync.markPlaceResolved(
+            at: SidecarKey(kind: .place, id: original.id.uuidString),
+            name: "Remote Name",
+            address: nil,
+            latitude: nil,
+            longitude: nil
+        )
+        store.resetCounts()
+
+        // The primary engine still owns its pre-notification generation.
+        #expect(try sync.allPlaces().first?.name == original.name)
+        #expect(store.allKeysCallCount == 0)
+
+        notificationCenter.post(name: .guessWhoSidecarsDidChange, object: nil)
+
+        #expect(try sync.allPlaces().first?.name == "Remote Name")
+        #expect(store.allKeysCallCount == 1)
+        #expect(store.placeReadCount == 1)
     }
 
     // MARK: - Refresh
@@ -440,5 +586,99 @@ struct GuideSidecarTests {
         let id = "ABCDEF00-1111-2222-3333-444455556666"
         #expect(SidecarKey(kind: .guide, id: id).id == id.lowercased())
         #expect(SidecarKey(kind: .place, id: id).id == id.lowercased())
+    }
+}
+
+private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked Sendable {
+    private let inner = InMemorySidecarStore()
+    private let lock = NSLock()
+    private let walkStarted = DispatchSemaphore(value: 0)
+    private let walkMayContinue = DispatchSemaphore(value: 0)
+    private var shouldBlockNextWalk = false
+    private var storedAllKeysCallCount = 0
+    private var storedPlaceReadCount = 0
+
+    var allKeysCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedAllKeysCallCount
+    }
+
+    var placeReadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedPlaceReadCount
+    }
+
+    func resetCounts(blockNextWalk: Bool = false) {
+        lock.lock()
+        storedAllKeysCallCount = 0
+        storedPlaceReadCount = 0
+        shouldBlockNextWalk = blockNextWalk
+        lock.unlock()
+    }
+
+    func waitUntilWalkIsBlocked() -> DispatchTimeoutResult {
+        walkStarted.wait(timeout: .now() + .seconds(2))
+    }
+
+    func resumeBlockedWalk() {
+        walkMayContinue.signal()
+    }
+
+    func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
+        if key.kind == .place {
+            lock.lock()
+            storedPlaceReadCount += 1
+            lock.unlock()
+        }
+        return try inner.read(key)
+    }
+
+    func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
+        try inner.write(envelope, at: key)
+    }
+
+    func delete(_ key: SidecarKey) throws {
+        try inner.delete(key)
+    }
+
+    func allKeys() throws -> [SidecarKey] {
+        lock.lock()
+        storedAllKeysCallCount += 1
+        let shouldBlock = shouldBlockNextWalk
+        shouldBlockNextWalk = false
+        lock.unlock()
+
+        if shouldBlock {
+            walkStarted.signal()
+            walkMayContinue.wait()
+        }
+        return try inner.allKeys()
+    }
+
+    func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus {
+        inner.downloadStatus(key)
+    }
+
+    func requestDownload(_ key: SidecarKey) throws {
+        try inner.requestDownload(key)
+    }
+}
+
+private final class LockedResult<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Value, Error>?
+
+    func store(_ result: Result<Value, Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func load() -> Result<Value, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
     }
 }

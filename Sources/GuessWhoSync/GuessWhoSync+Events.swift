@@ -658,8 +658,8 @@ extension GuessWhoSync {
         softDelete: Bool
     ) throws {
         try SidecarField.validate(value: value, against: type)
-        try sidecarLocks.withLock(forKey: key) {
-            let existing = try sidecars.read(key)
+        try withKeyLocked(key) { ctx in
+            let existing = try ctx.read()
             let now = Date()
             let createdAt: Date = {
                 if let cell = existing?.fields[cellKey],
@@ -690,7 +690,7 @@ extension GuessWhoSync {
                 entityID: existing?.entityID ?? key.id,
                 fields: fields
             )
-            try sidecars.write(envelope, at: key)
+            try ctx.write(envelope)
         }
     }
 

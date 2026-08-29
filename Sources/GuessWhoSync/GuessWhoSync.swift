@@ -2,7 +2,8 @@ import Foundation
 import Logging
 
 // Thread-safety is provided by `sidecarLocks` (per-sidecar serialization
-// for read-modify-write) and by the fact that `contacts` is now an actor.
+// for read-modify-write), `PlaceCorpusCache`'s condition lock, and by the fact
+// that `contacts` is now an actor.
 // Conformers passed in for `events` / `sidecars` are expected to handle
 // their own internal locking (the bundled FileSystemSidecarStore and
 // InMemorySidecarStore both do). Marked @unchecked so the type can be
@@ -18,6 +19,10 @@ public final class GuessWhoSync: @unchecked Sendable {
     internal let sidecars: SidecarStoreProtocol
     internal let deviceID: String
     internal let sidecarLocks = PerKeyLockTable<SidecarKey>()
+    internal let placeCorpusCache = PlaceCorpusCache()
+
+    private let notificationCenter: NotificationCenter
+    private var sidecarChangeObserver: NSObjectProtocol?
 
     /// Device-local persistence for the external-contact-change cursor. Present
     /// only when a host wants this instance to own the change watcher; `nil`
@@ -37,13 +42,29 @@ public final class GuessWhoSync: @unchecked Sendable {
         events: EventStoreProtocol,
         sidecars: SidecarStoreProtocol,
         deviceID: String,
-        contactCursorStore: ContactSyncCursorStore? = nil
+        contactCursorStore: ContactSyncCursorStore? = nil,
+        notificationCenter: NotificationCenter = .default
     ) {
         self.contacts = contacts
         self.events = events
         self.sidecars = sidecars
         self.deviceID = deviceID
         self.contactCursorStore = contactCursorStore
+        self.notificationCenter = notificationCenter
+        self.sidecarChangeObserver = nil
+        self.sidecarChangeObserver = notificationCenter.addObserver(
+            forName: .guessWhoSidecarsDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.invalidatePlaceCorpus()
+        }
+    }
+
+    deinit {
+        if let sidecarChangeObserver {
+            notificationCenter.removeObserver(sidecarChangeObserver)
+        }
     }
 
     // MARK: - Per-key atomicity
@@ -71,9 +92,13 @@ public final class GuessWhoSync: @unchecked Sendable {
     struct KeyLockedContext {
         let key: SidecarKey
         fileprivate let sidecars: SidecarStoreProtocol
+        fileprivate let didWrite: (SidecarKey) -> Void
 
         func read() throws -> SidecarEnvelope? { try sidecars.read(key) }
-        func write(_ envelope: SidecarEnvelope) throws { try sidecars.write(envelope, at: key) }
+        func write(_ envelope: SidecarEnvelope) throws {
+            try sidecars.write(envelope, at: key)
+            didWrite(key)
+        }
         func writeBlob(_ data: Data, blobId: String) throws { try sidecars.writeBlob(data, blobId: blobId, for: key) }
         func readBlob(blobId: String) throws -> Data? { try sidecars.readBlob(blobId: blobId, for: key) }
         func deleteBlob(blobId: String) throws { try sidecars.deleteBlob(blobId: blobId, for: key) }
@@ -90,8 +115,25 @@ public final class GuessWhoSync: @unchecked Sendable {
     @discardableResult
     func withKeyLocked<T>(_ key: SidecarKey, _ body: (KeyLockedContext) throws -> T) rethrows -> T {
         try sidecarLocks.withLock(forKey: key) {
-            try body(KeyLockedContext(key: key, sidecars: sidecars))
+            try body(KeyLockedContext(
+                key: key,
+                sidecars: sidecars,
+                didWrite: { [weak self] key in self?.invalidatePlaceCorpus(ifAffectedBy: key) }
+            ))
         }
+    }
+
+    /// Advance the place-corpus generation after every successful local write
+    /// that can change a place projection or guide-derived grouping. Keeping
+    /// this at the central envelope-write choke point covers the public generic
+    /// field APIs as well as the guide-specific helpers.
+    private func invalidatePlaceCorpus(ifAffectedBy key: SidecarKey) {
+        guard key.kind == .place || key.kind == .guide else { return }
+        invalidatePlaceCorpus()
+    }
+
+    private func invalidatePlaceCorpus() {
+        placeCorpusCache.invalidate()
     }
 
     // MARK: - External contact-change watcher
