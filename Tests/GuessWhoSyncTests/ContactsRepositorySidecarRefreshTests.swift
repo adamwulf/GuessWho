@@ -6,13 +6,13 @@ import GuessWhoSyncTesting
 /// The sidecar-change refresh path on `ContactsRepository`
 /// (`.guessWhoSidecarsDidChange` → debounce → `refreshFromSidecarChange`).
 ///
-/// Covers FIX C (among the kinds with no scoped projection, ONLY `.group` — a
+/// Covers FIX D (among the kinds with no scoped projection, ONLY `.group` — a
 /// favorite-identity record — escalates to the full sidecar-derived refresh and
 /// posts; an event/guide/place-only change names no kind this repository
 /// projects and is dropped as a relevance no-op — zero projection work, no
 /// post — mirroring `EventsRepository`. Mixed sets still process their relevant
 /// kinds, and `.group` subsumes any `.contact`/`.link` alongside it with a full
-/// refresh), FIX D (a projection refresh re-checks its generation after EACH
+/// refresh), FIX C (a projection refresh re-checks its generation after EACH
 /// scan and before issuing the next, so a refresh superseded mid-walk does not
 /// fire the remaining link endpoint/count scans), and FIX 1 (a monotonic
 /// refresh generation advanced whenever a refresh is SCHEDULED — every
@@ -102,7 +102,7 @@ struct ContactsRepositorySidecarRefreshTests {
         return fired
     }
 
-    // MARK: - FIX C: `.group` escalates to a full refresh; other unscopable
+    // MARK: - FIX D: `.group` escalates to a full refresh; other unscopable
     // kinds are dropped as a relevance no-op.
 
     @Test
@@ -129,7 +129,7 @@ struct ContactsRepositorySidecarRefreshTests {
         #expect(repo.people.map(\.localID) == ["amy", "zoe"])
 
         // A change naming ONLY a `.group` favorite-identity key has no scoped
-        // projection; FIX C escalates it to the full sidecar-derived refresh, so
+        // projection; FIX D escalates it to the full sidecar-derived refresh, so
         // the wholesale timestamp re-read picks up Zoe's view and reorders her
         // ahead — and it must not be silently dropped.
         let posted = await postAndAwaitReload(
@@ -579,17 +579,17 @@ struct ContactsRepositorySidecarRefreshTests {
         #expect(repo.people.map(\.localID) == ["c", "b", "a"])
     }
 
-    // MARK: - FIX D: a refresh superseded mid-walk skips its later scans
+    // MARK: - FIX C: a refresh superseded mid-walk skips its later scans
 
     @Test
     func supersededScopedRefreshSkipsLaterLinkScans() async throws {
         // A scoped {contact, link} refresh starts. The barrier parks it AFTER its
         // scoped timestamp read but BEFORE the generation guard. While parked, a
-        // newer {contact} change supersedes it. On resume, FIX D's guard right
+        // newer {contact} change supersedes it. On resume, FIX C's guard right
         // after the timestamp scan bails BEFORE issuing the two link-corpus walks
         // (linkedEndpoints + linkCounts, each an `allKeys` scan). Absent that
         // guard the superseded refresh would still fire both, only to no-op at its
-        // own guards — the wasted scans FIX D removes.
+        // own guards — the wasted scans FIX C removes.
         let anna = reconciled(localID: "a", uuid: "77777777-0000-0000-0000-000000000001", given: "Anna")
         let bob = reconciled(localID: "b", uuid: "77777777-0000-0000-0000-000000000002", given: "Bob")
         let store = InMemoryContactStore(contacts: [anna, bob])
@@ -629,7 +629,7 @@ struct ContactsRepositorySidecarRefreshTests {
         try await Task.sleep(for: Self.beyondDebounce)
 
         // The newer refresh INHERITS the link key (the in-flight handoff), so it
-        // walks the link corpus exactly once (2 `allKeys`). Absent FIX D the
+        // walks the link corpus exactly once (2 `allKeys`). Absent FIX C the
         // first, superseded refresh would ALSO have walked it (2 more) → 4 total.
         // Exactly 2 proves the superseded refresh issued none of its link scans.
         #expect(counting.allKeysCount == allKeysBefore + 2)

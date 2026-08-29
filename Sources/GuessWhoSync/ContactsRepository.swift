@@ -387,7 +387,7 @@ public final class ContactsRepository: NSObject {
             // if contacts landed first, `loadGroups()` performs the same pass.
             await refreshAllGroupIdentities()
         }
-        // FIX D: re-check the projection generation after EACH scan await and
+        // FIX C: re-check the projection generation after EACH scan await and
         // before issuing the next one. A sidecar delta scheduled during the
         // Contacts fetch (or during an earlier scan) bumps `refreshGeneration`
         // and owns the projection; once superseded, skip the remaining
@@ -3234,7 +3234,7 @@ public final class ContactsRepository: NSObject {
     @ObservationIgnored private var contactReloadGeneration = 0
 
     private func scheduleSidecarRefresh(_ changeSet: SidecarChangeSet) {
-        // FIX C: drop a scoped change that names no kind this repository projects
+        // FIX D: drop a scoped change that names no kind this repository projects
         // BEFORE any merge, generation bump, or cancellation — an irrelevant
         // delivery (an event/guide/place-only edit, or an explicitly empty set)
         // must not supersede and strand a useful pending/in-flight reload it
@@ -3296,7 +3296,7 @@ public final class ContactsRepository: NSObject {
 
         let contactKeys = Set(changedKeys.filter { $0.kind == .contact })
         let linksChanged = changedKeys.contains { $0.kind == .link }
-        // FIX C: among the kinds with no scoped projection on this path, ONLY
+        // FIX D: among the kinds with no scoped projection on this path, ONLY
         // `.group` (a favorite-identity record, which feeds group resolution)
         // affects the contacts projection, so it alone escalates to the full
         // sidecar-derived refresh — which subsumes any `.contact` / `.link`
@@ -3327,7 +3327,7 @@ public final class ContactsRepository: NSObject {
             return
         }
 
-        // FIX D: re-check the generation after EACH scoped scan await and before
+        // FIX C: re-check the generation after EACH scoped scan await and before
         // issuing the next expensive one, so a newer refresh that superseded us
         // mid-walk stops us from firing the remaining link endpoint/count scans.
         // The per-method guards still gate every state mutation; these add an
@@ -3351,11 +3351,11 @@ public final class ContactsRepository: NSObject {
     /// The full sidecar-derived projection refresh: re-read the bulk timestamp
     /// cache, the linked-endpoint set, and the link counts wholesale, then post
     /// a presentation-only reload. Shared by the explicit `changedKeys == nil`
-    /// full-refresh signal and the `.group`-change fallback (FIX C). Every step —
+    /// full-refresh signal and the `.group`-change fallback (FIX D). Every step —
     /// and the post — is gated on `generation`, so a newer refresh that began
     /// meanwhile is never overwritten by this one.
     private func performFullSidecarProjectionRefresh(generation: Int) async {
-        // FIX D: re-check the generation after EACH wholesale scan await and
+        // FIX C: re-check the generation after EACH wholesale scan await and
         // before issuing the next one. A newer refresh scheduled mid-walk owns
         // the projection; bail out before firing the remaining link
         // endpoint/count scans rather than issue them only to no-op at their
