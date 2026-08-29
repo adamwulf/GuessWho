@@ -92,6 +92,37 @@ public final class GuessWhoSync: @unchecked Sendable {
         }
     }
 
+    // Filesystem-backed corpus projections take one root-directory claim and
+    // reuse one decoder through this internal capability. Other conformers keep
+    // their existing behavior: enumerate once, then call read(_:) serially for
+    // each selected key. The visit closure receives identical per-key Results
+    // on both paths, including nil, malformed-data errors, and
+    // notYetDownloaded.
+    internal func walkSidecarCorpus(
+        kinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        try walkSidecarCorpus(reading: kinds, listing: kinds, visit)
+    }
+
+    internal func walkSidecarCorpus(
+        reading readKinds: Set<SidecarKind>,
+        listing listedKinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        if let corpusReader = sidecars as? SidecarCorpusReading {
+            try corpusReader.walkCorpus(reading: readKinds, listing: listedKinds, visit)
+            return
+        }
+
+        for key in try sidecars.allKeys() where listedKinds.contains(key.kind) {
+            let result = readKinds.contains(key.kind)
+                ? Result { try sidecars.read(key) }
+                : .success(nil)
+            try visit(key, result)
+        }
+    }
+
     // MARK: - Per-key atomicity
 
     /// The handle through which a key's sidecar envelope and its `.blob` `.dat`
@@ -820,10 +851,10 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// set.
     func linkEndpointProjection(ofKind kind: SidecarKind) throws -> LinkEndpointProjection {
         var projection = LinkEndpointProjection(endpoints: [], counts: [:])
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key),
+        try walkSidecarCorpus(kinds: [.link]) { key, readResult in
+            guard let envelope = try readResult.get(),
                   let link = Link(from: envelope),
-                  link.deletedAt == nil else { continue }
+                  link.deletedAt == nil else { return }
             Self.accumulate(link, ofKind: kind, into: &projection)
         }
         return projection
@@ -853,12 +884,15 @@ public final class GuessWhoSync: @unchecked Sendable {
         var timestampsFailed = false
         var linksFailed = false
 
-        for key in try sidecars.allKeys() {
+        try walkSidecarCorpus(
+            reading: [.contact, .link],
+            listing: [.contact, .link, .group]
+        ) { key, readResult in
             switch key.kind {
             case .contact:
-                guard !timestampsFailed else { continue }
+                guard !timestampsFailed else { return }
                 do {
-                    guard let envelope = try sidecars.read(key) else { continue }
+                    guard let envelope = try readResult.get() else { return }
                     timestamps[key.id] = ContactTimestamps(from: envelope)
                 } catch {
                     // The old standalone timestamp walk threw and the repository
@@ -868,11 +902,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                     timestamps = [:]
                 }
             case .link:
-                guard !linksFailed else { continue }
+                guard !linksFailed else { return }
                 do {
-                    guard let envelope = try sidecars.read(key),
+                    guard let envelope = try readResult.get(),
                           let link = Link(from: envelope),
-                          link.deletedAt == nil else { continue }
+                          link.deletedAt == nil else { return }
                     Self.accumulate(link, ofKind: .contact, into: &links)
                 } catch {
                     // Both old link walks failed independently on this stable
@@ -884,7 +918,7 @@ public final class GuessWhoSync: @unchecked Sendable {
             case .group:
                 groupKeys.append(key)
             default:
-                continue
+                return
             }
         }
 
@@ -1000,18 +1034,19 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// envelope that fails to read is skipped (no entry). O(N contacts).
     public func allContactTimestamps() throws -> [String: ContactTimestamps] {
         var result: [String: ContactTimestamps] = [:]
-        for key in try sidecars.allKeys() where key.kind == .contact {
-            guard let envelope = try sidecars.read(key) else { continue }
+        try walkSidecarCorpus(kinds: [.contact]) { key, readResult in
+            guard let envelope = try readResult.get() else { return }
             result[key.id] = ContactTimestamps(from: envelope)
         }
         return result
     }
 
     /// Async overload of `allContactTimestamps()` that hops the scan to a
-    /// background queue: the read walks EVERY contact sidecar (a coordinated
-    /// read + decode per file), so it scales with total contact count and must
-    /// not block the caller's actor / cooperative pool. Same continuation-hop
-    /// pattern (and `self` capture rationale) as `links(at:)`.
+    /// background queue: the read walks EVERY contact sidecar (one corpus claim
+    /// for filesystem storage, then a serial decode), so it scales with total
+    /// contact count and must not block the caller's actor / cooperative pool.
+    /// Same continuation-hop pattern (and `self` capture rationale) as
+    /// `links(at:)`.
     public func allContactTimestamps() async throws -> [String: ContactTimestamps] {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {

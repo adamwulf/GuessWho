@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import GuessWhoSync
 @_spi(ConflictReconcile) import GuessWhoSync
+import GuessWhoSyncTesting
 
 @Suite("FileSystemSidecarStore")
 struct FileSystemSidecarStoreTests {
@@ -39,6 +40,26 @@ struct FileSystemSidecarStoreTests {
             #expect(lc.modifiedBy == rc.modifiedBy)
             #expect(lc.deletedAt == rc.deletedAt)
         }
+    }
+
+    private func plantEnvelope(
+        _ envelope: SidecarEnvelope,
+        at key: SidecarKey,
+        root: URL
+    ) throws {
+        let directoryName: String
+        switch key.kind {
+        case .contact: directoryName = "contacts"
+        case .event: directoryName = "events"
+        case .link: directoryName = "links"
+        case .guide: directoryName = "guides"
+        case .place: directoryName = "places"
+        case .group: directoryName = "groups"
+        }
+        let directory = root.appendingPathComponent(directoryName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try SidecarEnvelopeCodec.encode(envelope)
+        try data.write(to: directory.appendingPathComponent("\(key.id.lowercased()).json"))
     }
 
     @Test
@@ -534,5 +555,302 @@ struct FileSystemSidecarStoreTests {
         try plantPlaceholder(in: root, kindDir: "events", basename: basename)
 
         #expect(store.downloadStatus(SidecarKey(kind: .event, id: basename)) == .notStarted)
+    }
+
+    // The bulk path must be a semantic substitution for calling read(_:) on
+    // the same key list, including retained soft-deleted cells, malformed JSON,
+    // and a file that disappeared/was absent after its key was selected.
+    @Test
+    func bulkWalkMatchesOneByOneReadsExactly() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FileSystemSidecarStore(root: root)
+
+        let liveKey = SidecarKey(kind: .contact, id: "bulk-live")
+        let deletedKey = SidecarKey(kind: .contact, id: "bulk-soft-deleted")
+        let malformedKey = SidecarKey(kind: .contact, id: "bulk-malformed")
+        let missingKey = SidecarKey(kind: .contact, id: "bulk-missing")
+        let live = envelope(id: liveKey.id, fields: [
+            "nickname": SidecarCell(value: .string("Bulk"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+        let softDeleted = envelope(id: deletedKey.id, fields: [
+            "nickname": SidecarCell(
+                value: .string("Former"),
+                modifiedAt: when,
+                modifiedBy: "device-A",
+                deletedAt: when.addingTimeInterval(10)
+            )
+        ])
+        try plantEnvelope(live, at: liveKey, root: root)
+        try plantEnvelope(softDeleted, at: deletedKey, root: root)
+        let contacts = root.appendingPathComponent("contacts")
+        try Data("{ malformed".utf8).write(
+            to: contacts.appendingPathComponent("\(malformedKey.id).json")
+        )
+
+        let keys = [liveKey, deletedKey, malformedKey, missingKey]
+        var oneByOne: [SidecarKey: Result<SidecarEnvelope?, Error>] = [:]
+        for key in keys {
+            oneByOne[key] = Result { try store.read(key) }
+        }
+        var bulk: [SidecarKey: Result<SidecarEnvelope?, Error>] = [:]
+        try store.walkCorpus(keys: keys) { key, result in
+            bulk[key] = result
+        }
+
+        let oneLive = try #require(try oneByOne[liveKey]?.get())
+        let bulkLive = try #require(try bulk[liveKey]?.get())
+        expectEqual(oneLive, live)
+        expectEqual(bulkLive, oneLive)
+
+        let oneDeleted = try #require(try oneByOne[deletedKey]?.get())
+        let bulkDeleted = try #require(try bulk[deletedKey]?.get())
+        expectEqual(oneDeleted, softDeleted)
+        expectEqual(bulkDeleted, oneDeleted)
+        #expect(oneDeleted.fields["nickname"]?.deletedAt == when.addingTimeInterval(10))
+
+        #expect(try oneByOne[missingKey]?.get() == nil)
+        #expect(try bulk[missingKey]?.get() == nil)
+        #expect(throws: (any Error).self) { _ = try oneByOne[malformedKey]?.get() }
+        #expect(throws: (any Error).self) { _ = try bulk[malformedKey]?.get() }
+        #expect(Set(bulk.keys) == Set(keys))
+    }
+
+    @Test
+    func contactReloadWalkCoordinatesDirectoryOnceInsteadOfOncePerFile() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let coordinator = CountingSidecarFileCoordinator(root: root)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator
+        )
+        let keys = (0..<5).map {
+            SidecarKey(kind: .contact, id: "bulk-count-\($0)")
+        }
+        for key in keys {
+            try plantEnvelope(envelope(id: key.id), at: key, root: root)
+        }
+
+        for key in keys { _ = try store.read(key) }
+        #expect(coordinator.readCount == keys.count)
+
+        coordinator.resetCounts()
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: InMemoryEventStore(),
+            sidecars: store,
+            deviceID: "device-A"
+        )
+        let projection = try sync.contactReloadProjection()
+        #expect(projection.timestamps?.count == keys.count)
+        #expect(coordinator.readCount == 1)
+        #expect(coordinator.lastReadURL == root)
+
+        coordinator.resetCounts()
+        _ = try sync.linkEndpointProjection(ofKind: .contact)
+        #expect(coordinator.readCount == 1)
+
+        coordinator.resetCounts()
+        _ = try sync.allContactTimestamps()
+        #expect(coordinator.readCount == 1)
+
+        coordinator.resetCounts()
+        _ = try sync.allPlaces()
+        #expect(coordinator.readCount == 1)
+    }
+
+    @Test
+    func localRootSkipsCoordinationAndBulkValuesRemainCorrect() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let coordinator = CountingSidecarFileCoordinator(root: root)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: nil,
+            fileCoordinator: coordinator
+        )
+        let key = SidecarKey(kind: .contact, id: "local-only")
+        let expected = envelope(id: key.id, fields: [
+            "nickname": SidecarCell(value: .string("Local"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+
+        try store.write(expected, at: key)
+        var fetched: SidecarEnvelope?
+        try store.walkCorpus(kinds: [.contact]) { _, result in
+            fetched = try result.get()
+        }
+        let decoded = try #require(fetched)
+        expectEqual(decoded, expected)
+        #expect(coordinator.readCount == 0)
+        #expect(coordinator.writeCount == 0)
+    }
+
+    @Test
+    func bulkPlaceholderPreservesRequestDownloadAndRetryContract() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let ubiquity = RecordingUbiquityProvider()
+        let coordinator = CountingSidecarFileCoordinator(root: root)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ubiquity,
+            coordinatesUbiquitousAccess: false,
+            fileCoordinator: coordinator
+        )
+        let key = SidecarKey(kind: .contact, id: "bulk-placeholder")
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: key.id)
+
+        var result: Result<SidecarEnvelope?, Error>?
+        try store.walkCorpus(keys: [key]) { _, readResult in result = readResult }
+
+        #expect(throws: SidecarStoreError.notYetDownloaded(key)) {
+            _ = try result?.get()
+        }
+        #expect(ubiquity.downloadRequests == [
+            root.appendingPathComponent("contacts").appendingPathComponent("\(key.id).json")
+        ])
+    }
+
+    @Test
+    func writerInterleavedWithBulkReadIsSerializedAfterSnapshot() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let coordinator = CountingSidecarFileCoordinator(root: root, blocksRootRead: true)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator,
+            perAttemptTimeout: 10
+        )
+        let key = SidecarKey(kind: .contact, id: "bulk-race")
+        let old = envelope(id: key.id, fields: [
+            "value": SidecarCell(value: .string("before"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+        let new = envelope(id: key.id, fields: [
+            "value": SidecarCell(value: .string("after"), modifiedAt: when, modifiedBy: "device-B")
+        ])
+        try plantEnvelope(old, at: key, root: root)
+
+        let bulkValue = ThreadSafeBox<SidecarEnvelope?>(nil)
+        let bulkError = ThreadSafeBox<Error?>(nil)
+        let bulkDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            do {
+                try store.walkCorpus(keys: [key]) { _, result in
+                    bulkValue.value = try result.get()
+                }
+            } catch {
+                bulkError.value = error
+            }
+            bulkDone.signal()
+        }
+
+        defer { coordinator.allowRootRead.signal() }
+        try #require(coordinator.rootReadEntered.wait(timeout: .now() + 5) == .success)
+        let writeError = ThreadSafeBox<Error?>(nil)
+        let writeDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            do { try store.write(new, at: key) }
+            catch { writeError.value = error }
+            writeDone.signal()
+        }
+        try #require(coordinator.writeAttempted.wait(timeout: .now() + 5) == .success)
+
+        coordinator.allowRootRead.signal()
+        try #require(bulkDone.wait(timeout: .now() + 5) == .success)
+        try #require(writeDone.wait(timeout: .now() + 5) == .success)
+        #expect(bulkError.value == nil)
+        #expect(writeError.value == nil)
+        let snapshot = try #require(bulkValue.value)
+        expectEqual(snapshot, old)
+        let final = try #require(try store.read(key))
+        expectEqual(final, new)
+    }
+}
+
+private final class CountingSidecarFileCoordinator: SidecarFileCoordinating, @unchecked Sendable {
+    private let root: URL
+    private let claimLock = NSRecursiveLock()
+    private let stateLock = NSLock()
+    private let blocksRootRead: Bool
+    let rootReadEntered = DispatchSemaphore(value: 0)
+    let allowRootRead = DispatchSemaphore(value: 0)
+    let writeAttempted = DispatchSemaphore(value: 0)
+    private var reads = 0
+    private var writes = 0
+    private var readURL: URL?
+
+    init(root: URL, blocksRootRead: Bool = false) {
+        self.root = root.standardizedFileURL
+        self.blocksRootRead = blocksRootRead
+    }
+
+    var readCount: Int { stateLock.withLock { reads } }
+    var writeCount: Int { stateLock.withLock { writes } }
+    var lastReadURL: URL? { stateLock.withLock { readURL } }
+
+    func resetCounts() {
+        stateLock.withLock {
+            reads = 0
+            writes = 0
+            readURL = nil
+        }
+    }
+
+    func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws {
+        stateLock.withLock {
+            reads += 1
+            readURL = url
+        }
+        claimLock.lock()
+        defer { claimLock.unlock() }
+        if blocksRootRead, url.standardizedFileURL == root {
+            rootReadEntered.signal()
+            allowRootRead.wait()
+        }
+        body(url)
+    }
+
+    func coordinateWriting(
+        at url: URL,
+        options: NSFileCoordinator.WritingOptions,
+        _ body: @escaping (URL) -> Void
+    ) throws {
+        stateLock.withLock { writes += 1 }
+        writeAttempted.signal()
+        claimLock.lock()
+        defer { claimLock.unlock() }
+        body(url)
+    }
+}
+
+private final class RecordingUbiquityProvider: SidecarUbiquityProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requested: [URL] = []
+
+    var downloadRequests: [URL] { lock.withLock { requested } }
+
+    func unresolvedConflictVersions(at url: URL) -> [SidecarVersionHandle]? { nil }
+    func currentVersionBytes(at url: URL) throws -> Data? { nil }
+    func downloadingStatus(for url: URL) -> URLUbiquitousItemDownloadingStatus? { nil }
+    func startDownloading(at url: URL) throws {
+        lock.withLock { requested.append(url) }
+    }
+}
+
+private final class ThreadSafeBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) { storage = value }
+
+    var value: Value {
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
     }
 }

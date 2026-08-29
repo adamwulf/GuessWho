@@ -602,8 +602,8 @@ extension GuessWhoSync {
     public func allPlaces() throws -> [MapsPlace] {
         try placeCorpusCache.value { [self] in
             var result: [MapsPlace] = []
-            for key in try sidecars.allKeys() where key.kind == .place {
-                guard let envelope = try sidecars.read(key) else { continue }
+            try walkSidecarCorpus(kinds: [.place]) { key, readResult in
+                guard let envelope = try readResult.get() else { return }
                 if let place = decodePlace(envelope: envelope, key: key) {
                     result.append(place)
                 }

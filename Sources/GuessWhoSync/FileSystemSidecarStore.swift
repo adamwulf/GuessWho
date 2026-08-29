@@ -3,6 +3,13 @@ import Foundation
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
 
+    // Read once at construction. Local/test roots bypass NSFileCoordinator;
+    // only an iCloud-backed root needs cross-process serialization with
+    // cloudd. Tests can override this decision through the internal
+    // initializer below without needing a real ubiquity container.
+    private let coordinatesUbiquitousAccess: Bool
+    private let fileCoordinator: SidecarFileCoordinating
+
     // Per-key locks for write/delete/reconcile: distinct keys run
     // independently, same-key operations serialize. This gives direct users of
     // the store (not going through GuessWhoSync) correctness on writes/deletes.
@@ -51,6 +58,14 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     )
 
+    // A corpus claim covers the root directory, not one key, so it has its own
+    // serial queue. NSFileCoordinator serializes this directory read against
+    // item writes; this queue supplies the same bounded-wait behavior as the
+    // per-key wrappers without wedging any key's queue if the root claim stalls.
+    private let corpusCoordinatorQueue = DispatchQueue(
+        label: "GuessWhoSync.FileSystemSidecarStore.coordinator.corpus"
+    )
+
     public init(
         root: URL,
         busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
@@ -61,6 +76,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.perAttemptTimeout = perAttemptTimeout
         self.ubiquity = ProductionUbiquityProvider()
         self.blobCrypto = Self.defaultProductionBlobCrypto()
+        self.coordinatesUbiquitousAccess = Self.isUbiquitousRoot(root)
+        self.fileCoordinator = ProductionSidecarFileCoordinator()
     }
 
     // SPI-gated constructor that lets tests inject a fake ubiquity provider.
@@ -79,6 +96,29 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.perAttemptTimeout = perAttemptTimeout
         self.ubiquity = ubiquity
         self.blobCrypto = blobCrypto ?? Self.defaultProductionBlobCrypto()
+        self.coordinatesUbiquitousAccess = Self.isUbiquitousRoot(root)
+        self.fileCoordinator = ProductionSidecarFileCoordinator()
+    }
+
+    // Internal test seam for the one-time root classification and file
+    // coordinator. Production construction always uses the two initializers
+    // above, so neither policy leaks into the package's public API.
+    init(
+        root: URL,
+        ubiquity: SidecarUbiquityProvider,
+        blobCrypto: SidecarBlobCrypto? = nil,
+        coordinatesUbiquitousAccess: Bool?,
+        fileCoordinator: SidecarFileCoordinating,
+        busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
+        perAttemptTimeout: TimeInterval = 1.0
+    ) {
+        self.root = root
+        self.busyHandler = busyHandler
+        self.perAttemptTimeout = perAttemptTimeout
+        self.ubiquity = ubiquity
+        self.blobCrypto = blobCrypto ?? Self.defaultProductionBlobCrypto()
+        self.coordinatesUbiquitousAccess = coordinatesUbiquitousAccess ?? Self.isUbiquitousRoot(root)
+        self.fileCoordinator = fileCoordinator
     }
 
     // The production blob-crypto seam: a keychain-backed AES-GCM key where
@@ -92,48 +132,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         #endif
     }
 
+    private static func isUbiquitousRoot(_ root: URL) -> Bool {
+        (try? root.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
+    }
+
     public func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
         let url = fileURL(for: key)
-        let fm = FileManager.default
-
-        // Coordinated existence + read in one pass: NSFileCoordinator serializes
-        // us against cloudd, which may otherwise be mid-rename between
-        // `.<name>.icloud` and the materialized `<name>` when we probe. Inside
-        // the coordinated block, filesystem state is stable enough to decide
-        // between materialized / placeholder / truly-absent.
-        enum Outcome {
-            case bytes(Data)
-            case placeholderPresent
-            case missing
-            case failed(Error)
-        }
-        var outcome: Outcome = .missing
+        var outcome: ReadBytesOutcome = .missing
         try coordinatedRead(key: key, at: url) { safeURL in
-            if fm.fileExists(atPath: safeURL.path) {
-                do {
-                    outcome = .bytes(try Data(contentsOf: safeURL))
-                } catch {
-                    outcome = .failed(error)
-                }
-            } else if fm.fileExists(atPath: self.placeholderURL(for: safeURL).path) {
-                outcome = .placeholderPresent
-            } else {
-                outcome = .missing
-            }
+            outcome = self.readBytes(at: safeURL)
         }
-
-        switch outcome {
-        case .bytes(let data):
-            return try JSONDecoder().decode(SidecarEnvelope.self, from: data)
-        case .placeholderPresent:
-            // Request the download and tell the caller to retry later.
-            try? ubiquity.startDownloading(at: url)
-            throw SidecarStoreError.notYetDownloaded(key)
-        case .missing:
-            return nil
-        case .failed(let error):
-            throw error
-        }
+        return try decode(outcome, for: key, decoder: JSONDecoder())
     }
 
     public func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
@@ -199,6 +208,77 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("places"), kind: .place))
         result.append(contentsOf: try listKeys(in: root.appendingPathComponent("groups"), kind: .group))
         return result
+    }
+
+    // One root-directory claim captures all selected bytes as a consistent
+    // snapshot. Decoding happens after the claim: the byte reads, not JSON CPU,
+    // are what must be serialized against writers. A single decoder is created
+    // here and used only by this synchronous serial loop, so it is never shared
+    // concurrently (JSONDecoder is not thread-safe).
+    func walkCorpus(
+        kinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        try walkCorpus(reading: kinds, listing: kinds, visit)
+    }
+
+    // listedKinds may be wider than readKinds when a projection needs only the
+    // identity of one kind. Listed-only entries receive success(nil), avoiding
+    // unnecessary I/O and decode while keeping one enumeration/coordination.
+    func walkCorpus(
+        reading readKinds: Set<SidecarKind>,
+        listing listedKinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        var keys: [SidecarKey] = []
+        var listingError: Error?
+        var outcomes: [SidecarKey: ReadBytesOutcome] = [:]
+
+        try coordinatedCorpusRead { safeRoot in
+            do {
+                keys = try self.listKeys(ofKinds: listedKinds, under: safeRoot, requestDownloads: false)
+                outcomes.reserveCapacity(keys.count)
+                for key in keys where readKinds.contains(key.kind) {
+                    outcomes[key] = self.readBytes(at: self.fileURL(for: key, root: safeRoot))
+                }
+            } catch {
+                listingError = error
+            }
+        }
+        if let listingError { throw listingError }
+
+        try visitCapturedCorpus(keys: keys, outcomes: outcomes, visit)
+    }
+
+    // Explicit-key form used by correctness tests (including a key that is
+    // absent on disk). Production corpus projections use the kind-scoped form
+    // above so enumeration and byte capture live under the same directory
+    // claim.
+    func walkCorpus(
+        keys: [SidecarKey],
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        var outcomes: [SidecarKey: ReadBytesOutcome] = [:]
+        try coordinatedCorpusRead { safeRoot in
+            outcomes.reserveCapacity(keys.count)
+            for key in keys {
+                outcomes[key] = self.readBytes(at: self.fileURL(for: key, root: safeRoot))
+            }
+        }
+        try visitCapturedCorpus(keys: keys, outcomes: outcomes, visit)
+    }
+
+    private func visitCapturedCorpus(
+        keys: [SidecarKey],
+        outcomes: [SidecarKey: ReadBytesOutcome],
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        let decoder = JSONDecoder()
+        for key in keys {
+            let outcome = outcomes[key] ?? .missing
+            let result = Result { try decode(outcome, for: key, decoder: decoder) }
+            try visit(key, result)
+        }
     }
 
     @_spi(ConflictReconcile)
@@ -502,6 +582,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // MARK: - Helpers
 
     private func fileURL(for key: SidecarKey) -> URL {
+        fileURL(for: key, root: root)
+    }
+
+    private func fileURL(for key: SidecarKey, root: URL) -> URL {
         root.appendingPathComponent(directoryName(for: key.kind))
             .appendingPathComponent(safeFilename(for: key))
     }
@@ -551,7 +635,11 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
-    private func listKeys(in directory: URL, kind: SidecarKind) throws -> [SidecarKey] {
+    private func listKeys(
+        in directory: URL,
+        kind: SidecarKind,
+        requestDownloads: Bool = true
+    ) throws -> [SidecarKey] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directory.path) else { return [] }
         let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -567,7 +655,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                 // download so subsequent reads can succeed; surface the key
                 // now so the orchestrator knows the sidecar exists.
                 let realURL = directory.appendingPathComponent(placeholderName)
-                try? ubiquity.startDownloading(at: realURL)
+                if requestDownloads {
+                    try? ubiquity.startDownloading(at: realURL)
+                }
                 realName = placeholderName
             } else {
                 continue
@@ -587,6 +677,70 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             }
         }
         return result
+    }
+
+    // Preserve allKeys()'s stable kind ordering while avoiding the five
+    // irrelevant directory probes in a one-kind projection. contentsOfDirectory
+    // already asks for no resource keys, so there is no per-entry attribute
+    // work to remove beyond limiting which directories a walk enumerates.
+    private func listKeys(
+        ofKinds kinds: Set<SidecarKind>,
+        under root: URL,
+        requestDownloads: Bool
+    ) throws -> [SidecarKey] {
+        let orderedKinds: [SidecarKind] = [.contact, .event, .link, .guide, .place, .group]
+        var result: [SidecarKey] = []
+        for kind in orderedKinds where kinds.contains(kind) {
+            let directory = root.appendingPathComponent(directoryName(for: kind))
+            result.append(contentsOf: try listKeys(
+                in: directory,
+                kind: kind,
+                requestDownloads: requestDownloads
+            ))
+        }
+        return result
+    }
+
+    private enum ReadBytesOutcome {
+        case bytes(Data)
+        case placeholderPresent
+        case missing
+        case failed(Error)
+    }
+
+    private func readBytes(at url: URL) -> ReadBytesOutcome {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            do {
+                return .bytes(try Data(contentsOf: url))
+            } catch {
+                return .failed(error)
+            }
+        }
+        if fm.fileExists(atPath: placeholderURL(for: url).path) {
+            return .placeholderPresent
+        }
+        return .missing
+    }
+
+    private func decode(
+        _ outcome: ReadBytesOutcome,
+        for key: SidecarKey,
+        decoder: JSONDecoder
+    ) throws -> SidecarEnvelope? {
+        switch outcome {
+        case .bytes(let data):
+            return try decoder.decode(SidecarEnvelope.self, from: data)
+        case .placeholderPresent:
+            // Preserve read(_:)'s request-download-and-retry contract. The
+            // request is deliberately made after the directory claim releases.
+            try? ubiquity.startDownloading(at: fileURL(for: key))
+            throw SidecarStoreError.notYetDownloaded(key)
+        case .missing:
+            return nil
+        case .failed(let error):
+            throw error
+        }
     }
 
     // iCloud Drive represents a not-yet-downloaded item at `name.ext` as a
@@ -624,35 +778,47 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // runs to completion in the background — see `runWithBusyHandling` for the
     // leak discussion.
     private func coordinatedRead(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        guard coordinatesUbiquitousAccess else {
+            body(url)
+            return
+        }
         try runWithBusyHandling(key: key) {
-            let coordinator = NSFileCoordinator(filePresenter: nil)
-            var coordError: NSError?
-            coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { safeURL in
-                body(safeURL)
-            }
-            if let coordError { throw coordError }
+            try self.fileCoordinator.coordinateReading(at: url, body)
+        }
+    }
+
+    private func coordinatedCorpusRead(_ body: @escaping (URL) -> Void) throws {
+        guard coordinatesUbiquitousAccess else {
+            body(root)
+            return
+        }
+
+        // There is no concrete record key for a root-directory claim. The
+        // sentinel is internal and exists only to preserve the busy-handler /
+        // timedOut error contract if cloudd wedges the corpus claim.
+        let operationKey = SidecarKey(kind: .contact, id: "__corpus__")
+        try runWithBusyHandling(key: operationKey, queue: corpusCoordinatorQueue) {
+            try self.fileCoordinator.coordinateReading(at: self.root, body)
         }
     }
 
     private func coordinatedWrite(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        guard coordinatesUbiquitousAccess else {
+            body(url)
+            return
+        }
         try runWithBusyHandling(key: key) {
-            let coordinator = NSFileCoordinator(filePresenter: nil)
-            var coordError: NSError?
-            coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { safeURL in
-                body(safeURL)
-            }
-            if let coordError { throw coordError }
+            try self.fileCoordinator.coordinateWriting(at: url, options: [.forReplacing], body)
         }
     }
 
     private func coordinatedDelete(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
+        guard coordinatesUbiquitousAccess else {
+            body(url)
+            return
+        }
         try runWithBusyHandling(key: key) {
-            let coordinator = NSFileCoordinator(filePresenter: nil)
-            var coordError: NSError?
-            coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordError) { safeURL in
-                body(safeURL)
-            }
-            if let coordError { throw coordError }
+            try self.fileCoordinator.coordinateWriting(at: url, options: [.forDeleting], body)
         }
     }
 
@@ -679,12 +845,14 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // bypassing the coordinator wrappers.
     func runWithBusyHandling(
         key: SidecarKey,
+        queue: DispatchQueue? = nil,
         operation: @escaping () throws -> Void
     ) throws {
         let started = SidecarMonotonicClock.now()
         let semaphore = DispatchSemaphore(value: 0)
         let resultBox = ResultBox()
-        coordinatorQueues.queue(forKey: key).async {
+        let operationQueue = queue ?? coordinatorQueues.queue(forKey: key)
+        operationQueue.async {
             do {
                 try operation()
                 resultBox.error = nil
@@ -722,6 +890,47 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 }
 
+// Small seam around NSFileCoordinator so tests can count claims and exercise
+// directory-read/item-write exclusion without a live iCloud container.
+protocol SidecarFileCoordinating: AnyObject {
+    func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws
+    func coordinateWriting(
+        at url: URL,
+        options: NSFileCoordinator.WritingOptions,
+        _ body: @escaping (URL) -> Void
+    ) throws
+}
+
+private final class ProductionSidecarFileCoordinator: SidecarFileCoordinating {
+    func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        coordinator.coordinate(
+            readingItemAt: url,
+            options: [.withoutChanges],
+            error: &coordinationError,
+            byAccessor: body
+        )
+        if let coordinationError { throw coordinationError }
+    }
+
+    func coordinateWriting(
+        at url: URL,
+        options: NSFileCoordinator.WritingOptions,
+        _ body: @escaping (URL) -> Void
+    ) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        coordinator.coordinate(
+            writingItemAt: url,
+            options: options,
+            error: &coordinationError,
+            byAccessor: body
+        )
+        if let coordinationError { throw coordinationError }
+    }
+}
+
 // Box for the bg worker to write its outcome; read by the waiter after the
 // semaphore signals. Heap-allocated so a late completion can write to it
 // even after the waiter threw `.timedOut` and returned.
@@ -745,3 +954,5 @@ private enum SidecarMonotonicClock {
 // reconcileConflict methods on the class above.
 @_spi(ConflictReconcile)
 extension FileSystemSidecarStore: SidecarConflictReconciling {}
+
+extension FileSystemSidecarStore: SidecarCorpusReading {}
