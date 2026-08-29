@@ -3,6 +3,8 @@ import GuessWhoSync
 
 public actor InMemoryContactStore: ContactStoreProtocol {
     private var contactsByID: [String: Contact]
+    private var contactSources: [ContactSource] = []
+    private var sourceIDsByContactLocalID: [String: Set<String>] = [:]
     private var imageSideband: [String: (image: Data?, thumbnail: Data?)] = [:]
     private var groupsByID: [String: ContactGroup] = [:]
     private var groupMembers: [String: Set<String>] = [:]
@@ -109,6 +111,27 @@ public actor InMemoryContactStore: ContactStoreProtocol {
         return contact
     }
 
+    public func fetchSources() throws -> [ContactSource] {
+        contactSources
+    }
+
+    public func sources(forContactLocalID localID: String) throws -> [ContactSource] {
+        guard contactsByID[localID] != nil,
+              let sourceIDs = sourceIDsByContactLocalID[localID] else { return [] }
+        return contactSources.filter { sourceIDs.contains($0.id) }
+    }
+
+    /// Test hook — registers the Contacts accounts exposed by this store.
+    public func setSources(_ sources: [ContactSource]) {
+        contactSources = sources
+    }
+
+    /// Test hook — assigns the account cards that contribute to one unified
+    /// contact. Unknown source IDs are ignored by `sources(forContactLocalID:)`.
+    public func setSourceIDs(_ sourceIDs: [String], forContactLocalID localID: String) {
+        sourceIDsByContactLocalID[localID] = Set(sourceIDs)
+    }
+
     public func save(_ contact: Contact) throws {
         try save(contact, author: transactionAuthor)
     }
@@ -146,6 +169,7 @@ public actor InMemoryContactStore: ContactStoreProtocol {
             throw ContactStoreError.contactNotFound(localID: localID)
         }
         contactsByID.removeValue(forKey: localID)
+        sourceIDsByContactLocalID.removeValue(forKey: localID)
         // Drop any image sideband bytes for the deleted contact so a
         // fresh contact with the same ID (rare; CN re-issues) doesn't
         // inherit them.
