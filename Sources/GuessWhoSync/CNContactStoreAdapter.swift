@@ -15,12 +15,38 @@ import GuessWhoSyncObjC
 public actor CNContactStoreAdapter: ContactStoreProtocol {
     private let store: CNContactStore
 
+    /// The synchronous, blocking implementation of the one full unified-store
+    /// enumeration. Production uses `enumerateAllContacts`; the injectable
+    /// operation lets tests count and gate the real single-flight boundary
+    /// without asking TCC for access to the developer's address book.
+    typealias FetchAllWork = @Sendable (CNContactStore, [CNKeyDescriptor]) throws -> [Contact]
+    private let fetchAllWork: FetchAllWork
+
+    /// One shared Task per active full unified fetch. Actor isolation is the
+    /// lock for this state: `fetchAll()` records the Task before its first
+    /// suspension, and every overlapping actor entry awaits that same Task.
+    /// The Task itself moves the blocking CN/XPC enumeration to `workQueue`, so
+    /// neither the actor executor nor a MainActor caller is blocked.
+    private var inFlightFetchAll: (
+        id: UInt64,
+        task: Task<[Contact], Error>,
+        callerCount: Int,
+        startedAt: UInt64
+    )?
+    private var nextFetchAllID: UInt64 = 0
+
     /// Routes contact-save failure breadcrumbs through swift-log. With the app's
     /// logging backend bootstrapped these land in `<AppGroup>/Logs/app.log` (and
     /// echo to the OS console); under `swift test` (no bootstrap) they fall back
     /// to swift-log's default handler. Developer-facing — internal vocabulary is
     /// fine in the message body. Stable label so the lines are greppable.
     private static let saveLog = Logger(label: "sync.contact-save")
+
+    /// One `full contact fetch started` line equals one underlying unified
+    /// Contacts enumeration. Joined callers log against the same fetch id, so
+    /// a launch log can distinguish logical reload requests from expensive
+    /// store work without profiling.
+    private static let fetchLog = Logger(label: "sync.contact-fetch")
 
     /// Dedicated serial queue that runs every blocking CNContactStore call,
     /// pinned to `.userInitiated`. The actor's executor can be provisioned at
@@ -37,6 +63,16 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
 
     public init(store: CNContactStore = CNContactStore()) {
         self.store = store
+        self.fetchAllWork = { store, keys in
+            try Self.enumerateAllContacts(store: store, keys: keys)
+        }
+    }
+
+    /// Store-free test seam for the blocking full-fetch operation. Internal so
+    /// production callers cannot replace Contacts behavior.
+    init(store: CNContactStore = CNContactStore(), fetchAllWork: @escaping FetchAllWork) {
+        self.store = store
+        self.fetchAllWork = fetchAllWork
     }
 
     /// Stamped on every `CNSaveRequest` this adapter executes so our own writes
@@ -60,8 +96,11 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     // contract. Debug and Release use the same app id and entitlements, so both
     // fetch `CNContactNoteKey` and map it into `Contact.note`.
     static let keys: [CNKeyDescriptor] = [
-        // Identifier
-        CNContactIdentifierKey as CNKeyDescriptor,
+        // `identifier` is intentionally absent: Contacts documents it as an
+        // always-fetched property, and `toContact` still reads it for localID.
+        // Asking for it explicitly is redundant. Every OPTIONAL property below
+        // has a live app/package/CLI consumer; see the key-set audit in
+        // docs/research/contacts-unified-fetch-key-audit.md.
         CNContactTypeKey as CNKeyDescriptor,
 
         // Names
@@ -162,14 +201,98 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     }
 
     public func fetchAll() async throws -> [Contact] {
-        try await runOnWorkQueue { store in
-            let request = CNContactFetchRequest(keysToFetch: Self.keys)
-            var results: [Contact] = []
-            try store.enumerateContacts(with: request) { cnContact, _ in
-                results.append(Self.toContact(cnContact))
-            }
-            return results
+        if var flight = inFlightFetchAll {
+            flight.callerCount += 1
+            inFlightFetchAll = flight
+            Self.fetchLog.info(
+                "full contact fetch joined",
+                metadata: [
+                    "fetchID": .stringConvertible(flight.id),
+                    "callers": .stringConvertible(flight.callerCount),
+                ]
+            )
+            return try await finishFetchAll(flight)
         }
+
+        nextFetchAllID &+= 1
+        let id = nextFetchAllID
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let fetchAllWork = self.fetchAllWork
+        let task = Task { [self] in
+            try await runOnWorkQueue { store in
+                try fetchAllWork(store, Self.keys)
+            }
+        }
+        let flight = (id: id, task: task, callerCount: 1, startedAt: startedAt)
+        inFlightFetchAll = flight
+        Self.fetchLog.info(
+            "full contact fetch started",
+            metadata: [
+                "fetchID": .stringConvertible(id),
+                "requestedOptionalKeys": .stringConvertible(Self.keys.count),
+            ]
+        )
+        return try await finishFetchAll(flight)
+    }
+
+    /// Await one flight and let whichever caller resumes first retire it. The
+    /// id check prevents a late waiter from clearing a newer flight. Failures
+    /// are shared exactly like successes, then the slot is cleared so the next
+    /// genuine reload retries instead of caching an error.
+    private func finishFetchAll(
+        _ flight: (id: UInt64, task: Task<[Contact], Error>, callerCount: Int, startedAt: UInt64)
+    ) async throws -> [Contact] {
+        do {
+            let contacts = try await flight.task.value
+            if let current = inFlightFetchAll, current.id == flight.id {
+                inFlightFetchAll = nil
+                let elapsedNanos = DispatchTime.now().uptimeNanoseconds - current.startedAt
+                Self.fetchLog.info(
+                    "full contact fetch finished",
+                    metadata: [
+                        "fetchID": .stringConvertible(current.id),
+                        "callers": .stringConvertible(current.callerCount),
+                        "contacts": .stringConvertible(contacts.count),
+                        "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+                    ]
+                )
+            }
+            return contacts
+        } catch {
+            if let current = inFlightFetchAll, current.id == flight.id {
+                inFlightFetchAll = nil
+                let elapsedNanos = DispatchTime.now().uptimeNanoseconds - current.startedAt
+                Self.fetchLog.error(
+                    "full contact fetch failed",
+                    metadata: [
+                        "fetchID": .stringConvertible(current.id),
+                        "callers": .stringConvertible(current.callerCount),
+                        "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+                        "error": .string(String(describing: error)),
+                    ]
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Test-only observation of the active flight. Reading this actor-isolated
+    /// value also proves a second caller has entered and joined before a gated
+    /// fake enumeration is released.
+    var inFlightFetchAllCallerCountForTesting: Int {
+        inFlightFetchAll?.callerCount ?? 0
+    }
+
+    private static func enumerateAllContacts(
+        store: CNContactStore,
+        keys: [CNKeyDescriptor]
+    ) throws -> [Contact] {
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var results: [Contact] = []
+        try store.enumerateContacts(with: request) { cnContact, _ in
+            results.append(Self.toContact(cnContact))
+        }
+        return results
     }
 
     public func fetch(localID: String) async throws -> Contact? {
