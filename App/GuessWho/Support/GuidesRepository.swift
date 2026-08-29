@@ -143,6 +143,14 @@ final class GuidesRepository: NSObject {
     private var pendingChangeSet: SidecarChangeSet?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
+    /// The sidecar kinds whose scoped changes can move the guides/places lists.
+    /// A watcher delivery is global and routinely names kinds these lists do not
+    /// project (an event/contact edit): a scoped change naming NONE of these is
+    /// irrelevant and must not mint a generation or cancel a pending/parked
+    /// reload it cannot affect. Unknown/full scope (`changedKeys == nil`) is
+    /// always relevant.
+    private static let handledKinds: Set<SidecarKind> = [.guide, .place, .link]
+
     /// Monotonic refresh token. Bumped whenever a NEWER authoritative refresh
     /// intent begins — a sidecar-change notification (`scheduleDebouncedReload`)
     /// or a direct `reload()` (import, delete, list mount, sort change) — and
@@ -180,6 +188,13 @@ final class GuidesRepository: NSObject {
     /// "a scoped change is already pending" impossible to set up deterministically
     /// otherwise. Production callers are unchanged.
     func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
+        // Drop a scoped change that names no kind these lists project BEFORE any
+        // merge, generation bump, or cancellation — an irrelevant delivery must
+        // not supersede a pending/parked reload it cannot affect.
+        if let keys = changeSet.changedKeys,
+           !keys.contains(where: { Self.handledKinds.contains($0.kind) }) {
+            return
+        }
         if pendingReload == nil {
             pendingChangeSet = changeSet
         } else {
@@ -224,7 +239,13 @@ final class GuidesRepository: NSObject {
         let guideIDs = Set(changedKeys.lazy.filter { $0.kind == .guide }.map(\.id))
         let placeIDs = Set(changedKeys.lazy.filter { $0.kind == .place }.map(\.id))
         let linksChanged = changedKeys.contains { $0.kind == .link }
-        guard !guideIDs.isEmpty || !placeIDs.isEmpty || linksChanged else { return }
+        guard !guideIDs.isEmpty || !placeIDs.isEmpty || linksChanged else {
+            // Unreachable while `scheduleDebouncedReload` drops irrelevant scoped
+            // changes, but stay safe if one ever slips through: settle any loading
+            // state an aborted older reload left set, rather than strand it.
+            if token == refreshGeneration { isLoading = false }
+            return
+        }
 
         // A delta can only patch a COMPLETE base. If no full load has landed yet
         // (e.g. a sidecar change raced the launch reload), upgrade to a full
@@ -296,6 +317,12 @@ final class GuidesRepository: NSObject {
             linkCountsByID = refreshedLinkCounts
         }
         guides = sortOrder.sorted(guides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
+        // This delta is the current authoritative projection, so the load is
+        // settled. Flip BEFORE posting (as `reload()` does) so observers see it
+        // false: an older reload that this delta superseded set `isLoading` true
+        // and then aborted on its stale token WITHOUT clearing it, so only this
+        // completion can, and a stuck spinner is the symptom otherwise.
+        isLoading = false
         notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
     }
 

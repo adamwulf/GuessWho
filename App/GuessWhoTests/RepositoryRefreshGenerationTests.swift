@@ -361,6 +361,184 @@ struct RepositoryRefreshGenerationTests {
         #expect(repository.guides.count == 2)
         #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
     }
+
+    // MARK: - Reentrancy: a delta that supersedes a loading reload settles isLoading
+
+    /// The reported production race: an older reload set `isLoading = true` then
+    /// aborts on its stale token, while a scheduled DELTA supersedes it and
+    /// publishes. The delta must settle `isLoading = false` — otherwise the
+    /// repository stays loading forever.
+    @Test
+    func eventsDeltaSupersedingLoadingReloadSettlesIsLoading() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let now = Date()
+        _ = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+        _ = try service.createManualEvent(
+            title: "B", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(180), isAllDay: false, location: nil
+        )
+
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.events.count == 2 }
+
+        let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
+        counter.reset()
+
+        // Park an OLDER reload after its stale read — `isLoading` is now true.
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        let older = Task { await repository.reload() }
+        await gate.waitUntilReached()
+        #expect(repository.isLoading == true)
+
+        repository.readBarrierForTesting = nil
+
+        // Changed data + a RELEVANT scoped delta naming it, scheduled directly.
+        let c = try service.createManualEvent(
+            title: "C", startDate: now.addingTimeInterval(240), endDate: now.addingTimeInterval(300), isAllDay: false, location: nil
+        )
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .event, id: c.uuidString)]))
+
+        // The delta publishes while the older reload is still parked.
+        await waitUntil { repository.events.count == 3 }
+
+        // Release the older read; it must abort without touching loading state.
+        gate.release()
+        await older.value
+
+        #expect(repository.events.count == 3)
+        #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])
+        #expect(counter.count == 1)                    // exactly the delta's post
+        #expect(repository.isLoading == false)         // settled, not stuck
+    }
+
+    /// The guides twin of the loading-settle race.
+    @Test
+    func guidesDeltaSupersedingLoadingReloadSettlesIsLoading() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Berlin"), sourceURL: nil)
+
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.guides.count == 1 }
+
+        let counter = ReloadPostCounter(.guidesRepositoryDidReload, on: center)
+        counter.reset()
+
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        let older = Task { await repository.reload() }
+        await gate.waitUntilReached()
+        #expect(repository.isLoading == true)
+
+        repository.readBarrierForTesting = nil
+
+        let g2 = try service.createGuide(from: sampleGuideSnapshot(name: "Lisbon"), sourceURL: nil)
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .guide, id: g2.uuidString)]))
+
+        await waitUntil { repository.guides.count == 2 }
+
+        gate.release()
+        await older.value
+
+        #expect(repository.guides.count == 2)
+        #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
+        #expect(counter.count == 1)
+        #expect(repository.isLoading == false)
+    }
+
+    // MARK: - Relevance: an irrelevant scoped change must not strand a reload
+
+    /// A watcher delivery names kinds this list does not project (here a guide
+    /// key reaching the Events list). It must NOT mint a generation or cancel a
+    /// parked initial reload: that reload completes and publishes, and no
+    /// delayed refresh runs.
+    @Test
+    func eventsIrrelevantChangeDuringParkedReloadDoesNotStrandIt() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let now = Date()
+        _ = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+        _ = try service.createManualEvent(
+            title: "B", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(180), isAllDay: false, location: nil
+        )
+
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
+
+        // Park the INITIAL full reload after its read (nothing published yet).
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        let initial = Task { await repository.reload() }
+        await gate.waitUntilReached()
+        repository.readBarrierForTesting = nil
+
+        // A wholly-irrelevant scoped change (a guide key) must be dropped.
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .guide, id: UUID().uuidString)]))
+
+        // Release the parked reload; it must complete and publish {A,B}.
+        gate.release()
+        await initial.value
+
+        #expect(repository.events.count == 2)          // not stranded
+        #expect(repository.isLoading == false)
+        #expect(counter.count == 1)                    // the reload's own post
+
+        // The dropped change scheduled no debounce, so nothing fires later.
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(counter.count == 1)
+        #expect(repository.events.count == 2)
+    }
+
+    /// The guides twin: an event key reaching the Guides list is irrelevant and
+    /// must not strand a parked initial reload.
+    @Test
+    func guidesIrrelevantChangeDuringParkedReloadDoesNotStrandIt() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Berlin"), sourceURL: nil)
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Lisbon"), sourceURL: nil)
+
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        let counter = ReloadPostCounter(.guidesRepositoryDidReload, on: center)
+
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        let initial = Task { await repository.reload() }
+        await gate.waitUntilReached()
+        repository.readBarrierForTesting = nil
+
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .event, id: UUID().uuidString)]))
+
+        gate.release()
+        await initial.value
+
+        #expect(repository.guides.count == 2)
+        #expect(repository.isLoading == false)
+        #expect(counter.count == 1)
+
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(counter.count == 1)
+        #expect(repository.guides.count == 2)
+    }
 }
 
 // MARK: - Reentrancy test helpers

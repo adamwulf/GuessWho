@@ -143,6 +143,14 @@ final class EventsRepository: NSObject {
     private var pendingChangeSet: SidecarChangeSet?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
+    /// The sidecar kinds whose scoped changes can move the events list. A
+    /// watcher delivery is global and routinely names kinds this list does not
+    /// project (a guide/place/contact edit): a scoped change naming NONE of
+    /// these is irrelevant and must not mint a generation or cancel a
+    /// pending/parked reload it cannot affect. Unknown/full scope (`changedKeys
+    /// == nil`) is always relevant.
+    private static let handledKinds: Set<SidecarKind> = [.event, .link]
+
     /// Monotonic refresh token. Bumped whenever a NEWER authoritative refresh
     /// intent begins — a sidecar-change notification (`scheduleDebouncedReload`)
     /// or a direct `reload()`/paging/filter change — and captured by the task
@@ -180,6 +188,13 @@ final class EventsRepository: NSObject {
     /// "a scoped change is already pending" impossible to set up deterministically
     /// otherwise. Production callers are unchanged.
     func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
+        // Drop a scoped change that names no kind this list projects BEFORE any
+        // merge, generation bump, or cancellation — an irrelevant delivery must
+        // not supersede a pending/parked reload it cannot affect.
+        if let keys = changeSet.changedKeys,
+           !keys.contains(where: { Self.handledKinds.contains($0.kind) }) {
+            return
+        }
         if pendingReload == nil {
             pendingChangeSet = changeSet
         } else {
@@ -223,7 +238,13 @@ final class EventsRepository: NSObject {
 
         let eventIDs = Set(changedKeys.lazy.filter { $0.kind == .event }.map(\.id))
         let linksChanged = changedKeys.contains { $0.kind == .link }
-        guard !eventIDs.isEmpty || linksChanged else { return }
+        guard !eventIDs.isEmpty || linksChanged else {
+            // Unreachable while `scheduleDebouncedReload` drops irrelevant scoped
+            // changes, but stay safe if one ever slips through: settle any loading
+            // state an aborted older reload left set, rather than strand it.
+            if token == refreshGeneration { isLoading = false }
+            return
+        }
 
         // A delta can only patch a COMPLETE base. If no full load has landed yet
         // (e.g. a sidecar change raced the launch reload), upgrade to a full
@@ -296,6 +317,12 @@ final class EventsRepository: NSObject {
         if let refreshedLinkCounts {
             linkCountsByID = refreshedLinkCounts
         }
+        // This delta is the current authoritative projection, so the load is
+        // settled. Flip BEFORE posting (as `reload()` does) so observers see it
+        // false: an older reload that this delta superseded set `isLoading` true
+        // and then aborted on its stale token WITHOUT clearing it, so only this
+        // completion can, and a stuck spinner is the symptom otherwise.
+        isLoading = false
         notificationCenter.post(name: .eventsRepositoryDidReload, object: self)
     }
 
