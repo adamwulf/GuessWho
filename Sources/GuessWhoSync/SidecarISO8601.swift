@@ -21,21 +21,24 @@ enum SidecarISO8601 {
     }
 
     static func date(from string: String) -> Date? {
-        let utf8 = Array(string.utf8)
-
-        if let date = fixedLayoutDate(from: utf8) {
+        // Fast common path: the self-inflicted regular UTC layout parses
+        // without touching ICU at all.
+        if let date = fixedLayoutDate(from: string) {
             return date
         }
 
-        // Stay permissive on decode (§7.1, §5.3 malformed-input
-        // handling), but avoid trying both ICU-backed formatters. Internet
-        // date-time fractional seconds, when present, begin after the fixed
-        // 19-byte date/time prefix. Inputs outside the regular layout still
-        // go through the same formatter that accepted them before.
-        if utf8.count > 19, utf8[19] == asciiPeriod {
-            return fractionalFormatter.date(from: string)
-        }
-        return nonFractionalFormatter.date(from: string)
+        // Fixed-layout parser declined (irregular spelling, out-of-range
+        // field, pre-1600 year, non-`Z` zone, …). Restore the original
+        // permissive decode EXACTLY (§7.1, §5.3 malformed-input handling):
+        // try the fractional-seconds formatter first, then the non-fractional
+        // one. The earlier "scan byte 19 for a period and pick one formatter"
+        // shortcut silently regressed odd-but-Foundation-accepted spellings —
+        // e.g. a single-digit month/day like `2024-2-29T12:34:56.123Z`, whose
+        // fractional dot no longer sits at byte 19, was routed to the
+        // non-fractional formatter and rejected. Trying both in this order is
+        // what the formatters did before the optimization.
+        return fractionalFormatter.date(from: string)
+            ?? nonFractionalFormatter.date(from: string)
     }
 
     /// Parses only the UTC layout written by ``string(from:)`` (plus its

@@ -6,6 +6,14 @@ import Foundation
 /// walk. A generation change during a walk discards that result and makes the
 /// owner retry, so an invalidation can never publish or return an old snapshot.
 final class PlaceCorpusCache: @unchecked Sendable {
+    /// Upper bound on how many times a single `value(walkingCorpus:)` caller
+    /// re-walks after losing a generation race. Small and finite: under
+    /// sustained invalidation (the watcher re-firing back-to-back, as in the
+    /// launch CPU baseline) the generation can tick on *every* walk, so an
+    /// unbounded retry loop would spin the caller forever. See the budget
+    /// handling in `value(walkingCorpus:)`.
+    static let maxGenerationRaceRetries = 4
+
     private let condition = NSCondition()
     private var generation: UInt64 = 0
     private var cached: (generation: UInt64, places: [MapsPlace])?
@@ -20,6 +28,12 @@ final class PlaceCorpusCache: @unchecked Sendable {
     }
 
     func value(walkingCorpus walk: () throws -> [MapsPlace]) throws -> [MapsPlace] {
+        // Count only the walks THIS caller performs (a `condition.wait()` on
+        // another caller's in-flight walk does not consume the budget). Once
+        // the budget is spent we stop re-walking and hand this caller its own
+        // freshest snapshot — see the bounded-exhaustion return below.
+        var walksPerformed = 0
+
         while true {
             condition.lock()
             let requestedGeneration = generation
@@ -38,6 +52,7 @@ final class PlaceCorpusCache: @unchecked Sendable {
             inFlightGeneration = requestedGeneration
             condition.unlock()
 
+            walksPerformed += 1
             let result: [MapsPlace]
             do {
                 result = try walk()
@@ -51,6 +66,11 @@ final class PlaceCorpusCache: @unchecked Sendable {
 
             condition.lock()
             let isCurrent = generation == requestedGeneration
+            // Cache ONLY a walk that observed the still-live generation. The
+            // cached-hit fast path above must never hand back a snapshot that
+            // predates an invalidation, so a raced walk (generation moved
+            // while we walked) is never published — this keeps that invariant
+            // strict regardless of the budget logic below.
             if isCurrent {
                 cached = (requestedGeneration, result)
             }
@@ -59,6 +79,22 @@ final class PlaceCorpusCache: @unchecked Sendable {
             condition.unlock()
 
             if isCurrent {
+                return result
+            }
+
+            // Lost the race. If the budget still has room, drop this raced
+            // snapshot and re-walk against the newer generation. If the budget
+            // is exhausted the corpus is being invalidated faster than we can
+            // walk it; rather than spin forever, return THIS just-completed
+            // walk to the current caller WITHOUT caching it. It is a genuine,
+            // freshly walked corpus (only newer than `requestedGeneration`, so
+            // never stale) — safe to return to whoever asked, but not safe to
+            // publish for later callers because it is not tagged to the live
+            // generation. We never return an old cached value and never cache a
+            // mismatched-generation result, so the strict cached-hit invariant
+            // holds; a subsequent genuine local write bumps the generation and
+            // is reflected on the next call.
+            if walksPerformed >= Self.maxGenerationRaceRetries {
                 return result
             }
         }

@@ -76,6 +76,34 @@ struct SidecarISO8601Tests {
     }
 
     @Test
+    func permissiveFallbackTriesFractionalThenNonFractional() {
+        // Regression guard for the ISO-8601 fast-path optimization: a fixed
+        // parser miss must fall back to the fractional formatter FIRST and
+        // then the non-fractional one, exactly like the reference fallback.
+        // These are odd-but-Foundation-accepted spellings whose fractional
+        // dot does not land on byte 19, so the earlier "scan byte 19" shortcut
+        // routed them to the non-fractional formatter and dropped the
+        // fractional value (or rejected the string outright).
+        let inputs = [
+            "2024-2-29T12:34:56.123Z",     // single-digit month
+            "2024-02-9T12:34:56.5Z",       // single-digit day
+            "2024-2-9T12:34:56.25Z",       // single-digit month and day
+            "2024-2-29T1:2:3.5Z",          // single-digit month, hour, minute, second
+            "2024-2-29T12:34:56.123+05:30", // single-digit month with numeric zone
+        ]
+
+        for input in inputs {
+            let reference = referenceDate(from: input)
+            #expect(reference != nil, "Reference formatter rejected \(input)")
+            // The fixed parser declines every one of these irregular shapes.
+            #expect(SidecarISO8601.fixedLayoutDate(from: input) == nil)
+            // The permissive fallback must reproduce the reference result
+            // exactly (fractional formatter first, non-fractional second).
+            #expect(SidecarISO8601.date(from: input) == reference)
+        }
+    }
+
+    @Test
     func malformedInputReturnsNil() {
         let inputs = [
             "",

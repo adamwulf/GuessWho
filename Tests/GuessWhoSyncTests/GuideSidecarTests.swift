@@ -206,6 +206,59 @@ struct GuideSidecarTests {
         #expect(store.placeReadCount == 3)
     }
 
+    @Test func sustainedInvalidationReturnsBoundedFreshSnapshotThenReflectsNextWrite() throws {
+        let (sync, store) = makeCountingOrchestrator()
+        let guideID = try sync.createGuide(
+            from: MapsGuideURL.Snapshot(
+                name: "Berlin",
+                entries: [MapsGuideURL.Entry(mapsPlaceID: "IABC123")]
+            ),
+            sourceURL: nil
+        )
+        // Fetch the key straight from the store so the corpus cache stays cold
+        // (never populated) going into the storm.
+        let placeKey = try #require(try store.allKeys().first { $0.kind == .place })
+
+        // Every corpus walk is invalidated the instant it begins, so the owner
+        // can never observe a still-current generation. Without the retry bound
+        // this call would spin forever; with it, the caller re-walks a small,
+        // finite number of times and then returns its own freshest snapshot
+        // uncached. The hook — not a wall clock — drives and proves each race.
+        store.resetCounts()
+        store.setWalkStartHook { sync.placeCorpusCache.invalidate() }
+
+        let sustained = try sync.allPlaces()
+
+        // Bounded: exactly the retry budget's worth of walks and no more. That
+        // the call returned at all (instead of hanging) is the core guarantee;
+        // the count proves it stopped at the budget, and it still handed back a
+        // genuinely walked corpus.
+        #expect(store.allKeysCallCount == PlaceCorpusCache.maxGenerationRaceRetries)
+        #expect(sustained.count == 1)
+        #expect(sustained.first?.guideID == guideID)
+
+        // Stop the storm and make a genuine local write. The very next call
+        // must reflect it with a single fresh walk — proving the bounded,
+        // uncached return neither poisoned the cache with a mismatched-
+        // generation snapshot nor left the single-flight state wedged.
+        store.setWalkStartHook(nil)
+        store.resetCounts()
+        try sync.markPlaceResolved(
+            at: placeKey,
+            name: "After Storm",
+            address: nil,
+            latitude: nil,
+            longitude: nil
+        )
+
+        #expect(try sync.allPlaces().first?.name == "After Storm")
+        #expect(store.allKeysCallCount == 1)
+
+        // And it is now cached: a repeat call does not re-walk the corpus.
+        #expect(try sync.allPlaces().first?.name == "After Storm")
+        #expect(store.allKeysCallCount == 1)
+    }
+
     @Test func localPlaceCreateUpdateAndDeleteInvalidateCachedCorpus() throws {
         let (sync, store) = makeCountingOrchestrator()
         #expect(try sync.allPlaces().isEmpty)
@@ -655,6 +708,17 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
     private var shouldFailNextWalk = false
     private var storedAllKeysCallCount = 0
     private var storedPlaceReadCount = 0
+    private var walkStartHook: (() -> Void)?
+
+    /// Fires at the start of every corpus walk (`allKeys()`), before the keys
+    /// are returned. A test uses it to invalidate the cache mid-walk on demand
+    /// — e.g. to drive sustained generation races deterministically. Pass `nil`
+    /// to stop.
+    func setWalkStartHook(_ hook: (() -> Void)?) {
+        lock.lock()
+        walkStartHook = hook
+        lock.unlock()
+    }
 
     var allKeysCallCount: Int {
         lock.lock()
@@ -720,9 +784,12 @@ private final class PlaceCorpusCountingStore: SidecarStoreProtocol, @unchecked S
         storedAllKeysCallCount += 1
         let shouldBlock = shouldBlockNextWalk
         let shouldFail = shouldFailNextWalk
+        let hook = walkStartHook
         shouldBlockNextWalk = false
         shouldFailNextWalk = false
         lock.unlock()
+
+        hook?()
 
         if shouldFail {
             throw PlaceCorpusTestError.injectedWalkFailure
