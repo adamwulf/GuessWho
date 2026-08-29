@@ -859,10 +859,10 @@ final class SyncService {
 
     /// Start the package-owned external-contact-change watcher. The package owns
     /// the `.CNContactStoreDidChange` observer, the change-history cursor, and
-    /// the coalescing, and posts `.guessWhoContactsDidChange` (which the
-    /// repositories subscribe to) when an external edit lands. Call once at
-    /// launch, after the initial reload. A no-op when storage is unavailable
-    /// (`sync == nil`).
+    /// the coalescing, and posts `.guessWhoContactsDidChange` (which
+    /// `ContactsRepository` subscribes to) when an external edit lands. Call
+    /// once at launch, after the initial reload. A no-op when storage is
+    /// unavailable (`sync == nil`).
     func startContactChangeWatcher() {
         sync?.startContactChangeWatcher()
     }
