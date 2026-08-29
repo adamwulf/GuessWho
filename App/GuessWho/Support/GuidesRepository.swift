@@ -48,7 +48,7 @@ final class GuidesRepository: NSObject {
     var placeFilter: LinkFilter = .all {
         didSet {
             guard placeFilter != oldValue else { return }
-            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+            notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
         }
     }
 
@@ -70,7 +70,7 @@ final class GuidesRepository: NSObject {
         didSet {
             guard sortOrder != oldValue else { return }
             guides = sortOrder.sorted(guides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
-            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+            notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
         }
     }
 
@@ -86,7 +86,7 @@ final class GuidesRepository: NSObject {
             for guideID in placesByGuide.keys {
                 placesByGuide[guideID] = placeSortOrder.sorted(placesByGuide[guideID] ?? [])
             }
-            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+            notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
         }
     }
 
@@ -99,19 +99,29 @@ final class GuidesRepository: NSObject {
     var allPlacesSortOrder: AllPlacesSortOrder = .byGuide {
         didSet {
             guard allPlacesSortOrder != oldValue else { return }
-            NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+            notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
         }
     }
 
-    init(service: SyncService) {
+    /// The center this repository observes `.guessWhoSidecarsDidChange` on AND
+    /// posts `.guidesRepositoryDidReload` to. Defaults to `.default` so
+    /// production wiring is unchanged (the live watcher posts there, and the
+    /// list controllers observe there). It is INJECTABLE solely for test
+    /// isolation — a fresh `NotificationCenter()` per test repository confines
+    /// both its observers and its posts to that test, exactly as
+    /// `ContactsRepository` and `EventsRepository` do for the same reason.
+    private let notificationCenter: NotificationCenter
+
+    init(service: SyncService, notificationCenter: NotificationCenter = .default) {
         self.service = service
+        self.notificationCenter = notificationCenter
         super.init()
         // Refresh when sidecar files change on disk — a guide arriving from
         // another device, or a `notYetDownloaded` file materializing. Local
         // writes (import, resolution, delete) drive explicit `reload()` calls
         // from their call sites, so this observer only needs to cover the
         // external path. Same selector + debounce shape as `EventsRepository`.
-        NotificationCenter.default.addObserver(
+        notificationCenter.addObserver(
             self,
             selector: #selector(storeDidChange(_:)),
             name: .guessWhoSidecarsDidChange,
@@ -133,12 +143,41 @@ final class GuidesRepository: NSObject {
     private var pendingChangeSet: SidecarChangeSet?
     private static let reloadDebounce: Duration = .milliseconds(300)
 
+    /// Monotonic refresh token. Bumped whenever a NEWER authoritative refresh
+    /// intent begins — a sidecar-change notification (`scheduleDebouncedReload`)
+    /// or a direct `reload()` (import, delete, list mount, sort change) — and
+    /// captured by the task that will read. Every async read path re-checks the
+    /// token still holds the current value before it mutates published state or
+    /// posts `.guidesRepositoryDidReload`, so an older read that resumes after a
+    /// newer one cannot publish its stale projection (newest-request-wins, the
+    /// same shape as `ContactsRepository.groupLoadRequestGeneration` and
+    /// `EventsRepository`). A delta that must fall back to a full reload passes
+    /// its token so the fallback does not supersede itself.
+    private var refreshGeneration = 0
+
+    /// True once a full `reload()` has published a complete projection. A delta
+    /// `refresh` may only PATCH a complete base — before the first full load
+    /// lands (e.g. a sidecar change racing the launch reload) it upgrades itself
+    /// to a full reload under the same token rather than stranding a partial
+    /// guides/places projection.
+    private var hasLoadedOnce = false
+
+    /// Bump the generation and return the new token. Every fresh authoritative
+    /// refresh intent calls this exactly once.
+    private func nextRefreshToken() -> Int {
+        refreshGeneration &+= 1
+        return refreshGeneration
+    }
+
     private func scheduleDebouncedReload(_ changeSet: SidecarChangeSet) {
         if pendingReload == nil {
             pendingChangeSet = changeSet
         } else {
             pendingChangeSet = (pendingChangeSet ?? .fullRefresh).merging(changeSet)
         }
+        // A newer change supersedes any in-flight read: bump the generation now
+        // and capture the token for the single task that survives the debounce.
+        let token = nextRefreshToken()
         pendingReload?.cancel()
         pendingReload = Task { [weak self] in
             do {
@@ -147,10 +186,11 @@ final class GuidesRepository: NSObject {
                 return   // superseded by a newer notification
             }
             guard let self else { return }
+            // Only this (newest) task consumes the merged pending change set.
             let coalescedChangeSet = self.pendingChangeSet ?? .fullRefresh
             self.pendingChangeSet = nil
             self.pendingReload = nil
-            await self.refresh(for: coalescedChangeSet)
+            await self.refresh(for: coalescedChangeSet, token: token)
         }
     }
 
@@ -158,9 +198,11 @@ final class GuidesRepository: NSObject {
     /// deletions still require the existing full-link scans because the
     /// notification cannot name their former endpoints. Unknown scope or a
     /// failed single-key read falls back to the established full reload.
-    private func refresh(for changeSet: SidecarChangeSet) async {
+    private func refresh(for changeSet: SidecarChangeSet, token: Int) async {
         guard let changedKeys = changeSet.changedKeys else {
-            await reload()
+            // Fallback full reload reuses this token so it does not supersede the
+            // very refresh intent that delegated to it.
+            await reload(token: token)
             return
         }
 
@@ -169,12 +211,20 @@ final class GuidesRepository: NSObject {
         let linksChanged = changedKeys.contains { $0.kind == .link }
         guard !guideIDs.isEmpty || !placeIDs.isEmpty || linksChanged else { return }
 
+        // A delta can only patch a COMPLETE base. If no full load has landed yet
+        // (e.g. a sidecar change raced the launch reload), upgrade to a full
+        // reload under the same token instead of stranding a partial projection.
+        guard hasLoadedOnce else {
+            await reload(token: token)
+            return
+        }
+
         let changedGuides: [String: MapsGuide]
         if guideIDs.isEmpty {
             changedGuides = [:]
         } else {
             guard let fetched = await service.sidecarGuides(uuids: guideIDs) else {
-                await reload()
+                await reload(token: token)
                 return
             }
             changedGuides = fetched
@@ -185,7 +235,7 @@ final class GuidesRepository: NSObject {
             changedPlaces = [:]
         } else {
             guard let fetched = await service.sidecarPlaces(uuids: placeIDs) else {
-                await reload()
+                await reload(token: token)
                 return
             }
             changedPlaces = fetched
@@ -200,6 +250,10 @@ final class GuidesRepository: NSObject {
             refreshedLinkedPlaceIDs = nil
             refreshedLinkCounts = nil
         }
+
+        // A newer refresh/reload superseded us while our reads were in flight.
+        // Never let an older delta overwrite that newer request's projection.
+        guard token == refreshGeneration else { return }
 
         if !guideIDs.isEmpty {
             guides.removeAll { guideIDs.contains($0.id.uuidString.lowercased()) }
@@ -227,15 +281,30 @@ final class GuidesRepository: NSObject {
             linkCountsByID = refreshedLinkCounts
         }
         guides = sortOrder.sorted(guides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
-        NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
     }
 
+    /// Full reload as a fresh authoritative refresh intent — the entry point
+    /// every direct caller (import, delete, list mount, sort change) uses. It
+    /// mints a new generation token so any older in-flight read is superseded.
     func reload() async {
+        await reload(token: nextRefreshToken())
+    }
+
+    /// Token-scoped full reload. `token` is either freshly minted (a direct
+    /// `reload()`) or handed down from a delta `refresh` that fell back here — in
+    /// which case it deliberately reuses that token so the fallback does not
+    /// supersede the refresh intent it belongs to.
+    private func reload(token: Int) async {
         isLoading = true
         let fetchedGuides = await service.allGuides()
         let fetchedPlaces = await service.allPlaces()
         let fetchedLinkedPlaceIDs = await service.linkedEndpointIDs(ofKind: .place)
         let fetchedLinkCounts = await service.linkCountsByEndpointID(ofKind: .place)
+
+        // A newer refresh/reload superseded us while these reads were in flight;
+        // discard our now-stale snapshot before touching any published state.
+        guard token == refreshGeneration else { return }
 
         // Build the per-guide place map BEFORE sorting the guides: the
         // `.placeCount` order sorts guides by how many places each has, so the
@@ -253,11 +322,12 @@ final class GuidesRepository: NSObject {
         linkCountsByID = fetchedLinkCounts
 
         guides = sortOrder.sorted(fetchedGuides) { [weak self] in self?.placeCount(inGuide: $0) ?? 0 }
+        hasLoadedOnce = true
 
         // Flip BEFORE posting so synchronous observers see the post-load
         // state — same ordering rationale as ContactsRepository.reload().
         isLoading = false
-        NotificationCenter.default.post(name: .guidesRepositoryDidReload, object: self)
+        notificationCenter.post(name: .guidesRepositoryDidReload, object: self)
     }
 
     func places(inGuide guideID: UUID) -> [MapsPlace] {

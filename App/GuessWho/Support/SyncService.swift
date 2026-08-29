@@ -195,17 +195,23 @@ final class SyncService {
         }
     }
 
-    /// Read only the event envelopes named by a watcher delta. A nil return
-    /// means at least one scoped read failed and tells the repository to use
-    /// its guaranteed full-refresh fallback; absent dictionary entries are
+    /// Read only the event envelopes named by a watcher delta, projected for the
+    /// list's currently-loaded `[from, to]` window so a scoped delta and a full
+    /// `fetchEventsRange` reload agree row-for-row (window-aware overlay, gated
+    /// on the same EventKit access as the full window read). A nil return means
+    /// at least one scoped read failed and tells the repository to use its
+    /// guaranteed full-refresh fallback; absent dictionary entries are
     /// successful missing/deleted projections.
-    func sidecarEvents(uuids: Set<String>) async -> [String: Event]? {
+    func sidecarEvents(uuids: Set<String>, from: Date, to: Date) async -> [String: Event]? {
         guard let sync else { return [:] }
+        let includeEventKit = (eventsAuthorization == .authorized)
         var result: [String: Event] = [:]
         do {
             for uuid in uuids {
                 let key = SidecarKey(kind: .event, id: uuid)
-                if let event = try await sync.eventForWatcherDelta(at: key) {
+                if let event = try await sync.eventForWatcherDelta(
+                    at: key, from: from, to: to, includeEventKit: includeEventKit
+                ) {
                     result[key.id] = event
                 }
             }

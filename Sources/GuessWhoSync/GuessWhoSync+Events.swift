@@ -217,14 +217,58 @@ extension GuessWhoSync {
         return overlay(live: live, onto: cached, ekid: ekid)
     }
 
-    /// Async single-key projection for watcher deltas. The coordinated read
-    /// and possible EventKit lookup run off the caller's actor without walking
-    /// unrelated event sidecars.
-    public func eventForWatcherDelta(at key: SidecarKey) async throws -> Event? {
+    /// Window-aware single-key projection for watcher deltas. Applies EXACTLY
+    /// the per-sidecar rule of `eventsWindow(from:to:includeEventKit:)` so a
+    /// scoped delta refresh and a full window reload cannot disagree for the
+    /// same event.
+    ///
+    /// `eventsWindow` overlays a linked event's live EventKit values only when
+    /// the live event appears in its single `fetchEvents(in:)` batch — i.e.
+    /// when the live event OVERLAPS `[from, to]` (`start <= to && end >= from`,
+    /// the adapter's window predicate). A linked event whose live version sits
+    /// outside the window (e.g. a cached start still inside the window while the
+    /// live start moved past it) keeps its cached projection there, so overlay
+    /// here is gated on that same overlap rather than an unconditional
+    /// `event(at:)`. `includeEventKit` gates the overlay the same way the batch
+    /// is gated on EventKit access.
+    ///
+    /// Returns nil for a missing / whole-event-deleted sidecar (no row). It does
+    /// NOT itself apply the window-membership filter — the caller keeps the row
+    /// only when the returned event's `startDate` falls in `[from, to]`, exactly
+    /// as `eventsWindow` filters its result — so a caller can still tell "no such
+    /// sidecar" (nil) from "event exists but is out of window".
+    func eventForWatcherDelta(
+        at key: SidecarKey,
+        from: Date,
+        to: Date,
+        includeEventKit: Bool
+    ) throws -> Event? {
+        guard let envelope = try sidecars.read(key) else { return nil }
+        if isEnvelopeWholeEventDeleted(envelope) { return nil }
+        guard let cached = decodeCachedEvent(envelope: envelope, key: key) else { return nil }
+        guard includeEventKit, let ekid = liveEventKitID(envelope: envelope) else { return cached }
+        guard let live = try events.fetch(eventKitID: ekid) else { return cached }
+        // Overlay only when the live event would be in `eventsWindow`'s batch —
+        // i.e. it overlaps the window. Otherwise the cached projection stands.
+        guard live.startDate <= to, live.endDate >= from else { return cached }
+        return overlay(live: live, onto: cached, ekid: ekid)
+    }
+
+    /// Async overload of `eventForWatcherDelta(at:from:to:includeEventKit:)` —
+    /// the coordinated sidecar read and possible EventKit lookup run off the
+    /// caller's actor without walking unrelated event sidecars.
+    public func eventForWatcherDelta(
+        at key: SidecarKey,
+        from: Date,
+        to: Date,
+        includeEventKit: Bool
+    ) async throws -> Event? {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    continuation.resume(returning: try self.event(at: key))
+                    continuation.resume(returning: try self.eventForWatcherDelta(
+                        at: key, from: from, to: to, includeEventKit: includeEventKit
+                    ))
                 } catch {
                     continuation.resume(throwing: error)
                 }
