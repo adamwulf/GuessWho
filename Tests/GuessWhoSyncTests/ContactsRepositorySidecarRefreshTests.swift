@@ -6,16 +6,22 @@ import GuessWhoSyncTesting
 /// The sidecar-change refresh path on `ContactsRepository`
 /// (`.guessWhoSidecarsDidChange` → debounce → `refreshFromSidecarChange`).
 ///
-/// Covers FIX 4 (any changed key kind other than `.contact`/`.link` — a
-/// `.group` favorite record in particular — must fall back to the full
-/// sidecar-derived refresh and post, never be silently dropped) and FIX 1 (a
-/// monotonic refresh generation advanced whenever a refresh is SCHEDULED —
-/// every notification and every `reload()` — so a newly scheduled refresh
-/// immediately supersedes older in-flight ones: a superseded refresh applies no
-/// projection state and posts nothing, only the latest pending task drains the
-/// merged key set, and a direct `reload()` both supersedes and cancels the
-/// pending debounced work it subsumes. The debounce and contact-delta scoping
-/// are preserved).
+/// Covers FIX C (among the kinds with no scoped projection, ONLY `.group` — a
+/// favorite-identity record — escalates to the full sidecar-derived refresh and
+/// posts; an event/guide/place-only change names no kind this repository
+/// projects and is dropped as a relevance no-op — zero projection work, no
+/// post — mirroring `EventsRepository`. Mixed sets still process their relevant
+/// kinds, and `.group` subsumes any `.contact`/`.link` alongside it with a full
+/// refresh), FIX D (a projection refresh re-checks its generation after EACH
+/// scan and before issuing the next, so a refresh superseded mid-walk does not
+/// fire the remaining link endpoint/count scans), and FIX 1 (a monotonic
+/// refresh generation advanced whenever a refresh is SCHEDULED — every
+/// notification and every `reload()` — so a newly scheduled refresh immediately
+/// supersedes older in-flight ones: a superseded refresh applies no projection
+/// state and posts nothing, only the latest pending task drains the merged key
+/// set, and a direct `reload()` both supersedes and cancels the pending
+/// debounced work it subsumes. The debounce and contact-delta scoping are
+/// preserved).
 ///
 /// Every test drives the REAL engine over an in-memory sidecar store: an
 /// "external" change is seeded by writing straight through `sync` (as another
@@ -34,6 +40,20 @@ struct ContactsRepositorySidecarRefreshTests {
             contacts: store,
             events: InMemoryEventStore(),
             sidecars: InMemorySidecarStore(),
+            deviceID: "device-test"
+        )
+    }
+
+    /// Variant that threads a specific sidecar store so a test can wrap it in a
+    /// `ScanCountingSidecarStore` and count projection scans deterministically.
+    private func makeSync(
+        _ store: InMemoryContactStore,
+        sidecars: SidecarStoreProtocol
+    ) -> GuessWhoSync {
+        GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
             deviceID: "device-test"
         )
     }
@@ -82,10 +102,11 @@ struct ContactsRepositorySidecarRefreshTests {
         return fired
     }
 
-    // MARK: - FIX 4: unscopable-kind fallback
+    // MARK: - FIX C: `.group` escalates to a full refresh; other unscopable
+    // kinds are dropped as a relevance no-op.
 
-    @Test(arguments: [SidecarKind.group, .event, .guide, .place])
-    func unscopableKindChange_runsFullRefreshAndPosts(_ kind: SidecarKind) async throws {
+    @Test
+    func groupOnlyChange_runsFullRefreshAndReorders() async throws {
         // Two reconciled people, no timestamps yet → under .lastViewed they tie
         // and sort alphabetically (Amy before Zoe).
         let amy = reconciled(localID: "amy", uuid: "aaaaaaaa-0000-0000-0000-000000000001", given: "Amy")
@@ -107,18 +128,69 @@ struct ContactsRepositorySidecarRefreshTests {
         )
         #expect(repo.people.map(\.localID) == ["amy", "zoe"])
 
-        // A change naming ONLY an unscopable key (no .contact/.link). The
-        // scoped path would touch nothing; FIX 4 must instead run the full
-        // sidecar-derived refresh, so the wholesale timestamp re-read picks up
-        // Zoe's view and reorders her ahead.
+        // A change naming ONLY a `.group` favorite-identity key has no scoped
+        // projection; FIX C escalates it to the full sidecar-derived refresh, so
+        // the wholesale timestamp re-read picks up Zoe's view and reorders her
+        // ahead — and it must not be silently dropped.
         let posted = await postAndAwaitReload(
-            SidecarChangeSet(changedKeys: [SidecarKey(kind: kind, id: "dddddddd-0000-0000-0000-000000000001")]),
+            SidecarChangeSet(changedKeys: [SidecarKey(kind: .group, id: "dddddddd-0000-0000-0000-000000000001")]),
             center: center,
             repo: repo
         )
 
-        #expect(posted)   // the refresh must not be silently dropped
+        #expect(posted)   // the group refresh must not be silently dropped
         #expect(repo.people.map(\.localID) == ["zoe", "amy"])
+    }
+
+    @Test(arguments: [SidecarKind.event, .guide, .place])
+    func irrelevantKindOnlyChange_doesZeroProjectionWorkAndPostsNothing(
+        _ kind: SidecarKind
+    ) async throws {
+        // Two reconciled people; under .lastViewed they tie → alphabetical.
+        let amy = reconciled(localID: "amy", uuid: "eeeeeeee-0000-0000-0000-000000000001", given: "Amy")
+        let zoe = reconciled(localID: "zoe", uuid: "eeeeeeee-0000-0000-0000-000000000002", given: "Zoe")
+        let store = InMemoryContactStore(contacts: [amy, zoe])
+        let counting = ScanCountingSidecarStore(wrapping: InMemorySidecarStore())
+        let sync = makeSync(store, sidecars: counting)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+        #expect(repo.people.map(\.localID) == ["amy", "zoe"])
+
+        // Externally view Zoe. A FULL sidecar-derived refresh WOULD pick this up
+        // and reorder her ahead; a correctly-dropped irrelevant change must not.
+        try sync.stampContactTimestamp(
+            .viewed,
+            at: SidecarKey(kind: .contact, id: "eeeeeeee-0000-0000-0000-000000000002"),
+            now: Date()
+        )
+
+        // Baseline the projection-scan counters AFTER reload + the external
+        // stamp, so the delta measures only work the notification triggers.
+        let scansBefore = counting.scanCount
+
+        // A change naming ONLY an event/guide/place key names no kind this
+        // repository projects. It must be dropped before any scan or post.
+        nonisolated(unsafe) var fired = false
+        let token = center.addObserver(
+            forName: .contactsRepositoryDidReload, object: repo, queue: nil
+        ) { _ in fired = true }
+        defer { center.removeObserver(token) }
+
+        center.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet:
+                SidecarChangeSet(changedKeys: [SidecarKey(kind: kind, id: "ffffffff-0000-0000-0000-000000000001")])]
+        )
+        try await Task.sleep(for: Self.beyondDebounce)
+
+        // Deterministic work proof: NOT a single projection scan (allKeys/read)
+        // ran for this change, and no reload posted. The stale order stands.
+        #expect(counting.scanCount == scansBefore)
+        #expect(!fired)
+        #expect(repo.people.map(\.localID) == ["amy", "zoe"])
     }
 
     @Test
@@ -149,6 +221,75 @@ struct ContactsRepositorySidecarRefreshTests {
         try await Task.sleep(for: Self.beyondDebounce)
 
         #expect(flags == [false])
+    }
+
+    @Test
+    func mixedContactAndIrrelevantKind_refreshesOnlyNamedContactNoFullRefresh() async throws {
+        // A set mixing a relevant `.contact` key with an irrelevant `.guide`
+        // key must process the contact scope and IGNORE the guide — NOT escalate
+        // to a full refresh. Proven by an external view on an UNNAMED contact
+        // that a full refresh would surface but a correctly-scoped delta won't.
+        let anna = reconciled(localID: "a", uuid: "aabbccdd-0000-0000-0000-000000000001", given: "Anna")
+        let bob = reconciled(localID: "b", uuid: "aabbccdd-0000-0000-0000-000000000002", given: "Bob")
+        let cara = reconciled(localID: "c", uuid: "aabbccdd-0000-0000-0000-000000000003", given: "Cara")
+        let store = InMemoryContactStore(contacts: [anna, bob, cara])
+        let sync = makeSync(store)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "aabbccdd-0000-0000-0000-000000000002"), now: base)
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "aabbccdd-0000-0000-0000-000000000003"), now: base.addingTimeInterval(10))
+
+        await postAndAwaitReload(
+            SidecarChangeSet(changedKeys: [
+                SidecarKey(kind: .contact, id: "aabbccdd-0000-0000-0000-000000000002"),
+                SidecarKey(kind: .guide, id: "12121212-0000-0000-0000-000000000001"),
+            ]),
+            center: center,
+            repo: repo
+        )
+
+        // Only Bob (named) surfaced; Cara's newer on-disk view was NOT pulled in,
+        // so the change stayed scoped — the guide key forced no full refresh.
+        #expect(repo.people.map(\.localID) == ["b", "a", "c"])
+    }
+
+    @Test
+    func mixedGroupAndContact_runsFullRefreshSubsumingScopedKeys() async throws {
+        // A set mixing a `.group` key with a scoped `.contact` key escalates to a
+        // full refresh that SUBSUMES the scoped key. Proven by an external view on
+        // an UNNAMED contact that only a full refresh would surface.
+        let anna = reconciled(localID: "a", uuid: "abababab-0000-0000-0000-000000000001", given: "Anna")
+        let bob = reconciled(localID: "b", uuid: "abababab-0000-0000-0000-000000000002", given: "Bob")
+        let cara = reconciled(localID: "c", uuid: "abababab-0000-0000-0000-000000000003", given: "Cara")
+        let store = InMemoryContactStore(contacts: [anna, bob, cara])
+        let sync = makeSync(store)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "abababab-0000-0000-0000-000000000002"), now: base)
+        try sync.stampContactTimestamp(.viewed, at: SidecarKey(kind: .contact, id: "abababab-0000-0000-0000-000000000003"), now: base.addingTimeInterval(10))
+
+        // Name only Bob among the contacts, plus a group key. The full refresh the
+        // group forces re-reads EVERY timestamp, so Cara's newer view surfaces her
+        // ahead of Bob even though she was never named.
+        await postAndAwaitReload(
+            SidecarChangeSet(changedKeys: [
+                SidecarKey(kind: .contact, id: "abababab-0000-0000-0000-000000000002"),
+                SidecarKey(kind: .group, id: "34343434-0000-0000-0000-000000000001"),
+            ]),
+            center: center,
+            repo: repo
+        )
+
+        // Cara (newest view) ahead of Bob → the group escalated to a full refresh.
+        #expect(repo.people.map(\.localID) == ["c", "b", "a"])
     }
 
     // MARK: - Delta scoping preserved (no spurious full refresh)
@@ -437,6 +578,62 @@ struct ContactsRepositorySidecarRefreshTests {
         #expect(flags == [true])
         #expect(repo.people.map(\.localID) == ["c", "b", "a"])
     }
+
+    // MARK: - FIX D: a refresh superseded mid-walk skips its later scans
+
+    @Test
+    func supersededScopedRefreshSkipsLaterLinkScans() async throws {
+        // A scoped {contact, link} refresh starts. The barrier parks it AFTER its
+        // scoped timestamp read but BEFORE the generation guard. While parked, a
+        // newer {contact} change supersedes it. On resume, FIX D's guard right
+        // after the timestamp scan bails BEFORE issuing the two link-corpus walks
+        // (linkedEndpoints + linkCounts, each an `allKeys` scan). Absent that
+        // guard the superseded refresh would still fire both, only to no-op at its
+        // own guards — the wasted scans FIX D removes.
+        let anna = reconciled(localID: "a", uuid: "77777777-0000-0000-0000-000000000001", given: "Anna")
+        let bob = reconciled(localID: "b", uuid: "77777777-0000-0000-0000-000000000002", given: "Bob")
+        let store = InMemoryContactStore(contacts: [anna, bob])
+        let counting = ScanCountingSidecarStore(wrapping: InMemorySidecarStore())
+        let sync = makeSync(store, sidecars: counting)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+
+        // Count only the link-corpus walks: `linkedEndpoints` / `linkCounts` are
+        // the sole projection reads that call `allKeys`; the scoped timestamp read
+        // (`contactTimestamps(at:)`) reads named keys directly and never does.
+        let allKeysBefore = counting.allKeysCount
+
+        // Park the first ({contact:Anna, link}) refresh inside its timestamp scan.
+        let gate = ContactsSidecarReadGate()
+        repo.sidecarReadBarrierForTesting = { await gate.arriveAndWait() }
+        center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
+            GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                SidecarKey(kind: .contact, id: "77777777-0000-0000-0000-000000000001"),
+                SidecarKey(kind: .link, id: "99999999-0000-0000-0000-000000000001"),
+            ])
+        ])
+        await gate.waitUntilReached()
+
+        // While it is parked, a newer {contact:Bob} change supersedes it.
+        repo.sidecarReadBarrierForTesting = nil
+        center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
+            GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
+                SidecarKey(kind: .contact, id: "77777777-0000-0000-0000-000000000002")
+            ])
+        ])
+        gate.release()
+
+        // Let the first (superseded) refresh return and the newer one run.
+        try await Task.sleep(for: Self.beyondDebounce)
+
+        // The newer refresh INHERITS the link key (the in-flight handoff), so it
+        // walks the link corpus exactly once (2 `allKeys`). Absent FIX D the
+        // first, superseded refresh would ALSO have walked it (2 more) → 4 total.
+        // Exactly 2 proves the superseded refresh issued none of its link scans.
+        #expect(counting.allKeysCount == allKeysBefore + 2)
+    }
 }
 
 @MainActor
@@ -548,4 +745,55 @@ actor GatedFetchAllContactStore: ContactStoreProtocol {
     func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
         try await inner.fetchMemberLocalIDs(ofGroup: groupLocalID)
     }
+}
+
+/// Test-only sidecar store that forwards every call to an `InMemorySidecarStore`
+/// while counting the reads a projection SCAN performs, so a test can prove
+/// "zero projection work" (or "the later scans never fired") deterministically
+/// rather than by timing.
+///
+/// - `allKeysCount` counts `allKeys()` — the corpus-walk primitive that
+///   `allContactTimestamps` / `linkedEndpoints` / `linkCounts` each begin with.
+/// - `readCount` counts `read(_:)` — every scoped or wholesale envelope read.
+/// - `scanCount` is their sum: the total projection-read work, which stays flat
+///   when a change is dropped before any scan.
+///
+/// The async projection overloads run on `DispatchQueue.global`, so every
+/// counter is guarded by an `NSLock`.
+final class ScanCountingSidecarStore: SidecarStoreProtocol {
+    private let inner: InMemorySidecarStore
+    private let lock = NSLock()
+    private var _allKeysCount = 0
+    private var _readCount = 0
+
+    init(wrapping inner: InMemorySidecarStore) { self.inner = inner }
+
+    var allKeysCount: Int { lock.lock(); defer { lock.unlock() }; return _allKeysCount }
+    var readCount: Int { lock.lock(); defer { lock.unlock() }; return _readCount }
+    var scanCount: Int { lock.lock(); defer { lock.unlock() }; return _allKeysCount + _readCount }
+
+    func read(_ key: SidecarKey) throws -> SidecarEnvelope? {
+        lock.lock(); _readCount += 1; lock.unlock()
+        return try inner.read(key)
+    }
+    func allKeys() throws -> [SidecarKey] {
+        lock.lock(); _allKeysCount += 1; lock.unlock()
+        return try inner.allKeys()
+    }
+    func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
+        try inner.write(envelope, at: key)
+    }
+    func delete(_ key: SidecarKey) throws { try inner.delete(key) }
+    func downloadStatus(_ key: SidecarKey) -> SidecarDownloadStatus { inner.downloadStatus(key) }
+    func requestDownload(_ key: SidecarKey) throws { try inner.requestDownload(key) }
+    func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {
+        try inner.writeBlob(data, blobId: blobId, for: key)
+    }
+    func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
+        try inner.readBlob(blobId: blobId, for: key)
+    }
+    func deleteBlob(blobId: String, for key: SidecarKey) throws {
+        try inner.deleteBlob(blobId: blobId, for: key)
+    }
+    func blobIds(for key: SidecarKey) throws -> [String] { try inner.blobIds(for: key) }
 }

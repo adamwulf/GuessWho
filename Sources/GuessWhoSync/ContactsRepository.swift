@@ -387,9 +387,23 @@ public final class ContactsRepository: NSObject {
             // if contacts landed first, `loadGroups()` performs the same pass.
             await refreshAllGroupIdentities()
         }
-        await refreshTimestampCache(generation: generation)
-        await refreshLinkedContactIDs(generation: generation)
-        await refreshLinkCounts(generation: generation)
+        // FIX D: re-check the projection generation after EACH scan await and
+        // before issuing the next one. A sidecar delta scheduled during the
+        // Contacts fetch (or during an earlier scan) bumps `refreshGeneration`
+        // and owns the projection; once superseded, skip the remaining
+        // wholesale scans rather than issue them only to have each no-op at its
+        // own guard. This does NOT abandon the reload — the Contacts result and
+        // its `contactDataChanged: true` post are owned by `contactReloadGeneration`
+        // (a separate domain) and still publish below.
+        if generation == refreshGeneration {
+            await refreshTimestampCache(generation: generation)
+        }
+        if generation == refreshGeneration {
+            await refreshLinkedContactIDs(generation: generation)
+        }
+        if generation == refreshGeneration {
+            await refreshLinkCounts(generation: generation)
+        }
         // A newer direct reload owns the Contacts result and its notification.
         // A sidecar-only refresh does not: even when it superseded the projection
         // reads above, the Contacts array was still freshly published and must
@@ -3188,6 +3202,17 @@ public final class ContactsRepository: NSObject {
     private var inFlightSidecarChangeSet: (generation: Int, value: SidecarChangeSet)?
     private static let sidecarRefreshDebounce: Duration = .milliseconds(300)
 
+    /// The sidecar kinds whose scoped changes can move the contacts projection.
+    /// A watcher delivery is global and routinely names kinds this repository
+    /// does not project (an event/guide/place edit): a scoped change naming NONE
+    /// of these is irrelevant and must not mint a generation or cancel a
+    /// pending/in-flight refresh it cannot affect. `.contact` and `.link` drive
+    /// the scoped projection reads; `.group` (a favorite-identity record) has no
+    /// scoped projection and escalates to the full sidecar-derived refresh in
+    /// `refreshFromSidecarChange`. Unknown/full scope (`changedKeys == nil`) is
+    /// always relevant. Mirrors `EventsRepository.handledKinds`.
+    private static let handledSidecarKinds: Set<SidecarKind> = [.contact, .link, .group]
+
     /// Monotonic token advanced whenever a new refresh is SCHEDULED — every
     /// `scheduleSidecarRefresh(_:)` call AND every `reload()` — so scheduling a
     /// refresh immediately invalidates every older in-flight one. The scheduling
@@ -3209,11 +3234,17 @@ public final class ContactsRepository: NSObject {
     @ObservationIgnored private var contactReloadGeneration = 0
 
     private func scheduleSidecarRefresh(_ changeSet: SidecarChangeSet) {
-        // An explicitly scoped empty set changes no projection. Ignore it before
-        // advancing the generation so it cannot supersede and strand a useful
-        // in-flight reload. Unknown scope (`changedKeys == nil`) remains a full
-        // refresh intent.
-        if changeSet.changedKeys?.isEmpty == true { return }
+        // FIX C: drop a scoped change that names no kind this repository projects
+        // BEFORE any merge, generation bump, or cancellation — an irrelevant
+        // delivery (an event/guide/place-only edit, or an explicitly empty set)
+        // must not supersede and strand a useful pending/in-flight reload it
+        // cannot affect. Mirrors `EventsRepository.scheduleDebouncedReload`.
+        // Unknown scope (`changedKeys == nil`) remains a full-refresh intent and
+        // is always relevant.
+        if let keys = changeSet.changedKeys,
+           !keys.contains(where: { Self.handledSidecarKinds.contains($0.kind) }) {
+            return
+        }
         if pendingSidecarRefresh == nil {
             pendingSidecarChangeSet = inFlightSidecarChangeSet?.value.merging(changeSet) ?? changeSet
         } else {
@@ -3265,40 +3296,54 @@ public final class ContactsRepository: NSObject {
 
         let contactKeys = Set(changedKeys.filter { $0.kind == .contact })
         let linksChanged = changedKeys.contains { $0.kind == .link }
-        // FIX 4: any changed key whose kind is neither `.contact` nor `.link`
-        // (a `.group` favorite-identity record, or a `.guide` / `.place` /
-        // `.event` / future kind) has no scoped projection on this path. Fall
-        // back to the full sidecar-derived refresh so it is never silently
-        // dropped — a `.group`-only burst must still refresh and post. This
-        // fires whenever an unscopable kind is present, even alongside
-        // `.contact` / `.link` keys, since the full refresh subsumes those.
-        let hasUnscopableKind = changedKeys.contains {
-            $0.kind != .contact && $0.kind != .link
-        }
-        if hasUnscopableKind {
-            await performFullSidecarProjectionRefresh(generation: generation)
-            return
-        }
+        // FIX C: among the kinds with no scoped projection on this path, ONLY
+        // `.group` (a favorite-identity record, which feeds group resolution)
+        // affects the contacts projection, so it alone escalates to the full
+        // sidecar-derived refresh — which subsumes any `.contact` / `.link`
+        // keys present alongside it. Every OTHER unscopable kind (`.guide`,
+        // `.place`, `.event`, a future kind) projects nothing here; a set
+        // naming only such kinds is dropped below as a relevance no-op,
+        // mirroring `EventsRepository`. This is unlike the earlier FIX 4, which
+        // escalated ANY unscopable kind to a full refresh.
+        let groupChanged = changedKeys.contains { $0.kind == .group }
 
-        // Every changed key is `.contact` or `.link` — a non-empty key set of
-        // scopable kinds always has at least one; the guard is defensive.
-        guard !contactKeys.isEmpty || linksChanged else {
+        // Relevance filter: a scoped set naming none of `.contact` / `.link` /
+        // `.group` (an event/guide/place-only delivery) moves no contacts
+        // projection, so do zero scan work and post nothing. Normally
+        // unreachable — `scheduleSidecarRefresh` drops such a delivery before it
+        // can mint a generation — but stay safe if one ever coalesces through:
+        // settle any loading state an aborted older reload left set, rather than
+        // strand it.
+        guard !contactKeys.isEmpty || linksChanged || groupChanged else {
             if generation == refreshGeneration { isLoading = false }
             return
         }
 
+        // A `.group` change (possibly mixed with `.contact` / `.link`) has no
+        // scoped projection; the full sidecar-derived refresh subsumes any
+        // scopable keys alongside it and posts on its own.
+        if groupChanged {
+            await performFullSidecarProjectionRefresh(generation: generation)
+            return
+        }
+
+        // FIX D: re-check the generation after EACH scoped scan await and before
+        // issuing the next expensive one, so a newer refresh that superseded us
+        // mid-walk stops us from firing the remaining link endpoint/count scans.
+        // The per-method guards still gate every state mutation; these add an
+        // early-out before the wasted work, and the last one guards the publish.
         if !contactKeys.isEmpty {
             await refreshTimestampCache(for: contactKeys, generation: generation)
+            guard generation == refreshGeneration else { return }
         }
         if linksChanged {
             // Link deletions do not carry their former endpoints, so the two
             // link-derived projections retain their full-link-scan fallback.
             await refreshLinkedContactIDs(generation: generation)
+            guard generation == refreshGeneration else { return }
             await refreshLinkCounts(generation: generation)
+            guard generation == refreshGeneration else { return }
         }
-        // A newer refresh may have superseded us across the awaits above; only
-        // post when this task still owns the current projection.
-        guard generation == refreshGeneration else { return }
         isLoading = false
         postDidReload(contactDataChanged: false)
     }
@@ -3306,12 +3351,19 @@ public final class ContactsRepository: NSObject {
     /// The full sidecar-derived projection refresh: re-read the bulk timestamp
     /// cache, the linked-endpoint set, and the link counts wholesale, then post
     /// a presentation-only reload. Shared by the explicit `changedKeys == nil`
-    /// full-refresh signal and the FIX-4 unscopable-kind fallback. Every step —
+    /// full-refresh signal and the `.group`-change fallback (FIX C). Every step —
     /// and the post — is gated on `generation`, so a newer refresh that began
     /// meanwhile is never overwritten by this one.
     private func performFullSidecarProjectionRefresh(generation: Int) async {
+        // FIX D: re-check the generation after EACH wholesale scan await and
+        // before issuing the next one. A newer refresh scheduled mid-walk owns
+        // the projection; bail out before firing the remaining link
+        // endpoint/count scans rather than issue them only to no-op at their
+        // guards. The final guard still gates the publish.
         await refreshTimestampCache(generation: generation)
+        guard generation == refreshGeneration else { return }
         await refreshLinkedContactIDs(generation: generation)
+        guard generation == refreshGeneration else { return }
         await refreshLinkCounts(generation: generation)
         guard generation == refreshGeneration else { return }
         isLoading = false
