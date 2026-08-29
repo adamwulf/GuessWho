@@ -40,6 +40,19 @@ struct EventWindowTests {
         SidecarKey(kind: .event, id: id.uuidString)
     }
 
+    /// Repository-style window membership. `EventsRepository` keeps a watcher
+    /// delta's projected row only when its start falls in the inclusive window
+    /// (`EventsRepository.swift` applies exactly
+    /// `projected.startDate >= windowStart && projected.startDate <= windowEnd`).
+    /// Model that here so a test can compare the VISIBLE delta row — the row the
+    /// list would actually show — against the full-reload row, which
+    /// `eventsWindow` has already start-filtered. Returns nil when the delta is
+    /// nil (no sidecar) or its start is out of window (dropped by membership).
+    private func repositoryVisibleRow(_ event: Event?, from: Date, to: Date) -> Event? {
+        guard let event, event.startDate >= from, event.startDate <= to else { return nil }
+        return event
+    }
+
     // MARK: -
 
     @Test
@@ -192,15 +205,130 @@ struct EventWindowTests {
     }
 
     // MARK: - Window-aware watcher-delta projection (must match `eventsWindow`)
+    //
+    // FIX B invariant: `eventsWindow` overlays whenever its single
+    // `events(matching:)` batch surfaces the event (i.e. the live version
+    // OVERLAPS the window), then its `projected.startDate` membership filter
+    // decides whether the row stays. `eventForWatcherDelta` overlays under the
+    // identical overlap test and leaves start membership to its caller
+    // (`EventsRepository`, modeled here by `repositoryVisibleRow`). So the
+    // delta's VISIBLE row and the full-reload row must agree for the same event:
+    // no stale cached title/time survives for an event the overlapping batch
+    // returned.
 
-    /// A linked event whose CACHED start sits inside the window but whose LIVE
-    /// start has since moved OUTSIDE it. `eventsWindow` keeps the row via its
-    /// cached start (the live event no longer appears in the single window
-    /// batch, so no live overlay). The window-aware delta projection must reach
-    /// the same result — otherwise a scoped delta refresh would drop a row a
-    /// full reload shows.
+    /// FIX B — the regression this restores. A linked event whose CACHED start
+    /// is inside the window but whose LIVE version has moved to START BEFORE
+    /// `from` while STILL OVERLAPPING the window (its end is past `from`). The
+    /// single `events(matching:)` batch surfaces it (it overlaps), so
+    /// `eventsWindow` overlays the live values and then DROPS the row on start
+    /// membership — it must NOT linger with the stale cached title/time. The
+    /// delta overlays under the same overlap test and hands the caller the live
+    /// (out-of-window) values, so the repository-visible row (after start
+    /// membership) agrees with the full reload: both drop, and neither surfaces
+    /// the cache.
     @Test
-    func watcherDeltaProjectionMatchesEventsWindowForCachedInLiveOut() throws {
+    func deltaAndWindowDropOverlapEventWhoseLiveStartMovedBeforeWindow() throws {
+        let (sync, _, events) = makeOrchestrator()
+        let now = Date()
+        let from = now
+        let to = now.addingTimeInterval(3600 * 24)
+
+        let seed = try events.createEvent(
+            title: "Cached title",
+            startDate: now.addingTimeInterval(3600),   // cached start in window
+            endDate: now.addingTimeInterval(5400),
+            isAllDay: false,
+            location: nil
+        )
+        let ekid = try #require(seed.eventKitID)
+        let id = try sync.linkEvent(toEventKitID: ekid, snapshot: seed)
+        let key = eventKey(for: id)
+
+        // Live now STARTS BEFORE the window but ENDS inside it, so it still
+        // overlaps and stays in the single window batch.
+        try events.updateEvent(
+            eventKitID: ekid,
+            title: "Live title",
+            startDate: from.addingTimeInterval(-3600),
+            endDate: from.addingTimeInterval(1800),
+            isAllDay: false,
+            location: nil
+        )
+        // Sanity: the event genuinely overlaps, so `events(matching:)` sees it —
+        // this is the case where the overlay MUST happen.
+        let batch = try events.fetchEvents(in: DateInterval(start: from, end: to))
+        #expect(batch.contains { $0.eventKitID == ekid })
+
+        // Full reload: overlaid to the live (out-of-window) start, then dropped
+        // by start membership. The stale cached row never appears.
+        #expect(try sync.eventsWindow(from: from, to: to).contains { $0.id == id } == false)
+
+        // Delta overlays the live values (never the cache), so the repository's
+        // start-membership filter drops it — agreeing with the full reload.
+        let delta = try #require(
+            try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
+        )
+        #expect(delta.title == "Live title")            // overlaid live, NOT cached
+        #expect(delta.title != "Cached title")
+        #expect(delta.startDate == from.addingTimeInterval(-3600))
+        #expect(repositoryVisibleRow(delta, from: from, to: to) == nil)   // dropped
+    }
+
+    /// A linked event whose LIVE version does NOT overlap the window at all (it
+    /// sits entirely before `from`). `events(matching:)` cannot see it, so
+    /// `eventsWindow` never overlays and falls back to the cached projection —
+    /// itself out of window here — and the row is excluded. The delta's overlap
+    /// gate likewise declines to overlay and returns the cached projection (NOT
+    /// nil), which the repository's start membership then excludes. Both exclude,
+    /// agreeing row-for-row under equivalent membership.
+    @Test
+    func deltaAndWindowExcludeEventWhoseLiveDoesNotOverlap() throws {
+        let (sync, _, events) = makeOrchestrator()
+        let now = Date()
+        let from = now
+        let to = now.addingTimeInterval(3600 * 24)
+
+        // Cached + live both sit entirely BEFORE the window (no overlap).
+        let seed = try events.createEvent(
+            title: "Past event",
+            startDate: from.addingTimeInterval(-7200),
+            endDate: from.addingTimeInterval(-6600),
+            isAllDay: false,
+            location: nil
+        )
+        let ekid = try #require(seed.eventKitID)
+        let id = try sync.linkEvent(toEventKitID: ekid, snapshot: seed)
+        let key = eventKey(for: id)
+
+        // Sanity: the live event does NOT overlap, so the batch excludes it.
+        let batch = try events.fetchEvents(in: DateInterval(start: from, end: to))
+        #expect(batch.contains { $0.eventKitID == ekid } == false)
+
+        // Full reload excludes the out-of-window row.
+        #expect(try sync.eventsWindow(from: from, to: to).contains { $0.id == id } == false)
+
+        // Delta returns the cached (out-of-window) projection — NOT nil, so the
+        // caller (not the delta) applies membership — and the repository excludes
+        // it, agreeing with the full reload. (The cached start round-trips
+        // through ISO8601, so assert its window position, not an exact literal.)
+        let delta = try #require(
+            try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
+        )
+        #expect(delta.title == "Past event")            // cached projection, not overlaid
+        #expect(delta.startDate < from)                 // sits before the window
+        #expect(repositoryVisibleRow(delta, from: from, to: to) == nil)   // excluded
+    }
+
+    /// The boundary of the FIX B invariant: an event whose LIVE version has
+    /// moved out of the window ENTIRELY (start past `to`, so it no longer
+    /// overlaps) while its cached start is still inside the window. Because the
+    /// single `events(matching:)` batch is scoped to the window, it cannot see
+    /// the moved event, so `eventsWindow` legitimately keeps the CACHED row — the
+    /// invariant only forbids stale cache for an event the OVERLAPPING batch
+    /// returned, and this event is not in it. The delta's overlap gate agrees: it
+    /// too keeps the cache, so the visible rows match.
+    @Test
+    func deltaAndWindowKeepCacheWhenLiveMovedOutOfBatch() throws {
         let (sync, _, events) = makeOrchestrator()
         let now = Date()
         let from = now
@@ -208,7 +336,7 @@ struct EventWindowTests {
 
         let live = try events.createEvent(
             title: "Standup",
-            startDate: now.addingTimeInterval(3600),        // in window
+            startDate: now.addingTimeInterval(3600),        // cached start in window
             endDate: now.addingTimeInterval(3600 + 1800),
             isAllDay: false,
             location: nil
@@ -218,7 +346,8 @@ struct EventWindowTests {
         let key = eventKey(for: id)
 
         // Move the LIVE event past the window end WITHOUT refreshing the cache,
-        // so the cached start stays in window while the live start moves out.
+        // so the cached start stays in window while the live start moves out and
+        // the event no longer overlaps.
         try events.updateEvent(
             eventKitID: ekid,
             title: "Standup moved",
@@ -227,74 +356,32 @@ struct EventWindowTests {
             isAllDay: false,
             location: nil
         )
+        // Sanity: the moved event does NOT overlap, so it is absent from the
+        // batch — the reason the cached projection legitimately stands.
+        let batch = try events.fetchEvents(in: DateInterval(start: from, end: to))
+        #expect(batch.contains { $0.eventKitID == ekid } == false)
 
         // Full reload keeps the row via the cached (in-window) projection.
-        let window = try sync.eventsWindow(from: from, to: to)
-        let full = try #require(window.first(where: { $0.id == id }))
+        let full = try #require(try sync.eventsWindow(from: from, to: to).first { $0.id == id })
         #expect(full.title == "Standup")   // cached title, NOT the moved live one
         #expect(full.startDate >= from && full.startDate <= to)
 
-        // The delta projection agrees row-for-row with the full reload (both read
-        // the same round-tripped cache), and the row stays in the window.
+        // The delta projection agrees row-for-row with the full reload.
         let delta = try #require(
             try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
         )
-        #expect(delta.startDate == full.startDate)
-        #expect(delta.title == full.title)
-        #expect(delta.startDate >= from && delta.startDate <= to)
+        let deltaRow = try #require(repositoryVisibleRow(delta, from: from, to: to))
+        #expect(deltaRow.startDate == full.startDate)
+        #expect(deltaRow.title == full.title)
     }
 
-    /// A linked event whose LIVE version overlaps the window but STARTS BEFORE
-    /// it, while its cached start is inside the window. Both surfaces gate the
-    /// overlay on the live START, so neither overlays here: the row shows via its
-    /// cached projection (not dropped), and the delta agrees with the full
-    /// reload. This is the exact start-membership rule the review asked for — an
-    /// overlap-but-start-before event is no longer overlaid.
-    @Test
-    func watcherDeltaAndWindowUseCacheWhenLiveStartsBeforeWindow() throws {
-        let (sync, _, events) = makeOrchestrator()
-        let now = Date()
-        let from = now
-        let to = now.addingTimeInterval(3600 * 24)
-
-        let live = try events.createEvent(
-            title: "Cached title",
-            startDate: now.addingTimeInterval(3600),   // cached start in window
-            endDate: now.addingTimeInterval(7200),
-            isAllDay: false,
-            location: nil
-        )
-        let ekid = try #require(live.eventKitID)
-        let id = try sync.linkEvent(toEventKitID: ekid, snapshot: live)
-        let key = eventKey(for: id)
-
-        // Live now STARTS BEFORE the window but ends inside it (overlaps).
-        try events.updateEvent(
-            eventKitID: ekid,
-            title: "Live title",
-            startDate: from.addingTimeInterval(-3600),
-            endDate: from.addingTimeInterval(1800),
-            isAllDay: false,
-            location: nil
-        )
-
-        // eventsWindow keeps the row via the cache — no overlay, live start out.
-        let full = try #require(try sync.eventsWindow(from: from, to: to).first { $0.id == id })
-        #expect(full.title == "Cached title")
-        #expect(full.startDate >= from && full.startDate <= to)
-
-        // The delta agrees row-for-row.
-        let delta = try #require(
-            try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
-        )
-        #expect(delta.title == full.title)
-        #expect(delta.startDate == full.startDate)
-        #expect(delta.startDate >= from && delta.startDate <= to)
-    }
-
-    /// Inclusive start boundaries: a live start exactly on `from` or `to`
-    /// overlays; a live start one second outside keeps the cache. The delta and
-    /// the full reload agree at every boundary, and the endpoints are inclusive.
+    /// Inclusive start boundaries under FIX B. For an event whose live version
+    /// OVERLAPS the window (kept overlapping at every boundary by pinning its end
+    /// inside the window), the row is shown — with the LIVE values — exactly when
+    /// the live START is in the inclusive `[from, to]`. A start one second before
+    /// `from` still overlaps, so it is overlaid and then dropped by membership —
+    /// never retained as stale cache. The delta's visible row and the full reload
+    /// agree at every boundary.
     @Test
     func watcherDeltaAndWindowShareInclusiveStartBoundary() throws {
         let (sync, _, events) = makeOrchestrator()
@@ -302,7 +389,7 @@ struct EventWindowTests {
         let from = now
         let to = now.addingTimeInterval(3600 * 24)
 
-        func check(liveStart: Date, expectOverlay: Bool, _ label: String) throws {
+        func check(liveStart: Date, expectShown: Bool, _ label: String) throws {
             let seed = try events.createEvent(
                 title: "cache-\(label)",
                 startDate: now.addingTimeInterval(3600),   // cached start in window
@@ -313,33 +400,39 @@ struct EventWindowTests {
             let ekid = try #require(seed.eventKitID)
             let id = try sync.linkEvent(toEventKitID: ekid, snapshot: seed)
             let key = eventKey(for: id)
+            // Pin the live end inside the window so the event overlaps at every
+            // boundary — only the live START crosses `from`/`to`.
+            let liveEnd = max(liveStart.addingTimeInterval(1800), from.addingTimeInterval(1))
             try events.updateEvent(
                 eventKitID: ekid,
                 title: "live-\(label)",
                 startDate: liveStart,
-                endDate: liveStart.addingTimeInterval(1800),
+                endDate: liveEnd,
                 isAllDay: false,
                 location: nil
             )
 
             let full = try sync.eventsWindow(from: from, to: to).first { $0.id == id }
-            let delta = try sync.eventForWatcherDelta(at: key, from: from, to: to, includeEventKit: true)
-            // Delta and full reload agree on presence and values at the boundary.
-            #expect(full?.id == delta?.id)
-            #expect(full?.title == delta?.title)
-            #expect(full?.startDate == delta?.startDate)
-            if expectOverlay {
-                #expect(delta?.title == "live-\(label)")   // live overlaid
-                #expect(delta?.startDate == liveStart)
+            let deltaRaw = try sync.eventForWatcherDelta(
+                at: key, from: from, to: to, includeEventKit: true
+            )
+            let deltaRow = repositoryVisibleRow(deltaRaw, from: from, to: to)
+            // Delta's visible row and the full reload agree on presence + values.
+            #expect(full?.id == deltaRow?.id)
+            #expect(full?.title == deltaRow?.title)
+            #expect(full?.startDate == deltaRow?.startDate)
+            if expectShown {
+                #expect(deltaRow?.title == "live-\(label)")   // live overlaid, in window
+                #expect(deltaRow?.startDate == liveStart)
             } else {
-                #expect(delta?.title == "cache-\(label)")  // cache retained
+                #expect(deltaRow == nil)                       // overlaid live, then dropped
+                #expect(full == nil)
             }
         }
 
-        try check(liveStart: from, expectOverlay: true, "at-from")
-        try check(liveStart: to, expectOverlay: true, "at-to")
-        try check(liveStart: from.addingTimeInterval(-1), expectOverlay: false, "just-before")
-        try check(liveStart: to.addingTimeInterval(1), expectOverlay: false, "just-after")
+        try check(liveStart: from, expectShown: true, "at-from")
+        try check(liveStart: to, expectShown: true, "at-to")
+        try check(liveStart: from.addingTimeInterval(-1), expectShown: false, "just-before")
     }
 
     /// The positive overlay case: a linked event whose live version is still
