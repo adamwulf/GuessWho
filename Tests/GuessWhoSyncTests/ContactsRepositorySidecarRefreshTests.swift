@@ -339,11 +339,17 @@ struct ContactsRepositorySidecarRefreshTests {
         await repo.reload()
         repo.sortOrder = .lastViewed
 
+        nonisolated(unsafe) var reloadCount = 0
+        let observer = center.addObserver(
+            forName: .contactsRepositoryDidReload, object: repo, queue: nil
+        ) { _ in reloadCount += 1 }
+        defer { center.removeObserver(observer) }
+
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         try sync.stampContactTimestamp(
             .viewed,
             at: SidecarKey(kind: .contact, id: "66666666-0000-0000-0000-000000000001"),
-            now: base
+            now: base.addingTimeInterval(20)
         )
 
         let gate = ContactsSidecarReadGate()
@@ -368,13 +374,16 @@ struct ContactsRepositorySidecarRefreshTests {
         ])
 
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while repo.people.map(\.localID) != ["b", "a", "c"], ContinuousClock.now < deadline {
+        while reloadCount == 0, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
         gate.release()
         try await Task.sleep(for: .milliseconds(20))
 
-        #expect(repo.people.map(\.localID) == ["b", "a", "c"])
+        #expect(reloadCount == 1)
+        // With both keys inherited Anna's newer stamp wins. If her running key
+        // is dropped, only Bob is stamped and the order becomes [Bob, Anna, Cara].
+        #expect(repo.people.map(\.localID) == ["a", "b", "c"])
     }
 
     @Test
