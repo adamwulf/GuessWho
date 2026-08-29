@@ -9,6 +9,11 @@ final class OrganizationsListViewController: UIViewController {
     var didSelectContact: (Contact) -> Void = { _ in }
     var didSelectContacts: ([Contact]) -> Void = { _ in }
 
+    /// Tapping a phantom-organization row (a company named on people's cards
+    /// with no record of its own). The SceneDelegate presents a read-only
+    /// `PhantomOrganizationDetailView`. See `PhantomOrganization`.
+    var didSelectPhantomOrganization: (PhantomOrganization) -> Void = { _ in }
+
     /// Nav-bar "+" callback. The SceneDelegate owns what "add" means (create a
     /// blank organization record and show it in edit mode) — see
     /// `ContactsListViewController.didRequestAddContact` for the same pattern.
@@ -34,6 +39,12 @@ final class OrganizationsListViewController: UIViewController {
     /// ourselves by comparing the `Contact` each row last rendered against the
     /// freshly fetched one.
     private var renderedContacts: [ContactID: Contact] = [:]
+
+    /// The phantom organizations shown in the current snapshot, keyed by their
+    /// normalized `key`. Rebuilt on every `applySnapshot` so the `.phantom` cell
+    /// provider and the row-tap handler resolve a row's content/identity without
+    /// recomputing the phantom set per cell.
+    private var phantomsByKey: [String: PhantomOrganization] = [:]
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
@@ -115,7 +126,7 @@ final class OrganizationsListViewController: UIViewController {
     private func applyPendingSelection() {
         guard isViewLoaded else { return }
         let selected = pendingSelection.applyIfPossible(in: tableView) { [self] id in
-            dataSource.indexPath(for: id)
+            dataSource.indexPath(for: .record(id))
         }
         selectionRecency.recordSelection(of: selected)
     }
@@ -196,8 +207,19 @@ final class OrganizationsListViewController: UIViewController {
             in: tableView,
             repository: repository,
             recency: selectionRecency,
-            itemIdentifier: { [weak self] in self?.dataSource.itemIdentifier(for: $0) }
+            // Only real records are contacts — a `.phantom` row has no ContactID,
+            // so it never joins a multi-selection or an "Add to Group" action.
+            itemIdentifier: { [weak self] indexPath in self?.recordID(at: indexPath) }
         )
+    }
+
+    /// The `ContactID` for the row at `indexPath` when it is a real record, or
+    /// nil for a `.phantom` row (or an unresolved index). The single place the VC
+    /// narrows an `OrganizationRow` to a contact identity for the ContactID-keyed
+    /// multi-select / pending-selection / group machinery.
+    private func recordID(at indexPath: IndexPath) -> ContactID? {
+        if case .record(let id)? = dataSource.itemIdentifier(for: indexPath) { return id }
+        return nil
     }
 
     /// The row context menu ("Add to Group") — see
@@ -206,7 +228,7 @@ final class OrganizationsListViewController: UIViewController {
         repository: repository,
         host: self,
         contactAt: { [weak self] indexPath in
-            guard let self, let id = self.dataSource.itemIdentifier(for: indexPath) else { return nil }
+            guard let self, let id = self.recordID(at: indexPath) else { return nil }
             return self.repository.contact(id: id)
         },
         selection: { [weak self] in self?.selectedContacts() ?? [] }
@@ -264,15 +286,23 @@ final class OrganizationsListViewController: UIViewController {
     private func configureDataSource() {
         dataSource = SectionedDataSource(
             tableView: tableView
-        ) { [weak self] tableView, indexPath, id in
+        ) { [weak self] tableView, indexPath, row in
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.organization.rawValue, for: indexPath)
-            guard let self, let contact = self.repository.contact(id: id) else { return cell }
-            (cell as? OrganizationCell)?.configure(
-                with: contact,
-                photoLoader: self.photoLoader,
-                isFavorite: self.favoritesStore.isFavorite(contact.contactID),
-                linkCount: self.repository.linkCount(for: contact)
-            )
+            guard let self, let orgCell = cell as? OrganizationCell else { return cell }
+            switch row {
+            case .record(let id):
+                guard let contact = self.repository.contact(id: id) else { return cell }
+                orgCell.configure(
+                    with: contact,
+                    photoLoader: self.photoLoader,
+                    isFavorite: self.favoritesStore.isFavorite(contact.contactID),
+                    linkCount: self.repository.linkCount(for: contact)
+                )
+            case .phantom(let key):
+                if let phantom = self.phantomsByKey[key] {
+                    orgCell.configurePhantom(phantom)
+                }
+            }
             return cell
         }
         dataSource.defaultRowAnimation = .fade
@@ -321,43 +351,56 @@ final class OrganizationsListViewController: UIViewController {
     }
 
     private func applySnapshot(animated: Bool) {
-        let sections = repository.organizationsSectionIDs
+        let sections = repository.organizationRowSectionIDs
         sectionLetters = sections.map { $0.0 }
+        // Cache the phantom set for this snapshot so the cell provider and the
+        // row-tap handler resolve `.phantom` rows without recomputing it per row.
+        // This recomputes `phantomOrganizations` a second time (the merged-rows
+        // accessor above computes it internally); both are O(cache) and run only
+        // per reload — not per cell — so the second pass is deliberately kept for
+        // a single-purpose accessor rather than folding both into a tuple return.
+        phantomsByKey = Dictionary(
+            repository.phantomOrganizations.map { ($0.key, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         // Hide the A–Z scrubber for time orders, whose section identifiers are
         // relative-time bucket names rather than index letters (see
         // ContactsListViewController.applySnapshot).
         dataSource.showsSectionIndex = !repository.sortOrder.isTimeOrder
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, ContactID>()
+        var snapshot = NSDiffableDataSourceSnapshot<String, OrganizationRow>()
         snapshot.appendSections(sectionLetters)
-        // De-dupe by effective identity across the whole snapshot (see
-        // ContactsListViewController.applySnapshot): equal ContactIDs trap in
-        // appendItems; the transient pre-reconcile duplicate-guessWhoID window
-        // is the only source, and reconciliation collapses it. First wins.
-        var seen = Set<ContactID>()
-        for (letter, contactIDs) in sections {
-            let unique = contactIDs.filter { seen.insert($0).inserted }
+        // De-dupe across the whole snapshot (see ContactsListViewController):
+        // equal identifiers trap in appendItems. For `.record` rows the only
+        // source is the transient pre-reconcile duplicate-guessWhoID window,
+        // which reconciliation collapses; `.phantom` keys are already distinct.
+        // First wins.
+        var seen = Set<OrganizationRow>()
+        for (letter, rows) in sections {
+            let unique = rows.filter { seen.insert($0).inserted }
             snapshot.appendItems(unique, toSection: letter)
         }
 
         // See ContactsListViewController.applySnapshot — ContactID is
         // identity-only, so apply() keeps a same-identity row in place but does
         // NOT repaint its contents on an in-place edit. Drive reconfigure
-        // explicitly: reconfigure rows present in BOTH the last render and the
-        // new snapshot whose fetched Contact differs from the one we last
-        // rendered (exclude inserts/removes — apply handles those, and
-        // reconfiguring an absent item traps).
-        let currentIDs = Set(snapshot.itemIdentifiers)
-        let changed = currentIDs.filter { id in
-            guard let previous = renderedContacts[id] else { return false }
-            return previous != repository.contact(id: id)
+        // explicitly for `.record` rows present in BOTH the last render and the
+        // new snapshot whose fetched Contact differs (exclude inserts/removes —
+        // apply handles those, and reconfiguring an absent item traps). Phantom
+        // rows carry no editable content beyond their name, which IS their
+        // identity, so they never need an explicit reconfigure.
+        let currentRows = Set(snapshot.itemIdentifiers)
+        var changed: [OrganizationRow] = []
+        for case .record(let id) in currentRows {
+            guard let previous = renderedContacts[id] else { continue }
+            if previous != repository.contact(id: id) { changed.append(.record(id)) }
         }
         if !changed.isEmpty {
-            snapshot.reconfigureItems(Array(changed))
+            snapshot.reconfigureItems(changed)
         }
 
         var rendered: [ContactID: Contact] = [:]
-        for id in currentIDs {
+        for case .record(let id) in currentRows {
             rendered[id] = repository.contact(id: id)
         }
         renderedContacts = rendered
@@ -392,12 +435,25 @@ final class OrganizationsListViewController: UIViewController {
 
 extension OrganizationsListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        let row = dataSource.itemIdentifier(for: indexPath)
         // Before the editing-mode early return — see
-        // `ContactsListViewController.tableView(_:didSelectRowAt:)`.
-        selectionRecency.recordSelection(of: dataSource.itemIdentifier(for: indexPath))
+        // `ContactsListViewController.tableView(_:didSelectRowAt:)`. Only a real
+        // record participates in multi-select ordering; a `.phantom` records nil.
+        selectionRecency.recordSelection(of: recordID(at: indexPath))
         // See `ContactsListViewController.tableView(_:didSelectRowAt:)` — a user
         // pick retires an unfulfilled sidebar request.
         pendingSelection.cancel()
+
+        // A phantom row is a navigation, not a selection: it opens the read-only
+        // phantom page and clears its own highlight (on Catalyst it would
+        // otherwise stay in the multi-selection). Handled before the iPhone
+        // editing early-return so a phantom tap always navigates.
+        if case .phantom(let key)? = row {
+            tableView.deselectRow(at: indexPath, animated: false)
+            if let phantom = phantomsByKey[key] { didSelectPhantomOrganization(phantom) }
+            return
+        }
+
         #if !targetEnvironment(macCatalyst)
         guard !tableView.isEditing else { return }
         #endif
@@ -405,7 +461,7 @@ extension OrganizationsListViewController: UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
-        selectionRecency.recordDeselection(of: dataSource.itemIdentifier(for: indexPath))
+        selectionRecency.recordDeselection(of: recordID(at: indexPath))
         #if targetEnvironment(macCatalyst)
         notifySelectionChanged()
         #endif
@@ -436,7 +492,8 @@ extension OrganizationsListViewController: UITableViewDelegate {
 extension OrganizationsListViewController: UITableViewDataSourcePrefetching {
     func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
         for indexPath in indexPaths {
-            guard let id = dataSource.itemIdentifier(for: indexPath),
+            // Phantom rows carry no photo — only real records prefetch.
+            guard let id = recordID(at: indexPath),
                   prefetchTasks[id] == nil,
                   photoLoader.cachedImage(for: id, kind: .thumbnail) == nil else { continue }
             prefetchTasks[id] = Task { [weak self, photoLoader] in
@@ -450,7 +507,7 @@ extension OrganizationsListViewController: UITableViewDataSourcePrefetching {
 
     func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
         for indexPath in indexPaths {
-            guard let id = dataSource.itemIdentifier(for: indexPath) else { continue }
+            guard let id = recordID(at: indexPath) else { continue }
             prefetchTasks[id]?.cancel()
             prefetchTasks[id] = nil
         }
@@ -466,7 +523,7 @@ extension OrganizationsListViewController: ScrollsToTop {
 /// Diffable data source subclass that forwards A–Z section headers
 /// and the index scrubber. Same rationale as
 /// `ContactsListViewController.SectionedDataSource`.
-private final class SectionedDataSource: UITableViewDiffableDataSource<String, ContactID> {
+private final class SectionedDataSource: UITableViewDiffableDataSource<String, OrganizationRow> {
     /// Whether the right-side A–Z scrubber is shown. The VC sets this to
     /// `!repository.sortOrder.isTimeOrder` before each apply — see
     /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
@@ -643,6 +700,27 @@ private final class OrganizationCell: UITableViewCell {
             textToLinkCountSpacing?.constant = 0
         }
         starView.isHidden = !isFavorite
+    }
+
+    /// Configure the cell for a phantom organization — a company named on
+    /// people's cards with no record of its own. It renders like a plain
+    /// organization row (initials monogram + name), deliberately WITHOUT a photo,
+    /// favorite star, or link count: a phantom has no record to carry those, and
+    /// hiding the seam means it should read as just another organization.
+    func configurePhantom(_ phantom: PhantomOrganization) {
+        cancelPhotoLoad()
+        // No represented photo id — a phantom never loads or caches a thumbnail.
+        representedID = nil
+        // Synthesize a name-only organization so the monogram initials + color
+        // match how a real organization row draws its placeholder.
+        let synthetic = Contact(contactType: .organization, organizationName: phantom.displayName)
+        iconView.contentMode = .scaleAspectFill
+        iconView.image = ContactAvatarImage.placeholder(for: synthetic, diameter: 28)
+        nameLabel.attributedText = synthetic.nameAttributedString
+        linkCountLabel.text = nil
+        linkCountLabel.isHidden = true
+        textToLinkCountSpacing?.constant = 0
+        starView.isHidden = true
     }
 
     func cancelPhotoLoad() {

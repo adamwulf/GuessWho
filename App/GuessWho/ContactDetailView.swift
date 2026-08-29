@@ -18,6 +18,7 @@ struct ContactDetailView: View {
     @Environment(\.pushContactReference) private var pushContactReference
     @Environment(\.pushEventReference) private var pushEventReference
     @Environment(\.pushDepartmentReference) private var pushDepartmentReference
+    @Environment(\.pushPhantomOrganizationReference) private var pushPhantomOrganizationReference
     @Environment(\.pushGroupReference) private var pushGroupReference
 
     /// The view's identity is the opaque, package-vended `ContactID` the scene
@@ -1436,6 +1437,17 @@ struct ContactDetailView: View {
         return organization
     }
 
+    /// The person's Contacts "company" name when it is a PHANTOM organization —
+    /// non-blank, and matching no organization record (so `associatedOrganization`
+    /// returned nil). People only; nil otherwise. The trimmed spelling is
+    /// returned for display; the phantom key is derived from it at the tap site.
+    private func phantomOrganizationName(of contact: Contact) -> String? {
+        guard contact.contactType == .person else { return nil }
+        let name = contact.organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, repository.organizationContact(named: name) == nil else { return nil }
+        return name
+    }
+
     /// Inferred membership on a person's page: when their Contacts "company"
     /// field names an organization record, show that organization as a
     /// read-only navigation row. The association remains owned by the person's
@@ -1456,6 +1468,18 @@ struct ContactDetailView: View {
             } header: {
                 Text("Associated Organization").centeredSectionHeader()
             }
+        } else if let phantomName = phantomOrganizationName(of: contact) {
+            // The person names a company that has no record of its own yet — a
+            // phantom organization. Show it as the same navigable row a real
+            // organization gets, tapping through to the read-only phantom page.
+            // (No department drill-down here: that destination is keyed on a
+            // real organization's ContactID, which a phantom lacks.)
+            Section {
+                phantomOrganizationRow(phantomName)
+                    .centeredRowContent()
+            } header: {
+                Text("Associated Organization").centeredSectionHeader()
+            }
         }
     }
 
@@ -1467,6 +1491,28 @@ struct ContactDetailView: View {
                 ContactAvatar(contact: organization, diameter: 20)
             } content: {
                 Text(organization.displayName)
+                    .foregroundStyle(.tint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The navigable row for a phantom organization (a company with no record).
+    /// Mirrors `associatedOrganizationRow`, but the avatar is a name-only
+    /// synthesized organization and the tap opens the read-only phantom page.
+    private func phantomOrganizationRow(_ name: String) -> some View {
+        let synthetic = Contact(contactType: .organization, organizationName: name)
+        return Button {
+            pushPhantomOrganizationReference(
+                PhantomOrganizationReference(key: name.lowercased(), displayName: name)
+            )
+        } label: {
+            ActivityRowLayout {
+                ContactAvatar(contact: synthetic, diameter: 20)
+            } content: {
+                Text(name)
                     .foregroundStyle(.tint)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())

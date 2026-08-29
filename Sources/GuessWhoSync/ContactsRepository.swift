@@ -2578,6 +2578,103 @@ public final class ContactsRepository: NSObject {
     /// `organizationsSections`.
     public var organizationsSectionIDs: [(String, [ContactID])] { sectionedIDs(organizations) }
 
+    /// Normalizes a company/organization name to its match key: trimmed of
+    /// surrounding whitespace and lowercased. The single normalization used by
+    /// every phantom-organization and inferred-association comparison, so the
+    /// list, the card row, and the associated-people lookup all agree.
+    func normalizedOrgKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// Every "phantom" organization — a distinct company name carried by the
+    /// people cache that matches NO organization record — honoring the current
+    /// `organizationsSearch` and `organizationsFilter`. Blank company fields are
+    /// ignored, and equal names (case-insensitive) collapse to one phantom.
+    /// Returned sorted by `key` for a deterministic order. Under the Linked
+    /// filter nothing qualifies: a phantom has no record, so it can hold no link.
+    /// See `PhantomOrganization`.
+    public var phantomOrganizations: [PhantomOrganization] {
+        // A phantom holds no link, so the Linked filter excludes every phantom.
+        guard organizationsFilter != .linked else { return [] }
+        return phantomOrganizations(matching: organizationsSearch)
+    }
+
+    /// Every phantom organization whose name matches `query` (blank = all),
+    /// sorted by normalized `key`. Unlike the `phantomOrganizations` property
+    /// this ignores the Organizations list's Linked filter and reads ONLY the
+    /// passed query — callers with their own search box (the link picker) or a
+    /// single-key lookup use it so the list's transient search/filter state can
+    /// never leak into them.
+    public func phantomOrganizations(matching query: String) -> [PhantomOrganization] {
+        // Names that already have a real organization record are NOT phantoms.
+        // Precompute the record-name set once (O(n)) so the per-person check is
+        // O(1) rather than a nested `organizationContact(named:)` scan.
+        let recordKeys = Set(
+            contacts.lazy
+                .filter { $0.contactType == .organization }
+                .map { self.normalizedOrgKey($0.displayName) }
+        )
+
+        var counts: [String: Int] = [:]          // key → associated people
+        var spellings: [String: Set<String>] = [:] // key → distinct display spellings
+        for person in contacts where person.contactType == .person {
+            let key = normalizedOrgKey(person.organizationName)
+            guard !key.isEmpty, !recordKeys.contains(key) else { continue }
+            let spelling = person.organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+            counts[key, default: 0] += 1
+            spellings[key, default: []].insert(spelling)
+        }
+
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Sort keys so the projection is DETERMINISTIC regardless of cache
+        // iteration order (the list re-sorts by `sortOrder`, but a public API
+        // must not depend on hash-order). When people spell one company several
+        // ways, the display form is the spelling that sorts first, so a
+        // capitalized "Acme" wins over an all-lowercase "acme".
+        return counts.keys.sorted().compactMap { key -> PhantomOrganization? in
+            let name = spellings[key]?.sorted().first ?? key
+            // Honor the query by matching a name-only synthesized org against the
+            // same search path the real records use.
+            if !trimmedQuery.isEmpty {
+                let probe = Contact(contactType: .organization, organizationName: name)
+                guard probe.matches(searchQuery: query) else { return nil }
+            }
+            return PhantomOrganization(key: key, displayName: name, associatedCount: counts[key] ?? 0)
+        }
+    }
+
+    /// The phantom organization identified by `key` (normalized on the way in,
+    /// so a raw name works too), or nil when no such phantom exists. Looks up
+    /// among ALL phantoms — independent of the list's search/filter — so a stale
+    /// Organizations-list search can't hide the match. Recomputes the phantom set;
+    /// fine for a one-shot detail open (the list caches its own map per reload).
+    public func phantomOrganization(key: String) -> PhantomOrganization? {
+        let needle = normalizedOrgKey(key)
+        guard !needle.isEmpty else { return nil }
+        return phantomOrganizations(matching: "").first { $0.key == needle }
+    }
+
+    /// The merged Organizations list — real records AND phantom organizations —
+    /// sorted and sectioned by the current `sortOrder`, addressed by
+    /// `OrganizationRow`. Each row is paired with the `Contact` that supplies its
+    /// sort/section keys: the real record, or a name-only synthesized org for a
+    /// phantom. Phantoms have no timestamps, so under a time order they land in
+    /// "Earlier"; under a name order they interleave with records by name.
+    public var organizationRowSectionIDs: [(String, [OrganizationRow])] {
+        var items: [(row: OrganizationRow, keyContact: Contact)] = []
+        for org in organizations {
+            items.append((.record(ContactID(contact: org)), org))
+        }
+        for phantom in phantomOrganizations {
+            let synthetic = Contact(contactType: .organization, organizationName: phantom.displayName)
+            items.append((.phantom(key: phantom.key), synthetic))
+        }
+        let ordered = sorted(items, keyContact: { $0.keyContact })
+        return sectioned(ordered, keyContact: { $0.keyContact }).map { title, rows in
+            (title, rows.map(\.row))
+        }
+    }
+
     /// Every cached contact whose display name matches `displayName`, addressed
     /// by `ContactID`. Returns ALL matches (no silent last-writer pick) — the
     /// UI owns disambiguation. The `ContactID` parallel to `contacts(named:)`.
@@ -2754,11 +2851,11 @@ public final class ContactsRepository: NSObject {
     /// the name) resolves to the first in cache order, mirroring the
     /// relation-row lookup. nil when `name` is blank or nothing matches.
     public func organizationContact(named name: String) -> Contact? {
-        let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let needle = normalizedOrgKey(name)
         guard !needle.isEmpty else { return nil }
         return contacts.first { other in
             other.contactType == .organization &&
-                other.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+                normalizedOrgKey(other.displayName) == needle
         }
     }
 
@@ -2767,12 +2864,22 @@ public final class ContactsRepository: NSObject {
     /// `organizationContact(named:)`. Inferred association only (no sidecar
     /// link), people only, sorted by display name.
     public func contactsAssociated(with organization: Contact) -> [Contact] {
-        let needle = organization.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        contactsAssociated(withOrganizationNamed: organization.displayName)
+    }
+
+    /// People whose Contacts "company" field matches `name` (trimmed,
+    /// case-insensitive) — the name-based core of `contactsAssociated(with:)`.
+    /// A phantom organization (no record) has only a name, so it associates its
+    /// people through this overload; the `Contact` overload delegates here with
+    /// the organization's display name. Inferred association only (no sidecar
+    /// link), people only, sorted by display name.
+    public func contactsAssociated(withOrganizationNamed name: String) -> [Contact] {
+        let needle = normalizedOrgKey(name)
         guard !needle.isEmpty else { return [] }
         return contacts
             .filter { person in
                 person.contactType == .person &&
-                    person.organizationName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+                    normalizedOrgKey(person.organizationName) == needle
             }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
@@ -2783,9 +2890,17 @@ public final class ContactsRepository: NSObject {
     /// display form wins); sorted A–Z. Empty when the organization has no
     /// associated people or none of them names a department.
     public func departments(in organization: Contact) -> [String] {
+        departments(inOrganizationNamed: organization.displayName)
+    }
+
+    /// The distinct department names carried by the people associated with the
+    /// organization NAMED `name` (see `contactsAssociated(withOrganizationNamed:)`).
+    /// The name-based core of `departments(in:)`, so a phantom organization can
+    /// list its departments too. Same de-dup + sort contract.
+    public func departments(inOrganizationNamed name: String) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
-        for person in contactsAssociated(with: organization) {
+        for person in contactsAssociated(withOrganizationNamed: name) {
             let name = person.departmentName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
             result.append(name)
@@ -3061,23 +3176,34 @@ public final class ContactsRepository: NSObject {
     /// `sectionedIDs(forMembers:)` (group members) so every person list orders
     /// identically.
     private func sorted(_ matched: [Contact]) -> [Contact] {
+        sorted(matched, keyContact: { $0 })
+    }
+
+    /// Generic form of `sorted(_:)`: orders an arbitrary element set by the
+    /// CURRENT `sortOrder`, reading each element's sort keys from the `Contact`
+    /// that `keyContact` yields. The `[Contact]` overload passes identity so the
+    /// two orderings stay byte-for-byte identical; the merged Organizations list
+    /// passes a synthesized name-only `Contact` for its phantom rows so records
+    /// and phantoms interleave by the same rules (a phantom has no timestamp, so
+    /// under a time order it sorts to the end, exactly like an unstamped record).
+    private func sorted<T>(_ items: [T], keyContact: (T) -> Contact) -> [T] {
         switch sortOrder {
         case .lastFirst:
-            return matched.sorted { lhs, rhs in
-                nameOrdered(lhs, rhs, primaryKey: \.lastNameSortKey)
+            return items.sorted { lhs, rhs in
+                nameOrdered(keyContact(lhs), keyContact(rhs), primaryKey: \.lastNameSortKey)
             }
         case .firstLast:
-            return matched.sorted { lhs, rhs in
-                nameOrdered(lhs, rhs, primaryKey: \.firstNameSortKey)
+            return items.sorted { lhs, rhs in
+                nameOrdered(keyContact(lhs), keyContact(rhs), primaryKey: \.firstNameSortKey)
             }
         case .created, .lastModified, .lastInteracted, .lastViewed:
             let kind = sortOrder.timestampKind ?? .modified
-            return matched.sorted { lhs, rhs in
-                let lt = timestamp(kind, for: lhs) ?? .distantPast
-                let rt = timestamp(kind, for: rhs) ?? .distantPast
+            return items.sorted { lhs, rhs in
+                let lt = timestamp(kind, for: keyContact(lhs)) ?? .distantPast
+                let rt = timestamp(kind, for: keyContact(rhs)) ?? .distantPast
                 if lt != rt { return lt > rt }   // DESC: most recent first
                 // Stable tie-break for equal (incl. both-nil) timestamps.
-                return nameOrdered(lhs, rhs, primaryKey: \.lastNameSortKey)
+                return nameOrdered(keyContact(lhs), keyContact(rhs), primaryKey: \.lastNameSortKey)
             }
         }
     }
@@ -3110,20 +3236,28 @@ public final class ContactsRepository: NSObject {
     /// buckets. `now` is injectable so time-bucket tests are deterministic; the
     /// public projections call it with `Date()`.
     private func sectioned(_ contacts: [Contact], now: Date = Date()) -> [(String, [Contact])] {
+        sectioned(contacts, keyContact: { $0 }, now: now)
+    }
+
+    /// Generic form of `sectioned(_:)`: sections an arbitrary already-sorted
+    /// element set, reading each element's section keys from the `Contact` that
+    /// `keyContact` yields (see `sorted(_:keyContact:)`). Used by the merged
+    /// Organizations list so record and phantom rows section identically.
+    private func sectioned<T>(_ items: [T], keyContact: (T) -> Contact, now: Date = Date()) -> [(String, [T])] {
         switch sortOrder {
         case .firstLast:
-            return lettered(contacts, by: \.firstNameSectionLetter)
+            return lettered(items, by: { keyContact($0).firstNameSectionLetter })
         case .lastFirst:
-            return lettered(contacts, by: \.sectionLetter)
+            return lettered(items, by: { keyContact($0).sectionLetter })
         case .created, .lastModified, .lastInteracted, .lastViewed:
-            return timeBucketed(contacts, by: sortOrder.timestampKind ?? .modified, now: now)
+            return timeBucketed(items, by: sortOrder.timestampKind ?? .modified, keyContact: keyContact, now: now)
         }
     }
 
     /// Groups by an A–Z section-letter key, sorting "#" last. Preserves the
     /// within-section order of the input list (already sorted by `filtered`).
-    private func lettered(_ contacts: [Contact], by letter: KeyPath<Contact, String>) -> [(String, [Contact])] {
-        Dictionary(grouping: contacts, by: { $0[keyPath: letter] }).map { ($0.key, $0.value) }.sorted {
+    private func lettered<T>(_ items: [T], by letter: (T) -> String) -> [(String, [T])] {
+        Dictionary(grouping: items, by: letter).map { ($0.key, $0.value) }.sorted {
             switch ($0.0, $1.0) {
             case ("#", _): return false
             case (_, "#"): return true
@@ -3145,12 +3279,12 @@ public final class ContactsRepository: NSObject {
     /// no timestamp (unreconciled or never stamped for this kind) buckets as
     /// "Earlier". Within each bucket the input order (timestamp DESC from
     /// `filtered`) is preserved.
-    private func timeBucketed(_ contacts: [Contact], by kind: ContactTimestampKind, now: Date) -> [(String, [Contact])] {
+    private func timeBucketed<T>(_ items: [T], by kind: ContactTimestampKind, keyContact: (T) -> Contact, now: Date) -> [(String, [T])] {
         let calendar = Calendar.current
-        var buckets: [String: [Contact]] = [:]
-        for contact in contacts {
-            let title = Self.bucketTitle(for: timestamp(kind, for: contact), now: now, calendar: calendar)
-            buckets[title, default: []].append(contact)
+        var buckets: [String: [T]] = [:]
+        for item in items {
+            let title = Self.bucketTitle(for: timestamp(kind, for: keyContact(item)), now: now, calendar: calendar)
+            buckets[title, default: []].append(item)
         }
         return Self.timeBucketOrder.compactMap { title in
             guard let rows = buckets[title], !rows.isEmpty else { return nil }
