@@ -438,9 +438,11 @@ struct RepositoryRefreshGenerationTests {
     // MARK: - Reentrancy: a delta that supersedes a loading reload settles isLoading
 
     /// The reported production race: an older reload set `isLoading = true` then
-    /// aborts on its stale token, while a scheduled DELTA supersedes it and
-    /// publishes. The delta must settle `isLoading = false` — otherwise the
-    /// repository stays loading forever.
+    /// aborts on its stale token, while a scheduled scoped change supersedes it
+    /// and publishes. The superseding change must settle `isLoading = false` —
+    /// otherwise the repository stays loading forever. (Under FIX A the parked
+    /// reload holds `.fullRefresh` ownership, so the scoped change inherits it
+    /// and publishes via a full read; either way it must settle loading.)
     @Test
     func eventsDeltaSupersedingLoadingReloadSettlesIsLoading() async throws {
         let root = try makeTempRoot()
@@ -491,7 +493,9 @@ struct RepositoryRefreshGenerationTests {
         #expect(repository.isLoading == false)         // settled, not stuck
     }
 
-    /// The guides twin of the loading-settle race.
+    /// The guides twin of the loading-settle race. (As above, under FIX A the
+    /// superseding scoped change inherits the parked reload's `.fullRefresh`
+    /// ownership and publishes via a full read; it must still settle loading.)
     @Test
     func guidesDeltaSupersedingLoadingReloadSettlesIsLoading() async throws {
         let root = try makeTempRoot()
@@ -612,6 +616,200 @@ struct RepositoryRefreshGenerationTests {
         #expect(counter.count == 1)
         #expect(repository.guides.count == 2)
     }
+
+    // MARK: - FIX A: a scoped change during a held reload inherits full-refresh
+
+    /// A scoped change that arrives while a DIRECT full reload is held mid-read
+    /// must inherit `.fullRefresh` ownership — never patch only its own key onto
+    /// the stale pre-reload base. `reload()` installs `(token, .fullRefresh)` up
+    /// front (matching `ContactsRepository`), so the later scoped change's
+    /// successor performs a FULL read and preserves everything the reload — and
+    /// the pending change it subsumed — brought in, not just the late key.
+    ///
+    /// Discriminating: without FIX A the reload cleared ownership to nil, so the
+    /// successor patched only C onto `{A}` and B was silently dropped.
+    @Test
+    func eventsScopedChangeDuringHeldReloadInheritsFullRefresh() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let now = Date()
+        // A is present when the base is first established.
+        _ = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        await repository.reload()                     // complete base {A}, hasLoadedOnce
+        await waitUntil { repository.events.count == 1 }
+        #expect(repository.events.count == 1)
+
+        // B and C now exist on disk; the repository does not know them yet.
+        let b = try service.createManualEvent(
+            title: "B", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(180), isAllDay: false, location: nil
+        )
+        let c = try service.createManualEvent(
+            title: "C", startDate: now.addingTimeInterval(240), endDate: now.addingTimeInterval(300), isAllDay: false, location: nil
+        )
+
+        // A scoped change naming B is already pending when the direct reload lands.
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .event, id: b.uuidString)]))
+
+        // Hold the direct reload's read: it subsumes the pending B change and reads
+        // the full window, then parks before publishing.
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        let held = Task { await repository.reload() }
+        await gate.waitUntilReached()
+
+        // While the reload is parked, a scoped change naming ONLY C arrives. Under
+        // FIX A it inherits the reload's `.fullRefresh` ownership; without it, its
+        // successor would patch only C onto the stale `{A}` base and drop B.
+        repository.readBarrierForTesting = nil
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .event, id: c.uuidString)]))
+
+        // The successor performs a FULL read and settles to {A,B,C}.
+        await waitUntil { repository.events.count == 3 }
+
+        // Release the superseded reload; its stale snapshot must not win.
+        gate.release()
+        await held.value
+
+        #expect(repository.events.count == 3)
+        #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])
+        #expect(repository.isLoading == false)
+    }
+
+    /// The guides twin of `eventsScopedChangeDuringHeldReloadInheritsFullRefresh`.
+    @Test
+    func guidesScopedChangeDuringHeldReloadInheritsFullRefresh() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        _ = try service.createGuide(from: sampleGuideSnapshot(name: "Aix"), sourceURL: nil)
+
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        await repository.reload()                     // complete base, hasLoadedOnce
+        await waitUntil { repository.guides.count == 1 }
+        #expect(repository.guides.count == 1)
+
+        let b = try service.createGuide(from: sampleGuideSnapshot(name: "Bonn"), sourceURL: nil)
+        let c = try service.createGuide(from: sampleGuideSnapshot(name: "Cork"), sourceURL: nil)
+
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .guide, id: b.uuidString)]))
+
+        let gate = ReadGate()
+        repository.readBarrierForTesting = { await gate.arriveAndWait() }
+        let held = Task { await repository.reload() }
+        await gate.waitUntilReached()
+
+        repository.readBarrierForTesting = nil
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [SidecarKey(kind: .guide, id: c.uuidString)]))
+
+        await waitUntil { repository.guides.count == 3 }
+
+        gate.release()
+        await held.value
+
+        #expect(repository.guides.count == 3)
+        #expect(Set(repository.guides.map(\.name)) == ["Aix", "Bonn", "Cork"])
+        #expect(repository.isLoading == false)
+    }
+
+    // MARK: - FIX C: a superseded scoped delta stops before subsequent scans
+
+    /// Once a scoped delta has been superseded, it must STOP at the mid-read
+    /// guard instead of running the extra link-count scan and discarding the
+    /// result at the publish guard. The delta parks after its event read; a
+    /// newer direct reload bumps the token; on release the guard fires and the
+    /// link-scan probe is never reached.
+    ///
+    /// The probe (`refreshWillScanLinksForTesting`) and the pause
+    /// (`refreshReadPauseForTesting`) are nil in production and are NOT touched
+    /// by `reload(token:)`, so the superseding full reload runs cleanly and only
+    /// the delta under test can trip either seam.
+    @Test
+    func eventsSupersededScopedDeltaSkipsLinkScan() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let now = Date()
+        let a = try service.createManualEvent(
+            title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
+        )
+
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: service, notificationCenter: center)
+        await repository.reload()                     // complete base, hasLoadedOnce
+        await waitUntil { repository.events.count == 1 }
+
+        let pause = ReadGate()
+        let linkScan = InvocationFlag()
+        repository.refreshReadPauseForTesting = { await pause.arriveAndWait() }
+        repository.refreshWillScanLinksForTesting = { linkScan.fire() }
+
+        // A scoped change naming event A AND a link: the delta reads A (where it
+        // parks) and would otherwise run a link-count scan.
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .event, id: a.uuidString),
+            SidecarKey(kind: .link, id: UUID().uuidString),
+        ]))
+        await pause.waitUntilReached()                // parked after the event read
+
+        // A direct reload supersedes the parked delta. It uses neither test seam,
+        // so it runs to completion cleanly.
+        await repository.reload()
+
+        // Release the parked delta; the mid-read guard must fire before the scan.
+        pause.release()
+        try await Task.sleep(for: .milliseconds(50))  // let the released delta run its (skipped) tail
+
+        #expect(linkScan.didFire == false)            // scan skipped, not paid-for-then-discarded
+        #expect(repository.events.count == 1)         // the reload's result stands
+        #expect(repository.isLoading == false)
+    }
+
+    /// The guides twin: a superseded scoped delta stops before the link scans.
+    @Test
+    func guidesSupersededScopedDeltaSkipsLinkScan() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root)
+
+        let g = try service.createGuide(from: sampleGuideSnapshot(name: "Berlin"), sourceURL: nil)
+
+        let center = NotificationCenter()
+        let repository = GuidesRepository(service: service, notificationCenter: center)
+        await repository.reload()
+        await waitUntil { repository.guides.count == 1 }
+
+        let pause = ReadGate()
+        let linkScan = InvocationFlag()
+        repository.refreshReadPauseForTesting = { await pause.arriveAndWait() }
+        repository.refreshWillScanLinksForTesting = { linkScan.fire() }
+
+        // A scoped change naming a guide AND a link: the delta reads the guide
+        // envelope (where it parks) and would otherwise run the link scans.
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .guide, id: g.uuidString),
+            SidecarKey(kind: .link, id: UUID().uuidString),
+        ]))
+        await pause.waitUntilReached()
+
+        await repository.reload()
+
+        pause.release()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(linkScan.didFire == false)
+        #expect(repository.guides.count == 1)
+        #expect(repository.isLoading == false)
+    }
 }
 
 // MARK: - Reentrancy test helpers
@@ -664,6 +862,16 @@ final class ReloadPostCounter {
     }
 
     func reset() { count = 0 }
+}
+
+/// Records whether a one-shot main-actor probe ever fired. Used by the FIX C
+/// tests to assert a superseded delta STOPPED before its expensive scan — the
+/// probe sits right before that scan, so `didFire` staying false proves the
+/// scan was skipped rather than run and then discarded.
+@MainActor
+final class InvocationFlag {
+    private(set) var didFire = false
+    func fire() { didFire = true }
 }
 
 // MARK: - Minimal store stubs

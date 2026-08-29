@@ -187,6 +187,23 @@ final class EventsRepository: NSObject {
     /// and prove the older read cannot overwrite the newer one.
     var readBarrierForTesting: (@MainActor () async -> Void)?
 
+    /// Test seam (nil in production, no behavior change): a barrier awaited once
+    /// inside the scoped `refresh(for:token:)` path AFTER the first envelope read
+    /// (`sidecarEvents`) and BEFORE the mid-read supersession guard, so a test can
+    /// park a scoped delta there, drive a newer refresh to bump the token, and
+    /// prove the parked delta STOPS before the extra link-count scan. Deliberately
+    /// NOT referenced by `reload(token:)`, so a superseding full reload never
+    /// trips it.
+    var refreshReadPauseForTesting: (@MainActor () async -> Void)?
+
+    /// Test seam (nil in production, no behavior change): invoked synchronously
+    /// in the scoped `refresh(for:token:)` path IMMEDIATELY before the link-count
+    /// scan — i.e. only once the mid-read guard has let execution through. A test
+    /// asserts it is NEVER called after the delta was superseded, proving the scan
+    /// was skipped rather than paid for and then discarded. Not referenced by
+    /// `reload(token:)`.
+    var refreshWillScanLinksForTesting: (@MainActor () -> Void)?
+
     /// `internal` (not `private`) so a test can establish a pending debounce
     /// synchronously — the notification path hops through a `Task`, which makes
     /// "a scoped change is already pending" impossible to set up deterministically
@@ -281,8 +298,20 @@ final class EventsRepository: NSObject {
             projectedEvents = fetched
         }
 
+        if let refreshReadPauseForTesting { await refreshReadPauseForTesting() }
+
         let refreshedLinkCounts: [String: Int]?
         if linksChanged {
+            // The event read above awaited; a newer refresh/reload (or a filter/
+            // window change, which starts its own reload) may have superseded us
+            // in the meantime. Stop BEFORE the extra link-count scan rather than
+            // pay for a projection the publish guard below would only discard.
+            guard token == refreshGeneration,
+                  requestedFilter == filter,
+                  requestedStart == windowStart,
+                  requestedEnd == windowEnd
+            else { return }
+            refreshWillScanLinksForTesting?()
             refreshedLinkCounts = await service.linkCountsByEndpointID(ofKind: .event)
         } else {
             refreshedLinkCounts = nil
@@ -348,11 +377,23 @@ final class EventsRepository: NSObject {
         pendingReload?.cancel()
         pendingReload = nil
         pendingChangeSet = nil
-        // The wholesale read also subsumes scoped keys already being read. Its
-        // generation invalidates that result, so no successor needs to inherit
-        // the old scoped ownership.
-        inFlightChangeSet = nil
-        await reload(token: nextRefreshToken())
+        let token = nextRefreshToken()
+        // INSTALL full-refresh ownership up front and HOLD it across the read —
+        // exactly as `ContactsRepository.reload()` does. A scoped change that
+        // arrives while this reload's read is still in flight then reads
+        // `inFlightChangeSet` (in `scheduleDebouncedReload`) and inherits
+        // `.fullRefresh` (`.fullRefresh.merging(scoped) == .fullRefresh`), so its
+        // successor performs a FULL read rather than patching only its keys onto
+        // a base this reload has not published yet. Clearing ownership to nil
+        // here — the previous behavior — let that successor patch one key onto
+        // the stale pre-reload base and silently drop the rest of the projection.
+        inFlightChangeSet = (token, .fullRefresh)
+        await reload(token: token)
+        // Release ownership only if it is still ours: a newer refresh that
+        // superseded us mid-read installed its own entry and must keep it.
+        if inFlightChangeSet?.token == token {
+            inFlightChangeSet = nil
+        }
     }
 
     /// Token-scoped full reload. `token` is either freshly minted (a direct
