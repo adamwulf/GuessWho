@@ -79,6 +79,24 @@ struct RepositoryRefreshGenerationTests {
 
     // MARK: - EventsRepository
 
+    /// Contact-store changes must continue to refresh event rows because
+    /// attendee presentation may depend on the updated contact projection. The
+    /// EventKit window coordinator makes this full reload a cheap cache hit.
+    @Test
+    func contactChangeTriggersEventsReload() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: makeService(root: root), notificationCenter: center)
+        let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
+
+        center.post(name: .guessWhoContactsDidChange, object: nil)
+
+        await waitUntil { counter.count == 1 }
+        #expect(counter.count == 1)
+        #expect(repository.events.isEmpty)
+    }
+
     /// A scoped sidecar change that arrives BEFORE any full load has landed must
     /// upgrade to a full reload rather than patch an empty base — otherwise the
     /// list would show only the one named event and drop every other one.

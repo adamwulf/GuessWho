@@ -160,11 +160,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // Start the package-owned external-contact-change watcher. The package
         // owns the `.CNContactStoreDidChange` observer, the change-history
         // cursor, and the coalescing; it posts `.guessWhoContactsDidChange` when
-        // an external edit lands. `ContactsRepository` subscribes to that;
-        // `EventsRepository` separately owns its `.EKEventStoreChanged`
-        // observer. The AppDelegate therefore registers no store-change
-        // observer itself — it owns the instances and kicks the watcher once
-        // at launch.
+        // an external edit lands. The repositories subscribe to that (and
+        // `EventsRepository` also owns its own `.EKEventStoreChanged` observer),
+        // so the AppDelegate registers no store-change observer itself — it owns
+        // the instances and kicks the watcher once at launch.
         //
         // Ordering against the reloads above doesn't matter: they run as Task
         // blocks not yet complete when this synchronous call fires, and the
