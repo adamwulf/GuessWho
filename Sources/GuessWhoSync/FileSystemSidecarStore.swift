@@ -925,6 +925,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         queue: DispatchQueue? = nil,
         operation: @escaping (_ reportProgress: @escaping () -> Void) throws -> Void
     ) throws {
+        // `started` fixes the operation's origin for the whole call: the busy
+        // handler's `elapsed` is TOTAL time since the operation started (its
+        // documented contract), NOT time since the last progress. Progress only
+        // resets the attempt count and re-arms the wait window; it never rebases
+        // elapsed.
+        let started = SidecarMonotonicClock.now()
         // One semaphore carries both progress and completion wakeups; the state
         // box distinguishes them (a progress wake sees `isComplete == false`).
         let semaphore = DispatchSemaphore(value: 0)
@@ -947,19 +953,19 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
 
         var attempt = 0
-        var windowStart = SidecarMonotonicClock.now()
         while true {
             let outcome = semaphore.wait(timeout: .now() + perAttemptTimeout)
             switch outcome {
             case .success:
                 // Completion wins over a coincident progress signal; a progress
-                // wake (not yet complete) resets the budget and keeps waiting.
+                // wake (not yet complete) resets the attempt count and, by
+                // looping, re-arms a fresh perAttemptTimeout window. It does NOT
+                // touch `started` — elapsed stays total.
                 if let completion = state.completionIfDone() {
                     if let error = completion { throw error }
                     return
                 }
                 attempt = 0
-                windowStart = SidecarMonotonicClock.now()
                 continue
             case .timedOut:
                 // Guard the race where the op completed just as we timed out but
@@ -968,7 +974,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
                     if let error = completion { throw error }
                     return
                 }
-                let elapsed = SidecarMonotonicClock.now() - windowStart
+                let elapsed = SidecarMonotonicClock.now() - started
                 switch busyHandler(key, attempt, elapsed) {
                 case .retry:
                     attempt += 1

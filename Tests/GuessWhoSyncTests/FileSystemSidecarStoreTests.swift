@@ -867,16 +867,19 @@ struct FileSystemSidecarStoreTests {
         let root = makeRoot()
         defer { cleanup(root) }
         let unitCount = 3
+        let perAttemptTimeout = 0.3
         let proceed = DispatchSemaphore(value: 0)
-        var attemptsSeen: [Int] = []   // handler runs on the (test) waiter thread
+        var attemptsSeen: [Int] = []          // handler runs on the (test) waiter thread
+        var elapsedSeen: [TimeInterval] = []
         let store = FileSystemSidecarStore(
             root: root,
-            busyHandler: { _, attempt, _ in
+            busyHandler: { _, attempt, elapsed in
                 attemptsSeen.append(attempt)
+                elapsedSeen.append(elapsed)
                 proceed.signal()                       // release one unit of work
                 return attempt >= 1 ? .fail : .retry   // no-reset would fail here
             },
-            perAttemptTimeout: 0.3
+            perAttemptTimeout: perAttemptTimeout
         )
 
         try store.runWithBusyHandling(key: SidecarKey(kind: .contact, id: "progress")) { reportProgress in
@@ -889,6 +892,12 @@ struct FileSystemSidecarStoreTests {
         // One consult per unit, each at attempt 0 — the reset kept the budget
         // from ever climbing to the .fail threshold, so the operation completed.
         #expect(attemptsSeen == Array(repeating: 0, count: unitCount))
+        // `elapsed` is TOTAL time since the operation started (its documented
+        // contract), NOT per-unit: it never decreases across progress resets, and
+        // by the third consult exceeds two full windows. A per-unit rebase would
+        // report ~one window each time (never reaching this bound).
+        #expect(elapsedSeen == elapsedSeen.sorted())
+        #expect((elapsedSeen.last ?? 0) >= perAttemptTimeout * 2)
     }
 
     // (2) A wedged GRANT (the coordinator never begins the accessor, so no
