@@ -1234,10 +1234,10 @@ extension GuessWhoSync {
             let preBMatches = preBEnd.kind == .event && mapping[preBEnd.id] != nil
             guard preAMatches || preBMatches else { continue }
 
-            try sidecarLocks.withLock(forKey: key) {
+            try withKeyLocked(key) { ctx in
                 // Re-read inside the lock: a concurrent setLinkNote or
                 // removeLink may have written between the pre-screen and now.
-                guard let envelope = try sidecars.read(key) else { return }
+                guard let envelope = try ctx.read() else { return }
                 guard let aCell = envelope.fields[Link.endpointAKey],
                       let bCell = envelope.fields[Link.endpointBKey],
                       let aEnd = Link.decodeEndpoint(aCell.value),
@@ -1262,9 +1262,8 @@ extension GuessWhoSync {
                         modifiedBy: deviceID
                     )
                 }
-                try sidecars.write(
-                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
-                    at: key
+                try ctx.write(
+                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields)
                 )
 
                 if let linkID = UUID(uuidString: key.id) {
