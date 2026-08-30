@@ -761,7 +761,7 @@ struct EventDetailView: View {
 
         let myLoadID = UUID()
         eventLoadID = myLoadID
-        var loadUUID = resolvedUUID
+        var adoptedUUID = resolvedUUID
         var ownsAdoption = false
         defer {
             if ownsAdoption { adoptionInFlight = false }
@@ -772,17 +772,25 @@ struct EventDetailView: View {
             adoptionInFlight = true
             ownsAdoption = true
             if let existing = await service.eventUUID(forEventKitID: ekid) {
-                loadUUID = existing.uuidString.lowercased()
+                adoptedUUID = existing.uuidString.lowercased()
             } else {
                 do {
                     let minted = try await service.linkEvent(toEventKitID: ekid)
-                    loadUUID = minted.uuidString.lowercased()
+                    adoptedUUID = minted.uuidString.lowercased()
                 } catch {
                     service.recordError("adopt event failed: \(error.localizedDescription)")
                 }
             }
             DetailLoadSignpost.end("event_adopt", adoptSignpostID)
         }
+
+        // Adoption is the only writer of `adoptedUUID`, and it is finished here.
+        // Freeze the (possibly re-pointed) value into an immutable `let` before
+        // the concurrent branches below capture it: sending a `var` into an
+        // `async let` would race that task's read against the synchronous
+        // main-actor reads (notes/tags, event envelope). A `let` String copy is
+        // Sendable, so each branch captures a value and no race is possible.
+        let loadUUID = adoptedUUID
 
         // Links and notes/tags do not depend on the cache refresh. Start their
         // reads immediately; only the event envelope itself remains ordered
