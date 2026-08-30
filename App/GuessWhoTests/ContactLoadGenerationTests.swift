@@ -4,7 +4,8 @@ import Testing
 
 /// Regression coverage for the newest-wins gate that `ContactDetailView` shares
 /// between its full contact load and its targeted event-link re-reads —
-/// `addEventLink` (post-add) and `removeEventLink` (post-remove).
+/// `addEventLink` (post-add), `removeEventLink` (post-remove), and the
+/// event-link branch of `commitLinkEditIfChanged` (post-note-edit).
 ///
 /// The defect this locks down: a targeted reread (the user just added or removed
 /// an event link) would publish the freshly-written links, and then a SLOWER
@@ -94,6 +95,31 @@ struct ContactLoadGenerationTests {
         publish(preRemoveLinks, as: fullLoad, gate: gate, into: published)
         #expect(published.eventLinkIDs == postRemoveLinks)
         #expect(!published.eventLinkIDs.contains(3))
+    }
+
+    /// A contact↔event link-note edit uses the same targeted reread pattern as
+    /// add/remove. Its post-edit note must likewise survive an older full load
+    /// that had already captured the pre-edit note.
+    @Test
+    func targetedNoteEditWinsOverEarlierSlowerFullLoad() {
+        let gate = ContactLoadGeneration()
+        var publishedNote = ""
+
+        let fullLoad = gate.begin()
+        let preEditNote = "old note"
+
+        let targetedReread = gate.begin()
+        let postEditNote = "new note"
+
+        if gate.isCurrent(targetedReread) {
+            publishedNote = postEditNote
+        }
+        #expect(publishedNote == postEditNote)
+
+        if gate.isCurrent(fullLoad) {
+            publishedNote = preEditNote
+        }
+        #expect(publishedNote == postEditNote)
     }
 
     /// The gate's raw predicate, independent of the publish helper: a superseded

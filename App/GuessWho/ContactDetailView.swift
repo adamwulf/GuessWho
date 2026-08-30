@@ -47,8 +47,9 @@ final class ContactViewedStampScheduler {
 }
 
 /// Monotonic newest-wins gate shared by the full contact load and the targeted
-/// event-link re-reads — both `addEventLink` (post-add) and `removeEventLink`
-/// (post-remove). Every load/reread mints a token via `begin()`, which
+/// event-link re-reads — `addEventLink` (post-add), `removeEventLink`
+/// (post-remove), and `commitLinkEditIfChanged` (post-note-edit). Every
+/// load/reread mints a token via `begin()`, which
 /// supersedes any token still in flight; only the newest token may publish
 /// (`isCurrent`). This is what stops a slower OLDER full load from tearing the
 /// card back to a pre-edit snapshot after a newer targeted reread has already
@@ -155,12 +156,12 @@ struct ContactDetailView: View {
     // complete contact-load snapshot).
     @State private var memberGroupsLoadID: UUID = UUID()
     // One newest-wins gate covers the complete contact-load snapshot AND the
-    // targeted event-link re-reads (`addEventLink` / `removeEventLink`). Each
-    // load/reread collects all independent reads into locals; only the newest
-    // invocation may publish its snapshot, so a slower older load can never tear
-    // the card back to stale contact/events/groups/guides/source data — nor drop
-    // a just-added link, nor restore a just-removed one, after a targeted reread
-    // has published the change.
+    // targeted event-link re-reads (`addEventLink`, `removeEventLink`, and a
+    // committed event-link note edit). Each load/reread collects all independent
+    // reads into locals; only the newest invocation may publish its snapshot, so
+    // a slower older load can never tear the card back to stale contact/events/
+    // groups/guides/source data — nor revert a targeted link mutation after its
+    // reread has published the change.
     @State private var loadGeneration = ContactLoadGeneration()
     @State private var viewedStampScheduler = ContactViewedStampScheduler()
     @State private var showingAddLinkSheet = false
@@ -2768,12 +2769,21 @@ struct ContactDetailView: View {
             // edit can never land after a subsequently-tapped delete.
             linksStore?.setNote(id: id, note: proposed)
         } else if eventLinks.contains(where: { $0.id == id }) {
+            // This targeted event-link reread participates in the same
+            // newest-wins gate as add/remove. Advance it synchronously before
+            // the note write so an older full load cannot later restore the
+            // pre-edit note; a genuinely newer load still supersedes this one.
+            let myLoadID = loadGeneration.begin()
             do {
                 // A contact↔event link's note edit goes through the shared
                 // repository link-note write (keyed on the link's own UUID, no
                 // contact resolve needed), then re-reads the event links.
                 try repository.setLinkNote(id: id, note: proposed)
-                Task { eventLinks = await repository.eventLinks(for: loadedContactID ?? self.id) }
+                Task {
+                    let links = await repository.eventLinks(for: loadedContactID ?? self.id)
+                    guard loadGeneration.isCurrent(myLoadID) else { return }
+                    eventLinks = links
+                }
             } catch {
                 service.recordError("set event-link note failed: \(error.localizedDescription)")
             }
