@@ -135,6 +135,10 @@ struct ContactDetailView: View {
     @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
+    // Forces linked-event rows to resolve their cached projections again after
+    // the post-paint refresh completes. The refresh writes through the sync
+    // engine but does not otherwise mutate observable view state.
+    @State private var linkedEventCacheRevision: UInt64 = 0
     @State private var showingEventPicker = false
     // EventKit events matched to this contact — the contact appears as an
     // attendee (matched by any email on the card) or the event's location text
@@ -2194,6 +2198,10 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func linkedEventRow(_ link: ContactLink) -> some View {
+        // Establish a dependency on the post-paint cache refresh. A cold event
+        // sidecar may briefly render as unknown so the entire contact card never
+        // waits on EventKit; the revision bump re-resolves it when refresh ends.
+        let _ = linkedEventCacheRevision
         // Resolve the link's EVENT endpoint through the repository so the app
         // never builds a `.contact` SidecarKey to walk the link. nil only for a
         // malformed/unreconciled link; the event lookup then misses → "(Unknown
@@ -2475,8 +2483,11 @@ struct ContactDetailView: View {
             }
 
             // Event-sidecar cache refresh is presentation-only and has no state
-            // to publish here. Start it after the fused read produced its UUIDs,
-            // and keep it off the path that reveals the card.
+            // to publish here. Start it after the fused read produced its UUIDs
+            // and keep it off the path that reveals the card. On a cold cache a
+            // Linked Events row may briefly say "(Unknown event)"; after the
+            // refresh finishes, the revision below makes those rows re-resolve
+            // without ever restoring the pane-wide loading spinner.
             async let refreshedLinkedEvents: Void = DetailLoadSignpost.measure(
                 "contact_refresh_linked_events"
             ) {
@@ -2503,6 +2514,7 @@ struct ContactDetailView: View {
             }
 
             await refreshedLinkedEvents
+            linkedEventCacheRevision &+= 1
         } else {
             guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = nil
@@ -2517,6 +2529,7 @@ struct ContactDetailView: View {
             eventLinks = []
             recentEvents = []
             memberGroups = []
+            addressGuides = []
             storeSourceCount = 0
             recordSources = []
         }
