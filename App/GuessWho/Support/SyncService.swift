@@ -11,6 +11,12 @@ final class SyncService {
     /// (see GuessWhoLogging notes).
     private static let log = GuessWhoLog.logger("app.sync-service")
 
+    enum RecentEventsIndexPreparationResult: String {
+        case ready
+        case skipped
+        case failed
+    }
+
     enum SidecarLocation: Equatable {
         case iCloud(URL)
         case localFallback(URL, reason: String)
@@ -590,14 +596,17 @@ final class SyncService {
     /// any user-visible load wait for it. This is deliberately best-effort:
     /// denied access or unavailable sidecar wiring makes it a no-op, and a
     /// failed warm-up is only logged because the first real lookup can retry.
-    func prepareRecentEventsIndex() async {
-        guard eventsAuthorization == .authorized, let sync else { return }
+    @discardableResult
+    func prepareRecentEventsIndex() async -> RecentEventsIndexPreparationResult {
+        guard eventsAuthorization == .authorized, let sync else { return .skipped }
         do {
             try await sync.prepareRecentEventsIndex()
+            return .ready
         } catch {
             Self.log.warning("recent events index warm-up failed", [
                 "error": error.localizedDescription
             ])
+            return .failed
         }
     }
 

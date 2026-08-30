@@ -62,3 +62,34 @@ enum DetailLoadSignpost {
         return body()
     }
 }
+
+/// Points-of-interest signposts for the three launch-time cache fills the app
+/// starts from `GuessWhoAppDelegate`: contacts, the visible events window, and
+/// the attendee/location index used by contact detail. Distinct interval names
+/// make an Instruments trace answer both questions independently: "when was
+/// startup data ready?" and "what delayed this contact?"
+enum StartupLoadSignpost {
+    static let log = OSLog(subsystem: "com.milestonemade.guesswho", category: .pointsOfInterest)
+
+    static func begin(_ name: StaticString, _ message: String = "") -> OSSignpostID {
+        let id = OSSignpostID(log: log)
+        os_signpost(.begin, log: log, name: name, signpostID: id, "%{public}s", message)
+        return id
+    }
+
+    static func end(_ name: StaticString, _ id: OSSignpostID, _ message: String = "") {
+        os_signpost(.end, log: log, name: name, signpostID: id, "%{public}s", message)
+    }
+}
+
+/// Shared monotonic elapsed-time conversion for human-readable performance
+/// breadcrumbs. Wall-clock changes cannot skew a duration measured from
+/// `DispatchTime`, and the result matches the `durationMs` convention already
+/// used by the Contacts and EventKit adapters.
+enum LoadTiming {
+    static func milliseconds(since startedAt: UInt64) -> Double {
+        let finishedAt = DispatchTime.now().uptimeNanoseconds
+        guard finishedAt >= startedAt else { return 0 }
+        return Double(finishedAt - startedAt) / 1_000_000
+    }
+}

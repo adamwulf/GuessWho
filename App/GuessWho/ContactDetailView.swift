@@ -77,6 +77,15 @@ final class ContactLoadGeneration {
     }
 }
 
+/// User-visible state of one complete contact load. The card can already be
+/// painted while `.loading`; slower sections and the full-size photo may still
+/// be in flight then. `.loaded` is the explicit done state shown in the footer.
+private enum ContactDetailLoadState: Equatable {
+    case loading
+    case loaded
+    case unavailable
+}
+
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
@@ -173,6 +182,7 @@ struct ContactDetailView: View {
     // reads depend only on this same immutable contact. A newer FULL load does.
     @State private var supplementalLoadGeneration = ContactLoadGeneration()
     @State private var viewedStampScheduler = ContactViewedStampScheduler()
+    @State private var detailLoadState: ContactDetailLoadState = .loading
     @State private var showingAddLinkSheet = false
     @State private var showingAddOrgLinkSheet = false
     @State private var showingNewNoteEditor = false
@@ -319,6 +329,12 @@ struct ContactDetailView: View {
         Group {
             if let contact {
                 loadedContent(contact)
+            } else if detailLoadState == .unavailable {
+                ContentUnavailableView(
+                    "Contact Unavailable",
+                    systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text("This contact could not be loaded.")
+                )
             } else {
                 // Centered loading state — hoisted out of the List so it sits in
                 // the middle of the pane, not top-left as the first row.
@@ -406,9 +422,6 @@ struct ContactDetailView: View {
         // Hoisted into a method — an inline multi-statement closure here blows
         // the body's type-checker budget (see PhotoChangeModifier's note).
         .task { await performInitialLoad() }
-        .task(id: contact?.contactID) {
-            await loadHeaderPhoto()
-        }
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop bypasses
             // our custom back button, so commit here too. A no-op if
@@ -428,11 +441,10 @@ struct ContactDetailView: View {
                 // Drop the decoded-photo cache FIRST (mirrors writePhoto):
                 // the loader's own didReload observer runs as a separately
                 // enqueued main-queue block, so relying on it races this Task —
-                // if loadHeaderPhoto wins the race, it re-serves the stale
-                // pre-import image from cache and returns early.
+                // the photo branch inside loadContact could otherwise re-serve
+                // the stale pre-import image from cache and return early.
                 photoLoader.invalidate(loadedContactID ?? id)
                 await loadContact(preferFresh: true)
-                await loadHeaderPhoto()
             }
         }
         // Hoisted into a method for the same reason as `performInitialLoad` —
@@ -523,6 +535,8 @@ struct ContactDetailView: View {
                 Section { activityFooter }
 
                 sourceFooterSection
+
+                contactLoadStatusSection
             }
         }
         // ⌘Return commits the active note editor from the keyboard, mirroring
@@ -925,16 +939,29 @@ struct ContactDetailView: View {
             headerPhoto = nil
             return
         }
+        await loadHeaderPhoto(for: contact)
+    }
 
-        let id = contact.contactID
+    /// Photo branch used by the complete-load tracker. Taking the resolved
+    /// contact explicitly lets `loadContact` start this work as soon as the
+    /// core snapshot publishes without waiting for a second SwiftUI `.task`
+    /// lifecycle callback.
+    private func loadHeaderPhoto(for loaded: Contact) async {
+        let id = loaded.contactID
         if let cached = photoLoader.cachedImage(for: id, kind: .fullSize) {
-            headerPhoto = cached
+            if self.contact?.contactID == id {
+                headerPhoto = cached
+            }
             return
         }
         if let cachedThumbnail = photoLoader.cachedImage(for: id, kind: .thumbnail) {
-            headerPhoto = cachedThumbnail
+            if self.contact?.contactID == id {
+                headerPhoto = cachedThumbnail
+            }
         } else {
-            headerPhoto = nil
+            if self.contact?.contactID == id {
+                headerPhoto = nil
+            }
         }
 
         let fetched = await DetailLoadSignpost.measure("contact_header_photo") {
@@ -952,6 +979,11 @@ struct ContactDetailView: View {
     /// load/decode failures that never reach the store; the CNContact save
     /// failure itself is logged by `CNContactStoreAdapter.setImageData`.
     private static let photoLog = GuessWhoLog.logger("contact.photo")
+
+    /// End-to-end contact-load milestones. Adapter-level fetch logs answer
+    /// which store call was slow; this stable channel answers when the visible
+    /// core became usable and when every footer-tracked branch was done.
+    private static let loadLog = GuessWhoLog.logger("app.contact-load")
 
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
     /// size, and writes them to the CNContact itself (not a sidecar), so the new
@@ -2113,6 +2145,36 @@ struct ContactDetailView: View {
         "In \(ListFormatter.localizedString(byJoining: recordSources.map(\.name)))"
     }
 
+    /// Persistent, unambiguous load state at the bottom of the card. The core
+    /// contact remains fast: it is published before secondary reads finish, and
+    /// this footer alone transitions from an in-progress spinner to a quiet
+    /// checkmark once events, groups, guides, sources, linked-event refresh,
+    /// and the header photo have all settled.
+    @ViewBuilder
+    private var contactLoadStatusSection: some View {
+        Section {
+            HStack(spacing: 8) {
+                if detailLoadState == .loading {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading contact details…")
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Contact loaded")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .centeredRowContent(alignment: .center)
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("contact-detail-load-state")
+        }
+    }
+
     /// The inline new-note editor: body text field plus a date picker so the
     /// user can back-date the note. Shared by the read-mode `notesSection`
     /// and the contact-edit `editableNotesSection`. The picker binding maps
@@ -2425,6 +2487,14 @@ struct ContactDetailView: View {
     private func loadContact(preferFresh: Bool = false) async {
         let myLoadID = loadGeneration.begin()
         let mySupplementalLoadID = supplementalLoadGeneration.begin()
+        let timingID = UUID()
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let loadReason = preferFresh ? "fresh" : "cached"
+        detailLoadState = .loading
+        Self.loadLog.info("contact load started", [
+            "loadID": timingID.uuidString,
+            "reason": loadReason
+        ])
 
         // Resolve the live contact off the view's captured `ContactID`.
         // `contact(id:)` is reconcile-stable (chases the guessWhoID pointer when
@@ -2446,6 +2516,7 @@ struct ContactDetailView: View {
         }
         DetailLoadSignpost.end("contact_resolve", resolveSignpostID)
         if let loaded {
+            let coreSignpostID = DetailLoadSignpost.begin("contact_core_ready")
             // Every branch below is independent after contact resolution. Start
             // the slow secondary lookups immediately, but do NOT make the card
             // wait for them: the 10-year EventKit scan in particular can take a
@@ -2480,7 +2551,20 @@ struct ContactDetailView: View {
                 fieldsStore = linkResult.stores.fields
                 linksStore = linkResult.stores.links
                 eventLinks = linkResult.eventLinks
+                DetailLoadSignpost.end("contact_core_ready", coreSignpostID, "published")
+                Self.loadLog.info("contact core ready", [
+                    "loadID": timingID.uuidString,
+                    "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+                ])
+            } else {
+                DetailLoadSignpost.end("contact_core_ready", coreSignpostID, "superseded")
             }
+
+            // The photo is not on the core critical path, but it is part of the
+            // footer's explicit done contract. Start it only after the coherent
+            // card snapshot is available, in parallel with the remaining
+            // secondary reads.
+            async let loadedHeaderPhoto: Void = loadHeaderPhoto(for: loaded)
 
             // Event-sidecar cache refresh is presentation-only and has no state
             // to publish here. Start it after the fused read produced its UUIDs
@@ -2513,11 +2597,27 @@ struct ContactDetailView: View {
                 recordSources = sources.recordSources
             }
 
-            await refreshedLinkedEvents
+            await (refreshedLinkedEvents, loadedHeaderPhoto)
             linkedEventCacheRevision &+= 1
+            guard supplementalLoadGeneration.isCurrent(mySupplementalLoadID) else {
+                Self.loadLog.info("contact load finished", [
+                    "loadID": timingID.uuidString,
+                    "status": "superseded",
+                    "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+                ])
+                return
+            }
+            detailLoadState = .loaded
+            DetailLoadSignpost.event("contact_detail_ready", "loaded")
+            Self.loadLog.info("contact load finished", [
+                "loadID": timingID.uuidString,
+                "status": "loaded",
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
         } else {
             guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = nil
+            detailLoadState = .unavailable
             // Contact disappeared from the store (e.g. deleted via the edit
             // sheet). Tear down sidecar-bound state so nothing keeps reading/
             // writing a dead identity while the view animates away. Safe to nil
@@ -2532,6 +2632,12 @@ struct ContactDetailView: View {
             addressGuides = []
             storeSourceCount = 0
             recordSources = []
+            DetailLoadSignpost.event("contact_detail_ready", "unavailable")
+            Self.loadLog.info("contact load finished", [
+                "loadID": timingID.uuidString,
+                "status": "unavailable",
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
         }
     }
 
