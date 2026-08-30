@@ -27,6 +27,34 @@ final class ContactViewedStampScheduler {
     }
 }
 
+/// Monotonic newest-wins gate shared by the full contact load and the targeted
+/// link re-reads (`addEventLink`). Every load/reread mints a token via
+/// `begin()`, which supersedes any token still in flight; only the newest token
+/// may publish (`isCurrent`). This is what stops a slower OLDER full load from
+/// tearing the card back to a pre-edit snapshot after a newer targeted reread
+/// has already published the freshly-written links: the older load's token is
+/// no longer current, so its guarded publish is dropped. Both paths share this
+/// ONE token so "newest wins" is defined across them, not per-path.
+@MainActor
+final class ContactLoadGeneration {
+    private(set) var current: UUID = UUID()
+
+    /// Start a new load/reread and return its token. Advances the generation so
+    /// any in-flight token is superseded and can no longer publish.
+    @discardableResult
+    func begin() -> UUID {
+        let token = UUID()
+        current = token
+        return token
+    }
+
+    /// Whether `token` is still the newest generation — i.e. its coherent
+    /// single-paint publish may proceed. A superseded token returns false.
+    func isCurrent(_ token: UUID) -> Bool {
+        current == token
+    }
+}
+
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
@@ -105,11 +133,13 @@ struct ContactDetailView: View {
     // membership scan can't overwrite the freshest result (or vice versa with a
     // complete contact-load snapshot).
     @State private var memberGroupsLoadID: UUID = UUID()
-    // One token covers the complete contact-load snapshot. Each load collects
-    // all independent reads into locals; only the newest invocation may publish
-    // its snapshot, so a slower older load can never tear the card back to stale
-    // contact/events/groups/guides/source data.
-    @State private var contactLoadID: UUID = UUID()
+    // One newest-wins gate covers the complete contact-load snapshot AND the
+    // targeted link re-reads. Each load/reread collects all independent reads
+    // into locals; only the newest invocation may publish its snapshot, so a
+    // slower older load can never tear the card back to stale
+    // contact/events/groups/guides/source data — nor restore pre-edit links
+    // after a targeted `addEventLink` reread has published the new one.
+    @State private var loadGeneration = ContactLoadGeneration()
     @State private var viewedStampScheduler = ContactViewedStampScheduler()
     @State private var showingAddLinkSheet = false
     @State private var showingAddOrgLinkSheet = false
@@ -2261,6 +2291,11 @@ struct ContactDetailView: View {
     }
 
     private func addEventLink(eventUUID: String, note: String) async {
+        // Join the newest-wins generation BEFORE the write, so a slower full
+        // load already in flight is superseded immediately and can never
+        // publish its pre-edit snapshot on top of the link we are about to add
+        // — the older load resolved its links before this write landed.
+        let myLoadID = loadGeneration.begin()
         do {
             // The write resolves-or-mints the CONTACT endpoint's GuessWho UUID,
             // so a never-touched contact can link an event.
@@ -2287,6 +2322,9 @@ struct ContactDetailView: View {
             // One main-actor publication: a first link may have minted and
             // re-keyed the contact, so the contact and every sidecar-bound view
             // model must become visible together under the newly-resolved ID.
+            // Guard on the shared generation so a NEWER load/reread started
+            // while this one read still wins — newest-wins across both paths.
+            guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = loaded
             notesStore = stores.notes
             fieldsStore = stores.fields
@@ -2294,6 +2332,7 @@ struct ContactDetailView: View {
             eventLinks = fused.eventLinks
         } else {
             let links = await repository.eventLinks(for: id)
+            guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = nil
             eventLinks = links
         }
@@ -2332,8 +2371,7 @@ struct ContactDetailView: View {
     }
 
     private func loadContact(preferFresh: Bool = false) async {
-        let myLoadID = UUID()
-        contactLoadID = myLoadID
+        let myLoadID = loadGeneration.begin()
 
         // Resolve the live contact off the view's captured `ContactID`.
         // `contact(id:)` is reconcile-stable (chases the guessWhoID pointer when
@@ -2386,7 +2424,7 @@ struct ContactDetailView: View {
                 fetchedAddressGuides
             )
 
-            guard contactLoadID == myLoadID else { return }
+            guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = loaded
             notesStore = linkResult.stores.notes
             fieldsStore = linkResult.stores.fields
@@ -2400,7 +2438,7 @@ struct ContactDetailView: View {
             storeSourceCount = sources.storeCount
             recordSources = sources.recordSources
         } else {
-            guard contactLoadID == myLoadID else { return }
+            guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = nil
             // Contact disappeared from the store (e.g. deleted via the edit
             // sheet). Tear down sidecar-bound state so nothing keeps reading/
