@@ -576,11 +576,28 @@ final class SyncService {
               !(emails.isEmpty && addresses.isEmpty) else { return [] }
         do {
             return try await sync.recentEvents(
-                matchingEmails: emails, matchingLocations: addresses, limit: limit
+                matchingEmails: emails,
+                matchingLocations: addresses,
+                limit: limit
             )
         } catch {
             lastError = "recent events lookup failed: \(error.localizedDescription)"
             return []
+        }
+    }
+
+    /// Fill the adapter's attendee/location index after launch without making
+    /// any user-visible load wait for it. This is deliberately best-effort:
+    /// denied access or unavailable sidecar wiring makes it a no-op, and a
+    /// failed warm-up is only logged because the first real lookup can retry.
+    func prepareRecentEventsIndex() async {
+        guard eventsAuthorization == .authorized, let sync else { return }
+        do {
+            try await sync.prepareRecentEventsIndex()
+        } catch {
+            Self.log.warning("recent events index warm-up failed", [
+                "error": error.localizedDescription
+            ])
         }
     }
 

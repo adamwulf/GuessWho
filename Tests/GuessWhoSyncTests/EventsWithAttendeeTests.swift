@@ -236,4 +236,44 @@ struct EventsWithAttendeeTests {
         )
         #expect(counting.eventsWithAttendeeCount == before + 1)
     }
+
+    @Test
+    func prepareRecentEventsIndexMakesOneAdapterPreparationCall() async throws {
+        let counting = CountingEventStore(wrapping: InMemoryEventStore())
+        let anchor = Date(timeIntervalSince1970: 1_000_000)
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: counting,
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-A",
+            recentEventsAsOf: anchor
+        )
+
+        try await sync.prepareRecentEventsIndex()
+        _ = try await sync.recentEvents(matchingEmails: ["alice@example.com"])
+
+        #expect(counting.prepareEventsWithAttendeeIndexCount == 1)
+        #expect(counting.preparedAttendeeIndexIntervals == counting.eventsWithAttendeeIntervals)
+        #expect(counting.preparedAttendeeIndexIntervals == [
+            GuessWhoSync.recentEventsWindow(asOf: anchor)
+        ])
+    }
+
+    @Test
+    func defaultRecentEventCallsReuseOneLaunchStableInterval() async throws {
+        let counting = CountingEventStore(wrapping: InMemoryEventStore())
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: counting,
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-A",
+            recentEventsAsOf: Date(timeIntervalSince1970: 2_000_000)
+        )
+
+        _ = try await sync.recentEvents(matchingEmails: ["first@example.com"])
+        _ = try await sync.recentEvents(matchingEmails: ["second@example.com"])
+
+        #expect(counting.eventsWithAttendeeIntervals.count == 2)
+        #expect(counting.eventsWithAttendeeIntervals[0] == counting.eventsWithAttendeeIntervals[1])
+    }
 }

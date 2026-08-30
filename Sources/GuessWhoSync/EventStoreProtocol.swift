@@ -78,6 +78,13 @@ public protocol EventStoreProtocol: Sendable {
         limit: Int
     ) throws -> [Event]
 
+    /// Best-effort optimization hint for callers that know an attendee lookup
+    /// window will be needed soon. A store with an attendee index may build it
+    /// now; stores without one may do nothing. This must not change lookup
+    /// results, and implementations must not retain a result fetched without
+    /// read authorization.
+    func prepareEventsWithAttendeeIndex(in interval: DateInterval) throws
+
     /// Migration-only: resolve a legacy `eventIdentifier` (the pre-pivot
     /// sidecar key shape) to an Event whose `eventKitID` is the canonical
     /// `calendarItemExternalIdentifier`. Returns nil if the EKEvent no longer
@@ -114,4 +121,11 @@ public protocol EventStoreProtocol: Sendable {
         isAllDay: Bool,
         location: String?
     ) throws
+}
+
+public extension EventStoreProtocol {
+    /// Most stores (including the in-memory testing adapter) need no explicit
+    /// preparation. Keeping the default a no-op makes this a pure performance
+    /// hint rather than a new correctness requirement for every conformer.
+    func prepareEventsWithAttendeeIndex(in interval: DateInterval) throws {}
 }

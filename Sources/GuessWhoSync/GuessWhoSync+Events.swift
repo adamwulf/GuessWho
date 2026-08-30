@@ -676,14 +676,11 @@ extension GuessWhoSync {
     public func recentEvents(
         matchingEmails emails: Set<String>,
         matchingLocations locations: Set<String> = [],
-        asOf now: Date = Date(),
+        asOf now: Date? = nil,
         limit: Int = 10
     ) async throws -> [Event] {
         guard !(emails.isEmpty && locations.isEmpty), limit > 0 else { return [] }
-        let calendar = Calendar(identifier: .gregorian)
-        let start = calendar.date(byAdding: .year, value: -10, to: now) ?? now
-        let end = calendar.date(byAdding: .year, value: 1, to: now) ?? now
-        let interval = DateInterval(start: start, end: end)
+        let interval = now.map { Self.recentEventsWindow(asOf: $0) } ?? recentEventsInterval
         // Capture `self` (which is `@unchecked Sendable`) rather than `events`
         // directly — `EventStoreProtocol` doesn't conform to `Sendable`, so a
         // bare capture would trip the `SendableClosureCaptures` warning even
@@ -703,6 +700,32 @@ extension GuessWhoSync {
                 }
             }
         }
+    }
+
+    /// Best-effort preparation for the same exact EventKit window consumed by
+    /// `recentEvents`. The adapter's operation is synchronous, so launch code
+    /// can await this wrapper without blocking its actor. Both preparation and
+    /// default lookups use the instance's launch-stable interval; explicit
+    /// `asOf` lookup calls remain available for deterministic tests.
+    public func prepareRecentEventsIndex() async throws {
+        let interval = recentEventsInterval
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try self.events.prepareEventsWithAttendeeIndex(in: interval)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    internal static func recentEventsWindow(asOf now: Date) -> DateInterval {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.date(byAdding: .year, value: -10, to: now) ?? now
+        let end = calendar.date(byAdding: .year, value: 1, to: now) ?? now
+        return DateInterval(start: start, end: end)
     }
 
     // MARK: - Private helpers

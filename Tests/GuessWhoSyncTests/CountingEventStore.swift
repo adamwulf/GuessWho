@@ -17,6 +17,9 @@ final class CountingEventStore: EventStoreProtocol, @unchecked Sendable {
     private(set) var fetchEventsOnDayCount: Int = 0
     private(set) var searchEventsCount: Int = 0
     private(set) var eventsWithAttendeeCount: Int = 0
+    private(set) var prepareEventsWithAttendeeIndexCount: Int = 0
+    private(set) var eventsWithAttendeeIntervals: [DateInterval] = []
+    private(set) var preparedAttendeeIndexIntervals: [DateInterval] = []
     private(set) var createEventCount: Int = 0
     private(set) var updateEventCount: Int = 0
 
@@ -75,10 +78,19 @@ final class CountingEventStore: EventStoreProtocol, @unchecked Sendable {
     ) throws -> [Event] {
         lock.lock()
         eventsWithAttendeeCount += 1
+        eventsWithAttendeeIntervals.append(interval)
         lock.unlock()
         return try inner.eventsWithAttendee(
             matchingEmails: emails, orLocations: locations, in: interval, limit: limit
         )
+    }
+
+    func prepareEventsWithAttendeeIndex(in interval: DateInterval) throws {
+        lock.lock()
+        prepareEventsWithAttendeeIndexCount += 1
+        preparedAttendeeIndexIntervals.append(interval)
+        lock.unlock()
+        try inner.prepareEventsWithAttendeeIndex(in: interval)
     }
 
     func createEvent(

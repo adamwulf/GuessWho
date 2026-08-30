@@ -46,6 +46,11 @@ public final class GuessWhoSync: @unchecked Sendable {
     internal let sidecarLocks = PerKeyLockTable<SidecarKey>()
     internal let placeCorpusCache = PlaceCorpusCache()
 
+    /// One launch-stable contact-detail Recent Events window. The attendee
+    /// index is keyed by exact interval, so recomputing `Date()` per contact
+    /// would miss by seconds and repeat the 11-year EventKit walk.
+    internal let recentEventsInterval: DateInterval
+
     private let notificationCenter: NotificationCenter
     private var sidecarChangeObserver: NSObjectProtocol?
 
@@ -68,12 +73,14 @@ public final class GuessWhoSync: @unchecked Sendable {
         sidecars: SidecarStoreProtocol,
         deviceID: String,
         contactCursorStore: ContactSyncCursorStore? = nil,
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        recentEventsAsOf: Date = Date()
     ) {
         self.contacts = contacts
         self.events = events
         self.sidecars = sidecars
         self.deviceID = deviceID
+        self.recentEventsInterval = Self.recentEventsWindow(asOf: recentEventsAsOf)
         self.contactCursorStore = contactCursorStore
         self.notificationCenter = notificationCenter
         self.sidecarChangeObserver = nil
