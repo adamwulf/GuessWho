@@ -29,6 +29,10 @@ struct EventDetailView: View {
     /// could each see `event == nil` and both call `linkEvent`, minting
     /// duplicate sidecars.
     @State private var adoptionInFlight: Bool = false
+    // Only the newest complete reload may publish. This protects the coherent
+    // event/links/notes/tags/guides snapshot when a mutation-triggered reload
+    // overlaps another reload.
+    @State private var eventLoadID: UUID = UUID()
 
     @State private var event: Event?
     @State private var links: [ContactLink] = []
@@ -124,14 +128,6 @@ struct EventDetailView: View {
             // no sidecar exists (e.g. a failed adoption), so a view can never
             // mint one. Mirrors ContactDetailView's on-open stampViewed.
             service.stampEventViewed(uuid: resolvedUUID)
-        }
-        // Recompute the guide rows whenever the event's location text changes
-        // (including the initial nil → loaded transition). Empty/nil location
-        // yields no rows.
-        .task(id: event?.location) {
-            locationGuides = await DetailLoadSignpost.measure("event_location_guides") {
-                await service.guides(matchingLocation: event?.location)
-            }
         }
         .toolbar {
             // Star sits BEFORE the existing Menu so the toolbar reads
@@ -745,52 +741,81 @@ struct EventDetailView: View {
     }
 
     private func reload() async {
-        // Overall detail-open region: adopt → cache refresh → envelope reads →
-        // link walk. Mirrors `ContactDetailView`'s "contact_detail_load".
+        // Overall detail-open region: ordered adoption, then overlapping cache
+        // refresh/link/envelope branches, followed by the event-dependent guide
+        // read. Mirrors `ContactDetailView`'s "contact_detail_load".
         let loadSignpostID = DetailLoadSignpost.begin("event_detail_load")
         defer { DetailLoadSignpost.end("event_detail_load", loadSignpostID) }
+
         // Adopt-on-load: if the incoming UUID is the synthetic
         // `Event.stableID(forEventKitID:)` for an ephemeral EventKit row
         // (no sidecar exists at that key) AND we were handed an
         // `eventKitID` hint, mint or look up the real sidecar UUID first
         // so every read/write below targets it. Guarded by
         // `adoptionInFlight` so concurrent reloads can't double-mint.
-        if service.event(uuid: resolvedUUID) == nil,
-           let ekid = eventKitID
-        {
+        let needsAdoption = service.event(uuid: resolvedUUID) == nil && eventKitID != nil
+        // A reload arriving while another is mid-adoption must BAIL, not read
+        // against the still-synthetic UUID. The owner keeps this flag until its
+        // complete coherent snapshot is published.
+        guard !(needsAdoption && adoptionInFlight) else { return }
+
+        let myLoadID = UUID()
+        eventLoadID = myLoadID
+        var loadUUID = resolvedUUID
+        var ownsAdoption = false
+        defer {
+            if ownsAdoption { adoptionInFlight = false }
+        }
+
+        if needsAdoption, let ekid = eventKitID {
             let adoptSignpostID = DetailLoadSignpost.begin("event_adopt")
-            defer { DetailLoadSignpost.end("event_adopt", adoptSignpostID) }
-            // Adoption spans awaits now. A reload arriving while another is
-            // mid-adoption must BAIL, not fall through: reading against the
-            // still-synthetic `resolvedUUID` below would render empty state.
-            // The in-flight reload finishes and renders the adopted event.
-            guard !adoptionInFlight else { return }
             adoptionInFlight = true
-            defer { adoptionInFlight = false }
+            ownsAdoption = true
             if let existing = await service.eventUUID(forEventKitID: ekid) {
-                resolvedUUID = existing.uuidString.lowercased()
+                loadUUID = existing.uuidString.lowercased()
             } else {
                 do {
                     let minted = try await service.linkEvent(toEventKitID: ekid)
-                    resolvedUUID = minted.uuidString.lowercased()
+                    loadUUID = minted.uuidString.lowercased()
                 } catch {
                     service.recordError("adopt event failed: \(error.localizedDescription)")
                 }
             }
+            DetailLoadSignpost.end("event_adopt", adoptSignpostID)
         }
-        await DetailLoadSignpost.measure("event_refresh") {
-            await service.refreshEvent(uuid: resolvedUUID)
+
+        // Links and notes/tags do not depend on the cache refresh. Start their
+        // reads immediately; only the event envelope itself remains ordered
+        // after refresh so it reflects any EventKit cache-cell write-back.
+        let endpoint = SidecarKey(kind: .event, id: loadUUID)
+        async let refreshed: Void = DetailLoadSignpost.measure("event_refresh") {
+            await service.refreshEvent(uuid: loadUUID)
         }
-        event = DetailLoadSignpost.measureSync("event_read") {
-            service.event(uuid: resolvedUUID)
+        async let fetchedLinks = DetailLoadSignpost.measure("event_links") {
+            await service.links(at: endpoint)
         }
-        links = await DetailLoadSignpost.measure("event_links") {
-            await service.links(at: eventEndpoint)
+        let fetchedNotesAndTags = DetailLoadSignpost.measureSync("event_notes_tags") {
+            (
+                service.eventNotes(forEventUUID: loadUUID),
+                service.eventTags(forEventUUID: loadUUID)
+            )
         }
-        let notesTagsSignpostID = DetailLoadSignpost.begin("event_notes_tags")
-        notes = service.eventNotes(forEventUUID: resolvedUUID)
-        tags = service.eventTags(forEventUUID: resolvedUUID)
-        DetailLoadSignpost.end("event_notes_tags", notesTagsSignpostID)
+        await refreshed
+        let fetchedEvent = DetailLoadSignpost.measureSync("event_read") {
+            service.event(uuid: loadUUID)
+        }
+        async let fetchedLocationGuides = DetailLoadSignpost.measure("event_location_guides") {
+            await service.guides(matchingLocation: fetchedEvent?.location)
+        }
+        let (loadedLinks, loadedGuides) = await (fetchedLinks, fetchedLocationGuides)
+
+        guard eventLoadID == myLoadID else { return }
+        resolvedUUID = loadUUID
+        event = fetchedEvent
+        links = loadedLinks
+        notes = fetchedNotesAndTags.0
+        tags = fetchedNotesAndTags.1
+        locationGuides = loadedGuides
         // Attendee→contact and linked-contact→contact resolution happen on
         // demand in the rows via the package repository's O(1) indexes, so
         // there's no app-side uuid/email→Contact map to build or hold here.

@@ -71,27 +71,24 @@ struct ContactDetailView: View {
     // on each contact load — separate from `eventLinks`, which are user-curated
     // contact↔event links.
     @State private var recentEvents: [Event] = []
-    // Token bumped at the start of every `reloadRecentEvents` call. The async
-    // load captures it and bails on assignment when it no longer matches, so a
-    // stale in-flight fetch (after navigation, a contact-emails edit, or rapid
-    // reloads) can't overwrite the freshest result. Stronger than a localID
-    // check, which can't tell two same-localID reloads apart.
-    @State private var recentEventsLoadID: UUID = UUID()
     // Imported guides whose places' addresses contain one of this contact's
     // structured street lines. Rendered directly under the address rows, in the
-    // same info section. Loaded async via SyncService on each contact load,
-    // guarded by its own load token like `recentEvents`.
+    // same info section. Loaded async via SyncService on each contact load.
     @State private var addressGuides: [GuideAddressMatcher.Match] = []
-    @State private var addressGuidesLoadID: UUID = UUID()
     // Contacts.app groups this record belongs to (people AND organizations — a
     // group holds either). Loaded async via the repository on each contact load.
     @State private var memberGroups: [ContactGroup] = []
     @State private var storeSourceCount: Int = 0
     @State private var recordSources: [ContactSource] = []
-    // Token bumped at the start of every `reloadGroups` call so a stale in-flight
-    // membership scan can't overwrite the freshest result, exactly like
-    // `recentEventsLoadID` guards the recent-events fetch.
+    // Token bumped at the start of every targeted `reloadGroups` call so a stale
+    // membership scan can't overwrite the freshest result (or vice versa with a
+    // complete contact-load snapshot).
     @State private var memberGroupsLoadID: UUID = UUID()
+    // One token covers the complete contact-load snapshot. Each load collects
+    // all independent reads into locals; only the newest invocation may publish
+    // its snapshot, so a slower older load can never tear the card back to stale
+    // contact/events/groups/guides/source data.
+    @State private var contactLoadID: UUID = UUID()
     @State private var showingAddLinkSheet = false
     @State private var showingAddOrgLinkSheet = false
     @State private var showingNewNoteEditor = false
@@ -151,6 +148,22 @@ struct ContactDetailView: View {
     @State private var editingLinkID: UUID?
     @State private var draftLinkNote: String = ""
     @State private var editLinkStartSnapshot: String = ""
+
+    /// Sidecar view models are built off to the side during a detail load and
+    /// become visible only with the rest of the completed load snapshot. The
+    /// notes/fields initializers still perform their existing synchronous
+    /// envelope reads on the main actor; the link-store corpus walk suspends and
+    /// runs off-main inside the repository.
+    private struct SidecarStoresSnapshot {
+        let notes: NotesStore
+        let fields: FieldsStore
+        let links: ContactLinksStore
+    }
+
+    private struct SourcesSnapshot {
+        let storeCount: Int
+        let recordSources: [ContactSource]
+    }
 
     private var isEditingAnything: Bool {
         // Keyboard focus alone isn't enough: interacting with a note editor's
@@ -708,9 +721,10 @@ struct ContactDetailView: View {
     /// (correct), and the FIRST write mints via the package's resolve-or-mint
     /// primitive.
     private func performInitialLoad() async {
-        // Overall detail-open region: resolve → sidecar stores → link walks →
-        // sources → recent events → groups → guides → viewed stamp. Sub-steps
-        // carry their own signpost regions inside `loadContact`.
+        // Overall detail-open region: resolve, then overlapping sidecar/link/
+        // source/recent-event/group/guide branches, then viewed stamp. Sub-steps
+        // carry their own signpost regions inside `loadContact` so Instruments
+        // shows the overlap directly.
         let loadSignpostID = DetailLoadSignpost.begin("contact_detail_load")
         defer { DetailLoadSignpost.end("contact_detail_load", loadSignpostID) }
         await loadContact()
@@ -2232,9 +2246,26 @@ struct ContactDetailView: View {
         // and re-key the notes/links stores onto the minted identity. Targeted
         // re-read (not a full loadContact) to avoid refiring refreshLinkedEvents;
         // the freshly-added event refreshes when the user opens its detail view.
-        contact = repository.contact(id: id)
-        if let contact { await rebuildSidecarStores(for: contact) }
-        eventLinks = await repository.eventLinks(for: loadedContactID ?? id)
+        let loaded = repository.contact(id: id)
+        if let loaded {
+            let loadedID = loaded.contactID
+            async let rebuiltStores = buildSidecarStores(for: loaded)
+            async let fetchedEventLinks = repository.eventLinks(for: loadedID)
+            let (stores, links) = await (rebuiltStores, fetchedEventLinks)
+
+            // One main-actor publication: a first link may have minted and
+            // re-keyed the contact, so the contact and every sidecar-bound view
+            // model must become visible together under the newly-resolved ID.
+            contact = loaded
+            notesStore = stores.notes
+            fieldsStore = stores.fields
+            linksStore = stores.links
+            eventLinks = links
+        } else {
+            let links = await repository.eventLinks(for: id)
+            contact = nil
+            eventLinks = links
+        }
     }
 
     private func removeEventLink(_ id: UUID) {
@@ -2270,6 +2301,9 @@ struct ContactDetailView: View {
     }
 
     private func loadContact(preferFresh: Bool = false) async {
+        let myLoadID = UUID()
+        contactLoadID = myLoadID
+
         // Resolve the live contact off the view's captured `ContactID`.
         // `contact(id:)` is reconcile-stable (chases the guessWhoID pointer when
         // present, else falls back to the token's always-present `localID`), so
@@ -2290,48 +2324,56 @@ struct ContactDetailView: View {
         }
         DetailLoadSignpost.end("contact_resolve", resolveSignpostID)
         if let loaded {
-            // Gather the sidecar-backed state BEFORE publishing `contact`:
-            // the store and link reads are async scans now, and publishing
-            // the card first would paint it with the link sections missing,
-            // then pop them in a beat later. Collecting into locals and
-            // assigning together restores the old single-paint appearance —
-            // only the I/O moved off the main actor.
-            await DetailLoadSignpost.measure("contact_sidecar_stores") {
-                await rebuildSidecarStores(for: loaded)
-            }
-            // Event links keyed on the LOADED contact's ContactID (carries
-            // the current guessWhoID; the nav `id` lacks it after a
-            // first-write mint). Empty for an unreconciled contact.
+            // Every branch below is independent after contact resolution. The
+            // event-link branch preserves its internal dependency chain:
+            // links -> event endpoint UUIDs -> EventKit cache refresh. All
+            // branches collect into locals and publish together only after the
+            // slowest read finishes, keeping the card a coherent single paint.
             let linkID = loaded.contactID
-            let fetchedEventLinks = await DetailLoadSignpost.measure("contact_event_links") {
-                await repository.eventLinks(for: linkID)
+            let groupLoadID = UUID()
+            memberGroupsLoadID = groupLoadID
+
+            async let rebuiltStores = DetailLoadSignpost.measure("contact_sidecar_stores") {
+                await buildSidecarStores(for: loaded)
             }
+            async let fetchedEventLinks = loadEventLinksAndRefreshEvents(for: linkID)
+            async let fetchedSources = DetailLoadSignpost.measure("contact_sources") {
+                await fetchSources(for: loaded)
+            }
+            async let fetchedRecentEvents = DetailLoadSignpost.measure("contact_recent_events") {
+                await fetchRecentEvents(for: loaded)
+            }
+            async let fetchedGroups = DetailLoadSignpost.measure("contact_groups") {
+                await fetchGroups(for: loaded)
+            }
+            async let fetchedAddressGuides = DetailLoadSignpost.measure("contact_address_guides") {
+                await fetchAddressGuides(for: loaded)
+            }
+
+            let (stores, links, sources, events, groups, guides) = await (
+                rebuiltStores,
+                fetchedEventLinks,
+                fetchedSources,
+                fetchedRecentEvents,
+                fetchedGroups,
+                fetchedAddressGuides
+            )
+
+            guard contactLoadID == myLoadID else { return }
             contact = loaded
-            eventLinks = fetchedEventLinks
-            await DetailLoadSignpost.measure("contact_sources") {
-                await reloadSources(for: loaded)
+            notesStore = stores.notes
+            fieldsStore = stores.fields
+            linksStore = stores.links
+            eventLinks = links
+            recentEvents = events
+            if memberGroupsLoadID == groupLoadID {
+                memberGroups = groups
             }
-            // The EventKit cache refresh stays on SyncService (an
-            // event-surface concern). The event UUIDs derive from the links
-            // just read (one disk scan, not a second `linkedEventUUIDs`
-            // walk) via the repository's pure per-link resolver, so the app
-            // still builds no `.contact` SidecarKey. Initial load only.
-            let eventUUIDs = fetchedEventLinks.compactMap {
-                repository.eventEndpointUUID(of: $0, for: linkID)
-            }
-            await DetailLoadSignpost.measure("contact_refresh_linked_events") {
-                await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
-            }
-            await DetailLoadSignpost.measure("contact_recent_events") {
-                await reloadRecentEvents(for: loaded)
-            }
-            await DetailLoadSignpost.measure("contact_groups") {
-                await reloadGroups(for: loaded)
-            }
-            await DetailLoadSignpost.measure("contact_address_guides") {
-                await reloadAddressGuides(for: loaded)
-            }
+            addressGuides = guides
+            storeSourceCount = sources.storeCount
+            recordSources = sources.recordSources
         } else {
+            guard contactLoadID == myLoadID else { return }
             contact = nil
             // Contact disappeared from the store (e.g. deleted via the edit
             // sheet). Tear down sidecar-bound state so nothing keeps reading/
@@ -2377,7 +2419,7 @@ struct ContactDetailView: View {
         try? await repository.stampInteracted(loadedContactID ?? id)
     }
 
-    /// (Re)build the notes/links stores keyed on the LOADED contact's ContactID
+    /// Build notes/fields/links stores keyed on the LOADED contact's ContactID
     /// — NOT the nav `id`, whose `guessWhoID` is still nil after a first-write
     /// mint: `repository.notes(for:)` / `links(for:)` read the `guessWhoID`
     /// directly off the passed ContactID. Rebuild when that identity changes — a
@@ -2386,24 +2428,34 @@ struct ContactDetailView: View {
     /// identity would read/write a dead file. Built for EVERY contact (even
     /// unreconciled): reads return empty until a write reconciles + mints, so
     /// notes/links can be added to a never-touched contact.
-    private func rebuildSidecarStores(for loaded: Contact) async {
+    private func buildSidecarStores(for loaded: Contact) async -> SidecarStoresSnapshot {
         let loadedID = loaded.contactID
-        if notesStore?.id != loadedID {
-            notesStore = NotesStore(repository: repository, id: loadedID)
-        } else {
-            notesStore?.reload()
-        }
-        if fieldsStore?.id != loadedID {
-            fieldsStore = FieldsStore(repository: repository, id: loadedID)
-        } else {
-            fieldsStore?.reload()
-        }
+        let notes = NotesStore(repository: repository, id: loadedID)
+        let fields = FieldsStore(repository: repository, id: loadedID)
         // The links store constructs EMPTY (its read walks every link sidecar,
-        // so it can't run in init) — always await a reload, fresh or reused.
-        if linksStore?.id != loadedID {
-            linksStore = ContactLinksStore(repository: repository, id: loadedID)
+        // so it can't run in init) — await its background-hop reload before
+        // returning the unpublished snapshot.
+        let links = ContactLinksStore(repository: repository, id: loadedID)
+        await links.reload()
+        return SidecarStoresSnapshot(notes: notes, fields: fields, links: links)
+    }
+
+    /// Event links are fetched first because their far endpoints are the input
+    /// to the linked-event refresh. That ordering stays strict inside this one
+    /// branch while the complete branch overlaps every other contact read.
+    private func loadEventLinksAndRefreshEvents(for linkID: ContactID) async -> [ContactLink] {
+        let fetched = await DetailLoadSignpost.measure("contact_event_links") {
+            await repository.eventLinks(for: linkID)
         }
-        await linksStore?.reload()
+        // Derive UUIDs from the links already read (no second corpus walk), and
+        // keep the EventKit cache work on SyncService as before.
+        let eventUUIDs = fetched.compactMap {
+            repository.eventEndpointUUID(of: $0, for: linkID)
+        }
+        await DetailLoadSignpost.measure("contact_refresh_linked_events") {
+            await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
+        }
+        return fetched
     }
 
     /// Fetch up to 10 EventKit events matched to this contact — either the
@@ -2412,9 +2464,7 @@ struct ContactDetailView: View {
     /// on a background queue inside `SyncService.recentEvents`; the awaited
     /// result resumes on the main actor. No-op when the contact has neither an
     /// email nor a street address.
-    private func reloadRecentEvents(for contact: Contact) async {
-        let myLoadID = UUID()
-        recentEventsLoadID = myLoadID
+    private func fetchRecentEvents(for contact: Contact) async -> [Event] {
         let emails = Set(contact.emailAddresses.map { $0.value })
         // Street lines drive location matching — city/state alone would sweep
         // in every unrelated venue in the same town.
@@ -2424,60 +2474,49 @@ struct ContactDetailView: View {
                 .filter { !$0.isEmpty }
         )
         guard !(emails.isEmpty && addresses.isEmpty) else {
-            // Synchronous from the token bump above — no suspension, no race.
-            recentEvents = []
-            return
+            return []
         }
-        let fetched = await service.recentEvents(forEmails: emails, addresses: addresses, limit: 10)
-        // Bail if a newer reload started while this fetch was in flight (see
-        // `recentEventsLoadID`).
-        guard recentEventsLoadID == myLoadID else { return }
-        recentEvents = fetched
+        return await service.recentEvents(forEmails: emails, addresses: addresses, limit: 10)
     }
 
     /// Fetch the imported guides whose places' addresses contain one of this
     /// contact's structured street lines, for the guide rows under the address
-    /// section. Guarded by a load token so a stale in-flight scan can't
-    /// overwrite a newer result — see `reloadRecentEvents`.
-    private func reloadAddressGuides(for contact: Contact) async {
-        let myLoadID = UUID()
-        addressGuidesLoadID = myLoadID
+    /// section. The complete load's token prevents a stale snapshot from being
+    /// published after a newer load.
+    private func fetchAddressGuides(for contact: Contact) async -> [GuideAddressMatcher.Match] {
         let streets = Set(
             contact.postalAddresses
                 .map { $0.value.street.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )
-        guard !streets.isEmpty else {
-            // Synchronous from the token bump above — no suspension, no race.
-            addressGuides = []
-            return
-        }
-        let fetched = await service.guides(containingAddresses: streets)
-        guard addressGuidesLoadID == myLoadID else { return }
-        addressGuides = fetched
+        guard !streets.isEmpty else { return [] }
+        return await service.guides(containingAddresses: streets)
     }
 
     /// Fetch the Contacts.app groups this record belongs to (a membership scan
-    /// over every group, so it runs after the card paints rather than blocking
-    /// it). Guarded by a load token so a stale in-flight scan can't overwrite a
-    /// newer result — see `reloadRecentEvents`.
+    /// over every group). A dedicated token also protects the targeted group-
+    /// membership notification reload from racing the complete load snapshot.
     private func reloadGroups(for contact: Contact) async {
         let myLoadID = UUID()
         memberGroupsLoadID = myLoadID
-        let fetched = await repository.groups(containing: contact)
+        let fetched = await fetchGroups(for: contact)
         guard memberGroupsLoadID == myLoadID else { return }
         memberGroups = fetched
     }
 
-    private func reloadSources(for contact: Contact) async {
+    private func fetchGroups(for contact: Contact) async -> [ContactGroup] {
+        await repository.groups(containing: contact)
+    }
+
+    private func fetchSources(for contact: Contact) async -> SourcesSnapshot {
         // The footer only shows when the store has more than one account, so
         // skip the per-record account scan entirely for the common single-
         // account user: `sources(for:)` runs one whole-address-book unified
         // fetch per account, and paying that on every card open for a footer
         // that can never render is pure waste. Gate it on the cheap count.
         let count = await repository.contactSources().count
-        storeSourceCount = count
-        recordSources = count > 1 ? await repository.sources(for: contact) : []
+        let sources = count > 1 ? await repository.sources(for: contact) : []
+        return SourcesSnapshot(storeCount: count, recordSources: sources)
     }
 
     // MARK: - Notes
