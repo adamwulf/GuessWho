@@ -163,6 +163,11 @@ struct ContactDetailView: View {
     // groups/guides/source data — nor revert a targeted link mutation after its
     // reread has published the change.
     @State private var loadGeneration = ContactLoadGeneration()
+    // Full-load-only generation for secondary sections. Targeted event-link
+    // rereads intentionally supersede the core snapshot above, but they do not
+    // make an in-flight recent-events/groups/guides/sources result stale: those
+    // reads depend only on this same immutable contact. A newer FULL load does.
+    @State private var supplementalLoadGeneration = ContactLoadGeneration()
     @State private var viewedStampScheduler = ContactViewedStampScheduler()
     @State private var showingAddLinkSheet = false
     @State private var showingAddOrgLinkSheet = false
@@ -2411,6 +2416,7 @@ struct ContactDetailView: View {
 
     private func loadContact(preferFresh: Bool = false) async {
         let myLoadID = loadGeneration.begin()
+        let mySupplementalLoadID = supplementalLoadGeneration.begin()
 
         // Resolve the live contact off the view's captured `ContactID`.
         // `contact(id:)` is reconcile-stable (chases the guessWhoID pointer when
@@ -2432,16 +2438,16 @@ struct ContactDetailView: View {
         }
         DetailLoadSignpost.end("contact_resolve", resolveSignpostID)
         if let loaded {
-            // Every branch below is independent after contact resolution. The
-            // fused link branch reads the link corpus ONCE and preserves its
-            // internal chain: one snapshot -> seed the links store + derive the
-            // event endpoint UUIDs -> EventKit cache refresh. All branches
-            // collect into locals and publish together only after the slowest
-            // read finishes, keeping the card a coherent single paint.
+            // Every branch below is independent after contact resolution. Start
+            // the slow secondary lookups immediately, but do NOT make the card
+            // wait for them: the 10-year EventKit scan in particular can take a
+            // long time on a large calendar. The core contact + sidecar/link
+            // snapshot publishes as soon as its single fused link read finishes;
+            // secondary sections publish together in a later paint.
             let groupLoadID = UUID()
             memberGroupsLoadID = groupLoadID
 
-            async let fusedLinks = loadLinkStoresAndEvents(for: loaded)
+            async let fusedLinks = loadLinkStores(for: loaded)
             async let fetchedSources = DetailLoadSignpost.measure("contact_sources") {
                 await fetchSources(for: loaded)
             }
@@ -2455,27 +2461,48 @@ struct ContactDetailView: View {
                 await fetchAddressGuides(for: loaded)
             }
 
-            let (linkResult, sources, events, groups, guides) = await (
-                fusedLinks,
+            let linkResult = await fusedLinks
+
+            // Publish the usable card before awaiting any secondary lookup.
+            // The shared core generation still prevents an older full load from
+            // overwriting a newer event-link mutation snapshot.
+            if loadGeneration.isCurrent(myLoadID) {
+                contact = loaded
+                notesStore = linkResult.stores.notes
+                fieldsStore = linkResult.stores.fields
+                linksStore = linkResult.stores.links
+                eventLinks = linkResult.eventLinks
+            }
+
+            // Event-sidecar cache refresh is presentation-only and has no state
+            // to publish here. Start it after the fused read produced its UUIDs,
+            // and keep it off the path that reveals the card.
+            async let refreshedLinkedEvents: Void = DetailLoadSignpost.measure(
+                "contact_refresh_linked_events"
+            ) {
+                await service.refreshLinkedEvents(eventUUIDs: linkResult.eventUUIDs)
+            }
+
+            let (sources, events, groups, guides) = await (
                 fetchedSources,
                 fetchedRecentEvents,
                 fetchedGroups,
                 fetchedAddressGuides
             )
 
-            guard loadGeneration.isCurrent(myLoadID) else { return }
-            contact = loaded
-            notesStore = linkResult.stores.notes
-            fieldsStore = linkResult.stores.fields
-            linksStore = linkResult.stores.links
-            eventLinks = linkResult.eventLinks
-            recentEvents = events
-            if memberGroupsLoadID == groupLoadID {
-                memberGroups = groups
+            // Targeted event-link rereads do not invalidate these contact-only
+            // results. Only a newer complete load may supersede them.
+            if supplementalLoadGeneration.isCurrent(mySupplementalLoadID) {
+                recentEvents = events
+                if memberGroupsLoadID == groupLoadID {
+                    memberGroups = groups
+                }
+                addressGuides = guides
+                storeSourceCount = sources.storeCount
+                recordSources = sources.recordSources
             }
-            addressGuides = guides
-            storeSourceCount = sources.storeCount
-            recordSources = sources.recordSources
+
+            await refreshedLinkedEvents
         } else {
             guard loadGeneration.isCurrent(myLoadID) else { return }
             contact = nil
@@ -2552,17 +2579,20 @@ struct ContactDetailView: View {
     /// links, replacing the two back-to-back walks (the links store's own reload
     /// plus a separate `eventLinks(for:)`) that ran per open. From that one
     /// snapshot it seeds the sidecar stores' links store (no second walk) and
-    /// derives the event endpoint UUIDs that feed the EventKit linked-event
-    /// refresh, then returns the built stores and the event links for the single
-    /// coherent publish in `loadContact`. The read/refresh chain stays strict
-    /// inside this one branch while the branch overlaps every other contact read.
+    /// derives the event endpoint UUIDs that feed the later EventKit linked-event
+    /// refresh, then returns all three values for staged publication in
+    /// `loadContact`.
     ///
     /// Keyed on `loaded.contactID` (the LOADED identity carrying the current
     /// `guessWhoID`), so a first-write mint is read off the live UUID, not the
     /// stale nav `id`.
-    private func loadLinkStoresAndEvents(
+    private func loadLinkStores(
         for loaded: Contact
-    ) async -> (stores: SidecarStoresSnapshot, eventLinks: [ContactLink]) {
+    ) async -> (
+        stores: SidecarStoresSnapshot,
+        eventLinks: [ContactLink],
+        eventUUIDs: [String]
+    ) {
         let linkID = loaded.contactID
         // ONE link-corpus walk for both link kinds.
         let fused = await DetailLoadSignpost.measure("contact_event_links") {
@@ -2573,15 +2603,12 @@ struct ContactDetailView: View {
         let stores = DetailLoadSignpost.measureSync("contact_sidecar_stores") {
             buildSidecarStores(for: loaded, contactLinks: fused.contactLinks)
         }
-        // Derive UUIDs from the event links already read (no third corpus walk),
-        // and keep the EventKit cache work on SyncService as before.
+        // Derive UUIDs from the event links already read (no third corpus walk).
+        // The caller starts the refresh only after it has revealed the card.
         let eventUUIDs = fused.eventLinks.compactMap {
             repository.eventEndpointUUID(of: $0, for: linkID)
         }
-        await DetailLoadSignpost.measure("contact_refresh_linked_events") {
-            await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
-        }
-        return (stores, fused.eventLinks)
+        return (stores, fused.eventLinks, eventUUIDs)
     }
 
     /// Fetch up to 10 EventKit events matched to this contact — either the

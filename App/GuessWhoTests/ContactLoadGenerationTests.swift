@@ -155,4 +155,34 @@ struct ContactLoadGenerationTests {
         #expect(gate.isCurrent(newerFullLoad))
         #expect(!gate.isCurrent(reread))
     }
+
+    /// Secondary contact-only sections have their own full-load generation.
+    /// Once the core card is visible, an event-link mutation may supersede the
+    /// core link snapshot without throwing away an already-running Recent
+    /// Events / Groups / Guides / Sources read for that same contact.
+    @Test
+    func targetedRereadDoesNotSupersedeSameContactSupplementalLoad() {
+        let coreGate = ContactLoadGeneration()
+        let supplementalGate = ContactLoadGeneration()
+
+        let fullCoreLoad = coreGate.begin()
+        let fullSupplementalLoad = supplementalGate.begin()
+
+        // The core contact + link snapshot can paint immediately.
+        #expect(coreGate.isCurrent(fullCoreLoad))
+
+        // A link mutation starts while slower secondary sections are still
+        // loading. It supersedes only the core snapshot.
+        let targetedReread = coreGate.begin()
+        #expect(coreGate.isCurrent(targetedReread))
+        #expect(!coreGate.isCurrent(fullCoreLoad))
+        #expect(supplementalGate.isCurrent(fullSupplementalLoad))
+
+        // A genuinely newer full load still supersedes both phases.
+        let newerCoreLoad = coreGate.begin()
+        let newerSupplementalLoad = supplementalGate.begin()
+        #expect(coreGate.isCurrent(newerCoreLoad))
+        #expect(supplementalGate.isCurrent(newerSupplementalLoad))
+        #expect(!supplementalGate.isCurrent(fullSupplementalLoad))
+    }
 }
