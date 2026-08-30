@@ -5,7 +5,11 @@ import Testing
 @testable import GuessWhoSync
 import GuessWhoSyncTesting
 
-@Suite("EKEventStoreAdapter window coalescing")
+// The cases below deliberately park dedicated threads at the EventKit boundary.
+// Keep the cases serial relative to one another so the full package run cannot
+// exhaust its thread budget before a gated worker starts; concurrency within
+// each case remains unchanged and is the behavior under test.
+@Suite("EKEventStoreAdapter window coalescing", .serialized)
 struct EKEventStoreAdapterCoalescingTests {
     private func makeAdapter(
         center: NotificationCenter = NotificationCenter(),

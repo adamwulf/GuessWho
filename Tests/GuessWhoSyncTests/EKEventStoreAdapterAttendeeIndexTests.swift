@@ -9,7 +9,12 @@ import Testing
 /// verbatim from the pre-index linear scan — email/location matching, the
 /// latest-MATCHING-occurrence collapse, descending-start order, and the limit —
 /// plus the invalidation discipline shared with the raw window coordinator.
-@Suite("EKEventStoreAdapter attendee index")
+// These tests intentionally create blocking OS threads to prove single-flight
+// and invalidation interleavings. Running every case in this suite at once as
+// part of the 1,000+ test package run can exhaust the process thread budget and
+// strand a BlockingFuture before its thread starts. Serialize this suite's
+// cases; each individual concurrency test still exercises its intended race.
+@Suite("EKEventStoreAdapter attendee index", .serialized)
 struct EKEventStoreAdapterAttendeeIndexTests {
     private func makeAdapter(
         center: NotificationCenter = NotificationCenter(),
