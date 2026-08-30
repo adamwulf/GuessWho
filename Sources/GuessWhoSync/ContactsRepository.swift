@@ -85,6 +85,17 @@ public enum ContactsRepositoryDidReloadKey {
 /// mechanics so all UI clients observe one coherent view of the address book,
 /// and preserves the app's established list-query behavior as a transitional
 /// compatibility API.
+public enum ContactsRepositoryReloadOutcome: Equatable, Sendable {
+    /// This invocation owns the authoritative cache publication. `itemCount`
+    /// may legitimately be zero (an empty address book or denied access).
+    case published(itemCount: Int)
+    /// The Contacts fetch failed. The repository still publishes its settled
+    /// empty fallback, but callers must not describe that fallback as ready.
+    case failed(message: String)
+    /// A newer direct reload superseded this invocation before publication.
+    case superseded
+}
+
 @MainActor
 @Observable
 public final class ContactsRepository: NSObject {
@@ -123,6 +134,16 @@ public final class ContactsRepository: NSObject {
     public private(set) var contacts: [Contact] = []
     public private(set) var isLoading = false
     public private(set) var lastError: String?
+    /// Outcome of the most recent winning direct reload. Unlike `lastError`,
+    /// this cannot be polluted by an unrelated group/sidecar operation and is
+    /// therefore safe for cold-cache consumers deciding whether a miss means
+    /// "absent" or "the authoritative fetch failed."
+    public private(set) var lastReloadOutcome: ContactsRepositoryReloadOutcome?
+    /// False only before the first winning direct reload settles. A completed
+    /// failed reload still flips this true: a cache miss is then authoritative
+    /// for this attempt (and `lastError` explains why data was unavailable).
+    public private(set) var hasCompletedInitialLoad = false
+    @ObservationIgnored private var initialLoadWaiters: [CheckedContinuation<Void, Never>] = []
     public var peopleSearch = ""
     public var organizationsSearch = ""
 
@@ -331,7 +352,8 @@ public final class ContactsRepository: NSObject {
     /// Rebuild the cache from Contacts. A failed fetch leaves an empty cache
     /// and records the error; this preserves the existing app behavior for a
     /// denied permission or a transient Contacts failure.
-    public func reload() async {
+    @discardableResult
+    public func reload() async -> ContactsRepositoryReloadOutcome {
         // A full reload participates in the shared sidecar-refresh generation
         // scheme (see `refreshGeneration`): it advances the token up front —
         // superseding any older in-flight reload AND any queued sidecar delta —
@@ -368,16 +390,19 @@ public final class ContactsRepository: NSObject {
         inFlightSidecarChangeSet = (generation, .fullRefresh)
         isLoading = true
         var fetchedContacts = false
+        var fetchFailure: String?
         do {
             let fetched = try await contactsStore.fetchAll()
-            guard contactGeneration == contactReloadGeneration else { return }
+            guard contactGeneration == contactReloadGeneration else { return .superseded }
             setContacts(fetched)
             lastError = nil
             fetchedContacts = true
         } catch {
-            guard contactGeneration == contactReloadGeneration else { return }
+            guard contactGeneration == contactReloadGeneration else { return .superseded }
             setContacts([])
-            lastError = "Contacts fetch failed: \(error.localizedDescription)"
+            let message = "Contacts fetch failed: \(error.localizedDescription)"
+            lastError = message
+            fetchFailure = message
         }
         if fetchedContacts {
             await repairPendingCreationTimestamps()
@@ -406,15 +431,38 @@ public final class ContactsRepository: NSObject {
         // A sidecar-only refresh does not: even when it superseded the projection
         // reads above, the Contacts array was still freshly published and must
         // announce `contactDataChanged: true` for state restoration and caches.
-        guard contactGeneration == contactReloadGeneration else { return }
+        guard contactGeneration == contactReloadGeneration else { return .superseded }
         // NotificationCenter can deliver synchronously. Consumers must observe
         // the settled loading state when they apply their post-reload snapshot.
         // Check ownership first: a stale reload must mutate nothing, including
         // loading state. The winning delta settles it on its own completion.
         isLoading = false
+        let outcome: ContactsRepositoryReloadOutcome
+        if let fetchFailure {
+            outcome = .failed(message: fetchFailure)
+        } else {
+            outcome = .published(itemCount: contacts.count)
+        }
+        lastReloadOutcome = outcome
+        hasCompletedInitialLoad = true
+        let waiters = initialLoadWaiters
+        initialLoadWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
         postDidReload()
         if inFlightSidecarChangeSet?.generation == generation {
             inFlightSidecarChangeSet = nil
+        }
+        return outcome
+    }
+
+    /// Suspend a cold-cache consumer until the first winning direct reload has
+    /// either published or failed. Registering the continuation on this
+    /// MainActor-isolated repository closes the check/register race: the reload
+    /// cannot flip `hasCompletedInitialLoad` between those two operations.
+    public func waitUntilInitialLoadCompletes() async {
+        guard !hasCompletedInitialLoad else { return }
+        await withCheckedContinuation { continuation in
+            initialLoadWaiters.append(continuation)
         }
     }
 

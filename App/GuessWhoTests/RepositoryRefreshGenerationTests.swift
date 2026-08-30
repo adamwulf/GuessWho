@@ -199,7 +199,7 @@ struct RepositoryRefreshGenerationTests {
         #expect(afterDelta.count == 3)
 
         // A full reload settles to the same set the delta produced.
-        await repository.reload()
+        let newerOutcome = await repository.reload()
         await waitUntil { repository.events.count == 3 }
         #expect(Set(repository.events.map(\.id)) == afterDelta)
     }
@@ -377,8 +377,10 @@ struct RepositoryRefreshGenerationTests {
 
         // Release the older read; its stale {A,B} snapshot must not win.
         gate.release()
-        await older.value
+        let olderOutcome = await older.value
 
+        #expect(newerOutcome == .published(itemCount: 3))
+        #expect(olderOutcome == .superseded)
         #expect(repository.events.count == 3)
         #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])
     }
@@ -410,7 +412,7 @@ struct RepositoryRefreshGenerationTests {
         await waitUntil { repository.guides.count == 2 }
 
         gate.release()
-        await older.value
+        _ = await older.value
 
         #expect(repository.guides.count == 2)
         #expect(Set(repository.guides.map(\.name)) == ["Berlin", "Lisbon"])
@@ -539,7 +541,7 @@ struct RepositoryRefreshGenerationTests {
 
         // Release the older read; it must abort without touching loading state.
         gate.release()
-        await older.value
+        _ = await older.value
 
         #expect(repository.events.count == 3)
         #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])
@@ -624,7 +626,7 @@ struct RepositoryRefreshGenerationTests {
 
         // Release the parked reload; it must complete and publish {A,B}.
         gate.release()
-        await initial.value
+        _ = await initial.value
 
         #expect(repository.events.count == 2)          // not stranded
         #expect(repository.isLoading == false)
@@ -729,7 +731,7 @@ struct RepositoryRefreshGenerationTests {
 
         // Release the superseded reload; its stale snapshot must not win.
         gate.release()
-        await held.value
+        _ = await held.value
 
         #expect(repository.events.count == 3)
         #expect(Set(repository.events.map(\.title)) == ["A", "B", "C"])

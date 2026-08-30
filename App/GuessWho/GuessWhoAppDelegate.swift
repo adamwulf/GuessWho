@@ -151,13 +151,25 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             let signpostID = StartupLoadSignpost.begin("startup_contacts_cache")
             Self.startupLoadLog.info("startup cache load started", ["cache": "contacts"])
             await service.requestContactsAccessIfNeeded()
-            await contactsRepository.reload()
-            let status = contactsRepository.lastError == nil ? "ready" : "failed"
+            let outcome = await contactsRepository.reload()
+            let status: String
+            let itemCount: Int
+            switch outcome {
+            case .published(let count):
+                status = "ready"
+                itemCount = count
+            case .failed:
+                status = "failed"
+                itemCount = contactsRepository.contacts.count
+            case .superseded:
+                status = "superseded"
+                itemCount = contactsRepository.contacts.count
+            }
             StartupLoadSignpost.end("startup_contacts_cache", signpostID, status)
             Self.startupLoadLog.info("startup cache load finished", [
                 "cache": "contacts",
                 "status": status,
-                "items": "\(contactsRepository.contacts.count)",
+                "items": "\(itemCount)",
                 "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
             ])
         }
@@ -174,12 +186,25 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             // cannot read pre-migration keys.
             await service.migrateEventsIfNeeded()
             await service.requestEventsAccessIfNeeded()
-            await eventsRepository.reload(trigger: "app-launch")
-            StartupLoadSignpost.end("startup_events_cache", signpostID, "ready")
+            let outcome = await eventsRepository.reload(trigger: "app-launch")
+            let status: String
+            let itemCount: Int
+            switch outcome {
+            case .published(let count):
+                status = "ready"
+                itemCount = count
+            case .failed:
+                status = "failed"
+                itemCount = eventsRepository.events.count
+            case .superseded:
+                status = "superseded"
+                itemCount = eventsRepository.events.count
+            }
+            StartupLoadSignpost.end("startup_events_cache", signpostID, status)
             Self.startupLoadLog.info("startup cache load finished", [
                 "cache": "events",
-                "status": "ready",
-                "items": "\(eventsRepository.events.count)",
+                "status": status,
+                "items": "\(itemCount)",
                 "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
             ])
 

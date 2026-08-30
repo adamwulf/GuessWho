@@ -366,12 +366,46 @@ struct CNContactStoreAdapterTests {
         #expect(joined)
 
         spy.releaseFirstFetch()
-        await first.value
-        await second.value
+        let firstOutcome = await first.value
+        let secondOutcome = await second.value
 
         #expect(spy.fetchCount == 1)
+        #expect(firstOutcome == .superseded)
+        #expect(secondOutcome == .published(itemCount: 1))
         #expect(repository.contacts.first?.givenName == "Snapshot 1")
         #expect(repository.isLoading == false)
+        #expect(repository.hasCompletedInitialLoad)
+    }
+
+    @Test @MainActor
+    func initialLoadWaiterResumesOnlyAfterWinningReloadPublishes() async {
+        let spy = BlockingFetchAllSpy()
+        let adapter = CNContactStoreAdapter(fetchAllWork: { _, keys in
+            spy.fetch(keys: keys)
+        })
+        let repository = ContactsRepository(
+            contacts: adapter,
+            notificationCenter: NotificationCenter()
+        )
+
+        let reload = Task { @MainActor in await repository.reload() }
+        while spy.fetchCount == 0 { await Task.yield() }
+
+        var waiterFinished = false
+        let waiter = Task { @MainActor in
+            await repository.waitUntilInitialLoadCompletes()
+            waiterFinished = true
+        }
+        await Task.yield()
+        #expect(!waiterFinished)
+        #expect(!repository.hasCompletedInitialLoad)
+
+        spy.releaseFirstFetch()
+        let outcome = await reload.value
+        #expect(outcome == .published(itemCount: 1))
+        await waiter.value
+        #expect(waiterFinished)
+        #expect(repository.hasCompletedInitialLoad)
     }
 
     @Test @MainActor

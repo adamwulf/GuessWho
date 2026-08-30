@@ -2502,6 +2502,13 @@ struct ContactDetailView: View {
             "loadID": timingID.uuidString,
             "reason": loadReason
         ])
+        func logFinished(_ status: String) {
+            Self.loadLog.info("contact load finished", [
+                "loadID": timingID.uuidString,
+                "status": status,
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
+        }
 
         // Resolve the live contact off the view's captured `ContactID`.
         // `contact(id:)` is reconcile-stable (chases the guessWhoID pointer when
@@ -2512,13 +2519,31 @@ struct ContactDetailView: View {
         let resolveSignpostID = DetailLoadSignpost.begin(
             "contact_resolve", preferFresh ? "fresh" : "cache"
         )
-        let loaded: Contact?
+        var loaded: Contact?
         if preferFresh, let fresh = try? await repository.editableContact(id: id) {
             // Post-save read: unifiedContact(withIdentifier:) is more consistent
             // than the enumerate path the repository cache uses on Catalyst right
             // after a write.
             loaded = fresh
         } else {
+            loaded = repository.contact(id: id)
+        }
+
+        // A cold repository cache is not evidence that the contact is gone.
+        // Keep the pane-wide spinner up until the first winning direct reload
+        // settles, then resolve again from its authoritative cache. The
+        // repository continuation is race-free: registration and completion
+        // both happen on MainActor.
+        if loaded == nil, !repository.hasCompletedInitialLoad {
+            let waitSignpostID = DetailLoadSignpost.begin("contact_wait_initial_cache")
+            await repository.waitUntilInitialLoadCompletes()
+            DetailLoadSignpost.end("contact_wait_initial_cache", waitSignpostID)
+            guard loadGeneration.isCurrent(myLoadID),
+                  supplementalLoadGeneration.isCurrent(mySupplementalLoadID) else {
+                DetailLoadSignpost.end("contact_resolve", resolveSignpostID, "superseded")
+                logFinished("superseded")
+                return
+            }
             loaded = repository.contact(id: id)
         }
         DetailLoadSignpost.end("contact_resolve", resolveSignpostID)
@@ -2552,20 +2577,28 @@ struct ContactDetailView: View {
             // Publish the usable card before awaiting any secondary lookup.
             // The shared core generation still prevents an older full load from
             // overwriting a newer event-link mutation snapshot.
-            if loadGeneration.isCurrent(myLoadID) {
-                contact = loaded
-                notesStore = linkResult.stores.notes
-                fieldsStore = linkResult.stores.fields
-                linksStore = linkResult.stores.links
-                eventLinks = linkResult.eventLinks
-                DetailLoadSignpost.end("contact_core_ready", coreSignpostID, "published")
-                Self.loadLog.info("contact core ready", [
-                    "loadID": timingID.uuidString,
-                    "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
-                ])
-            } else {
+            guard loadGeneration.isCurrent(myLoadID) else {
                 DetailLoadSignpost.end("contact_core_ready", coreSignpostID, "superseded")
+                // A targeted event-link reread advances only the shared core
+                // generation; a newer FULL load advances the supplemental one
+                // too and owns the footer. Restore the prior card's settled
+                // footer only in the targeted-reread case.
+                if supplementalLoadGeneration.isCurrent(mySupplementalLoadID), contact != nil {
+                    detailLoadState = .loaded
+                }
+                logFinished("superseded")
+                return
             }
+            contact = loaded
+            notesStore = linkResult.stores.notes
+            fieldsStore = linkResult.stores.fields
+            linksStore = linkResult.stores.links
+            eventLinks = linkResult.eventLinks
+            DetailLoadSignpost.end("contact_core_ready", coreSignpostID, "published")
+            Self.loadLog.info("contact core ready", [
+                "loadID": timingID.uuidString,
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
 
             // The photo is not on the core critical path, but it is part of the
             // footer's explicit done contract. Start it only after the coherent
@@ -2609,24 +2642,27 @@ struct ContactDetailView: View {
             // finishes, so the total wait stays the max of the two, not the sum.
             await refreshedLinkedEvents
             await loadedHeaderPhoto
-            linkedEventCacheRevision &+= 1
-            guard supplementalLoadGeneration.isCurrent(mySupplementalLoadID) else {
-                Self.loadLog.info("contact load finished", [
-                    "loadID": timingID.uuidString,
-                    "status": "superseded",
-                    "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
-                ])
+            guard loadGeneration.isCurrent(myLoadID),
+                  supplementalLoadGeneration.isCurrent(mySupplementalLoadID) else {
+                // See the core-publish guard above: if only a targeted reread
+                // superseded us, all supplemental branches have nevertheless
+                // settled and the newer event-link snapshot is already visible.
+                if supplementalLoadGeneration.isCurrent(mySupplementalLoadID), contact != nil {
+                    detailLoadState = .loaded
+                }
+                logFinished("superseded")
                 return
             }
+            linkedEventCacheRevision &+= 1
             detailLoadState = .loaded
             DetailLoadSignpost.event("contact_detail_ready", "loaded")
-            Self.loadLog.info("contact load finished", [
-                "loadID": timingID.uuidString,
-                "status": "loaded",
-                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
-            ])
+            logFinished("loaded")
         } else {
-            guard loadGeneration.isCurrent(myLoadID) else { return }
+            guard loadGeneration.isCurrent(myLoadID),
+                  supplementalLoadGeneration.isCurrent(mySupplementalLoadID) else {
+                logFinished("superseded")
+                return
+            }
             contact = nil
             detailLoadState = .unavailable
             // Contact disappeared from the store (e.g. deleted via the edit
@@ -2643,12 +2679,14 @@ struct ContactDetailView: View {
             addressGuides = []
             storeSourceCount = 0
             recordSources = []
-            DetailLoadSignpost.event("contact_detail_ready", "unavailable")
-            Self.loadLog.info("contact load finished", [
-                "loadID": timingID.uuidString,
-                "status": "unavailable",
-                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
-            ])
+            let terminalStatus: String
+            if case .failed = repository.lastReloadOutcome {
+                terminalStatus = "failed"
+            } else {
+                terminalStatus = "unavailable"
+            }
+            DetailLoadSignpost.event("contact_detail_finished", terminalStatus)
+            logFinished(terminalStatus)
         }
     }
 
