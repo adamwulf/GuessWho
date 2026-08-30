@@ -6,6 +6,27 @@ import UniformTypeIdentifiers
 import GuessWhoSync
 import GuessWhoLogging
 
+/// Once-per-view scheduler for the presentation-only viewed stamp. An
+/// unstructured utility-priority task deliberately outlives SwiftUI's
+/// appearance task: navigating away must not cancel the real stamp/mint, while
+/// a later reappearance of the same view instance must not stamp twice.
+@MainActor
+final class ContactViewedStampScheduler {
+    private(set) var hasScheduled = false
+
+    func schedule(_ operation: @escaping @MainActor @Sendable () async -> Void) {
+        guard !hasScheduled else { return }
+        hasScheduled = true
+        Task(priority: .utility) { @MainActor in
+            // Let performInitialLoad return (ending contact_detail_load) and let
+            // SwiftUI publish the completed visible snapshot before beginning
+            // the presentation-only write.
+            await Task.yield()
+            await operation()
+        }
+    }
+}
+
 struct ContactDetailView: View {
     @Environment(SyncService.self) private var service
     @Environment(ContactsRepository.self) private var repository
@@ -89,6 +110,7 @@ struct ContactDetailView: View {
     // its snapshot, so a slower older load can never tear the card back to stale
     // contact/events/groups/guides/source data.
     @State private var contactLoadID: UUID = UUID()
+    @State private var viewedStampScheduler = ContactViewedStampScheduler()
     @State private var showingAddLinkSheet = false
     @State private var showingAddOrgLinkSheet = false
     @State private var showingNewNoteEditor = false
@@ -737,16 +759,20 @@ struct ContactDetailView: View {
         if startsInEditMode, contact != nil, editModel == nil {
             await beginInlineEdit()
         }
-        // Stamp lastViewed ONCE per open. Lives here (runs once per
-        // appearance) rather than in `loadContact()`, which re-runs on every
-        // save/import/delete reload — so a card the user opens and edits is
-        // "viewed" once, not once per keystroke-driven reload. NOTE:
-        // `stampViewed` reconciles + mints by design (Adam: "always reconcile
-        // when stamping the viewed timestamp"), so opening a never-touched
-        // contact mints its GuessWho UUID. That is intended, not a leak of
-        // the sidecar boundary. Fire-and-forget; never surface a stamp error.
-        await DetailLoadSignpost.measure("contact_stamp_viewed") {
-            await stampViewed()
+        // Stamp lastViewed ONCE per open, but never await it on the visible
+        // load's critical path. Capture the successfully LOADED identity now:
+        // it carries any identity adopted by a newer winning load, and its
+        // local-ID fallback remains reconcile-stable if this stamp performs the
+        // first-write mint. The scheduler is unstructured (so SwiftUI task
+        // cancellation cannot lose the real stamp) and once-only (so a
+        // reappearance cannot double-fire). Errors remain presentation-only.
+        if let stampID = loadedContactID {
+            let repository = repository
+            viewedStampScheduler.schedule {
+                await DetailLoadSignpost.measure("contact_stamp_viewed") {
+                    try? await repository.stampViewed(stampID)
+                }
+            }
         }
     }
 
@@ -2398,16 +2424,10 @@ struct ContactDetailView: View {
     // or interacted with a contact, feeding the global time-ordered sorts. Each
     // routes through the repository (which resolves-or-mints the GuessWho UUID as
     // part of the write), runs on the MainActor, and swallows errors with `try?`
-    // — a failed stamp must never block the UI or surface to the user. All three
-    // prefer `loadedContactID` (carries the resolved `guessWhoID`), falling back
-    // to the nav `id` before the first load resolves a contact.
-
-    /// Stamp `lastViewed` for the open contact. Called once per open from the
-    /// view's `.task`. See that call site for the once-per-open rationale and
-    /// the reconcile-on-view note.
-    private func stampViewed() async {
-        try? await repository.stampViewed(loadedContactID ?? id)
-    }
+    // — a failed stamp must never block the UI or surface to the user. The viewed
+    // stamp is scheduled after the initial load above; the mutation-triggered
+    // stamps below prefer `loadedContactID` (carries the resolved `guessWhoID`),
+    // falling back to the nav `id` before the first load resolves a contact.
 
     /// Stamp `lastModified` after a successful inline save.
     private func stampModified() async {
