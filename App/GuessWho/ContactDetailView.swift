@@ -152,8 +152,10 @@ struct ContactDetailView: View {
     /// Sidecar view models are built off to the side during a detail load and
     /// become visible only with the rest of the completed load snapshot. The
     /// notes/fields initializers still perform their existing synchronous
-    /// envelope reads on the main actor; the link-store corpus walk suspends and
-    /// runs off-main inside the repository.
+    /// envelope reads on the main actor; the links store is SEEDED from the
+    /// caller's single fused link read (whose one corpus walk already ran
+    /// off-main inside the repository), so building the snapshot no longer walks
+    /// the corpus itself and is fully synchronous.
     private struct SidecarStoresSnapshot {
         let notes: NotesStore
         let fields: FieldsStore
