@@ -67,6 +67,34 @@ public enum GuideAddressMatcher {
         }
     }
 
+    /// The contact-detail variant that keeps each street line's matches
+    /// separate. A contact can have multiple postal addresses, and collapsing
+    /// them into one result makes a summary row for one address count guides
+    /// that actually matched another address. Keys are trimmed street lines;
+    /// empty lines are omitted, as are street lines with no matching guides.
+    public static func guides(
+        containingEachOf streetLines: Set<String>,
+        guides: [MapsGuide],
+        places: [MapsPlace]
+    ) -> [String: [Match]] {
+        let needles = Set(
+            streetLines
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        let placesByGuide = orderedPlacesByGuide(places)
+        var result: [String: [Match]] = [:]
+        for needle in needles {
+            let needleMatches = matches(guides: guides, placesByGuide: placesByGuide) { place in
+                EventLocationMatcher.matches(location: place.address, anyOf: [needle])
+            }
+            if !needleMatches.isEmpty {
+                result[needle] = needleMatches
+            }
+        }
+        return result
+    }
+
     /// Guides whose places' street lines appear inside `location` (an event's
     /// free-text location) — the event-detail direction. One `Match` per guide
     /// (the first matching place in entry order); guides in `guides` order.
@@ -92,6 +120,17 @@ public enum GuideAddressMatcher {
         places: [MapsPlace],
         isMatch: (MapsPlace) -> Bool
     ) -> [Match] {
+        matches(
+            guides: guides,
+            placesByGuide: orderedPlacesByGuide(places),
+            isMatch: isMatch
+        )
+    }
+
+    /// Bucket places once in canonical guide-entry order. The per-address
+    /// matcher reuses this corpus for every street line so a multi-address
+    /// contact does not repeat the needle-independent grouping and sorting.
+    private static func orderedPlacesByGuide(_ places: [MapsPlace]) -> [UUID: [MapsPlace]] {
         var placesByGuide: [UUID: [MapsPlace]] = [:]
         for place in places {
             placesByGuide[place.guideID, default: []].append(place)
@@ -102,6 +141,14 @@ public enum GuideAddressMatcher {
                 return lhs.id.uuidString < rhs.id.uuidString
             }
         }
+        return placesByGuide
+    }
+
+    private static func matches(
+        guides: [MapsGuide],
+        placesByGuide: [UUID: [MapsPlace]],
+        isMatch: (MapsPlace) -> Bool
+    ) -> [Match] {
         var result: [Match] = []
         for guide in guides {
             guard let hit = placesByGuide[guide.id]?.first(where: isMatch) else { continue }

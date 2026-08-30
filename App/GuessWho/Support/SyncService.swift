@@ -776,6 +776,25 @@ final class SyncService {
         )
     }
 
+    /// Imported-guide matches kept separate for each of a contact's street
+    /// lines. The contact detail uses this to place a summary immediately below
+    /// the address it describes and to avoid combining guide counts from two
+    /// different postal addresses. Empty and unmatched street lines are absent
+    /// from the returned dictionary.
+    func guides(containingEachAddress streetLines: Set<String>) async -> [String: [GuideAddressMatcher.Match]] {
+        let needles = Set(
+            streetLines
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !needles.isEmpty else { return [:] }
+        async let fetchedGuides = allGuides()
+        async let fetchedPlaces = allPlaces()
+        return GuideAddressMatcher.guides(
+            containingEachOf: needles, guides: await fetchedGuides, places: await fetchedPlaces
+        )
+    }
+
     /// Imported guides whose places' street lines appear inside `location`
     /// (an event's free-text location) — the event detail's guide rows. Same
     /// background-hop read as `guides(containingAddresses:)` (cached `allPlaces()`
