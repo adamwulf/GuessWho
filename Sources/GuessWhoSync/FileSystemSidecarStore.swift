@@ -854,21 +854,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
-    // Files captured under one corpus claim per `perAttemptTimeout` window. The
-    // budget grows one window per this many items, so a bulk read scales with
-    // its work while a small corpus keeps the single-file budget.
-    private static let corpusItemsPerTimeoutWindow = 64
-
-    // The per-attempt wait a corpus claim of `count` items earns: one
-    // `perAttemptTimeout` window per `corpusItemsPerTimeoutWindow` items, at
-    // least one. Proportional to work, so a large corpus is not spuriously
-    // timed out; still finite, so a wedged claim fails after the scaled budget.
+    // The per-attempt wait a corpus claim of `count` items earns: one full
+    // `perAttemptTimeout` window PER item (at least one). This preserves the
+    // aggregate budget the old per-file coordinated reads had — reading N files
+    // one at a time gave each its own `perAttemptTimeout`, so the single
+    // consolidated claim over the same N files gets N × `perAttemptTimeout`
+    // rather than shrinking the budget. It is proportional to work, so a large
+    // corpus is never spuriously timed out; it is still finite (bounded by the
+    // estimated count), so a genuinely wedged claim fails after the scaled
+    // budget is exhausted. No arbitrary throughput assumption.
     private func corpusPerAttemptTimeout(forItemCount count: Int) -> TimeInterval {
-        let windows = max(
-            1,
-            Int((Double(max(0, count)) / Double(Self.corpusItemsPerTimeoutWindow)).rounded(.up))
-        )
-        return perAttemptTimeout * Double(windows)
+        perAttemptTimeout * Double(max(1, count))
     }
 
     private func coordinatedWrite(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {

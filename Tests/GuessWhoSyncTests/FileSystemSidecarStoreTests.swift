@@ -841,21 +841,23 @@ struct FileSystemSidecarStoreTests {
     func manyKeyBulkWalkIsNotSpuriouslyTimedOut() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        // The root claim takes a fixed 0.25s regardless of key count. With a
-        // tight per-attempt budget and a fail-fast handler, a single-file
-        // budget (0.05s) would time out; a work-proportional budget for a large
-        // corpus grants enough of a window that the claim completes first.
-        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.25)
+        // The budget MUST scale one `perAttemptTimeout` window per item, never a
+        // per-batch fraction of it. Parameters are chosen so the discrimination
+        // is sharp: the root claim takes a fixed 0.3s, and with a 0.02s base and
+        // a fail-fast handler,
+        //   • true per-item scaling → 128 × 0.02s = 2.56s budget > 0.3s → passes;
+        //   • any /N-batch policy (e.g. the rejected /64: ceil(128/64) × 0.02s =
+        //     0.04s) → budget < 0.3s → times out → this test FAILS.
+        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.3)
         let store = FileSystemSidecarStore(
             root: root,
             ubiquity: ProductionUbiquityProvider(),
             coordinatesUbiquitousAccess: true,
             fileCoordinator: coordinator,
             busyHandler: { _, _, _ in .fail },
-            perAttemptTimeout: 0.05
+            perAttemptTimeout: 0.02
         )
-        // 512 keys → ceil(512 / 64) = 8 windows → 0.4s budget > 0.25s claim.
-        let keys = (0..<512).map { SidecarKey(kind: .contact, id: "bulk-timeout-\($0)") }
+        let keys = (0..<128).map { SidecarKey(kind: .contact, id: "bulk-timeout-\($0)") }
 
         var visited: Set<SidecarKey> = []
         try store.walkCorpus(keys: keys) { key, _ in visited.insert(key) }
@@ -869,17 +871,20 @@ struct FileSystemSidecarStoreTests {
         let root = makeRoot()
         defer { cleanup(root) }
         // The production projection path (walkCorpus(kinds:)) pre-counts the
-        // listed directories to size the same work-proportional budget.
-        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.25)
+        // listed directories to size the same per-item budget. Same sharp
+        // discrimination as the keys-form test: 128 contacts, 0.02s base, 0.3s
+        // claim — per-item (2.56s) passes; a /64-batch budget (0.04s) times out
+        // and fails this test.
+        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.3)
         let store = FileSystemSidecarStore(
             root: root,
             ubiquity: ProductionUbiquityProvider(),
             coordinatesUbiquitousAccess: true,
             fileCoordinator: coordinator,
             busyHandler: { _, _, _ in .fail },
-            perAttemptTimeout: 0.05
+            perAttemptTimeout: 0.02
         )
-        let keys = (0..<512).map { SidecarKey(kind: .contact, id: "listing-timeout-\($0)") }
+        let keys = (0..<128).map { SidecarKey(kind: .contact, id: "listing-timeout-\($0)") }
         for key in keys { try plantEnvelope(envelope(id: key.id), at: key, root: root) }
 
         var visited: Set<SidecarKey> = []
