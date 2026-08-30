@@ -300,12 +300,29 @@ public final class SidecarFileWatcher: NSObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let changedKeys: Set<SidecarKey>?
+            let mappedKeys = paths.map { path in
+                (path: path, key: self.sidecarKey(forMetadataPath: path))
+            }
             if paths.count == itemCount {
-                let mappedKeys = paths.compactMap(self.sidecarKey(forMetadataPath:))
-                changedKeys = mappedKeys.count == paths.count ? Set(mappedKeys) : nil
+                let keys = mappedKeys.compactMap { $0.key }
+                changedKeys = keys.count == paths.count ? Set(keys) : nil
             } else {
                 changedKeys = nil
             }
+            Self.log.info(
+                "sidecar metadata paths mapped",
+                metadata: [
+                    "items": .stringConvertible(itemCount),
+                    "paths": .stringConvertible(paths.count),
+                    "mapped": .stringConvertible(mappedKeys.lazy.filter { $0.key != nil }.count),
+                    "deliveries": .string(
+                        mappedKeys.map { entry in
+                            let key = entry.key.map { "\($0.kind.rawValue):\($0.id)" } ?? "unmapped"
+                            return "\(entry.path) => \(key)"
+                        }.joined(separator: " | ")
+                    )
+                ]
+            )
             // A path that cannot be mapped to a SidecarKey (for example a
             // directory or root-level support file) makes scope unknown.
             self.scheduleChangeProcessing(

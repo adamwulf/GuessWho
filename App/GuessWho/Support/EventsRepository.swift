@@ -214,13 +214,26 @@ final class EventsRepository: NSObject {
     /// "a scoped change is already pending" impossible to set up deterministically
     /// otherwise. Production callers are unchanged.
     func scheduleDebouncedReload(_ changeSet: SidecarChangeSet, trigger: String = "direct-schedule") {
+        let keySummary = changeSet.changedKeys.map {
+            $0.sorted { ($0.kind.rawValue, $0.id) < ($1.kind.rawValue, $1.id) }
+                .map { "\($0.kind.rawValue):\($0.id)" }
+                .joined(separator: ",")
+        } ?? "nil/full-scope"
         // Drop a scoped change that names no kind this list projects BEFORE any
         // merge, generation bump, or cancellation — an irrelevant delivery must
         // not supersede a pending/parked reload it cannot affect.
         if let keys = changeSet.changedKeys,
            !keys.contains(where: { Self.handledKinds.contains($0.kind) }) {
+            Self.reloadLog.info(
+                "events sidecar delivery dropped",
+                metadata: ["trigger": .string(trigger), "changedKeys": .string(keySummary)]
+            )
             return
         }
+        Self.reloadLog.info(
+            "events sidecar delivery accepted",
+            metadata: ["trigger": .string(trigger), "changedKeys": .string(keySummary)]
+        )
         if pendingReload == nil {
             pendingChangeSet = inFlightChangeSet?.value.merging(changeSet) ?? changeSet
         } else {
