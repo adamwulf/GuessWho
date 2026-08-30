@@ -94,9 +94,17 @@ final class SyncService {
         self.sidecarLocation = location
         self.deviceID = id
 
+        // Coordination policy comes from the resolved provenance, never a
+        // filesystem probe: an iCloud root serializes against cloudd, a local
+        // fallback root has no second writer and skips coordination.
+        let coordinatesUbiquitousAccess = Self.coordinatesUbiquitousAccess(for: location)
+
         switch location {
         case .iCloud(let url):
-            let sidecarStore = FileSystemSidecarStore(root: url)
+            let sidecarStore = FileSystemSidecarStore(
+                root: url,
+                coordinatesUbiquitousAccess: coordinatesUbiquitousAccess
+            )
             self.sync = GuessWhoSync(
                 contacts: contactsAdapter,
                 events: eventsAdapter,
@@ -112,7 +120,10 @@ final class SyncService {
             // we fell back to Application Support. Not user-actionable here — the
             // banner explains the trade-off (local-only, no cross-device sync).
             Self.log.notice("storage fallback to local", ["reason": reason])
-            let sidecarStore = FileSystemSidecarStore(root: url)
+            let sidecarStore = FileSystemSidecarStore(
+                root: url,
+                coordinatesUbiquitousAccess: coordinatesUbiquitousAccess
+            )
             self.sync = GuessWhoSync(
                 contacts: contactsAdapter,
                 events: eventsAdapter,
@@ -1033,6 +1044,21 @@ final class SyncService {
     }
 
     // MARK: - Private
+
+    /// Maps resolved storage provenance to the sidecar store's coordination
+    /// policy. An iCloud root MUST serialize file access against cloudd; a local
+    /// fallback root is the only writer, so coordination is pure overhead and is
+    /// skipped. `.unavailable` builds no store, so its value is moot — it
+    /// returns `true` (the safe default: uncertainty coordinates). Internal so
+    /// the SyncService unit tests can pin the provenance→policy mapping without
+    /// constructing a live store.
+    static func coordinatesUbiquitousAccess(for location: SidecarLocation) -> Bool {
+        switch location {
+        case .iCloud: return true
+        case .localFallback: return false
+        case .unavailable: return true
+        }
+    }
 
     private static func resolveSidecarLocation() -> SidecarLocation {
         resolveSidecarLocation(

@@ -3,10 +3,15 @@ import Foundation
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
 
-    // Read once at construction. Local/test roots bypass NSFileCoordinator;
-    // only an iCloud-backed root needs cross-process serialization with
-    // cloudd. Tests can override this decision through the internal
-    // initializer below without needing a real ubiquity container.
+    // Whether root access is serialized through NSFileCoordinator. This is a
+    // policy the CALLER supplies from the root's known provenance, NOT a value
+    // probed off the filesystem: an iCloud-backed root must serialize against
+    // cloudd, a local/App-Support fallback root has no second writer and skips
+    // coordination, and any caller that doesn't know defaults to coordinating
+    // (the safe choice — over-coordinating only costs a lock, under-
+    // coordinating races cloudd). The internal initializer below can still
+    // force this flag (or fall back to a filesystem probe) for tests that need
+    // to drive coordination without a real ubiquity container.
     private let coordinatesUbiquitousAccess: Bool
     private let fileCoordinator: SidecarFileCoordinating
 
@@ -66,8 +71,13 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         label: "GuessWhoSync.FileSystemSidecarStore.coordinator.corpus"
     )
 
+    // `coordinatesUbiquitousAccess` is the root's provenance, supplied by the
+    // caller (production passes `true` for an iCloud root, `false` for a local
+    // fallback). It defaults to `true` so a caller that omits it coordinates —
+    // uncertainty defaults to the safe choice, never a filesystem probe.
     public init(
         root: URL,
+        coordinatesUbiquitousAccess: Bool = true,
         busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
         perAttemptTimeout: TimeInterval = 1.0
     ) {
@@ -76,7 +86,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.perAttemptTimeout = perAttemptTimeout
         self.ubiquity = ProductionUbiquityProvider()
         self.blobCrypto = Self.defaultProductionBlobCrypto()
-        self.coordinatesUbiquitousAccess = Self.isUbiquitousRoot(root)
+        self.coordinatesUbiquitousAccess = coordinatesUbiquitousAccess
         self.fileCoordinator = ProductionSidecarFileCoordinator()
     }
 
@@ -88,6 +98,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         root: URL,
         ubiquity: SidecarUbiquityProvider,
         blobCrypto: SidecarBlobCrypto? = nil,
+        coordinatesUbiquitousAccess: Bool = true,
         busyHandler: @escaping SidecarBusyHandler = defaultSidecarBusyHandler,
         perAttemptTimeout: TimeInterval = 1.0
     ) {
@@ -96,13 +107,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         self.perAttemptTimeout = perAttemptTimeout
         self.ubiquity = ubiquity
         self.blobCrypto = blobCrypto ?? Self.defaultProductionBlobCrypto()
-        self.coordinatesUbiquitousAccess = Self.isUbiquitousRoot(root)
+        self.coordinatesUbiquitousAccess = coordinatesUbiquitousAccess
         self.fileCoordinator = ProductionSidecarFileCoordinator()
     }
 
-    // Internal test seam for the one-time root classification and file
-    // coordinator. Production construction always uses the two initializers
-    // above, so neither policy leaks into the package's public API.
+    // Internal test seam for the forced coordination flag and the file
+    // coordinator. Passing an explicit `true`/`false` forces the policy;
+    // passing `nil` falls back to the filesystem probe — this probe survives
+    // ONLY here, as a test convenience, and is never the production policy
+    // (the public initializers above take the flag from the caller's known
+    // provenance). Production construction always uses the two initializers
+    // above, so neither seam leaks into the package's public API.
     init(
         root: URL,
         ubiquity: SidecarUbiquityProvider,
@@ -132,6 +147,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         #endif
     }
 
+    // Filesystem probe of the root's ubiquity flag. Used ONLY by the internal
+    // test-seam initializer's `nil` fallback — never as production coordination
+    // policy, which comes from caller-supplied provenance (see the field above).
     private static func isUbiquitousRoot(_ root: URL) -> Bool {
         (try? root.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
     }
@@ -234,7 +252,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         var listingError: Error?
         var outcomes: [SidecarKey: ReadBytesOutcome] = [:]
 
-        try coordinatedCorpusRead { safeRoot in
+        try coordinatedCorpusRead(estimatedItemCount: estimatedCorpusItemCount(listing: listedKinds)) { safeRoot in
             do {
                 keys = try self.listKeys(ofKinds: listedKinds, under: safeRoot, requestDownloads: false)
                 outcomes.reserveCapacity(keys.count)
@@ -259,13 +277,32 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
     ) throws {
         var outcomes: [SidecarKey: ReadBytesOutcome] = [:]
-        try coordinatedCorpusRead { safeRoot in
+        try coordinatedCorpusRead(estimatedItemCount: keys.count) { safeRoot in
             outcomes.reserveCapacity(keys.count)
             for key in keys {
                 outcomes[key] = self.readBytes(at: self.fileURL(for: key, root: safeRoot))
             }
         }
         try visitCapturedCorpus(keys: keys, outcomes: outcomes, visit)
+    }
+
+    // Uncoordinated, name-only count of the entries the listed directories
+    // hold, used ONLY to size the coordinated corpus read's timeout budget. It
+    // never feeds the captured snapshot — the authoritative listing happens
+    // inside the claim — so a concurrent change between this count and the claim
+    // only mis-sizes the budget slightly, never the result. It over-counts
+    // (`.dat` payloads and `.icloud` placeholders included), which only makes
+    // the budget more generous. Cheap relative to the byte reads it guards.
+    private func estimatedCorpusItemCount(listing kinds: Set<SidecarKind>) -> Int {
+        let fm = FileManager.default
+        var count = 0
+        for kind in kinds {
+            let directory = root.appendingPathComponent(directoryName(for: kind))
+            if let entries = try? fm.contentsOfDirectory(atPath: directory.path) {
+                count += entries.count
+            }
+        }
+        return count
     }
 
     private func visitCapturedCorpus(
@@ -787,7 +824,18 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
-    private func coordinatedCorpusRead(_ body: @escaping (URL) -> Void) throws {
+    // `estimatedItemCount` sizes the timeout budget for the whole-corpus claim
+    // and nothing else — it is an @autoclosure so a skipped (local) claim never
+    // pays for the estimate. A single claim legitimately reads every selected
+    // file, so charging it the single-file `perAttemptTimeout` spuriously trips
+    // the busy handler on a large corpus. We scale the per-attempt wait with the
+    // item count (see `corpusPerAttemptTimeout`); a genuinely wedged claim —
+    // one whose body never makes progress — still fails after the (larger, but
+    // finite) budget is exhausted, preserving graceful failure.
+    private func coordinatedCorpusRead(
+        estimatedItemCount: @autoclosure () -> Int,
+        _ body: @escaping (URL) -> Void
+    ) throws {
         guard coordinatesUbiquitousAccess else {
             body(root)
             return
@@ -797,9 +845,30 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         // sentinel is internal and exists only to preserve the busy-handler /
         // timedOut error contract if cloudd wedges the corpus claim.
         let operationKey = SidecarKey(kind: .contact, id: "__corpus__")
-        try runWithBusyHandling(key: operationKey, queue: corpusCoordinatorQueue) {
+        try runWithBusyHandling(
+            key: operationKey,
+            queue: corpusCoordinatorQueue,
+            perAttemptTimeout: corpusPerAttemptTimeout(forItemCount: estimatedItemCount())
+        ) {
             try self.fileCoordinator.coordinateReading(at: self.root, body)
         }
+    }
+
+    // Files captured under one corpus claim per `perAttemptTimeout` window. The
+    // budget grows one window per this many items, so a bulk read scales with
+    // its work while a small corpus keeps the single-file budget.
+    private static let corpusItemsPerTimeoutWindow = 64
+
+    // The per-attempt wait a corpus claim of `count` items earns: one
+    // `perAttemptTimeout` window per `corpusItemsPerTimeoutWindow` items, at
+    // least one. Proportional to work, so a large corpus is not spuriously
+    // timed out; still finite, so a wedged claim fails after the scaled budget.
+    private func corpusPerAttemptTimeout(forItemCount count: Int) -> TimeInterval {
+        let windows = max(
+            1,
+            Int((Double(max(0, count)) / Double(Self.corpusItemsPerTimeoutWindow)).rounded(.up))
+        )
+        return perAttemptTimeout * Double(windows)
     }
 
     private func coordinatedWrite(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
@@ -823,8 +892,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 
     // Run `operation` on `key`'s coordinator queue with a per-attempt wait of
-    // `perAttemptTimeout`. The operation is dispatched ONCE; we never
-    // re-issue. On wait-timeout we consult the busy handler:
+    // `perAttemptTimeout` (or the caller-supplied override — a bulk corpus
+    // claim passes a work-proportional budget so its many-file read is not
+    // charged the single-file budget). The operation is dispatched ONCE; we
+    // never re-issue. On wait-timeout we consult the busy handler:
     //   .retry          → keep waiting (next per-attempt slice).
     //   .retryAfter(t)  → sleep, then keep waiting.
     //   .fail           → throw `.timedOut(key)` and abandon the operation.
@@ -846,8 +917,10 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     func runWithBusyHandling(
         key: SidecarKey,
         queue: DispatchQueue? = nil,
+        perAttemptTimeout: TimeInterval? = nil,
         operation: @escaping () throws -> Void
     ) throws {
+        let effectiveTimeout = perAttemptTimeout ?? self.perAttemptTimeout
         let started = SidecarMonotonicClock.now()
         let semaphore = DispatchSemaphore(value: 0)
         let resultBox = ResultBox()
@@ -865,7 +938,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
         var attempt = 0
         while true {
-            let outcome = semaphore.wait(timeout: .now() + perAttemptTimeout)
+            let outcome = semaphore.wait(timeout: .now() + effectiveTimeout)
             switch outcome {
             case .success:
                 if let error = resultBox.error { throw error }

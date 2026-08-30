@@ -771,6 +771,190 @@ struct FileSystemSidecarStoreTests {
         let final = try #require(try store.read(key))
         expectEqual(final, new)
     }
+
+    // MARK: - Provenance-driven coordination policy (Fix 1)
+
+    @Test
+    func iCloudClassificationCoordinatesEvenOnLocalTempRootWhoseProbeIsFalse() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        // A local temp root: the filesystem ubiquity probe reports `false`. The
+        // store must still coordinate because the CALLER classified it iCloud —
+        // policy comes from provenance, not the probe.
+        #expect(!isUbiquitousProbe(root))
+        let coordinator = CountingSidecarFileCoordinator(root: root)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator
+        )
+        let key = SidecarKey(kind: .contact, id: "icloud-classified")
+        let expected = envelope(id: key.id, fields: [
+            "nickname": SidecarCell(value: .string("Cloud"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+        try plantEnvelope(expected, at: key, root: root)
+
+        var fetched: SidecarEnvelope?
+        try store.walkCorpus(kinds: [.contact]) { _, result in
+            fetched = try result.get()
+        }
+        let decoded = try #require(fetched)
+        expectEqual(decoded, expected)
+        // One coordinated directory claim for the whole corpus walk.
+        #expect(coordinator.readCount == 1)
+        #expect(coordinator.lastReadURL == root)
+    }
+
+    @Test
+    func localFallbackClassificationSkipsCoordination() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let coordinator = CountingSidecarFileCoordinator(root: root)
+        // A caller that classified the root as a local fallback forces the flag
+        // OFF explicitly (not via the probe) — no coordination at all.
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: false,
+            fileCoordinator: coordinator
+        )
+        let key = SidecarKey(kind: .contact, id: "local-classified")
+        let expected = envelope(id: key.id, fields: [
+            "nickname": SidecarCell(value: .string("Local"), modifiedAt: when, modifiedBy: "device-A")
+        ])
+
+        try store.write(expected, at: key)
+        var fetched: SidecarEnvelope?
+        try store.walkCorpus(kinds: [.contact]) { _, result in
+            fetched = try result.get()
+        }
+        let decoded = try #require(fetched)
+        expectEqual(decoded, expected)
+        #expect(coordinator.readCount == 0)
+        #expect(coordinator.writeCount == 0)
+    }
+
+    // MARK: - Work-proportional corpus timeout budget (Fix 3)
+
+    @Test
+    func manyKeyBulkWalkIsNotSpuriouslyTimedOut() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        // The root claim takes a fixed 0.25s regardless of key count. With a
+        // tight per-attempt budget and a fail-fast handler, a single-file
+        // budget (0.05s) would time out; a work-proportional budget for a large
+        // corpus grants enough of a window that the claim completes first.
+        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.25)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator,
+            busyHandler: { _, _, _ in .fail },
+            perAttemptTimeout: 0.05
+        )
+        // 512 keys → ceil(512 / 64) = 8 windows → 0.4s budget > 0.25s claim.
+        let keys = (0..<512).map { SidecarKey(kind: .contact, id: "bulk-timeout-\($0)") }
+
+        var visited: Set<SidecarKey> = []
+        try store.walkCorpus(keys: keys) { key, _ in visited.insert(key) }
+        #expect(visited == Set(keys))
+        // Let the (completed) claim drain before teardown.
+        #expect(coordinator.rootReadFinished.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test
+    func manyContactBulkWalkThroughListingPathIsNotSpuriouslyTimedOut() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        // The production projection path (walkCorpus(kinds:)) pre-counts the
+        // listed directories to size the same work-proportional budget.
+        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.25)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator,
+            busyHandler: { _, _, _ in .fail },
+            perAttemptTimeout: 0.05
+        )
+        let keys = (0..<512).map { SidecarKey(kind: .contact, id: "listing-timeout-\($0)") }
+        for key in keys { try plantEnvelope(envelope(id: key.id), at: key, root: root) }
+
+        var visited: Set<SidecarKey> = []
+        try store.walkCorpus(kinds: [.contact]) { key, _ in visited.insert(key) }
+        #expect(visited == Set(keys))
+        #expect(coordinator.rootReadFinished.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test
+    func smallCorpusStillFailsGracefullyWhenClaimIsWedged() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        // Same fail-fast handler and tight budget, but a claim slower than even
+        // the scaled single-item budget: graceful failure is preserved — the
+        // wedged claim surfaces as `.timedOut` for the corpus sentinel key.
+        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.5)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator,
+            busyHandler: { _, _, _ in .fail },
+            perAttemptTimeout: 0.05
+        )
+        let key = SidecarKey(kind: .contact, id: "solo")
+        try plantEnvelope(envelope(id: key.id), at: key, root: root)
+
+        let corpusSentinel = SidecarKey(kind: .contact, id: "__corpus__")
+        #expect(throws: SidecarStoreError.timedOut(corpusSentinel)) {
+            try store.walkCorpus(keys: [key]) { _, _ in }
+        }
+        // The abandoned claim still runs its body to completion in the
+        // background; drain it before teardown removes the root.
+        #expect(coordinator.rootReadFinished.wait(timeout: .now() + 2) == .success)
+    }
+
+    // Filesystem ubiquity probe mirror for the test above — asserts a local
+    // temp root would classify `false`, so a coordinating store there proves
+    // policy is caller-driven, not probe-driven.
+    private func isUbiquitousProbe(_ root: URL) -> Bool {
+        (try? root.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
+    }
+}
+
+// Coordinator that delays the root-directory read by a fixed interval to model
+// a bulk claim that is slow but making progress (a large corpus) versus one
+// slow enough to be treated as wedged. Signals `rootReadFinished` after the
+// root claim's body returns so a test can drain an abandoned claim before
+// teardown.
+private final class DelayingSidecarFileCoordinator: SidecarFileCoordinating, @unchecked Sendable {
+    private let root: URL
+    private let rootReadDelay: TimeInterval
+    let rootReadFinished = DispatchSemaphore(value: 0)
+
+    init(root: URL, rootReadDelay: TimeInterval) {
+        self.root = root.standardizedFileURL
+        self.rootReadDelay = rootReadDelay
+    }
+
+    func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws {
+        let isRoot = url.standardizedFileURL == root
+        if isRoot, rootReadDelay > 0 {
+            Thread.sleep(forTimeInterval: rootReadDelay)
+        }
+        body(url)
+        if isRoot { rootReadFinished.signal() }
+    }
+
+    func coordinateWriting(
+        at url: URL,
+        options: NSFileCoordinator.WritingOptions,
+        _ body: @escaping (URL) -> Void
+    ) throws {
+        body(url)
+    }
 }
 
 private final class CountingSidecarFileCoordinator: SidecarFileCoordinating, @unchecked Sendable {

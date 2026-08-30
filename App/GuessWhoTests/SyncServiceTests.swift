@@ -165,6 +165,21 @@ struct SyncServiceTests {
         #expect(reason.contains("unwritable"))
     }
 
+    // MARK: - Coordination policy (provenance-driven)
+
+    @Test
+    func coordinationPolicyFollowsProvenanceNotProbe() throws {
+        let url = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: url) }
+        // An iCloud root coordinates even though this temp URL's filesystem
+        // probe would report non-ubiquitous — policy is driven by provenance.
+        #expect(SyncService.coordinatesUbiquitousAccess(for: .iCloud(url)))
+        // A local fallback root has no second writer and skips coordination.
+        #expect(!SyncService.coordinatesUbiquitousAccess(for: .localFallback(url, reason: "test")))
+        // `.unavailable` builds no store; the moot value defaults to coordinating.
+        #expect(SyncService.coordinatesUbiquitousAccess(for: .unavailable(reason: "test")))
+    }
+
     // MARK: - Event migration (memoized single run)
 
     /// Plants a legacy (non-UUID-keyed) event sidecar on disk via a second
