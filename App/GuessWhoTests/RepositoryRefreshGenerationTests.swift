@@ -199,8 +199,9 @@ struct RepositoryRefreshGenerationTests {
         #expect(afterDelta.count == 3)
 
         // A full reload settles to the same set the delta produced.
-        let newerOutcome = await repository.reload()
+        let fullReloadOutcome = await repository.reload()
         await waitUntil { repository.events.count == 3 }
+        #expect(fullReloadOutcome == .published(itemCount: 3))
         #expect(Set(repository.events.map(\.id)) == afterDelta)
     }
 
@@ -372,7 +373,7 @@ struct RepositoryRefreshGenerationTests {
             title: "C", startDate: now.addingTimeInterval(240), endDate: now.addingTimeInterval(300), isAllDay: false, location: nil
         )
         _ = c
-        await repository.reload()
+        let newerOutcome = await repository.reload()
         await waitUntil { repository.events.count == 3 }
 
         // Release the older read; its stale {A,B} snapshot must not win.
