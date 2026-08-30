@@ -20,14 +20,21 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     typealias AuthorizationStatusWork = @Sendable () -> StoreAuthorizationStatus
     private let fetchEventsWork: FetchEventsWork
     private let authorizationStatusWork: AuthorizationStatusWork
+    /// The ONE lock + generation both window caches share (FIX 2). Because a
+    /// single lock guards both, `invalidateCaches` bumps the generation and
+    /// clears the raw window cache AND the attendee index inside one critical
+    /// section — atomically. A concurrent lookup can never slip between the two
+    /// clears and observe one cache invalidated while the other still serves a
+    /// pre-invalidation snapshot (split state).
+    private let cacheClock: WindowCacheClock
     private let windowFetches: EventWindowFetchCoordinator
-    /// DL-2 attendee/location index cache. Same generation + single-flight
-    /// discipline as `windowFetches`, but the cached value is the prebuilt
-    /// attendee-email + location index for the window instead of the raw
-    /// batch. Invalidated in lock-step with `windowFetches` through the shared
-    /// `invalidateCaches` / `resolveAuthorization` hooks so an app-initiated
-    /// write, store change, or authorization transition can never clear one
-    /// coordinator and leave the other holding stale data.
+    /// DL-2 attendee/location index cache. Shares the exact same `cacheClock`
+    /// lock + generation and single-flight discipline as `windowFetches`, but
+    /// the cached value is the prebuilt attendee-email + location index for the
+    /// window instead of the raw batch. Because both caches gate on that one
+    /// shared generation, an app-initiated write, store change, or authorization
+    /// transition invalidating through `invalidateCaches` clears BOTH atomically
+    /// — one can never be left holding stale data while the other is refreshed.
     private let attendeeIndex: WindowSingleFlightCache<AttendeeWindowIndex>
     private let notificationCenter: NotificationCenter
     private var eventStoreChangedObserver: NSObjectProtocol?
@@ -69,7 +76,13 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         self.store = store
         self.fetchEventsWork = fetchEventsWork
         self.authorizationStatusWork = authorizationStatusWork
+        // One shared clock (single lock + generation) drives both caches so
+        // their invalidation is atomic. Built first because both coordinators
+        // take it at construction and register their clear closures with it.
+        let clock = WindowCacheClock()
+        self.cacheClock = clock
         self.windowFetches = EventWindowFetchCoordinator(
+            clock: clock,
             cacheLifetime: cacheLifetime,
             maximumCacheEntries: 4
         )
@@ -77,9 +90,12 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         // survive the whole launch — one raw walk per window until an explicit
         // invalidation (store change, auth transition, or adapter write) — NOT
         // re-walk on the window cache's short TTL. The raw window coordinator
-        // keeps its `cacheLifetime` TTL; this cache ignores it by design.
+        // keeps its `cacheLifetime` TTL; this cache ignores it by design. Both,
+        // however, share `clock`'s single lock + generation, so invalidation of
+        // one is invalidation of both, atomically.
         self.attendeeIndex = WindowSingleFlightCache<AttendeeWindowIndex>(
             name: "EventKit attendee index",
+            clock: clock,
             cacheLifetime: nil,
             maximumCacheEntries: 4
         )
@@ -107,10 +123,16 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// apart. Every caller that invalidates — the `.EKEventStoreChanged`
     /// observer, the access-request before-guard, and every adapter-initiated
     /// `createEvent` / `updateEvent` write — clears BOTH here. Adding a future
-    /// cache means adding one line here, not hunting every write site.
+    /// cache means registering it with `cacheClock`, not hunting every write
+    /// site.
+    ///
+    /// One call to `cacheClock.invalidate` bumps the shared generation and
+    /// clears every registered cache under the shared lock, so the two caches
+    /// flip together atomically — a concurrent lookup can never observe the
+    /// window cache invalidated while the attendee index still serves a
+    /// pre-invalidation snapshot.
     private func invalidateCaches(reason: String) {
-        windowFetches.invalidate(reason: reason)
-        attendeeIndex.invalidate(reason: reason)
+        cacheClock.invalidate(reason: reason)
     }
 
     /// Centralized authorization-transition tracking. One `lastObservedAuthorization`
@@ -128,7 +150,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// together. The first status seen only establishes the baseline.
     ///
     /// The baseline read/write is the only work under `authorizationLock`;
-    /// `invalidateCaches` (which takes each coordinator's own lock) runs after
+    /// `invalidateCaches` (which takes the shared `cacheClock` lock) runs after
     /// the unlock, so no lock nests inside another. Two callers racing the same
     /// edge just invalidate twice — harmless (idempotent generation bumps).
     private func resolveAuthorization(to status: StoreAuthorizationStatus) {
@@ -645,6 +667,22 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         invalidateCaches(reason: reason)
     }
 
+    /// Test-only: drive the shared atomic invalidation with an interpose closure
+    /// invoked WHILE the single shared cache lock is held — after the generation
+    /// bump and both caches are cleared, before the lock is released. This is the
+    /// exact path `invalidateCaches` takes (it calls `cacheClock.invalidate`), so
+    /// a lookup launched from the interpose blocks on the shared lock and cannot
+    /// observe split state. It proves invalidation is atomic across BOTH caches:
+    /// a two-lock design would have cleared the window cache while leaving the
+    /// attendee index readable, letting that racing lookup return a
+    /// pre-invalidation snapshot instead of blocking and rebuilding.
+    func invalidateCachesWithInterposeForTesting(
+        reason: String = "test-interpose",
+        whileHoldingLock: @escaping () -> Void
+    ) {
+        cacheClock.invalidate(reason: reason, whileHoldingLock: whileHoldingLock)
+    }
+
     /// Test-only: feed an explicit observed authorization status through the
     /// centralized transition detector, standing in for an
     /// `authorizationStatusWork()` read. Lets tests drive concurrent, differing,
@@ -655,19 +693,82 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     }
 }
 
+/// Shared lock + generation clock for the adapter's window caches (FIX 2).
+///
+/// Both the raw `[Event]` window coordinator and the non-expiring
+/// attendee/location index lock this ONE `condition` and gate on this ONE
+/// `generation`. Because a single lock guards both, `invalidate` bumps the
+/// generation and clears EVERY registered cache inside one critical section —
+/// atomically. A concurrent lookup can therefore never observe one cache
+/// invalidated while the other still serves a pre-invalidation snapshot (split
+/// state): to read either cache a lookup must take this same lock, so it either
+/// runs entirely before the bump (both caches old) or entirely after it (both
+/// cleared) — never in between.
+///
+/// Members register a `clear` closure once at wiring time. `invalidate` runs
+/// every closure while holding `condition`, so a closure must only mutate its
+/// own member's storage and never re-lock — there is exactly one lock, and no
+/// lock nests inside another.
+private final class WindowCacheClock: @unchecked Sendable {
+    /// The single lock both caches share. Members lock/unlock/wait/broadcast on
+    /// this; a broadcast here wakes waiters in every member cache.
+    let condition = NSCondition()
+    /// The single generation both caches gate on. MUST be read/written with
+    /// `condition` held (see `generation` / `bumpGenerationLocked`).
+    private var _generation: UInt64 = 0
+    /// One storage-clearing closure per registered member cache. Guarded by
+    /// `condition`.
+    private var clearHandlers: [(_ reason: String, _ generation: UInt64) -> Void] = []
+
+    /// Current shared generation. MUST be called with `condition` held.
+    var generation: UInt64 { _generation }
+
+    /// Register a member cache's storage-clearing closure. Called once, from the
+    /// member's initializer. The closure runs under `condition` during
+    /// `invalidate`; it must only clear that member's own storage.
+    func register(clear: @escaping (_ reason: String, _ generation: UInt64) -> Void) {
+        condition.lock()
+        clearHandlers.append(clear)
+        condition.unlock()
+    }
+
+    /// Atomically bump the shared generation and clear every registered cache,
+    /// then wake all waiters. All of it happens under `condition`, so the two
+    /// caches flip together and no lookup can slip between the clears.
+    ///
+    /// `whileHoldingLock` is a test-only interpose invoked after the bump and
+    /// every clear but BEFORE the broadcast/unlock — standing in for a
+    /// concurrent observer racing the mid-invalidation state. Production passes
+    /// nil. A lookup launched from it blocks on `condition` (still held here),
+    /// so it cannot observe split state.
+    func invalidate(reason: String, whileHoldingLock: (() -> Void)? = nil) {
+        condition.lock()
+        _generation &+= 1
+        let generation = _generation
+        for clear in clearHandlers {
+            clear(reason, generation)
+        }
+        whileHoldingLock?()
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
 /// Synchronous generation cache around EventKit's synchronous window query.
 ///
 /// `EventStoreProtocol.fetchEvents(in:)` is intentionally synchronous, while
-/// production callers already move it to a background queue. `NSCondition`
-/// therefore supplies the same single-flight discipline as `PlaceCorpusCache`:
-/// one caller performs a given generation/window query and concurrent callers
-/// wait for its exact `Result`. Different windows remain independent.
+/// production callers already move it to a background queue. The shared
+/// `WindowCacheClock`'s `NSCondition` supplies the same single-flight discipline
+/// as `PlaceCorpusCache`: one caller performs a given generation/window query
+/// and concurrent callers wait for its exact `Result`. Different windows remain
+/// independent.
 ///
-/// Invalidation is linearized under the same condition lock. It advances the
-/// generation and clears every cache entry. A caller arriving afterwards can
-/// neither hit nor join old-generation work. If invalidation races an active
-/// query, that query's result is discarded and all of its callers retry in the
-/// new generation, which is stronger than merely preventing stale cache fill.
+/// Invalidation is linearized under the shared clock's condition lock (see
+/// `WindowCacheClock.invalidate`). It advances the shared generation and clears
+/// every registered cache's entries. A caller arriving afterwards can neither
+/// hit nor join old-generation work. If invalidation races an active query, that
+/// query's result is discarded and all of its callers retry in the new
+/// generation, which is stronger than merely preventing stale cache fill.
 private final class EventWindowFetchCoordinator: @unchecked Sendable {
     private struct WindowKey: Hashable {
         let start: Date
@@ -700,52 +801,41 @@ private final class EventWindowFetchCoordinator: @unchecked Sendable {
         var lastUse: UInt64
     }
 
-    private let condition = NSCondition()
+    /// The shared lock + generation. This coordinator locks `clock.condition`
+    /// and gates on `clock.generation` so its invalidation is atomic with the
+    /// attendee index's. Authorization-transition tracking is centralized at the
+    /// `EKEventStoreAdapter` level (one lock, one baseline) and drives
+    /// invalidation through the shared clock, so this coordinator tracks no
+    /// authorization state of its own.
+    private let clock: WindowCacheClock
+    /// Forward to the shared lock/generation so the body below reads exactly as
+    /// the single-lock coordinator did — every access already happens under
+    /// `condition`, which is the shared lock.
+    private var condition: NSCondition { clock.condition }
+    private var generation: UInt64 { clock.generation }
     private let cacheLifetimeNanos: UInt64
     private let maximumCacheEntries: Int
-    private var generation: UInt64 = 0
-    private var lastAuthorization: StoreAuthorizationStatus?
     private var flights: [FlightKey: Flight] = [:]
     private var cache: [WindowKey: CacheEntry] = [:]
     private var useCounter: UInt64 = 0
 
-    init(cacheLifetime: TimeInterval, maximumCacheEntries: Int) {
+    init(clock: WindowCacheClock, cacheLifetime: TimeInterval, maximumCacheEntries: Int) {
+        self.clock = clock
         self.cacheLifetimeNanos = UInt64(max(0, cacheLifetime) * 1_000_000_000)
         self.maximumCacheEntries = max(1, maximumCacheEntries)
-    }
-
-    /// Detect TCC changes even when EventKit emits no store-change
-    /// notification. The first observed status establishes the baseline; every
-    /// later transition advances the same generation as a store change.
-    func authorizationDidResolve(to status: StoreAuthorizationStatus) {
-        condition.lock()
-        defer { condition.unlock() }
-        guard let previous = lastAuthorization else {
-            lastAuthorization = status
-            return
+        // Clearing runs under `clock.condition` (held by `invalidate`); it only
+        // drops this coordinator's own cache entries and must never re-lock.
+        clock.register { [weak self] reason, generation in
+            guard let self else { return }
+            self.cache.removeAll(keepingCapacity: true)
+            EKEventStoreAdapter.fetchLog.info(
+                "EventKit window cache invalidated",
+                metadata: [
+                    "reason": .string(reason),
+                    "generation": .stringConvertible(generation),
+                ]
+            )
         }
-        guard previous != status else { return }
-        lastAuthorization = status
-        invalidateLocked(reason: "calendar-access-changed")
-    }
-
-    func invalidate(reason: String) {
-        condition.lock()
-        invalidateLocked(reason: reason)
-        condition.unlock()
-    }
-
-    private func invalidateLocked(reason: String) {
-        generation &+= 1
-        cache.removeAll(keepingCapacity: true)
-        condition.broadcast()
-        EKEventStoreAdapter.fetchLog.info(
-            "EventKit window cache invalidated",
-            metadata: [
-                "reason": .string(reason),
-                "generation": .stringConvertible(generation),
-            ]
-        )
     }
 
     func fetch(
@@ -966,17 +1056,19 @@ private struct AttendeeWindowIndex {
 /// discipline `EventWindowFetchCoordinator` implements for `[Event]`, here
 /// parameterized over the cached `Value`. DL-2 uses it for the
 /// `AttendeeWindowIndex` so repeated `eventsWithAttendee` calls for one window
-/// build the index once. The `[Event]` window coordinator is deliberately left
-/// untouched (its coalescing tests pin its exact behavior); this is a sibling
-/// primitive, not a refactor of it.
+/// build the index once. It is a sibling primitive to the `[Event]` window
+/// coordinator, not a refactor of it — but both now share ONE `WindowCacheClock`
+/// (one lock, one generation) so their invalidation is atomic (FIX 2).
 ///
-/// One `NSCondition` linearizes all state. A window's build runs once per
-/// generation; concurrent identical callers wait for its `Result`. Invalidation
-/// advances the generation and clears the cache under the same lock: a caller
-/// arriving afterward can neither hit nor join old-generation work, and a build
-/// that finishes AFTER an invalidation is discarded (its callers retry in the
-/// new generation) — so a store change or write racing an in-flight build can
-/// never return stale data.
+/// The shared clock's `NSCondition` linearizes all state. A window's build runs
+/// once per (shared) generation; concurrent identical callers wait for its
+/// `Result`. Invalidation advances the shared generation and clears every
+/// registered cache under that one lock: a caller arriving afterward can neither
+/// hit nor join old-generation work, and a build that finishes AFTER an
+/// invalidation is discarded (its callers retry in the new generation) — so a
+/// store change or write racing an in-flight build can never return stale data,
+/// and can never leave this cache stale while the sibling window cache is
+/// refreshed (or vice versa).
 private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendable {
     private struct WindowKey: Hashable {
         let start: Date
@@ -1010,22 +1102,43 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
     }
 
     private let name: String
-    private let condition = NSCondition()
+    /// The shared lock + generation. This cache locks `clock.condition` and
+    /// gates on `clock.generation`, so its invalidation is atomic with the
+    /// sibling window coordinator's — both clear under one lock, one generation.
+    private let clock: WindowCacheClock
+    /// Forward to the shared lock/generation so the body below reads exactly as
+    /// the single-lock cache did — every access already happens under
+    /// `condition`, which is the shared lock.
+    private var condition: NSCondition { clock.condition }
+    private var generation: UInt64 { clock.generation }
     /// `nil` = non-expiring (invalidation-only): entries live until an explicit
     /// invalidation, never a wall-clock TTL. `.some(n)` expires an entry `n`
     /// nanoseconds after capture; `.some(0)` disables caching entirely.
     private let cacheLifetimeNanos: UInt64?
     private let maximumCacheEntries: Int
-    private var generation: UInt64 = 0
     private var flights: [FlightKey: Flight] = [:]
     private var cache: [WindowKey: CacheEntry] = [:]
     private var useCounter: UInt64 = 0
 
     /// `cacheLifetime == nil` builds a non-expiring cache (invalidation-only).
-    init(name: String, cacheLifetime: TimeInterval?, maximumCacheEntries: Int) {
+    init(name: String, clock: WindowCacheClock, cacheLifetime: TimeInterval?, maximumCacheEntries: Int) {
         self.name = name
+        self.clock = clock
         self.cacheLifetimeNanos = cacheLifetime.map { UInt64(max(0, $0) * 1_000_000_000) }
         self.maximumCacheEntries = max(1, maximumCacheEntries)
+        // Clearing runs under `clock.condition` (held by `invalidate`); it only
+        // drops this cache's own entries and must never re-lock.
+        clock.register { [weak self] reason, generation in
+            guard let self else { return }
+            self.cache.removeAll(keepingCapacity: true)
+            EKEventStoreAdapter.fetchLog.info(
+                "\(self.name) cache invalidated",
+                metadata: [
+                    "reason": .string(reason),
+                    "generation": .stringConvertible(generation),
+                ]
+            )
+        }
     }
 
     /// True when successful builds should be cached. Non-expiring caches always
@@ -1039,27 +1152,10 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
 
     // Authorization-transition tracking is centralized at the EKEventStoreAdapter
     // level (one lock, one baseline) and drives invalidation through the shared
-    // `invalidateCaches` path. This cache exposes only `invalidate`; it does not
-    // track authorization itself, so two caches can't diverge on a transition.
-
-    func invalidate(reason: String) {
-        condition.lock()
-        invalidateLocked(reason: reason)
-        condition.unlock()
-    }
-
-    private func invalidateLocked(reason: String) {
-        generation &+= 1
-        cache.removeAll(keepingCapacity: true)
-        condition.broadcast()
-        EKEventStoreAdapter.fetchLog.info(
-            "\(name) cache invalidated",
-            metadata: [
-                "reason": .string(reason),
-                "generation": .stringConvertible(generation),
-            ]
-        )
-    }
+    // `invalidateCaches` path (which bumps the shared clock). This cache tracks
+    // no authorization itself and owns no invalidation entry point of its own —
+    // it registers a clear closure with the shared clock — so two caches can't
+    // diverge on a transition, nor be cleared non-atomically.
 
     func value(
         interval: DateInterval,

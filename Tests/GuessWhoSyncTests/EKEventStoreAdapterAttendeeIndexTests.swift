@@ -462,6 +462,68 @@ struct EKEventStoreAdapterAttendeeIndexTests {
         #expect(postResult.map(\.eventKitID) == ["new"])
     }
 
+    @Test
+    func invalidateCachesAtomicallyBlocksLookupFromServingPreInvalidationSnapshot() throws {
+        // FIX 2: the raw window cache and the non-expiring attendee index share
+        // ONE lock + generation, so `invalidateCaches` clears BOTH inside a
+        // single critical section. A lookup racing an in-progress invalidation
+        // must never slip between the two clears and serve a pre-invalidation
+        // attendee snapshot; it blocks on the shared lock and, once invalidation
+        // completes, rebuilds against fresh data.
+        //
+        // The interpose runs WHILE the shared lock is held — after both caches
+        // are cleared and the generation bumped, before the lock is released. A
+        // split-lock design would already have cleared the window cache while
+        // leaving the attendee index readable AND unlocked, so the racing lookup
+        // would hit the stale "before" entry and return it without rebuilding.
+        // The atomic design parks that lookup on the one shared lock until
+        // invalidation finishes, then forces a fresh rebuild.
+        let spy = AttendeeIndexFetchSpy(events: [event(ekid: "before", start: 100, emails: ["a@x.com"])])
+        let adapter = makeAdapter(spy: spy)
+        let w = window()
+
+        // Seed the attendee index (one walk; "before" cached). This also
+        // establishes the .authorized baseline, so the racing lookup's own
+        // authorization read below is a no-op edge and never re-invalidates.
+        let seeded = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)
+        #expect(spy.fetchCount == 1)
+        #expect(seeded.map(\.eventKitID) == ["before"])
+
+        // Swap the underlying data so any rebuild yields "after".
+        spy.events = [event(ekid: "after", start: 200, emails: ["a@x.com"])]
+
+        // The interpose runs on THIS thread, synchronously, while the shared
+        // lock is held. It launches the racing lookup on a dedicated thread and
+        // gives it ample time to reach the attendee cache.
+        var racing: BlockingFuture<[Event]>?
+        var completedWhileLockHeld = true
+        var fetchCountWhileLockHeld = -1
+        adapter.invalidateCachesWithInterposeForTesting {
+            let future = blockingLookup(adapter, emails: ["a@x.com"], window: w)
+            racing = future
+            // The racing lookup is parked on the shared lock we still hold here,
+            // so under the atomic design it can neither complete nor start a
+            // rebuild no matter how long we wait.
+            Thread.sleep(forTimeInterval: 0.2)
+            completedWhileLockHeld = future.hasCompleted
+            fetchCountWhileLockHeld = spy.fetchCount
+        }
+
+        // While the shared lock was held, the racing lookup could neither
+        // complete (a split-lock design would have completed here with stale
+        // data) nor trigger a rebuild — it was blocked on that one lock.
+        #expect(completedWhileLockHeld == false)
+        #expect(fetchCountWhileLockHeld == 1)
+
+        // Once invalidation released the shared lock, the lookup missed the
+        // cleared cache and rebuilt against fresh data — never the "before"
+        // snapshot.
+        let future = try #require(racing)
+        let result = try future.value()
+        #expect(result.map(\.eventKitID) == ["after"])
+        #expect(spy.fetchCount == 2)
+    }
+
     // MARK: - Warm-up
 
     @Test
@@ -596,6 +658,14 @@ private final class BlockingFuture<T: Sendable>: @unchecked Sendable {
         let outcome = result!
         condition.unlock()
         return try outcome.get()
+    }
+
+    /// Non-blocking peek: has the work finished? Lock-guarded so it is safe to
+    /// call from another thread while the work is still running.
+    var hasCompleted: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return result != nil
     }
 }
 
