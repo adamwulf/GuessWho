@@ -68,6 +68,41 @@ struct SidecarReconcilerTests {
     }
 
     @Test
+    func scopedReconcilePreservesConflictReportShape() throws {
+        func seededStore() throws -> InMemorySidecarStore {
+            let store = InMemorySidecarStore()
+            let current = envelope(fields: [
+                "nickname": SidecarCell(
+                    value: .string("Bear"),
+                    modifiedAt: t1,
+                    modifiedBy: "device-A"
+                )
+            ])
+            let conflict = envelope(fields: [
+                "notes": SidecarCell(
+                    value: .string("Met at WWDC"),
+                    modifiedAt: t2,
+                    modifiedBy: "device-B"
+                )
+            ])
+            try store.write(current, at: key())
+            store.scriptConflict(at: key(), versions: [try encode(conflict)])
+            return store
+        }
+
+        let fullReport = try makeSync(sidecars: seededStore()).reconcileSidecars()
+        let scopedReport = try makeSync(sidecars: seededStore())
+            .reconcileSidecars(keys: [key()])
+
+        #expect(scopedReport.fileOutcomes.count == fullReport.fileOutcomes.count)
+        let fullOutcome = try #require(fullReport.fileOutcomes.first)
+        let scopedOutcome = try #require(scopedReport.fileOutcomes.first)
+        #expect(scopedOutcome.key == fullOutcome.key)
+        #expect(scopedOutcome.versionsConsidered == fullOutcome.versionsConsidered)
+        #expect(scopedOutcome.skippedReasons == fullOutcome.skippedReasons)
+    }
+
+    @Test
     func threeWayFold_currentPlusTwoConflictsAllParseable() throws {
         let store = InMemorySidecarStore()
         let envA = envelope(fields: [

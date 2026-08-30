@@ -1101,7 +1101,7 @@ struct Fixture {
         return GuessWhoSync(
             contacts: InMemoryContactStore(),
             events: InMemoryEventStore(),
-            sidecars: FileSystemSidecarStore(root: root),
+            sidecars: FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false),
             deviceID: Sentinels.deviceID)
     }
 

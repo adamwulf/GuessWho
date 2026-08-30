@@ -217,6 +217,71 @@ extension GuessWhoSync {
         return overlay(live: live, onto: cached, ekid: ekid)
     }
 
+    /// Window-aware single-key projection for watcher deltas. Applies EXACTLY
+    /// the per-sidecar rule of `eventsWindow(from:to:includeEventKit:)` so a
+    /// scoped delta refresh and a full window reload cannot disagree for the
+    /// same event.
+    ///
+    /// Both surfaces overlay a linked event's live EventKit values whenever the
+    /// live version OVERLAPS the inclusive window (`startDate <= to &&
+    /// endDate >= from`) — exactly the set `eventsWindow`'s single
+    /// `events(matching:)` batch surfaces. A live version that does not overlap
+    /// the window at all is invisible to that batch, so both keep the cached
+    /// projection for it. Overlaying an overlapping event shows its true (live)
+    /// start and title, so an event whose live start has moved out of the window
+    /// drops via the caller's membership filter rather than lingering with a
+    /// stale cached title/time. `includeEventKit` gates the overlay the same way
+    /// `eventsWindow`'s batch is gated on EventKit access.
+    ///
+    /// Returns nil for a missing / whole-event-deleted sidecar (no row). It does
+    /// NOT itself apply the window-membership filter — the caller keeps the row
+    /// only when the returned event's `startDate` falls in `[from, to]`, exactly
+    /// as `eventsWindow` filters its result — so a caller can still tell "no such
+    /// sidecar" (nil) from "event exists but is out of window".
+    func eventForWatcherDelta(
+        at key: SidecarKey,
+        from: Date,
+        to: Date,
+        includeEventKit: Bool
+    ) throws -> Event? {
+        guard let envelope = try sidecars.read(key) else { return nil }
+        if isEnvelopeWholeEventDeleted(envelope) { return nil }
+        guard let cached = decodeCachedEvent(envelope: envelope, key: key) else { return nil }
+        guard includeEventKit, let ekid = liveEventKitID(envelope: envelope) else { return cached }
+        guard let live = try events.fetch(eventKitID: ekid) else { return cached }
+        // Overlay only when the live version OVERLAPS the inclusive window —
+        // exactly what `eventsWindow`'s single `events(matching:)` batch
+        // surfaces (`ekIndex` holds every overlapping event). A live version
+        // that does not overlap the window at all is invisible to that batch, so
+        // here too the cached projection stands. Otherwise overlay the live
+        // values; the caller's start-membership filter then drops a row whose
+        // live start has moved outside the window.
+        guard live.startDate <= to, live.endDate >= from else { return cached }
+        return overlay(live: live, onto: cached, ekid: ekid)
+    }
+
+    /// Async overload of `eventForWatcherDelta(at:from:to:includeEventKit:)` —
+    /// the coordinated sidecar read and possible EventKit lookup run off the
+    /// caller's actor without walking unrelated event sidecars.
+    public func eventForWatcherDelta(
+        at key: SidecarKey,
+        from: Date,
+        to: Date,
+        includeEventKit: Bool
+    ) async throws -> Event? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try self.eventForWatcherDelta(
+                        at: key, from: from, to: to, includeEventKit: includeEventKit
+                    ))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Every sidecar event (`events/<uuid>.json`) projected via Option C.
     /// O(N) + per-linked fetch. Whole-event-deleted envelopes are filtered.
     public func allEvents() throws -> [Event] {
@@ -531,6 +596,19 @@ extension GuessWhoSync {
             let projected: Event
             if let ekid = liveEventKitID(envelope: envelope) {
                 seenEKIDs.insert(ekid)
+                // Overlay whenever the batch surfaced this event. `ekIndex` holds
+                // every event OVERLAPPING the window (`events(matching:)`'s
+                // contract), so its presence means EventKit has a live version
+                // whose true start/title we must show — even one that overlaps
+                // the window but starts before `from`. The `projected.startDate`
+                // membership filter below then decides whether the (possibly
+                // moved) row stays: an event whose live start has moved out drops
+                // rather than lingering with a stale cached title/time.
+                // `eventForWatcherDelta` overlays under the identical overlap
+                // test, so the delta and this full read agree row-for-row. An
+                // event NOT in the batch (its live version moved out of the
+                // window entirely, so `events(matching:)` can't see it) keeps its
+                // cached projection.
                 if let live = ekIndex[ekid] {
                     projected = overlay(live: live, onto: cached, ekid: ekid)
                 } else {
@@ -598,14 +676,11 @@ extension GuessWhoSync {
     public func recentEvents(
         matchingEmails emails: Set<String>,
         matchingLocations locations: Set<String> = [],
-        asOf now: Date = Date(),
+        asOf now: Date? = nil,
         limit: Int = 10
     ) async throws -> [Event] {
         guard !(emails.isEmpty && locations.isEmpty), limit > 0 else { return [] }
-        let calendar = Calendar(identifier: .gregorian)
-        let start = calendar.date(byAdding: .year, value: -10, to: now) ?? now
-        let end = calendar.date(byAdding: .year, value: 1, to: now) ?? now
-        let interval = DateInterval(start: start, end: end)
+        let interval = now.map { Self.recentEventsWindow(asOf: $0) } ?? recentEventsInterval
         // Capture `self` (which is `@unchecked Sendable`) rather than `events`
         // directly — `EventStoreProtocol` doesn't conform to `Sendable`, so a
         // bare capture would trip the `SendableClosureCaptures` warning even
@@ -627,6 +702,32 @@ extension GuessWhoSync {
         }
     }
 
+    /// Best-effort preparation for the same exact EventKit window consumed by
+    /// `recentEvents`. The adapter's operation is synchronous, so launch code
+    /// can await this wrapper without blocking its actor. Both preparation and
+    /// default lookups use the instance's launch-stable interval; explicit
+    /// `asOf` lookup calls remain available for deterministic tests.
+    public func prepareRecentEventsIndex() async throws {
+        let interval = recentEventsInterval
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try self.events.prepareEventsWithAttendeeIndex(in: interval)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    internal static func recentEventsWindow(asOf now: Date) -> DateInterval {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.date(byAdding: .year, value: -10, to: now) ?? now
+        let end = calendar.date(byAdding: .year, value: 1, to: now) ?? now
+        return DateInterval(start: start, end: end)
+    }
+
     // MARK: - Private helpers
 
     /// Write one §5.2 cell at a fixed cell key (vs. the minted-UUID keys used
@@ -643,8 +744,8 @@ extension GuessWhoSync {
         softDelete: Bool
     ) throws {
         try SidecarField.validate(value: value, against: type)
-        try sidecarLocks.withLock(forKey: key) {
-            let existing = try sidecars.read(key)
+        try withKeyLocked(key) { ctx in
+            let existing = try ctx.read()
             let now = Date()
             let createdAt: Date = {
                 if let cell = existing?.fields[cellKey],
@@ -675,7 +776,7 @@ extension GuessWhoSync {
                 entityID: existing?.entityID ?? key.id,
                 fields: fields
             )
-            try sidecars.write(envelope, at: key)
+            try ctx.write(envelope)
         }
     }
 
@@ -1133,10 +1234,10 @@ extension GuessWhoSync {
             let preBMatches = preBEnd.kind == .event && mapping[preBEnd.id] != nil
             guard preAMatches || preBMatches else { continue }
 
-            try sidecarLocks.withLock(forKey: key) {
+            try withKeyLocked(key) { ctx in
                 // Re-read inside the lock: a concurrent setLinkNote or
                 // removeLink may have written between the pre-screen and now.
-                guard let envelope = try sidecars.read(key) else { return }
+                guard let envelope = try ctx.read() else { return }
                 guard let aCell = envelope.fields[Link.endpointAKey],
                       let bCell = envelope.fields[Link.endpointBKey],
                       let aEnd = Link.decodeEndpoint(aCell.value),
@@ -1161,9 +1262,8 @@ extension GuessWhoSync {
                         modifiedBy: deviceID
                     )
                 }
-                try sidecars.write(
-                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields),
-                    at: key
+                try ctx.write(
+                    SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields)
                 )
 
                 if let linkID = UUID(uuidString: key.id) {

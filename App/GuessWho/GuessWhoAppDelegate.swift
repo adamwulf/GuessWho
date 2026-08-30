@@ -154,7 +154,16 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             // cannot read pre-migration keys.
             await service.migrateEventsIfNeeded()
             await service.requestEventsAccessIfNeeded()
-            await eventsRepository.reload()
+            await eventsRepository.reload(trigger: "app-launch")
+
+            // Best-effort DL-2 warm-up. The repository's first visible window
+            // is ready before this starts, and the low-priority task does not
+            // hold launch or navigation open. The sync engine reuses one exact
+            // per-launch interval here and for every contact lookup, so the
+            // prepared 11-year index is also the first open's index.
+            Task(priority: .background) { [service] in
+                await service.prepareRecentEventsIndex()
+            }
         }
 
         // Start the package-owned external-contact-change watcher. The package

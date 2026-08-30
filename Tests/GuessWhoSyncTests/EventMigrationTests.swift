@@ -266,6 +266,11 @@ struct EventMigrationTests {
         let eventEndpoint = SidecarKey(kind: .event, id: legacyID)
         let originalLink = try sync.addLink(from: contactKey, to: eventEndpoint, note: "attended")
 
+        // Warm the endpoint index under the LEGACY event id. The migration's
+        // raw endpoint rewrite must invalidate that generation or the new UUID
+        // lookup below would keep serving the pre-migration snapshot.
+        #expect(try sync.links(at: eventEndpoint).map(\.id) == [originalLink.id])
+
         let report = try sync.migrateEventsToSidecarFirst()
         let migrated = try #require(report.migratedEvents.first)
         let newUUID = migrated.newUUID
@@ -284,6 +289,10 @@ struct EventMigrationTests {
         let aCell = try #require(envelope.fields[Link.endpointAKey])
         let decodedA = try #require(Link.decodeEndpoint(aCell.value))
         #expect(decodedA == contactKey)
+
+        let migratedEndpoint = SidecarKey(kind: .event, id: newUUID.uuidString)
+        #expect(try sync.links(at: migratedEndpoint).map(\.id) == [originalLink.id])
+        #expect(try sync.links(at: eventEndpoint).isEmpty)
     }
 
     @Test

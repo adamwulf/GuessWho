@@ -12,6 +12,8 @@ final class CountingSidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
     private(set) var writeCount: Int = 0
     private(set) var writeCounts: [SidecarKey: Int] = [:]
+    private(set) var keysWithUnresolvedConflictsCallCount: Int = 0
+    private(set) var reconcileConflictCalls: [SidecarKey] = []
 
     init(wrapping inner: InMemorySidecarStore) {
         self.inner = inner
@@ -34,13 +36,19 @@ final class CountingSidecarStore: SidecarStoreProtocol {
 @_spi(ConflictReconcile)
 extension CountingSidecarStore: SidecarConflictReconciling {
     func keysWithUnresolvedConflicts() throws -> [SidecarKey] {
-        try inner.keysWithUnresolvedConflicts()
+        lock.lock()
+        keysWithUnresolvedConflictsCallCount += 1
+        lock.unlock()
+        return try inner.keysWithUnresolvedConflicts()
     }
 
     func reconcileConflict(
         at key: SidecarKey,
         resolve: (_ current: Data?, _ conflicts: [Data]) throws -> SidecarEnvelope
     ) throws -> SidecarReconcileReport.FileOutcome? {
-        try inner.reconcileConflict(at: key, resolve: resolve)
+        lock.lock()
+        reconcileConflictCalls.append(key)
+        lock.unlock()
+        return try inner.reconcileConflict(at: key, resolve: resolve)
     }
 }

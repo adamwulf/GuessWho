@@ -91,7 +91,12 @@ struct ContactSortOrderTests {
             now: Date(timeIntervalSince1970: 1_000_000)
         )
 
-        let repo = ContactsRepository(contacts: store, sync: sync)
+        // A per-test NotificationCenter isolates this repo from a parallel
+        // test's `.guessWhoSidecarsDidChange` post on `.default` (e.g. the file
+        // watcher tests): such a post would advance this repo's refresh
+        // generation mid-reload and drop the sidecar-derived timestamp cache
+        // these time-order assertions read.
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repo.reload()
         repo.sortOrder = .created
 
@@ -116,7 +121,12 @@ struct ContactSortOrderTests {
         try sync.stampContactTimestamp(.viewed, at: key(recentUUID), now: Date(timeIntervalSince1970: 2_000_000))
         try sync.stampContactTimestamp(.viewed, at: key(olderUUID), now: Date(timeIntervalSince1970: 1_000_000))
 
-        let repo = ContactsRepository(contacts: store, sync: sync)
+        // A per-test NotificationCenter isolates this repo from a parallel
+        // test's `.guessWhoSidecarsDidChange` post on `.default` (e.g. the file
+        // watcher tests): such a post would advance this repo's refresh
+        // generation mid-reload and drop the sidecar-derived timestamp cache
+        // these time-order assertions read.
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repo.reload()
         repo.sortOrder = .lastViewed
 
@@ -139,7 +149,12 @@ struct ContactSortOrderTests {
         try sync.stampContactTimestamp(.viewed, at: key(viewedUUID), now: Date(timeIntervalSince1970: 1_000_000))
         try sync.stampContactTimestamp(.interacted, at: key(interactedUUID), now: Date(timeIntervalSince1970: 9_000_000))
 
-        let repo = ContactsRepository(contacts: store, sync: sync)
+        // A per-test NotificationCenter isolates this repo from a parallel
+        // test's `.guessWhoSidecarsDidChange` post on `.default` (e.g. the file
+        // watcher tests): such a post would advance this repo's refresh
+        // generation mid-reload and drop the sidecar-derived timestamp cache
+        // these time-order assertions read.
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repo.reload()
         repo.sortOrder = .lastViewed
 
@@ -165,7 +180,12 @@ struct ContactSortOrderTests {
         try sync.stampContactTimestamp(.viewed, at: key(todayUUID), now: now.addingTimeInterval(-3_600))
         try sync.stampContactTimestamp(.viewed, at: key(earlierUUID), now: now.addingTimeInterval(-365 * 24 * 3_600))
 
-        let repo = ContactsRepository(contacts: store, sync: sync)
+        // A per-test NotificationCenter isolates this repo from a parallel
+        // test's `.guessWhoSidecarsDidChange` post on `.default` (e.g. the file
+        // watcher tests): such a post would advance this repo's refresh
+        // generation mid-reload and drop the sidecar-derived timestamp cache
+        // these time-order assertions read.
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repo.reload()
         repo.sortOrder = .lastViewed
 
@@ -227,7 +247,12 @@ struct ContactSortOrderTests {
         let sidecars = InMemorySidecarStore()
         let store = InMemoryContactStore(contacts: [c])
         let sync = GuessWhoSync(contacts: store, events: InMemoryEventStore(), sidecars: sidecars, deviceID: "device-test")
-        let repo = ContactsRepository(contacts: store, sync: sync)
+        // A per-test NotificationCenter isolates this repo from a parallel
+        // test's `.guessWhoSidecarsDidChange` post on `.default` (e.g. the file
+        // watcher tests): such a post would advance this repo's refresh
+        // generation mid-reload and drop the sidecar-derived timestamp cache
+        // these time-order assertions read.
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repo.reload()
         repo.sortOrder = .lastModified
 

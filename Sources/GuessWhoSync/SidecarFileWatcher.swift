@@ -6,9 +6,10 @@ public extension Notification.Name {
     /// root change on disk — a remote edit or a `notYetDownloaded` file
     /// arriving from another device, or a same-device write echoing back
     /// through the metadata query (see `SidecarFileWatcher` for why echoes
-    /// are accepted rather than filtered). No payload: subscribers treat it
-    /// as a coarse "sidecar-derived state may be stale" signal and run their
-    /// (debounced, read-only) refresh paths.
+    /// are scoped rather than filtered). The notification carries a
+    /// `SidecarChangeSet` with exact file keys when available, otherwise with
+    /// the narrowest safe kind scope; subscribers use a global full refresh
+    /// only when neither scope can be established.
     ///
     /// This is the missing half of the `SidecarStoreError.notYetDownloaded`
     /// contract: `read()` requests the download and tells the caller to retry
@@ -18,6 +19,114 @@ public extension Notification.Name {
     /// The name is developer/internal-facing; the `guessWho` vocabulary is
     /// intentional and never surfaces in any user-facing string.
     static let guessWhoSidecarsDidChange = Notification.Name("GuessWhoSidecarsDidChange")
+}
+
+/// `userInfo` keys for `.guessWhoSidecarsDidChange`.
+public enum GuessWhoSidecarsDidChangeKey {
+    /// Value: a `SidecarChangeSet`. Its `changedKeys` is nil when the watcher
+    /// cannot safely identify every changed file; `changedKinds` can still
+    /// retain a safe kind-directory scope. Both are nil for initial gather or
+    /// a truly unknown delivery.
+    public static let changeSet = "changeSet"
+}
+
+/// The sidecar scope named by one coalesced metadata-query burst. Concrete file
+/// deliveries carry `changedKeys`; a kind-directory delivery carries only
+/// `changedKinds`, meaning "some unknown key of this kind changed." Only nil
+/// kinds mean globally unknown/full scope. This distinction lets an events
+/// subscriber safely ignore a coarse `.contact` delivery while the contacts
+/// subscriber conservatively refreshes its full sidecar projection.
+public struct SidecarChangeSet: Sendable, Equatable {
+    public let changedKeys: Set<SidecarKey>?
+    public let changedKinds: Set<SidecarKind>?
+
+    public init(changedKeys: Set<SidecarKey>?) {
+        if let changedKeys, !changedKeys.isEmpty {
+            self.changedKeys = changedKeys
+            self.changedKinds = Set(changedKeys.map(\.kind))
+        } else {
+            self.changedKeys = nil
+            self.changedKinds = nil
+        }
+    }
+
+    /// A kind-scoped delivery. `changedKeys == nil` means at least one item was
+    /// only identifiable to its containing kind directory; it is not global
+    /// full scope as long as `changedKinds` is non-empty.
+    public init(changedKeys: Set<SidecarKey>?, changedKinds: Set<SidecarKind>) {
+        let keyKinds = Set(changedKeys?.map(\.kind) ?? [])
+        let allKinds = changedKinds.union(keyKinds)
+        if allKinds.isEmpty {
+            self.changedKeys = nil
+            self.changedKinds = nil
+        } else {
+            // Exact keys are safe only when they account for every declared
+            // kind. A future caller that supplies a broader kind set must
+            // degrade to coarse scope rather than let an accepted repository
+            // find no matching key and silently no-op.
+            self.changedKeys = keyKinds == allKinds
+                ? changedKeys.flatMap { $0.isEmpty ? nil : $0 }
+                : nil
+            self.changedKinds = allKinds
+        }
+    }
+
+    public static let fullRefresh = SidecarChangeSet(changedKeys: nil)
+
+    public var requiresFullRefresh: Bool { changedKinds == nil }
+
+    /// Globally unknown scope is contagious. Otherwise kinds union safely, while
+    /// concrete keys remain exact only if both operands named every key.
+    public func merging(_ other: SidecarChangeSet) -> SidecarChangeSet {
+        guard let changedKinds, let otherKinds = other.changedKinds else {
+            return .fullRefresh
+        }
+        let mergedKeys: Set<SidecarKey>?
+        if let changedKeys, let otherKeys = other.changedKeys {
+            mergedKeys = changedKeys.union(otherKeys)
+        } else {
+            mergedKeys = nil
+        }
+        return SidecarChangeSet(
+            changedKeys: mergedKeys,
+            changedKinds: changedKinds.union(otherKinds)
+        )
+    }
+}
+
+/// The files reconciliation must probe after one coalesced metadata burst.
+/// Unlike `SidecarChangeSet`, an empty key set is meaningful here: every
+/// metadata item was definitively flagged conflict-free, so there is no file
+/// to probe. `.all` is the fail-closed fallback whenever metadata is missing.
+enum SidecarConflictScanScope: Sendable, Equatable {
+    case all
+    case keys(Set<SidecarKey>)
+
+    func merging(_ other: SidecarConflictScanScope) -> SidecarConflictScanScope {
+        switch (self, other) {
+        case (.all, _), (_, .all):
+            return .all
+        case (.keys(let keys), .keys(let otherKeys)):
+            return .keys(keys.union(otherKeys))
+        }
+    }
+}
+
+/// Value-only projection of an `NSMetadataItem`, kept independent from a live
+/// `NSMetadataQuery` so conflict-flag decisions are deterministic in tests.
+struct SidecarMetadataConflictItem: Sendable, Equatable {
+    let path: String?
+    let hasUnresolvedConflicts: Bool?
+}
+
+public extension Notification {
+    /// Typed payload for `.guessWhoSidecarsDidChange`. A missing or malformed
+    /// payload preserves compatibility with coarse legacy/test posts by
+    /// returning the guaranteed full-refresh fallback.
+    var guessWhoSidecarChangeSet: SidecarChangeSet {
+        userInfo?[GuessWhoSidecarsDidChangeKey.changeSet] as? SidecarChangeSet
+            ?? .fullRefresh
+    }
 }
 
 /// Watches the sidecar root in the iCloud ubiquity container with an
@@ -44,9 +153,9 @@ public extension Notification.Name {
 /// hatch is store-side write journaling (compare changed paths against
 /// recent local writes), not query-side filtering.
 ///
-/// The query itself batches: `notificationBatchingInterval` collapses rapid
-/// file events into one `didUpdate` per interval, so a multi-file sync
-/// burst reaches subscribers as a single post (which they debounce again).
+/// The query itself batches notifications, and the watcher adds a trailing
+/// quiet period before reconciliation. A burst therefore reaches subscribers
+/// as one reconcile-and-post pass (which they debounce again).
 @MainActor
 public final class SidecarFileWatcher: NSObject {
     /// Breadcrumbs for the arrival pipeline, alongside the rest of the app's
@@ -62,11 +171,53 @@ public final class SidecarFileWatcher: NSObject {
     /// `start()` is idempotent.
     private var isObserving = false
 
+    /// Metadata notifications first collect here until the trailing quiet
+    /// period expires. A separate ready batch is necessary because a new
+    /// delivery can restart the quiet period while an older ready batch is
+    /// waiting for the current reconciliation pass to finish.
+    private struct ChangeBatch {
+        var added: Int
+        var changed: Int
+        var removed: Int
+        var changeSet: SidecarChangeSet
+        var conflictScanScope: SidecarConflictScanScope
+
+        mutating func merge(
+            added: Int,
+            changed: Int,
+            removed: Int,
+            changeSet: SidecarChangeSet,
+            conflictScanScope: SidecarConflictScanScope
+        ) {
+            self.added += added
+            self.changed += changed
+            self.removed += removed
+            self.changeSet = self.changeSet.merging(changeSet)
+            self.conflictScanScope = self.conflictScanScope.merging(conflictScanScope)
+        }
+
+        mutating func merge(_ other: ChangeBatch) {
+            merge(
+                added: other.added,
+                changed: other.changed,
+                removed: other.removed,
+                changeSet: other.changeSet,
+                conflictScanScope: other.conflictScanScope
+            )
+        }
+    }
+
+    /// Named independently from `notificationBatchingInterval`: batching is
+    /// upstream delivery policy, while this is the trailing-edge quiet period
+    /// that coalesces deliveries before expensive work starts.
+    private static let changeProcessingQuietPeriod: Duration = .milliseconds(500)
+    private var pendingQuietPeriod: Task<Void, Never>?
+    private var pendingBatch: ChangeBatch?
+    private var readyBatch: ChangeBatch?
+
     /// Metadata notifications can arrive while a reconciliation pass is still
-    /// waiting on cloudd. Coalesce them into at most one follow-up pass rather
-    /// than running overlapping whole-tree scans. The reconciler's own writes
-    /// echo through the metadata query; that echo produces one cheap no-conflict
-    /// follow-up and then settles.
+    /// waiting on cloudd. Coalesce quieted batches into at most one follow-up
+    /// pass rather than running overlapping whole-tree scans.
     private var isProcessingChanges = false
     private var needsAnotherPass = false
 
@@ -149,11 +300,26 @@ public final class SidecarFileWatcher: NSObject {
     private nonisolated func queryDidFinishGathering(_ note: Notification) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Snapshot the gathered result set atomically with respect to
+            // subsequent metadata updates. Those updates queue while disabled
+            // and are delivered after `enableUpdates()`.
+            self.query.disableUpdates()
+            let metadataItems = self.query.results.map(Self.metadataConflictItem)
+            self.query.enableUpdates()
             Self.log.info(
                 "sidecar metadata query gathered",
-                metadata: ["results": .stringConvertible(self.query.resultCount)]
+                metadata: ["results": .stringConvertible(metadataItems.count)]
             )
-            self.scheduleChangeProcessing(added: self.query.resultCount, changed: 0, removed: 0)
+            self.scheduleChangeProcessing(
+                added: metadataItems.count,
+                changed: 0,
+                removed: 0,
+                changedKeys: nil,
+                conflictScanScope: self.conflictScanScope(
+                    for: metadataItems,
+                    emptyItemsAreComplete: true
+                )
+            )
         }
     }
 
@@ -163,35 +329,278 @@ public final class SidecarFileWatcher: NSObject {
     /// on the main actor.
     @objc
     private nonisolated func queryDidUpdate(_ note: Notification) {
-        let added = (note.userInfo?[NSMetadataQueryUpdateAddedItemsKey] as? [Any])?.count ?? 0
-        let changed = (note.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [Any])?.count ?? 0
-        let removed = (note.userInfo?[NSMetadataQueryUpdateRemovedItemsKey] as? [Any])?.count ?? 0
+        let addedItems = note.userInfo?[NSMetadataQueryUpdateAddedItemsKey] as? [Any] ?? []
+        let changedItems = note.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [Any] ?? []
+        let removedItems = note.userInfo?[NSMetadataQueryUpdateRemovedItemsKey] as? [Any] ?? []
+        let deliveredItems = addedItems + changedItems + removedItems
+        let paths = deliveredItems.compactMap(Self.metadataPath)
+        let metadataItems = deliveredItems.map(Self.metadataConflictItem)
+        let itemCount = addedItems.count + changedItems.count + removedItems.count
         Task { @MainActor [weak self] in
-            self?.scheduleChangeProcessing(added: added, changed: changed, removed: removed)
+            guard let self else { return }
+            let changedKeys: Set<SidecarKey>?
+            let changedKinds: Set<SidecarKind>?
+            let mappedItems = paths.map { path in
+                let key = self.sidecarKey(forMetadataPath: path)
+                let kind = key?.kind ?? self.sidecarKind(forMetadataDirectoryPath: path)
+                return (path: path, key: key, kind: kind)
+            }
+            if paths.count == itemCount {
+                let kinds = mappedItems.compactMap { $0.kind }
+                if kinds.count == paths.count {
+                    changedKinds = Set(kinds)
+                    let keys = mappedItems.compactMap { $0.key }
+                    // A kind-directory item deliberately makes the key slice
+                    // coarse while retaining its safe kind scope.
+                    changedKeys = keys.count == paths.count ? Set(keys) : nil
+                } else {
+                    changedKeys = nil
+                    changedKinds = nil
+                }
+            } else {
+                changedKeys = nil
+                changedKinds = nil
+            }
+            let coarsePaths = mappedItems.compactMap { entry in
+                entry.key == nil && entry.kind != nil ? entry.path : nil
+            }
+            let unmappedPaths = mappedItems.compactMap { entry in
+                entry.kind == nil ? entry.path : nil
+            }
+            Self.log.info(
+                "sidecar metadata paths mapped",
+                metadata: [
+                    "items": .stringConvertible(itemCount),
+                    "paths": .stringConvertible(paths.count),
+                    "keys": .stringConvertible(mappedItems.lazy.filter { $0.key != nil }.count),
+                    "scoped": .stringConvertible(mappedItems.lazy.filter { $0.kind != nil }.count),
+                    "coarsePaths": .string(coarsePaths.joined(separator: ",")),
+                    "unmappedPaths": .string(unmappedPaths.joined(separator: ",")),
+                ]
+            )
+            // Known kind directories retain coarse kind scope. A missing path
+            // or any other unmappable item keeps the batch globally unknown.
+            self.scheduleChangeProcessing(
+                added: addedItems.count,
+                changed: changedItems.count,
+                removed: removedItems.count,
+                changedKeys: changedKeys,
+                changedKinds: changedKinds,
+                conflictScanScope: self.conflictScanScope(for: metadataItems)
+            )
         }
     }
 
-    private func scheduleChangeProcessing(added: Int, changed: Int, removed: Int) {
+    private nonisolated static func metadataPath(from item: Any) -> String? {
+        if let metadataItem = item as? NSMetadataItem {
+            return metadataItem.value(forAttribute: NSMetadataItemPathKey) as? String
+        }
+        if let url = item as? URL { return url.path }
+        return item as? String
+    }
+
+    /// Project the two metadata attributes conflict planning needs. A URL or
+    /// String remains useful for delta key mapping, but has no iCloud conflict
+    /// flag and therefore deliberately produces an unavailable flag.
+    nonisolated static func metadataConflictItem(from item: Any) -> SidecarMetadataConflictItem {
+        guard let metadataItem = item as? NSMetadataItem else {
+            return SidecarMetadataConflictItem(
+                path: metadataPath(from: item),
+                hasUnresolvedConflicts: nil
+            )
+        }
+
+        let rawFlag = metadataItem.value(
+            forAttribute: NSMetadataUbiquitousItemHasUnresolvedConflictsKey
+        )
+        let flag: Bool?
+        if let bool = rawFlag as? Bool {
+            flag = bool
+        } else if let number = rawFlag as? NSNumber {
+            flag = number.boolValue
+        } else {
+            flag = nil
+        }
+        return SidecarMetadataConflictItem(
+            path: metadataPath(from: metadataItem),
+            hasUnresolvedConflicts: flag
+        )
+    }
+
+    /// Build the narrowest provably safe conflict scan. A false flag is OS
+    /// proof that the item has no unresolved versions. A true flag must map to
+    /// a sidecar key and remains a normal per-file probe. Missing flags or an
+    /// unrouteable flagged item make the entire batch fall back to `.all`.
+    func conflictScanScope(
+        for metadataItems: [SidecarMetadataConflictItem],
+        emptyItemsAreComplete: Bool = false
+    ) -> SidecarConflictScanScope {
+        guard !metadataItems.isEmpty else {
+            return emptyItemsAreComplete ? .keys([]) : .all
+        }
+
+        var conflictedKeys: Set<SidecarKey> = []
+        for item in metadataItems {
+            guard let hasUnresolvedConflicts = item.hasUnresolvedConflicts else {
+                return .all
+            }
+            guard hasUnresolvedConflicts else { continue }
+            guard let path = item.path,
+                  let key = sidecarKey(forMetadataPath: path) else {
+                return .all
+            }
+            conflictedKeys.insert(key)
+        }
+        return .keys(conflictedKeys)
+    }
+
+    /// Internal so the external-input parser can be covered without requiring
+    /// a live metadata query.
+    func sidecarKey(forMetadataPath path: String) -> SidecarKey? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let itemComponents = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard itemComponents.count == rootComponents.count + 2,
+              Array(itemComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+
+        guard let kind = Self.sidecarKind(
+            forDirectoryName: itemComponents[rootComponents.count]
+        ) else { return nil }
+
+        var filename = itemComponents.last ?? ""
+        if filename.hasPrefix("."),
+           filename.hasSuffix(".icloud"),
+           filename.count > ".icloud".count
+        {
+            filename.removeFirst()
+            filename.removeLast(".icloud".count)
+        }
+
+        let id: String
+        if filename.hasSuffix(".json") {
+            id = String(filename.dropLast(".json".count))
+        } else if filename.hasSuffix(".dat"), let separator = filename.firstIndex(of: ".") {
+            id = String(filename[..<separator])
+        } else {
+            return nil
+        }
+        guard !id.isEmpty else { return nil }
+        let decodedID = kind == .event ? (id.removingPercentEncoding ?? id) : id
+        return SidecarKey(kind: kind, id: decodedID)
+    }
+
+    /// A metadata update for `Documents/<kind>` is coarse but not globally
+    /// unknown. NSMetadataQuery emits this containing-directory node alongside
+    /// atomic file writes; retaining its kind prevents a `.contact` directory
+    /// echo from poisoning the concrete contact file into full scope.
+    func sidecarKind(forMetadataDirectoryPath path: String) -> SidecarKind? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let itemComponents = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard itemComponents.count == rootComponents.count + 1,
+              Array(itemComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return Self.sidecarKind(forDirectoryName: itemComponents.last ?? "")
+    }
+
+    private static func sidecarKind(forDirectoryName name: String) -> SidecarKind? {
+        switch name {
+        case "contacts": .contact
+        case "events": .event
+        case "links": .link
+        case "guides": .guide
+        case "places": .place
+        case "groups": .group
+        default: nil
+        }
+    }
+
+    /// Internal so tests can drive the production debounce without requiring
+    /// a live ubiquity container.
+    func scheduleChangeProcessing(
+        added: Int,
+        changed: Int,
+        removed: Int,
+        changedKeys: Set<SidecarKey>?,
+        changedKinds: Set<SidecarKind>? = nil,
+        conflictScanScope: SidecarConflictScanScope? = nil
+    ) {
+        let changeSet = changedKinds.map {
+            SidecarChangeSet(changedKeys: changedKeys, changedKinds: $0)
+        } ?? SidecarChangeSet(changedKeys: changedKeys)
+        let effectiveConflictScanScope: SidecarConflictScanScope
+        if let conflictScanScope {
+            effectiveConflictScanScope = conflictScanScope
+        } else if let changedKeys, !changedKeys.isEmpty {
+            // Internal/test callers without metadata items still get the
+            // delta-scoped fallback from opportunity #1's typed change set.
+            effectiveConflictScanScope = .keys(changedKeys)
+        } else {
+            effectiveConflictScanScope = .all
+        }
+        if pendingBatch == nil {
+            pendingBatch = ChangeBatch(
+                added: added,
+                changed: changed,
+                removed: removed,
+                changeSet: changeSet,
+                conflictScanScope: effectiveConflictScanScope
+            )
+        } else {
+            pendingBatch?.merge(
+                added: added,
+                changed: changed,
+                removed: removed,
+                changeSet: changeSet,
+                conflictScanScope: effectiveConflictScanScope
+            )
+        }
+
+        pendingQuietPeriod?.cancel()
+        pendingQuietPeriod = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.changeProcessingQuietPeriod)
+            } catch {
+                return
+            }
+            self?.quietPeriodElapsed()
+        }
+    }
+
+    private func quietPeriodElapsed() {
+        pendingQuietPeriod = nil
+        guard let batch = pendingBatch else { return }
+        pendingBatch = nil
+        if readyBatch == nil {
+            readyBatch = batch
+        } else {
+            readyBatch?.merge(batch)
+        }
+
         if isProcessingChanges {
             needsAnotherPass = true
             return
         }
+        startProcessingReadyBatches()
+    }
 
+    private func startProcessingReadyBatches() {
+        guard !isProcessingChanges, readyBatch != nil else { return }
         isProcessingChanges = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            var counts = (added: added, changed: changed, removed: removed)
             repeat {
                 self.needsAnotherPass = false
+                guard let batch = self.readyBatch else { break }
+                self.readyBatch = nil
                 await self.processSidecarChanges(
-                    added: counts.added,
-                    changed: counts.changed,
-                    removed: counts.removed
+                    added: batch.added,
+                    changed: batch.changed,
+                    removed: batch.removed,
+                    changedKeys: batch.changeSet.changedKeys,
+                    changedKinds: batch.changeSet.changedKinds,
+                    conflictScanScope: batch.conflictScanScope
                 )
-                // A coalesced pass represents an unspecified metadata burst;
-                // counts are diagnostics only, so don't repeat stale values.
-                counts = (0, 0, 0)
-            } while self.needsAnotherPass
+            } while self.needsAnotherPass && self.readyBatch != nil
             self.isProcessingChanges = false
         }
     }
@@ -202,7 +611,14 @@ public final class SidecarFileWatcher: NSObject {
     /// before notification delivery, guaranteeing subscribers read the merged
     /// envelope. A failed pass is logged but still posts: the current version
     /// remains readable, and a later metadata update can retry the conflict.
-    func processSidecarChanges(added: Int, changed: Int, removed: Int) async {
+    func processSidecarChanges(
+        added: Int,
+        changed: Int,
+        removed: Int,
+        changedKeys: Set<SidecarKey>? = nil,
+        changedKinds: Set<SidecarKind>? = nil,
+        conflictScanScope: SidecarConflictScanScope? = nil
+    ) async {
         Self.log.info(
             "sidecar files changed",
             metadata: [
@@ -213,7 +629,22 @@ public final class SidecarFileWatcher: NSObject {
         )
 
         do {
-            let report = try await sync.reconcileSidecars()
+            let effectiveConflictScanScope: SidecarConflictScanScope
+            if let conflictScanScope {
+                effectiveConflictScanScope = conflictScanScope
+            } else if let changedKeys, !changedKeys.isEmpty {
+                effectiveConflictScanScope = .keys(changedKeys)
+            } else {
+                effectiveConflictScanScope = .all
+            }
+
+            let report: SidecarReconcileReport
+            switch effectiveConflictScanScope {
+            case .all:
+                report = try await sync.reconcileSidecars()
+            case .keys(let keys):
+                report = try await sync.reconcileSidecars(keys: keys)
+            }
             if !report.fileOutcomes.isEmpty {
                 let skipped = report.fileOutcomes.reduce(0) { $0 + $1.skippedReasons.count }
                 Self.log.notice(
@@ -231,6 +662,15 @@ public final class SidecarFileWatcher: NSObject {
             )
         }
 
-        notificationCenter.post(name: .guessWhoSidecarsDidChange, object: self)
+        notificationCenter.post(
+            name: .guessWhoSidecarsDidChange,
+            object: self,
+            userInfo: [
+                GuessWhoSidecarsDidChangeKey.changeSet:
+                    changedKinds.map {
+                        SidecarChangeSet(changedKeys: changedKeys, changedKinds: $0)
+                    } ?? SidecarChangeSet(changedKeys: changedKeys)
+            ]
+        )
     }
 }

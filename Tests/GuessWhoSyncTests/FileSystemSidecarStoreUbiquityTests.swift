@@ -37,6 +37,7 @@ final class FakeVersionHandle: SidecarVersionHandle, @unchecked Sendable {
 final class FakeUbiquityProvider: SidecarUbiquityProvider, @unchecked Sendable {
     // Conflict versions keyed by sidecar file URL.
     var conflicts: [URL: [FakeVersionHandle]] = [:]
+    private(set) var unresolvedConflictVersionCalls: [URL] = []
 
     // Current bytes keyed by sidecar file URL. nil means "no current
     // version exists" (the resolver receives nil); not setting an entry
@@ -59,6 +60,7 @@ final class FakeUbiquityProvider: SidecarUbiquityProvider, @unchecked Sendable {
     var startDownloadingCalls: [URL] = []
 
     func unresolvedConflictVersions(at url: URL) -> [SidecarVersionHandle]? {
+        unresolvedConflictVersionCalls.append(url)
         guard let list = conflicts[url], !list.isEmpty else { return nil }
         return list.map { $0 as SidecarVersionHandle }
     }
@@ -132,7 +134,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let conflictHandle = FakeVersionHandle(contents: encode(conflictEnv))
         fake.conflicts[url] = [conflictHandle]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(currentEnv, at: key)
 
         var resolverInvocations = 0
@@ -189,7 +191,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let h2 = FakeVersionHandle(contents: encode(v2))
         fake.conflicts[url] = [h1, h2]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(currentEnv, at: key)
 
         var seenConflictBytes: [Data] = []
@@ -228,7 +230,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let conflictHandle = FakeVersionHandle(contents: encode(envelope(id: "boom")))
         fake.conflicts[url] = [conflictHandle]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(currentEnv, at: key)
 
         let outcome = try store.reconcileConflict(at: key) { _, _ in
@@ -261,7 +263,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let failingHandle = FakeVersionHandle(contents: nil, readError: ReadFail())
         fake.conflicts[url] = [failingHandle]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(currentEnv, at: key)
 
         var resolverCalled = false
@@ -297,7 +299,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let conflictHandle = FakeVersionHandle(contents: Data())
         fake.conflicts[url] = [conflictHandle]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "currfail"), at: key)
 
         var resolverCalled = false
@@ -334,7 +336,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let handle = FakeVersionHandle(contents: encode(conflictEnv))
         fake.conflicts[url] = [handle]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "nocurrent"), at: key)
 
         var seenCurrent: Data? = Data([0xFF])
@@ -362,7 +364,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let handle = FakeVersionHandle(contents: encode(envelope(id: "right-id")))
         fake.conflicts[url] = [handle]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "right-id"), at: key)
 
         let outcome = try store.reconcileConflict(at: key) { _, _ in
@@ -388,7 +390,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let fake = FakeUbiquityProvider()
         // No conflicts entry for this URL.
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "clean"), at: key)
 
         var resolverCalled = false
@@ -412,7 +414,7 @@ struct FileSystemSidecarStoreUbiquityTests {
             FakeVersionHandle(contents: Data())
         ]
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "with"), at: withConflict)
         try store.write(envelope(id: "without"), at: withoutConflict)
 
@@ -431,7 +433,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let fake = FakeUbiquityProvider()
         fake.downloadingStatus[url] = .current
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "current"), at: key)
 
         #expect(store.downloadStatus(key) == .downloaded)
@@ -446,7 +448,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let fake = FakeUbiquityProvider()
         fake.downloadingStatus[url] = .downloaded
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "dl"), at: key)
 
         #expect(store.downloadStatus(key) == .downloaded)
@@ -461,7 +463,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let fake = FakeUbiquityProvider()
         fake.downloadingStatus[url] = .notDownloaded
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "ndl"), at: key)
 
         #expect(store.downloadStatus(key) == .notStarted)
@@ -476,7 +478,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         // No downloadingStatus entry → provider returns nil → store falls
         // back to treating the materialized file as downloaded.
 
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "local"), at: key)
 
         #expect(store.downloadStatus(key) == .downloaded)
@@ -490,7 +492,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         // means iCloud is actively pulling the real file in — the store reports
         // .downloading. Any non-.notDownloaded status reaches that branch; .downloaded
         // here is a concrete representative.
-        let store = FileSystemSidecarStore(root: root, ubiquity: makeProviderForPlaceholderTest(root: root, basename: "downloading", placeholderStatus: .downloaded))
+        let store = FileSystemSidecarStore(root: root, ubiquity: makeProviderForPlaceholderTest(root: root, basename: "downloading", placeholderStatus: .downloaded), coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "downloading")
 
         try plantPlaceholder(in: root, kindDir: "contacts", basename: "downloading")
@@ -503,7 +505,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         defer { cleanup(root) }
         let fake = FakeUbiquityProvider()
         // No downloadingStatus entry for the placeholder URL.
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "notstarted")
 
         try plantPlaceholder(in: root, kindDir: "contacts", basename: "notstarted")
@@ -515,7 +517,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let root = makeRoot()
         defer { cleanup(root) }
         let fake = FakeUbiquityProvider()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "ghost")
         #expect(store.downloadStatus(key) == .notFound)
     }
@@ -527,7 +529,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let root = makeRoot()
         defer { cleanup(root) }
         let fake = FakeUbiquityProvider()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "needs-dl")
 
         try store.requestDownload(key)
@@ -542,7 +544,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         defer { cleanup(root) }
         let fake = FakeUbiquityProvider()
         fake.startDownloadingError = NotUbiquity()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
 
         #expect(throws: NotUbiquity.self) {
             try store.requestDownload(SidecarKey(kind: .contact, id: "needs-dl"))
@@ -554,7 +556,7 @@ struct FileSystemSidecarStoreUbiquityTests {
         let root = makeRoot()
         defer { cleanup(root) }
         let fake = FakeUbiquityProvider()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
 
         let uuid = "550e8400-e29b-41d4-a716-446655440000"
         try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)

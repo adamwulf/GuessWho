@@ -94,9 +94,17 @@ final class SyncService {
         self.sidecarLocation = location
         self.deviceID = id
 
+        // Coordination policy comes from the resolved provenance, never a
+        // filesystem probe: an iCloud root serializes against cloudd, a local
+        // fallback root has no second writer and skips coordination.
+        let coordinatesUbiquitousAccess = Self.coordinatesUbiquitousAccess(for: location)
+
         switch location {
         case .iCloud(let url):
-            let sidecarStore = FileSystemSidecarStore(root: url)
+            let sidecarStore = FileSystemSidecarStore(
+                root: url,
+                coordinatesUbiquitousAccess: coordinatesUbiquitousAccess
+            )
             self.sync = GuessWhoSync(
                 contacts: contactsAdapter,
                 events: eventsAdapter,
@@ -112,7 +120,10 @@ final class SyncService {
             // we fell back to Application Support. Not user-actionable here — the
             // banner explains the trade-off (local-only, no cross-device sync).
             Self.log.notice("storage fallback to local", ["reason": reason])
-            let sidecarStore = FileSystemSidecarStore(root: url)
+            let sidecarStore = FileSystemSidecarStore(
+                root: url,
+                coordinatesUbiquitousAccess: coordinatesUbiquitousAccess
+            )
             self.sync = GuessWhoSync(
                 contacts: contactsAdapter,
                 events: eventsAdapter,
@@ -191,6 +202,33 @@ final class SyncService {
             return try sync.event(at: SidecarKey(kind: .event, id: uuid))
         } catch {
             lastError = "event fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Read only the event envelopes named by a watcher delta, projected for the
+    /// list's currently-loaded `[from, to]` window so a scoped delta and a full
+    /// `fetchEventsRange` reload agree row-for-row (window-aware overlay, gated
+    /// on the same EventKit access as the full window read). A nil return means
+    /// at least one scoped read failed and tells the repository to use its
+    /// guaranteed full-refresh fallback; absent dictionary entries are
+    /// successful missing/deleted projections.
+    func sidecarEvents(uuids: Set<String>, from: Date, to: Date) async -> [String: Event]? {
+        guard let sync else { return [:] }
+        let includeEventKit = (eventsAuthorization == .authorized)
+        var result: [String: Event] = [:]
+        do {
+            for uuid in uuids {
+                let key = SidecarKey(kind: .event, id: uuid)
+                if let event = try await sync.eventForWatcherDelta(
+                    at: key, from: from, to: to, includeEventKit: includeEventKit
+                ) {
+                    result[key.id] = event
+                }
+            }
+            return result
+        } catch {
+            lastError = "event delta fetch failed: \(error.localizedDescription)"
             return nil
         }
     }
@@ -538,11 +576,28 @@ final class SyncService {
               !(emails.isEmpty && addresses.isEmpty) else { return [] }
         do {
             return try await sync.recentEvents(
-                matchingEmails: emails, matchingLocations: addresses, limit: limit
+                matchingEmails: emails,
+                matchingLocations: addresses,
+                limit: limit
             )
         } catch {
             lastError = "recent events lookup failed: \(error.localizedDescription)"
             return []
+        }
+    }
+
+    /// Fill the adapter's attendee/location index after launch without making
+    /// any user-visible load wait for it. This is deliberately best-effort:
+    /// denied access or unavailable sidecar wiring makes it a no-op, and a
+    /// failed warm-up is only logged because the first real lookup can retry.
+    func prepareRecentEventsIndex() async {
+        guard eventsAuthorization == .authorized, let sync else { return }
+        do {
+            try await sync.prepareRecentEventsIndex()
+        } catch {
+            Self.log.warning("recent events index warm-up failed", [
+                "error": error.localizedDescription
+            ])
         }
     }
 
@@ -609,6 +664,25 @@ final class SyncService {
         }
     }
 
+    /// Read only the guide envelopes named by a watcher delta. Nil is the
+    /// error signal that makes the repository fall back to `reload()`.
+    func sidecarGuides(uuids: Set<String>) async -> [String: MapsGuide]? {
+        guard let sync else { return [:] }
+        var result: [String: MapsGuide] = [:]
+        do {
+            for uuid in uuids {
+                let key = SidecarKey(kind: .guide, id: uuid)
+                if let guide = try await sync.guideForWatcherDelta(at: key) {
+                    result[key.id] = guide
+                }
+            }
+            return result
+        } catch {
+            lastError = "guide delta fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Every live place across all guides — the guides list derives its
     /// per-guide place counts from this single walk.
     func allPlaces() async -> [MapsPlace] {
@@ -621,11 +695,32 @@ final class SyncService {
         }
     }
 
+    /// Read only the place envelopes named by a watcher delta. Nil is the
+    /// error signal that makes the repository fall back to `reload()`.
+    func sidecarPlaces(uuids: Set<String>) async -> [String: MapsPlace]? {
+        guard let sync else { return [:] }
+        var result: [String: MapsPlace] = [:]
+        do {
+            for uuid in uuids {
+                let key = SidecarKey(kind: .place, id: uuid)
+                if let place = try await sync.placeForWatcherDelta(at: key) {
+                    result[key.id] = place
+                }
+            }
+            return result
+        } catch {
+            lastError = "place delta fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Imported guides whose places' addresses contain any of `streetLines`
     /// (a contact's structured street lines) — the contact detail's guide rows.
-    /// Walks every guide + place sidecar via the background-hop overloads, so
-    /// it's safe to call from a view `.task`. Returns `[]` for an empty needle
-    /// set (a contact with no street address matches nothing).
+    /// Reads every guide + place via the background-hop overloads (`allGuides()`
+    /// walks the guide sidecars; `allPlaces()` serves the `PlaceCorpusCache`
+    /// snapshot when warm, re-walking only after a place/guide change), so it's
+    /// safe to call from a view `.task`. Returns `[]` for an empty needle set
+    /// (a contact with no street address matches nothing).
     func guides(containingAddresses streetLines: Set<String>) async -> [GuideAddressMatcher.Match] {
         let needles = Set(
             streetLines
@@ -642,7 +737,8 @@ final class SyncService {
 
     /// Imported guides whose places' street lines appear inside `location`
     /// (an event's free-text location) — the event detail's guide rows. Same
-    /// background-hop walk as `guides(containingAddresses:)`.
+    /// background-hop read as `guides(containingAddresses:)` (cached `allPlaces()`
+    /// when warm).
     func guides(matchingLocation location: String?) async -> [GuideAddressMatcher.Match] {
         guard let location,
               !location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
@@ -968,6 +1064,21 @@ final class SyncService {
     }
 
     // MARK: - Private
+
+    /// Maps resolved storage provenance to the sidecar store's coordination
+    /// policy. An iCloud root MUST serialize file access against cloudd; a local
+    /// fallback root is the only writer, so coordination is pure overhead and is
+    /// skipped. `.unavailable` builds no store, so its value is moot — it
+    /// returns `true` (the safe default: uncertainty coordinates). Internal so
+    /// the SyncService unit tests can pin the provenance→policy mapping without
+    /// constructing a live store.
+    static func coordinatesUbiquitousAccess(for location: SidecarLocation) -> Bool {
+        switch location {
+        case .iCloud: return true
+        case .localFallback: return false
+        case .unavailable: return true
+        }
+    }
 
     private static func resolveSidecarLocation() -> SidecarLocation {
         resolveSidecarLocation(

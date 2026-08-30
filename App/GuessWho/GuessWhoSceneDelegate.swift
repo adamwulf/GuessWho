@@ -108,6 +108,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         if !connectionOptions.urlContexts.isEmpty {
             handleIncomingURLs(urlContexts: connectionOptions.urlContexts, entry: "cold-launch")
         }
+
+        #if DEBUG && targetEnvironment(macCatalyst)
+        // Profiling driver — inert without the `--nav-benchmark` launch
+        // argument, compiled out of Release. See the extension at the bottom
+        // of this file.
+        startNavBenchmarkIfRequested(appDelegate: appDelegate)
+        #endif
     }
 
     /// Running-app path for app-scheme wakes: UIKit delivers
@@ -2651,6 +2658,113 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
 }
+
+#if DEBUG && targetEnvironment(macCatalyst)
+// MARK: - Headless navigation benchmark (DEBUG only)
+
+/// Deterministic navigation driver for detail-load profiling. Launch the app
+/// with the `--nav-benchmark` argument (e.g. under `xctrace record --launch …
+/// -- --nav-benchmark`), and after startup idles it drives: contact A →
+/// contact B → organization → event → phantom organization, replacing the
+/// secondary column exactly as a list-row click does. A `nav_open` signpost
+/// marker precedes each navigation so a Time Profiler + os_signpost trace can
+/// slice per-navigation windows without any UI scripting. Compiled out of
+/// Release builds entirely; without the launch argument it never runs.
+extension GuessWhoSceneDelegate {
+    private static let navBenchmarkLog = GuessWhoLog.logger("app.nav-benchmark")
+
+    /// Idle wait before the first navigation. Startup goes idle at ~8 s after
+    /// batch 2; 15 s leaves margin for the slower DEBUG build.
+    private static let navBenchmarkStartupDelay: Duration = .seconds(15)
+
+    func startNavBenchmarkIfRequested(appDelegate: GuessWhoAppDelegate) {
+        guard ProcessInfo.processInfo.arguments.contains("--nav-benchmark") else { return }
+        Self.navBenchmarkLog.notice("nav benchmark armed; waiting for startup idle")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.navBenchmarkStartupDelay)
+            await self?.runNavBenchmark(appDelegate: appDelegate)
+        }
+    }
+
+    @MainActor
+    private func runNavBenchmark(appDelegate: GuessWhoAppDelegate) async {
+        let repository = appDelegate.contactsRepository
+        // The picks below need the contacts cache; wait (bounded) for the
+        // launch load in case the idle delay wasn't enough.
+        var waitedSeconds = 0.0
+        while repository.contacts.isEmpty && waitedSeconds < 30 {
+            try? await Task.sleep(for: .milliseconds(500))
+            waitedSeconds += 0.5
+        }
+        // Deterministic picks: alphabetical people WITH an email address, so
+        // the recent-events attendee scan — the suspected hot path — actually
+        // runs (it early-returns for a contact with no email and no street).
+        let people = repository.contacts
+            .filter { $0.contactType == .person && !$0.emailAddresses.isEmpty }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+        guard people.count >= 2 else {
+            Self.navBenchmarkLog.error("nav benchmark: need ≥2 people with emails; aborting")
+            return
+        }
+
+        Self.navBenchmarkLog.notice("nav benchmark: opening contact A")
+        DetailLoadSignpost.event("nav_open", "contact-A")
+        showContactDetail(contact: people[0], appDelegate: appDelegate)
+        try? await Task.sleep(for: .seconds(8))
+
+        Self.navBenchmarkLog.notice("nav benchmark: opening contact B")
+        DetailLoadSignpost.event("nav_open", "contact-B")
+        showContactDetail(contact: people[1], appDelegate: appDelegate)
+        try? await Task.sleep(for: .seconds(8))
+
+        // Organization card — same ContactDetailView, org-specific sections
+        // (associated contacts + departments scans).
+        let organizations = repository.contacts
+            .filter { $0.contactType == .organization }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+        if let organization = organizations.first {
+            Self.navBenchmarkLog.notice("nav benchmark: opening organization")
+            DetailLoadSignpost.event("nav_open", "organization")
+            showContactDetail(contact: organization, appDelegate: appDelegate)
+            try? await Task.sleep(for: .seconds(6))
+        }
+
+        // Event detail — prefer an event with attendees so invitee matching
+        // renders. (Opening an EventKit-only row adopts a sidecar, exactly as
+        // a user open does.)
+        let eventsRepository = appDelegate.eventsRepository
+        if eventsRepository.events.isEmpty {
+            await eventsRepository.reload()
+        }
+        let events = eventsRepository.events
+        if let event = events.last(where: { !$0.attendees.isEmpty }) ?? events.last {
+            Self.navBenchmarkLog.notice("nav benchmark: opening event")
+            DetailLoadSignpost.event("nav_open", "event")
+            showEventDetail(
+                eventUUID: event.id.uuidString,
+                eventKitID: event.eventKitID,
+                appDelegate: appDelegate
+            )
+            try? await Task.sleep(for: .seconds(6))
+        }
+
+        // Phantom organization — no async loads of its own; the control case.
+        if let phantom = repository.phantomOrganizations.first {
+            Self.navBenchmarkLog.notice("nav benchmark: opening phantom organization")
+            DetailLoadSignpost.event("nav_open", "phantom-org")
+            showPhantomOrganizationDetail(phantom: phantom, appDelegate: appDelegate)
+            try? await Task.sleep(for: .seconds(5))
+        }
+
+        Self.navBenchmarkLog.notice("nav benchmark: complete")
+        DetailLoadSignpost.event("nav_benchmark_complete")
+    }
+}
+#endif
 
 #if !targetEnvironment(macCatalyst)
 extension GuessWhoSceneDelegate: UITabBarControllerDelegate {

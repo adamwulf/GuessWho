@@ -96,7 +96,12 @@ struct ContactsRepositoryTests {
             note: ""
         )
 
-        let repository = ContactsRepository(contacts: store, sync: sync)
+        // A per-test NotificationCenter isolates this repo from a parallel
+        // test's `.guessWhoSidecarsDidChange` post on `.default` (e.g. the file
+        // watcher tests): such a post would advance this repo's refresh
+        // generation mid-reload and drop the sidecar-derived linked-endpoint set
+        // this `.linked` filter reads.
+        let repository = ContactsRepository(contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repository.reload()
         repository.sortOrder = .firstLast
         repository.peopleFilter = .linked

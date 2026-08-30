@@ -165,6 +165,21 @@ struct SyncServiceTests {
         #expect(reason.contains("unwritable"))
     }
 
+    // MARK: - Coordination policy (provenance-driven)
+
+    @Test
+    func coordinationPolicyFollowsProvenanceNotProbe() throws {
+        let url = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: url) }
+        // An iCloud root coordinates even though this temp URL's filesystem
+        // probe would report non-ubiquitous — policy is driven by provenance.
+        #expect(SyncService.coordinatesUbiquitousAccess(for: .iCloud(url)))
+        // A local fallback root has no second writer and skips coordination.
+        #expect(!SyncService.coordinatesUbiquitousAccess(for: .localFallback(url, reason: "test")))
+        // `.unavailable` builds no store; the moot value defaults to coordinating.
+        #expect(SyncService.coordinatesUbiquitousAccess(for: .unavailable(reason: "test")))
+    }
+
     // MARK: - Event migration (memoized single run)
 
     /// Plants a legacy (non-UUID-keyed) event sidecar on disk via a second
@@ -173,7 +188,7 @@ struct SyncServiceTests {
         let engine = GuessWhoSync(
             contacts: StubContactStore(),
             events: StubEventStore(),
-            sidecars: FileSystemSidecarStore(root: root),
+            sidecars: FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false),
             deviceID: "planter"
         )
         try engine.addField(
@@ -185,7 +200,7 @@ struct SyncServiceTests {
     }
 
     private func eventKeys(root: URL) throws -> [SidecarKey] {
-        try FileSystemSidecarStore(root: root).allKeys().filter { $0.kind == .event }
+        try FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false).allKeys().filter { $0.kind == .event }
     }
 
     @Test
@@ -346,7 +361,7 @@ struct SyncServiceTests {
             location: nil
         )
         let envelope = try #require(
-            try FileSystemSidecarStore(root: root)
+            try FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
                 .read(SidecarKey(kind: .event, id: uuid.uuidString))
         )
         #expect(!envelope.fields.isEmpty)

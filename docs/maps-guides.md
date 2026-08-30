@@ -249,9 +249,12 @@ full list; it does *not* jump straight to a guide.
 
 Both call the shared `GuideAddressMatcher` (GuessWhoSync) via
 `SyncService.guides(containingAddresses:)` / `guides(matchingLocation:)`, which
-walk every guide + place sidecar (the background-hop `allGuides()` /
-`allPlaces()` overloads) and return one `Match` per guide (guide + the first
-matching place). The matcher reuses the same `EventLocationMatcher` street-line
+read every guide + place (the background-hop `allGuides()` / `allPlaces()`
+overloads) and return one `Match` per guide (guide + the first matching place).
+`allGuides()` walks the guide sidecars each call; `allPlaces()` serves a
+`PlaceCorpusCache` snapshot on a cache hit and only re-walks the place sidecars
+after a place/guide change invalidates it (see the corpus cache in
+`GuessWhoSync+Guides.swift`). The matcher reuses the same `EventLocationMatcher` street-line
 token logic as the place detail — only the needle/haystack direction differs
 (contact street line ⊂ place address vs. place street line ⊂ event location),
 and `GuideAddressMatcher.streetNeedle` derives a place's needle exactly as the

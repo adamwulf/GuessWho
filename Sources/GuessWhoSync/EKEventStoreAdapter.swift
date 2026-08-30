@@ -1,10 +1,11 @@
 #if canImport(EventKit)
 import EventKit
 import Foundation
+import Logging
 
-// `@unchecked Sendable`: the adapter holds a single immutable `let store`,
-// adds no mutable state of its own, and only ever issues read / request / save
-// calls on that store — it never mutates shared adapter state across threads.
+// `@unchecked Sendable`: the adapter holds one immutable, thread-safe EventKit
+// store. Its window-flight/cache state is isolated by one `NSCondition`; the
+// observer token is installed during init and touched again only in deinit.
 // That is the basis for the unchecked conformance; it lets
 // `requestEventsAccess()` be `async` (it awaits EventKit's permission prompt)
 // without the caller's `sending`-check flagging a data race when it hops off
@@ -13,8 +14,153 @@ import Foundation
 public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable {
     private let store: EKEventStore
 
-    public init(store: EKEventStore = EKEventStore()) {
+    /// Injectable only so tests can count and gate the exact expensive
+    /// `events(matching:)` boundary without reading the developer's calendars.
+    typealias FetchEventsWork = @Sendable (EKEventStore, DateInterval) throws -> [Event]
+    typealias AuthorizationStatusWork = @Sendable () -> StoreAuthorizationStatus
+    private let fetchEventsWork: FetchEventsWork
+    private let authorizationStatusWork: AuthorizationStatusWork
+    /// The ONE lock + generation both window caches share (FIX 2). Because a
+    /// single lock guards both, `invalidateCaches` bumps the generation and
+    /// clears the raw window cache AND the attendee index inside one critical
+    /// section — atomically. A concurrent lookup can never slip between the two
+    /// clears and observe one cache invalidated while the other still serves a
+    /// pre-invalidation snapshot (split state).
+    private let cacheClock: WindowCacheClock
+    private let windowFetches: EventWindowFetchCoordinator
+    /// DL-2 attendee/location index cache. Shares the exact same `cacheClock`
+    /// lock + generation and single-flight discipline as `windowFetches`, but
+    /// the cached value is the prebuilt attendee-email + location index for the
+    /// window instead of the raw batch. Because both caches gate on that one
+    /// shared generation, an app-initiated write, store change, or authorization
+    /// transition invalidating through `invalidateCaches` clears BOTH atomically
+    /// — one can never be left holding stale data while the other is refreshed.
+    private let attendeeIndex: WindowSingleFlightCache<AttendeeWindowIndex>
+    private let notificationCenter: NotificationCenter
+    private var eventStoreChangedObserver: NSObjectProtocol?
+
+    /// The single, adapter-level authorization baseline that drives cache
+    /// invalidation on a TCC transition. Guarded by `authorizationLock` so
+    /// concurrent differing-status observations resolve against one serialized
+    /// value instead of two independently-tracked per-coordinator baselines.
+    private let authorizationLock = NSLock()
+    private var lastObservedAuthorization: StoreAuthorizationStatus?
+
+    /// One start/finish pair per underlying EventKit enumeration. The UUID and
+    /// exact interval let a launch log correlate this adapter work with the
+    /// repository's trigger breadcrumbs without relying on a profiler stack.
+    fileprivate static let fetchLog = Logger(label: "sync.eventkit-fetch")
+
+    public convenience init(store: EKEventStore = EKEventStore()) {
+        self.init(
+            store: store,
+            notificationCenter: .default,
+            fetchEventsWork: { store, interval in
+                try Self.fetchEventsDirectly(store: store, interval: interval)
+            },
+            authorizationStatusWork: {
+                Self.mapAuthorization(EKEventStore.authorizationStatus(for: .event))
+            }
+        )
+    }
+
+    /// Store-free test seam for the blocking EventKit enumeration and access
+    /// status. Production always uses the public convenience initializer.
+    init(
+        store: EKEventStore = EKEventStore(),
+        notificationCenter: NotificationCenter,
+        cacheLifetime: TimeInterval = 20,
+        fetchEventsWork: @escaping FetchEventsWork,
+        authorizationStatusWork: @escaping AuthorizationStatusWork
+    ) {
         self.store = store
+        self.fetchEventsWork = fetchEventsWork
+        self.authorizationStatusWork = authorizationStatusWork
+        // One shared clock (single lock + generation) drives both caches so
+        // their invalidation is atomic. Built first because both coordinators
+        // take it at construction and register their clear closures with it.
+        let clock = WindowCacheClock()
+        self.cacheClock = clock
+        self.windowFetches = EventWindowFetchCoordinator(
+            clock: clock,
+            cacheLifetime: cacheLifetime,
+            maximumCacheEntries: 4
+        )
+        // Non-expiring (invalidation-only): the attendee/location index must
+        // survive the whole launch — one raw walk per window until an explicit
+        // invalidation (store change, auth transition, or adapter write) — NOT
+        // re-walk on the window cache's short TTL. The raw window coordinator
+        // keeps its `cacheLifetime` TTL; this cache ignores it by design. Both,
+        // however, share `clock`'s single lock + generation, so invalidation of
+        // one is invalidation of both, atomically.
+        self.attendeeIndex = WindowSingleFlightCache<AttendeeWindowIndex>(
+            name: "EventKit attendee index",
+            clock: clock,
+            cacheLifetime: nil,
+            maximumCacheEntries: 4
+        )
+        self.notificationCenter = notificationCenter
+        self.eventStoreChangedObserver = nil
+        self.eventStoreChangedObserver = notificationCenter.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.invalidateCaches(reason: "EKEventStoreChanged")
+        }
+    }
+
+    deinit {
+        if let eventStoreChangedObserver {
+            notificationCenter.removeObserver(eventStoreChangedObserver)
+        }
+    }
+
+    // MARK: - Cache invalidation
+
+    /// The single hook every cache-clearing event routes through, so the raw
+    /// window coordinator and the attendee/location index can never drift
+    /// apart. Every caller that invalidates — the `.EKEventStoreChanged`
+    /// observer, the access-request before-guard, and every adapter-initiated
+    /// `createEvent` / `updateEvent` write — clears BOTH here. Adding a future
+    /// cache means registering it with `cacheClock`, not hunting every write
+    /// site.
+    ///
+    /// One call to `cacheClock.invalidate` bumps the shared generation and
+    /// clears every registered cache under the shared lock, so the two caches
+    /// flip together atomically — a concurrent lookup can never observe the
+    /// window cache invalidated while the attendee index still serves a
+    /// pre-invalidation snapshot.
+    private func invalidateCaches(reason: String) {
+        cacheClock.invalidate(reason: reason)
+    }
+
+    /// Centralized authorization-transition tracking. One `lastObservedAuthorization`
+    /// value, guarded by one lock at the adapter level, decides whether an
+    /// observation is an edge — and on any edge (grant → revoke or revoke →
+    /// grant) it clears BOTH caches through the shared `invalidateCaches` path.
+    ///
+    /// This must live here, NOT per-coordinator: the attendee index is
+    /// non-expiring, so a missed transition would be permanently stale. With two
+    /// independent per-coordinator baselines, concurrent differing-status
+    /// observations could be applied to the two coordinators in different orders
+    /// and leave them disagreeing about the current status — one could then
+    /// treat a real transition as a no-op. A single serialized baseline makes
+    /// the edge decision atomic, and every edge invalidates both caches
+    /// together. The first status seen only establishes the baseline.
+    ///
+    /// The baseline read/write is the only work under `authorizationLock`;
+    /// `invalidateCaches` (which takes the shared `cacheClock` lock) runs after
+    /// the unlock, so no lock nests inside another. Two callers racing the same
+    /// edge just invalidate twice — harmless (idempotent generation bumps).
+    private func resolveAuthorization(to status: StoreAuthorizationStatus) {
+        authorizationLock.lock()
+        let previous = lastObservedAuthorization
+        lastObservedAuthorization = status
+        authorizationLock.unlock()
+        if let previous, previous != status {
+            invalidateCaches(reason: "calendar-access-changed")
+        }
     }
 
     // MARK: - Authorization
@@ -24,7 +170,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// this does not touch the instance store; it lives here to keep the auth
     /// surface behind the adapter port.
     public func eventsAuthorizationStatus() -> StoreAuthorizationStatus {
-        Self.mapAuthorization(EKEventStore.authorizationStatus(for: .event))
+        let status = authorizationStatusWork()
+        resolveAuthorization(to: status)
+        return status
     }
 
     /// Prompt for events access on this adapter's store and return the
@@ -34,6 +182,10 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// with a non-nil `failureDescription` (the error's `localizedDescription`)
     /// so the caller can restore its error-state write.
     public func requestEventsAccess() async -> StoreAccessResult {
+        // The prompt can change read access without producing a store-change
+        // notification. Invalidate both before and after it so no pre-prompt
+        // result can mask the new permission state.
+        invalidateCaches(reason: "calendar-access-request")
         let status = EKEventStore.authorizationStatus(for: .event)
         switch status {
         case .notDetermined:
@@ -44,12 +196,18 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
                 } else {
                     granted = try await store.requestAccess(to: .event)
                 }
-                return StoreAccessResult(status: granted ? .authorized : .denied)
+                let result = StoreAccessResult(status: granted ? .authorized : .denied)
+                resolveAuthorization(to: result.status)
+                return result
             } catch {
-                return StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
+                let result = StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
+                resolveAuthorization(to: result.status)
+                return result
             }
         default:
-            return StoreAccessResult(status: Self.mapAuthorization(status))
+            let result = StoreAccessResult(status: Self.mapAuthorization(status))
+            resolveAuthorization(to: result.status)
+            return result
         }
     }
 
@@ -72,6 +230,70 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     // MARK: - Reads
 
     public func fetchEvents(in interval: DateInterval) throws -> [Event] {
+        let authorization = authorizationStatusWork()
+        resolveAuthorization(to: authorization)
+
+        // Preserve the no-access behavior exactly: without read permission we
+        // always ask EventKit and return what it returns. In particular, an
+        // empty denied/not-determined result never enters the cache and cannot
+        // mask a later permission grant.
+        guard authorization == .authorized else {
+            return try runUnderlyingWindowFetch(in: interval)
+        }
+
+        return try windowFetches.fetch(interval: interval) { [self] in
+            try runUnderlyingWindowFetch(in: interval)
+        }
+    }
+
+    /// The one expensive raw EventKit enumeration. Coalescing surrounds this
+    /// operation; `GuessWhoSync.eventsWindow` still receives the exact same raw
+    /// batch and applies its sidecar overlay/membership rules unchanged.
+    private func runUnderlyingWindowFetch(in interval: DateInterval) throws -> [Event] {
+        let fetchID = UUID().uuidString
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.fetchLog.info(
+            "EventKit window fetch started",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+            ]
+        )
+        do {
+            let result = try fetchEventsWork(store, interval)
+            let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+            Self.fetchLog.info(
+                "EventKit window fetch finished",
+                metadata: [
+                    "fetchID": .string(fetchID),
+                    "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                    "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    "events": .stringConvertible(result.count),
+                    "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+                ]
+            )
+            return result
+        } catch {
+            let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+            Self.fetchLog.error(
+                "EventKit window fetch failed",
+                metadata: [
+                    "fetchID": .string(fetchID),
+                    "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                    "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+                    "error": .string(String(describing: error)),
+                ]
+            )
+            throw error
+        }
+    }
+
+    private static func fetchEventsDirectly(
+        store: EKEventStore,
+        interval: DateInterval
+    ) throws -> [Event] {
         // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
         // predicate at a 4-year span; longer windows silently drop everything
         // past the cap. Chunk like `eventsWithAttendee` does, but dedupe on
@@ -162,41 +384,100 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         guard limit > 0, interval.start < interval.end,
               !(normalized.isEmpty && locationNeedles.isEmpty) else { return [] }
 
-        // EventKit's `predicateForEvents(withStart:end:calendars:)` caps each
-        // predicate at a 4-year span; longer windows silently return nothing.
-        // Chunk the requested interval into ≤4-year slices, walk each, and
-        // collapse multiple hits per `calendarItemExternalIdentifier` so:
-        //   • a multi-day event straddling a chunk boundary isn't counted
-        //     twice, and
-        //   • a recurring event (every occurrence shares the same
-        //     calendarItemExternalIdentifier) collapses to ONE row showing
-        //     the most-recent occurrence's date. A plain dict-assignment
-        //     dedupe would pick whichever occurrence happened to be visited
-        //     last — nondeterministic and almost never "most recent."
-        var dedupe: [String: Event] = [:]
-        for chunk in Self.chunked(interval: interval, maxYears: 4) {
-            let predicate = store.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: nil)
-            let ekEvents = store.events(matching: predicate)
-            for ek in ekEvents {
-                let participants = ek.attendees ?? []
-                let matchesEmail = !normalized.isEmpty && participants.contains { p in
-                    guard let email = Self.email(from: p.url)?.lowercased() else { return false }
-                    return normalized.contains(email)
-                }
-                let matchesLocation = EventLocationMatcher.matches(
-                    location: ek.location, anyOf: locationNeedles
-                )
-                guard matchesEmail || matchesLocation,
-                      let event = Self.toEvent(ek), let ekid = event.eventKitID else { continue }
-                if let existing = dedupe[ekid], existing.startDate >= event.startDate { continue }
-                dedupe[ekid] = event
+        // Authorization gates the index exactly like `fetchEvents(in:)`: an
+        // observed transition invalidates it, and a non-authorized read
+        // bypasses the cache entirely so an empty no-access batch is never
+        // cached and can never mask a later grant.
+        let authorization = authorizationStatusWork()
+        resolveAuthorization(to: authorization)
+
+        let fetchID = UUID().uuidString
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.fetchLog.info(
+            "EventKit attendee window fetch started",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "emails": .stringConvertible(normalized.count),
+                "locations": .stringConvertible(locationNeedles.count),
+                "limit": .stringConvertible(limit),
+            ]
+        )
+
+        // One raw window walk builds the index; every later query for the same
+        // window (until an invalidation) is served from cache. The lookup —
+        // per-occurrence match, then latest-matching-occurrence collapse per
+        // eventKitID, descending start, limit — reproduces the pre-index
+        // linear scan exactly.
+        let index: AttendeeWindowIndex
+        if authorization == .authorized {
+            index = try attendeeIndex.value(interval: interval) { [self] in
+                try buildAttendeeIndex(in: interval)
             }
+        } else {
+            // Non-authorized: walk once, filter, cache nothing.
+            index = try buildAttendeeIndex(in: interval)
         }
 
-        return dedupe.values
-            .sorted { $0.startDate > $1.startDate }
-            .prefix(limit)
-            .map { $0 }
+        let result = index.lookup(
+            matchingEmails: normalized,
+            orLocations: locationNeedles,
+            limit: limit
+        )
+        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
+        Self.fetchLog.info(
+            "EventKit attendee window fetch finished",
+            metadata: [
+                "fetchID": .string(fetchID),
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "events": .stringConvertible(result.count),
+                "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
+            ]
+        )
+        return result
+    }
+
+    /// Build the attendee/location index for `interval` with exactly ONE raw
+    /// EventKit walk. Routed through the same injected `fetchEventsWork`
+    /// boundary as the window read so a test can count and gate it. Production
+    /// `fetchEventsDirectly` applies the 4-year chunking and the
+    /// (eventKitID, startDate) occurrence dedup, so the batch handed here is
+    /// the full converted occurrence walk: every distinct occurrence of a
+    /// recurring event survives (only an exact occurrence re-seen across a
+    /// chunk seam collapses), which is required for the lookup's
+    /// latest-MATCHING-occurrence collapse to be correct.
+    private func buildAttendeeIndex(in interval: DateInterval) throws -> AttendeeWindowIndex {
+        let events = try fetchEventsWork(store, interval)
+        Self.fetchLog.info(
+            "EventKit attendee index built",
+            metadata: [
+                "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                "events": .stringConvertible(events.count),
+            ]
+        )
+        return AttendeeWindowIndex(events: events)
+    }
+
+    /// Warm the attendee/location index for `interval` ahead of the first real
+    /// lookup. Launch warm-up calls this with GuessWhoSync's single
+    /// launch-stable window; the later `eventsWithAttendee` call for that
+    /// identical window is then a cache hit instead of a fresh EventKit walk
+    /// on the contact-detail open path. This kicks — or JOINS, through the
+    /// same single-flight coordinator — the exact authorized, window-keyed
+    /// build the lookup performs; there is no synthetic needle. A
+    /// non-authorized store warms (and caches) nothing, matching the lookup's
+    /// bypass, so warm-up can never seed an empty no-access batch.
+    public func prepareEventsWithAttendeeIndex(in interval: DateInterval) throws {
+        guard interval.start < interval.end else { return }
+        let authorization = authorizationStatusWork()
+        resolveAuthorization(to: authorization)
+        guard authorization == .authorized else { return }
+        _ = try attendeeIndex.value(interval: interval) { [self] in
+            try buildAttendeeIndex(in: interval)
+        }
     }
 
     /// Split `interval` into back-to-back slices each no longer than `maxYears`
@@ -235,6 +516,11 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         ekEvent.location = location
         ekEvent.calendar = calendar
         try store.save(ekEvent, span: .thisEvent, commit: true)
+        // Do not wait for EventKit's asynchronous notification: once our own
+        // commit succeeds, no caller may reuse a window captured before it.
+        // The shared hook clears the attendee index alongside the raw window
+        // cache so a just-created event's attendees/location cannot be missed.
+        invalidateCaches(reason: "event-created")
         guard let event = Self.toEvent(ekEvent) else {
             // The just-created EKEvent must have a calendarItemExternalIdentifier
             // — but if it somehow doesn't, surface eventNotFound for safety.
@@ -266,6 +552,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         ekEvent.isAllDay = isAllDay
         ekEvent.location = location
         try store.save(ekEvent, span: .thisEvent, commit: true)
+        invalidateCaches(reason: "event-updated")
     }
 
     // MARK: - Conversion
@@ -356,6 +643,621 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         let decoded = address.removingPercentEncoding ?? address
         let trimmed = decoded.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Test-only observation proving a second identical caller joined the
+    /// existing flight before a gated fake EventKit query is released.
+    func inFlightWindowCallerCountForTesting(_ interval: DateInterval) -> Int {
+        windowFetches.inFlightCallerCount(for: interval)
+    }
+
+    /// Test-only twin of `inFlightWindowCallerCountForTesting` for the
+    /// attendee/location index, proving two identical concurrent
+    /// `eventsWithAttendee` callers share one in-flight index build.
+    func inFlightAttendeeIndexCallerCountForTesting(_ interval: DateInterval) -> Int {
+        attendeeIndex.inFlightCallerCount(for: interval)
+    }
+
+    /// Test-only proxy for an app-initiated `createEvent` / `updateEvent`
+    /// write. Those need a live writable `EKEventStore` a unit test can't
+    /// provide, so this drives the exact same shared `invalidateCaches` hook
+    /// they call — proving a write clears BOTH the window cache and the
+    /// attendee index through one path. Default reason mirrors `createEvent`.
+    func invalidateAfterWriteForTesting(reason: String = "event-created") {
+        invalidateCaches(reason: reason)
+    }
+
+    /// Test-only: drive the shared atomic invalidation with an interpose closure
+    /// invoked WHILE the single shared cache lock is held — after the generation
+    /// bump and both caches are cleared, before the lock is released. This is the
+    /// exact path `invalidateCaches` takes (it calls `cacheClock.invalidate`), so
+    /// a lookup launched from the interpose blocks on the shared lock and cannot
+    /// observe split state. It proves invalidation is atomic across BOTH caches:
+    /// a two-lock design would have cleared the window cache while leaving the
+    /// attendee index readable, letting that racing lookup return a
+    /// pre-invalidation snapshot instead of blocking and rebuilding.
+    func invalidateCachesWithInterposeForTesting(
+        reason: String = "test-interpose",
+        whileHoldingLock: @escaping () -> Void
+    ) {
+        cacheClock.invalidate(reason: reason, whileHoldingLock: whileHoldingLock)
+    }
+
+    /// Test-only: feed an explicit observed authorization status through the
+    /// centralized transition detector, standing in for an
+    /// `authorizationStatusWork()` read. Lets tests drive concurrent, differing,
+    /// interleaved observations deterministically and prove a detected edge
+    /// invalidates BOTH caches together.
+    func observeAuthorizationForTesting(_ status: StoreAuthorizationStatus) {
+        resolveAuthorization(to: status)
+    }
+}
+
+/// Shared lock + generation clock for the adapter's window caches (FIX 2).
+///
+/// Both the raw `[Event]` window coordinator and the non-expiring
+/// attendee/location index lock this ONE `condition` and gate on this ONE
+/// `generation`. Because a single lock guards both, `invalidate` bumps the
+/// generation and clears EVERY registered cache inside one critical section —
+/// atomically. A concurrent lookup can therefore never observe one cache
+/// invalidated while the other still serves a pre-invalidation snapshot (split
+/// state): to read either cache a lookup must take this same lock, so it either
+/// runs entirely before the bump (both caches old) or entirely after it (both
+/// cleared) — never in between.
+///
+/// Members register a `clear` closure once at wiring time. `invalidate` runs
+/// every closure while holding `condition`, so a closure must only mutate its
+/// own member's storage and never re-lock — there is exactly one lock, and no
+/// lock nests inside another.
+private final class WindowCacheClock: @unchecked Sendable {
+    /// The single lock both caches share. Members lock/unlock/wait/broadcast on
+    /// this; a broadcast here wakes waiters in every member cache.
+    let condition = NSCondition()
+    /// The single generation both caches gate on. MUST be read/written with
+    /// `condition` held (see `generation` / `invalidate`).
+    private var _generation: UInt64 = 0
+    /// One storage-clearing closure per registered member cache. Guarded by
+    /// `condition`.
+    private var clearHandlers: [(_ reason: String, _ generation: UInt64) -> Void] = []
+
+    /// Current shared generation. MUST be called with `condition` held.
+    var generation: UInt64 { _generation }
+
+    /// Register a member cache's storage-clearing closure. Called once, from the
+    /// member's initializer. The closure runs under `condition` during
+    /// `invalidate`; it must only clear that member's own storage.
+    func register(clear: @escaping (_ reason: String, _ generation: UInt64) -> Void) {
+        condition.lock()
+        clearHandlers.append(clear)
+        condition.unlock()
+    }
+
+    /// Atomically bump the shared generation and clear every registered cache,
+    /// then wake all waiters. All of it happens under `condition`, so the two
+    /// caches flip together and no lookup can slip between the clears.
+    ///
+    /// `whileHoldingLock` is a test-only interpose invoked after the bump and
+    /// every clear but BEFORE the broadcast/unlock — standing in for a
+    /// concurrent observer racing the mid-invalidation state. Production passes
+    /// nil. A lookup launched from it blocks on `condition` (still held here),
+    /// so it cannot observe split state.
+    func invalidate(reason: String, whileHoldingLock: (() -> Void)? = nil) {
+        condition.lock()
+        _generation &+= 1
+        let generation = _generation
+        for clear in clearHandlers {
+            clear(reason, generation)
+        }
+        whileHoldingLock?()
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+/// Synchronous generation cache around EventKit's synchronous window query.
+///
+/// `EventStoreProtocol.fetchEvents(in:)` is intentionally synchronous, while
+/// production callers already move it to a background queue. The shared
+/// `WindowCacheClock`'s `NSCondition` supplies the same single-flight discipline
+/// as `PlaceCorpusCache`: one caller performs a given generation/window query
+/// and concurrent callers wait for its exact `Result`. Different windows remain
+/// independent.
+///
+/// Invalidation is linearized under the shared clock's condition lock (see
+/// `WindowCacheClock.invalidate`). It advances the shared generation and clears
+/// every registered cache's entries. A caller arriving afterwards can neither
+/// hit nor join old-generation work. If invalidation races an active query, that
+/// query's result is discarded and all of its callers retry in the new
+/// generation, which is stronger than merely preventing stale cache fill.
+private final class EventWindowFetchCoordinator: @unchecked Sendable {
+    private struct WindowKey: Hashable {
+        let start: Date
+        let end: Date
+
+        init(_ interval: DateInterval) {
+            self.start = interval.start
+            self.end = interval.end
+        }
+    }
+
+    private struct FlightKey: Hashable {
+        let generation: UInt64
+        let window: WindowKey
+    }
+
+    private enum FlightOutcome {
+        case result(Result<[Event], Error>)
+        case invalidated
+    }
+
+    private final class Flight {
+        var callerCount = 1
+        var outcome: FlightOutcome?
+    }
+
+    private struct CacheEntry {
+        let events: [Event]
+        let capturedAt: UInt64
+        var lastUse: UInt64
+    }
+
+    /// The shared lock + generation. This coordinator locks `clock.condition`
+    /// and gates on `clock.generation` so its invalidation is atomic with the
+    /// attendee index's. Authorization-transition tracking is centralized at the
+    /// `EKEventStoreAdapter` level (one lock, one baseline) and drives
+    /// invalidation through the shared clock, so this coordinator tracks no
+    /// authorization state of its own.
+    private let clock: WindowCacheClock
+    /// Forward to the shared lock/generation so the body below reads exactly as
+    /// the single-lock coordinator did — every access already happens under
+    /// `condition`, which is the shared lock.
+    private var condition: NSCondition { clock.condition }
+    private var generation: UInt64 { clock.generation }
+    private let cacheLifetimeNanos: UInt64
+    private let maximumCacheEntries: Int
+    private var flights: [FlightKey: Flight] = [:]
+    private var cache: [WindowKey: CacheEntry] = [:]
+    private var useCounter: UInt64 = 0
+
+    init(clock: WindowCacheClock, cacheLifetime: TimeInterval, maximumCacheEntries: Int) {
+        self.clock = clock
+        self.cacheLifetimeNanos = UInt64(max(0, cacheLifetime) * 1_000_000_000)
+        self.maximumCacheEntries = max(1, maximumCacheEntries)
+        // Clearing runs under `clock.condition` (held by `invalidate`); it only
+        // drops this coordinator's own cache entries and must never re-lock.
+        clock.register { [weak self] reason, generation in
+            guard let self else { return }
+            self.cache.removeAll(keepingCapacity: true)
+            EKEventStoreAdapter.fetchLog.info(
+                "EventKit window cache invalidated",
+                metadata: [
+                    "reason": .string(reason),
+                    "generation": .stringConvertible(generation),
+                ]
+            )
+        }
+    }
+
+    func fetch(
+        interval: DateInterval,
+        operation: () throws -> [Event]
+    ) throws -> [Event] {
+        let window = WindowKey(interval)
+
+        while true {
+            condition.lock()
+            let activeGeneration = generation
+            let now = DispatchTime.now().uptimeNanoseconds
+            purgeExpiredEntries(now: now)
+
+            if var entry = cache[window] {
+                useCounter &+= 1
+                entry.lastUse = useCounter
+                cache[window] = entry
+                condition.unlock()
+                EKEventStoreAdapter.fetchLog.info(
+                    "EventKit window fetch cache hit",
+                    metadata: [
+                        "generation": .stringConvertible(activeGeneration),
+                        "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                        "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    ]
+                )
+                return entry.events
+            }
+
+            let key = FlightKey(generation: activeGeneration, window: window)
+            if let flight = flights[key] {
+                flight.callerCount += 1
+                let callerCount = flight.callerCount
+                EKEventStoreAdapter.fetchLog.info(
+                    "EventKit window fetch joined",
+                    metadata: [
+                        "generation": .stringConvertible(activeGeneration),
+                        "callers": .stringConvertible(callerCount),
+                        "from": .stringConvertible(interval.start.timeIntervalSince1970),
+                        "to": .stringConvertible(interval.end.timeIntervalSince1970),
+                    ]
+                )
+                while flight.outcome == nil && generation == activeGeneration {
+                    condition.wait()
+                }
+                guard generation == activeGeneration,
+                      let outcome = flight.outcome
+                else {
+                    condition.unlock()
+                    continue
+                }
+                condition.unlock()
+                switch outcome {
+                case .result(let result):
+                    return try result.get()
+                case .invalidated:
+                    continue
+                }
+            }
+
+            let flight = Flight()
+            flights[key] = flight
+            condition.unlock()
+
+            let result = Result { try operation() }
+
+            condition.lock()
+            if generation != activeGeneration {
+                flight.outcome = .invalidated
+                flights.removeValue(forKey: key)
+                condition.broadcast()
+                condition.unlock()
+                continue
+            }
+
+            if case .success(let events) = result, cacheLifetimeNanos > 0 {
+                useCounter &+= 1
+                evictLeastRecentlyUsedEntryIfNeeded(for: window)
+                cache[window] = CacheEntry(
+                    events: events,
+                    capturedAt: DispatchTime.now().uptimeNanoseconds,
+                    lastUse: useCounter
+                )
+            }
+            flight.outcome = .result(result)
+            flights.removeValue(forKey: key)
+            condition.broadcast()
+            condition.unlock()
+            return try result.get()
+        }
+    }
+
+    func inFlightCallerCount(for interval: DateInterval) -> Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return flights[FlightKey(generation: generation, window: WindowKey(interval))]?.callerCount ?? 0
+    }
+
+    private func purgeExpiredEntries(now: UInt64) {
+        guard cacheLifetimeNanos > 0 else {
+            cache.removeAll(keepingCapacity: true)
+            return
+        }
+        cache = cache.filter { _, entry in
+            now >= entry.capturedAt && now - entry.capturedAt <= cacheLifetimeNanos
+        }
+    }
+
+    private func evictLeastRecentlyUsedEntryIfNeeded(for window: WindowKey) {
+        guard cache[window] == nil, cache.count >= maximumCacheEntries,
+              let oldest = cache.min(by: { $0.value.lastUse < $1.value.lastUse })?.key
+        else { return }
+        cache.removeValue(forKey: oldest)
+    }
+}
+
+/// Prebuilt attendee/location lookup structure for one window (DL-2). Built
+/// once per generation from the raw converted occurrence walk and cached, so
+/// repeated `eventsWithAttendee` queries for that window do not re-walk
+/// EventKit. Two dimensions:
+///   • attendee-email: lowercased email → fetch-order indices of the
+///     OCCURRENCES whose attendee list carries that address.
+///   • location: fetch-order indices of the occurrences that carry a non-empty
+///     free-text location eligible for `EventLocationMatcher` token-run
+///     matching.
+///
+/// Every occurrence is indexed independently — a recurring event's occurrences
+/// share one `eventKitID` but can differ in attendees/location, so the index
+/// must NOT collapse by `eventKitID` before filtering. `events` is retained in
+/// raw fetch order so the per-`eventKitID` collapse in `lookup` can tie-break
+/// (equal `startDate` keeps the first-seen occurrence) exactly like the old
+/// linear scan.
+private struct AttendeeWindowIndex {
+    let events: [Event]
+    private let eventsByEmail: [String: [Int]]
+    private let locatedEventIndices: [Int]
+
+    init(events: [Event]) {
+        self.events = events
+        var byEmail: [String: [Int]] = [:]
+        var located: [Int] = []
+        for (offset, event) in events.enumerated() {
+            // Distinct emails per occurrence: an attendee list that repeats an
+            // address must not enter this occurrence's offset twice.
+            var seenEmails = Set<String>()
+            for attendee in event.attendees {
+                // Normalize to lowercase at index time. The pre-index adapter
+                // lowercased every parsed participant email at MATCH time, so a
+                // mixed-case stored address — one decoded from JSON or set
+                // directly, bypassing EventAttendee.init's lowercasing — must
+                // still match the (lowercased) query set.
+                guard let rawEmail = attendee.email, !rawEmail.isEmpty else { continue }
+                let email = rawEmail.lowercased()
+                if seenEmails.insert(email).inserted {
+                    byEmail[email, default: []].append(offset)
+                }
+            }
+            if event.location != nil {
+                located.append(offset)
+            }
+        }
+        self.eventsByEmail = byEmail
+        self.locatedEventIndices = located
+    }
+
+    /// Resolve the occurrences matching any queried email OR whose location
+    /// contains any queried street line, collapse per `eventKitID` to the
+    /// latest MATCHING occurrence, sort newest-first, cap at `limit`. Mirrors
+    /// the pre-index `eventsWithAttendee` semantics exactly: per-occurrence
+    /// match, then union, then latest-occurrence collapse — never a collapse
+    /// before the match.
+    func lookup(
+        matchingEmails emails: Set<String>,
+        orLocations locations: Set<String>,
+        limit: Int
+    ) -> [Event] {
+        guard limit > 0 else { return [] }
+
+        // Union of the two dimensions. A `Set<Int>` collapses an occurrence
+        // matched by BOTH signals to one entry, so a multi-signal event is
+        // never processed (or emitted) twice, and no arbitrary union order
+        // reaches the output.
+        var matched = Set<Int>()
+        if !emails.isEmpty {
+            for email in emails {
+                guard let indices = eventsByEmail[email] else { continue }
+                matched.formUnion(indices)
+            }
+        }
+        if !locations.isEmpty {
+            for offset in locatedEventIndices
+            where EventLocationMatcher.matches(location: events[offset].location, anyOf: locations) {
+                matched.insert(offset)
+            }
+        }
+        guard !matched.isEmpty else { return [] }
+
+        // Collapse per `eventKitID` keeping the latest occurrence, walking the
+        // matched offsets in ascending (raw fetch) order so a tie on
+        // `startDate` keeps the first-seen occurrence — identical to the old
+        // linear scan's `existing.startDate >= event.startDate` guard.
+        var dedupe: [String: Event] = [:]
+        for offset in matched.sorted() {
+            let event = events[offset]
+            guard let ekid = event.eventKitID else { continue }
+            if let existing = dedupe[ekid], existing.startDate >= event.startDate { continue }
+            dedupe[ekid] = event
+        }
+        return dedupe.values
+            .sorted { $0.startDate > $1.startDate }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+/// Generic single-flight generation cache — the reusable core of the
+/// discipline `EventWindowFetchCoordinator` implements for `[Event]`, here
+/// parameterized over the cached `Value`. DL-2 uses it for the
+/// `AttendeeWindowIndex` so repeated `eventsWithAttendee` calls for one window
+/// build the index once. It is a sibling primitive to the `[Event]` window
+/// coordinator, not a refactor of it — but both now share ONE `WindowCacheClock`
+/// (one lock, one generation) so their invalidation is atomic (FIX 2).
+///
+/// The shared clock's `NSCondition` linearizes all state. A window's build runs
+/// once per (shared) generation; concurrent identical callers wait for its
+/// `Result`. Invalidation advances the shared generation and clears every
+/// registered cache under that one lock: a caller arriving afterward can neither
+/// hit nor join old-generation work, and a build that finishes AFTER an
+/// invalidation is discarded (its callers retry in the new generation) — so a
+/// store change or write racing an in-flight build can never return stale data,
+/// and can never leave this cache stale while the sibling window cache is
+/// refreshed (or vice versa).
+private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendable {
+    private struct WindowKey: Hashable {
+        let start: Date
+        let end: Date
+
+        init(_ interval: DateInterval) {
+            self.start = interval.start
+            self.end = interval.end
+        }
+    }
+
+    private struct FlightKey: Hashable {
+        let generation: UInt64
+        let window: WindowKey
+    }
+
+    private enum FlightOutcome {
+        case result(Result<Value, Error>)
+        case invalidated
+    }
+
+    private final class Flight {
+        var callerCount = 1
+        var outcome: FlightOutcome?
+    }
+
+    private struct CacheEntry {
+        let value: Value
+        let capturedAt: UInt64
+        var lastUse: UInt64
+    }
+
+    private let name: String
+    /// The shared lock + generation. This cache locks `clock.condition` and
+    /// gates on `clock.generation`, so its invalidation is atomic with the
+    /// sibling window coordinator's — both clear under one lock, one generation.
+    private let clock: WindowCacheClock
+    /// Forward to the shared lock/generation so the body below reads exactly as
+    /// the single-lock cache did — every access already happens under
+    /// `condition`, which is the shared lock.
+    private var condition: NSCondition { clock.condition }
+    private var generation: UInt64 { clock.generation }
+    /// `nil` = non-expiring (invalidation-only): entries live until an explicit
+    /// invalidation, never a wall-clock TTL. `.some(n)` expires an entry `n`
+    /// nanoseconds after capture; `.some(0)` disables caching entirely.
+    private let cacheLifetimeNanos: UInt64?
+    private let maximumCacheEntries: Int
+    private var flights: [FlightKey: Flight] = [:]
+    private var cache: [WindowKey: CacheEntry] = [:]
+    private var useCounter: UInt64 = 0
+
+    /// `cacheLifetime == nil` builds a non-expiring cache (invalidation-only).
+    init(name: String, clock: WindowCacheClock, cacheLifetime: TimeInterval?, maximumCacheEntries: Int) {
+        self.name = name
+        self.clock = clock
+        self.cacheLifetimeNanos = cacheLifetime.map { UInt64(max(0, $0) * 1_000_000_000) }
+        self.maximumCacheEntries = max(1, maximumCacheEntries)
+        // Clearing runs under `clock.condition` (held by `invalidate`); it only
+        // drops this cache's own entries and must never re-lock.
+        clock.register { [weak self] reason, generation in
+            guard let self else { return }
+            self.cache.removeAll(keepingCapacity: true)
+            EKEventStoreAdapter.fetchLog.info(
+                "\(self.name) cache invalidated",
+                metadata: [
+                    "reason": .string(reason),
+                    "generation": .stringConvertible(generation),
+                ]
+            )
+        }
+    }
+
+    /// True when successful builds should be cached. Non-expiring caches always
+    /// cache; a `.some(0)` lifetime disables caching.
+    private var cachingEnabled: Bool {
+        switch cacheLifetimeNanos {
+        case .none: return true
+        case .some(let nanos): return nanos > 0
+        }
+    }
+
+    // Authorization-transition tracking is centralized at the EKEventStoreAdapter
+    // level (one lock, one baseline) and drives invalidation through the shared
+    // `invalidateCaches` path (which bumps the shared clock). This cache tracks
+    // no authorization itself and owns no invalidation entry point of its own —
+    // it registers a clear closure with the shared clock — so two caches can't
+    // diverge on a transition, nor be cleared non-atomically.
+
+    func value(
+        interval: DateInterval,
+        build: () throws -> Value
+    ) throws -> Value {
+        let window = WindowKey(interval)
+
+        while true {
+            condition.lock()
+            let activeGeneration = generation
+            let now = DispatchTime.now().uptimeNanoseconds
+            purgeExpiredEntries(now: now)
+
+            if var entry = cache[window] {
+                useCounter &+= 1
+                entry.lastUse = useCounter
+                cache[window] = entry
+                condition.unlock()
+                return entry.value
+            }
+
+            let key = FlightKey(generation: activeGeneration, window: window)
+            if let flight = flights[key] {
+                flight.callerCount += 1
+                while flight.outcome == nil && generation == activeGeneration {
+                    condition.wait()
+                }
+                guard generation == activeGeneration,
+                      let outcome = flight.outcome
+                else {
+                    condition.unlock()
+                    continue
+                }
+                condition.unlock()
+                switch outcome {
+                case .result(let result):
+                    return try result.get()
+                case .invalidated:
+                    continue
+                }
+            }
+
+            let flight = Flight()
+            flights[key] = flight
+            condition.unlock()
+
+            let result = Result { try build() }
+
+            condition.lock()
+            if generation != activeGeneration {
+                // Invalidated mid-build: discard this result and make every
+                // joined caller retry in the new generation. Nothing stale is
+                // cached or returned.
+                flight.outcome = .invalidated
+                flights.removeValue(forKey: key)
+                condition.broadcast()
+                condition.unlock()
+                continue
+            }
+
+            if case .success(let value) = result, cachingEnabled {
+                useCounter &+= 1
+                evictLeastRecentlyUsedEntryIfNeeded(for: window)
+                cache[window] = CacheEntry(
+                    value: value,
+                    capturedAt: DispatchTime.now().uptimeNanoseconds,
+                    lastUse: useCounter
+                )
+            }
+            flight.outcome = .result(result)
+            flights.removeValue(forKey: key)
+            condition.broadcast()
+            condition.unlock()
+            return try result.get()
+        }
+    }
+
+    func inFlightCallerCount(for interval: DateInterval) -> Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return flights[FlightKey(generation: generation, window: WindowKey(interval))]?.callerCount ?? 0
+    }
+
+    private func purgeExpiredEntries(now: UInt64) {
+        switch cacheLifetimeNanos {
+        case .none:
+            // Non-expiring: entries only leave via invalidation or LRU eviction.
+            return
+        case .some(let lifetime) where lifetime == 0:
+            cache.removeAll(keepingCapacity: true)
+        case .some(let lifetime):
+            cache = cache.filter { _, entry in
+                now >= entry.capturedAt && now - entry.capturedAt <= lifetime
+            }
+        }
+    }
+
+    private func evictLeastRecentlyUsedEntryIfNeeded(for window: WindowKey) {
+        guard cache[window] == nil, cache.count >= maximumCacheEntries,
+              let oldest = cache.min(by: { $0.value.lastUse < $1.value.lastUse })?.key
+        else { return }
+        cache.removeValue(forKey: oldest)
     }
 }
 

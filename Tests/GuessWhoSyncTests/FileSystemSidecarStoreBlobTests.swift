@@ -28,7 +28,8 @@ struct FileSystemSidecarStoreBlobTests {
         FileSystemSidecarStore(
             root: root,
             ubiquity: ubiquity,
-            blobCrypto: InMemoryBlobCrypto(key: key)
+            blobCrypto: InMemoryBlobCrypto(key: key),
+            coordinatesUbiquitousAccess: false
         )
     }
 

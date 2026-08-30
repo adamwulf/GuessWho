@@ -245,12 +245,16 @@ struct CNContactStoreAdapterTests {
     // MARK: - Fetch-key contract
 
     @Test
-    func fetchKeysIncludeNoteKeyAndCoverMappedFields() {
+    func trimmedFetchKeysCoverEveryMappedConsumerField() {
         let keys = Set(CNContactStoreAdapter.keys.compactMap { $0 as? String })
 
         // Debug and Release use the same app id and entitlements, so Contacts
         // notes are part of the main fetch/edit contract in both configurations.
         #expect(keys.contains(CNContactNoteKey))
+
+        // Contacts documents identifier as ALWAYS fetched. It remains mapped
+        // into Contact.localID, but explicitly requesting it is redundant.
+        #expect(!keys.contains(CNContactIdentifierKey))
 
         // Image BYTES load on demand via separate key sets; the bulk fetch
         // carries only the presence flag.
@@ -258,16 +262,217 @@ struct CNContactStoreAdapterTests {
         #expect(!keys.contains(CNContactThumbnailImageDataKey))
         #expect(keys.contains(CNContactImageDataAvailableKey))
 
-        // Spot-check the fetch covers what `toContact` reads — a key missing
-        // here throws CNContactPropertyNotFetchedException at runtime.
-        #expect(keys.contains(CNContactIdentifierKey))
-        #expect(keys.contains(CNContactTypeKey))
-        #expect(keys.contains(CNContactGivenNameKey))
-        #expect(keys.contains(CNContactPhoneNumbersKey))
-        #expect(keys.contains(CNContactPostalAddressesKey))
-        #expect(keys.contains(CNContactSocialProfilesKey))
-        #expect(keys.contains(CNContactRelationsKey))
-        #expect(keys.contains(CNContactDatesKey))
+        // Exact contract: every OPTIONAL property `toContact` reads is here.
+        // A missing entry can throw CNContactPropertyNotFetchedException at
+        // runtime; an extra entry silently adds cost to every unified fetch.
+        let expected = Set([
+            CNContactTypeKey,
+            CNContactNamePrefixKey,
+            CNContactGivenNameKey,
+            CNContactMiddleNameKey,
+            CNContactFamilyNameKey,
+            CNContactPreviousFamilyNameKey,
+            CNContactNameSuffixKey,
+            CNContactNicknameKey,
+            CNContactPhoneticGivenNameKey,
+            CNContactPhoneticMiddleNameKey,
+            CNContactPhoneticFamilyNameKey,
+            CNContactJobTitleKey,
+            CNContactDepartmentNameKey,
+            CNContactOrganizationNameKey,
+            CNContactPhoneticOrganizationNameKey,
+            CNContactNoteKey,
+            CNContactPhoneNumbersKey,
+            CNContactEmailAddressesKey,
+            CNContactPostalAddressesKey,
+            CNContactUrlAddressesKey,
+            CNContactBirthdayKey,
+            CNContactNonGregorianBirthdayKey,
+            CNContactDatesKey,
+            CNContactSocialProfilesKey,
+            CNContactInstantMessageAddressesKey,
+            CNContactRelationsKey,
+            CNContactImageDataAvailableKey,
+        ])
+        #expect(keys == expected)
+    }
+
+    // MARK: - Full-fetch single-flight
+
+    @Test
+    func concurrentFetchAllCallersShareOneUnderlyingUnifiedFetch() async throws {
+        let spy = BlockingFetchAllSpy()
+        let adapter = CNContactStoreAdapter(fetchAllWork: { _, keys in
+            spy.fetch(keys: keys)
+        })
+
+        let first = Task { try await adapter.fetchAll() }
+        #expect(spy.waitForFetchCount(1))
+
+        let second = Task { try await adapter.fetchAll() }
+        var joined = false
+        for _ in 0..<1_000 {
+            if await adapter.inFlightFetchAllCallerCountForTesting == 2 {
+                joined = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(joined)
+
+        spy.releaseFirstFetch()
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        #expect(spy.fetchCount == 1)
+        #expect(firstResult == secondResult)
+        #expect(firstResult.first?.givenName == "Snapshot 1")
+        #expect(spy.requestedKeys == Set(CNContactStoreAdapter.keys.compactMap { $0 as? String }))
+    }
+
+    @Test @MainActor
+    func concurrentRepositoryReloadsShareOneUnderlyingUnifiedFetch() async {
+        let spy = BlockingFetchAllSpy()
+        let adapter = CNContactStoreAdapter(fetchAllWork: { _, keys in
+            spy.fetch(keys: keys)
+        })
+        let repository = ContactsRepository(
+            contacts: adapter,
+            notificationCenter: NotificationCenter()
+        )
+
+        let first = Task { @MainActor in await repository.reload() }
+        var started = false
+        for _ in 0..<1_000 {
+            if spy.fetchCount == 1 {
+                started = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(started)
+
+        // This second reload supersedes the first repository generation, but
+        // it must join rather than enqueue another full Contacts enumeration.
+        let second = Task { @MainActor in await repository.reload() }
+        var joined = false
+        for _ in 0..<1_000 {
+            if await adapter.inFlightFetchAllCallerCountForTesting == 2 {
+                joined = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(joined)
+
+        spy.releaseFirstFetch()
+        await first.value
+        await second.value
+
+        #expect(spy.fetchCount == 1)
+        #expect(repository.contacts.first?.givenName == "Snapshot 1")
+        #expect(repository.isLoading == false)
+    }
+
+    @Test @MainActor
+    func contactStoreFullReloadAfterCompletedFetchStartsFreshFlight() async throws {
+        let spy = BlockingFetchAllSpy(blockFirstFetch: false)
+        let adapter = CNContactStoreAdapter(fetchAllWork: { _, keys in
+            spy.fetch(keys: keys)
+        })
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: adapter, notificationCenter: center)
+
+        await repository.reload()
+        #expect(spy.fetchCount == 1)
+        #expect(repository.contacts.first?.givenName == "Snapshot 1")
+
+        // A real ContactChangeWatcher full-reload notification after the first
+        // flight completed must not reuse its result. Await the repository's
+        // completion post so the assertion observes the settled second reload.
+        var token: NSObjectProtocol?
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            token = center.addObserver(
+                forName: .contactsRepositoryDidReload,
+                object: repository,
+                queue: nil
+            ) { _ in
+                continuation.resume()
+            }
+            center.post(
+                name: .guessWhoContactsDidChange,
+                object: nil,
+                userInfo: [GuessWhoContactsDidChangeKey.requiresFullReload: true]
+            )
+        }
+        if let token { center.removeObserver(token) }
+
+        #expect(spy.fetchCount == 2)
+        #expect(repository.contacts.first?.givenName == "Snapshot 2")
+    }
+
+    @Test
+    func fullReloadRecoveryAfterChangeDuringFetchStartsFreshFlight() async throws {
+        // The batch-2 regression: a contact-store change lands DURING an
+        // in-flight fetchAll. The change-driven full-reload recovery must NOT
+        // join the pre-change flight (that would re-serve the stale snapshot) —
+        // it starts a fresh underlying enumeration and observes post-change
+        // contacts. Meanwhile the original in-flight caller finishes its
+        // pre-change flight safely.
+        let spy = BlockingFetchAllSpy()
+        let adapter = CNContactStoreAdapter(fetchAllWork: { _, keys in
+            spy.fetch(keys: keys)
+        })
+
+        // fetchAll #1 begins and parks in the underlying enumeration (the
+        // pre-change flight). It will resolve to "Snapshot 1".
+        let inFlight = Task { try await adapter.fetchAll() }
+        #expect(spy.waitForFetchCount(1))
+        var flightRecorded = false
+        for _ in 0..<1_000 {
+            if await adapter.startedFetchAllCountForTesting == 1,
+               await adapter.inFlightFetchAllCallerCountForTesting == 1 {
+                flightRecorded = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(flightRecorded)
+
+        // An external contact-store change lands DURING the flight; the watcher
+        // forwards it to the adapter as a single-flight invalidation.
+        await adapter.invalidateInFlightFetchAll()
+
+        // The change-driven full-reload recovery must fork a FRESH flight rather
+        // than join the pre-change one. Prove it BEFORE releasing the first
+        // fetch: a second distinct flight was started (startedCount == 2) and
+        // the current flight has exactly one caller (callerCount == 1, i.e. the
+        // recovery did NOT increment the pre-change flight to two). Without the
+        // fix the recovery would join, leaving startedCount == 1 and
+        // callerCount == 2.
+        let recovery = Task { try await adapter.fetchAll() }
+        var forkedFreshFlight = false
+        for _ in 0..<1_000 {
+            if await adapter.startedFetchAllCountForTesting == 2,
+               await adapter.inFlightFetchAllCallerCountForTesting == 1 {
+                forkedFreshFlight = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(forkedFreshFlight)
+
+        // Releasing the first fetch lets the original caller finish its
+        // pre-change flight safely ("Snapshot 1"); the serial work queue then
+        // runs the recovery's own enumeration, which returns the post-change
+        // snapshot ("Snapshot 2").
+        spy.releaseFirstFetch()
+        let inFlightResult = try await inFlight.value
+        let recoveryResult = try await recovery.value
+
+        #expect(inFlightResult.first?.givenName == "Snapshot 1")
+        #expect(recoveryResult.first?.givenName == "Snapshot 2")
+        #expect(spy.fetchCount == 2)
     }
 
     // MARK: - Save-request author tag
@@ -299,6 +504,65 @@ struct CNContactStoreAdapterTests {
         #expect(CNContactStoreAdapter.mapAuthorization(.denied) == .denied)
         #expect(CNContactStoreAdapter.mapAuthorization(.restricted) == .restricted)
         #expect(CNContactStoreAdapter.mapAuthorization(.notDetermined) == .notDetermined)
+    }
+}
+
+/// Thread-safe stand-in for the adapter's blocking CN enumeration. The first
+/// call can be parked on the adapter work queue while a second actor caller
+/// joins the same flight. Each genuine invocation returns a distinct snapshot,
+/// making accidental reuse after completion visible as a value failure as well
+/// as a count failure.
+private final class BlockingFetchAllSpy: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let blockFirstFetch: Bool
+    private var firstFetchReleased = false
+    private var _fetchCount = 0
+    private var _requestedKeys: Set<String> = []
+
+    init(blockFirstFetch: Bool = true) {
+        self.blockFirstFetch = blockFirstFetch
+    }
+
+    func fetch(keys: [CNKeyDescriptor]) -> [Contact] {
+        condition.lock()
+        _fetchCount += 1
+        let invocation = _fetchCount
+        _requestedKeys = Set(keys.compactMap { $0 as? String })
+        condition.broadcast()
+        while blockFirstFetch && invocation == 1 && !firstFetchReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return [Contact(localID: "contact", givenName: "Snapshot \(invocation)")]
+    }
+
+    func waitForFetchCount(_ expected: Int) -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        condition.lock()
+        defer { condition.unlock() }
+        while _fetchCount < expected {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func releaseFirstFetch() {
+        condition.lock()
+        firstFetchReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var fetchCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return _fetchCount
+    }
+
+    var requestedKeys: Set<String> {
+        condition.lock()
+        defer { condition.unlock() }
+        return _requestedKeys
     }
 }
 #endif

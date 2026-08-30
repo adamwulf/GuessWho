@@ -50,6 +50,23 @@ public protocol SidecarStoreProtocol {
     func blobIds(for key: SidecarKey) throws -> [String]
 }
 
+// Internal fast path for whole-corpus projections. The filesystem store can
+// take one read claim on its root and capture every selected file under that
+// claim; stores without a snapshot/coordination concept continue through the
+// ordinary SidecarStoreProtocol methods (see GuessWhoSync.walkSidecarCorpus).
+//
+// The per-entry Result is load-bearing. Some projections fail as a whole on a
+// bad read, while contactReloadProjection deliberately lets a contact failure
+// invalidate only timestamps and a link failure invalidate only link-derived
+// values. Keeping errors attached to their keys preserves both behaviors.
+protocol SidecarCorpusReading {
+    func walkCorpus(
+        reading readKinds: Set<SidecarKind>,
+        listing listedKinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws
+}
+
 // Conflict-reconcile plumbing is exposed via SPI so the two shipping stores
 // (FileSystemSidecarStore, InMemorySidecarStore) can conform from their own
 // modules, but a host or UI doing a plain `import GuessWhoSync` never sees

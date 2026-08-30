@@ -103,7 +103,7 @@ struct MCPWriteIntegrationTests {
         // write that the sync machinery pushes to the user's cloud storage.
         // A field cell's `value` is the §5.2 inner object
         // { field, type, value, createdAt }; the tag text is its `value`.
-        let onDisk = try FileSystemSidecarStore(root: root)
+        let onDisk = try FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
             .read(SidecarKey(kind: .event, id: uuidString))
         let storedValues = (onDisk?.fields.values).map(Array.init) ?? []
         #expect(storedValues.contains { cell in

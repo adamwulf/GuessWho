@@ -1,5 +1,106 @@
 import Foundation
 
+/// A process-local, generation-token cache for the expensive place-sidecar
+/// corpus walk. `NSCondition` both protects the snapshot/generation and lets
+/// overlapping synchronous or async-overload callers share one in-flight
+/// walk. A generation change during a walk discards that result and makes the
+/// owner retry, so an invalidation can never publish or return an old snapshot.
+final class PlaceCorpusCache: @unchecked Sendable {
+    /// Upper bound on how many times a single `value(walkingCorpus:)` caller
+    /// re-walks after losing a generation race. Small and finite: under
+    /// sustained invalidation (the watcher re-firing back-to-back, as in the
+    /// launch CPU baseline) the generation can tick on *every* walk, so an
+    /// unbounded retry loop would spin the caller forever. See the budget
+    /// handling in `value(walkingCorpus:)`.
+    static let maxGenerationRaceRetries = 4
+
+    private let condition = NSCondition()
+    private var generation: UInt64 = 0
+    private var cached: (generation: UInt64, places: [MapsPlace])?
+    private var inFlightGeneration: UInt64?
+
+    func invalidate() {
+        condition.lock()
+        generation += 1
+        cached = nil
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func value(walkingCorpus walk: () throws -> [MapsPlace]) throws -> [MapsPlace] {
+        // Count only the walks THIS caller performs (a `condition.wait()` on
+        // another caller's in-flight walk does not consume the budget). Once
+        // the budget is spent we stop re-walking and hand this caller its own
+        // freshest snapshot — see the bounded-exhaustion return below.
+        var walksPerformed = 0
+
+        while true {
+            condition.lock()
+            let requestedGeneration = generation
+
+            if let cached, cached.generation == requestedGeneration {
+                condition.unlock()
+                return cached.places
+            }
+
+            if inFlightGeneration != nil {
+                condition.wait()
+                condition.unlock()
+                continue
+            }
+
+            inFlightGeneration = requestedGeneration
+            condition.unlock()
+
+            walksPerformed += 1
+            let result: [MapsPlace]
+            do {
+                result = try walk()
+            } catch {
+                condition.lock()
+                inFlightGeneration = nil
+                condition.broadcast()
+                condition.unlock()
+                throw error
+            }
+
+            condition.lock()
+            let isCurrent = generation == requestedGeneration
+            // Cache ONLY a walk that observed the still-live generation. The
+            // cached-hit fast path above must never hand back a snapshot that
+            // predates an invalidation, so a raced walk (generation moved
+            // while we walked) is never published — this keeps that invariant
+            // strict regardless of the budget logic below.
+            if isCurrent {
+                cached = (requestedGeneration, result)
+            }
+            inFlightGeneration = nil
+            condition.broadcast()
+            condition.unlock()
+
+            if isCurrent {
+                return result
+            }
+
+            // Lost the race. If the budget still has room, drop this raced
+            // snapshot and re-walk against the newer generation. If the budget
+            // is exhausted the corpus is being invalidated faster than we can
+            // walk it; rather than spin forever, return THIS just-completed
+            // walk to the current caller WITHOUT caching it. It is a genuine,
+            // freshly walked corpus (only newer than `requestedGeneration`, so
+            // never stale) — safe to return to whoever asked, but not safe to
+            // publish for later callers because it is not tagged to the live
+            // generation. We never return an old cached value and never cache a
+            // mismatched-generation result, so the strict cached-hit invariant
+            // holds; a subsequent genuine local write bumps the generation and
+            // is reflected on the next call.
+            if walksPerformed >= Self.maxGenerationRaceRetries {
+                return result
+            }
+        }
+    }
+}
+
 extension GuessWhoSync {
     // MARK: - Well-known guide / place cell keys
 
@@ -390,6 +491,38 @@ extension GuessWhoSync {
         return decodeGuide(envelope: envelope, key: key)
     }
 
+    /// Async single-key projection for watcher deltas.
+    public func guideForWatcherDelta(at key: SidecarKey) async throws -> MapsGuide? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try self.guide(at: key))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Decode the place at `key`, or nil when missing / soft-deleted.
+    public func place(at key: SidecarKey) throws -> MapsPlace? {
+        guard let envelope = try sidecars.read(key) else { return nil }
+        return decodePlace(envelope: envelope, key: key)
+    }
+
+    /// Async single-key projection for watcher deltas.
+    public func placeForWatcherDelta(at key: SidecarKey) async throws -> MapsPlace? {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try self.place(at: key))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// The canonical live guide whose stored source URL exactly equals
     /// `sourceURL`, or nil. Oldest-created wins if legacy data already contains
     /// duplicates; UUID is the deterministic fallback when timestamps tie.
@@ -462,16 +595,21 @@ extension GuessWhoSync {
     }
 
     /// Every live place, across all guides. Backs the guides list's per-guide
-    /// place counts with ONE sidecar walk instead of one per guide.
+    /// place counts with ONE sidecar walk instead of one per guide. The engine-
+    /// level generation cache also shares that walk across overlapping callers
+    /// and across CLI/MCP/app call sites until a place/guide change invalidates
+    /// it.
     public func allPlaces() throws -> [MapsPlace] {
-        var result: [MapsPlace] = []
-        for key in try sidecars.allKeys() where key.kind == .place {
-            guard let envelope = try sidecars.read(key) else { continue }
-            if let place = decodePlace(envelope: envelope, key: key) {
-                result.append(place)
+        try placeCorpusCache.value { [self] in
+            var result: [MapsPlace] = []
+            try walkSidecarCorpus(kinds: [.place]) { key, readResult in
+                guard let envelope = try readResult.get() else { return }
+                if let place = decodePlace(envelope: envelope, key: key) {
+                    result.append(place)
+                }
             }
+            return result
         }
-        return result
     }
 
     /// Async overload of `allPlaces()` — same background-hop rationale as

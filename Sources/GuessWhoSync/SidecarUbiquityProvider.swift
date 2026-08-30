@@ -7,9 +7,6 @@ import Foundation
 // real iCloud Drive container.
 //
 // Scope notes:
-//  - NSFileCoordinator is NOT abstracted here. It serializes against
-//    cloudd, but the logic we care about (envelope parse, mark resolved,
-//    folding the resolver decision) sits ABOVE the coordinator.
 //  - The handle returns its bytes via `bytes() throws -> Data` rather
 //    than exposing a URL so fakes can stay pure-in-memory. The production
 //    adapter reads via `Data(contentsOf: nsVersion.url)` once.

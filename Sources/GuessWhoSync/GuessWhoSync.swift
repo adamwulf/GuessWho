@@ -1,13 +1,150 @@
 import Foundation
 import Logging
 
+/// One decoded view of the complete link corpus. Keeping the endpoint index
+/// beside the corpus-order array lets point reads stay O(1) without changing
+/// the ordering or filtering semantics of the former per-read walk.
+struct LinkCorpusSnapshot: Sendable, Equatable {
+    var allLinks: [Link]
+    var linksByEndpoint: [SidecarKey: [Link]]
+}
+
+/// Process-local, single-flight cache for the expensive link-sidecar corpus
+/// walk. A generation change while a walk is in flight discards that result and
+/// retries against the new generation, so neither the cache nor the initiating
+/// caller can observe a snapshot older than a completed invalidating write or
+/// watcher delivery.
+final class LinkCorpusCache: @unchecked Sendable {
+    /// Upper bound on how many times a single `value(walkingCorpus:)` caller
+    /// re-walks after losing a generation race. Small and finite: under
+    /// sustained invalidation (the watcher re-firing back-to-back, as in the
+    /// launch CPU baseline) the generation can tick on *every* walk, so an
+    /// unbounded retry loop would spin the caller forever. See the budget
+    /// handling in `value(walkingCorpus:)`.
+    static let maxGenerationRaceRetries = 4
+
+    private let condition = NSCondition()
+    private var generation: UInt64 = 0
+    private var cached: (generation: UInt64, snapshot: LinkCorpusSnapshot)?
+    private var inFlightGeneration: UInt64?
+
+    func invalidate() {
+        condition.lock()
+        generation &+= 1
+        cached = nil
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func value(walkingCorpus walk: () throws -> LinkCorpusSnapshot) throws -> LinkCorpusSnapshot {
+        // Count only the walks THIS caller performs (a `condition.wait()` on
+        // another caller's in-flight walk does not consume the budget). Once
+        // the budget is spent we stop re-walking and hand this caller its own
+        // freshest snapshot — see the bounded-exhaustion return below.
+        var walksPerformed = 0
+
+        while true {
+            condition.lock()
+            let requestedGeneration = generation
+
+            if let cached, cached.generation == requestedGeneration {
+                condition.unlock()
+                return cached.snapshot
+            }
+
+            if inFlightGeneration != nil {
+                condition.wait()
+                condition.unlock()
+                continue
+            }
+
+            inFlightGeneration = requestedGeneration
+            condition.unlock()
+
+            walksPerformed += 1
+            let result: LinkCorpusSnapshot
+            do {
+                result = try walk()
+            } catch {
+                condition.lock()
+                inFlightGeneration = nil
+                condition.broadcast()
+                condition.unlock()
+                throw error
+            }
+
+            condition.lock()
+            let isCurrent = generation == requestedGeneration
+            // Cache ONLY a walk that observed the still-live generation. The
+            // cached-hit fast path above must never hand back a snapshot that
+            // predates an invalidation, so a raced walk (generation moved
+            // while we walked) is never published — this keeps that invariant
+            // strict regardless of the budget logic below.
+            if isCurrent {
+                cached = (requestedGeneration, result)
+            }
+            inFlightGeneration = nil
+            condition.broadcast()
+            condition.unlock()
+
+            if isCurrent {
+                return result
+            }
+
+            // Lost the race. If the budget still has room, drop this raced
+            // snapshot and re-walk against the newer generation. If the budget
+            // is exhausted the corpus is being invalidated faster than we can
+            // walk it; rather than spin forever, return THIS just-completed
+            // walk to the current caller WITHOUT caching it. It is a genuine,
+            // freshly walked corpus (only newer than `requestedGeneration`, so
+            // never stale) — safe to return to whoever asked, but not safe to
+            // publish for later callers because it is not tagged to the live
+            // generation. This is the same deliberate bounded-retry tradeoff
+            // as PlaceCorpusCache: it prevents invalidation churn from
+            // livelocking the caller while returning a fresh recent walk, not
+            // old cached data. We never cache the mismatched-generation result,
+            // so the next read rebuilds against the then-current generation and
+            // self-heals once the churn subsides.
+            if walksPerformed >= Self.maxGenerationRaceRetries {
+                return result
+            }
+        }
+    }
+}
+
 // Thread-safety is provided by `sidecarLocks` (per-sidecar serialization
-// for read-modify-write) and by the fact that `contacts` is now an actor.
+// for read-modify-write), the corpus caches' condition locks, and by the fact
+// that `contacts` is now an actor.
 // Conformers passed in for `events` / `sidecars` are expected to handle
 // their own internal locking (the bundled FileSystemSidecarStore and
 // InMemorySidecarStore both do). Marked @unchecked so the type can be
 // shared across actors without requiring those protocols to be Sendable.
 public final class GuessWhoSync: @unchecked Sendable {
+    /// The two contact-list projections derived from the live link corpus.
+    /// Internal because callers outside the package should consume repository
+    /// projections rather than sidecar-shaped keys.
+    struct LinkEndpointProjection: Sendable, Equatable {
+        var endpoints: Set<SidecarKey>
+        var counts: [SidecarKey: Int]
+    }
+
+    /// Every sidecar-derived value a wholesale contacts reload needs. Keeping
+    /// these together lets the engine enumerate the corpus once and decode each
+    /// relevant envelope once, while the repository still publishes its normal
+    /// contact-shaped caches.
+    struct ContactReloadProjection: Sendable, Equatable {
+        /// Nil means the contact-envelope portion failed and the repository
+        /// should apply its existing empty-cache fallback for timestamps only.
+        let timestamps: [String: ContactTimestamps]?
+        /// Nil means the link-envelope portion failed and the repository should
+        /// empty only the two link-derived caches. Keeping failure independent
+        /// preserves the former three-walk degradation semantics.
+        let links: LinkEndpointProjection?
+        /// Reuses the reload's one corpus enumeration for the pre-existing
+        /// group-identity refresh without reading group envelopes prematurely.
+        let groupKeys: [SidecarKey]
+    }
+
     /// Same label as the adapter/repository save breadcrumbs: every CNContact
     /// write REQUEST logs its initiating operation so a failed save in the log
     /// is attributable (the reconcile writes here were previously silent).
@@ -18,6 +155,16 @@ public final class GuessWhoSync: @unchecked Sendable {
     internal let sidecars: SidecarStoreProtocol
     internal let deviceID: String
     internal let sidecarLocks = PerKeyLockTable<SidecarKey>()
+    internal let placeCorpusCache = PlaceCorpusCache()
+    internal let linkCorpusCache = LinkCorpusCache()
+
+    /// One launch-stable contact-detail Recent Events window. The attendee
+    /// index is keyed by exact interval, so recomputing `Date()` per contact
+    /// would miss by seconds and repeat the 11-year EventKit walk.
+    internal let recentEventsInterval: DateInterval
+
+    private let notificationCenter: NotificationCenter
+    private var sidecarChangeObserver: NSObjectProtocol?
 
     /// Device-local persistence for the external-contact-change cursor. Present
     /// only when a host wants this instance to own the change watcher; `nil`
@@ -37,13 +184,74 @@ public final class GuessWhoSync: @unchecked Sendable {
         events: EventStoreProtocol,
         sidecars: SidecarStoreProtocol,
         deviceID: String,
-        contactCursorStore: ContactSyncCursorStore? = nil
+        contactCursorStore: ContactSyncCursorStore? = nil,
+        notificationCenter: NotificationCenter = .default,
+        recentEventsAsOf: Date = Date()
     ) {
         self.contacts = contacts
         self.events = events
         self.sidecars = sidecars
         self.deviceID = deviceID
+        self.recentEventsInterval = Self.recentEventsWindow(asOf: recentEventsAsOf)
         self.contactCursorStore = contactCursorStore
+        self.notificationCenter = notificationCenter
+        self.sidecarChangeObserver = nil
+        self.sidecarChangeObserver = notificationCenter.addObserver(
+            forName: .guessWhoSidecarsDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] note in
+            let changeSet = note.guessWhoSidecarChangeSet
+            if changeSet.requiresFullRefresh {
+                self?.invalidatePlaceCorpus()
+                self?.invalidateLinkCorpus()
+                return
+            }
+            if changeSet.changedKinds?.contains(.place) == true
+                || changeSet.changedKinds?.contains(.guide) == true {
+                self?.invalidatePlaceCorpus()
+            }
+            if changeSet.changedKinds?.contains(.link) == true {
+                self?.invalidateLinkCorpus()
+            }
+        }
+    }
+
+    deinit {
+        if let sidecarChangeObserver {
+            notificationCenter.removeObserver(sidecarChangeObserver)
+        }
+    }
+
+    // Filesystem-backed corpus projections take one root-directory claim and
+    // reuse one decoder through this internal capability. Other conformers keep
+    // their existing behavior: enumerate once, then call read(_:) serially for
+    // each selected key. The visit closure receives identical per-key Results
+    // on both paths, including nil, malformed-data errors, and
+    // notYetDownloaded.
+    internal func walkSidecarCorpus(
+        kinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        try walkSidecarCorpus(reading: kinds, listing: kinds, visit)
+    }
+
+    internal func walkSidecarCorpus(
+        reading readKinds: Set<SidecarKind>,
+        listing listedKinds: Set<SidecarKind>,
+        _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
+    ) throws {
+        if let corpusReader = sidecars as? SidecarCorpusReading {
+            try corpusReader.walkCorpus(reading: readKinds, listing: listedKinds, visit)
+            return
+        }
+
+        for key in try sidecars.allKeys() where listedKinds.contains(key.kind) {
+            let result = readKinds.contains(key.kind)
+                ? Result { try sidecars.read(key) }
+                : .success(nil)
+            try visit(key, result)
+        }
     }
 
     // MARK: - Per-key atomicity
@@ -71,9 +279,13 @@ public final class GuessWhoSync: @unchecked Sendable {
     struct KeyLockedContext {
         let key: SidecarKey
         fileprivate let sidecars: SidecarStoreProtocol
+        fileprivate let didWrite: (SidecarKey) -> Void
 
         func read() throws -> SidecarEnvelope? { try sidecars.read(key) }
-        func write(_ envelope: SidecarEnvelope) throws { try sidecars.write(envelope, at: key) }
+        func write(_ envelope: SidecarEnvelope) throws {
+            try sidecars.write(envelope, at: key)
+            didWrite(key)
+        }
         func writeBlob(_ data: Data, blobId: String) throws { try sidecars.writeBlob(data, blobId: blobId, for: key) }
         func readBlob(blobId: String) throws -> Data? { try sidecars.readBlob(blobId: blobId, for: key) }
         func deleteBlob(blobId: String) throws { try sidecars.deleteBlob(blobId: blobId, for: key) }
@@ -90,8 +302,41 @@ public final class GuessWhoSync: @unchecked Sendable {
     @discardableResult
     func withKeyLocked<T>(_ key: SidecarKey, _ body: (KeyLockedContext) throws -> T) rethrows -> T {
         try sidecarLocks.withLock(forKey: key) {
-            try body(KeyLockedContext(key: key, sidecars: sidecars))
+            try body(KeyLockedContext(
+                key: key,
+                sidecars: sidecars,
+                didWrite: { [weak self] key in self?.invalidateCorpusCaches(ifAffectedBy: key) }
+            ))
         }
+    }
+
+    /// Advance the relevant corpus generation after every successful local
+    /// envelope write. This central choke point covers ordinary link writes,
+    /// undeletes, soft deletes, and Case-D endpoint rewrites without asking
+    /// callers to remember cache maintenance. Conflict reconciliation uses the
+    /// store's multi-version API and invalidates explicitly after its write.
+    private func invalidateCorpusCaches(ifAffectedBy key: SidecarKey) {
+        invalidatePlaceCorpus(ifAffectedBy: key)
+        if key.kind == .link {
+            invalidateLinkCorpus()
+        }
+    }
+
+    /// Advance the place-corpus generation after every successful local write
+    /// that can change a place projection or guide-derived grouping. Keeping
+    /// this at the central envelope-write choke point covers the public generic
+    /// field APIs as well as the guide-specific helpers.
+    private func invalidatePlaceCorpus(ifAffectedBy key: SidecarKey) {
+        guard key.kind == .place || key.kind == .guide else { return }
+        invalidatePlaceCorpus()
+    }
+
+    private func invalidatePlaceCorpus() {
+        placeCorpusCache.invalidate()
+    }
+
+    private func invalidateLinkCorpus() {
+        linkCorpusCache.invalidate()
     }
 
     // MARK: - External contact-change watcher
@@ -665,25 +910,17 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     /// Returns every link whose endpointA or endpointB equals `key`.
-    /// Soft-deleted links are returned. O(N links).
+    /// Soft-deleted links are returned. The first read in a generation builds
+    /// the O(N links) endpoint index; later endpoint reads are O(1).
     public func links(at endpoint: SidecarKey) throws -> [Link] {
-        var result: [Link] = []
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key) else { continue }
-            guard let link = Link(from: envelope) else { continue }
-            if link.endpointA == endpoint || link.endpointB == endpoint {
-                result.append(link)
-            }
-        }
-        return result
+        try linkCorpusSnapshot().linksByEndpoint[endpoint] ?? []
     }
 
-    /// Async overload of `links(at:)` that hops the scan to a background
-    /// queue: the read walks EVERY link sidecar (a coordinated read + decode
-    /// per file), so it scales with total link count and must not block the
-    /// caller's actor / main thread. Same continuation-hop pattern (and
-    /// `self` capture rationale) as `recentEvents(matchingEmails:)` in the
-    /// Events extension. Sync callers keep the synchronous overload.
+    /// Async overload of `links(at:)` that hops a cache miss to a background
+    /// queue: the miss walks EVERY link sidecar (a coordinated read + decode
+    /// per file), so it must not block the caller's actor / main thread. Cache
+    /// hits keep the same hop for a stable async API. Same continuation pattern
+    /// as `recentEvents(matchingEmails:)` in the Events extension.
     public func links(at endpoint: SidecarKey) async throws -> [Link] {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -702,19 +939,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// list filters: one O(N links) pass can identify all linked contacts,
     /// events, or places without performing an O(N endpoints × N links) scan.
     public func linkedEndpoints(ofKind kind: SidecarKind) throws -> Set<SidecarKey> {
-        var result: Set<SidecarKey> = []
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key),
-                  let link = Link(from: envelope),
-                  link.deletedAt == nil else { continue }
-            if link.endpointA.kind == kind {
-                result.insert(link.endpointA)
-            }
-            if link.endpointB.kind == kind {
-                result.insert(link.endpointB)
-            }
-        }
-        return result
+        try linkEndpointProjection(ofKind: kind).endpoints
     }
 
     /// Async overload of `linkedEndpoints(ofKind:)`; the complete link scan
@@ -739,19 +964,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// Counts ALL links touching the endpoint regardless of the far endpoint's
     /// kind, consistent with the Linked filter.
     public func linkCounts(ofKind kind: SidecarKind) throws -> [SidecarKey: Int] {
-        var result: [SidecarKey: Int] = [:]
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key),
-                  let link = Link(from: envelope),
-                  link.deletedAt == nil else { continue }
-            if link.endpointA.kind == kind {
-                result[link.endpointA, default: 0] += 1
-            }
-            if link.endpointB.kind == kind {
-                result[link.endpointB, default: 0] += 1
-            }
-        }
-        return result
+        try linkEndpointProjection(ofKind: kind).counts
     }
 
     /// Async overload of `linkCounts(ofKind:)`; the complete link scan
@@ -766,6 +979,140 @@ public final class GuessWhoSync: @unchecked Sendable {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    /// Computes linked-endpoint membership and per-endpoint counts together.
+    /// Each link envelope is read and decoded exactly once. The accumulation is
+    /// deliberately identical to the former separate methods: malformed and
+    /// soft-deleted links are ignored, both endpoints are considered, and a
+    /// same-key link increments that endpoint twice while membership remains a
+    /// set.
+    func linkEndpointProjection(ofKind kind: SidecarKind) throws -> LinkEndpointProjection {
+        var projection = LinkEndpointProjection(endpoints: [], counts: [:])
+        for link in try linkCorpusSnapshot().allLinks where link.deletedAt == nil {
+            Self.accumulate(link, ofKind: kind, into: &projection)
+        }
+        return projection
+    }
+
+    /// Decode the link corpus once and index each valid link under both of its
+    /// endpoints. Soft-deleted links stay in the snapshot because `links(at:)`
+    /// has always returned tombstones; its repository callers apply their own
+    /// live/far-kind filters. A self-link is indexed once, matching the former
+    /// `endpointA == endpoint || endpointB == endpoint` append behavior.
+    private func linkCorpusSnapshot() throws -> LinkCorpusSnapshot {
+        try linkCorpusCache.value { [self] in
+            var snapshot = LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:])
+            try walkSidecarCorpus(kinds: [.link]) { _, readResult in
+                guard let envelope = try readResult.get(),
+                      let link = Link(from: envelope) else { return }
+                snapshot.allLinks.append(link)
+                snapshot.linksByEndpoint[link.endpointA, default: []].append(link)
+                if link.endpointB != link.endpointA {
+                    snapshot.linksByEndpoint[link.endpointB, default: []].append(link)
+                }
+            }
+            return snapshot
+        }
+    }
+
+    /// Async overload used by scoped repository refreshes after a link change.
+    func linkEndpointProjection(ofKind kind: SidecarKind) async throws -> LinkEndpointProjection {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.linkEndpointProjection(ofKind: kind)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Fused wholesale projection for `ContactsRepository.reload()` and its
+    /// full sidecar refresh fallback. `allKeys()` runs once; contact envelopes
+    /// feed timestamps and link envelopes feed BOTH link-derived values.
+    func contactReloadProjection() throws -> ContactReloadProjection {
+        var timestamps: [String: ContactTimestamps] = [:]
+        var links = LinkEndpointProjection(endpoints: [], counts: [:])
+        var groupKeys: [SidecarKey] = []
+        var timestampsFailed = false
+        var linksFailed = false
+
+        try walkSidecarCorpus(
+            reading: [.contact, .link],
+            listing: [.contact, .link, .group]
+        ) { key, readResult in
+            switch key.kind {
+            case .contact:
+                guard !timestampsFailed else { return }
+                do {
+                    guard let envelope = try readResult.get() else { return }
+                    timestamps[key.id] = ContactTimestamps(from: envelope)
+                } catch {
+                    // The old standalone timestamp walk threw and the repository
+                    // replaced ONLY that cache with empty. Record the same
+                    // per-projection failure while continuing the fused link walk.
+                    timestampsFailed = true
+                    timestamps = [:]
+                }
+            case .link:
+                guard !linksFailed else { return }
+                do {
+                    guard let envelope = try readResult.get(),
+                          let link = Link(from: envelope),
+                          link.deletedAt == nil else { return }
+                    Self.accumulate(link, ofKind: .contact, into: &links)
+                } catch {
+                    // Both old link walks failed independently on this stable
+                    // read error; discard both derived values but keep scanning
+                    // contacts so a link failure cannot erase valid timestamps.
+                    linksFailed = true
+                    links = LinkEndpointProjection(endpoints: [], counts: [:])
+                }
+            case .group:
+                groupKeys.append(key)
+            default:
+                return
+            }
+        }
+
+        return ContactReloadProjection(
+            timestamps: timestampsFailed ? nil : timestamps,
+            links: linksFailed ? nil : links,
+            groupKeys: groupKeys
+        )
+    }
+
+    /// Async overload that keeps the single fused corpus walk off the caller's
+    /// actor and the main thread.
+    func contactReloadProjection() async throws -> ContactReloadProjection {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.contactReloadProjection()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func accumulate(
+        _ link: Link,
+        ofKind kind: SidecarKind,
+        into projection: inout LinkEndpointProjection
+    ) {
+        if link.endpointA.kind == kind {
+            projection.endpoints.insert(link.endpointA)
+            projection.counts[link.endpointA, default: 0] += 1
+        }
+        if link.endpointB.kind == kind {
+            projection.endpoints.insert(link.endpointB)
+            projection.counts[link.endpointB, default: 0] += 1
         }
     }
 
@@ -818,23 +1165,45 @@ public final class GuessWhoSync: @unchecked Sendable {
         return ContactTimestamps(from: envelope)
     }
 
+    /// Delta form used by `ContactsRepository` after a scoped file-watcher
+    /// delivery. It reads only the named contact envelopes and hops the
+    /// coordinated I/O off the caller's actor. Missing/deleted envelopes are
+    /// represented by all-nil timestamps so the caller can clear stale cache
+    /// values for that key.
+    func contactTimestamps(at keys: Set<SidecarKey>) async throws -> [String: ContactTimestamps] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    var result: [String: ContactTimestamps] = [:]
+                    for key in keys where key.kind == .contact {
+                        result[key.id] = try self.contactTimestamps(at: key)
+                    }
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Bulk-reads the timestamps for EVERY contact sidecar, keyed by `key.id`
     /// (the lowercased GuessWho UUID). Reads only the `.contact` keys; an
     /// envelope that fails to read is skipped (no entry). O(N contacts).
     public func allContactTimestamps() throws -> [String: ContactTimestamps] {
         var result: [String: ContactTimestamps] = [:]
-        for key in try sidecars.allKeys() where key.kind == .contact {
-            guard let envelope = try sidecars.read(key) else { continue }
+        try walkSidecarCorpus(kinds: [.contact]) { key, readResult in
+            guard let envelope = try readResult.get() else { return }
             result[key.id] = ContactTimestamps(from: envelope)
         }
         return result
     }
 
     /// Async overload of `allContactTimestamps()` that hops the scan to a
-    /// background queue: the read walks EVERY contact sidecar (a coordinated
-    /// read + decode per file), so it scales with total contact count and must
-    /// not block the caller's actor / cooperative pool. Same continuation-hop
-    /// pattern (and `self` capture rationale) as `links(at:)`.
+    /// background queue: the read walks EVERY contact sidecar (one corpus claim
+    /// for filesystem storage, then a serial decode), so it scales with total
+    /// contact count and must not block the caller's actor / cooperative pool.
+    /// Same continuation-hop pattern (and `self` capture rationale) as
+    /// `links(at:)`.
     public func allContactTimestamps() async throws -> [String: ContactTimestamps] {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -849,6 +1218,20 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     public func reconcileSidecars() throws -> SidecarReconcileReport {
+        try reconcileSidecars(candidateKeys: nil)
+    }
+
+    /// Reconcile unresolved versions only for `keys`. This is the watcher
+    /// delta/metadata-flag path: each named key is still checked by the
+    /// store's normal per-file conflict probe, while every key outside the
+    /// proven scope avoids an `NSFileVersion` lookup entirely.
+    public func reconcileSidecars(keys: Set<SidecarKey>) throws -> SidecarReconcileReport {
+        try reconcileSidecars(candidateKeys: keys)
+    }
+
+    private func reconcileSidecars(
+        candidateKeys: Set<SidecarKey>?
+    ) throws -> SidecarReconcileReport {
         // A third-party SidecarStoreProtocol conformer with no concept of
         // multi-version conflicts has nothing to reconcile.
         guard let conflictStore = sidecars as? SidecarConflictReconciling else {
@@ -861,7 +1244,20 @@ public final class GuessWhoSync: @unchecked Sendable {
         // (resolver invocation through the store's merged-write). Otherwise a
         // concurrent setField on the same key would slip a write between the
         // store's read-versions and its merged-write and be silently clobbered.
-        for key in try conflictStore.keysWithUnresolvedConflicts() {
+        let keys: [SidecarKey]
+        if let candidateKeys {
+            // Stable ordering keeps report output deterministic even though
+            // metadata-query and coalesced watcher scopes are sets.
+            keys = candidateKeys.sorted {
+                ($0.kind.rawValue, $0.id) < ($1.kind.rawValue, $1.id)
+            }
+        } else {
+            // Unknown scope deliberately retains the existing corpus-wide
+            // probe and all of its fallback behavior.
+            keys = try conflictStore.keysWithUnresolvedConflicts()
+        }
+
+        for key in keys {
             var reasons: [String] = []
             let outcome = try sidecarLocks.withLock(forKey: key) { () throws -> SidecarReconcileReport.FileOutcome? in
                 try conflictStore.reconcileConflict(at: key) { currentBytes, conflictBytes in
@@ -921,6 +1317,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                 }
             }
             if let outcome {
+                // `SidecarConflictReconciling` performs its merged write inside
+                // the store, outside `KeyLockedContext.write`. It is the sole
+                // envelope-write carve-out, so advance corpus generations here
+                // before the reconciled result can be observed by a next read.
+                invalidateCorpusCaches(ifAffectedBy: key)
                 stamped.append(
                     SidecarReconcileReport.FileOutcome(
                         key: outcome.key,
@@ -948,6 +1349,25 @@ public final class GuessWhoSync: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result: SidecarReconcileReport = try self.reconcileSidecars()
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Async scoped overload used by `SidecarFileWatcher`. It keeps the same
+    /// background hop as the full reconcile while preserving the exact merge
+    /// and reporting path of the synchronous implementation.
+    @discardableResult
+    public func reconcileSidecars(
+        keys: Set<SidecarKey>
+    ) async throws -> SidecarReconcileReport {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: SidecarReconcileReport = try self.reconcileSidecars(keys: keys)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)

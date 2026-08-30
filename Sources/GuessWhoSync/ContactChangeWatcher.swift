@@ -122,7 +122,24 @@ public final class ContactChangeWatcher: NSObject {
     /// Overlap handling: if a notification arrives mid-run, `changesPending` is
     /// set and drained by a single extra pass after the current one finishes, so
     /// a write whose notification lands during the apply is never stranded.
+    ///
+    /// Before anything else it invalidates the store's `fetchAll()` coalescing
+    /// (see `ContactStoreProtocol.invalidateInFlightFetchAll`) so a change-driven
+    /// full reload starts a fresh underlying fetch and observes post-change
+    /// contacts rather than joining a flight that began before the change.
     public func processChanges() async {
+        // A store change means any full unified fetch that BEGAN before it is
+        // stale for a recovery reload. Invalidate the store's `fetchAll()`
+        // coalescing FIRST — before the guard, and before any notification is
+        // posted below — so the change-driven full-reload recovery starts a fresh
+        // underlying fetch instead of joining the pre-change flight. Routing the
+        // signal through the watcher (rather than a second adapter-side
+        // `.CNContactStoreDidChange` observer) gives a deterministic
+        // invalidate-before-post ordering that the subscriber's reload cannot
+        // race. Every notification invalidates, including one that only sets
+        // `changesPending` below — each represents a real store change.
+        await contacts.invalidateInFlightFetchAll()
+
         guard !isProcessing else {
             // A run is in flight. Mark that another pass is needed rather than
             // dropping this notification — the in-flight run advances the cursor,
