@@ -54,12 +54,19 @@ public struct SidecarChangeSet: Sendable, Equatable {
     /// only identifiable to its containing kind directory; it is not global
     /// full scope as long as `changedKinds` is non-empty.
     public init(changedKeys: Set<SidecarKey>?, changedKinds: Set<SidecarKind>) {
-        let allKinds = changedKinds.union(changedKeys?.map(\.kind) ?? [])
+        let keyKinds = Set(changedKeys?.map(\.kind) ?? [])
+        let allKinds = changedKinds.union(keyKinds)
         if allKinds.isEmpty {
             self.changedKeys = nil
             self.changedKinds = nil
         } else {
-            self.changedKeys = changedKeys.flatMap { $0.isEmpty ? nil : $0 }
+            // Exact keys are safe only when they account for every declared
+            // kind. A future caller that supplies a broader kind set must
+            // degrade to coarse scope rather than let an accepted repository
+            // find no matching key and silently no-op.
+            self.changedKeys = keyKinds == allKinds
+                ? changedKeys.flatMap { $0.isEmpty ? nil : $0 }
+                : nil
             self.changedKinds = allKinds
         }
     }

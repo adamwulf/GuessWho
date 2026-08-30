@@ -297,6 +297,16 @@ struct SidecarFileWatcherTests {
         #expect(unknown.changedKeys == nil)
         #expect(unknown.changedKinds == nil)
         #expect(unknown.requiresFullRefresh)
+
+        // A broader declared kind set cannot retain keys that account for only
+        // part of the delivery; fail closed to coarse scope for both kinds.
+        let mismatched = SidecarChangeSet(
+            changedKeys: [contactKey],
+            changedKinds: [.contact, .event]
+        )
+        #expect(mismatched.changedKeys == nil)
+        #expect(mismatched.changedKinds == [.contact, .event])
+        #expect(!mismatched.requiresFullRefresh)
     }
 
     @Test
