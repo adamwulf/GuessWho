@@ -82,9 +82,10 @@ public enum GuideAddressMatcher {
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )
+        let placesByGuide = orderedPlacesByGuide(places)
         var result: [String: [Match]] = [:]
         for needle in needles {
-            let needleMatches = matches(guides: guides, places: places) { place in
+            let needleMatches = matches(guides: guides, placesByGuide: placesByGuide) { place in
                 EventLocationMatcher.matches(location: place.address, anyOf: [needle])
             }
             if !needleMatches.isEmpty {
@@ -119,6 +120,17 @@ public enum GuideAddressMatcher {
         places: [MapsPlace],
         isMatch: (MapsPlace) -> Bool
     ) -> [Match] {
+        matches(
+            guides: guides,
+            placesByGuide: orderedPlacesByGuide(places),
+            isMatch: isMatch
+        )
+    }
+
+    /// Bucket places once in canonical guide-entry order. The per-address
+    /// matcher reuses this corpus for every street line so a multi-address
+    /// contact does not repeat the needle-independent grouping and sorting.
+    private static func orderedPlacesByGuide(_ places: [MapsPlace]) -> [UUID: [MapsPlace]] {
         var placesByGuide: [UUID: [MapsPlace]] = [:]
         for place in places {
             placesByGuide[place.guideID, default: []].append(place)
@@ -129,6 +141,14 @@ public enum GuideAddressMatcher {
                 return lhs.id.uuidString < rhs.id.uuidString
             }
         }
+        return placesByGuide
+    }
+
+    private static func matches(
+        guides: [MapsGuide],
+        placesByGuide: [UUID: [MapsPlace]],
+        isMatch: (MapsPlace) -> Bool
+    ) -> [Match] {
         var result: [Match] = []
         for guide in guides {
             guard let hit = placesByGuide[guide.id]?.first(where: isMatch) else { continue }

@@ -59,13 +59,26 @@ struct GuideAddressMatcherTests {
         ]
 
         let matchesByStreet = GuideAddressMatcher.guides(
-            containingEachOf: ["1 Infinite Loop", "500 Terry A Francois Blvd"],
+            containingEachOf: ["1 Infinite Loop", "500 Terry A Francois Blvd", "No Such Street"],
             guides: [homeGuide, workGuide],
             places: places
         )
 
         #expect(matchesByStreet["1 Infinite Loop"]?.map(\.guide.id) == [homeGuide.id])
         #expect(matchesByStreet["500 Terry A Francois Blvd"]?.map(\.guide.id) == [workGuide.id])
+        #expect(matchesByStreet["No Such Street"] == nil)
+    }
+
+    @Test
+    func perAddressMatchesOmitEmptyStreetLines() {
+        let berlin = guide("Berlin")
+        let places = [place(guide: berlin, address: "1 Infinite Loop")]
+
+        let matchesByStreet = GuideAddressMatcher.guides(
+            containingEachOf: ["", "   "], guides: [berlin], places: places
+        )
+
+        #expect(matchesByStreet.isEmpty)
     }
 
     @Test
