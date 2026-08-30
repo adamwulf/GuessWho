@@ -460,7 +460,8 @@ struct MCPProductionFixture {
         let sidecars = FileSystemSidecarStore(
             root: root,
             ubiquity: ProductionUbiquityProvider(),
-            blobCrypto: InMemoryBlobCrypto())
+            blobCrypto: InMemoryBlobCrypto(),
+            coordinatesUbiquitousAccess: false)
         let sync = GuessWhoSync(
             contacts: store,
             events: InMemoryEventStore(),

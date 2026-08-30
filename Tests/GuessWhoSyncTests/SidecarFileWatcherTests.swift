@@ -261,7 +261,7 @@ struct SidecarFileWatcherTests {
             SidecarKey(kind: .contact, id: "clear-b"),
         ]
         let fake = FakeUbiquityProvider()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         for key in keys {
             try seedEnvelopeFile(for: key, in: root)
         }
@@ -341,7 +341,7 @@ struct SidecarFileWatcherTests {
         let unchanged = SidecarKey(kind: .contact, id: "unchanged")
         let changed = SidecarKey(kind: .contact, id: "changed")
         let fake = FakeUbiquityProvider()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         for key in [unchanged, changed] {
             try seedEnvelopeFile(for: key, in: root)
         }
@@ -366,7 +366,7 @@ struct SidecarFileWatcherTests {
             SidecarKey(kind: .event, id: "fallback-b"),
         ]
         let fake = FakeUbiquityProvider()
-        let store = FileSystemSidecarStore(root: root, ubiquity: fake)
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
         for key in keys {
             try seedEnvelopeFile(for: key, in: root)
         }

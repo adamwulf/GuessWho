@@ -188,7 +188,7 @@ struct SyncServiceTests {
         let engine = GuessWhoSync(
             contacts: StubContactStore(),
             events: StubEventStore(),
-            sidecars: FileSystemSidecarStore(root: root),
+            sidecars: FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false),
             deviceID: "planter"
         )
         try engine.addField(
@@ -200,7 +200,7 @@ struct SyncServiceTests {
     }
 
     private func eventKeys(root: URL) throws -> [SidecarKey] {
-        try FileSystemSidecarStore(root: root).allKeys().filter { $0.kind == .event }
+        try FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false).allKeys().filter { $0.kind == .event }
     }
 
     @Test
@@ -361,7 +361,7 @@ struct SyncServiceTests {
             location: nil
         )
         let envelope = try #require(
-            try FileSystemSidecarStore(root: root)
+            try FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
                 .read(SidecarKey(kind: .event, id: uuid.uuidString))
         )
         #expect(!envelope.fields.isEmpty)

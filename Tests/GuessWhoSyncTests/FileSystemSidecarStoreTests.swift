@@ -66,7 +66,7 @@ struct FileSystemSidecarStoreTests {
     func writeThenReadReturnsSameEnvelope() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "abc")
         let env = envelope(id: "abc", fields: [
             "nickname": SidecarCell(value: .string("Bear"), modifiedAt: when, modifiedBy: "device-A")
@@ -80,7 +80,7 @@ struct FileSystemSidecarStoreTests {
     func readOfMissingKeyReturnsNil() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         #expect(try store.read(SidecarKey(kind: .contact, id: "missing")) == nil)
     }
 
@@ -88,7 +88,7 @@ struct FileSystemSidecarStoreTests {
     func deleteRemovesFile() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "abc")
         try store.write(envelope(id: "abc"), at: key)
         try store.delete(key)
@@ -99,7 +99,7 @@ struct FileSystemSidecarStoreTests {
     func deleteOfNonexistentKeyIsNoOp() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         try store.delete(SidecarKey(kind: .contact, id: "never-written"))
     }
 
@@ -107,7 +107,7 @@ struct FileSystemSidecarStoreTests {
     func allKeysReturnsEveryWrittenKey() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         let a = SidecarKey(kind: .contact, id: "a")
         let b = SidecarKey(kind: .contact, id: "b")
         let c = SidecarKey(kind: .event, id: "evt")
@@ -133,7 +133,7 @@ struct FileSystemSidecarStoreTests {
     func eventUUIDRoundTrips() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         let eventUUID = "550e8400-e29b-41d4-a716-44665544aaaa"
         let key = SidecarKey(kind: .event, id: eventUUID)
         let env = envelope(id: eventUUID, fields: [
@@ -156,7 +156,7 @@ struct FileSystemSidecarStoreTests {
     func legacyPercentEncodedEventFilenameRemainsReadableViaListKeys() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         let legacyID = "https://example.com/cal/123"
         // Plant a legacy-formatted file (percent-encoded basename) directly,
         // simulating a sidecar that was written before the lowercased-UUID
@@ -194,7 +194,7 @@ struct FileSystemSidecarStoreTests {
     func legacyPercentEncodedEventFilenameWithoutSlashesRoundTrips() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         // Use a legacy id that contains characters needing percent-encoding
         // but no path separators — e.g. uppercase + colon. This exercises the
         // listKeys decode path while keeping the filename creatable.
@@ -222,7 +222,7 @@ struct FileSystemSidecarStoreTests {
     func reconcileConflictsWithNoConflictsReturnsEmpty() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         try store.write(envelope(id: "abc"), at: SidecarKey(kind: .contact, id: "abc"))
 
         let outcomes = try store.reconcileAllConflicts { _, _, _ in
@@ -251,7 +251,7 @@ struct FileSystemSidecarStoreTests {
     func listKeysIncludesContactPlaceholderStubs() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let uuid = "550e8400-e29b-41d4-a716-446655440000"
         try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
@@ -264,7 +264,7 @@ struct FileSystemSidecarStoreTests {
     func listKeysIncludesEventPlaceholderStubs() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         // Use an externalID with no characters that need percent-encoding
         // (so the basename and id match 1:1) and verify the event surfaces
@@ -280,7 +280,7 @@ struct FileSystemSidecarStoreTests {
     func listKeysDeduplicatesPlaceholderAndRealFile() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let key = SidecarKey(kind: .contact, id: "abc")
         try store.write(envelope(id: "abc"), at: key)
@@ -302,6 +302,7 @@ struct FileSystemSidecarStoreTests {
         var handlerCalled = 0
         let store = FileSystemSidecarStore(
             root: root,
+            coordinatesUbiquitousAccess: false,
             busyHandler: { _, _, _ in
                 handlerCalled += 1
                 return .fail
@@ -325,6 +326,7 @@ struct FileSystemSidecarStoreTests {
         var receivedElapsed: TimeInterval = -1
         let store = FileSystemSidecarStore(
             root: root,
+            coordinatesUbiquitousAccess: false,
             busyHandler: { _, attempt, elapsed in
                 receivedAttempt = attempt
                 receivedElapsed = elapsed
@@ -350,6 +352,7 @@ struct FileSystemSidecarStoreTests {
         var receivedAttempts: [Int] = []
         let store = FileSystemSidecarStore(
             root: root,
+            coordinatesUbiquitousAccess: false,
             busyHandler: { _, attempt, _ in
                 receivedAttempts.append(attempt)
                 return decisions.removeFirst()
@@ -374,6 +377,7 @@ struct FileSystemSidecarStoreTests {
         var seenAttempts: [Int] = []
         let store = FileSystemSidecarStore(
             root: root,
+            coordinatesUbiquitousAccess: false,
             busyHandler: { key, attempt, elapsed in
                 seenAttempts.append(attempt)
                 // Delegate to default but with negligible delay to keep
@@ -414,6 +418,7 @@ struct FileSystemSidecarStoreTests {
         // surfaces as `.timedOut(liveKey)` instead of a test hang.
         let store = FileSystemSidecarStore(
             root: root,
+            coordinatesUbiquitousAccess: false,
             busyHandler: { key, _, _ in key == stuckKey ? .retry : .fail },
             perAttemptTimeout: 0.05
         )
@@ -457,7 +462,7 @@ struct FileSystemSidecarStoreTests {
     func downloadStatusReportsDownloadedForMaterializedFile() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let key = SidecarKey(kind: .contact, id: "abc")
         try store.write(envelope(id: "abc"), at: key)
@@ -468,7 +473,7 @@ struct FileSystemSidecarStoreTests {
     func downloadStatusReportsNotFoundForMissingFile() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         #expect(store.downloadStatus(SidecarKey(kind: .contact, id: "absent")) == .notFound)
     }
 
@@ -476,7 +481,7 @@ struct FileSystemSidecarStoreTests {
     func downloadStatusReportsNotStartedForPlaceholder() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let uuid = "550e8400-e29b-41d4-a716-446655440000"
         try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
@@ -494,7 +499,7 @@ struct FileSystemSidecarStoreTests {
         // pointed at a non-iCloud root.
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
         let key = SidecarKey(kind: .contact, id: "needs-download")
         #expect(throws: (any Error).self) {
             try store.requestDownload(key)
@@ -509,7 +514,7 @@ struct FileSystemSidecarStoreTests {
     func readOfPlaceholderThrowsNotYetDownloaded() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let uuid = "550e8400-e29b-41d4-a716-446655440000"
         try plantPlaceholder(in: root, kindDir: "contacts", basename: uuid)
@@ -520,13 +525,15 @@ struct FileSystemSidecarStoreTests {
         }
     }
 
-    // Regression: NSFileCoordinator-wrapped read/write of a normal .json
-    // round-trips identically to the pre-coordinator behavior.
+    // Regression: read/write/delete of a normal .json round-trips on a
+    // local-classified root (coordination skipped). The NSFileCoordinator-
+    // wrapped round-trip is proven separately by the injected-coordinator
+    // tests below (e.g. `iCloudClassificationCoordinatesEvenOnLocalTempRootWhoseProbeIsFalse`).
     @Test
     func coordinatedReadWriteOfRegularFileRoundTrips() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let key = SidecarKey(kind: .contact, id: "round-trip-uuid")
         let env = envelope(id: "round-trip-uuid", fields: [
@@ -549,7 +556,7 @@ struct FileSystemSidecarStoreTests {
     func downloadStatusReportsNotStartedForEventPlaceholder() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let basename = "evt-only"
         try plantPlaceholder(in: root, kindDir: "events", basename: basename)
@@ -564,7 +571,7 @@ struct FileSystemSidecarStoreTests {
     func bulkWalkMatchesOneByOneReadsExactly() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let store = FileSystemSidecarStore(root: root)
+        let store = FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
 
         let liveKey = SidecarKey(kind: .contact, id: "bulk-live")
         let deletedKey = SidecarKey(kind: .contact, id: "bulk-soft-deleted")
@@ -873,6 +880,7 @@ struct FileSystemSidecarStoreTests {
         var elapsedSeen: [TimeInterval] = []
         let store = FileSystemSidecarStore(
             root: root,
+            coordinatesUbiquitousAccess: false,
             busyHandler: { _, attempt, elapsed in
                 attemptsSeen.append(attempt)
                 elapsedSeen.append(elapsed)
