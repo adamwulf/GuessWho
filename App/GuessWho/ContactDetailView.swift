@@ -25,6 +25,25 @@ final class ContactViewedStampScheduler {
             await operation()
         }
     }
+
+    /// Arm the once-per-open viewed stamp for the winning `resolved` identity if
+    /// present, else the nav `fallback`. UNCONDITIONAL by design: the initial
+    /// load may have been SUPERSEDED by a newer load (its own publish rejected
+    /// by the newest-wins gate), so `resolved` (the loaded contact's id) can
+    /// still be nil when the stamp is armed — yet the open must always be
+    /// recorded exactly once. `stampViewed` resolves-or-mints whichever id it
+    /// receives and the nav `fallback` is reconcile-stable if this stamp
+    /// performs the first-write mint, so the fallback is safe. Arming still
+    /// routes through `schedule`, keeping the once-only + outlives-cancellation
+    /// guarantees.
+    func armViewedStamp(
+        resolved: ContactID?,
+        fallback: ContactID,
+        _ stamp: @escaping @MainActor @Sendable (ContactID) async -> Void
+    ) {
+        let stampID = resolved ?? fallback
+        schedule { await stamp(stampID) }
+    }
 }
 
 /// Monotonic newest-wins gate shared by the full contact load and the targeted
@@ -790,18 +809,20 @@ struct ContactDetailView: View {
             await beginInlineEdit()
         }
         // Stamp lastViewed ONCE per open, but never await it on the visible
-        // load's critical path. Capture the successfully LOADED identity now:
-        // it carries any identity adopted by a newer winning load, and its
-        // local-ID fallback remains reconcile-stable if this stamp performs the
-        // first-write mint. The scheduler is unstructured (so SwiftUI task
-        // cancellation cannot lose the real stamp) and once-only (so a
-        // reappearance cannot double-fire). Errors remain presentation-only.
-        if let stampID = loadedContactID {
-            let repository = repository
-            viewedStampScheduler.schedule {
-                await DetailLoadSignpost.measure("contact_stamp_viewed") {
-                    try? await repository.stampViewed(stampID)
-                }
+        // load's critical path. Arm the scheduler UNCONDITIONALLY: this
+        // `loadContact` may have been SUPERSEDED by a newer load, so its own
+        // publish was rejected and `loadedContactID` can still be nil here even
+        // though the open is real. Prefer the winning resolved identity
+        // (`loadedContactID`, carrying any adopted GuessWho id); fall back to
+        // the nav `id`, which `stampViewed` resolves-or-mints and which stays
+        // reconcile-stable if this stamp performs the first-write mint. The
+        // scheduler is unstructured (so SwiftUI task cancellation cannot lose
+        // the real stamp) and once-only (so a reappearance cannot double-fire).
+        // Errors remain presentation-only.
+        let repository = repository
+        viewedStampScheduler.armViewedStamp(resolved: loadedContactID, fallback: id) { stampID in
+            await DetailLoadSignpost.measure("contact_stamp_viewed") {
+                try? await repository.stampViewed(stampID)
             }
         }
     }
