@@ -121,6 +121,35 @@ struct ContactDetailLinkOptimizationTests {
         )
     }
 
+    @Test
+    func sustainedGenerationRacesReturnWithinBudgetWithoutCachingTheRacedSnapshot() throws {
+        let cache = LinkCorpusCache()
+        var racingWalks = 0
+
+        let racedResult = try cache.value {
+            racingWalks += 1
+            cache.invalidate()
+            return LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:])
+        }
+
+        #expect(racedResult == LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:]))
+        #expect(racingWalks == LinkCorpusCache.maxGenerationRaceRetries)
+
+        // The bounded return is caller-only: because every preceding walk
+        // raced an invalidation, the next read must walk once and may only then
+        // publish a cache entry for later callers.
+        var postRaceWalks = 0
+        _ = try cache.value {
+            postRaceWalks += 1
+            return LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:])
+        }
+        _ = try cache.value {
+            postRaceWalks += 1
+            return LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:])
+        }
+        #expect(postRaceWalks == 1)
+    }
+
     @Test @MainActor
     func localLinkAddAndRemoveInvalidateBeforeTheNextRead() async throws {
         let fixture = makeRepository()
