@@ -325,24 +325,31 @@ struct ContactDetailView: View {
             .sorted { $0.createdAt < $1.createdAt }
     }
 
-    var body: some View {
-        Group {
-            if let contact {
-                loadedContent(contact)
-            } else if detailLoadState == .unavailable {
-                ContentUnavailableView(
-                    "Contact Unavailable",
-                    systemImage: "person.crop.circle.badge.exclamationmark",
-                    description: Text("This contact could not be loaded.")
-                )
-            } else {
-                // Centered loading state — hoisted out of the List so it sits in
-                // the middle of the pane, not top-left as the first row.
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+    /// The pane-level state switch: the loaded card, the unavailable
+    /// placeholder, or the centered loading spinner. Hoisted out of `body` so
+    /// `var body` stays under the SwiftUI type-checker budget; the modifier
+    /// chain in `body` attaches to it exactly as it did to the inline `Group`.
+    @ViewBuilder
+    private var detailStateContent: some View {
+        if let contact {
+            loadedContent(contact)
+        } else if detailLoadState == .unavailable {
+            ContentUnavailableView(
+                "Contact Unavailable",
+                systemImage: "person.crop.circle.badge.exclamationmark",
+                description: Text("This contact could not be loaded.")
+            )
+        } else {
+            // Centered loading state — hoisted out of the List so it sits in
+            // the middle of the pane, not top-left as the first row.
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        // Width clamping is NOT applied to this Group: it would inset the List
+    }
+
+    var body: some View {
+        detailStateContent
+        // Width clamping is NOT applied to this view: it would inset the List
         // (and its scroll view) from the pane edges, leaving inert dead space
         // that doesn't scroll. Instead the List stays full-bleed and each row
         // clamps + centers its own content to `ContactDetailLayout.maxContentWidth`
@@ -2597,7 +2604,11 @@ struct ContactDetailView: View {
                 recordSources = sources.recordSources
             }
 
-            await (refreshedLinkedEvents, loadedHeaderPhoto)
+            // Both branches already run concurrently as `async let`s started
+            // above; awaiting them one after the other only suspends until each
+            // finishes, so the total wait stays the max of the two, not the sum.
+            await refreshedLinkedEvents
+            await loadedHeaderPhoto
             linkedEventCacheRevision &+= 1
             guard supplementalLoadGeneration.isCurrent(mySupplementalLoadID) else {
                 Self.loadLog.info("contact load finished", [
