@@ -708,6 +708,11 @@ struct ContactDetailView: View {
     /// (correct), and the FIRST write mints via the package's resolve-or-mint
     /// primitive.
     private func performInitialLoad() async {
+        // Overall detail-open region: resolve → sidecar stores → link walks →
+        // sources → recent events → groups → guides → viewed stamp. Sub-steps
+        // carry their own signpost regions inside `loadContact`.
+        let loadSignpostID = DetailLoadSignpost.begin("contact_detail_load")
+        defer { DetailLoadSignpost.end("contact_detail_load", loadSignpostID) }
         await loadContact()
         // Add-contact / LinkedIn-import entry: the record was just created;
         // open it already editing so the user lands in the form directly.
@@ -724,7 +729,9 @@ struct ContactDetailView: View {
         // when stamping the viewed timestamp"), so opening a never-touched
         // contact mints its GuessWho UUID. That is intended, not a leak of
         // the sidecar boundary. Fire-and-forget; never surface a stamp error.
-        await stampViewed()
+        await DetailLoadSignpost.measure("contact_stamp_viewed") {
+            await stampViewed()
+        }
     }
 
     private func beginInlineEdit() async {
@@ -824,7 +831,10 @@ struct ContactDetailView: View {
             headerPhoto = nil
         }
 
-        guard let image = await photoLoader.image(for: id, kind: .fullSize) else { return }
+        let fetched = await DetailLoadSignpost.measure("contact_header_photo") {
+            await photoLoader.image(for: id, kind: .fullSize)
+        }
+        guard let image = fetched else { return }
         guard self.contact?.contactID == id else { return }
         headerPhoto = image
     }
@@ -2266,6 +2276,9 @@ struct ContactDetailView: View {
         // the captured `id` keeps resolving even after a first-write reconcile
         // re-keys the contact's effective identity — no separately threaded
         // `localID` needed.
+        let resolveSignpostID = DetailLoadSignpost.begin(
+            "contact_resolve", preferFresh ? "fresh" : "cache"
+        )
         let loaded: Contact?
         if preferFresh, let fresh = try? await repository.editableContact(id: id) {
             // Post-save read: unifiedContact(withIdentifier:) is more consistent
@@ -2275,6 +2288,7 @@ struct ContactDetailView: View {
         } else {
             loaded = repository.contact(id: id)
         }
+        DetailLoadSignpost.end("contact_resolve", resolveSignpostID)
         if let loaded {
             // Gather the sidecar-backed state BEFORE publishing `contact`:
             // the store and link reads are async scans now, and publishing
@@ -2282,15 +2296,21 @@ struct ContactDetailView: View {
             // then pop them in a beat later. Collecting into locals and
             // assigning together restores the old single-paint appearance —
             // only the I/O moved off the main actor.
-            await rebuildSidecarStores(for: loaded)
+            await DetailLoadSignpost.measure("contact_sidecar_stores") {
+                await rebuildSidecarStores(for: loaded)
+            }
             // Event links keyed on the LOADED contact's ContactID (carries
             // the current guessWhoID; the nav `id` lacks it after a
             // first-write mint). Empty for an unreconciled contact.
             let linkID = loaded.contactID
-            let fetchedEventLinks = await repository.eventLinks(for: linkID)
+            let fetchedEventLinks = await DetailLoadSignpost.measure("contact_event_links") {
+                await repository.eventLinks(for: linkID)
+            }
             contact = loaded
             eventLinks = fetchedEventLinks
-            await reloadSources(for: loaded)
+            await DetailLoadSignpost.measure("contact_sources") {
+                await reloadSources(for: loaded)
+            }
             // The EventKit cache refresh stays on SyncService (an
             // event-surface concern). The event UUIDs derive from the links
             // just read (one disk scan, not a second `linkedEventUUIDs`
@@ -2299,10 +2319,18 @@ struct ContactDetailView: View {
             let eventUUIDs = fetchedEventLinks.compactMap {
                 repository.eventEndpointUUID(of: $0, for: linkID)
             }
-            await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
-            await reloadRecentEvents(for: loaded)
-            await reloadGroups(for: loaded)
-            await reloadAddressGuides(for: loaded)
+            await DetailLoadSignpost.measure("contact_refresh_linked_events") {
+                await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
+            }
+            await DetailLoadSignpost.measure("contact_recent_events") {
+                await reloadRecentEvents(for: loaded)
+            }
+            await DetailLoadSignpost.measure("contact_groups") {
+                await reloadGroups(for: loaded)
+            }
+            await DetailLoadSignpost.measure("contact_address_guides") {
+                await reloadAddressGuides(for: loaded)
+            }
         } else {
             contact = nil
             // Contact disappeared from the store (e.g. deleted via the edit

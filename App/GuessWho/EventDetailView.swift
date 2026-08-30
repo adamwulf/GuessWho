@@ -129,7 +129,9 @@ struct EventDetailView: View {
         // (including the initial nil → loaded transition). Empty/nil location
         // yields no rows.
         .task(id: event?.location) {
-            locationGuides = await service.guides(matchingLocation: event?.location)
+            locationGuides = await DetailLoadSignpost.measure("event_location_guides") {
+                await service.guides(matchingLocation: event?.location)
+            }
         }
         .toolbar {
             // Star sits BEFORE the existing Menu so the toolbar reads
@@ -743,6 +745,10 @@ struct EventDetailView: View {
     }
 
     private func reload() async {
+        // Overall detail-open region: adopt → cache refresh → envelope reads →
+        // link walk. Mirrors `ContactDetailView`'s "contact_detail_load".
+        let loadSignpostID = DetailLoadSignpost.begin("event_detail_load")
+        defer { DetailLoadSignpost.end("event_detail_load", loadSignpostID) }
         // Adopt-on-load: if the incoming UUID is the synthetic
         // `Event.stableID(forEventKitID:)` for an ephemeral EventKit row
         // (no sidecar exists at that key) AND we were handed an
@@ -752,6 +758,8 @@ struct EventDetailView: View {
         if service.event(uuid: resolvedUUID) == nil,
            let ekid = eventKitID
         {
+            let adoptSignpostID = DetailLoadSignpost.begin("event_adopt")
+            defer { DetailLoadSignpost.end("event_adopt", adoptSignpostID) }
             // Adoption spans awaits now. A reload arriving while another is
             // mid-adoption must BAIL, not fall through: reading against the
             // still-synthetic `resolvedUUID` below would render empty state.
@@ -770,11 +778,19 @@ struct EventDetailView: View {
                 }
             }
         }
-        await service.refreshEvent(uuid: resolvedUUID)
-        event = service.event(uuid: resolvedUUID)
-        links = await service.links(at: eventEndpoint)
+        await DetailLoadSignpost.measure("event_refresh") {
+            await service.refreshEvent(uuid: resolvedUUID)
+        }
+        event = DetailLoadSignpost.measureSync("event_read") {
+            service.event(uuid: resolvedUUID)
+        }
+        links = await DetailLoadSignpost.measure("event_links") {
+            await service.links(at: eventEndpoint)
+        }
+        let notesTagsSignpostID = DetailLoadSignpost.begin("event_notes_tags")
         notes = service.eventNotes(forEventUUID: resolvedUUID)
         tags = service.eventTags(forEventUUID: resolvedUUID)
+        DetailLoadSignpost.end("event_notes_tags", notesTagsSignpostID)
         // Attendee→contact and linked-contact→contact resolution happen on
         // demand in the rows via the package repository's O(1) indexes, so
         // there's no app-side uuid/email→Contact map to build or hold here.
