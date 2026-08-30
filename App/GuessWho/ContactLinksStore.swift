@@ -39,16 +39,27 @@ final class ContactLinksStore {
 
     /// Starts EMPTY — the link read walks every link sidecar on disk, so it
     /// is `async` and cannot run in `init`. The builder
-    /// (`ContactDetailView.rebuildSidecarStores`) awaits `reload()` right
-    /// after construction.
+    /// (`ContactDetailView.buildSidecarStores`) populates it right after
+    /// construction — normally via `seed(_:)` from the fused
+    /// `contactDetailLinks(for:)` read (no second corpus walk); `reload()`
+    /// (which does walk) runs after a write mutates a link.
     init(repository: ContactsRepository, id: ContactID) {
         self.repository = repository
         self.id = id
     }
 
-    func reload() async {
-        let raw = await repository.links(for: id)
+    /// Seed `links` from an already-fetched snapshot — e.g. the fused
+    /// `ContactsRepository.contactDetailLinks(for:)` read, which walks the
+    /// link corpus once and hands back the contact-link slice — WITHOUT a
+    /// second repository walk. Applies the SAME deterministic sort as
+    /// `reload()`, so a seeded store and a reloaded store order links
+    /// identically.
+    func seed(_ raw: [Link]) {
         links = raw.sorted { linkSortKey($0) < linkSortKey($1) }
+    }
+
+    func reload() async {
+        seed(await repository.links(for: id))
     }
 
     /// Re-derive `id` after a write that may have minted the GuessWho UUID.

@@ -2249,9 +2249,12 @@ struct ContactDetailView: View {
         let loaded = repository.contact(id: id)
         if let loaded {
             let loadedID = loaded.contactID
-            async let rebuiltStores = buildSidecarStores(for: loaded)
-            async let fetchedEventLinks = repository.eventLinks(for: loadedID)
-            let (stores, links) = await (rebuiltStores, fetchedEventLinks)
+            // One fused link read (contact + event links in a single corpus
+            // walk): seed the sidecar stores' links store from the contact
+            // links and publish the event links, without the two separate walks
+            // the old reread paid.
+            let fused = await repository.contactDetailLinks(for: loadedID)
+            let stores = buildSidecarStores(for: loaded, contactLinks: fused.contactLinks)
 
             // One main-actor publication: a first link may have minted and
             // re-keyed the contact, so the contact and every sidecar-bound view
@@ -2260,7 +2263,7 @@ struct ContactDetailView: View {
             notesStore = stores.notes
             fieldsStore = stores.fields
             linksStore = stores.links
-            eventLinks = links
+            eventLinks = fused.eventLinks
         } else {
             let links = await repository.eventLinks(for: id)
             contact = nil
@@ -2325,18 +2328,15 @@ struct ContactDetailView: View {
         DetailLoadSignpost.end("contact_resolve", resolveSignpostID)
         if let loaded {
             // Every branch below is independent after contact resolution. The
-            // event-link branch preserves its internal dependency chain:
-            // links -> event endpoint UUIDs -> EventKit cache refresh. All
-            // branches collect into locals and publish together only after the
-            // slowest read finishes, keeping the card a coherent single paint.
-            let linkID = loaded.contactID
+            // fused link branch reads the link corpus ONCE and preserves its
+            // internal chain: one snapshot -> seed the links store + derive the
+            // event endpoint UUIDs -> EventKit cache refresh. All branches
+            // collect into locals and publish together only after the slowest
+            // read finishes, keeping the card a coherent single paint.
             let groupLoadID = UUID()
             memberGroupsLoadID = groupLoadID
 
-            async let rebuiltStores = DetailLoadSignpost.measure("contact_sidecar_stores") {
-                await buildSidecarStores(for: loaded)
-            }
-            async let fetchedEventLinks = loadEventLinksAndRefreshEvents(for: linkID)
+            async let fusedLinks = loadLinkStoresAndEvents(for: loaded)
             async let fetchedSources = DetailLoadSignpost.measure("contact_sources") {
                 await fetchSources(for: loaded)
             }
@@ -2350,9 +2350,8 @@ struct ContactDetailView: View {
                 await fetchAddressGuides(for: loaded)
             }
 
-            let (stores, links, sources, events, groups, guides) = await (
-                rebuiltStores,
-                fetchedEventLinks,
+            let (linkResult, sources, events, groups, guides) = await (
+                fusedLinks,
                 fetchedSources,
                 fetchedRecentEvents,
                 fetchedGroups,
@@ -2361,10 +2360,10 @@ struct ContactDetailView: View {
 
             guard contactLoadID == myLoadID else { return }
             contact = loaded
-            notesStore = stores.notes
-            fieldsStore = stores.fields
-            linksStore = stores.links
-            eventLinks = links
+            notesStore = linkResult.stores.notes
+            fieldsStore = linkResult.stores.fields
+            linksStore = linkResult.stores.links
+            eventLinks = linkResult.eventLinks
             recentEvents = events
             if memberGroupsLoadID == groupLoadID {
                 memberGroups = groups
@@ -2421,41 +2420,69 @@ struct ContactDetailView: View {
 
     /// Build notes/fields/links stores keyed on the LOADED contact's ContactID
     /// — NOT the nav `id`, whose `guessWhoID` is still nil after a first-write
-    /// mint: `repository.notes(for:)` / `links(for:)` read the `guessWhoID`
-    /// directly off the passed ContactID. Rebuild when that identity changes — a
-    /// first-write/Case-A mint stamps a fresh UUID, and a Case-D reconcile picks
-    /// a winner UUID and deletes the loser's sidecar, so a store bound to the old
-    /// identity would read/write a dead file. Built for EVERY contact (even
-    /// unreconciled): reads return empty until a write reconciles + mints, so
+    /// mint: the stores read/write the `guessWhoID` directly off the passed
+    /// ContactID (`notes(for:)` on build; the links store on its later
+    /// reloads/writes). Rebuild when that identity changes — a first-write/Case-A
+    /// mint stamps a fresh UUID, and a Case-D reconcile picks a winner UUID and
+    /// deletes the loser's sidecar, so a store bound to the old identity would
+    /// read/write a dead file. Built for EVERY contact (even unreconciled): the
+    /// fused read returns empty link slices until a write reconciles + mints, so
     /// notes/links can be added to a never-touched contact.
-    private func buildSidecarStores(for loaded: Contact) async -> SidecarStoresSnapshot {
+    ///
+    /// The links store is SEEDED from `contactLinks` (the contact-link slice of
+    /// the caller's single fused `contactDetailLinks(for:)` read) rather than
+    /// walking the link corpus a second time, so this builder is fully
+    /// synchronous.
+    private func buildSidecarStores(
+        for loaded: Contact,
+        contactLinks: [ContactLink]
+    ) -> SidecarStoresSnapshot {
         let loadedID = loaded.contactID
         let notes = NotesStore(repository: repository, id: loadedID)
         let fields = FieldsStore(repository: repository, id: loadedID)
-        // The links store constructs EMPTY (its read walks every link sidecar,
-        // so it can't run in init) — await its background-hop reload before
-        // returning the unpublished snapshot.
+        // The links store constructs EMPTY (its own read walks every link
+        // sidecar) — seed it from the already-fetched fused snapshot instead of
+        // a second corpus walk. The store applies its own deterministic sort.
         let links = ContactLinksStore(repository: repository, id: loadedID)
-        await links.reload()
+        links.seed(contactLinks)
         return SidecarStoresSnapshot(notes: notes, fields: fields, links: links)
     }
 
-    /// Event links are fetched first because their far endpoints are the input
-    /// to the linked-event refresh. That ordering stays strict inside this one
-    /// branch while the complete branch overlaps every other contact read.
-    private func loadEventLinksAndRefreshEvents(for linkID: ContactID) async -> [ContactLink] {
-        let fetched = await DetailLoadSignpost.measure("contact_event_links") {
-            await repository.eventLinks(for: linkID)
+    /// Read this contact's links ONCE — `contactDetailLinks(for:)` walks the
+    /// link corpus a single time and splits it into contact links and event
+    /// links, replacing the two back-to-back walks (the links store's own reload
+    /// plus a separate `eventLinks(for:)`) that ran per open. From that one
+    /// snapshot it seeds the sidecar stores' links store (no second walk) and
+    /// derives the event endpoint UUIDs that feed the EventKit linked-event
+    /// refresh, then returns the built stores and the event links for the single
+    /// coherent publish in `loadContact`. The read/refresh chain stays strict
+    /// inside this one branch while the branch overlaps every other contact read.
+    ///
+    /// Keyed on `loaded.contactID` (the LOADED identity carrying the current
+    /// `guessWhoID`), so a first-write mint is read off the live UUID, not the
+    /// stale nav `id`.
+    private func loadLinkStoresAndEvents(
+        for loaded: Contact
+    ) async -> (stores: SidecarStoresSnapshot, eventLinks: [ContactLink]) {
+        let linkID = loaded.contactID
+        // ONE link-corpus walk for both link kinds.
+        let fused = await DetailLoadSignpost.measure("contact_event_links") {
+            await repository.contactDetailLinks(for: linkID)
         }
-        // Derive UUIDs from the links already read (no second corpus walk), and
-        // keep the EventKit cache work on SyncService as before.
-        let eventUUIDs = fetched.compactMap {
+        // Seed the links store from the already-read contact links — no second
+        // walk. The notes/fields stores read their own single envelopes.
+        let stores = DetailLoadSignpost.measureSync("contact_sidecar_stores") {
+            buildSidecarStores(for: loaded, contactLinks: fused.contactLinks)
+        }
+        // Derive UUIDs from the event links already read (no third corpus walk),
+        // and keep the EventKit cache work on SyncService as before.
+        let eventUUIDs = fused.eventLinks.compactMap {
             repository.eventEndpointUUID(of: $0, for: linkID)
         }
         await DetailLoadSignpost.measure("contact_refresh_linked_events") {
             await service.refreshLinkedEvents(eventUUIDs: eventUUIDs)
         }
-        return fetched
+        return (stores, fused.eventLinks)
     }
 
     /// Fetch up to 10 EventKit events matched to this contact — either the
