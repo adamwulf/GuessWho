@@ -66,6 +66,12 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// GuessWhoLogging notes.
     private static let lifecycleLog = GuessWhoLog.logger("app.lifecycle")
 
+    /// End-to-end launch cache timing. Lower-level adapters retain their own
+    /// fetch breadcrumbs; this channel records when each app-visible cache is
+    /// actually ready, including permission/migration/projection work around
+    /// the raw store fetch.
+    private static let startupLoadLog = GuessWhoLog.logger("app.startup-load")
+
     override init() {
         // Bootstrap file logging FIRST — before UserDefaults.register and before
         // SyncService() — so the logging backend is live before any logger in the
@@ -141,10 +147,36 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // the request methods are idempotent on iPhone where the gate
         // already asked.
         Task { @MainActor in
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let signpostID = StartupLoadSignpost.begin("startup_contacts_cache")
+            Self.startupLoadLog.info("startup cache load started", ["cache": "contacts"])
             await service.requestContactsAccessIfNeeded()
-            await contactsRepository.reload()
+            let outcome = await contactsRepository.reload()
+            let status: String
+            let itemCount: Int
+            switch outcome {
+            case .published(let count):
+                status = "ready"
+                itemCount = count
+            case .failed:
+                status = "failed"
+                itemCount = contactsRepository.contacts.count
+            case .superseded:
+                status = "superseded"
+                itemCount = contactsRepository.contacts.count
+            }
+            StartupLoadSignpost.end("startup_contacts_cache", signpostID, status)
+            Self.startupLoadLog.info("startup cache load finished", [
+                "cache": "contacts",
+                "status": status,
+                "items": "\(itemCount)",
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
         }
         Task { @MainActor in
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let signpostID = StartupLoadSignpost.begin("startup_events_cache")
+            Self.startupLoadLog.info("startup cache load started", ["cache": "events"])
             // Sidecar-only migration first — permission-free (it runs even
             // when access stays denied), with its sidecar walk off the main
             // actor. This explicit await starts it at launch; the HARD
@@ -154,7 +186,27 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             // cannot read pre-migration keys.
             await service.migrateEventsIfNeeded()
             await service.requestEventsAccessIfNeeded()
-            await eventsRepository.reload(trigger: "app-launch")
+            let outcome = await eventsRepository.reload(trigger: "app-launch")
+            let status: String
+            let itemCount: Int
+            switch outcome {
+            case .published(let count):
+                status = "ready"
+                itemCount = count
+            case .failed:
+                status = "failed"
+                itemCount = eventsRepository.events.count
+            case .superseded:
+                status = "superseded"
+                itemCount = eventsRepository.events.count
+            }
+            StartupLoadSignpost.end("startup_events_cache", signpostID, status)
+            Self.startupLoadLog.info("startup cache load finished", [
+                "cache": "events",
+                "status": status,
+                "items": "\(itemCount)",
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
 
             // Best-effort DL-2 warm-up. The repository's first visible window
             // is ready before this starts, and the low-priority task does not
@@ -162,7 +214,19 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             // per-launch interval here and for every contact lookup, so the
             // prepared 11-year index is also the first open's index.
             Task(priority: .background) { [service] in
-                await service.prepareRecentEventsIndex()
+                let startedAt = DispatchTime.now().uptimeNanoseconds
+                let signpostID = StartupLoadSignpost.begin("startup_event_attendee_cache")
+                Self.startupLoadLog.info(
+                    "startup cache load started", ["cache": "event-attendee-index"]
+                )
+                let result = await service.prepareRecentEventsIndex()
+                let status = result.rawValue
+                StartupLoadSignpost.end("startup_event_attendee_cache", signpostID, status)
+                Self.startupLoadLog.info("startup cache load finished", [
+                    "cache": "event-attendee-index",
+                    "status": status,
+                    "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+                ])
             }
         }
 

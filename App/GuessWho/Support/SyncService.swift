@@ -11,6 +11,24 @@ final class SyncService {
     /// (see GuessWhoLogging notes).
     private static let log = GuessWhoLog.logger("app.sync-service")
 
+    enum RecentEventsIndexPreparationResult: String {
+        case ready
+        case skipped
+        case failed
+    }
+
+    enum EventFetchResult {
+        case success([Event])
+        case failure(message: String)
+
+        var eventsOrEmpty: [Event] {
+            switch self {
+            case .success(let events): events
+            case .failure: []
+            }
+        }
+    }
+
     enum SidecarLocation: Equatable {
         case iCloud(URL)
         case localFallback(URL, reason: String)
@@ -180,16 +198,28 @@ final class SyncService {
     // rides the orchestrator's background-hop overload rather than blocking
     // the main actor.
     func fetchEventsRange(from start: Date, to end: Date) async -> [Event] {
-        guard let sync else { return [] }
+        await fetchEventsRangeResult(from: start, to: end).eventsOrEmpty
+    }
+
+    /// Outcome-preserving form used by `EventsRepository`, where an empty
+    /// successful window must remain distinguishable from a failed read. Other
+    /// presentation callers keep the robust array-only wrapper above.
+    func fetchEventsRangeResult(from start: Date, to end: Date) async -> EventFetchResult {
+        guard let sync else {
+            return .failure(message: "Event storage is unavailable.")
+        }
         // Hard ordering: the window read must never see pre-migration keys.
         // Memoized — free after the first completion.
         await migrateEventsIfNeeded()
         let includeEventKit = (eventsAuthorization == .authorized)
         do {
-            return try await sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
+            return .success(
+                try await sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
+            )
         } catch {
-            lastError = "fetchEvents failed: \(error.localizedDescription)"
-            return []
+            let message = "fetchEvents failed: \(error.localizedDescription)"
+            lastError = message
+            return .failure(message: message)
         }
     }
 
@@ -510,12 +540,20 @@ final class SyncService {
     /// sidecar-backed events too. The repository applies the user's selected
     /// sort order after this query returns.
     func allLinkedEvents() async -> [Event] {
-        guard let sync else { return [] }
+        await allLinkedEventsResult().eventsOrEmpty
+    }
+
+    /// Outcome-preserving linked-event read for repository reload timing.
+    func allLinkedEventsResult() async -> EventFetchResult {
+        guard let sync else {
+            return .failure(message: "Event storage is unavailable.")
+        }
         do {
-            return try await sync.allLinkedEvents()
+            return .success(try await sync.allLinkedEvents())
         } catch {
-            lastError = "linked events read failed: \(error.localizedDescription)"
-            return []
+            let message = "linked events read failed: \(error.localizedDescription)"
+            lastError = message
+            return .failure(message: message)
         }
     }
 
@@ -590,14 +628,17 @@ final class SyncService {
     /// any user-visible load wait for it. This is deliberately best-effort:
     /// denied access or unavailable sidecar wiring makes it a no-op, and a
     /// failed warm-up is only logged because the first real lookup can retry.
-    func prepareRecentEventsIndex() async {
-        guard eventsAuthorization == .authorized, let sync else { return }
+    @discardableResult
+    func prepareRecentEventsIndex() async -> RecentEventsIndexPreparationResult {
+        guard eventsAuthorization == .authorized, let sync else { return .skipped }
         do {
             try await sync.prepareRecentEventsIndex()
+            return .ready
         } catch {
             Self.log.warning("recent events index warm-up failed", [
                 "error": error.localizedDescription
             ])
+            return .failed
         }
     }
 

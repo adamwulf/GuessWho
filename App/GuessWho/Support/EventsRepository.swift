@@ -29,6 +29,17 @@ enum EventListFilter: CaseIterable, Sendable {
     }
 }
 
+enum EventsRepositoryReloadOutcome: Equatable, Sendable {
+    /// This invocation owns the authoritative list publication. A zero count is
+    /// a valid successful result, distinct from `.failed`.
+    case published(itemCount: Int)
+    /// The backing event read failed and the repository published its settled
+    /// empty fallback.
+    case failed(message: String)
+    /// A newer refresh intent replaced this invocation before publication.
+    case superseded
+}
+
 @MainActor
 @Observable
 final class EventsRepository: NSObject {
@@ -403,7 +414,8 @@ final class EventsRepository: NSObject {
     /// Full reload as a fresh authoritative refresh intent — the entry point
     /// every direct caller (launch, paging, and filter change) uses. It
     /// mints a new generation token so any older in-flight read is superseded.
-    func reload(trigger: String = "direct") async {
+    @discardableResult
+    func reload(trigger: String = "direct") async -> EventsRepositoryReloadOutcome {
         // A full read subsumes any pending scoped delta, so cancel and clear it.
         // The token bump below then supersedes any debounce task already past
         // its sleep (its pre-consume guard sees the newer generation). Only this
@@ -424,22 +436,24 @@ final class EventsRepository: NSObject {
         // here — the previous behavior — let that successor patch one key onto
         // the stale pre-reload base and silently drop the rest of the projection.
         inFlightChangeSet = (token, .fullRefresh)
-        await reload(token: token, trigger: trigger)
+        let outcome = await reload(token: token, trigger: trigger)
         // Release ownership only if it is still ours: a newer refresh that
         // superseded us mid-read installed its own entry and must keep it.
         if inFlightChangeSet?.token == token {
             inFlightChangeSet = nil
         }
+        return outcome
     }
 
     /// Token-scoped full reload. `token` is either freshly minted (a direct
     /// `reload()`) or handed down from a delta `refresh` that fell back here — in
     /// which case it deliberately reuses that token so the fallback does not
     /// supersede the refresh intent it belongs to.
-    private func reload(token: Int, trigger: String) async {
+    @discardableResult
+    private func reload(token: Int, trigger: String) async -> EventsRepositoryReloadOutcome {
         // A fallback reload may already be superseded before it even starts;
         // guard before touching `isLoading` or issuing a read.
-        guard token == refreshGeneration else { return }
+        guard token == refreshGeneration else { return .superseded }
         let requestedFilter = filter
         isLoading = true
         Self.reloadLog.info(
@@ -452,26 +466,27 @@ final class EventsRepository: NSObject {
                 "to": .stringConvertible(windowEnd.timeIntervalSince1970),
             ]
         )
-        let fetched: [Event]
+        let fetchResult: SyncService.EventFetchResult
         switch requestedFilter {
         case .linked:
-            fetched = await service.allLinkedEvents()
+            fetchResult = await service.allLinkedEventsResult()
         case .showAll, .hasAttendees, .physicalLocation:
-            fetched = await service.fetchEventsRange(from: windowStart, to: windowEnd)
+            fetchResult = await service.fetchEventsRangeResult(from: windowStart, to: windowEnd)
         }
+        let fetched = fetchResult.eventsOrEmpty
 
         if let readBarrierForTesting { await readBarrierForTesting() }
 
         // A newer refresh/reload superseded us, or the filter changed while this
         // read was in flight (that selection started its own reload). Early-out
         // before the extra link-count scan and before touching published state.
-        guard token == refreshGeneration, requestedFilter == filter else { return }
+        guard token == refreshGeneration, requestedFilter == filter else { return .superseded }
         // Refresh the per-event link counts before publishing so the snapshot the
         // list applies already sees them (one bulk scan, not a per-row read).
         let refreshedLinkCounts = await service.linkCountsByEndpointID(ofKind: .event)
         // Re-check after the second await: nothing may be published if a newer
         // request has since superseded this one.
-        guard token == refreshGeneration, requestedFilter == filter else { return }
+        guard token == refreshGeneration, requestedFilter == filter else { return .superseded }
         events = sortOrder.sorted(fetched)
         linkCountsByID = refreshedLinkCounts
         hasLoadedOnce = true
@@ -479,15 +494,27 @@ final class EventsRepository: NSObject {
         // post-load state. See ContactsRepository.reload() for the full
         // rationale.
         isLoading = false
+        let status: String
+        switch fetchResult {
+        case .success: status = "published"
+        case .failure: status = "failed"
+        }
         Self.reloadLog.info(
-            "events window reload published",
+            "events window reload finished",
             metadata: [
                 "trigger": .string(trigger),
                 "generation": .stringConvertible(token),
+                "status": .string(status),
                 "events": .stringConvertible(events.count),
             ]
         )
         notificationCenter.post(name: .eventsRepositoryDidReload, object: self)
+        switch fetchResult {
+        case .success:
+            return .published(itemCount: events.count)
+        case .failure(let message):
+            return .failed(message: message)
+        }
     }
 
     /// Extend the loaded window one month further back and reload — the

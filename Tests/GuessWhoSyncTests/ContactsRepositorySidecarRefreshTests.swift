@@ -482,7 +482,7 @@ struct ContactsRepositorySidecarRefreshTests {
         // order is the plain alphabetical [Amy, Zed]. Its Contacts fetch still
         // announces completion for cold-launch state restoration.
         await store.openGate()
-        await reloadTask.value
+        _ = await reloadTask.value
 
         // The debounced delta has NOT fired yet (300 ms > the few ms above), so
         // this observes the reload's own outcome: no projection, but exactly its
