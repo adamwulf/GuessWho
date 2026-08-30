@@ -1,8 +1,83 @@
 import Foundation
 import Logging
 
+/// One decoded view of the complete link corpus. Keeping the endpoint index
+/// beside the corpus-order array lets point reads stay O(1) without changing
+/// the ordering or filtering semantics of the former per-read walk.
+struct LinkCorpusSnapshot: Sendable, Equatable {
+    var allLinks: [Link]
+    var linksByEndpoint: [SidecarKey: [Link]]
+}
+
+/// Process-local, single-flight cache for the expensive link-sidecar corpus
+/// walk. A generation change while a walk is in flight discards that result and
+/// retries against the new generation, so neither the cache nor the initiating
+/// caller can observe a snapshot older than a completed invalidating write or
+/// watcher delivery.
+final class LinkCorpusCache: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var generation: UInt64 = 0
+    private var cached: (generation: UInt64, snapshot: LinkCorpusSnapshot)?
+    private var inFlightGeneration: UInt64?
+
+    func invalidate() {
+        condition.lock()
+        generation &+= 1
+        cached = nil
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func value(walkingCorpus walk: () throws -> LinkCorpusSnapshot) throws -> LinkCorpusSnapshot {
+        while true {
+            condition.lock()
+            let requestedGeneration = generation
+
+            if let cached, cached.generation == requestedGeneration {
+                condition.unlock()
+                return cached.snapshot
+            }
+
+            if inFlightGeneration != nil {
+                condition.wait()
+                condition.unlock()
+                continue
+            }
+
+            inFlightGeneration = requestedGeneration
+            condition.unlock()
+
+            let result: LinkCorpusSnapshot
+            do {
+                result = try walk()
+            } catch {
+                condition.lock()
+                inFlightGeneration = nil
+                condition.broadcast()
+                condition.unlock()
+                throw error
+            }
+
+            condition.lock()
+            let isCurrent = generation == requestedGeneration
+            if isCurrent {
+                cached = (requestedGeneration, result)
+            }
+            inFlightGeneration = nil
+            condition.broadcast()
+            condition.unlock()
+
+            if isCurrent {
+                return result
+            }
+            // A link mutation landed during the walk. Never return or publish
+            // that raced snapshot; loop and either join/build the new generation.
+        }
+    }
+}
+
 // Thread-safety is provided by `sidecarLocks` (per-sidecar serialization
-// for read-modify-write), `PlaceCorpusCache`'s condition lock, and by the fact
+// for read-modify-write), the corpus caches' condition locks, and by the fact
 // that `contacts` is now an actor.
 // Conformers passed in for `events` / `sidecars` are expected to handle
 // their own internal locking (the bundled FileSystemSidecarStore and
@@ -45,6 +120,7 @@ public final class GuessWhoSync: @unchecked Sendable {
     internal let deviceID: String
     internal let sidecarLocks = PerKeyLockTable<SidecarKey>()
     internal let placeCorpusCache = PlaceCorpusCache()
+    internal let linkCorpusCache = LinkCorpusCache()
 
     /// One launch-stable contact-detail Recent Events window. The attendee
     /// index is keyed by exact interval, so recomputing `Date()` per contact
@@ -90,12 +166,18 @@ public final class GuessWhoSync: @unchecked Sendable {
             queue: nil
         ) { [weak self] note in
             let changeSet = note.guessWhoSidecarChangeSet
-            if changeSet.requiresFullRefresh
-                || changeSet.changedKeys?.contains(where: {
-                    $0.kind == .place || $0.kind == .guide
-                }) == true
-            {
+            if changeSet.requiresFullRefresh {
                 self?.invalidatePlaceCorpus()
+                self?.invalidateLinkCorpus()
+                return
+            }
+            if changeSet.changedKeys?.contains(where: {
+                $0.kind == .place || $0.kind == .guide
+            }) == true {
+                self?.invalidatePlaceCorpus()
+            }
+            if changeSet.changedKeys?.contains(where: { $0.kind == .link }) == true {
+                self?.invalidateLinkCorpus()
             }
         }
     }
@@ -188,8 +270,20 @@ public final class GuessWhoSync: @unchecked Sendable {
             try body(KeyLockedContext(
                 key: key,
                 sidecars: sidecars,
-                didWrite: { [weak self] key in self?.invalidatePlaceCorpus(ifAffectedBy: key) }
+                didWrite: { [weak self] key in self?.invalidateCorpusCaches(ifAffectedBy: key) }
             ))
+        }
+    }
+
+    /// Advance the relevant corpus generation after every successful local
+    /// envelope write. This central choke point covers ordinary link writes,
+    /// undeletes, soft deletes, and Case-D endpoint rewrites without asking
+    /// callers to remember cache maintenance. Conflict reconciliation uses the
+    /// store's multi-version API and invalidates explicitly after its write.
+    private func invalidateCorpusCaches(ifAffectedBy key: SidecarKey) {
+        invalidatePlaceCorpus(ifAffectedBy: key)
+        if key.kind == .link {
+            invalidateLinkCorpus()
         }
     }
 
@@ -204,6 +298,10 @@ public final class GuessWhoSync: @unchecked Sendable {
 
     private func invalidatePlaceCorpus() {
         placeCorpusCache.invalidate()
+    }
+
+    private func invalidateLinkCorpus() {
+        linkCorpusCache.invalidate()
     }
 
     // MARK: - External contact-change watcher
@@ -777,25 +875,17 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     /// Returns every link whose endpointA or endpointB equals `key`.
-    /// Soft-deleted links are returned. O(N links).
+    /// Soft-deleted links are returned. The first read in a generation builds
+    /// the O(N links) endpoint index; later endpoint reads are O(1).
     public func links(at endpoint: SidecarKey) throws -> [Link] {
-        var result: [Link] = []
-        for key in try sidecars.allKeys() where key.kind == .link {
-            guard let envelope = try sidecars.read(key) else { continue }
-            guard let link = Link(from: envelope) else { continue }
-            if link.endpointA == endpoint || link.endpointB == endpoint {
-                result.append(link)
-            }
-        }
-        return result
+        try linkCorpusSnapshot().linksByEndpoint[endpoint] ?? []
     }
 
-    /// Async overload of `links(at:)` that hops the scan to a background
-    /// queue: the read walks EVERY link sidecar (a coordinated read + decode
-    /// per file), so it scales with total link count and must not block the
-    /// caller's actor / main thread. Same continuation-hop pattern (and
-    /// `self` capture rationale) as `recentEvents(matchingEmails:)` in the
-    /// Events extension. Sync callers keep the synchronous overload.
+    /// Async overload of `links(at:)` that hops a cache miss to a background
+    /// queue: the miss walks EVERY link sidecar (a coordinated read + decode
+    /// per file), so it must not block the caller's actor / main thread. Cache
+    /// hits keep the same hop for a stable async API. Same continuation pattern
+    /// as `recentEvents(matchingEmails:)` in the Events extension.
     public func links(at endpoint: SidecarKey) async throws -> [Link] {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -865,13 +955,31 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// set.
     func linkEndpointProjection(ofKind kind: SidecarKind) throws -> LinkEndpointProjection {
         var projection = LinkEndpointProjection(endpoints: [], counts: [:])
-        try walkSidecarCorpus(kinds: [.link]) { key, readResult in
-            guard let envelope = try readResult.get(),
-                  let link = Link(from: envelope),
-                  link.deletedAt == nil else { return }
+        for link in try linkCorpusSnapshot().allLinks where link.deletedAt == nil {
             Self.accumulate(link, ofKind: kind, into: &projection)
         }
         return projection
+    }
+
+    /// Decode the link corpus once and index each valid link under both of its
+    /// endpoints. Soft-deleted links stay in the snapshot because `links(at:)`
+    /// has always returned tombstones; its repository callers apply their own
+    /// live/far-kind filters. A self-link is indexed once, matching the former
+    /// `endpointA == endpoint || endpointB == endpoint` append behavior.
+    private func linkCorpusSnapshot() throws -> LinkCorpusSnapshot {
+        try linkCorpusCache.value { [self] in
+            var snapshot = LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:])
+            try walkSidecarCorpus(kinds: [.link]) { _, readResult in
+                guard let envelope = try readResult.get(),
+                      let link = Link(from: envelope) else { return }
+                snapshot.allLinks.append(link)
+                snapshot.linksByEndpoint[link.endpointA, default: []].append(link)
+                if link.endpointB != link.endpointA {
+                    snapshot.linksByEndpoint[link.endpointB, default: []].append(link)
+                }
+            }
+            return snapshot
+        }
     }
 
     /// Async overload used by scoped repository refreshes after a link change.
@@ -1174,6 +1282,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                 }
             }
             if let outcome {
+                // `SidecarConflictReconciling` performs its merged write inside
+                // the store, outside `KeyLockedContext.write`. It is the sole
+                // envelope-write carve-out, so advance corpus generations here
+                // before the reconciled result can be observed by a next read.
+                invalidateCorpusCaches(ifAffectedBy: key)
                 stamped.append(
                     SidecarReconcileReport.FileOutcome(
                         key: outcome.key,

@@ -1732,6 +1732,42 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    /// Both live link collections needed by one contact-detail open, derived
+    /// from one engine endpoint lookup. The engine lookup is backed by the
+    /// generation-gated link-corpus index, so the first call for a generation
+    /// performs one corpus walk and subsequent contact opens are O(1).
+    ///
+    /// Classification intentionally mirrors `links(for:)` and
+    /// `eventLinks(for:)`: tombstones are excluded, endpoint direction is
+    /// irrelevant, and the far endpoint kind alone chooses the destination
+    /// collection. An unreconciled contact has no durable link endpoint and
+    /// therefore returns two empty collections without minting identity.
+    public func contactDetailLinks(
+        for id: ContactID
+    ) async -> (contactLinks: [Link], eventLinks: [Link]) {
+        guard let sync, let guessWhoID = id.guessWhoID else { return ([], []) }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        do {
+            let allLinks = try await sync.links(at: endpoint)
+            var contactLinks: [Link] = []
+            var eventLinks: [Link] = []
+            for link in allLinks where link.deletedAt == nil {
+                switch Self.otherEndpoint(of: link, from: endpoint).kind {
+                case .contact:
+                    contactLinks.append(link)
+                case .event:
+                    eventLinks.append(link)
+                default:
+                    break
+                }
+            }
+            return (contactLinks, eventLinks)
+        } catch {
+            lastError = "contact-detail links read failed: \(error.localizedDescription)"
+            return ([], [])
+        }
+    }
+
     /// Live contact↔contact links on the contact identified by `id`. Excludes
     /// soft-deleted links and links whose FAR endpoint is not a contact (those
     /// are event links — see `eventLinks(for:)`). Returns `[]` when the contact
