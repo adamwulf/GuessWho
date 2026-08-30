@@ -99,10 +99,12 @@ final class LinkCorpusCache: @unchecked Sendable {
             // freshly walked corpus (only newer than `requestedGeneration`, so
             // never stale) — safe to return to whoever asked, but not safe to
             // publish for later callers because it is not tagged to the live
-            // generation. We never return an old cached value and never cache a
-            // mismatched-generation result, so the strict cached-hit invariant
-            // holds; a subsequent genuine local write bumps the generation and
-            // is reflected on the next call.
+            // generation. This is the same deliberate bounded-retry tradeoff
+            // as PlaceCorpusCache: it prevents invalidation churn from
+            // livelocking the caller while returning a fresh recent walk, not
+            // old cached data. We never cache the mismatched-generation result,
+            // so the next read rebuilds against the then-current generation and
+            // self-heals once the churn subsides.
             if walksPerformed >= Self.maxGenerationRaceRetries {
                 return result
             }
