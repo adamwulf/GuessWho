@@ -360,7 +360,7 @@ struct GuideSidecarTests {
     @Test func remoteGuideNotificationInvalidatesCachedCorpus() throws {
         let notificationCenter = NotificationCenter()
         let (sync, store) = makeCountingOrchestrator(notificationCenter: notificationCenter)
-        let guideID = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
+        _ = try sync.createGuide(from: sampleSnapshot, sourceURL: nil)
         #expect(try sync.allPlaces().count == 3)
         store.resetCounts()
 
@@ -368,9 +368,10 @@ struct GuideSidecarTests {
             name: .guessWhoSidecarsDidChange,
             object: nil,
             userInfo: [
-                GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [
-                    SidecarKey(kind: .guide, id: guideID.uuidString)
-                ])
+                // A legitimate remote edit can arrive as only the containing
+                // kind-directory node. It must still invalidate this cache.
+                GuessWhoSidecarsDidChangeKey.changeSet:
+                    SidecarChangeSet(changedKeys: nil, changedKinds: [.guide])
             ]
         )
 

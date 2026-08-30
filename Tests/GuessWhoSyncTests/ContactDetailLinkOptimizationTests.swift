@@ -207,8 +207,11 @@ struct ContactDetailLinkOptimizationTests {
             name: .guessWhoSidecarsDidChange,
             object: nil,
             userInfo: [
+                // Directory-only metadata remains a legitimate remote link
+                // delivery and must invalidate the cached link corpus.
                 GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(
-                    changedKeys: [SidecarKey(kind: .link, id: remoteLink.id.uuidString)]
+                    changedKeys: nil,
+                    changedKinds: [.link]
                 )
             ]
         )
