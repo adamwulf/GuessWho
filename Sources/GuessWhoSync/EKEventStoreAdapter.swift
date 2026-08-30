@@ -714,7 +714,7 @@ private final class WindowCacheClock: @unchecked Sendable {
     /// this; a broadcast here wakes waiters in every member cache.
     let condition = NSCondition()
     /// The single generation both caches gate on. MUST be read/written with
-    /// `condition` held (see `generation` / `bumpGenerationLocked`).
+    /// `condition` held (see `generation` / `invalidate`).
     private var _generation: UInt64 = 0
     /// One storage-clearing closure per registered member cache. Guarded by
     /// `condition`.
