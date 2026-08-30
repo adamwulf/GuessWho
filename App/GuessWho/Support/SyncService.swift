@@ -699,9 +699,11 @@ final class SyncService {
 
     /// Imported guides whose places' addresses contain any of `streetLines`
     /// (a contact's structured street lines) — the contact detail's guide rows.
-    /// Walks every guide + place sidecar via the background-hop overloads, so
-    /// it's safe to call from a view `.task`. Returns `[]` for an empty needle
-    /// set (a contact with no street address matches nothing).
+    /// Reads every guide + place via the background-hop overloads (`allGuides()`
+    /// walks the guide sidecars; `allPlaces()` serves the `PlaceCorpusCache`
+    /// snapshot when warm, re-walking only after a place/guide change), so it's
+    /// safe to call from a view `.task`. Returns `[]` for an empty needle set
+    /// (a contact with no street address matches nothing).
     func guides(containingAddresses streetLines: Set<String>) async -> [GuideAddressMatcher.Match] {
         let needles = Set(
             streetLines
@@ -718,7 +720,8 @@ final class SyncService {
 
     /// Imported guides whose places' street lines appear inside `location`
     /// (an event's free-text location) — the event detail's guide rows. Same
-    /// background-hop walk as `guides(containingAddresses:)`.
+    /// background-hop read as `guides(containingAddresses:)` (cached `allPlaces()`
+    /// when warm).
     func guides(matchingLocation location: String?) async -> [GuideAddressMatcher.Match] {
         guard let location,
               !location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }

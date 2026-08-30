@@ -1,5 +1,15 @@
 # Catalyst cold-start CPU baseline — first 30 s (Release, 2026-08-29)
 
+> **Status: historical baseline — superseded.** This is the pre-optimization
+> measurement. Its §6 "Ranked CPU optimization opportunities" was the plan; it
+> is now ~90% executed. Batch 1 landed and was re-measured in
+> [`catalyst-startup-cpu-after-batch1.md`](catalyst-startup-cpu-after-batch1.md)
+> and batch 2 in
+> [`catalyst-startup-cpu-after-batch2.md`](catalyst-startup-cpu-after-batch2.md)
+> (window CPU 19.2 s → 7.8 s → 3.3 s). Only the attendee-scan (#7) and MapKit
+> (#9) items remain un-measured/open. Read this only for the original baseline
+> numbers; treat the after-reports as the current state.
+
 Instruments/xctrace profile of the first 30 seconds of a cold launch of the
 Mac Catalyst **Release** build, recorded headless on the developer machine
 (`MacBook Pro`, macOS 26.5.2, xctrace 26.0/17C519). Investigation only — no

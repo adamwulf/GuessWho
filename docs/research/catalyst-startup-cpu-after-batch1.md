@@ -1,5 +1,15 @@
 # Catalyst cold-start CPU after batch 1 — first 30 s (Release, 2026-08-29)
 
+> **Status: superseded — batch 2 is done.** §5 ("Re-ranked remaining
+> opportunities (batch 2)") and §7 were the batch-2 plan; all five items were
+> then implemented, reviewed clean, and re-measured in
+> [`catalyst-startup-cpu-after-batch2.md`](catalyst-startup-cpu-after-batch2.md)
+> (window CPU 7.8 s → 3.3 s). Two code claims below drifted after batch 2: the
+> place-corpus cache invalidation is no longer unconditional — it is now scoped
+> to place/guide (and unknown-scope) deliveries (batch-2 item B2-4); and the
+> Contacts `fetchAll` is now single-flighted (B2-1). Read §5 as executed, not
+> planned; treat the after-batch2 report as the current state.
+
 Re-profile of the first 30 seconds of a cold Mac Catalyst **Release** launch,
 recorded headless with xctrace on the developer machine (macOS 26.5.2,
 xctrace 26.0/17C519), **after** the four batch-1 CPU optimizations landed.
