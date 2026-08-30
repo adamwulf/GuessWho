@@ -155,4 +155,43 @@ struct ContactLoadGenerationTests {
         #expect(gate.isCurrent(newerFullLoad))
         #expect(!gate.isCurrent(reread))
     }
+
+    /// Secondary contact-only sections have their own full-load generation.
+    /// Once the core card is visible, an event-link mutation may supersede the
+    /// core link snapshot without throwing away an already-running Recent
+    /// Events / Groups / Guides / Sources read for that same contact.
+    @Test
+    func targetedRereadDoesNotSupersedeSameContactSupplementalLoad() {
+        let coreGate = ContactLoadGeneration()
+        let supplementalGate = ContactLoadGeneration()
+        let publishedCore = PublishedLinks()
+        var publishedRecentEvents: [Int] = []
+
+        let fullCoreLoad = coreGate.begin()
+        let fullSupplementalLoad = supplementalGate.begin()
+
+        // The core contact + link snapshot paints immediately.
+        publish([1, 2], as: fullCoreLoad, gate: coreGate, into: publishedCore)
+        #expect(publishedCore.eventLinkIDs == [1, 2])
+
+        // A link mutation starts while slower secondary sections are still
+        // loading. It supersedes only the core snapshot.
+        let targetedReread = coreGate.begin()
+        publish([1, 2, 3], as: targetedReread, gate: coreGate, into: publishedCore)
+        #expect(publishedCore.eventLinkIDs == [1, 2, 3])
+
+        // The same full load's supplemental snapshot is guarded by the
+        // full-load-only gate, so the targeted reread cannot discard it.
+        if supplementalGate.isCurrent(fullSupplementalLoad) {
+            publishedRecentEvents = [10, 20]
+        }
+        #expect(publishedRecentEvents == [10, 20])
+
+        // A genuinely newer full load still supersedes both phases.
+        let newerCoreLoad = coreGate.begin()
+        let newerSupplementalLoad = supplementalGate.begin()
+        #expect(coreGate.isCurrent(newerCoreLoad))
+        #expect(supplementalGate.isCurrent(newerSupplementalLoad))
+        #expect(!supplementalGate.isCurrent(fullSupplementalLoad))
+    }
 }
