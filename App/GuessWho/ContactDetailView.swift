@@ -47,13 +47,15 @@ final class ContactViewedStampScheduler {
 }
 
 /// Monotonic newest-wins gate shared by the full contact load and the targeted
-/// link re-reads (`addEventLink`). Every load/reread mints a token via
-/// `begin()`, which supersedes any token still in flight; only the newest token
-/// may publish (`isCurrent`). This is what stops a slower OLDER full load from
-/// tearing the card back to a pre-edit snapshot after a newer targeted reread
-/// has already published the freshly-written links: the older load's token is
-/// no longer current, so its guarded publish is dropped. Both paths share this
-/// ONE token so "newest wins" is defined across them, not per-path.
+/// event-link re-reads — both `addEventLink` (post-add) and `removeEventLink`
+/// (post-remove). Every load/reread mints a token via `begin()`, which
+/// supersedes any token still in flight; only the newest token may publish
+/// (`isCurrent`). This is what stops a slower OLDER full load from tearing the
+/// card back to a pre-edit snapshot after a newer targeted reread has already
+/// published the changed links: the older load's token is no longer current, so
+/// its guarded publish is dropped — it can neither drop a just-added link nor
+/// restore a just-removed one. All three paths share this ONE token so "newest
+/// wins" is defined across them, not per-path.
 @MainActor
 final class ContactLoadGeneration {
     private(set) var current: UUID = UUID()
@@ -153,11 +155,12 @@ struct ContactDetailView: View {
     // complete contact-load snapshot).
     @State private var memberGroupsLoadID: UUID = UUID()
     // One newest-wins gate covers the complete contact-load snapshot AND the
-    // targeted link re-reads. Each load/reread collects all independent reads
-    // into locals; only the newest invocation may publish its snapshot, so a
-    // slower older load can never tear the card back to stale
-    // contact/events/groups/guides/source data — nor restore pre-edit links
-    // after a targeted `addEventLink` reread has published the new one.
+    // targeted event-link re-reads (`addEventLink` / `removeEventLink`). Each
+    // load/reread collects all independent reads into locals; only the newest
+    // invocation may publish its snapshot, so a slower older load can never tear
+    // the card back to stale contact/events/groups/guides/source data — nor drop
+    // a just-added link, nor restore a just-removed one, after a targeted reread
+    // has published the change.
     @State private var loadGeneration = ContactLoadGeneration()
     @State private var viewedStampScheduler = ContactViewedStampScheduler()
     @State private var showingAddLinkSheet = false
@@ -2360,6 +2363,14 @@ struct ContactDetailView: View {
     }
 
     private func removeEventLink(_ id: UUID) {
+        // Join the shared newest-wins gate SYNCHRONOUSLY at mutation start —
+        // the mirror of `addEventLink`'s begin()-before-write. A full load
+        // already in flight resolved its event-link set BEFORE this removal, so
+        // it must be superseded now; otherwise it could finish afterward and
+        // restore the link the user just removed. The token is captured here on
+        // the main actor (before any await), so the supersession is in effect
+        // the instant the removal begins.
+        let myLoadID = loadGeneration.begin()
         // Clear edit state first (synchronously, at tap time): setLinkNote on
         // a soft-deleted link undeletes it, so a pending edit must NOT commit
         // after the delete lands. The delete WRITE is synchronous too — only
@@ -2380,8 +2391,14 @@ struct ContactDetailView: View {
         }
         // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
         // had event links to remove), so reading off `loadedContactID` resolves;
-        // `self.id` is the fallback.
-        Task { eventLinks = await repository.eventLinks(for: loadedContactID ?? self.id) }
+        // `self.id` is the fallback. Guard the async publication on the gate so
+        // a newer load/reread that started meanwhile wins — and, symmetrically,
+        // so an older full load cannot revert this removal.
+        Task {
+            let links = await repository.eventLinks(for: loadedContactID ?? self.id)
+            guard loadGeneration.isCurrent(myLoadID) else { return }
+            eventLinks = links
+        }
     }
 
     // MARK: - Loading & reconcile

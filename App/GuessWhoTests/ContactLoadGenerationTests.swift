@@ -3,15 +3,16 @@ import Testing
 @testable import GuessWho
 
 /// Regression coverage for the newest-wins gate that `ContactDetailView` shares
-/// between its full contact load and its targeted `addEventLink` link re-read.
+/// between its full contact load and its targeted event-link re-reads —
+/// `addEventLink` (post-add) and `removeEventLink` (post-remove).
 ///
-/// The defect this locks down: a targeted reread (the user just added an event
-/// link) would publish the freshly-written links, and then a SLOWER full load
-/// that had begun earlier — and had already read the PRE-edit link set — would
-/// finish and republish that stale snapshot, silently dropping the new link.
-/// Because both paths now mint their token from the SAME `ContactLoadGeneration`,
-/// the targeted reread supersedes the older full load, so the older load's
-/// guarded publish is rejected.
+/// The defect this locks down: a targeted reread (the user just added or removed
+/// an event link) would publish the freshly-written links, and then a SLOWER
+/// full load that had begun earlier — and had already read the PRE-edit link set
+/// — would finish and republish that stale snapshot, silently dropping the added
+/// link or restoring the removed one. Because all paths now mint their token
+/// from the SAME `ContactLoadGeneration`, the targeted reread supersedes the
+/// older full load, so the older load's guarded publish is rejected.
 @MainActor
 @Suite("Contact load generation newest-wins")
 struct ContactLoadGenerationTests {
@@ -62,6 +63,37 @@ struct ContactLoadGenerationTests {
         //    link survives on the card.
         publish(preEditLinks, as: fullLoad, gate: gate, into: published)
         #expect(published.eventLinkIDs == postEditLinks)
+    }
+
+    /// The symmetric case for `removeEventLink`: a targeted removal reread that
+    /// begins AFTER a slower full load must win, and the slower load must not
+    /// RESTORE the removed link when it finally finishes.
+    @Test
+    func targetedRemovalWinsOverEarlierSlowerFullLoad() {
+        let gate = ContactLoadGeneration()
+        let published = PublishedLinks()
+
+        // 1. A full load begins first and reads the PRE-remove link set — it
+        //    still contains link 3.
+        let fullLoad = gate.begin()
+        let preRemoveLinks = [1, 2, 3]
+
+        // 2. While that full load is still in flight, the user removes link 3.
+        //    The targeted removal reread begins — advancing the generation —
+        //    and reads the POST-remove set without it.
+        let targetedReread = gate.begin()
+        let postRemoveLinks = [1, 2]
+
+        // 3. The targeted removal reread publishes first.
+        publish(postRemoveLinks, as: targetedReread, gate: gate, into: published)
+        #expect(published.eventLinkIDs == postRemoveLinks)
+
+        // 4. The slower full load finishes and tries to publish its stale
+        //    pre-remove snapshot. Newest-wins must reject it, so the removed
+        //    link does NOT reappear on the card.
+        publish(preRemoveLinks, as: fullLoad, gate: gate, into: published)
+        #expect(published.eventLinkIDs == postRemoveLinks)
+        #expect(!published.eventLinkIDs.contains(3))
     }
 
     /// The gate's raw predicate, independent of the publish helper: a superseded
