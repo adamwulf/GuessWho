@@ -13,12 +13,13 @@ import Testing
 struct EKEventStoreAdapterAttendeeIndexTests {
     private func makeAdapter(
         center: NotificationCenter = NotificationCenter(),
+        cacheLifetime: TimeInterval = 60,
         authorization: @escaping @Sendable () -> StoreAuthorizationStatus = { .authorized },
         spy: AttendeeIndexFetchSpy
     ) -> EKEventStoreAdapter {
         EKEventStoreAdapter(
             notificationCenter: center,
-            cacheLifetime: 60,
+            cacheLifetime: cacheLifetime,
             fetchEventsWork: { _, interval in spy.fetch(interval: interval) },
             authorizationStatusWork: authorization
         )
@@ -113,6 +114,26 @@ struct EKEventStoreAdapterAttendeeIndexTests {
     }
 
     @Test
+    func attendeeIndexIsNonExpiringAndSurvivesWindowCacheTTL() throws {
+        // The adapter's cacheLifetime governs the RAW window cache's TTL. The
+        // attendee index must be invalidation-only (one walk per launch, not
+        // one walk per TTL), so it stays cached well past that window TTL.
+        let spy = AttendeeIndexFetchSpy(events: [event(ekid: "e1", start: 100, emails: ["a@x.com"])])
+        let adapter = makeAdapter(cacheLifetime: 0.05, spy: spy)
+        let w = window()
+
+        _ = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)
+        #expect(spy.fetchCount == 1)
+
+        // Sleep well past the injected 0.05s window-cache TTL.
+        Thread.sleep(forTimeInterval: 0.25)
+
+        let result = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)
+        #expect(spy.fetchCount == 1)   // still cached — the index never expires
+        #expect(result.map(\.eventKitID) == ["e1"])
+    }
+
+    @Test
     func concurrentIdenticalLookupsShareOneIndexBuild() throws {
         let w = window()
         let spy = AttendeeIndexFetchSpy(
@@ -150,6 +171,29 @@ struct EKEventStoreAdapterAttendeeIndexTests {
         // sides must still match.
         let result = try adapter.eventsWithAttendee(matchingEmails: ["  wanted@x.com "], in: window(), limit: 10)
         #expect(result.map(\.eventKitID) == ["wanted"])
+    }
+
+    @Test
+    func mixedCaseStoredAttendeeEmailStillMatchesLowercasedQuery() throws {
+        // Force a mixed-case STORED email, bypassing EventAttendee.init's
+        // lowercasing (mirrors a Codable-decoded or directly-mutated attendee).
+        // The index must lowercase at build time — as the old adapter did at
+        // match time — so a lowercased query still matches.
+        var attendee = EventAttendee(name: "Mixed", email: "placeholder@example.com")
+        attendee.email = "MixedCase@X.com"
+        #expect(attendee.email == "MixedCase@X.com")   // stored verbatim, not lowercased
+        let mixed = Event(
+            eventKitID: "mixed",
+            title: "mixed",
+            startDate: Date(timeIntervalSince1970: 100),
+            endDate: Date(timeIntervalSince1970: 3_700),
+            attendees: [attendee]
+        )
+        let spy = AttendeeIndexFetchSpy(events: [mixed])
+        let adapter = makeAdapter(spy: spy)
+
+        let result = try adapter.eventsWithAttendee(matchingEmails: ["mixedcase@x.com"], in: window(), limit: 10)
+        #expect(result.map(\.eventKitID) == ["mixed"])
     }
 
     @Test

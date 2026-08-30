@@ -66,9 +66,14 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             cacheLifetime: cacheLifetime,
             maximumCacheEntries: 4
         )
+        // Non-expiring (invalidation-only): the attendee/location index must
+        // survive the whole launch — one raw walk per window until an explicit
+        // invalidation (store change, auth transition, or adapter write) — NOT
+        // re-walk on the window cache's short TTL. The raw window coordinator
+        // keeps its `cacheLifetime` TTL; this cache ignores it by design.
         self.attendeeIndex = WindowSingleFlightCache<AttendeeWindowIndex>(
             name: "EventKit attendee index",
-            cacheLifetime: cacheLifetime,
+            cacheLifetime: nil,
             maximumCacheEntries: 4
         )
         self.notificationCenter = notificationCenter
@@ -854,9 +859,13 @@ private struct AttendeeWindowIndex {
             // address must not enter this occurrence's offset twice.
             var seenEmails = Set<String>()
             for attendee in event.attendees {
-                // EventAttendee.email is already lowercased at construction,
-                // matching the lowercased query set the lookup passes.
-                guard let email = attendee.email, !email.isEmpty else { continue }
+                // Normalize to lowercase at index time. The pre-index adapter
+                // lowercased every parsed participant email at MATCH time, so a
+                // mixed-case stored address — one decoded from JSON or set
+                // directly, bypassing EventAttendee.init's lowercasing — must
+                // still match the (lowercased) query set.
+                guard let rawEmail = attendee.email, !rawEmail.isEmpty else { continue }
+                let email = rawEmail.lowercased()
                 if seenEmails.insert(email).inserted {
                     byEmail[email, default: []].append(offset)
                 }
@@ -968,7 +977,10 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
 
     private let name: String
     private let condition = NSCondition()
-    private let cacheLifetimeNanos: UInt64
+    /// `nil` = non-expiring (invalidation-only): entries live until an explicit
+    /// invalidation, never a wall-clock TTL. `.some(n)` expires an entry `n`
+    /// nanoseconds after capture; `.some(0)` disables caching entirely.
+    private let cacheLifetimeNanos: UInt64?
     private let maximumCacheEntries: Int
     private var generation: UInt64 = 0
     private var lastAuthorization: StoreAuthorizationStatus?
@@ -976,10 +988,20 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
     private var cache: [WindowKey: CacheEntry] = [:]
     private var useCounter: UInt64 = 0
 
-    init(name: String, cacheLifetime: TimeInterval, maximumCacheEntries: Int) {
+    /// `cacheLifetime == nil` builds a non-expiring cache (invalidation-only).
+    init(name: String, cacheLifetime: TimeInterval?, maximumCacheEntries: Int) {
         self.name = name
-        self.cacheLifetimeNanos = UInt64(max(0, cacheLifetime) * 1_000_000_000)
+        self.cacheLifetimeNanos = cacheLifetime.map { UInt64(max(0, $0) * 1_000_000_000) }
         self.maximumCacheEntries = max(1, maximumCacheEntries)
+    }
+
+    /// True when successful builds should be cached. Non-expiring caches always
+    /// cache; a `.some(0)` lifetime disables caching.
+    private var cachingEnabled: Bool {
+        switch cacheLifetimeNanos {
+        case .none: return true
+        case .some(let nanos): return nanos > 0
+        }
     }
 
     /// Detect TCC changes even when EventKit emits no store-change
@@ -1075,7 +1097,7 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
                 continue
             }
 
-            if case .success(let value) = result, cacheLifetimeNanos > 0 {
+            if case .success(let value) = result, cachingEnabled {
                 useCounter &+= 1
                 evictLeastRecentlyUsedEntryIfNeeded(for: window)
                 cache[window] = CacheEntry(
@@ -1099,12 +1121,16 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
     }
 
     private func purgeExpiredEntries(now: UInt64) {
-        guard cacheLifetimeNanos > 0 else {
-            cache.removeAll(keepingCapacity: true)
+        switch cacheLifetimeNanos {
+        case .none:
+            // Non-expiring: entries only leave via invalidation or LRU eviction.
             return
-        }
-        cache = cache.filter { _, entry in
-            now >= entry.capturedAt && now - entry.capturedAt <= cacheLifetimeNanos
+        case .some(let lifetime) where lifetime == 0:
+            cache.removeAll(keepingCapacity: true)
+        case .some(let lifetime):
+            cache = cache.filter { _, entry in
+                now >= entry.capturedAt && now - entry.capturedAt <= lifetime
+            }
         }
     }
 
