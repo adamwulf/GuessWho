@@ -157,6 +157,32 @@ struct SidecarFileWatcherTests {
         let post = try #require(recorder.posts.first)
         #expect(post.object as? SidecarFileWatcher === watcher)
         #expect(post.guessWhoSidecarChangeSet.changedKeys == keys)
+        #expect(post.guessWhoSidecarChangeSet.changedKinds == [.contact, .place])
+        #expect(!post.guessWhoSidecarChangeSet.requiresFullRefresh)
+    }
+
+    @Test
+    func kindDirectoryDeliveryRemainsScopedWithoutInventingAKey() async throws {
+        let center = NotificationCenter()
+        let recorder = Recorder(center: center, name: .guessWhoSidecarsDidChange)
+        defer { recorder.stop(center: center) }
+        let watcher = SidecarFileWatcher(
+            root: FileManager.default.temporaryDirectory,
+            sync: makeSync(),
+            notificationCenter: center
+        )
+
+        await watcher.processSidecarChanges(
+            added: 0,
+            changed: 1,
+            removed: 0,
+            changedKeys: nil,
+            changedKinds: [.contact]
+        )
+
+        let post = try #require(recorder.posts.first)
+        #expect(post.guessWhoSidecarChangeSet.changedKeys == nil)
+        #expect(post.guessWhoSidecarChangeSet.changedKinds == [.contact])
         #expect(!post.guessWhoSidecarChangeSet.requiresFullRefresh)
     }
 
@@ -219,6 +245,12 @@ struct SidecarFileWatcherTests {
         #expect(watcher.sidecarKey(forMetadataPath:
             root.appendingPathComponent("events/External%2FID.json").path
         ) == SidecarKey(kind: .event, id: "external/id"))
+        #expect(watcher.sidecarKind(forMetadataDirectoryPath:
+            root.appendingPathComponent("contacts", isDirectory: true).path
+        ) == .contact)
+        #expect(watcher.sidecarKind(forMetadataDirectoryPath:
+            root.appendingPathComponent("events", isDirectory: true).path
+        ) == .event)
 
         // Unrecognized external input must make the delivery fall back to a
         // full refresh, never crash or invent a key.
@@ -231,6 +263,40 @@ struct SidecarFileWatcherTests {
         #expect(watcher.sidecarKey(forMetadataPath:
             root.appendingPathComponent("contacts/nested/\(contactID).json").path
         ) == nil)
+        #expect(watcher.sidecarKind(forMetadataDirectoryPath:
+            root.appendingPathComponent("Favorites.json").path
+        ) == nil)
+        #expect(watcher.sidecarKind(forMetadataDirectoryPath:
+            root.appendingPathComponent("unknown", isDirectory: true).path
+        ) == nil)
+    }
+
+    @Test
+    func changeSetMergePreservesKindScopeAndFailsClosedForUnknownScope() {
+        let contactKey = SidecarKey(kind: .contact, id: "contact-a")
+        let eventKey = SidecarKey(kind: .event, id: "event-a")
+        let coarseContact = SidecarChangeSet(changedKeys: nil, changedKinds: [.contact])
+        let exactContact = SidecarChangeSet(changedKeys: [contactKey])
+        let exactEvent = SidecarChangeSet(changedKeys: [eventKey])
+
+        #expect(coarseContact.changedKeys == nil)
+        #expect(coarseContact.changedKinds == [.contact])
+        #expect(!coarseContact.requiresFullRefresh)
+
+        let sameKind = coarseContact.merging(exactContact)
+        #expect(sameKind.changedKeys == nil)
+        #expect(sameKind.changedKinds == [.contact])
+        #expect(!sameKind.requiresFullRefresh)
+
+        let mixedKinds = coarseContact.merging(exactEvent)
+        #expect(mixedKinds.changedKeys == nil)
+        #expect(mixedKinds.changedKinds == [.contact, .event])
+        #expect(!mixedKinds.requiresFullRefresh)
+
+        let unknown = mixedKinds.merging(.fullRefresh)
+        #expect(unknown.changedKeys == nil)
+        #expect(unknown.changedKinds == nil)
+        #expect(unknown.requiresFullRefresh)
     }
 
     @Test

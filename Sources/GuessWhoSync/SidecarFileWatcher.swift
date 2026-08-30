@@ -6,9 +6,10 @@ public extension Notification.Name {
     /// root change on disk — a remote edit or a `notYetDownloaded` file
     /// arriving from another device, or a same-device write echoing back
     /// through the metadata query (see `SidecarFileWatcher` for why echoes
-    /// are accepted rather than filtered). The notification carries a
-    /// `SidecarChangeSet` when the metadata delivery names concrete files;
-    /// subscribers fall back to their full refresh when it does not.
+    /// are scoped rather than filtered). The notification carries a
+    /// `SidecarChangeSet` with exact file keys when available, otherwise with
+    /// the narrowest safe kind scope; subscribers use a global full refresh
+    /// only when neither scope can be established.
     ///
     /// This is the missing half of the `SidecarStoreError.notYetDownloaded`
     /// contract: `read()` requests the download and tells the caller to retry
@@ -23,35 +24,66 @@ public extension Notification.Name {
 /// `userInfo` keys for `.guessWhoSidecarsDidChange`.
 public enum GuessWhoSidecarsDidChangeKey {
     /// Value: a `SidecarChangeSet`. Its `changedKeys` is nil when the watcher
-    /// cannot safely identify every changed file, including initial gather.
+    /// cannot safely identify every changed file; `changedKinds` can still
+    /// retain a safe kind-directory scope. Both are nil for initial gather or
+    /// a truly unknown delivery.
     public static let changeSet = "changeSet"
 }
 
-/// The sidecar keys named by one coalesced metadata-query burst. A nil key set
-/// is an explicit full-refresh signal. Empty sets are normalized to nil so an
-/// incomplete or synthetic metadata delivery can never suppress a refresh.
+/// The sidecar scope named by one coalesced metadata-query burst. Concrete file
+/// deliveries carry `changedKeys`; a kind-directory delivery carries only
+/// `changedKinds`, meaning "some unknown key of this kind changed." Only nil
+/// kinds mean globally unknown/full scope. This distinction lets an events
+/// subscriber safely ignore a coarse `.contact` delivery while the contacts
+/// subscriber conservatively refreshes its full sidecar projection.
 public struct SidecarChangeSet: Sendable, Equatable {
     public let changedKeys: Set<SidecarKey>?
+    public let changedKinds: Set<SidecarKind>?
 
     public init(changedKeys: Set<SidecarKey>?) {
         if let changedKeys, !changedKeys.isEmpty {
             self.changedKeys = changedKeys
+            self.changedKinds = Set(changedKeys.map(\.kind))
         } else {
             self.changedKeys = nil
+            self.changedKinds = nil
+        }
+    }
+
+    /// A kind-scoped delivery. `changedKeys == nil` means at least one item was
+    /// only identifiable to its containing kind directory; it is not global
+    /// full scope as long as `changedKinds` is non-empty.
+    public init(changedKeys: Set<SidecarKey>?, changedKinds: Set<SidecarKind>) {
+        let allKinds = changedKinds.union(changedKeys?.map(\.kind) ?? [])
+        if allKinds.isEmpty {
+            self.changedKeys = nil
+            self.changedKinds = nil
+        } else {
+            self.changedKeys = changedKeys.flatMap { $0.isEmpty ? nil : $0 }
+            self.changedKinds = allKinds
         }
     }
 
     public static let fullRefresh = SidecarChangeSet(changedKeys: nil)
 
-    public var requiresFullRefresh: Bool { changedKeys == nil }
+    public var requiresFullRefresh: Bool { changedKinds == nil }
 
-    /// Unknown scope is contagious: if either delivery cannot name every key,
-    /// the combined burst must retain the full-refresh fallback.
+    /// Globally unknown scope is contagious. Otherwise kinds union safely, while
+    /// concrete keys remain exact only if both operands named every key.
     public func merging(_ other: SidecarChangeSet) -> SidecarChangeSet {
-        guard let changedKeys, let otherKeys = other.changedKeys else {
+        guard let changedKinds, let otherKinds = other.changedKinds else {
             return .fullRefresh
         }
-        return SidecarChangeSet(changedKeys: changedKeys.union(otherKeys))
+        let mergedKeys: Set<SidecarKey>?
+        if let changedKeys, let otherKeys = other.changedKeys {
+            mergedKeys = changedKeys.union(otherKeys)
+        } else {
+            mergedKeys = nil
+        }
+        return SidecarChangeSet(
+            changedKeys: mergedKeys,
+            changedKinds: changedKinds.union(otherKinds)
+        )
     }
 }
 
@@ -300,36 +332,53 @@ public final class SidecarFileWatcher: NSObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let changedKeys: Set<SidecarKey>?
-            let mappedKeys = paths.map { path in
-                (path: path, key: self.sidecarKey(forMetadataPath: path))
+            let changedKinds: Set<SidecarKind>?
+            let mappedItems = paths.map { path in
+                let key = self.sidecarKey(forMetadataPath: path)
+                let kind = key?.kind ?? self.sidecarKind(forMetadataDirectoryPath: path)
+                return (path: path, key: key, kind: kind)
             }
             if paths.count == itemCount {
-                let keys = mappedKeys.compactMap { $0.key }
-                changedKeys = keys.count == paths.count ? Set(keys) : nil
+                let kinds = mappedItems.compactMap { $0.kind }
+                if kinds.count == paths.count {
+                    changedKinds = Set(kinds)
+                    let keys = mappedItems.compactMap { $0.key }
+                    // A kind-directory item deliberately makes the key slice
+                    // coarse while retaining its safe kind scope.
+                    changedKeys = keys.count == paths.count ? Set(keys) : nil
+                } else {
+                    changedKeys = nil
+                    changedKinds = nil
+                }
             } else {
                 changedKeys = nil
+                changedKinds = nil
+            }
+            let coarsePaths = mappedItems.compactMap { entry in
+                entry.key == nil && entry.kind != nil ? entry.path : nil
+            }
+            let unmappedPaths = mappedItems.compactMap { entry in
+                entry.kind == nil ? entry.path : nil
             }
             Self.log.info(
                 "sidecar metadata paths mapped",
                 metadata: [
                     "items": .stringConvertible(itemCount),
                     "paths": .stringConvertible(paths.count),
-                    "mapped": .stringConvertible(mappedKeys.lazy.filter { $0.key != nil }.count),
-                    "deliveries": .string(
-                        mappedKeys.map { entry in
-                            let key = entry.key.map { "\($0.kind.rawValue):\($0.id)" } ?? "unmapped"
-                            return "\(entry.path) => \(key)"
-                        }.joined(separator: " | ")
-                    )
+                    "keys": .stringConvertible(mappedItems.lazy.filter { $0.key != nil }.count),
+                    "scoped": .stringConvertible(mappedItems.lazy.filter { $0.kind != nil }.count),
+                    "coarsePaths": .string(coarsePaths.joined(separator: ",")),
+                    "unmappedPaths": .string(unmappedPaths.joined(separator: ",")),
                 ]
             )
-            // A path that cannot be mapped to a SidecarKey (for example a
-            // directory or root-level support file) makes scope unknown.
+            // Known kind directories retain coarse kind scope. A missing path
+            // or any other unmappable item keeps the batch globally unknown.
             self.scheduleChangeProcessing(
                 added: addedItems.count,
                 changed: changedItems.count,
                 removed: removedItems.count,
                 changedKeys: changedKeys,
+                changedKinds: changedKinds,
                 conflictScanScope: self.conflictScanScope(for: metadataItems)
             )
         }
@@ -407,16 +456,9 @@ public final class SidecarFileWatcher: NSObject {
               Array(itemComponents.prefix(rootComponents.count)) == rootComponents
         else { return nil }
 
-        let kind: SidecarKind
-        switch itemComponents[rootComponents.count] {
-        case "contacts": kind = .contact
-        case "events": kind = .event
-        case "links": kind = .link
-        case "guides": kind = .guide
-        case "places": kind = .place
-        case "groups": kind = .group
-        default: return nil
-        }
+        guard let kind = Self.sidecarKind(
+            forDirectoryName: itemComponents[rootComponents.count]
+        ) else { return nil }
 
         var filename = itemComponents.last ?? ""
         if filename.hasPrefix("."),
@@ -440,6 +482,31 @@ public final class SidecarFileWatcher: NSObject {
         return SidecarKey(kind: kind, id: decodedID)
     }
 
+    /// A metadata update for `Documents/<kind>` is coarse but not globally
+    /// unknown. NSMetadataQuery emits this containing-directory node alongside
+    /// atomic file writes; retaining its kind prevents a `.contact` directory
+    /// echo from poisoning the concrete contact file into full scope.
+    func sidecarKind(forMetadataDirectoryPath path: String) -> SidecarKind? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let itemComponents = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard itemComponents.count == rootComponents.count + 1,
+              Array(itemComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return Self.sidecarKind(forDirectoryName: itemComponents.last ?? "")
+    }
+
+    private static func sidecarKind(forDirectoryName name: String) -> SidecarKind? {
+        switch name {
+        case "contacts": .contact
+        case "events": .event
+        case "links": .link
+        case "guides": .guide
+        case "places": .place
+        case "groups": .group
+        default: nil
+        }
+    }
+
     /// Internal so tests can drive the production debounce without requiring
     /// a live ubiquity container.
     func scheduleChangeProcessing(
@@ -447,9 +514,12 @@ public final class SidecarFileWatcher: NSObject {
         changed: Int,
         removed: Int,
         changedKeys: Set<SidecarKey>?,
+        changedKinds: Set<SidecarKind>? = nil,
         conflictScanScope: SidecarConflictScanScope? = nil
     ) {
-        let changeSet = SidecarChangeSet(changedKeys: changedKeys)
+        let changeSet = changedKinds.map {
+            SidecarChangeSet(changedKeys: changedKeys, changedKinds: $0)
+        } ?? SidecarChangeSet(changedKeys: changedKeys)
         let effectiveConflictScanScope: SidecarConflictScanScope
         if let conflictScanScope {
             effectiveConflictScanScope = conflictScanScope
@@ -520,6 +590,7 @@ public final class SidecarFileWatcher: NSObject {
                     changed: batch.changed,
                     removed: batch.removed,
                     changedKeys: batch.changeSet.changedKeys,
+                    changedKinds: batch.changeSet.changedKinds,
                     conflictScanScope: batch.conflictScanScope
                 )
             } while self.needsAnotherPass && self.readyBatch != nil
@@ -538,6 +609,7 @@ public final class SidecarFileWatcher: NSObject {
         changed: Int,
         removed: Int,
         changedKeys: Set<SidecarKey>? = nil,
+        changedKinds: Set<SidecarKind>? = nil,
         conflictScanScope: SidecarConflictScanScope? = nil
     ) async {
         Self.log.info(
@@ -588,7 +660,9 @@ public final class SidecarFileWatcher: NSObject {
             object: self,
             userInfo: [
                 GuessWhoSidecarsDidChangeKey.changeSet:
-                    SidecarChangeSet(changedKeys: changedKeys)
+                    changedKinds.map {
+                        SidecarChangeSet(changedKeys: changedKeys, changedKinds: $0)
+                    } ?? SidecarChangeSet(changedKeys: changedKeys)
             ]
         )
     }

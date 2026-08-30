@@ -205,12 +205,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                 self?.invalidateLinkCorpus()
                 return
             }
-            if changeSet.changedKeys?.contains(where: {
-                $0.kind == .place || $0.kind == .guide
-            }) == true {
+            if changeSet.changedKinds?.contains(.place) == true
+                || changeSet.changedKinds?.contains(.guide) == true {
                 self?.invalidatePlaceCorpus()
             }
-            if changeSet.changedKeys?.contains(where: { $0.kind == .link }) == true {
+            if changeSet.changedKinds?.contains(.link) == true {
                 self?.invalidateLinkCorpus()
             }
         }

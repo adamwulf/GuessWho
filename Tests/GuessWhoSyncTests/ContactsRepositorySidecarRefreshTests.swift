@@ -106,6 +106,37 @@ struct ContactsRepositorySidecarRefreshTests {
     // kinds are dropped as a relevance no-op.
 
     @Test
+    func coarseContactDirectoryChange_runsFullProjectionRefresh() async throws {
+        let amy = reconciled(localID: "amy", uuid: "abababab-0000-0000-0000-000000000001", given: "Amy")
+        let zoe = reconciled(localID: "zoe", uuid: "abababab-0000-0000-0000-000000000002", given: "Zoe")
+        let store = InMemoryContactStore(contacts: [amy, zoe])
+        let sync = makeSync(store)
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        repo.sortOrder = .lastViewed
+        #expect(repo.people.map(\.localID) == ["amy", "zoe"])
+
+        // Model a legitimate remote write for which NSMetadataQuery reports
+        // only the containing kind directory. The repository cannot patch an
+        // exact key, so it must conservatively re-read the full contact sidecar
+        // projection rather than treating this as a self-echo.
+        try sync.stampContactTimestamp(
+            .viewed,
+            at: SidecarKey(kind: .contact, id: "abababab-0000-0000-0000-000000000002"),
+            now: Date()
+        )
+        let posted = await postAndAwaitReload(
+            SidecarChangeSet(changedKeys: nil, changedKinds: [.contact]),
+            center: center,
+            repo: repo
+        )
+
+        #expect(posted)
+        #expect(repo.people.map(\.localID) == ["zoe", "amy"])
+    }
+
+    @Test
     func groupOnlyChange_runsFullRefreshAndReorders() async throws {
         // Two reconciled people, no timestamps yet → under .lastViewed they tie
         // and sort alphabetically (Amy before Zoe).

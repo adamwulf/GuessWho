@@ -97,10 +97,10 @@ struct RepositoryRefreshGenerationTests {
         #expect(repository.events.isEmpty)
     }
 
-    /// A contact timestamp echo is irrelevant to the events projection when
-    /// the watcher identifies its concrete `.contact` key, so it must cause
-    /// zero reloads. Unknown scope remains fail-closed: it can represent a real
-    /// remote event/link delivery and must still perform the full refresh.
+    /// A contact timestamp echo is irrelevant to the events projection even
+    /// when the watcher can identify only its `.contact` directory, so it must
+    /// cause zero reloads. A coarse `.event` directory delivery remains relevant
+    /// and performs a refresh; globally unknown scope remains fail-closed too.
     @Test
     func contactOnlySidecarChangeIsDroppedButUnknownScopeStillReloads() async throws {
         let root = try makeTempRoot()
@@ -112,12 +112,21 @@ struct RepositoryRefreshGenerationTests {
         let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
         counter.reset()
 
-        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
-            SidecarKey(kind: .contact, id: UUID().uuidString)
-        ]), trigger: "test-contact-echo")
+        repository.scheduleDebouncedReload(
+            SidecarChangeSet(changedKeys: nil, changedKinds: [.contact]),
+            trigger: "test-contact-directory-echo"
+        )
         try await Task.sleep(for: .milliseconds(400))
         #expect(counter.count == 0)
 
+        repository.scheduleDebouncedReload(
+            SidecarChangeSet(changedKeys: nil, changedKinds: [.event]),
+            trigger: "test-remote-event-directory"
+        )
+        await waitUntil { counter.count == 1 }
+        #expect(counter.count == 1)
+
+        counter.reset()
         repository.scheduleDebouncedReload(.fullRefresh, trigger: "test-unknown-remote")
         await waitUntil { counter.count == 1 }
         #expect(counter.count == 1)

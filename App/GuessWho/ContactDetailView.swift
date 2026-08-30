@@ -745,10 +745,10 @@ struct ContactDetailView: View {
     /// (correct), and the FIRST write mints via the package's resolve-or-mint
     /// primitive.
     private func performInitialLoad() async {
-        // Overall detail-open region: resolve, then overlapping sidecar/link/
-        // source/recent-event/group/guide branches, then viewed stamp. Sub-steps
-        // carry their own signpost regions inside `loadContact` so Instruments
-        // shows the overlap directly.
+        // Overall visible detail-open region: resolve, then overlapping sidecar/
+        // link/source/recent-event/group/guide branches. The viewed stamp is
+        // scheduled only after this region ends. Sub-steps carry their own
+        // signpost regions inside `loadContact` so Instruments shows the overlap.
         let loadSignpostID = DetailLoadSignpost.begin("contact_detail_load")
         defer { DetailLoadSignpost.end("contact_detail_load", loadSignpostID) }
         await loadContact()

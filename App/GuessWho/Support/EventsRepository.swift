@@ -156,8 +156,9 @@ final class EventsRepository: NSObject {
     /// watcher delivery is global and routinely names kinds this list does not
     /// project (a guide/place/contact edit): a scoped change naming NONE of
     /// these is irrelevant and must not mint a generation or cancel a
-    /// pending/parked reload it cannot affect. Unknown/full scope (`changedKeys
-    /// == nil`) is always relevant.
+    /// pending/parked reload it cannot affect. A coarse kind-directory delivery
+    /// has nil keys but known `changedKinds`; only globally unknown kinds are
+    /// always relevant.
     private static let handledKinds: Set<SidecarKind> = [.event, .link]
 
     /// Monotonic refresh token. Bumped whenever a NEWER authoritative refresh
@@ -215,24 +216,33 @@ final class EventsRepository: NSObject {
     /// otherwise. Production callers are unchanged.
     func scheduleDebouncedReload(_ changeSet: SidecarChangeSet, trigger: String = "direct-schedule") {
         let keySummary = changeSet.changedKeys.map {
-            $0.sorted { ($0.kind.rawValue, $0.id) < ($1.kind.rawValue, $1.id) }
-                .map { "\($0.kind.rawValue):\($0.id)" }
-                .joined(separator: ",")
+            "exact/\($0.count)"
+        } ?? (changeSet.requiresFullRefresh ? "nil/full-scope" : "nil/coarse-scope")
+        let kindSummary = changeSet.changedKinds.map {
+            $0.map(\.rawValue).sorted().joined(separator: ",")
         } ?? "nil/full-scope"
         // Drop a scoped change that names no kind this list projects BEFORE any
         // merge, generation bump, or cancellation — an irrelevant delivery must
         // not supersede a pending/parked reload it cannot affect.
-        if let keys = changeSet.changedKeys,
-           !keys.contains(where: { Self.handledKinds.contains($0.kind) }) {
+        if let kinds = changeSet.changedKinds,
+           kinds.isDisjoint(with: Self.handledKinds) {
             Self.reloadLog.info(
                 "events sidecar delivery dropped",
-                metadata: ["trigger": .string(trigger), "changedKeys": .string(keySummary)]
+                metadata: [
+                    "trigger": .string(trigger),
+                    "changedKinds": .string(kindSummary),
+                    "changedKeys": .string(keySummary),
+                ]
             )
             return
         }
         Self.reloadLog.info(
             "events sidecar delivery accepted",
-            metadata: ["trigger": .string(trigger), "changedKeys": .string(keySummary)]
+            metadata: [
+                "trigger": .string(trigger),
+                "changedKinds": .string(kindSummary),
+                "changedKeys": .string(keySummary),
+            ]
         )
         if pendingReload == nil {
             pendingChangeSet = inFlightChangeSet?.value.merging(changeSet) ?? changeSet

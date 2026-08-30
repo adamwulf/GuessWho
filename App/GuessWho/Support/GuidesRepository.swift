@@ -150,8 +150,8 @@ final class GuidesRepository: NSObject {
     /// A watcher delivery is global and routinely names kinds these lists do not
     /// project (an event/contact edit): a scoped change naming NONE of these is
     /// irrelevant and must not mint a generation or cancel a pending/parked
-    /// reload it cannot affect. Unknown/full scope (`changedKeys == nil`) is
-    /// always relevant.
+    /// reload it cannot affect. A coarse kind-directory delivery has nil keys
+    /// but known `changedKinds`; only globally unknown kinds are always relevant.
     private static let handledKinds: Set<SidecarKind> = [.guide, .place, .link]
 
     /// Monotonic refresh token. Bumped whenever a NEWER authoritative refresh
@@ -210,8 +210,8 @@ final class GuidesRepository: NSObject {
         // Drop a scoped change that names no kind these lists project BEFORE any
         // merge, generation bump, or cancellation — an irrelevant delivery must
         // not supersede a pending/parked reload it cannot affect.
-        if let keys = changeSet.changedKeys,
-           !keys.contains(where: { Self.handledKinds.contains($0.kind) }) {
+        if let kinds = changeSet.changedKinds,
+           kinds.isDisjoint(with: Self.handledKinds) {
             return
         }
         if pendingReload == nil {

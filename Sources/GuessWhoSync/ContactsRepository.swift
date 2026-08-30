@@ -3294,8 +3294,9 @@ public final class ContactsRepository: NSObject {
     /// pending/in-flight refresh it cannot affect. `.contact` and `.link` drive
     /// the scoped projection reads; `.group` (a favorite-identity record) has no
     /// scoped projection and escalates to the full sidecar-derived refresh in
-    /// `refreshFromSidecarChange`. Unknown/full scope (`changedKeys == nil`) is
-    /// always relevant. Mirrors `EventsRepository.handledKinds`.
+    /// `refreshFromSidecarChange`. A coarse kind-directory delivery has nil
+    /// keys but known `changedKinds`; only globally unknown kinds are always
+    /// relevant. Mirrors `EventsRepository.handledKinds`.
     private static let handledSidecarKinds: Set<SidecarKind> = [.contact, .link, .group]
 
     /// Monotonic token advanced whenever a new refresh is SCHEDULED — every
@@ -3324,10 +3325,10 @@ public final class ContactsRepository: NSObject {
         // delivery (an event/guide/place-only edit, or an explicitly empty set)
         // must not supersede and strand a useful pending/in-flight reload it
         // cannot affect. Mirrors `EventsRepository.scheduleDebouncedReload`.
-        // Unknown scope (`changedKeys == nil`) remains a full-refresh intent and
-        // is always relevant.
-        if let keys = changeSet.changedKeys,
-           !keys.contains(where: { Self.handledSidecarKinds.contains($0.kind) }) {
+        // A known coarse kind remains safely droppable by repositories that do
+        // not project it. Only nil kinds are globally unknown/full scope.
+        if let kinds = changeSet.changedKinds,
+           kinds.isDisjoint(with: Self.handledSidecarKinds) {
             return
         }
         if pendingSidecarRefresh == nil {
@@ -3433,10 +3434,11 @@ public final class ContactsRepository: NSObject {
 
     /// The full sidecar-derived projection refresh: re-read the bulk timestamp
     /// cache, the linked-endpoint set, and the link counts in one fused engine
-    /// pass, then post a presentation-only reload. Shared by the explicit
-    /// `changedKeys == nil` full-refresh signal and the `.group`-change fallback
-    /// (FIX D). The cache replace and post are gated on `generation`, so a newer
-    /// refresh that began meanwhile is never overwritten by this one.
+    /// pass, then post a presentation-only reload. Shared by globally unknown
+    /// and coarse relevant-kind deliveries (`changedKeys == nil`) and the
+    /// `.group`-change fallback (FIX D). The cache replace and post are gated on
+    /// `generation`, so a newer refresh that began meanwhile is never
+    /// overwritten by this one.
     private func performFullSidecarProjectionRefresh(generation: Int) async {
         await refreshFullSidecarProjectionCaches(generation: generation)
         guard generation == refreshGeneration else { return }
