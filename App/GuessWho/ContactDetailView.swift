@@ -155,10 +155,11 @@ struct ContactDetailView: View {
     // on each contact load — separate from `eventLinks`, which are user-curated
     // contact↔event links.
     @State private var recentEvents: [Event] = []
-    // Imported guides whose places' addresses contain one of this contact's
-    // structured street lines. Rendered directly under the address rows, in the
-    // same info section. Loaded async via SyncService on each contact load.
-    @State private var addressGuides: [GuideAddressMatcher.Match] = []
+    // Imported-guide matches keyed by the individual contact street line they
+    // describe. Each summary renders directly below its own address rather than
+    // combining counts across a multi-address contact. Loaded async via
+    // SyncService on each contact load.
+    @State private var addressGuides: [String: [GuideAddressMatcher.Match]] = [:]
     // Contacts.app groups this record belongs to (people AND organizations — a
     // group holds either). Loaded async via the repository on each contact load.
     @State private var memberGroups: [ContactGroup] = []
@@ -1270,28 +1271,37 @@ struct ContactDetailView: View {
         let isExpanded = expandedFieldGroups.contains(group)
         Section {
             ForEach(visible) { row in
-                infoRow(row)
-                    .centeredRowContent()
+                groupedInfoRow(row)
             }
             if isExpanded {
                 // Reveal is one-way (no "less…"): expansion is per-view-instance
                 // @State, so the group re-collapses only on view rebuild
                 // (navigate away and back).
                 ForEach(hidden) { row in
-                    infoRow(row)
-                        .centeredRowContent()
+                    groupedInfoRow(row)
                 }
-            }
-            if group == .address, !addressGuides.isEmpty {
-                // Directly below the address rows, in the same section: one
-                // summary row that opens the matched place's detail, where the
-                // full list of guides this place sits in is enumerated.
-                AddressGuidesSummaryRow(matches: addressGuides)
-                    .centeredRowContent()
             }
         } footer: {
             if !isExpanded, !hidden.isEmpty {
                 moreDisclosureFooter(for: group, hiddenCount: hidden.count)
+            }
+        }
+    }
+
+    /// Render one grouped field row and, for a postal address with guide
+    /// matches, its own summary immediately afterward. Keeping these adjacent
+    /// makes the association unambiguous for contacts with multiple addresses;
+    /// it also keeps an old address's summary hidden until that address itself
+    /// is revealed.
+    @ViewBuilder
+    private func groupedInfoRow(_ row: InfoRowData) -> some View {
+        infoRow(row)
+            .centeredRowContent()
+        if case .address(let address) = row.kind {
+            let street = address.street.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let matches = addressGuides[street], !matches.isEmpty {
+                AddressGuidesSummaryRow(matches: matches)
+                    .centeredRowContent()
             }
         }
     }
@@ -2676,7 +2686,7 @@ struct ContactDetailView: View {
             eventLinks = []
             recentEvents = []
             memberGroups = []
-            addressGuides = []
+            addressGuides = [:]
             storeSourceCount = 0
             recordSources = []
             let terminalStatus: String
@@ -2804,14 +2814,14 @@ struct ContactDetailView: View {
     /// contact's structured street lines, for the guide rows under the address
     /// section. The complete load's token prevents a stale snapshot from being
     /// published after a newer load.
-    private func fetchAddressGuides(for contact: Contact) async -> [GuideAddressMatcher.Match] {
+    private func fetchAddressGuides(for contact: Contact) async -> [String: [GuideAddressMatcher.Match]] {
         let streets = Set(
             contact.postalAddresses
                 .map { $0.value.street.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )
-        guard !streets.isEmpty else { return [] }
-        return await service.guides(containingAddresses: streets)
+        guard !streets.isEmpty else { return [:] }
+        return await service.guides(containingEachAddress: streets)
     }
 
     /// Fetch the Contacts.app groups this record belongs to (a membership scan

@@ -67,6 +67,33 @@ public enum GuideAddressMatcher {
         }
     }
 
+    /// The contact-detail variant that keeps each street line's matches
+    /// separate. A contact can have multiple postal addresses, and collapsing
+    /// them into one result makes a summary row for one address count guides
+    /// that actually matched another address. Keys are trimmed street lines;
+    /// empty lines are omitted, as are street lines with no matching guides.
+    public static func guides(
+        containingEachOf streetLines: Set<String>,
+        guides: [MapsGuide],
+        places: [MapsPlace]
+    ) -> [String: [Match]] {
+        let needles = Set(
+            streetLines
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        var result: [String: [Match]] = [:]
+        for needle in needles {
+            let needleMatches = matches(guides: guides, places: places) { place in
+                EventLocationMatcher.matches(location: place.address, anyOf: [needle])
+            }
+            if !needleMatches.isEmpty {
+                result[needle] = needleMatches
+            }
+        }
+        return result
+    }
+
     /// Guides whose places' street lines appear inside `location` (an event's
     /// free-text location) — the event-detail direction. One `Match` per guide
     /// (the first matching place in entry order); guides in `guides` order.

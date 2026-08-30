@@ -49,6 +49,41 @@ struct GuideAddressMatcherTests {
         ).isEmpty)
     }
 
+    @Test
+    func contactAddressesKeepTheirGuideMatchesSeparate() {
+        let homeGuide = guide("Home favorites")
+        let workGuide = guide("Work lunches")
+        let places = [
+            place(guide: homeGuide, address: "1 Infinite Loop, Cupertino, CA", name: "Home"),
+            place(guide: workGuide, address: "500 Terry A Francois Blvd, San Francisco, CA", name: "Work"),
+        ]
+
+        let matchesByStreet = GuideAddressMatcher.guides(
+            containingEachOf: ["1 Infinite Loop", "500 Terry A Francois Blvd"],
+            guides: [homeGuide, workGuide],
+            places: places
+        )
+
+        #expect(matchesByStreet["1 Infinite Loop"]?.map(\.guide.id) == [homeGuide.id])
+        #expect(matchesByStreet["500 Terry A Francois Blvd"]?.map(\.guide.id) == [workGuide.id])
+    }
+
+    @Test
+    func perAddressMatchesStillDeduplicatePlacesWithinAGuide() {
+        let guide = guide("Favorites")
+        let places = [
+            place(guide: guide, address: "1 Infinite Loop, Cupertino", name: "first", sortOrder: 0),
+            place(guide: guide, address: "1 Infinite Loop, Cupertino", name: "second", sortOrder: 1),
+        ]
+
+        let matchesByStreet = GuideAddressMatcher.guides(
+            containingEachOf: ["1 Infinite Loop"], guides: [guide], places: places
+        )
+
+        #expect(matchesByStreet["1 Infinite Loop"]?.count == 1)
+        #expect(matchesByStreet["1 Infinite Loop"]?.first?.place.name == "first")
+    }
+
     // MARK: - Event direction: place street line inside event location
 
     @Test

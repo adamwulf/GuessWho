@@ -238,23 +238,28 @@ under the address it matched, in the same section. Tapping it opens the
 matched place's detail, where the **Guides** section (above) enumerates the
 full list; it does *not* jump straight to a guide.
 
-* **`ContactDetailView`** — under the postal-address group, one summary row
-  when the contact's structured street lines match any guide's place
-  addresses. Loaded by `reloadAddressGuides(for:)` on each contact load (its
-  own load token, like `reloadRecentEvents`).
+* **`ContactDetailView`** — immediately under each matching postal-address row,
+  one summary for that address only. Keeping matches separate by street line
+  makes the association clear for contacts with multiple addresses and keeps
+  the count aligned with the place detail opened by that row. An old/hidden
+  address's summary remains hidden until its address is revealed. Loaded with
+  the other supplemental contact data on each contact load.
 * **`EventDetailView`** — under the Location row in the Details section, one
   summary row when the event's free-text location contains a guide place's
   street line. Loaded by a `.task(id: event?.location)` so it recomputes when
   the location changes.
 
 Both call the shared `GuideAddressMatcher` (GuessWhoSync) via
-`SyncService.guides(containingAddresses:)` / `guides(matchingLocation:)`, which
+`SyncService.guides(containingEachAddress:)` / `guides(matchingLocation:)`, which
 read every guide + place (the background-hop `allGuides()` / `allPlaces()`
 overloads) and return one `Match` per guide (guide + the first matching place).
 `allGuides()` walks the guide sidecars each call; `allPlaces()` serves a
 `PlaceCorpusCache` snapshot on a cache hit and only re-walks the place sidecars
 after a place/guide change invalidates it (see the corpus cache in
-`GuessWhoSync+Guides.swift`). The matcher reuses the same `EventLocationMatcher` street-line
+`GuessWhoSync+Guides.swift`). Contact matches remain partitioned by their
+trimmed street line; within each street line the matcher still returns at most
+one place per guide, so duplicate matching entries in one guide never inflate
+the displayed guide count. The matcher reuses the same `EventLocationMatcher` street-line
 token logic as the place detail — only the needle/haystack direction differs
 (contact street line ⊂ place address vs. place street line ⊂ event location),
 and `GuideAddressMatcher.streetNeedle` derives a place's needle exactly as the
@@ -262,8 +267,8 @@ place detail did (it now lives in the package and `GuidePlaceDetailView` calls
 it). The row is the SwiftUI `AddressGuidesSummaryRow`; tapping pushes the first
 match's place via a `pushPlaceReference` env closure (`PlaceReference` carries
 the `MapsPlace`, which knows its own `guideID`) wired in both shells'
-scene-delegate push handlers — any matched place is equivalent, since they
-share the address and the place detail re-derives the full guide list from it.
+scene-delegate push handlers. The place detail then re-derives the full guide
+list for that specific address.
 The place detail's own **Guides** section then pushes an individual guide via
 `pushGuideReference` (`GuideReference` carries the `MapsGuide`). As with the
 place detail, matching keys off the resolved `address`, so an unresolved

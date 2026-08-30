@@ -2,15 +2,15 @@ import SwiftUI
 import GuessWhoSync
 
 /// One summary row — "This place is in N guides" — shown directly under a
-/// contact's postal address or an event's location when that address appears in
-/// one or more imported Apple Maps guides. Replaces the earlier
+/// contact's individual postal address or an event's location when that address
+/// appears in one or more imported Apple Maps guides. Replaces the earlier
 /// one-row-per-guide list: instead of jumping straight to a guide, the row opens
 /// the matched place's detail (via the injected `pushPlaceReference` closure),
 /// where a "Guides" section enumerates every guide the place sits in.
 ///
-/// The first match's place is the representative handed to the place detail:
-/// every match shares the queried address, so any of their place records lands
-/// on an equivalent place detail, whose own guide scan re-derives the full list.
+/// The first match's place is the representative handed to the place detail.
+/// Contact callers keep separate postal addresses in separate rows, so matches
+/// from another address never inflate this representative place's guide count.
 struct AddressGuidesSummaryRow: View {
     let matches: [GuideAddressMatcher.Match]
 
