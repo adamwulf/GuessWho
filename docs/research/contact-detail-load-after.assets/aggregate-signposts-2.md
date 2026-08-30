@@ -1,0 +1,61 @@
+Exporting os-signpost table from .build/traces/detail-nav-2.trace...
+name                                   count        total        mean       stdev         max         min
+--------------------------------------------------------------------------------------------------------
+Fetching                                 261     19.950 s    76.44 ms   638.20 ms     5.989 s     4.22 ms
+LayerDataRequest                          68      8.158 s   119.97 ms   112.51 ms   291.62 ms     8.09 ms
+Fetching Contacts                         87      6.643 s    76.36 ms   641.33 ms     5.989 s     4.26 ms
+Visible                                    1      5.299 s     5.299 s        0 ns     5.299 s     5.299 s
+EKPredicateSearch                         15      4.302 s   286.83 ms   551.04 ms     1.639 s   397.00 μs
+contact_detail_load                        6      1.828 s   304.59 ms    77.80 ms   381.35 ms   210.12 ms
+contact_sources                            6      1.573 s   262.20 ms    89.80 ms   378.10 ms   202.02 ms
+PresentedFrameStats                        3      1.521 s   507.12 ms   559.42 ms     1.107 s    11.00 μs
+SkippedFrameStats                          2      1.521 s   760.67 ms   490.08 ms     1.107 s   414.13 ms
+Commit                                   268      1.284 s     4.79 ms    23.53 ms   319.82 ms    21.58 μs
+contact_groups                             6      1.194 s   199.08 ms    89.91 ms   315.14 ms   140.47 ms
+event_detail_load                          2    745.71 ms   372.85 ms        0 ns   372.85 ms   372.85 ms
+event_location_guides                      2    667.99 ms   334.00 ms        0 ns   334.00 ms   334.00 ms
+UpdateSequence                           228    651.50 ms     2.86 ms    11.95 ms   119.10 ms    16.83 μs
+contact_address_guides                     6    629.42 ms   104.90 ms   162.51 ms   314.71 ms     2.67 μs
+contact_header_photo                       6    428.81 ms    71.47 ms    56.67 ms   144.53 ms    31.77 ms
+LoadAllLayers                              1    379.67 ms   379.67 ms        0 ns   379.67 ms   379.67 ms
+LoadRequiredLayers                         1    224.93 ms   224.93 ms        0 ns   224.93 ms   224.93 ms
+datadetectors.scanString                 374    176.98 ms   473.20 μs   543.10 μs     8.33 ms    40.92 μs
+BatchUpdates                              92    161.47 ms     1.76 ms     1.97 ms    18.98 ms    50.62 μs
+PerfLoggingOperation                       3    155.79 ms    51.93 ms    47.18 ms   106.40 ms    24.05 ms
+CAMetalLayerMetadata                       1    154.26 ms   154.26 ms        0 ns   154.26 ms   154.26 ms
+contact_recent_events                      6    121.20 ms    20.20 ms    17.66 ms    42.95 ms     7.58 ms
+contact_stamp_viewed                       6    114.31 ms    19.05 ms     2.88 ms    22.71 ms    16.66 ms
+CommonInitialization                       1    109.65 ms   109.65 ms        0 ns   109.65 ms   109.65 ms
+CellForItem                               60     91.94 ms     1.53 ms     1.50 ms     8.29 ms   629.75 μs
+FullyLoaded                                1     83.54 ms    83.54 ms        0 ns    83.54 ms    83.54 ms
+ReconfigureCell                          428     69.95 ms   163.44 μs   178.62 μs     1.99 ms     6.79 μs
+contact_sidecar_stores                     6     52.40 ms     8.73 ms     1.05 ms     9.78 ms     7.47 ms
+LayerDataDecodeDispatched                 49     43.59 ms   889.49 μs     2.01 ms    10.23 ms     3.75 μs
+ResourceDecode                           114     33.04 ms   289.84 μs     1.11 ms     7.71 ms     4.92 μs
+ClientDrawable                            66     32.78 ms   496.65 μs     1.02 ms     8.23 ms   200.88 μs
+UpdateSceneMetrics                         9     25.14 ms     2.79 ms     6.35 ms    19.21 ms    28.71 μs
+CellForRow                                16     17.62 ms     1.10 ms   790.56 μs     3.29 ms   628.96 μs
+event_notes_tags                           2     12.59 ms     6.29 ms        0 ns     6.29 ms     6.29 ms
+event_links                                2     11.25 ms     5.62 ms        0 ns     5.62 ms     5.62 ms
+event_refresh                              2     11.24 ms     5.62 ms        0 ns     5.62 ms     5.62 ms
+event_read                                 2      8.97 ms     4.48 ms        0 ns     4.48 ms     4.48 ms
+EnabledDataclassesForAccount               6      8.02 ms     1.34 ms   859.05 μs     2.50 ms   424.46 μs
+SupportedDataclassesForAccountType         6      7.29 ms     1.22 ms   831.28 μs     2.75 ms   245.21 μs
+ViewForSupplementary                       8      6.78 ms   847.97 μs   212.14 μs     1.34 ms   704.46 μs
+RegisterTypesToMonitorSync                 1      6.60 ms     6.60 ms        0 ns     6.60 ms     6.60 ms
+GoToDefaultLocation                        1      4.92 ms     4.92 ms        0 ns     4.92 ms     4.92 ms
+ModalTransition                            1      2.98 ms     2.98 ms        0 ns     2.98 ms     2.98 ms
+AccountWithIdentifierSync                  2      2.97 ms     1.48 ms   438.26 μs     1.79 ms     1.17 ms
+NSCGSDisplayCreate                         1      1.74 ms     1.74 ms        0 ns     1.74 ms     1.74 ms
+CameraControllerTask                      66    668.46 μs    10.13 μs    11.09 μs    96.92 μs     5.42 μs
+contact_event_links                        6    409.00 μs    68.17 μs     9.73 μs    76.25 μs    55.79 μs
+Initialization                             1    350.12 μs   350.12 μs        0 ns   350.12 μs   350.12 μs
+CameraCollisionTask                       66    271.21 μs     4.11 μs     3.14 μs    23.67 μs     1.54 μs
+SetMapType                                 5    225.75 μs    45.15 μs    51.41 μs   137.04 μs    19.54 μs
+Register Property Providers                1    129.00 μs   129.00 μs        0 ns   129.00 μs   129.00 μs
+keyboard.becomeFirstResponder             10    107.21 μs    10.72 μs     7.85 μs    31.04 μs     1.46 μs
+contact_resolve                            6     87.67 μs    14.61 μs     2.97 μs    18.29 μs    11.83 μs
+reload                                     1     71.83 μs    71.83 μs        0 ns    71.83 μs    71.83 μs
+contact_refresh_linked_events              6     71.08 μs    11.85 μs    12.71 μs    28.25 μs     3.25 μs
+Collision                                  1     35.33 μs    35.33 μs        0 ns    35.33 μs    35.33 μs
+Clustering                                 1       333 ns      333 ns        0 ns      333 ns      333 ns
