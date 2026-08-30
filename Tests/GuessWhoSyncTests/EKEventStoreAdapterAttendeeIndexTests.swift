@@ -370,6 +370,69 @@ struct EKEventStoreAdapterAttendeeIndexTests {
     }
 
     @Test
+    func authorizationTransitionInvalidatesBothWindowAndAttendeeCachesTogether() throws {
+        // Centralized transition tracking must clear BOTH caches on one edge, so
+        // the non-expiring attendee index can never be left stale while the
+        // window cache is refreshed (or vice versa).
+        let auth = AuthorizationStatusBox(.authorized)
+        let spy = AttendeeIndexFetchSpy(events: [event(ekid: "e1", start: 100, emails: ["a@x.com"])])
+        let adapter = makeAdapter(authorization: { auth.value }, spy: spy)
+        let w = window()
+
+        _ = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)  // attendee walk
+        _ = try adapter.fetchEvents(in: w)                                                 // window walk
+        #expect(spy.fetchCount == 2)
+        // Both are now cached — repeat reads add no walks.
+        _ = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)
+        _ = try adapter.fetchEvents(in: w)
+        #expect(spy.fetchCount == 2)
+
+        // One observed transition (revoke then re-grant) must invalidate BOTH.
+        adapter.observeAuthorizationForTesting(.denied)
+        adapter.observeAuthorizationForTesting(.authorized)
+
+        _ = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)  // attendee re-walk
+        #expect(spy.fetchCount == 3)
+        _ = try adapter.fetchEvents(in: w)                                                 // window re-walk
+        #expect(spy.fetchCount == 4)   // == 3 would mean only one cache was cleared
+    }
+
+    @Test
+    func interleavedDifferingAuthObservationsNeverLeaveAttendeeCacheStale() throws {
+        // Hammer the centralized detector with concurrent, differing,
+        // interleaved authorization observations on dedicated threads. The
+        // single serialized baseline must stay thread-safe and every observed
+        // edge must invalidate the (non-expiring) attendee cache, so the
+        // authorized index built beforehand cannot survive the churn.
+        let spy = AttendeeIndexFetchSpy(events: [event(ekid: "e1", start: 100, emails: ["a@x.com"])])
+        let adapter = makeAdapter(spy: spy)
+        let w = window()
+
+        _ = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)
+        #expect(spy.fetchCount == 1)
+
+        let threadCount = 8
+        let iterations = 300
+        let churn = (0..<threadCount).map { index in
+            BlockingFuture<Void> {
+                for i in 0..<iterations {
+                    let status: StoreAuthorizationStatus = ((i + index) % 2 == 0) ? .authorized : .denied
+                    adapter.observeAuthorizationForTesting(status)
+                }
+            }
+        }
+        for future in churn { try future.value() }
+
+        // A .denied edge definitely occurred after the cache was built (so it
+        // was cleared), and no lookup ran during the churn to repopulate it.
+        // Settle to authorized and read: the lookup must re-walk.
+        adapter.observeAuthorizationForTesting(.authorized)
+        let result = try adapter.eventsWithAttendee(matchingEmails: ["a@x.com"], in: w, limit: 10)
+        #expect(spy.fetchCount == 2)
+        #expect(result.map(\.eventKitID) == ["e1"])
+    }
+
+    @Test
     func invalidationDuringBuildDiscardsRacedIndexAndRetriesFresh() throws {
         let center = NotificationCenter()
         let spy = AttendeeIndexFetchSpy(

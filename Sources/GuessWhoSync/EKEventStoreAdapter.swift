@@ -32,6 +32,13 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     private let notificationCenter: NotificationCenter
     private var eventStoreChangedObserver: NSObjectProtocol?
 
+    /// The single, adapter-level authorization baseline that drives cache
+    /// invalidation on a TCC transition. Guarded by `authorizationLock` so
+    /// concurrent differing-status observations resolve against one serialized
+    /// value instead of two independently-tracked per-coordinator baselines.
+    private let authorizationLock = NSLock()
+    private var lastObservedAuthorization: StoreAuthorizationStatus?
+
     /// One start/finish pair per underlying EventKit enumeration. The UUID and
     /// exact interval let a launch log correlate this adapter work with the
     /// repository's trigger breadcrumbs without relying on a profiler stack.
@@ -106,14 +113,32 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         attendeeIndex.invalidate(reason: reason)
     }
 
-    /// Feed an observed authorization status to BOTH caches so a transition in
-    /// either direction (grant → revoke or revoke → grant) advances both
-    /// generations. The first status seen only establishes the baseline; every
-    /// later change invalidates. Routed through one hook for the same
-    /// no-drift reason as `invalidateCaches`.
+    /// Centralized authorization-transition tracking. One `lastObservedAuthorization`
+    /// value, guarded by one lock at the adapter level, decides whether an
+    /// observation is an edge — and on any edge (grant → revoke or revoke →
+    /// grant) it clears BOTH caches through the shared `invalidateCaches` path.
+    ///
+    /// This must live here, NOT per-coordinator: the attendee index is
+    /// non-expiring, so a missed transition would be permanently stale. With two
+    /// independent per-coordinator baselines, concurrent differing-status
+    /// observations could be applied to the two coordinators in different orders
+    /// and leave them disagreeing about the current status — one could then
+    /// treat a real transition as a no-op. A single serialized baseline makes
+    /// the edge decision atomic, and every edge invalidates both caches
+    /// together. The first status seen only establishes the baseline.
+    ///
+    /// The baseline read/write is the only work under `authorizationLock`;
+    /// `invalidateCaches` (which takes each coordinator's own lock) runs after
+    /// the unlock, so no lock nests inside another. Two callers racing the same
+    /// edge just invalidate twice — harmless (idempotent generation bumps).
     private func resolveAuthorization(to status: StoreAuthorizationStatus) {
-        windowFetches.authorizationDidResolve(to: status)
-        attendeeIndex.authorizationDidResolve(to: status)
+        authorizationLock.lock()
+        let previous = lastObservedAuthorization
+        lastObservedAuthorization = status
+        authorizationLock.unlock()
+        if let previous, previous != status {
+            invalidateCaches(reason: "calendar-access-changed")
+        }
     }
 
     // MARK: - Authorization
@@ -619,6 +644,15 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     func invalidateAfterWriteForTesting(reason: String = "event-created") {
         invalidateCaches(reason: reason)
     }
+
+    /// Test-only: feed an explicit observed authorization status through the
+    /// centralized transition detector, standing in for an
+    /// `authorizationStatusWork()` read. Lets tests drive concurrent, differing,
+    /// interleaved observations deterministically and prove a detected edge
+    /// invalidates BOTH caches together.
+    func observeAuthorizationForTesting(_ status: StoreAuthorizationStatus) {
+        resolveAuthorization(to: status)
+    }
 }
 
 /// Synchronous generation cache around EventKit's synchronous window query.
@@ -983,7 +1017,6 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
     private let cacheLifetimeNanos: UInt64?
     private let maximumCacheEntries: Int
     private var generation: UInt64 = 0
-    private var lastAuthorization: StoreAuthorizationStatus?
     private var flights: [FlightKey: Flight] = [:]
     private var cache: [WindowKey: CacheEntry] = [:]
     private var useCounter: UInt64 = 0
@@ -1004,20 +1037,10 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
         }
     }
 
-    /// Detect TCC changes even when EventKit emits no store-change
-    /// notification. The first observed status establishes the baseline; every
-    /// later transition advances the generation as a store change would.
-    func authorizationDidResolve(to status: StoreAuthorizationStatus) {
-        condition.lock()
-        defer { condition.unlock() }
-        guard let previous = lastAuthorization else {
-            lastAuthorization = status
-            return
-        }
-        guard previous != status else { return }
-        lastAuthorization = status
-        invalidateLocked(reason: "calendar-access-changed")
-    }
+    // Authorization-transition tracking is centralized at the EKEventStoreAdapter
+    // level (one lock, one baseline) and drives invalidation through the shared
+    // `invalidateCaches` path. This cache exposes only `invalidate`; it does not
+    // track authorization itself, so two caches can't diverge on a transition.
 
     func invalidate(reason: String) {
         condition.lock()
