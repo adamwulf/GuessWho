@@ -97,6 +97,33 @@ struct RepositoryRefreshGenerationTests {
         #expect(repository.events.isEmpty)
     }
 
+    /// A contact timestamp echo is irrelevant to the events projection when
+    /// the watcher identifies its concrete `.contact` key, so it must cause
+    /// zero reloads. Unknown scope remains fail-closed: it can represent a real
+    /// remote event/link delivery and must still perform the full refresh.
+    @Test
+    func contactOnlySidecarChangeIsDroppedButUnknownScopeStillReloads() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = NotificationCenter()
+        let repository = EventsRepository(service: makeService(root: root), notificationCenter: center)
+        await repository.reload()
+
+        let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
+        counter.reset()
+
+        repository.scheduleDebouncedReload(SidecarChangeSet(changedKeys: [
+            SidecarKey(kind: .contact, id: UUID().uuidString)
+        ]), trigger: "test-contact-echo")
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(counter.count == 0)
+
+        repository.scheduleDebouncedReload(.fullRefresh, trigger: "test-unknown-remote")
+        await waitUntil { counter.count == 1 }
+        #expect(counter.count == 1)
+        #expect(repository.isLoading == false)
+    }
+
     /// A scoped sidecar change that arrives BEFORE any full load has landed must
     /// upgrade to a full reload rather than patch an empty base — otherwise the
     /// list would show only the one named event and drop every other one.
