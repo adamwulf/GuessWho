@@ -334,7 +334,7 @@ struct FileSystemSidecarStoreTests {
         )
         let key = SidecarKey(kind: .contact, id: "busy-fail-key")
         #expect(throws: SidecarStoreError.timedOut(key)) {
-            try store.runWithBusyHandling(key: key) {
+            try store.runWithBusyHandling(key: key) { _ in
                 Thread.sleep(forTimeInterval: 0.5)
             }
         }
@@ -358,7 +358,7 @@ struct FileSystemSidecarStoreTests {
         )
         let key = SidecarKey(kind: .contact, id: "busy-retry-key")
         #expect(throws: SidecarStoreError.timedOut(key)) {
-            try store.runWithBusyHandling(key: key) {
+            try store.runWithBusyHandling(key: key) { _ in
                 Thread.sleep(forTimeInterval: 0.5)
             }
         }
@@ -395,7 +395,7 @@ struct FileSystemSidecarStoreTests {
         )
         let key = SidecarKey(kind: .contact, id: "default-handler")
         #expect(throws: SidecarStoreError.timedOut(key)) {
-            try store.runWithBusyHandling(key: key) {
+            try store.runWithBusyHandling(key: key) { _ in
                 Thread.sleep(forTimeInterval: 1.0)
             }
         }
@@ -426,7 +426,7 @@ struct FileSystemSidecarStoreTests {
         let stuckRelease = DispatchSemaphore(value: 0)
         let stuckDone = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
-            try? store.runWithBusyHandling(key: stuckKey) {
+            try? store.runWithBusyHandling(key: stuckKey) { _ in
                 stuckStarted.signal()
                 stuckRelease.wait()
             }
@@ -437,7 +437,7 @@ struct FileSystemSidecarStoreTests {
         // An operation on a DIFFERENT key must complete promptly even though
         // the stuck key's queue is fully wedged.
         var liveRan = false
-        try store.runWithBusyHandling(key: liveKey) {
+        try store.runWithBusyHandling(key: liveKey) { _ in
             liveRan = true
         }
         #expect(liveRan)
@@ -835,90 +835,151 @@ struct FileSystemSidecarStoreTests {
         #expect(coordinator.writeCount == 0)
     }
 
-    // MARK: - Work-proportional corpus timeout budget (Fix 3)
-
     @Test
-    func manyKeyBulkWalkIsNotSpuriouslyTimedOut() throws {
+    func publicInitializerStoresCallerProvenanceNotProbeResult() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        // The budget MUST scale one `perAttemptTimeout` window per item, never a
-        // per-batch fraction of it. Parameters are chosen so the discrimination
-        // is sharp: the root claim takes a fixed 0.3s, and with a 0.02s base and
-        // a fail-fast handler,
-        //   • true per-item scaling → 128 × 0.02s = 2.56s budget > 0.3s → passes;
-        //   • any /N-batch policy (e.g. the rejected /64: ceil(128/64) × 0.02s =
-        //     0.04s) → budget < 0.3s → times out → this test FAILS.
-        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.3)
-        let store = FileSystemSidecarStore(
-            root: root,
-            ubiquity: ProductionUbiquityProvider(),
-            coordinatesUbiquitousAccess: true,
-            fileCoordinator: coordinator,
-            busyHandler: { _, _, _ in .fail },
-            perAttemptTimeout: 0.02
+        // The temp root's filesystem probe reports non-ubiquitous, so if the
+        // PUBLIC initializer probed, it would store `false`. Instead it stores
+        // the caller-supplied provenance: the default coordinates (uncertainty →
+        // safe choice), and an explicit `false` skips — both on this same
+        // probe-false root, read back through the internal test observation.
+        #expect(!isUbiquitousProbe(root))
+        #expect(FileSystemSidecarStore(root: root).coordinatesUbiquitousAccessForTesting)
+        #expect(
+            !FileSystemSidecarStore(root: root, coordinatesUbiquitousAccess: false)
+                .coordinatesUbiquitousAccessForTesting
         )
-        let keys = (0..<128).map { SidecarKey(kind: .contact, id: "bulk-timeout-\($0)") }
-
-        var visited: Set<SidecarKey> = []
-        try store.walkCorpus(keys: keys) { key, _ in visited.insert(key) }
-        #expect(visited == Set(keys))
-        // Let the (completed) claim drain before teardown.
-        #expect(coordinator.rootReadFinished.wait(timeout: .now() + 2) == .success)
     }
 
+    // MARK: - Progress-aware corpus timeout budget (Fix 3)
+
+    // (1) A progress report is success-of-one-work-unit: it resets the busy
+    // budget and starts a fresh window without completing the whole operation.
+    // Deterministic — the operation blocks on a gate between units and only the
+    // busy handler (fired on a genuine timeout while the op is blocked) releases
+    // it, so the ordering never depends on racing sleeps. The handler fails at
+    // attempt >= 1, so WITHOUT the reset a two-window stall would fail on the
+    // second consult; WITH the reset every unit is consulted at attempt 0 and
+    // the multi-unit operation — whose total span exceeds one window — completes.
     @Test
-    func manyContactBulkWalkThroughListingPathIsNotSpuriouslyTimedOut() throws {
+    func progressReportsResetTheBusyBudgetAcrossManyUnits() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        // The production projection path (walkCorpus(kinds:)) pre-counts the
-        // listed directories to size the same per-item budget. Same sharp
-        // discrimination as the keys-form test: 128 contacts, 0.02s base, 0.3s
-        // claim — per-item (2.56s) passes; a /64-batch budget (0.04s) times out
-        // and fails this test.
-        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.3)
+        let unitCount = 3
+        let proceed = DispatchSemaphore(value: 0)
+        var attemptsSeen: [Int] = []   // handler runs on the (test) waiter thread
         let store = FileSystemSidecarStore(
             root: root,
-            ubiquity: ProductionUbiquityProvider(),
-            coordinatesUbiquitousAccess: true,
-            fileCoordinator: coordinator,
-            busyHandler: { _, _, _ in .fail },
-            perAttemptTimeout: 0.02
+            busyHandler: { _, attempt, _ in
+                attemptsSeen.append(attempt)
+                proceed.signal()                       // release one unit of work
+                return attempt >= 1 ? .fail : .retry   // no-reset would fail here
+            },
+            perAttemptTimeout: 0.3
         )
-        let keys = (0..<128).map { SidecarKey(kind: .contact, id: "listing-timeout-\($0)") }
+
+        try store.runWithBusyHandling(key: SidecarKey(kind: .contact, id: "progress")) { reportProgress in
+            for _ in 0..<unitCount {
+                proceed.wait()     // block until the handler (post-timeout) releases us
+                reportProgress()   // one unit done → resets the waiter's budget
+            }
+        }
+
+        // One consult per unit, each at attempt 0 — the reset kept the budget
+        // from ever climbing to the .fail threshold, so the operation completed.
+        #expect(attemptsSeen == Array(repeating: 0, count: unitCount))
+    }
+
+    // (2) A wedged GRANT (the coordinator never begins the accessor, so no
+    // progress is ever reported) fails on the ordinary fixed budget — the
+    // default handler's four consults — INDEPENDENT of corpus size. A large
+    // planted corpus is present precisely to prove the failure is not scaled by
+    // item count.
+    @Test
+    func wedgedRootClaimFailsOnFixedBudgetRegardlessOfCorpusSize() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let keys = (0..<512).map { SidecarKey(kind: .contact, id: "wedged-\($0)") }
         for key in keys { try plantEnvelope(envelope(id: key.id), at: key, root: root) }
 
-        var visited: Set<SidecarKey> = []
-        try store.walkCorpus(kinds: [.contact]) { key, _ in visited.insert(key) }
-        #expect(visited == Set(keys))
-        #expect(coordinator.rootReadFinished.wait(timeout: .now() + 2) == .success)
-    }
-
-    @Test
-    func smallCorpusStillFailsGracefullyWhenClaimIsWedged() throws {
-        let root = makeRoot()
-        defer { cleanup(root) }
-        // Same fail-fast handler and tight budget, but a claim slower than even
-        // the scaled single-item budget: graceful failure is preserved — the
-        // wedged claim surfaces as `.timedOut` for the corpus sentinel key.
-        let coordinator = DelayingSidecarFileCoordinator(root: root, rootReadDelay: 0.5)
+        // Gate never signaled during the wedged window → the accessor never
+        // begins → the operation reports no progress at all.
+        let gate = DispatchSemaphore(value: 0)
+        let coordinator = GatedRootReadCoordinator(root: root, rootReadGate: gate)
+        var attemptsSeen: [Int] = []
         let store = FileSystemSidecarStore(
             root: root,
             ubiquity: ProductionUbiquityProvider(),
             coordinatesUbiquitousAccess: true,
             fileCoordinator: coordinator,
-            busyHandler: { _, _, _ in .fail },
-            perAttemptTimeout: 0.05
+            busyHandler: { _, attempt, _ in
+                attemptsSeen.append(attempt)
+                return attempt >= 3 ? .fail : .retry
+            },
+            perAttemptTimeout: 0.03
         )
-        let key = SidecarKey(kind: .contact, id: "solo")
-        try plantEnvelope(envelope(id: key.id), at: key, root: root)
 
         let corpusSentinel = SidecarKey(kind: .contact, id: "__corpus__")
         #expect(throws: SidecarStoreError.timedOut(corpusSentinel)) {
-            try store.walkCorpus(keys: [key]) { _, _ in }
+            try store.walkCorpus(kinds: [.contact]) { _, _ in }
         }
-        // The abandoned claim still runs its body to completion in the
-        // background; drain it before teardown removes the root.
+        // Fixed budget: consulted at 0,1,2,3 then failed — four attempts, NOT
+        // 512-scaled. Independent of corpus size.
+        #expect(attemptsSeen == [0, 1, 2, 3])
+
+        // Release the wedged grant so the abandoned accessor drains before
+        // teardown removes the root.
+        gate.signal()
         #expect(coordinator.rootReadFinished.wait(timeout: .now() + 2) == .success)
+    }
+
+    // (3) The actual many-key bulk path emits per-item progress AND profits from
+    // it. The internal progress hook gates each unit on a handshake (same
+    // deterministic shape as (1)); the handler fails at attempt >= 1, so a
+    // no-reset budget would fail on the second unit. Because the bulk read
+    // reports progress after the claim is granted and after EACH file capture,
+    // every unit is consulted at attempt 0 and the whole walk completes.
+    @Test
+    func manyKeyBulkPathEmitsPerItemProgressAndProfitsFromIt() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let keys = (0..<3).map { SidecarKey(kind: .contact, id: "progress-item-\($0)") }
+        for key in keys { try plantEnvelope(envelope(id: key.id), at: key, root: root) }
+
+        let coordinator = CountingSidecarFileCoordinator(root: root)
+        let proceed = DispatchSemaphore(value: 0)
+        let hookCalls = ThreadSafeBox<Int>(0)
+        var attemptsSeen: [Int] = []
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: ProductionUbiquityProvider(),
+            coordinatesUbiquitousAccess: true,
+            fileCoordinator: coordinator,
+            busyHandler: { _, attempt, _ in
+                attemptsSeen.append(attempt)
+                proceed.signal()
+                return attempt >= 1 ? .fail : .retry
+            },
+            perAttemptTimeout: 0.3
+        )
+        // Fires on the worker thread after each reported unit; count it, then
+        // block until the handler (post-timeout) releases the next unit.
+        store.corpusProgressHookForTesting = {
+            hookCalls.value += 1
+            proceed.wait()
+        }
+
+        var visited: Set<SidecarKey> = []
+        try store.walkCorpus(keys: keys) { key, _ in visited.insert(key) }
+
+        #expect(visited == Set(keys))
+        // One consolidated claim; the bulk keys path emits one unit for the
+        // granted accessor plus one per file read (no listing in the keys form).
+        #expect(coordinator.readCount == 1)
+        #expect(hookCalls.value == keys.count + 1)
+        // Every unit consulted at attempt 0 — per-item progress reset the budget.
+        #expect(attemptsSeen == Array(repeating: 0, count: keys.count + 1))
     }
 
     // Filesystem ubiquity probe mirror for the test above — asserts a local
@@ -929,26 +990,24 @@ struct FileSystemSidecarStoreTests {
     }
 }
 
-// Coordinator that delays the root-directory read by a fixed interval to model
-// a bulk claim that is slow but making progress (a large corpus) versus one
-// slow enough to be treated as wedged. Signals `rootReadFinished` after the
-// root claim's body returns so a test can drain an abandoned claim before
-// teardown.
-private final class DelayingSidecarFileCoordinator: SidecarFileCoordinating, @unchecked Sendable {
+// Coordinator that blocks the root-directory claim on an injected gate until
+// the test releases it, modeling a GRANT that never begins the accessor (a
+// wedged root). The accessor's body — and therefore any progress report — runs
+// only after the gate opens. Signals `rootReadFinished` after the root claim's
+// body returns so a test can drain an abandoned claim before teardown.
+private final class GatedRootReadCoordinator: SidecarFileCoordinating, @unchecked Sendable {
     private let root: URL
-    private let rootReadDelay: TimeInterval
+    private let rootReadGate: DispatchSemaphore
     let rootReadFinished = DispatchSemaphore(value: 0)
 
-    init(root: URL, rootReadDelay: TimeInterval) {
+    init(root: URL, rootReadGate: DispatchSemaphore) {
         self.root = root.standardizedFileURL
-        self.rootReadDelay = rootReadDelay
+        self.rootReadGate = rootReadGate
     }
 
     func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws {
         let isRoot = url.standardizedFileURL == root
-        if isRoot, rootReadDelay > 0 {
-            Thread.sleep(forTimeInterval: rootReadDelay)
-        }
+        if isRoot { rootReadGate.wait() }
         body(url)
         if isRoot { rootReadFinished.signal() }
     }

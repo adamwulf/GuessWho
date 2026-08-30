@@ -15,6 +15,19 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let coordinatesUbiquitousAccess: Bool
     private let fileCoordinator: SidecarFileCoordinating
 
+    // Read-only test observation of the stored coordination policy. Internal
+    // (never public), so it lets a `@testable` test assert the PUBLIC
+    // initializer stored the caller-supplied provenance rather than a filesystem
+    // probe result, without widening the package's public API.
+    var coordinatesUbiquitousAccessForTesting: Bool { coordinatesUbiquitousAccess }
+
+    // Test-only seam invoked on the corpus worker thread immediately after each
+    // unit of progress is reported inside a consolidated corpus claim (claim
+    // granted, listing captured, each file read). Lets deterministic tests gate
+    // per-unit timing and count emissions. nil in production; the corpus read
+    // pays only a nil-check per unit.
+    var corpusProgressHookForTesting: (() -> Void)?
+
     // Per-key locks for write/delete/reconcile: distinct keys run
     // independently, same-key operations serialize. This gives direct users of
     // the store (not going through GuessWhoSync) correctness on writes/deletes.
@@ -252,12 +265,16 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         var listingError: Error?
         var outcomes: [SidecarKey: ReadBytesOutcome] = [:]
 
-        try coordinatedCorpusRead(estimatedItemCount: estimatedCorpusItemCount(listing: listedKinds)) { safeRoot in
+        try coordinatedCorpusRead { safeRoot, reportProgress in
             do {
                 keys = try self.listKeys(ofKinds: listedKinds, under: safeRoot, requestDownloads: false)
+                // Authoritative listing captured — one unit of progress.
+                reportProgress()
                 outcomes.reserveCapacity(keys.count)
                 for key in keys where readKinds.contains(key.kind) {
                     outcomes[key] = self.readBytes(at: self.fileURL(for: key, root: safeRoot))
+                    // Each file capture is its own unit; refresh the budget.
+                    reportProgress()
                 }
             } catch {
                 listingError = error
@@ -277,32 +294,15 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         _ visit: (SidecarKey, Result<SidecarEnvelope?, Error>) throws -> Void
     ) throws {
         var outcomes: [SidecarKey: ReadBytesOutcome] = [:]
-        try coordinatedCorpusRead(estimatedItemCount: keys.count) { safeRoot in
+        try coordinatedCorpusRead { safeRoot, reportProgress in
             outcomes.reserveCapacity(keys.count)
             for key in keys {
                 outcomes[key] = self.readBytes(at: self.fileURL(for: key, root: safeRoot))
+                // Each file capture is its own unit; refresh the budget.
+                reportProgress()
             }
         }
         try visitCapturedCorpus(keys: keys, outcomes: outcomes, visit)
-    }
-
-    // Uncoordinated, name-only count of the entries the listed directories
-    // hold, used ONLY to size the coordinated corpus read's timeout budget. It
-    // never feeds the captured snapshot — the authoritative listing happens
-    // inside the claim — so a concurrent change between this count and the claim
-    // only mis-sizes the budget slightly, never the result. It over-counts
-    // (`.dat` payloads and `.icloud` placeholders included), which only makes
-    // the budget more generous. Cheap relative to the byte reads it guards.
-    private func estimatedCorpusItemCount(listing kinds: Set<SidecarKind>) -> Int {
-        let fm = FileManager.default
-        var count = 0
-        for kind in kinds {
-            let directory = root.appendingPathComponent(directoryName(for: kind))
-            if let entries = try? fm.contentsOfDirectory(atPath: directory.path) {
-                count += entries.count
-            }
-        }
-        return count
     }
 
     private func visitCapturedCorpus(
@@ -819,25 +819,30 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             body(url)
             return
         }
-        try runWithBusyHandling(key: key) {
+        // A single-file read is one unit; it never reports progress, so it gets
+        // exactly one `perAttemptTimeout` window and the ordinary busy budget.
+        try runWithBusyHandling(key: key) { _ in
             try self.fileCoordinator.coordinateReading(at: url, body)
         }
     }
 
-    // `estimatedItemCount` sizes the timeout budget for the whole-corpus claim
-    // and nothing else — it is an @autoclosure so a skipped (local) claim never
-    // pays for the estimate. A single claim legitimately reads every selected
-    // file, so charging it the single-file `perAttemptTimeout` spuriously trips
-    // the busy handler on a large corpus. We scale the per-attempt wait with the
-    // item count (see `corpusPerAttemptTimeout`); a genuinely wedged claim —
-    // one whose body never makes progress — still fails after the (larger, but
-    // finite) budget is exhausted, preserving graceful failure.
+    // One consolidated root claim reads the whole selected corpus. The budget is
+    // NOT scaled by item count; instead the claim is progress-aware. `body`
+    // receives a `reportProgress` closure it MUST call after each unit of work —
+    // after the authoritative listing and after each file capture — so every
+    // unit inside the single claim earns its own `perAttemptTimeout` window (see
+    // `runWithBusyHandling`). The accessor beginning is itself the first unit:
+    // reporting progress the moment cloudd grants the claim means a slow GRANT
+    // (the accessor never begins) fails on the ordinary fixed budget, while a
+    // slow-but-progressing read never spuriously times out — graceful
+    // degradation bounded by per-unit work, not by corpus size.
     private func coordinatedCorpusRead(
-        estimatedItemCount: @autoclosure () -> Int,
-        _ body: @escaping (URL) -> Void
+        _ body: @escaping (_ safeRoot: URL, _ reportProgress: () -> Void) -> Void
     ) throws {
         guard coordinatesUbiquitousAccess else {
-            body(root)
+            // No cross-process writer to serialize against: run inline, no busy
+            // handling, progress is a no-op.
+            body(root, {})
             return
         }
 
@@ -845,26 +850,19 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         // sentinel is internal and exists only to preserve the busy-handler /
         // timedOut error contract if cloudd wedges the corpus claim.
         let operationKey = SidecarKey(kind: .contact, id: "__corpus__")
-        try runWithBusyHandling(
-            key: operationKey,
-            queue: corpusCoordinatorQueue,
-            perAttemptTimeout: corpusPerAttemptTimeout(forItemCount: estimatedItemCount())
-        ) {
-            try self.fileCoordinator.coordinateReading(at: self.root, body)
+        try runWithBusyHandling(key: operationKey, queue: corpusCoordinatorQueue) { reportProgress in
+            // Wrap the waiter's progress with the test-only hook so tests can
+            // gate/observe each unit; nil in production.
+            let progress: () -> Void = {
+                reportProgress()
+                self.corpusProgressHookForTesting?()
+            }
+            try self.fileCoordinator.coordinateReading(at: self.root) { safeRoot in
+                // Claim granted / accessor began — first unit of progress.
+                progress()
+                body(safeRoot, progress)
+            }
         }
-    }
-
-    // The per-attempt wait a corpus claim of `count` items earns: one full
-    // `perAttemptTimeout` window PER item (at least one). This preserves the
-    // aggregate budget the old per-file coordinated reads had — reading N files
-    // one at a time gave each its own `perAttemptTimeout`, so the single
-    // consolidated claim over the same N files gets N × `perAttemptTimeout`
-    // rather than shrinking the budget. It is proportional to work, so a large
-    // corpus is never spuriously timed out; it is still finite (bounded by the
-    // estimated count), so a genuinely wedged claim fails after the scaled
-    // budget is exhausted. No arbitrary throughput assumption.
-    private func corpusPerAttemptTimeout(forItemCount count: Int) -> TimeInterval {
-        perAttemptTimeout * Double(max(1, count))
     }
 
     private func coordinatedWrite(key: SidecarKey, at url: URL, _ body: @escaping (URL) -> Void) throws {
@@ -872,7 +870,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             body(url)
             return
         }
-        try runWithBusyHandling(key: key) {
+        try runWithBusyHandling(key: key) { _ in
             try self.fileCoordinator.coordinateWriting(at: url, options: [.forReplacing], body)
         }
     }
@@ -882,16 +880,27 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             body(url)
             return
         }
-        try runWithBusyHandling(key: key) {
+        try runWithBusyHandling(key: key) { _ in
             try self.fileCoordinator.coordinateWriting(at: url, options: [.forDeleting], body)
         }
     }
 
     // Run `operation` on `key`'s coordinator queue with a per-attempt wait of
-    // `perAttemptTimeout` (or the caller-supplied override — a bulk corpus
-    // claim passes a work-proportional budget so its many-file read is not
-    // charged the single-file budget). The operation is dispatched ONCE; we
-    // never re-issue. On wait-timeout we consult the busy handler:
+    // `perAttemptTimeout`. The operation is dispatched ONCE; we never re-issue.
+    //
+    // The operation is handed a `reportProgress` closure. Calling it means "one
+    // unit of work inside this single dispatch finished" (a claim was granted, a
+    // listing was captured, a file was read). Each progress report is treated as
+    // success-of-one-unit: it resets the busy-handler attempt count and starts a
+    // fresh `perAttemptTimeout` window WITHOUT completing the whole operation.
+    // So a consolidated claim that reads many files gives EACH unit its own
+    // budget as long as it keeps making progress, while a grant that never
+    // begins — or a single unit that wedges — still fails on the ordinary fixed
+    // budget (one `perAttemptTimeout` window run through the busy handler),
+    // independent of how much work the operation would have done. A single-unit
+    // operation that never reports progress behaves exactly as before.
+    //
+    // On a wait that times out with no progress we consult the busy handler:
     //   .retry          → keep waiting (next per-attempt slice).
     //   .retryAfter(t)  → sleep, then keep waiting.
     //   .fail           → throw `.timedOut(key)` and abandon the operation.
@@ -902,45 +911,64 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // extremes still work: "block forever" (a handler returning `.retry`
     // forever) and "best effort, eventually fail" (the default handler).
     //
-    // An operation that completes after we threw `.timedOut` still runs its body
-    // on the background queue — captures live in `ResultBox` (heap) so a late
-    // completion never writes to a dead stack frame. ARC then releases the box;
-    // the key's coordinator queue is reused for its next call. An op abandoned
-    // STUCK (a coordination claim that never releases) wedges only that key's
-    // queue; other keys' queues are unaffected.
+    // An operation that completes (or reports progress) after we threw
+    // `.timedOut` still runs on the background queue — completion state lives in
+    // `BusyOperationState` (heap, lock-guarded) so a late write never touches a
+    // dead stack frame and the waiter's timeout-path read is race-free. ARC then
+    // releases the state; the key's coordinator queue is reused for its next
+    // call. An op abandoned STUCK (a coordination claim that never releases)
+    // wedges only that key's queue; other keys' queues are unaffected.
     // Internal so @testable tests can drive busy handling directly,
     // bypassing the coordinator wrappers.
     func runWithBusyHandling(
         key: SidecarKey,
         queue: DispatchQueue? = nil,
-        perAttemptTimeout: TimeInterval? = nil,
-        operation: @escaping () throws -> Void
+        operation: @escaping (_ reportProgress: @escaping () -> Void) throws -> Void
     ) throws {
-        let effectiveTimeout = perAttemptTimeout ?? self.perAttemptTimeout
-        let started = SidecarMonotonicClock.now()
+        // One semaphore carries both progress and completion wakeups; the state
+        // box distinguishes them (a progress wake sees `isComplete == false`).
         let semaphore = DispatchSemaphore(value: 0)
-        let resultBox = ResultBox()
+        let state = BusyOperationState()
         let operationQueue = queue ?? coordinatorQueues.queue(forKey: key)
+        let reportProgress: () -> Void = {
+            // A unit finished. Wake the waiter so it resets its budget. No state
+            // to publish — the wake before completion IS the signal.
+            semaphore.signal()
+        }
         operationQueue.async {
             do {
-                try operation()
-                resultBox.error = nil
+                try operation(reportProgress)
+                state.markComplete(error: nil)
             } catch {
-                resultBox.error = error
+                state.markComplete(error: error)
             }
-            resultBox.didComplete = true
+            // Set completion BEFORE signaling so the woken waiter sees it.
             semaphore.signal()
         }
 
         var attempt = 0
+        var windowStart = SidecarMonotonicClock.now()
         while true {
-            let outcome = semaphore.wait(timeout: .now() + effectiveTimeout)
+            let outcome = semaphore.wait(timeout: .now() + perAttemptTimeout)
             switch outcome {
             case .success:
-                if let error = resultBox.error { throw error }
-                return
+                // Completion wins over a coincident progress signal; a progress
+                // wake (not yet complete) resets the budget and keeps waiting.
+                if let completion = state.completionIfDone() {
+                    if let error = completion { throw error }
+                    return
+                }
+                attempt = 0
+                windowStart = SidecarMonotonicClock.now()
+                continue
             case .timedOut:
-                let elapsed = SidecarMonotonicClock.now() - started
+                // Guard the race where the op completed just as we timed out but
+                // its signal has not been consumed yet: don't fail a done op.
+                if let completion = state.completionIfDone() {
+                    if let error = completion { throw error }
+                    return
+                }
+                let elapsed = SidecarMonotonicClock.now() - windowStart
                 switch busyHandler(key, attempt, elapsed) {
                 case .retry:
                     attempt += 1
@@ -1000,12 +1028,34 @@ private final class ProductionSidecarFileCoordinator: SidecarFileCoordinating {
     }
 }
 
-// Box for the bg worker to write its outcome; read by the waiter after the
-// semaphore signals. Heap-allocated so a late completion can write to it
-// even after the waiter threw `.timedOut` and returned.
-private final class ResultBox {
-    var error: Error?
-    var didComplete: Bool = false
+// Thread-safe completion state for `runWithBusyHandling`. The bg worker records
+// the terminal outcome; the waiter reads it both after a wake AND on a timeout
+// (to resolve the completed-just-as-we-timed-out race), so access is
+// lock-guarded. Heap-allocated so a late completion after the waiter threw
+// `.timedOut` writes to live memory, never a dead stack frame. Progress wakeups
+// carry no state — a wake with the operation not yet complete IS the progress
+// signal — so only completion needs publishing here.
+private final class BusyOperationState {
+    private let lock = NSLock()
+    private var didComplete = false
+    private var completionError: Error?
+
+    func markComplete(error: Error?) {
+        lock.lock()
+        defer { lock.unlock() }
+        completionError = error
+        didComplete = true
+    }
+
+    // nil while the operation is still running; once complete, `.some(error)`
+    // where `error` is the failure (or nil on success). The double optional lets
+    // the waiter distinguish "not done yet" (outer nil) from "done, no error"
+    // (`.some(nil)`).
+    func completionIfDone() -> Error?? {
+        lock.lock()
+        defer { lock.unlock() }
+        return didComplete ? .some(completionError) : nil
+    }
 }
 
 // Monotonic clock for elapsed-time measurement. Avoids wall-clock skew if
