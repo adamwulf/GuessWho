@@ -8,6 +8,7 @@ const {
   compactTLSPhotoForHandoff,
   extractContactInfo,
   extractProfile,
+  extractRiceBusinessProfile,
   extractRiceProfile,
   extractTLSProfiles,
   fitTLSBatchToHandoffCap,
@@ -124,6 +125,73 @@ const rice = extractRiceProfile(documentFor(`
 `, "https://profiles.rice.edu/faculty/grace-hopper"));
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
+
+const riceBusinessFixtureURL = new URL(
+  "./fixtures/rice-business-person-sanitized.html", import.meta.url
+);
+const riceBusiness = extractRiceBusinessProfile(documentFor(
+  fs.readFileSync(riceBusinessFixtureURL, "utf8"),
+  "https://business.rice.edu/person/elena-naids/?ref=directory#bio"
+));
+equal(riceBusiness.source, "rice", "Rice Business source");
+equal(riceBusiness.slug, "elena-naids", "Rice Business slug");
+equal(riceBusiness.fullName, "Elena Naids", "Rice Business name");
+equal(riceBusiness.title, "Lecturer in Entrepreneurship", "Rice Business title");
+equal(riceBusiness.department, "Faculty", "Rice Business department");
+equal(riceBusiness.about, "Design researcher and strategist.", "Rice Business biography");
+equal(riceBusiness.contactInfo.emails.join(","), "elena.naids@rice.edu", "Rice Business email");
+equal(riceBusiness.contactInfo.phones.join(","), "+1-713-348-4622", "Rice Business phone");
+equal(
+  riceBusiness.contactInfo.websites.join(","),
+  "https://portfolio.example/elena",
+  "Rice Business keeps only HTTP(S) contact websites"
+);
+equal(
+  riceBusiness.photoSrcset,
+  "https://business.rice.edu/sites/default/files/styles/1_1_720x720/public/elena-naids.jpg",
+  "Rice Business visible profile photo wins over metadata"
+);
+const riceBusinessMetadataOnly = extractRiceBusinessProfile(documentFor(`
+  <meta property="og:title" content="Social Title | Rice Business">
+  <meta property="og:description" content="A social description, not a job title">
+  <main id="main-content"><div class="t--profile"></div></main>
+`, "https://business.rice.edu/person/metadata-only"));
+equal(riceBusinessMetadataOnly.fullName, null, "Rice Business rejects og:title as a name");
+equal(riceBusinessMetadataOnly.title, null, "Rice Business rejects og:description as a title");
+const safariManifest = JSON.parse(fs.readFileSync(
+  new URL("../Resources/manifest.json", import.meta.url), "utf8"
+));
+equal(
+  safariManifest.host_permissions.includes("https://business.rice.edu/*"),
+  true,
+  "Safari manifest grants Rice Business access"
+);
+equal(
+  safariManifest.content_scripts.some((script) =>
+    script.matches.includes("https://business.rice.edu/person/*")),
+  true,
+  "Safari manifest injects on Rice Business people"
+);
+const chromeManifest = JSON.parse(fs.readFileSync(
+  new URL("../../GuessWhoChrome/Sources/manifest.template.json", import.meta.url), "utf8"
+));
+equal(
+  chromeManifest.host_permissions.includes("https://business.rice.edu/*"),
+  true,
+  "Chrome manifest grants Rice Business access"
+);
+equal(
+  chromeManifest.content_scripts.some((script) =>
+    script.matches.includes("https://business.rice.edu/person/*")),
+  true,
+  "Chrome manifest injects on Rice Business people"
+);
+const popupSource = fs.readFileSync(new URL("../Resources/popup.js", import.meta.url), "utf8");
+equal(
+  popupSource.includes("business\\.rice\\.edu\\/person"),
+  true,
+  "popup accepts Rice Business person URLs"
+);
 
 // The checked-in fixture is a privacy-safe structural derivative of the saved
 // rendered TLS page. Keep it mandatory so a clean checkout always exercises
@@ -334,6 +402,18 @@ const riceProbe = await sendProbe("rice-route");
 equal(riceProbe.source, "rice", "content routes Rice source");
 equal(riceProbe.fullName, "Grace Hopper", "Rice content result remains single-profile");
 equal("profiles" in riceProbe, false, "Rice content result is not a batch");
+
+const riceBusinessContentDocument = documentFor(`
+  <main id="main-content"><div class="t--profile">
+    <div class="title-hero"><h1>Elena Naids</h1><p>Lecturer in Entrepreneurship</p></div>
+  </div></main>
+`, "https://business.rice.edu/person/elena-naids");
+globalThis.document = riceBusinessContentDocument;
+globalThis.location = riceBusinessContentDocument.location;
+const riceBusinessProbe = await sendProbe("rice-business-route");
+equal(riceBusinessProbe.source, "rice", "content routes Rice Business source");
+equal(riceBusinessProbe.slug, "elena-naids", "content routes Rice Business person slug");
+equal(riceBusinessProbe.fullName, "Elena Naids", "Rice Business content result");
 
 globalThis.extractProfile = () => ({
   source: "linkedin",

@@ -43,13 +43,16 @@ The extension is bundled inside the GuessWho app as a single
 | App receiver | `App/GuessWho/GuessWhoSceneDelegate.swift` | Runs in the **app process**. Receives the wake URL, drains the parked payload, then **matches** the profile, builds a **per-field before/after diff**, and presents a **confirm sheet** that saves the checked fields (see [Match → diff → confirm → save](#match--diff--confirm--save-app-side)). |
 
 Rice profile support uses the same transport and confirmation pipeline. The
-manifests match `profiles.rice.edu/faculty/*` and `/staff/*`;
-`extractRiceProfile` reads the server-rendered profile name, first title,
-department/office units, bio, email, phone, listed websites, and profile image.
-Rice pages do not need the LinkedIn lazy-scroll or contact-overlay steps. The
-content script still fetches the image bytes in-page and attaches the same
-`photo` payload. On save, title/email/phone/websites/photo use normal Contacts
-fields, the Rice profile URL is added as a website labeled `Rice`, and
+manifests match `profiles.rice.edu/faculty/*`, `profiles.rice.edu/staff/*`, and
+`business.rice.edu/person/*`. `extractRiceProfile` reads the main Rice
+directory's server-rendered fields; `extractRiceBusinessProfile` reads the
+business school's Schema.org Person data plus its visible department and bio
+components. Both produce the same Rice payload: name, first title,
+department/office units, bio, email, phone, listed websites, and profile image
+when present. Rice pages do not need the LinkedIn lazy-scroll or contact-overlay
+steps. The content script still fetches the image bytes in-page and attaches
+the same `photo` payload. On save, title/email/phone/websites/photo use normal
+Contacts fields, the Rice profile URL is added as a website labeled `Rice`, and
 department/bio upsert the named `Rice Department` and `Rice Bio` fields.
 
 The same extension also supports the TLS 2026 Session 2 roster at

@@ -160,10 +160,11 @@ async function runHandoff() {
     const tab = await activeTab();
     const supportedProfile = /linkedin\.com\/in\//.test(tab?.url || "") ||
       /profiles\.rice\.edu\/(faculty|staff)\//.test(tab?.url || "") ||
+      /^https:\/\/business\.rice\.edu\/person\/[^/?#]+/.test(tab?.url || "") ||
       /^https:\/\/tls26-s2-people\.netlify\.app(?:\/|$)/.test(tab?.url || "");
     if (!tab || !supportedProfile) {
       log("abort: not a supported profile tab", { url: tab?.url ?? null });
-      show("Open a LinkedIn profile, a Rice faculty/staff profile, or the TLS people page first.", true);
+      show("Open a LinkedIn profile, a Rice person profile, or the TLS people page first.", true);
       return;
     }
     log("active tab", { tabId: tab.id, url: tab.url });
