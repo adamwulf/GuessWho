@@ -583,6 +583,16 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
     });
   };
   const absoluteURL = (raw) => raw ? safe(() => new URL(raw, doc.location.href).href) : null;
+  const identityURL = (raw) => {
+    const url = absoluteURL(raw);
+    return url ? safe(() => {
+      const normalized = new URL(url);
+      normalized.hash = "";
+      normalized.search = "";
+      normalized.pathname = normalized.pathname.replace(/\/+$/, "") || "/";
+      return normalized.href;
+    }) : null;
+  };
   const httpURL = (raw) => {
     const url = absoluteURL(raw);
     return url && safe(() => ["http:", "https:"].includes(new URL(url).protocol)) ? url : null;
@@ -613,9 +623,9 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
         : [record && record["@type"]];
       return types.includes("Person");
     });
-    const pageURL = absoluteURL(doc.location.href);
+    const pageURL = identityURL(doc.location.href);
     return people.find((record) =>
-      [record.url, record["@id"]].some((value) => absoluteURL(value) === pageURL)
+      [record.url, record["@id"]].some((value) => identityURL(value) === pageURL)
     ) || people[0] || null;
   });
 

@@ -131,7 +131,7 @@ const riceBusinessFixtureURL = new URL(
 );
 const riceBusiness = extractRiceBusinessProfile(documentFor(
   fs.readFileSync(riceBusinessFixtureURL, "utf8"),
-  "https://business.rice.edu/person/elena-naids"
+  "https://business.rice.edu/person/elena-naids/?ref=directory#bio"
 ));
 equal(riceBusiness.source, "rice", "Rice Business source");
 equal(riceBusiness.slug, "elena-naids", "Rice Business slug");
@@ -175,6 +175,11 @@ equal(
 const chromeManifest = JSON.parse(fs.readFileSync(
   new URL("../../GuessWhoChrome/Sources/manifest.template.json", import.meta.url), "utf8"
 ));
+equal(
+  chromeManifest.host_permissions.includes("https://business.rice.edu/*"),
+  true,
+  "Chrome manifest grants Rice Business access"
+);
 equal(
   chromeManifest.content_scripts.some((script) =>
     script.matches.includes("https://business.rice.edu/person/*")),
