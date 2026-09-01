@@ -8,6 +8,7 @@ const {
   compactTLSPhotoForHandoff,
   extractContactInfo,
   extractProfile,
+  extractRiceBusinessProfile,
   extractRiceProfile,
   extractTLSProfiles,
   fitTLSBatchToHandoffCap,
@@ -124,6 +125,74 @@ const rice = extractRiceProfile(documentFor(`
 `, "https://profiles.rice.edu/faculty/grace-hopper"));
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
+
+const riceBusiness = extractRiceBusinessProfile(documentFor(`
+  <script type="application/ld+json">{
+    "@context": "https://schema.org",
+    "@graph": [{
+      "@type": "Person",
+      "name": "Elena Naids",
+      "email": "elena.naids@rice.edu",
+      "jobTitle": "Lecturer in Entrepreneurship",
+      "image": { "@type": "ImageObject", "url": "/images/elena-naids.jpg" }
+    }]
+  }</script>
+  <main id="main-content">
+    <div class="t--profile">
+      <section class="header-container">
+        <div class="title-hero"><h1>Elena Naids</h1><p>Lecturer in Entrepreneurship</p></div>
+        <div class="profile-main-metadata">
+          <div class="department"><label>Departments</label><div>Faculty</div></div>
+          <div class="contact"><a href="mailto:elena.naids@rice.edu">Email</a></div>
+        </div>
+      </section>
+      <div class="clc--faculty-experts-bio-component-list">
+        <section class="cc--rich-text"><div class="f--wysiwyg"><p>Design researcher and strategist.</p></div></section>
+      </div>
+    </div>
+  </main>
+`, "https://business.rice.edu/person/elena-naids"));
+equal(riceBusiness.source, "rice", "Rice Business source");
+equal(riceBusiness.slug, "elena-naids", "Rice Business slug");
+equal(riceBusiness.fullName, "Elena Naids", "Rice Business name");
+equal(riceBusiness.title, "Lecturer in Entrepreneurship", "Rice Business title");
+equal(riceBusiness.department, "Faculty", "Rice Business department");
+equal(riceBusiness.about, "Design researcher and strategist.", "Rice Business biography");
+equal(riceBusiness.contactInfo.emails.join(","), "elena.naids@rice.edu", "Rice Business email");
+equal(
+  riceBusiness.photoSrcset,
+  "https://business.rice.edu/images/elena-naids.jpg",
+  "Rice Business Schema.org photo"
+);
+const safariManifest = JSON.parse(fs.readFileSync(
+  new URL("../Resources/manifest.json", import.meta.url), "utf8"
+));
+equal(
+  safariManifest.host_permissions.includes("https://business.rice.edu/*"),
+  true,
+  "Safari manifest grants Rice Business access"
+);
+equal(
+  safariManifest.content_scripts.some((script) =>
+    script.matches.includes("https://business.rice.edu/person/*")),
+  true,
+  "Safari manifest injects on Rice Business people"
+);
+const chromeManifest = JSON.parse(fs.readFileSync(
+  new URL("../../GuessWhoChrome/Sources/manifest.template.json", import.meta.url), "utf8"
+));
+equal(
+  chromeManifest.content_scripts.some((script) =>
+    script.matches.includes("https://business.rice.edu/person/*")),
+  true,
+  "Chrome manifest injects on Rice Business people"
+);
+const popupSource = fs.readFileSync(new URL("../Resources/popup.js", import.meta.url), "utf8");
+equal(
+  popupSource.includes("business\\.rice\\.edu\\/person"),
+  true,
+  "popup accepts Rice Business person URLs"
+);
 
 // The checked-in fixture is a privacy-safe structural derivative of the saved
 // rendered TLS page. Keep it mandatory so a clean checkout always exercises
@@ -334,6 +403,18 @@ const riceProbe = await sendProbe("rice-route");
 equal(riceProbe.source, "rice", "content routes Rice source");
 equal(riceProbe.fullName, "Grace Hopper", "Rice content result remains single-profile");
 equal("profiles" in riceProbe, false, "Rice content result is not a batch");
+
+const riceBusinessContentDocument = documentFor(`
+  <main id="main-content"><div class="t--profile">
+    <div class="title-hero"><h1>Elena Naids</h1><p>Lecturer in Entrepreneurship</p></div>
+  </div></main>
+`, "https://business.rice.edu/person/elena-naids");
+globalThis.document = riceBusinessContentDocument;
+globalThis.location = riceBusinessContentDocument.location;
+const riceBusinessProbe = await sendProbe("rice-business-route");
+equal(riceBusinessProbe.source, "rice", "content routes Rice Business source");
+equal(riceBusinessProbe.slug, "elena-naids", "content routes Rice Business person slug");
+equal(riceBusinessProbe.fullName, "Elena Naids", "Rice Business content result");
 
 globalThis.extractProfile = () => ({
   source: "linkedin",

@@ -559,6 +559,134 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
   return result;
 }
 
+// business.rice.edu profile pages use a different Drupal theme from
+// profiles.rice.edu. Their Schema.org Person record is the most stable source
+// for identity/contact fields, while the visible profile components carry the
+// department and biography. Keep the result wire-compatible with the existing
+// Rice importer so both sites share matching, diffing, and save behavior.
+function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? document : null)) {
+  if (!doc) return null;
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+  const text = (el) => {
+    if (!el) return null;
+    const raw = typeof el.innerText === "string" ? el.innerText : el.textContent;
+    const normalized = String(raw || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    return normalized || null;
+  };
+  const unique = (values, key = (v) => v.toLowerCase()) => {
+    const seen = new Set();
+    return values.map((v) => String(v || "").trim()).filter((v) => {
+      const k = key(v);
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+  const absoluteURL = (raw) => raw ? safe(() => new URL(raw, doc.location.href).href) : null;
+  const meta = (selector) => safe(() => doc.querySelector(selector)?.getAttribute("content")) || null;
+
+  const person = safe(() => {
+    const records = [];
+    for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      let parsed;
+      try { parsed = JSON.parse(script.textContent || ""); }
+      catch { continue; }
+      const roots = Array.isArray(parsed) ? parsed : [parsed];
+      for (const root of roots) {
+        records.push(root);
+        if (Array.isArray(root && root["@graph"])) records.push(...root["@graph"]);
+      }
+    }
+    return records.find((record) => {
+      const types = Array.isArray(record && record["@type"])
+        ? record["@type"]
+        : [record && record["@type"]];
+      return types.includes("Person");
+    }) || null;
+  });
+
+  const root = doc.querySelector(".t--profile") || doc.querySelector("#main-content");
+  if (!root && !person) return null;
+
+  const fullName = text(root?.querySelector(".title-hero h1")) ||
+    (person && text({ textContent: person.name })) || meta('meta[property="og:title"]');
+  const title = text(root?.querySelector(".title-hero p")) ||
+    (person && text({ textContent: person.jobTitle })) || meta('meta[property="og:description"]');
+  const department = safe(() => {
+    const values = unique(
+      [...(root?.querySelectorAll(".profile-main-metadata .department > div") || [])]
+        .map(text).filter(Boolean)
+    );
+    return values.length ? values.join("\n") : null;
+  });
+  const contact = root?.querySelector(".profile-main-metadata .contact");
+  const schemaEmails = person && person.email
+    ? (Array.isArray(person.email) ? person.email : [person.email])
+    : [];
+  const emails = unique([
+    ...schemaEmails.map((value) => String(value).replace(/^mailto:/i, "").split("?")[0]),
+    ...[...(contact?.querySelectorAll('a[href^="mailto:"]') || [])]
+      .map((a) => (a.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0]),
+  ]);
+  const schemaPhones = person && person.telephone
+    ? (Array.isArray(person.telephone) ? person.telephone : [person.telephone])
+    : [];
+  const phones = unique([
+    ...schemaPhones,
+    ...[...(contact?.querySelectorAll('a[href^="tel:"]') || [])]
+      .map((a) => (a.getAttribute("href") || "").replace(/^tel:/i, "")),
+  ], (value) => value.replace(/\D/g, ""));
+  const websites = unique(
+    [...(contact?.querySelectorAll("a[href]") || [])]
+      .map((a) => a.getAttribute("href"))
+      .filter((href) => href && !/^(?:mailto|tel):/i.test(href))
+      .map(absoluteURL).filter(Boolean),
+    (value) => value.toLowerCase().replace(/\/$/, "")
+  );
+  const about = text(root?.querySelector(
+    ".clc--faculty-experts-bio-component-list .cc--rich-text .f--wysiwyg"
+  ));
+  const photoImg = root?.querySelector(".cc--profile-sidebar-metadata.desktop img") ||
+    root?.querySelector(".cc--profile-sidebar-metadata img");
+  const photoSrcset = safe(() => {
+    const socialImage = meta('meta[property="og:image"]') ||
+      (typeof person?.image === "string" ? person.image : person?.image?.url);
+    if (socialImage) return absoluteURL(socialImage);
+    if (!photoImg) return null;
+    const srcset = photoImg.getAttribute("srcset");
+    if (srcset) {
+      return srcset.split(",").map((entry) => {
+        const parts = entry.trim().split(/\s+/);
+        const url = absoluteURL(parts.shift());
+        return [url, ...parts].filter(Boolean).join(" ");
+      }).join(", ");
+    }
+    return absoluteURL(photoImg.getAttribute("src") || photoImg.currentSrc || photoImg.src);
+  });
+
+  const result = {
+    source: "rice",
+    sourceUrl: safe(() => doc.location.href),
+    slug: safe(() => {
+      const match = doc.location.pathname.match(/^\/person\/([^/]+)/i);
+      return match ? match[1] : null;
+    }),
+    fullName,
+    title,
+    department,
+    about,
+    contactInfo: { emails, phones, websites },
+    photoSrcset,
+  };
+  result.readiness = {
+    sections: [{ key: "profile", label: "Rice profile", required: true, present: !!fullName }],
+    ready: !!fullName,
+    loaded: fullName ? 1 : 0,
+    total: 1,
+  };
+  return result;
+}
+
 // --- TLS 2026 Session 2 people roster ---------------------------------------
 //
 // tls26-s2-people.netlify.app renders the entire roster at once using stable,
@@ -1191,7 +1319,8 @@ function profileReadiness(result) {
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    extractProfile, extractRiceProfile, extractTLSProfiles, extractExperience, extractContactInfo,
+    extractProfile, extractRiceProfile, extractRiceBusinessProfile, extractTLSProfiles,
+    extractExperience, extractContactInfo,
     compactTLSPhotoForHandoff, fitTLSBatchToHandoffCap, tlsHandoffEnvelopeByteSize,
     profileReadiness, findInPageContactSection, gwContactFieldsFrom, gwPhotoAssetID,
   };

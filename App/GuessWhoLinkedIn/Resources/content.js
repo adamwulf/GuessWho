@@ -255,8 +255,8 @@ function gwSendDiagnostic(probeId, event, detail) {
 }
 
 function minimalProbe() {
-  const slug = (location.pathname.match(/\/(?:in|faculty|staff)\/([^/]+)/) || [])[1] || null;
-  const source = location.hostname === "profiles.rice.edu"
+  const slug = (location.pathname.match(/\/(?:in|faculty|staff|person)\/([^/]+)/) || [])[1] || null;
+  const source = (location.hostname === "profiles.rice.edu" || location.hostname === "business.rice.edu")
     ? "rice"
     : (location.hostname === "tls26-s2-people.netlify.app" ? "tls" : "linkedin");
   if (source === "tls") {
@@ -663,9 +663,16 @@ async function probe(probeId) {
   // Rice profiles are fully server-rendered: no lazy-section scroll and no
   // contact overlay are needed. Parse once, then use the exact same in-page
   // photo-byte fetch and native handoff as LinkedIn.
-  if (location.hostname === "profiles.rice.edu" && typeof extractRiceProfile === "function") {
+  const isRiceProfile = location.hostname === "profiles.rice.edu" ||
+    location.hostname === "business.rice.edu";
+  const riceParser = location.hostname === "business.rice.edu"
+    ? (typeof extractRiceBusinessProfile === "function" ? extractRiceBusinessProfile : null)
+    : (typeof extractRiceProfile === "function" ? extractRiceProfile : null);
+  if (isRiceProfile && riceParser) {
     let rice;
-    try { rice = extractRiceProfile() || minimalProbe(); }
+    try {
+      rice = riceParser() || minimalProbe();
+    }
     catch (e) {
       console.log("[GuessWho] extractRiceProfile threw:", e);
       rice = minimalProbe();
