@@ -583,6 +583,16 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
     });
   };
   const absoluteURL = (raw) => raw ? safe(() => new URL(raw, doc.location.href).href) : null;
+  const httpURL = (raw) => {
+    const url = absoluteURL(raw);
+    return url && safe(() => ["http:", "https:"].includes(new URL(url).protocol)) ? url : null;
+  };
+  const sameOriginHTTPURL = (raw) => {
+    const url = httpURL(raw);
+    return url && safe(() => new URL(url).origin === new URL(doc.location.href).origin)
+      ? url
+      : null;
+  };
   const meta = (selector) => safe(() => doc.querySelector(selector)?.getAttribute("content")) || null;
 
   const person = safe(() => {
@@ -597,21 +607,25 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
         if (Array.isArray(root && root["@graph"])) records.push(...root["@graph"]);
       }
     }
-    return records.find((record) => {
+    const people = records.filter((record) => {
       const types = Array.isArray(record && record["@type"])
         ? record["@type"]
         : [record && record["@type"]];
       return types.includes("Person");
-    }) || null;
+    });
+    const pageURL = absoluteURL(doc.location.href);
+    return people.find((record) =>
+      [record.url, record["@id"]].some((value) => absoluteURL(value) === pageURL)
+    ) || people[0] || null;
   });
 
   const root = doc.querySelector(".t--profile") || doc.querySelector("#main-content");
   if (!root && !person) return null;
 
   const fullName = text(root?.querySelector(".title-hero h1")) ||
-    (person && text({ textContent: person.name })) || meta('meta[property="og:title"]');
+    (person && text({ textContent: person.name }));
   const title = text(root?.querySelector(".title-hero p")) ||
-    (person && text({ textContent: person.jobTitle })) || meta('meta[property="og:description"]');
+    (person && text({ textContent: person.jobTitle }));
   const department = safe(() => {
     const values = unique(
       [...(root?.querySelectorAll(".profile-main-metadata .department > div") || [])]
@@ -639,8 +653,8 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
   const websites = unique(
     [...(contact?.querySelectorAll("a[href]") || [])]
       .map((a) => a.getAttribute("href"))
-      .filter((href) => href && !/^(?:mailto|tel):/i.test(href))
-      .map(absoluteURL).filter(Boolean),
+      .filter((href) => href && !/^(?:#|javascript:|mailto:|tel:)/i.test(href))
+      .map(httpURL).filter(Boolean),
     (value) => value.toLowerCase().replace(/\/$/, "")
   );
   const about = text(root?.querySelector(
@@ -649,19 +663,24 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
   const photoImg = root?.querySelector(".cc--profile-sidebar-metadata.desktop img") ||
     root?.querySelector(".cc--profile-sidebar-metadata img");
   const photoSrcset = safe(() => {
-    const socialImage = meta('meta[property="og:image"]') ||
-      (typeof person?.image === "string" ? person.image : person?.image?.url);
-    if (socialImage) return absoluteURL(socialImage);
-    if (!photoImg) return null;
-    const srcset = photoImg.getAttribute("srcset");
-    if (srcset) {
-      return srcset.split(",").map((entry) => {
-        const parts = entry.trim().split(/\s+/);
-        const url = absoluteURL(parts.shift());
-        return [url, ...parts].filter(Boolean).join(" ");
-      }).join(", ");
+    if (photoImg) {
+      const srcset = photoImg.getAttribute("srcset");
+      if (srcset) {
+        const normalized = srcset.split(",").map((entry) => {
+          const parts = entry.trim().split(/\s+/);
+          const url = sameOriginHTTPURL(parts.shift());
+          return url ? [url, ...parts].filter(Boolean).join(" ") : null;
+        }).filter(Boolean);
+        if (normalized.length) return normalized.join(", ");
+      }
+      const imageURL = sameOriginHTTPURL(
+        photoImg.getAttribute("src") || photoImg.currentSrc || photoImg.src
+      );
+      if (imageURL) return imageURL;
     }
-    return absoluteURL(photoImg.getAttribute("src") || photoImg.currentSrc || photoImg.src);
+    const schemaImage = typeof person?.image === "string" ? person.image : person?.image?.url;
+    return sameOriginHTTPURL(schemaImage) ||
+      sameOriginHTTPURL(meta('meta[property="og:image"]'));
   });
 
   const result = {

@@ -674,7 +674,7 @@ async function probe(probeId) {
       rice = riceParser() || minimalProbe();
     }
     catch (e) {
-      console.log("[GuessWho] extractRiceProfile threw:", e);
+      console.log("[GuessWho] Rice parser threw:", e);
       rice = minimalProbe();
     }
     try {

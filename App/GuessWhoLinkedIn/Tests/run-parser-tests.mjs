@@ -126,32 +126,13 @@ const rice = extractRiceProfile(documentFor(`
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
 
-const riceBusiness = extractRiceBusinessProfile(documentFor(`
-  <script type="application/ld+json">{
-    "@context": "https://schema.org",
-    "@graph": [{
-      "@type": "Person",
-      "name": "Elena Naids",
-      "email": "elena.naids@rice.edu",
-      "jobTitle": "Lecturer in Entrepreneurship",
-      "image": { "@type": "ImageObject", "url": "/images/elena-naids.jpg" }
-    }]
-  }</script>
-  <main id="main-content">
-    <div class="t--profile">
-      <section class="header-container">
-        <div class="title-hero"><h1>Elena Naids</h1><p>Lecturer in Entrepreneurship</p></div>
-        <div class="profile-main-metadata">
-          <div class="department"><label>Departments</label><div>Faculty</div></div>
-          <div class="contact"><a href="mailto:elena.naids@rice.edu">Email</a></div>
-        </div>
-      </section>
-      <div class="clc--faculty-experts-bio-component-list">
-        <section class="cc--rich-text"><div class="f--wysiwyg"><p>Design researcher and strategist.</p></div></section>
-      </div>
-    </div>
-  </main>
-`, "https://business.rice.edu/person/elena-naids"));
+const riceBusinessFixtureURL = new URL(
+  "./fixtures/rice-business-person-sanitized.html", import.meta.url
+);
+const riceBusiness = extractRiceBusinessProfile(documentFor(
+  fs.readFileSync(riceBusinessFixtureURL, "utf8"),
+  "https://business.rice.edu/person/elena-naids"
+));
 equal(riceBusiness.source, "rice", "Rice Business source");
 equal(riceBusiness.slug, "elena-naids", "Rice Business slug");
 equal(riceBusiness.fullName, "Elena Naids", "Rice Business name");
@@ -159,11 +140,24 @@ equal(riceBusiness.title, "Lecturer in Entrepreneurship", "Rice Business title")
 equal(riceBusiness.department, "Faculty", "Rice Business department");
 equal(riceBusiness.about, "Design researcher and strategist.", "Rice Business biography");
 equal(riceBusiness.contactInfo.emails.join(","), "elena.naids@rice.edu", "Rice Business email");
+equal(riceBusiness.contactInfo.phones.join(","), "+1-713-348-4622", "Rice Business phone");
+equal(
+  riceBusiness.contactInfo.websites.join(","),
+  "https://portfolio.example/elena",
+  "Rice Business keeps only HTTP(S) contact websites"
+);
 equal(
   riceBusiness.photoSrcset,
-  "https://business.rice.edu/images/elena-naids.jpg",
-  "Rice Business Schema.org photo"
+  "https://business.rice.edu/sites/default/files/styles/1_1_720x720/public/elena-naids.jpg",
+  "Rice Business visible profile photo wins over metadata"
 );
+const riceBusinessMetadataOnly = extractRiceBusinessProfile(documentFor(`
+  <meta property="og:title" content="Social Title | Rice Business">
+  <meta property="og:description" content="A social description, not a job title">
+  <main id="main-content"><div class="t--profile"></div></main>
+`, "https://business.rice.edu/person/metadata-only"));
+equal(riceBusinessMetadataOnly.fullName, null, "Rice Business rejects og:title as a name");
+equal(riceBusinessMetadataOnly.title, null, "Rice Business rejects og:description as a title");
 const safariManifest = JSON.parse(fs.readFileSync(
   new URL("../Resources/manifest.json", import.meta.url), "utf8"
 ));
