@@ -95,6 +95,36 @@ struct FavoritesStoreTests {
     }
 
     @Test
+    func departmentFavoriteRoundTripsThroughDisk() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        // The stored id is "<org guesswho uuid>/<department>". The store
+        // lowercases the whole string; a department name with a "/" survives.
+        let orgUUID = "11111111-2222-4333-8444-555566667777"
+        let id = DepartmentFavoriteKey(
+            organizationGuessWhoID: orgUUID, department: "R&D/AI").favoriteID
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        #expect(try store.toggle(kind: .department, id: id, now: now) == true)
+        let afterAdd = try store.loadAll()
+        #expect(afterAdd.count == 1)
+        #expect(afterAdd[0].kind == .department)
+        #expect(afterAdd[0].id == id.lowercased())
+        // The lowercased stored id still parses back to the same org + department.
+        let parsed = try #require(DepartmentFavoriteKey(favoriteID: afterAdd[0].id))
+        #expect(parsed.organizationGuessWhoID == orgUUID)
+        #expect(parsed.matches(department: "R&D/AI"))
+        // A case-varying lookup still resolves — the store canonicalizes both sides.
+        #expect(try store.isFavorite(kind: .department, id: id.uppercased()) == true)
+        // The department namespace is distinct from a contact favorite on the org.
+        #expect(try store.isFavorite(kind: .contact, id: orgUUID) == false)
+
+        #expect(try store.toggle(kind: .department, id: id, now: now.addingTimeInterval(1)) == false)
+        #expect(try store.loadAll().isEmpty)
+    }
+
+    @Test
     func guideAndPlaceKindsDecodeFromTheirPersistedRawValues() throws {
         // Pin the on-disk spelling: a favorite written by another device (or an
         // earlier build) must decode to the same kind, so these raw values can
@@ -121,6 +151,8 @@ struct FavoritesStoreTests {
         #expect(FavoriteKind.contact.rawValue == "contact")
         #expect(FavoriteKind.event.rawValue == "event")
         #expect(FavoriteKind.group.rawValue == "group")
+        // The department kind pins its on-disk spelling too.
+        #expect(FavoriteKind.department.rawValue == "department")
     }
 
     @Test

@@ -349,6 +349,18 @@ final class LegacyScriptedContactSource: MCPContactSource {
             "ContactsRepository.setGroupFavorite")
     }
 
+    func isDepartmentFavorite(_ department: String, in organization: Contact) -> Bool {
+        unexpectedLegacySemanticPath(
+            "ContactsRepository.isDepartmentFavorite", returning: false)
+    }
+
+    func setDepartmentFavorite(
+        _ favorite: Bool, department: String, in organization: Contact
+    ) async throws -> Bool {
+        try throwUnexpectedLegacySemanticPath(
+            "ContactsRepository.setDepartmentFavorite")
+    }
+
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus {
         authorizationStatus
     }

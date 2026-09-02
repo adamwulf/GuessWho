@@ -665,4 +665,94 @@ final class FavoritesToolTests: XCTestCase {
             return XCTFail("permission denial must not consume the write budget")
         }
     }
+
+    // MARK: - Department favorites (production-backed)
+
+    @MainActor
+    func testDepartmentFavoriteSetMintsOrgAndProjectsLiveDepartmentName() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        // Seed a person carrying a department under the seeded organization.
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace",
+                givenName: "Grace", familyName: "Hopper",
+                departmentName: "Research",
+                organizationName: "Analytical Engines"),
+        ])
+        // The organization is unreconciled, so its wire id is the deterministic
+        // preview UUID it will mint to on the first write.
+        let liveOrg = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        XCTAssertNil(liveOrg.contactID.guessWhoID)
+        let orgWireID = liveOrg.deterministicGuessWhoID
+        let expectedWireID = DepartmentFavoriteKey(
+            organizationGuessWhoID: orgWireID, department: "Research").favoriteID
+
+        let set = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "dept-set",
+            kind: .department, id: "\(orgWireID)/Research", favorite: true, idempotencyToken: nil))
+        guard case .acknowledged = set else {
+            return XCTFail("department set failed: \(String(describing: set))")
+        }
+
+        // The write minted the org identity and stored EXACTLY one department
+        // favorite — never a second contact favorite for the organization.
+        let stored = try fixture.favoritesStore.loadAll()
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored.first?.kind, .department)
+        let mintedOrg = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        XCTAssertEqual(mintedOrg.contactID.guessWhoID, orgWireID.lowercased())
+
+        // favorites_list projects the row with the live department name and the
+        // org's wire id, available.
+        let listed = await list(fixture)
+        let page = try XCTUnwrap(listed)
+        XCTAssertEqual(page.items.count, 1)
+        let row = try XCTUnwrap(page.items.first)
+        XCTAssertEqual(row.kind, .department)
+        XCTAssertEqual(row.id, expectedWireID)
+        XCTAssertEqual(row.displayName, "Research")
+        XCTAssertTrue(row.isAvailable)
+    }
+
+    @MainActor
+    func testDepartmentFavoriteProjectsUnavailableWhenNoOneCarriesTheDepartment() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace",
+                givenName: "Grace", familyName: "Hopper",
+                departmentName: "Research",
+                organizationName: "Analytical Engines"),
+        ])
+        let liveOrg = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        // Favorite a live department through the repository so the org mints and
+        // its UUID becomes known.
+        _ = try await fixture.repository.setDepartmentFavorite(
+            true, department: "Research", in: liveOrg)
+        let orgUUID = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID }?
+                .contactID.guessWhoID)
+
+        // Seed a second department favorite that no person carries; it must stay
+        // in its stored position as Unavailable, never dropped.
+        let researchKey = DepartmentFavoriteKey(organizationGuessWhoID: orgUUID, department: "Research")
+        let ghostKey = DepartmentFavoriteKey(organizationGuessWhoID: orgUUID, department: "Ghost")
+        try fixture.favoritesStore.setAll([
+            Favorite(kind: .department, id: researchKey.favoriteID, addedAt: Date(timeIntervalSince1970: 1)),
+            Favorite(kind: .department, id: ghostKey.favoriteID, addedAt: Date(timeIntervalSince1970: 2)),
+        ])
+
+        let listed = await list(fixture)
+        let page = try XCTUnwrap(listed)
+        XCTAssertEqual(page.items.map(\.kind), [.department, .department])
+        XCTAssertEqual(page.items[0].displayName, "Research")
+        XCTAssertTrue(page.items[0].isAvailable)
+        XCTAssertEqual(page.items[1].displayName, "Unavailable")
+        XCTAssertFalse(page.items[1].isAvailable)
+    }
 }
