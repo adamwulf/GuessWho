@@ -2,10 +2,22 @@
 
 ## Status (2026-09-01)
 
-Research complete; not yet built. This document answers "can a department be
-favorited, and shown in the sidebar under its organization?" The answer is
-yes. No new storage concept is needed. The work is a new favorite kind plus
-one extra nesting level in the Catalyst sidebar.
+Approved, building. This document answers "can a department be favorited,
+and shown in the sidebar under its organization?" The answer is yes. No new
+storage concept is needed. The work is a new favorite kind plus one extra
+nesting level in the Catalyst sidebar.
+
+### Decisions locked (2026-09-01, Adam)
+
+1. **The org row is inferred, never written.** Favoriting a department never
+   writes a second `contact` favorite for the organization. The sidebar shows
+   the org row because a department under it is favorited (§6).
+2. **A department with no members shows "Unavailable"**, and the row stays
+   tappable so the user can un-favorite it (§3).
+3. **Phantom organizations CAN have a favorited department.** Favoriting a
+   department on a phantom page first creates the real organization record,
+   then favorites the department on that record (§4a). The favorite is
+   therefore always a normal department favorite keyed on a real org UUID.
 
 The motivating case: the user has a "Rice University" organization record
 with four departments and wants to favorite "Lilie" so the sidebar shows
@@ -148,10 +160,27 @@ Two affordances, both mirroring the group precedent:
   trailing star on each department row, like `groupRow`[^22]. Today
   `departmentRow` is a plain push button with no menu[^29].
 
-Not offered on the phantom-organization page: a phantom has no record and no
-UUID[^30]. Its departments become favoritable once the user creates the real
-organization from that page. This matches the phantom rule that a phantom
-never gets a synthetic `ContactID`.
+### 4a. Phantom organizations: create the record, then favorite
+
+A phantom has no record and no UUID[^30], so a department favorite cannot be
+keyed on it directly. Instead, the phantom page's department rows get the
+same Favorite context menu as the real org page. Favoriting runs two steps in
+one action:
+
+1. Create the real organization record with the phantom's display name, the
+   same call the page's "Create organization card" button makes[^39].
+   `createContact` mints the GuessWho identity as part of the create[^40].
+2. Call `setDepartmentFavorite(true, department:, in: created)` on the
+   returned record.
+
+This stays inside the phantom rule "nothing mutates Contacts until the user
+taps an action" — the favorite IS the tap. The page already re-renders as the
+real `ContactDetailView` the moment a record with that name exists[^41], so
+the user lands on the real org page with the department row starred. An
+"Unfavorite" action is never shown on a phantom, since no favorite can exist
+without a record. If the create succeeds and the favorite write fails, the
+record stays (a created card is not undone) and the error surfaces like the
+other best-effort favorite writes.
 
 ### 5. Flat Favorites list (iPhone tab and Catalyst Favorites section)
 
@@ -232,32 +261,75 @@ next to the other favorite kinds. The audit `renameDepartment` entry is
 unchanged; the favorite re-key rides inside the repository call it already
 records[^7].
 
+## Package API contract
+
+Fixed here so the parallel app phases agree on names.
+
+```swift
+// Sources/GuessWhoSync/Favorite.swift
+public enum FavoriteKind { …; case department }
+
+// Sources/GuessWhoSync/DepartmentFavoriteKey.swift (new)
+public struct DepartmentFavoriteKey: Hashable, Sendable {
+    public let organizationGuessWhoID: String   // lowercased UUID string
+    public let department: String               // trimmed, as given
+    public init(organizationGuessWhoID: String, department: String)
+    /// "<uuid>/<department>" — what goes into Favorite.id (the store lowercases it).
+    public var favoriteID: String
+    /// Parses by the fixed 36-char UUID prefix + "/" — nil for anything else.
+    public init?(favoriteID: String)
+    /// Trimmed, case-insensitive department comparison.
+    public func matches(department: String) -> Bool
+}
+
+// Sources/GuessWhoSync/FavoriteListItem.swift
+public struct DepartmentFavorite: Hashable, Sendable {
+    public let organization: Contact
+    public let department: String   // live display form from departments(in:)
+}
+extension FavoriteListItem { public let department: DepartmentFavorite? }
+
+// Sources/GuessWhoSync/ContactsRepository.swift
+public func isDepartmentFavorite(_ department: String, in organization: Contact) -> Bool
+@discardableResult
+public func setDepartmentFavorite(_ favorite: Bool, department: String, in organization: Contact) async throws -> Bool
+```
+
+`setDepartmentFavorite` resolves-or-mints the org UUID (like
+`toggleFavorite(_:)`[^26]), trims the department, refuses a blank one, calls
+the store's idempotent `set`[^10], and refreshes the cache if it minted.
+`isDepartmentFavorite` reads only: an org with no GuessWho UUID is `false`.
+
 ## Build order
 
-1. **Package**: `FavoriteKind.department`, key type, `FavoriteListItem`
-   payload, `favoriteListItems` case, `isDepartmentFavorite` /
-   `setDepartmentFavorite`, rename re-key. Fix the MCP switches so the
-   package builds. Tests: store round-trip with the new kind, resolution
-   (resolves / org gone / department emptied), rename re-keys and preserves
-   slot + `addedAt`, org without a GuessWho UUID mints on first favorite.
-2. **App, flat surfaces**: department list star button, org-page row menu +
-   star, Favorites list cell + callback, iPhone and Catalyst routing.
-3. **Sidebar nesting**: structural org rows, department children, badge
-   count, drag rules, click routing.
-4. **Wire**: `favorites_set` id syntax, `favorites_list` projection, docs.
+Every commit must leave BOTH the package and the App target compiling. Adding
+a `FavoriteKind` case breaks every exhaustive switch in the app (the Favorites
+list cell and selection[^17][^18], the sidebar content and section
+mapping[^14], the context-menu router[^36]) as well as the two MCP
+mappers[^24]. Step 1 therefore carries the minimal app-side cases too.
 
-Steps 1–2 alone already deliver a working feature (department favorites
-appear in the Favorites list and as a flat child under Organizations if step
-3 is deferred, but the user's ask is the nested form, so plan for all three).
+1. **Package + wire + compile floor** (one agent): `FavoriteKind.department`,
+   `DepartmentFavoriteKey`, `DepartmentFavorite` payload, `favoriteListItems`
+   case, `isDepartmentFavorite` / `setDepartmentFavorite`, rename re-key.
+   Wire: `WireFavoriteKind.department`, both mappers, `SubjectKind`,
+   `favorites_list` projection, `favorites_set` id syntax (org wire id +
+   "/" + department, mirroring the key), `docs/cli-mcp.md`. App compile
+   floor: router returns nil; Favorites list renders a department row
+   (title = department, caption = org) and gains `didSelectDepartment`
+   (wired to nothing yet is NOT acceptable — wire it to the existing pushes);
+   sidebar places a department favorite under `.organizations` as a plain
+   child (nesting comes in step 3). Tests: store round-trip with the new
+   kind, key encode/parse (including a "/" inside the department name),
+   resolution (resolves / org gone / department emptied), rename re-keys and
+   preserves slot + `addedAt`, org without a GuessWho UUID mints on first
+   favorite, wire projection.
+2. **App, flat surfaces** (parallel with 3): department list star button,
+   org-page row menu + star, phantom-page row menu with create-then-favorite
+   (§4a).
+3. **Sidebar nesting** (parallel with 2): structural org rows, department
+   children, badge count, drag rules, click routing (§6).
 
-## Open decisions for Adam
-
-- Confirm: derive the org row (recommended) rather than auto-favoriting the
-  org when a department is favorited.
-- Confirm: a department with no remaining members reads as "Unavailable"
-  (recommended) rather than staying visible with zero people.
-- Confirm: phantom organizations stay out of scope until a real record
-  exists.
+Each step gets its own review cycle before merge.
 
 ## Limitations of this research
 
@@ -305,3 +377,6 @@ appear in the Favorites list and as a flat child under Organizations if step
 [^36]: [FavoriteContextMenuRouter kind switch](../App/GuessWho/FavoriteContextMenuRouter.swift:FavoriteContextMenuRouter.configuration(forRowAt:))
 [^37]: [MCP audit SubjectKind](../Sources/GuessWhoMCPCore/MCPAuditLog.swift:MCPAuditEntry.SubjectKind)
 [^38]: [WireFavorite: stale referents stay in position, isAvailable false](../Sources/GuessWhoMCPWire/WireDTOs.swift:WireFavorite)
+[^39]: [Phantom page create action](../App/GuessWho/PhantomOrganizationDetailView.swift:PhantomOrganizationDetailView.createCard(name:))
+[^40]: [createContact stamps timestamps, which mints the GuessWho identity](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.createContact(_:))
+[^41]: [Phantom page becomes the real card once a record with the name exists](../App/GuessWho/PhantomOrganizationDetailView.swift:PhantomOrganizationDetailView.body)
