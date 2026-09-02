@@ -823,4 +823,219 @@ final class FavoritesToolTests: XCTestCase {
         let after = try XCTUnwrap(relisted)
         XCTAssertEqual(after.items.map(\.id), originalOrder.reversed())
     }
+
+    // MARK: - Department favorite clear paths (production-backed)
+
+    @MainActor
+    func testDepartmentFavoriteStillClearsAfterItsLastMemberLeavesTheDepartment() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        // Seed a person carrying "Research" under the seeded org, favorite it,
+        // then move that person out so no one carries "Research" any more.
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace", givenName: "Grace",
+                departmentName: "Research", organizationName: "Analytical Engines"),
+        ])
+        let liveOrg = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        _ = try await fixture.repository.setDepartmentFavorite(true, department: "Research", in: liveOrg)
+        let orgUUID = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID }?
+                .contactID.guessWhoID)
+
+        // Re-seed the SAME person into a different department; "Research" now has
+        // no members, so its favorite reads as Unavailable but keeps its row.
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace", givenName: "Grace",
+                departmentName: "Analytics", organizationName: "Analytical Engines"),
+        ])
+        let emptiedList = await list(fixture)
+        let emptied = try XCTUnwrap(emptiedList)
+        XCTAssertEqual(emptied.items.count, 1)
+        XCTAssertEqual(emptied.items[0].kind, .department)
+        XCTAssertEqual(emptied.items[0].displayName, "Unavailable")
+        XCTAssertFalse(emptied.items[0].isAvailable)
+
+        // The org still exists, so clearing resolves it and removes the favorite
+        // even though no live department matches — an emptied department stays
+        // un-favoritable.
+        let cleared = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "clear-emptied",
+            kind: .department, id: "\(orgUUID)/Research", favorite: false, idempotencyToken: nil))
+        guard case .acknowledged = cleared else {
+            return XCTFail("emptied-department clear failed: \(String(describing: cleared))")
+        }
+        XCTAssertTrue(try fixture.favoritesStore.loadAll().isEmpty)
+    }
+
+    @MainActor
+    func testDepartmentFavoriteClearsWhenTheOrganizationIsGoneButAddCannot() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        // A department favorite keyed on a UUID no contact carries — the org is
+        // "gone" from this device's book. It projects as one Unavailable row.
+        let ghostKey = DepartmentFavoriteKey(
+            organizationGuessWhoID: "99999999-2222-4333-8444-555566667777",
+            department: "Marketing")
+        try fixture.favoritesStore.setAll([
+            Favorite(kind: .department, id: ghostKey.favoriteID, addedAt: Date(timeIntervalSince1970: 1)),
+        ])
+        let listedPage = await list(fixture)
+        let listed = try XCTUnwrap(listedPage)
+        XCTAssertEqual(listed.items.count, 1)
+        let row = listed.items[0]
+        XCTAssertEqual(row.kind, .department)
+        XCTAssertFalse(row.isAvailable)
+
+        // Adding a favorite for a gone org is an error and writes nothing.
+        let added = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "ghost-add",
+            kind: .department, id: row.id, favorite: true, idempotencyToken: nil))
+        error(added, .notFound)
+        XCTAssertEqual(try fixture.favoritesStore.loadAll().count, 1)
+
+        // Clearing the same id succeeds via the stored-row fallback.
+        let cleared = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "ghost-clear",
+            kind: .department, id: row.id, favorite: false, idempotencyToken: nil))
+        guard case .acknowledged = cleared else {
+            return XCTFail("org-gone clear failed: \(String(describing: cleared))")
+        }
+        XCTAssertTrue(try fixture.favoritesStore.loadAll().isEmpty)
+    }
+
+    @MainActor
+    func testDepartmentFavoriteAddForAnUncarriedDepartmentFailsWithoutMintingTheOrg() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        // One live department ("Research") exists under the seeded org; "Ghost"
+        // does not.
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace", givenName: "Grace",
+                departmentName: "Research", organizationName: "Analytical Engines"),
+        ])
+        let liveOrg = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        XCTAssertNil(liveOrg.contactID.guessWhoID)
+        let orgWireID = liveOrg.deterministicGuessWhoID
+        let before = try fixture.favoritesStore.loadAll()
+
+        let added = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "ghost-dept",
+            kind: .department, id: "\(orgWireID)/Ghost", favorite: true, idempotencyToken: nil))
+        error(added, .notFound)
+
+        // The live-department check runs BEFORE any write, so nothing was stored
+        // and the organization was NOT minted — its guessWhoID stays nil.
+        XCTAssertEqual(try fixture.favoritesStore.loadAll(), before)
+        XCTAssertNil(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID }?
+                .contactID.guessWhoID)
+    }
+
+    // MARK: - Department rename re-keys the favorite (production-backed, end to end)
+
+    @MainActor
+    func testDepartmentRenameThroughTheToolReKeysTheFavoriteEndToEnd() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace", givenName: "Grace",
+                departmentName: "Research", organizationName: "Analytical Engines"),
+        ])
+        let liveOrg = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        // Favorite the department; this mints the org identity.
+        _ = try await fixture.repository.setDepartmentFavorite(true, department: "Research", in: liveOrg)
+        let orgWireID = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID }?
+                .contactID.guessWhoID)
+        let originalAddedAt = try XCTUnwrap(fixture.favoritesStore.loadAll().first?.addedAt)
+
+        let renamed = await fixture.dispatcher.handle(.organizationsRenameDepartment(
+            helperId: MCPProductionFixture.helper, messageId: "rename",
+            organizationId: orgWireID, oldName: "Research", newName: "Innovation",
+            idempotencyToken: nil))
+        guard case .departmentRename(_, _, let result) = renamed else {
+            return XCTFail("rename failed: \(String(describing: renamed))")
+        }
+        XCTAssertEqual(result.affectedCount, 1)
+
+        // favorites_list shows ONE department row, now "Innovation", available,
+        // keyed on the org wire id + the new name.
+        let listedAfterRename = await list(fixture)
+        let page = try XCTUnwrap(listedAfterRename)
+        XCTAssertEqual(page.items.count, 1)
+        let listRow = page.items[0]
+        XCTAssertEqual(listRow.kind, .department)
+        XCTAssertEqual(listRow.displayName, "Innovation")
+        XCTAssertTrue(listRow.isAvailable)
+        XCTAssertEqual(listRow.id, DepartmentFavoriteKey(
+            organizationGuessWhoID: orgWireID, department: "Innovation").favoriteID)
+
+        // The stored favorite re-keyed to "Innovation" but kept its addedAt.
+        let stored = try fixture.favoritesStore.loadAll()
+        XCTAssertEqual(stored.count, 1)
+        let storedKey = try XCTUnwrap(DepartmentFavoriteKey(favoriteID: stored[0].id))
+        XCTAssertTrue(storedKey.matches(department: "Innovation"))
+        XCTAssertFalse(storedKey.matches(department: "Research"))
+        XCTAssertEqual(stored[0].addedAt, originalAddedAt)
+    }
+
+    // MARK: - Mixed-kind favorites list keeps the department row in place
+
+    @MainActor
+    func testMixedKindFavoritesKeepTheDepartmentRowInStoredOrderAndPageOnce() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace", givenName: "Grace",
+                departmentName: "Research", organizationName: "Analytical Engines"),
+        ])
+        // Written in this order → stored in this order: contact, department, group.
+        let ada = try XCTUnwrap(
+            fixture.repository.contact(localID: MCPProductionFixture.adaLocalID))
+        _ = try await fixture.repository.toggleFavorite(ada.contactID)
+        let org = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        _ = try await fixture.repository.setDepartmentFavorite(true, department: "Research", in: org)
+        let orgUUID = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID }?
+                .contactID.guessWhoID)
+        let group = try XCTUnwrap(
+            fixture.repository.groups.first { $0.name == MCPProductionFixture.groupName })
+        _ = try await fixture.repository.setGroupFavorite(true, for: group)
+
+        XCTAssertEqual(try fixture.favoritesStore.loadAll().map(\.kind), [.contact, .department, .group])
+
+        // The full page keeps the department row in the middle, correctly typed.
+        let fullList = await list(fixture)
+        let page = try XCTUnwrap(fullList)
+        XCTAssertEqual(page.items.map(\.kind), [.contact, .department, .group])
+        XCTAssertEqual(page.items[0].displayName, "Ada Lovelace")
+        let deptRow = page.items[1]
+        XCTAssertEqual(deptRow.kind, .department)
+        XCTAssertEqual(deptRow.displayName, "Research")
+        XCTAssertEqual(deptRow.id, DepartmentFavoriteKey(
+            organizationGuessWhoID: orgUUID, department: "Research").favoriteID)
+        XCTAssertEqual(page.items[2].displayName, "Pioneers")
+
+        // Paging one at a time surfaces the department row exactly once, on page 2.
+        let firstList = await list(fixture, limit: 1)
+        let first = try XCTUnwrap(firstList)
+        XCTAssertEqual(first.items.map(\.kind), [.contact])
+        let secondList = await list(fixture, limit: 1, cursor: first.nextCursor)
+        let second = try XCTUnwrap(secondList)
+        XCTAssertEqual(second.items.map(\.kind), [.department])
+        XCTAssertEqual(second.items[0].id, deptRow.id)
+        let thirdList = await list(fixture, limit: 1, cursor: second.nextCursor)
+        let third = try XCTUnwrap(thirdList)
+        XCTAssertEqual(third.items.map(\.kind), [.group])
+        XCTAssertNil(third.nextCursor)
+    }
 }
