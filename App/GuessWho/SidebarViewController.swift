@@ -1053,17 +1053,14 @@ extension SidebarViewController: UICollectionViewDropDelegate {
         // Translate the flat visible-row insertion point into this hierarchy
         // level. Nested department rows make root sibling indices noncontiguous:
         // any destination inside a root's subtree counts as after that root.
-        // UIKit reports a pre-removal index, so adjust a downward move once the
-        // source block has been removed.
-        let destination = context.rowStarts.filter {
-            $0 < destinationIndexPath.item
-        }.count
-        var rows = context.rows
-        let moved = rows.remove(at: context.source)
-        let adjustedDestination = destination > context.source
-            ? destination - 1
-            : destination
-        rows.insert(moved, at: min(max(adjustedDestination, 0), rows.count))
+        // UIKit reports a pre-removal index, so a downward move lands one slot
+        // earlier once the source block is out (the pure index math is unit
+        // tested on `SidebarFavoriteHierarchy`).
+        let rows = FavoriteHierarchy.rowsAfterMoving(
+            context.rows,
+            from: context.source,
+            rowStarts: context.rowStarts,
+            toVisibleIndex: destinationIndexPath.item)
 
         // A root row is a block: a favorited organization contributes its own
         // favorite id plus its departments, while a structural organization

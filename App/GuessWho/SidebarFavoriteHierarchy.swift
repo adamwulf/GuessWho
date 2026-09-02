@@ -128,6 +128,26 @@ struct SidebarFavoriteHierarchy<SectionID: Hashable, FavoriteID: Hashable, Organ
         rows.flatMap(favoriteIDs(in:))
     }
 
+    /// Reorders `rows` by moving the element at `source` to the position a drop
+    /// at visible index `visibleDestination` means, given each row's visible
+    /// start index (`rowStarts`, ascending, one per row). A destination inside a
+    /// row's subtree counts as after that row, because a nested department raises
+    /// the next sibling's start above the destination. UIKit reports a PRE-removal
+    /// index, so a downward move lands one slot earlier once the source is out.
+    static func rowsAfterMoving(
+        _ rows: [Row],
+        from source: Int,
+        rowStarts: [Int],
+        toVisibleIndex visibleDestination: Int
+    ) -> [Row] {
+        let destination = rowStarts.filter { $0 < visibleDestination }.count
+        var rows = rows
+        let moved = rows.remove(at: source)
+        let adjustedDestination = destination > source ? destination - 1 : destination
+        rows.insert(moved, at: min(max(adjustedDestination, 0), rows.count))
+        return rows
+    }
+
     private mutating func appendRoot(
         _ row: Row,
         in section: SectionID,
