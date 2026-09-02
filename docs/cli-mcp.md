@@ -381,8 +381,9 @@ currently visible star state without reopening the app.
 
 `favorites_list(limit?, cursor?)`, `favorites_set(kind, id, favorite)`,
 and `favorites_reorder(favorites)` expose the app's single ordered favorites
-surface across contacts, events, contact groups, guides, and places. Wire
-kinds are exactly `contact`, `event`, `group`, `guide`, and `place`. Each id
+surface across contacts, events, contact groups, guides, places, and
+organization departments. Wire kinds are exactly `contact`, `event`, `group`,
+`guide`, `place`, and `department`. Each id
 is the ordinary opaque id from that entity's list tool: contact and stored
 event ids are record ids, group ids are one-way opaque values (the Contacts
 identifier never crosses), and guide/place ids are their record ids. A
@@ -391,6 +392,22 @@ favorites kind for either card is always `contact`. A
 calendar-only event keeps its derived opaque event id on reads, but must be
 opened once in the app before it can be favorited; the write never stores or
 returns the calendar identifier.
+
+A `department` favorite has no record of its own — a department exists only
+through the people who carry that department string — so its id is composite:
+the organization's wire contact id (a 36-character UUID), then `/`, then the
+department name, e.g. `<org-id>/Lilie`. The id is parsed by that fixed
+36-character prefix, never by searching for the separator, so a department name
+that itself contains `/` round-trips. `favorites_set(kind: "department", …)`
+resolves the organization from the prefix and, like a first contact favorite,
+mints its durable identity before the favorite is written; adding requires the
+department to exist live (`organizations_list_departments`), while clearing an
+emptied or removed department is still allowed. In `favorites_list`, an
+available department row's id pairs the org's current wire id with the live
+department name (restoring its capitalization), and its `displayName` is that
+department name; a department no person still carries reads as `Unavailable`
+(`isAvailable: false`) in its stored position. Favoriting a department never
+writes a second `contact` favorite for the organization.
 
 `favorites_list` preserves the persisted global order and pages over that
 order before resolving rows. Every row contains `kind`, `id`, `displayName`,
@@ -422,9 +439,9 @@ A concurrent UI/device edit fails with a fixed refresh-and-retry error instead
 of being overwritten.
 
 The favorites tools use dynamic permission gates because their static domain
-spans kinds: contact and group referents require Contacts access, event
-referents require calendar access, and guide/place referents require no system
-permission. List and reorder inspect all referenced kinds and fail as a whole
+spans kinds: contact, group, and department referents require Contacts access,
+event referents require calendar access, and guide/place referents require no
+system permission. List and reorder inspect all referenced kinds and fail as a whole
 when a required domain is unavailable. Writes additionally require read-write
 mode, use the global write budget and idempotency-token replay, append agent
 activity audit records after successful changes, and ride the shared response
