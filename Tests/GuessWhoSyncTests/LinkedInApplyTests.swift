@@ -255,8 +255,11 @@ struct LinkedInApplyTests {
 
         let reconciledID = repo.contact(localID: "T")!.contactID
         let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: reconciledID).map { ($0.field, $0) })
-        #expect(byName["Rice Department"]?.value == .string("Jones Graduate School of Business\nOffice of Innovation"))
-        #expect(byName["Rice Department"]?.type == .multilineNote)
+        // The Rice unit lands in the real Contacts Department field (feeding the
+        // organization → department hierarchy), not a custom note. A multi-unit
+        // page keeps only the first (primary) unit, since Department holds one.
+        #expect(result.departmentName == "Jones Graduate School of Business")
+        #expect(byName["Rice Department"] == nil)
         #expect(byName["Rice Bio"]?.value == .string("Brad supports new technologies created by Rice faculty."))
         #expect(byName["LinkedIn About"] == nil)
     }

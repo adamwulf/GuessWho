@@ -79,6 +79,19 @@ struct LinkedInProfileDecodeTests {
         #expect(LinkedInContactSeed.contact(from: profile).organizationName == "Rice University")
     }
 
+    // The Rice department maps onto the single-valued Contacts Department field,
+    // so `primaryDepartment` is the first non-empty unit. A page can list several
+    // units, one per line; applyLinkedIn saves this one.
+    @Test func primaryDepartment_isFirstNonEmptyUnit() {
+        #expect(LinkedInProfile(department: "Rice Alliance").primaryDepartment == "Rice Alliance")
+        #expect(LinkedInProfile(
+            department: "Jones Graduate School of Business\nOffice of Innovation"
+        ).primaryDepartment == "Jones Graduate School of Business")
+        #expect(LinkedInProfile(department: "\n  \n  Rice Alliance ").primaryDepartment == "Rice Alliance")
+        #expect(LinkedInProfile(department: nil).primaryDepartment == nil)
+        #expect(LinkedInProfile(department: "   ").primaryDepartment == nil)
+    }
+
     @Test func browserPayloadDecodesSingleProfileBackwardCompatibly() throws {
         let payload = try JSONDecoder().decode(
             BrowserImportPayload.self,
