@@ -126,6 +126,58 @@ struct ContactsRepositoryDepartmentFavoritesTests {
         #expect(items[2].department == nil)
     }
 
+    // MARK: - Phantom organization flow
+
+    @Test @MainActor
+    func favoritingADepartmentOnAPhantomCreatesTheOrgThenOwnsTheFavorite() async throws {
+        // A person names "Rice University" with department "Lilie", but there is
+        // NO organization record — so "Rice University" is a phantom. Favoriting
+        // its department first materializes the real org (createContact mints the
+        // identity), then keys a normal department favorite on that real UUID.
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/TestTemp", isDirectory: true)
+            .appendingPathComponent("guesswho-repo-deptfav-phantom-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { cleanup(root) }
+
+        let person = Contact(
+            localID: "person-lilie",
+            givenName: "Liana",
+            departmentName: "Lilie",
+            organizationName: "Rice University")
+        let contacts = InMemoryContactStore(contacts: [person])
+        let sync = GuessWhoSync(
+            contacts: contacts, events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(), deviceID: Self.deviceID)
+        let favorites = FavoritesStore(root: root)
+        let repository = ContactsRepository(
+            contacts: contacts, sync: sync, favorites: favorites,
+            notificationCenter: NotificationCenter())
+        await repository.reload()
+
+        // "Rice University" is a phantom until a record with that name exists.
+        #expect(repository.phantomOrganization(key: "Rice University") != nil)
+
+        // Materialize the real organization — createContact mints its identity.
+        let created = try await repository.createContact(
+            Contact(contactType: .organization, organizationName: "Rice University"))
+        let createdUUID = try #require(created.contactID.guessWhoID)
+
+        // Favorite the department on the freshly created org.
+        #expect(try await repository.setDepartmentFavorite(true, department: "Lilie", in: created) == true)
+
+        // The stored favorite resolves to that org and the live department name.
+        let items = repository.favoriteListItems(from: try favorites.loadAll(), event: { _ in nil })
+        #expect(items.count == 1)
+        #expect(items[0].kind == .department)
+        #expect(items[0].department?.organization.contactID.guessWhoID == createdUUID)
+        #expect(items[0].department?.organization.localID == created.localID)
+        #expect(items[0].department?.department == "Lilie")
+
+        // The phantom is gone — a real record now carries the name.
+        #expect(repository.phantomOrganization(key: "Rice University") == nil)
+    }
+
     // MARK: - Rename re-key
 
     @Test @MainActor
