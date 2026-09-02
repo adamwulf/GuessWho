@@ -4686,6 +4686,11 @@ public actor ToolDispatcher {
         let canonical = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if canonical.hasPrefix("g-") { return expected != .group }
         if canonical.hasPrefix("e-") { return expected != .event }
+        // A "<org uuid>/<department>" composite belongs to a department. Only a
+        // department id carries the fixed 36-char UUID prefix + "/"; every other
+        // kind's id is a bare UUID or a prefixed opaque value, so this never
+        // mislabels them.
+        if DepartmentFavoriteKey(favoriteID: canonical) != nil { return expected != .department }
         return false
     }
 

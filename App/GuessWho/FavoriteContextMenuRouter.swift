@@ -8,10 +8,11 @@ import GuessWhoSync
 ///
 /// The routing is the whole point of the abstraction: a favorited person or
 /// organization gets the "Add to Group" menu (both can hold group membership); a
-/// favorited group gets Email All Members / Rename / Delete; events, guides, and
-/// places have no row menu today and so get none here — the same nil that gates a
-/// non-contact row in `AddToGroupMenu`. When a kind gains a menu in its own list,
-/// teaching this one switch surfaces it in every favorites surface at once.
+/// favorited group gets Email All Members / Rename / Delete; events, guides,
+/// places, and departments have no row menu today and so get none here — the
+/// same nil that gates a non-contact row in `AddToGroupMenu`. When a kind gains
+/// a menu in its own list, teaching this one switch surfaces it in every
+/// favorites surface at once.
 ///
 /// Both owned menus present their own alerts against `host` and are unguarded
 /// (no "＋" button to disable), which is why neither takes the Groups list's

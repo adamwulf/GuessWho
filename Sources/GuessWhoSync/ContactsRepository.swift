@@ -2025,16 +2025,19 @@ public final class ContactsRepository: NSObject {
     /// UUID first (like `toggleFavorite(_:)`), so favoriting a department is the
     /// FIRST write that gives an untouched organization its durable identity;
     /// then keys the favorite on `<uuid>/<department>` and calls the store's
-    /// idempotent `set`. A blank department is refused. The favorite is always a
-    /// normal department favorite on a real org UUID — there is nothing to
-    /// reconcile beyond the org identity itself.
+    /// idempotent `set`. A blank department is a no-op: it returns `false` and
+    /// mints/writes NOTHING (a department is identified by its name, so an empty
+    /// one can never be a favorite). The favorite is always a normal department
+    /// favorite on a real org UUID — there is nothing to reconcile beyond the
+    /// org identity itself.
     @discardableResult
     public func setDepartmentFavorite(
         _ favorite: Bool, department: String, in organization: Contact
     ) async throws -> Bool {
         guard let favorites else { throw SidecarUnavailableError() }
         let trimmed = department.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw BlankDepartmentError() }
+        // A blank department has no favorite to set: no mint, no write, no throw.
+        guard !trimmed.isEmpty else { return false }
         let id = organization.contactID
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)

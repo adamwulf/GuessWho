@@ -429,6 +429,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         case .organizations:
             let list = installOrganizationsList(in: split, appDelegate: appDelegate)
+            if let department = item.department {
+                // A department favorite lands on its organization: mount the
+                // Organizations list, select the org row, and show the org
+                // detail — then stop. (Step 1: a plain child under Organizations;
+                // the org detail already carries the department drill-in. Deeper
+                // department nesting/routing is Step 3.)
+                let organization = department.organization
+                list.select(contactID: organization.contactID)
+                showContactDetail(contact: organization, appDelegate: appDelegate)
+                return
+            }
             guard let contact = item.contact else { return }
             list.select(contactID: contact.contactID)
             showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -652,10 +663,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.showPlaceDetail(place: place, appDelegate: appDelegate)
         }
         // A department drills into its members list on this supplementary
-        // column, exactly as a favorited group does, and as the department row on
-        // the organization page does.
+        // column, exactly as a favorited group does: member selection then
+        // REPLACES the secondary/detail column (via `showContactDetail`).
         list.didSelectDepartment = { [weak self, weak nav] department in
-            self?.pushCatalystDepartmentMembers(
+            self?.showDepartmentMembers(
                 ref: DepartmentReference(
                     organizationID: department.organization.contactID,
                     department: department.department),
@@ -698,6 +709,37 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let nav else { return }
         let members = GroupMembersListViewController(
             group: group,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        members.didSelectContact = { [weak self] contact in
+            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
+        members.didSelectContacts = { [weak self] contacts in
+            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+        }
+        nav.pushViewController(members, animated: true)
+    }
+
+    /// Push a `DepartmentMembersListViewController` for `ref` onto the
+    /// SUPPLEMENTARY column's `nav`, mirroring `showGroupMembers`: member
+    /// selection REPLACES the secondary/detail column via `showContactDetail`
+    /// (and `showContactDetailStack` for a multi-select). This is the Favorites
+    /// section's department drill-in — distinct from `pushCatalystDepartmentMembers`,
+    /// which pushes onto the SECONDARY nav for an in-detail drill-down.
+    private func showDepartmentMembers(
+        ref: DepartmentReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav,
+              let organization = appDelegate.contactsRepository.contact(id: ref.organizationID)
+        else { return }
+        let members = DepartmentMembersListViewController(
+            organizationID: ref.organizationID,
+            organization: organization,
+            department: ref.department,
             repository: appDelegate.contactsRepository,
             photoLoader: appDelegate.contactPhotoLoader,
             favoritesStore: appDelegate.favoritesStore

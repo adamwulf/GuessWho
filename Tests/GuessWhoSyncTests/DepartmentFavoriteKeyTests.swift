@@ -47,6 +47,19 @@ struct DepartmentFavoriteKeyTests {
     }
 
     @Test
+    func parseStoresTheDepartmentTrimmed() throws {
+        // The parse init trims surrounding whitespace, exactly like the
+        // component init, so a stored id with padding round-trips to the trimmed
+        // form. Internal whitespace (e.g. around an internal "/") is preserved.
+        let padded = try #require(DepartmentFavoriteKey(favoriteID: "\(Self.orgUUID)/  Lilie  "))
+        #expect(padded.department == "Lilie")
+
+        let internalSpaces = try #require(DepartmentFavoriteKey(favoriteID: "\(Self.orgUUID)/  R&D / AI  "))
+        #expect(internalSpaces.department == "R&D / AI")
+        #expect(internalSpaces.favoriteID == "\(Self.orgUUID)/R&D / AI")
+    }
+
+    @Test
     func parseRejectsMalformedIDs() {
         // Not a UUID prefix.
         #expect(DepartmentFavoriteKey(favoriteID: "not-a-uuid/Lilie") == nil)

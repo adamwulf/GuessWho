@@ -67,14 +67,18 @@ struct ContactsRepositoryDepartmentFavoritesTests {
     }
 
     @Test @MainActor
-    func aBlankDepartmentIsRefused() async throws {
+    func aBlankDepartmentIsANoOpThatMintsAndWritesNothing() async throws {
         let fixture = try await makeLoadedFixture()
         defer { cleanup(fixture.root) }
         let org = try #require(fixture.repository.contact(localID: Self.orgLocalID))
-        await #expect(throws: BlankDepartmentError.self) {
-            _ = try await fixture.repository.setDepartmentFavorite(true, department: "   ", in: org)
-        }
+        // Blank department: returns false, mints nothing, writes nothing — never
+        // throws.
+        let result = try await fixture.repository.setDepartmentFavorite(
+            true, department: "   ", in: org)
+        #expect(result == false)
         #expect(try fixture.favorites.loadAll().isEmpty)
+        // The organization was NOT minted by the no-op.
+        #expect(fixture.repository.contact(localID: Self.orgLocalID)?.contactID.guessWhoID == nil)
     }
 
     // MARK: - Read projection

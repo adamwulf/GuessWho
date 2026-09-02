@@ -125,6 +125,35 @@ struct FavoritesStoreTests {
     }
 
     @Test
+    func departmentFavoriteExercisesSetAndRemoveAndLowercasing() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let store = FavoritesStore(root: root)
+        // A mixed-case org UUID and department; every primitive lowercases the id
+        // on both write and lookup.
+        let mixedID = DepartmentFavoriteKey(
+            organizationGuessWhoID: "ABCDEF01-2222-4333-8444-555566667777",
+            department: "Lilie").favoriteID
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // `set` is idempotent desired-state.
+        #expect(try store.set(kind: .department, id: mixedID, favorite: true, now: now) == true)
+        #expect(try store.set(kind: .department, id: mixedID.uppercased(), favorite: true, now: now) == false)
+        let stored = try store.loadAll()
+        #expect(stored.count == 1)
+        #expect(stored[0].kind == .department)
+        #expect(stored[0].id == mixedID.lowercased())
+        // Case-insensitive membership through every entry point.
+        #expect(try store.isFavorite(kind: .department, id: mixedID.uppercased()) == true)
+
+        // `remove` is idempotent and case-insensitive.
+        #expect(try store.remove(kind: .department, id: mixedID.uppercased()) == true)
+        #expect(try store.loadAll().isEmpty)
+        #expect(try store.remove(kind: .department, id: mixedID) == false)
+        #expect(try store.set(kind: .department, id: mixedID, favorite: false, now: now) == false)
+    }
+
+    @Test
     func guideAndPlaceKindsDecodeFromTheirPersistedRawValues() throws {
         // Pin the on-disk spelling: a favorite written by another device (or an
         // earlier build) must decode to the same kind, so these raw values can

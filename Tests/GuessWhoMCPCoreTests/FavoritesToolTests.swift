@@ -755,4 +755,72 @@ final class FavoritesToolTests: XCTestCase {
         XCTAssertEqual(page.items[1].displayName, "Unavailable")
         XCTAssertFalse(page.items[1].isAvailable)
     }
+
+    @MainActor
+    func testDepartmentIdShapeIsValidatedAndNeverWrites() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        let before = try fixture.favoritesStore.loadAll()
+
+        // A malformed department id (prefix is not a UUID) → notFound.
+        let malformedPrefix = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "d1", kind: .department,
+            id: "not-a-uuid/Lilie", favorite: true, idempotencyToken: nil))
+        error(malformedPrefix, .notFound)
+
+        // A department id with no "/" (a bare UUID) → notFound.
+        let noSeparator = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "d2", kind: .department,
+            id: UUID().uuidString, favorite: true, idempotencyToken: nil))
+        error(noSeparator, .notFound)
+
+        // A valid department composite supplied for a NON-department kind is a
+        // typed kind mismatch, never a silent misfile.
+        let mislabeled = await fixture.dispatcher.handle(.favoritesSet(
+            helperId: MCPProductionFixture.helper, messageId: "d3", kind: .contact,
+            id: "11111111-2222-4333-8444-555566667777/Lilie", favorite: true, idempotencyToken: nil))
+        error(mislabeled, .invalidParams)
+
+        // None of the rejected writes touched the store.
+        XCTAssertEqual(try fixture.favoritesStore.loadAll(), before)
+    }
+
+    @MainActor
+    func testReorderAcceptsDepartmentCompositeIdentity() async throws {
+        let fixture = try await productionFixture(writable: true)
+        defer { fixture.cleanUp() }
+        try await fixture.seedContacts([
+            Contact(
+                localID: "harness-person-grace", givenName: "Grace",
+                departmentName: "Research", organizationName: "Analytical Engines"),
+            Contact(
+                localID: "harness-person-ida", givenName: "Ida",
+                departmentName: "Sales", organizationName: "Analytical Engines"),
+        ])
+        let org = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        // The first favorite mints the org; the second favorites a sibling
+        // department on the now-reconciled org.
+        _ = try await fixture.repository.setDepartmentFavorite(true, department: "Research", in: org)
+        let minted = try XCTUnwrap(
+            fixture.repository.allContacts.first { $0.localID == MCPProductionFixture.orgLocalID })
+        _ = try await fixture.repository.setDepartmentFavorite(true, department: "Sales", in: minted)
+
+        let listed = await list(fixture)
+        let page = try XCTUnwrap(listed)
+        XCTAssertEqual(page.items.map(\.kind), [.department, .department])
+        let originalOrder = page.items.map(\.id)
+        let desired = page.items.reversed().map { WireFavoriteIdentity(kind: $0.kind, id: $0.id) }
+
+        let response = await fixture.dispatcher.handle(.favoritesReorder(
+            helperId: MCPProductionFixture.helper, messageId: "dept-reorder",
+            favorites: desired, idempotencyToken: "dr-1"))
+        guard case .acknowledged = response else {
+            return XCTFail("department reorder failed: \(String(describing: response))")
+        }
+
+        let relisted = await list(fixture)
+        let after = try XCTUnwrap(relisted)
+        XCTAssertEqual(after.items.map(\.id), originalOrder.reversed())
+    }
 }

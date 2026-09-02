@@ -46,10 +46,13 @@ public struct DepartmentFavoriteKey: Hashable, Sendable {
         let uuidPart = String(favoriteID[favoriteID.startIndex..<uuidEnd])
         guard UUID(uuidString: uuidPart) != nil else { return nil }
         guard favoriteID[uuidEnd] == "/" else { return nil }
+        // Everything after the "/" is the department — including any internal
+        // "/". Trim surrounding whitespace so the stored form matches the
+        // `init(organizationGuessWhoID:department:)` contract ("trimmed, as
+        // given"); a blank department is not a valid key.
         let departmentPart = String(favoriteID[favoriteID.index(after: uuidEnd)...])
-        guard !departmentPart.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !departmentPart.isEmpty else { return nil }
         self.organizationGuessWhoID = uuidPart.lowercased()
         self.department = departmentPart
     }
@@ -62,12 +65,4 @@ public struct DepartmentFavoriteKey: Hashable, Sendable {
         let rhs = other.trimmingCharacters(in: .whitespacesAndNewlines)
         return lhs.caseInsensitiveCompare(rhs) == .orderedSame
     }
-}
-
-/// Thrown by `setDepartmentFavorite` when the department name is blank. A
-/// department is identified by its name, so an empty one can never be a valid
-/// favorite; the write refuses it at the package boundary rather than persisting
-/// a nameless key.
-public struct BlankDepartmentError: Error {
-    public init() {}
 }

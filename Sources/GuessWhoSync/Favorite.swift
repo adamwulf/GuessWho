@@ -26,16 +26,20 @@ public enum FavoriteKind: String, Codable, Sendable {
 
 public struct Favorite: Codable, Sendable, Hashable {
     public let kind: FavoriteKind
-    /// Lowercased sidecar UUID of the referent. Every favorite kind, including
-    /// groups, uses a durable GuessWho-owned UUID rather than an OS-local id.
+    /// Lowercased durable id of the referent. For `contact`/`event`/`group`/
+    /// `guide`/`place` this is a single GuessWho-owned UUID (never an OS-local
+    /// id). For `department` it is the composite `<org uuid>/<department name>`
+    /// (see `DepartmentFavoriteKey`): the department part is not a UUID and may
+    /// itself contain "/", so it is parsed by the fixed 36-character UUID prefix.
     public let id: String
     public let addedAt: Date
 
     /// Composite identity for SwiftUI iteration: `"contact:<uuid>"` /
-    /// `"event:<uuid>"` / `"guide:<uuid>"` / `"place:<uuid>"`. Two favorites
-    /// with the same `id` but different kinds remain distinguishable — which a
-    /// guide and its own places never are today, but the composite keeps that
-    /// guarantee free of any per-kind uniqueness assumption.
+    /// `"event:<uuid>"` / `"guide:<uuid>"` / `"place:<uuid>"` /
+    /// `"department:<org uuid>/<department>"`. Two favorites with the same `id`
+    /// but different kinds remain distinguishable — which a guide and its own
+    /// places never are today, but the composite keeps that guarantee free of
+    /// any per-kind uniqueness assumption.
     public var stableID: String { "\(kind.rawValue):\(id)" }
 
     public init(kind: FavoriteKind, id: String, addedAt: Date) {
