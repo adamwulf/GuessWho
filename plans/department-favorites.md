@@ -27,8 +27,23 @@ Catalyst sidebar.
   event selections stamp restoration state, so a relaunch after clicking a
   department child lands on the organization detail.
 - **Hand check still owed on Catalyst:** drag-reorder of org rows with nested
-  department rows present (the range math is reviewed and unit-tested at the
-  hierarchy level, not exercised end to end).
+  department rows present. The drop-index translation now lives in the pure
+  `SidebarFavoriteHierarchy.rowsAfterMoving(_:from:rowStarts:toVisibleIndex:)`
+  and is unit-tested (own index, later root, inside a subtree, past the last
+  root, up/down corrections, self-drop, contiguous == flat); the UIKit
+  index-path plumbing around it is not exercised by automation.
+
+### Test coverage added after the build (2026-09-02)
+
+Five gaps closed, each reviewed: the drop-index helper above (7 app tests);
+MCP clear paths (emptied department still clears; org gone clears via the
+stored-row fallback while an add errors; an add for a department no one
+carries is `notFound`, writes nothing, and does NOT mint the org); the
+phantom flow at the package level (`createContact` mints, then
+`setDepartmentFavorite` resolves, phantom gone); the department rename tool
+re-keys the favorite end to end (new name, same slot, `addedAt` kept); and a
+mixed contact/department/group `favorites_list` keeps the department row in
+stored order and pages it exactly once.
 
 ### Decisions locked (2026-09-01, Adam)
 
