@@ -416,7 +416,7 @@ public actor ToolDispatcher {
     private func favoritePermissionError(
         kinds: [WireFavoriteKind], helperId: String, messageId: String
     ) async -> WireResponse? {
-        let needsContacts = kinds.contains { $0 == .contact || $0 == .group }
+        let needsContacts = kinds.contains { $0 == .contact || $0 == .group || $0 == .department }
         let needsEvents = kinds.contains { $0 == .event }
         let (contactsOK, eventsOK) = await MainActor.run {
             (gates.contactsAuthorized, gates.eventsAuthorized)
@@ -1427,8 +1427,9 @@ public actor ToolDispatcher {
         let (slice, nextCursor) = page.slice(stored)
 
         // Resolve only the requested page, but keep the page boundaries over
-        // the raw stored order so stale rows cannot shift or disappear.
-        let contactSnapshot = slice.contains { $0.kind == .contact }
+        // the raw stored order so stale rows cannot shift or disappear. A
+        // department favorite resolves its organization from the same snapshot.
+        let contactSnapshot = slice.contains { $0.kind == .contact || $0.kind == .department }
             ? await MainActor.run { contacts.allContacts } : []
         let groupSnapshot = slice.contains { $0.kind == .group }
             ? await contacts.fetchGroups() : []
@@ -2175,6 +2176,77 @@ public actor ToolDispatcher {
             }
         }
 
+        // Department favorites also have a repository-owned identity boundary:
+        // the org side of the id resolve-or-mints its durable GuessWho UUID (like
+        // a first contact favorite), then the favorite is keyed on
+        // "<org uuid>/<department>". The generic store never sees a department id,
+        // so the org identity is always minted before the favorite is written.
+        if kind == .department {
+            guard let key = DepartmentFavoriteKey(favoriteID: id) else {
+                // Not a well-formed "<org id>/<department>" id. A clear can still
+                // remove a stale stored row by its exact composite identity.
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                return FavoriteResolutionFailure
+                    .notFound(WireErrorMessage.notFoundDepartment)
+                    .response(helperId: helperId, messageId: messageId)
+            }
+            switch await resolveOrganization(key.organizationGuessWhoID) {
+            case .failure(let failure):
+                // The organization is gone (or the id names a person). A clear
+                // may still target the stale favorite; an add cannot.
+                if !favorite, let cleared = await clearStoredFavorite(
+                    kind: kind, id: id, helperId: helperId, messageId: messageId
+                ) {
+                    return cleared
+                }
+                return failure.response(helperId: helperId, messageId: messageId)
+            case .success(let organization):
+                // Adding requires a live department; clearing does not, so an
+                // emptied department can still be un-favorited.
+                if favorite {
+                    let liveDepartments = await MainActor.run {
+                        contacts.departments(in: organization)
+                    }
+                    guard liveDepartments.contains(where: { key.matches(department: $0) }) else {
+                        return FavoriteResolutionFailure
+                            .notFound(WireErrorMessage.notFoundDepartment)
+                            .response(helperId: helperId, messageId: messageId)
+                    }
+                }
+                let prior = await MainActor.run {
+                    contacts.isDepartmentFavorite(key.department, in: organization)
+                }
+                do {
+                    _ = try await contacts.setDepartmentFavorite(
+                        favorite, department: key.department, in: organization)
+                    if prior != favorite {
+                        // The org wire id is stable across the resolve-or-mint (a
+                        // pre-mint id equals the deterministic id it mints to).
+                        let wireID = DepartmentFavoriteKey(
+                            organizationGuessWhoID: WireRecordID.contactID(for: organization),
+                            department: key.department).favoriteID
+                        await recordAudit(
+                            .setFavorite, kind: .department,
+                            subjectID: wireID, subjectName: key.department,
+                            instanceID: nil, postModifiedAt: nil,
+                            priorValue: prior ? "true" : "false",
+                            newValue: favorite ? "true" : "false")
+                    }
+                    return .acknowledged(
+                        helperId: helperId, messageId: messageId,
+                        message: favorite
+                            ? WireAckMessage.genericFavoriteSet
+                            : WireAckMessage.genericFavoriteCleared)
+                } catch {
+                    return writeFailure(error, helperId: helperId, messageId: messageId)
+                }
+            }
+        }
+
         switch await resolveFavoriteInput(kind: kind, id: id) {
         case .failure(let failure):
             if !favorite, let cleared = await clearStoredFavorite(
@@ -2245,7 +2317,7 @@ public actor ToolDispatcher {
         let candidates = stored.filter { Self.wireFavoriteKind($0.kind) == kind }
         guard !candidates.isEmpty else { return nil }
 
-        let contactSnapshot = kind == .contact
+        let contactSnapshot = (kind == .contact || kind == .department)
             ? await MainActor.run { contacts.allContacts } : []
         let groupSnapshot = kind == .group ? await contacts.fetchGroups() : []
         let guideSnapshot = kind == .guide ? await guides.allGuides() : []
@@ -2300,7 +2372,7 @@ public actor ToolDispatcher {
         guard identities.count == current.count else {
             return favoriteOrderMismatch(helperId: helperId, messageId: messageId)
         }
-        let contactSnapshot = current.contains { $0.kind == .contact }
+        let contactSnapshot = current.contains { $0.kind == .contact || $0.kind == .department }
             ? await MainActor.run { contacts.allContacts } : []
         let groupSnapshot = current.contains { $0.kind == .group }
             ? await contacts.fetchGroups() : []
@@ -4593,6 +4665,7 @@ public actor ToolDispatcher {
         case .group: return .group
         case .guide: return .guide
         case .place: return .place
+        case .department: return .department
         }
     }
 
@@ -4603,6 +4676,7 @@ public actor ToolDispatcher {
         case .group: return .group
         case .guide: return .guide
         case .place: return .place
+        case .department: return .department
         }
     }
 
@@ -4635,6 +4709,13 @@ public actor ToolDispatcher {
         case .group:
             guard trimmed.hasPrefix("g-") else { return nil }
             return WireFavoriteIdentity(kind: .group, id: trimmed)
+        case .department:
+            // "<org uuid>/<department>", parsed by the fixed 36-char prefix so a
+            // department name containing "/" survives. The uuid is lowercased and
+            // the department trimmed, matching the id `resolveStoredFavorite`
+            // emits for an available department row.
+            guard let key = DepartmentFavoriteKey(favoriteID: trimmed) else { return nil }
+            return WireFavoriteIdentity(kind: .department, id: key.favoriteID)
         }
     }
 
@@ -4647,12 +4728,21 @@ public actor ToolDispatcher {
         kind: WireFavoriteKind, id: String
     ) -> WireFavoriteIdentity? {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let uuid = WireRecordID.recordUUID(trimmed), kind != .group {
+        if let uuid = WireRecordID.recordUUID(trimmed), kind != .group, kind != .department {
             return WireFavoriteIdentity(kind: kind, id: uuid.uuidString.lowercased())
         }
         switch kind {
         case .group:
             guard isOpaqueDigestID(trimmed, prefix: "g-") else { return nil }
+            return WireFavoriteIdentity(kind: kind, id: trimmed)
+        case .department:
+            // A live-shaped "<org uuid>/<department>" canonicalizes to the same
+            // composite `safeStoredFavoriteID` emits for a stale department row; a
+            // malformed legacy id is matched by its opaque `x-` digest instead.
+            if let key = DepartmentFavoriteKey(favoriteID: trimmed) {
+                return WireFavoriteIdentity(kind: kind, id: key.favoriteID)
+            }
+            guard isOpaqueDigestID(trimmed, prefix: "x-") else { return nil }
             return WireFavoriteIdentity(kind: kind, id: trimmed)
         case .contact, .event, .guide, .place:
             guard isOpaqueDigestID(trimmed, prefix: "x-") else { return nil }
@@ -4669,6 +4759,15 @@ public actor ToolDispatcher {
         switch favorite.kind {
         case .group:
             return WireRecordID.groupID(localID: favorite.id)
+        case .department:
+            // The stored id is "<org guesswho uuid>/<department>" — the org uuid
+            // IS the org's wire contact id, and the department is user text also
+            // returned as displayName, so the composite is safe to echo. A
+            // malformed legacy id falls back to the opaque stale form.
+            if let key = DepartmentFavoriteKey(favoriteID: favorite.id) {
+                return key.favoriteID
+            }
+            return WireRecordID.opaqueStaleID(kind: favorite.kind.rawValue, id: favorite.id)
         case .contact, .event, .guide, .place:
             if let uuid = WireRecordID.recordUUID(favorite.id) {
                 return uuid.uuidString.lowercased()
@@ -4719,6 +4818,24 @@ public actor ToolDispatcher {
                 id = place.id.uuidString.lowercased()
                 name = place.name.isEmpty ? (place.address ?? "Unnamed place") : place.name
                 available = true
+            }
+        case .department:
+            // Resolve the org by its GuessWho UUID, then find the LIVE department
+            // whose trimmed, case-insensitive name matches the key — a department
+            // exists only through people, so a favorite of one no person carries
+            // reads as unavailable. The live match restores the display case the
+            // lowercased stored key dropped; the wire id pairs the org's wire
+            // contact id with that live name.
+            if let key = DepartmentFavoriteKey(favoriteID: favorite.id),
+               let organization = WireRecordID.contact(for: key.organizationGuessWhoID, in: contactSnapshot) {
+                let liveDepartments = await MainActor.run { contacts.departments(in: organization) }
+                if let liveName = liveDepartments.first(where: { key.matches(department: $0) }) {
+                    id = DepartmentFavoriteKey(
+                        organizationGuessWhoID: WireRecordID.contactID(for: organization),
+                        department: liveName).favoriteID
+                    name = liveName
+                    available = true
+                }
             }
         }
         return StoredFavoriteResolution(
@@ -4800,6 +4917,16 @@ public actor ToolDispatcher {
                 identity: WireFavoriteIdentity(kind: kind, id: place.id.uuidString.lowercased()),
                 storageKind: .place, storageID: place.id.uuidString,
                 displayName: place.name.isEmpty ? (place.address ?? "Unnamed place") : place.name))
+        case .department:
+            // Unreachable: department favorites are resolved and persisted
+            // ENTIRELY by favoritesSet's dedicated `.department` branch, which
+            // resolve-or-mints the organization's identity and stores
+            // "<org uuid>/<department>". This generic resolver must never run for
+            // a department — routing one here would bypass the org resolve-or-mint
+            // — so fail hard if a future refactor sends one through.
+            assertionFailure(
+                "resolveFavoriteInput must not be reached for .department; favoritesSet handles departments directly")
+            return .failure(.notFound(WireErrorMessage.notFoundDepartment))
         }
     }
 

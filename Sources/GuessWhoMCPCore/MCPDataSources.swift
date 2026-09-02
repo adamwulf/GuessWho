@@ -85,6 +85,15 @@ public protocol MCPContactSource: AnyObject {
     func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws
     @discardableResult
     func setGroupFavorite(_ favorite: Bool, for group: ContactGroup) async throws -> Bool
+    /// Whether one department of an organization is favorited (read-only; never
+    /// mints).
+    func isDepartmentFavorite(_ department: String, in organization: Contact) -> Bool
+    /// Idempotently sets whether one department of an organization is favorited.
+    /// Resolve-or-mints the organization's GuessWho identity first, exactly like
+    /// a first contact favorite, then keys the favorite on the org UUID plus the
+    /// department name.
+    @discardableResult
+    func setDepartmentFavorite(_ favorite: Bool, department: String, in organization: Contact) async throws -> Bool
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus
 
     // Tombstone-inclusive reads for the write-side audit (post-write

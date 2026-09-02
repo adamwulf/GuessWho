@@ -13,6 +13,15 @@ public enum FavoriteKind: String, Codable, Sendable {
     /// UUID. A place favorite stands on its own — it does NOT imply that the
     /// guide holding the place is favorited.
     case place
+    /// A department of an organization, keyed by the organization's GuessWho
+    /// UUID followed by "/" and the department name (see
+    /// `DepartmentFavoriteKey`). A department is not a record — it exists only
+    /// through the people who carry that department string — so the key pairs
+    /// the durable, cross-device org identity with the Apple-synced department
+    /// name. Favoriting a department never writes a second `.contact` favorite
+    /// for the organization; the organization row is inferred from the
+    /// department favorite.
+    case department
 }
 
 public struct Favorite: Codable, Sendable, Hashable {

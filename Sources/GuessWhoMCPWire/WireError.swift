@@ -134,7 +134,7 @@ public enum WireErrorMessage {
     public static let reorderMustCoverEveryPlace =
         "The placeIds argument must contain every place in the guide exactly once, in the desired order."
     public static let invalidFavoriteKindArgument =
-        "The kind argument must be \"contact\", \"event\", \"group\", \"guide\", or \"place\"."
+        "The kind argument must be \"contact\", \"event\", \"group\", \"guide\", \"place\", or \"department\"."
     public static let favoriteKindMismatch =
         "That id doesn't belong to a record of the kind given for it. Check the kind and id against the matching list tool, then try again."
     public static let staleFavorite =

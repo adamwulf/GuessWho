@@ -651,6 +651,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectPlace = { [weak self] place in
             self?.showPlaceDetail(place: place, appDelegate: appDelegate)
         }
+        // A department drills into its members list on this supplementary
+        // column, exactly as a favorited group does, and as the department row on
+        // the organization page does.
+        list.didSelectDepartment = { [weak self, weak nav] department in
+            self?.pushCatalystDepartmentMembers(
+                ref: DepartmentReference(
+                    organizationID: department.organization.contactID,
+                    department: department.department),
+                on: nav, appDelegate: appDelegate)
+        }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .favorites)
     }
@@ -1453,6 +1463,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectPlace = { [weak self] place in
             self?.pushGuidePlaceDetail(
                 place: place,
+                on: list.navigationController,
+                appDelegate: appDelegate
+            )
+        }
+        // A department pushes its members list onto this tab's own stack, like a
+        // group, and like the department row on the organization page.
+        list.didSelectDepartment = { [weak self] department in
+            self?.pushDepartmentMembers(
+                ref: DepartmentReference(
+                    organizationID: department.organization.contactID,
+                    department: department.department),
                 on: list.navigationController,
                 appDelegate: appDelegate
             )

@@ -58,6 +58,11 @@ public enum WireFavoriteKind: String, Codable, CaseIterable, Sendable {
     case group
     case guide
     case place
+    /// A department of an organization. Its id is the organization's wire
+    /// contact id (a 36-character UUID) followed by "/" and the department name;
+    /// the department part may itself contain "/", so the id is parsed by the
+    /// fixed 36-character prefix, never by searching for the separator.
+    case department
 }
 
 /// Composite favorite identity. `kind` is part of identity because ordinary

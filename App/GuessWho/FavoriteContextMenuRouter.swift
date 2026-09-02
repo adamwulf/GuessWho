@@ -49,7 +49,7 @@ final class FavoriteContextMenuRouter {
         case .group:
             guard let group = item.group else { return nil }
             return groupContextMenu.configuration(for: group)
-        case .event, .guide, .place:
+        case .event, .guide, .place, .department:
             return nil
         }
     }

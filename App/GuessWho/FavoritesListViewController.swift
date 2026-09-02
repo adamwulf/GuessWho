@@ -20,6 +20,9 @@ final class FavoritesListViewController: UIViewController {
     var didSelectGroup: (ContactGroup) -> Void = { _ in }
     var didSelectGuide: (MapsGuide) -> Void = { _ in }
     var didSelectPlace: (MapsPlace) -> Void = { _ in }
+    /// A favorited department drills into its members list (org + department
+    /// name), exactly like tapping the department row on the organization page.
+    var didSelectDepartment: (DepartmentFavorite) -> Void = { _ in }
 
     private let store: FavoritesListStore
     private let service: SyncService
@@ -384,6 +387,10 @@ extension FavoritesListViewController: UITableViewDelegate {
         case .place:
             if let place = item.place {
                 didSelectPlace(place)
+            }
+        case .department:
+            if let department = item.department {
+                didSelectDepartment(department)
             }
         }
     }
@@ -786,6 +793,21 @@ private final class FavoriteCell: UITableViewCell {
                 iconView.image = UIImage(systemName: "mappin.slash")
                 titleLabel.text = "Unavailable"
                 captionLabel.text = "Place"
+                captionLabel.isHidden = false
+            }
+
+        case .department:
+            iconView.contentMode = .scaleAspectFit
+            // The department row's icon on the organization page — one icon per
+            // kind.
+            iconView.image = UIImage(systemName: "person.2")
+            if let department = item.department {
+                titleLabel.text = department.department
+                captionLabel.text = department.organization.displayName
+                captionLabel.isHidden = department.organization.displayName.isEmpty
+            } else {
+                titleLabel.text = "Unavailable"
+                captionLabel.text = "Department"
                 captionLabel.isHidden = false
             }
         }

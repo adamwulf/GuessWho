@@ -421,6 +421,16 @@ final class SidebarViewController: UIViewController {
             }
             content.text = Self.placeTitle(place)
             content.image = UIImage(systemName: SidebarTab.places.systemImage)
+
+        case .department:
+            // The department row's icon on the organization page — one icon per
+            // kind, never branched on where the data comes from.
+            content.image = UIImage(systemName: "person.2")
+            guard let department = item.department else {
+                content.text = Self.unavailableTitle
+                return content
+            }
+            content.text = department.department
         }
         return content
     }
@@ -701,6 +711,10 @@ final class SidebarViewController: UIViewController {
             return .guides
         case .place:
             return .places
+        case .department:
+            // A department hangs under Organizations, beside its organization.
+            // Step 1 shows it as a plain child; the org-nested layout is Step 3.
+            return .organizations
         }
     }
 
