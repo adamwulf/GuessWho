@@ -1107,7 +1107,8 @@ extension SidebarViewController: UICollectionViewDropDelegate {
     /// the last row. Read that as the end of the list, so a child of the LAST
     /// section can be dropped there instead of meeting a "no drop" cursor (the
     /// same end-of-list fallback `FavoritesListViewController` uses). Every
-    /// other section still refuses it — `insertionRange` doesn't reach.
+    /// other sibling scope still refuses it — its `reorderContext` range
+    /// doesn't reach.
     private func resolvedDestination(_ destinationIndexPath: IndexPath?) -> IndexPath {
         destinationIndexPath
             ?? IndexPath(item: collectionView.numberOfItems(inSection: 0), section: 0)

@@ -1,11 +1,34 @@
 # Plan: favorite a department of an organization
 
-## Status (2026-09-01)
+## Status (2026-09-02)
 
-Approved, building. This document answers "can a department be favorited,
-and shown in the sidebar under its organization?" The answer is yes. No new
-storage concept is needed. The work is a new favorite kind plus one extra
-nesting level in the Catalyst sidebar.
+BUILT on `agent/favorite-organization-dept`; awaiting promotion to `main`
+and a hand check on Catalyst. All three steps landed, each after an
+independent review: step 1 (package + wire + compile floor, a567678), step 2
+(star affordances, 38cfb94), step 3 (sidebar nesting, 85734a8). This
+document answers "can a department be favorited, and shown in the sidebar
+under its organization?" The answer is yes. No new storage concept was
+needed. The work is a new favorite kind plus one extra nesting level in the
+Catalyst sidebar.
+
+### Accepted behaviors noted in review
+
+- **Sidebar root reorder normalizes grouped order.** Dragging an org row in
+  the sidebar rewrites that section's slots as blocks (org, then its
+  departments). If a department had been favorited BEFORE its org, the flat
+  Favorites list and `favorites_list` afterwards show the org first. Display
+  in the sidebar is unchanged; accepted.
+- **Main-thread favorite reads on the org page.** `departmentRow` reads
+  `Favorites.json` through a coordinated read during body evaluation, exactly
+  as `groupRow` already does. Same cost class as groups; a follow-up could
+  serve both from the in-memory `FavoritesListStore.items` if it ever shows
+  up in profiling.
+- **Restoration returns to the org, not the department.** Only contact and
+  event selections stamp restoration state, so a relaunch after clicking a
+  department child lands on the organization detail.
+- **Hand check still owed on Catalyst:** drag-reorder of org rows with nested
+  department rows present (the range math is reviewed and unit-tested at the
+  hierarchy level, not exercised end to end).
 
 ### Decisions locked (2026-09-01, Adam)
 
