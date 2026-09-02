@@ -44,7 +44,6 @@ enum LinkedInDiff {
     static let headlineFieldName = "LinkedIn Headline"
     static let aboutFieldName = "LinkedIn About"
     static let locationFieldName = "LinkedIn Location"
-    static let riceDepartmentFieldName = "Rice Department"
     static let riceBioFieldName = "Rice Bio"
 
     /// - Parameter existingSidecar: the contact's current sidecar field values

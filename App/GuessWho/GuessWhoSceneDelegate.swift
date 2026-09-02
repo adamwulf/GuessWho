@@ -2518,7 +2518,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let hasSidecarContent = [profile.headline, profile.about, profile.location]
             .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
         if hasSidecarContent { extras.formUnion([.headline, .about, .location]) }
-        if profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+        // Rice department is a real Contacts Department field, seeded into the
+        // new-contact editor and saved with the card (like the organization),
+        // so it is not a post-save extra. TLS keeps its unit in a custom field
+        // with no editor row, so it still attaches here.
+        if profile.isTLSProfile,
+           profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             extras.insert(.department)
         }
         if profile.role?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
@@ -2556,7 +2561,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             LinkedInDiff.headlineFieldName,
             LinkedInDiff.aboutFieldName,
             LinkedInDiff.locationFieldName,
-            LinkedInDiff.riceDepartmentFieldName,
             LinkedInDiff.riceBioFieldName,
             LinkedInProfile.dschoolAMAFieldName,
             LinkedInProfile.dschoolRoleFieldName,

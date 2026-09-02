@@ -264,6 +264,32 @@ struct LinkedInApplyTests {
         #expect(byName["LinkedIn About"] == nil)
     }
 
+    @Test func riceProfile_migratesLegacyRiceDepartmentNoteToRealField() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Torey"))
+        // Simulate a contact imported before the unit moved to the real Contacts
+        // Department field: it still carries the old "Rice Department" note.
+        _ = try await repo.upsertField(
+            for: id, field: "Rice Department", value: "Old Unit", type: .multilineNote
+        )
+        let reconciledID = repo.contact(localID: "T")!.contactID
+        #expect(repo.fields(for: reconciledID).contains { $0.field == "Rice Department" })
+
+        let rice = LinkedInProfile(
+            source: "rice",
+            sourceUrl: "https://business.rice.edu/person/torey-brown",
+            fullName: "Torey Brown",
+            department: "Rice Alliance"
+        )
+        let result = try await repo.applyLinkedIn(
+            profile: rice, to: reconciledID, fields: [.department]
+        )
+
+        // The unit now lives in the real Department field, and the stale note is
+        // gone (soft-deleted) so the value is not shown in two places.
+        #expect(result.departmentName == "Rice Alliance")
+        #expect(!repo.fields(for: reconciledID).contains { $0.field == "Rice Department" })
+    }
+
     @Test func tlsProfile_appliesNicknameAndDschoolFields() async throws {
         let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Amanda"))
         let tls = LinkedInProfile(

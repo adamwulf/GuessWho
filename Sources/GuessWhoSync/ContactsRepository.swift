@@ -1498,6 +1498,18 @@ public final class ContactsRepository: NSObject {
                 type: .multilineNote
             )
         }
+        // Migrate away from the pre-hierarchy "Rice Department" custom note: the
+        // unit now lives in the real Department field (set above, before the
+        // save), so drop any stale note an earlier import left, to avoid showing
+        // the value in two places. No-op when none exists (a brand-new contact,
+        // or one imported after this change). Best-effort (soft-delete, so it is
+        // recoverable): the card write already succeeded, so a cleanup hiccup
+        // must not fail the whole import.
+        if fields.contains(.department), profile.isRiceProfile, profile.primaryDepartment != nil {
+            for stale in self.fields(for: id) where stale.field == "Rice Department" {
+                try? await deleteField(for: id, id: stale.id)
+            }
+        }
         if fields.contains(.role), let role = profile.role?.trimmed, !role.isEmpty {
             _ = try await upsertField(
                 for: id,
