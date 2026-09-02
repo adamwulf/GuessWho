@@ -224,7 +224,11 @@ equal(
 for (const profile of sanitizedBatch.profiles) compactTLSPhotoForHandoff(profile);
 const sanitizedBudget = fitTLSBatchToHandoffCap(sanitizedBatch);
 equal(sanitizedBudget.droppedPhotoIndexes.length, 0, "sanitized fixture keeps every photo");
-equal(sanitizedBudget.byteSize, 18292, "sanitized Foundation envelope byte size");
+// This total moves whenever the per-profile wire shape changes: it dropped
+// from 18292 when the bare "Faculty" / "Higher Ed" roles stopped being copied
+// into `title` (see isRoleCategory), and those two omitted properties account
+// for the whole difference.
+equal(sanitizedBudget.byteSize, 18232, "sanitized Foundation envelope byte size");
 
 // A standard, dependency-local 45-person DOM always checks record count,
 // order, optional photos, title/role mapping, and envelope sizing.
