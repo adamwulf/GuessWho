@@ -448,8 +448,11 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
 // the university itself as their employer, so a Rice import would otherwise
 // leave the contact's Organization empty. Any page on rice.edu or one of its
 // subdomains (profiles., business., …) therefore defaults the organization to
-// "Rice University" when the page names none of its own — a parser that does
-// find one on the page should prefer it (`parsed || gwDefaultOrganization()`).
+// "Rice University". Neither extractor reads an organization off the page
+// today (there is none to read), so this default is currently the ONLY org
+// source; an extractor that someday does find one should prefer it
+// (`parsed || gwDefaultOrganization()`) rather than let the default overrule
+// the page.
 // The match is on whole DNS labels: a host that merely ENDS in the letters
 // "rice.edu" (say "notrice.edu") is not Rice, and a Rice label buried inside
 // another domain ("rice.edu.example.com") isn't either. Off-campus hosts get
