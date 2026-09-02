@@ -12,6 +12,7 @@ const {
   extractRiceProfile,
   extractTLSProfiles,
   fitTLSBatchToHandoffCap,
+  gwDefaultOrganization,
   profileReadiness,
   tlsHandoffEnvelopeByteSize,
 } = parserModule;
@@ -114,7 +115,7 @@ const linkedIn = extractProfile(documentFor(`
 equal(linkedIn.fullName, "Ada Lovelace", "LinkedIn name regression");
 equal(linkedIn.title, "Engineer", "LinkedIn title regression");
 
-const rice = extractRiceProfile(documentFor(`
+const riceMarkup = `
   <article class="article--bio">
     <h1 class="article__author-name profile">Grace Hopper</h1>
     <div class="article__author-role profile">Professor</div>
@@ -122,9 +123,31 @@ const rice = extractRiceProfile(documentFor(`
       <div class="article__author-role profile top-border">Computer Science</div>
     </div>
   </article>
-`, "https://profiles.rice.edu/faculty/grace-hopper"));
+`;
+const rice = extractRiceProfile(documentFor(riceMarkup, "https://profiles.rice.edu/faculty/grace-hopper"));
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
+equal(rice.org, "Rice University", "Rice profile defaults the organization");
+
+// The organization default is a property of the rice.edu HOST, not of the
+// parser: the same markup served off-campus must not claim Rice as employer,
+// while the apex domain counts as much as any subdomain.
+equal(
+  extractRiceProfile(documentFor(riceMarkup, "https://profiles.notrice.edu/faculty/grace-hopper")).org,
+  null,
+  "Rice parser on a non-Rice host names no organization"
+);
+equal(
+  extractRiceProfile(documentFor(riceMarkup, "https://rice.edu/faculty/grace-hopper")).org,
+  "Rice University",
+  "Rice apex domain defaults the organization"
+);
+equal(gwDefaultOrganization("profiles.rice.edu"), "Rice University", "default org: subdomain");
+equal(gwDefaultOrganization("RICE.EDU."), "Rice University", "default org: case and trailing dot");
+equal(gwDefaultOrganization("notrice.edu"), null, "default org: suffix-only lookalike");
+equal(gwDefaultOrganization("rice.edu.example.com"), null, "default org: Rice label inside another domain");
+equal(gwDefaultOrganization("www.linkedin.com"), null, "default org: LinkedIn");
+equal(gwDefaultOrganization(null), null, "default org: missing host");
 
 const riceBusinessFixtureURL = new URL(
   "./fixtures/rice-business-person-sanitized.html", import.meta.url
@@ -137,6 +160,7 @@ equal(riceBusiness.source, "rice", "Rice Business source");
 equal(riceBusiness.slug, "elena-naids", "Rice Business slug");
 equal(riceBusiness.fullName, "Elena Naids", "Rice Business name");
 equal(riceBusiness.title, "Lecturer in Entrepreneurship", "Rice Business title");
+equal(riceBusiness.org, "Rice University", "Rice Business defaults the organization");
 equal(riceBusiness.department, "Faculty", "Rice Business department");
 equal(riceBusiness.about, "Design researcher and strategist.", "Rice Business biography");
 equal(riceBusiness.contactInfo.emails.join(","), "elena.naids@rice.edu", "Rice Business email");
@@ -405,6 +429,7 @@ globalThis.location = riceContentDocument.location;
 const riceProbe = await sendProbe("rice-route");
 equal(riceProbe.source, "rice", "content routes Rice source");
 equal(riceProbe.fullName, "Grace Hopper", "Rice content result remains single-profile");
+equal(riceProbe.org, "Rice University", "Rice content result carries the default organization");
 equal("profiles" in riceProbe, false, "Rice content result is not a batch");
 
 const riceBusinessContentDocument = documentFor(`
@@ -418,6 +443,7 @@ const riceBusinessProbe = await sendProbe("rice-business-route");
 equal(riceBusinessProbe.source, "rice", "content routes Rice Business source");
 equal(riceBusinessProbe.slug, "elena-naids", "content routes Rice Business person slug");
 equal(riceBusinessProbe.fullName, "Elena Naids", "Rice Business content result");
+equal(riceBusinessProbe.org, "Rice University", "Rice Business content result carries the default organization");
 
 globalThis.extractProfile = () => ({
   source: "linkedin",

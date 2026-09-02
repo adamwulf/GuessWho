@@ -59,6 +59,26 @@ struct LinkedInProfileDecodeTests {
         #expect(profile.photoError == "payload-cap")
     }
 
+    // The extension defaults `org` to "Rice University" for any rice.edu page
+    // (the directory pages never name the university as employer). The app
+    // side needs no Rice-specific branch: the value rides the ordinary `org`
+    // key, so the seed, the diff row, and applyLinkedIn all pick it up.
+    @Test func ricePayloadDefaultOrganizationReachesTheSeed() throws {
+        let profile = try decode(#"""
+        {
+          "source": "rice",
+          "sourceUrl": "https://business.rice.edu/person/elena-naids",
+          "fullName": "Elena Naids",
+          "title": "Lecturer in Entrepreneurship",
+          "org": "Rice University",
+          "department": "Faculty"
+        }
+        """#)
+        #expect(profile.isRiceProfile)
+        #expect(profile.org == "Rice University")
+        #expect(LinkedInContactSeed.contact(from: profile).organizationName == "Rice University")
+    }
+
     @Test func browserPayloadDecodesSingleProfileBackwardCompatibly() throws {
         let payload = try JSONDecoder().decode(
             BrowserImportPayload.self,
