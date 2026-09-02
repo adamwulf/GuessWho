@@ -2034,10 +2034,17 @@ public final class ContactsRepository: NSObject {
     public func setDepartmentFavorite(
         _ favorite: Bool, department: String, in organization: Contact
     ) async throws -> Bool {
-        guard let favorites else { throw SidecarUnavailableError() }
         let trimmed = department.trimmingCharacters(in: .whitespacesAndNewlines)
-        // A blank department has no favorite to set: no mint, no write, no throw.
+        // A blank department has no favorite to set: no dependency needed, no
+        // write, no throw. This is checked FIRST, before the availability guard.
         guard !trimmed.isEmpty else { return false }
+        // A valid write needs BOTH the favorites store AND the engine: the engine
+        // mints the org identity on the first favorite. `resolveOrMintGuessWhoID`
+        // only reaches the engine when it has to mint — its already-reconciled
+        // fast path returns without touching `sync` — so guard the engine
+        // explicitly here, or a favorite of a reconciled org with no engine would
+        // silently proceed.
+        guard let favorites, sync != nil else { throw SidecarUnavailableError() }
         let id = organization.contactID
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
@@ -3243,27 +3250,66 @@ public final class ContactsRepository: NSObject {
         // The member saves succeeded, so re-key any department favorite on this
         // organization from `oldName` to `newName`. Without this the favorite
         // would go "Unavailable" the instant the department it names no longer
-        // exists. Slot and `addedAt` are preserved (loadAll + in-place replace +
-        // setAll — the reorder primitive refuses anything but a reordering). Only
-        // a reconciled organization can own a department favorite, so an org with
-        // no GuessWho UUID has nothing to re-key.
+        // exists. Only a reconciled organization can own a department favorite,
+        // so an org with no GuessWho UUID has nothing to re-key.
+        //
+        // Collision: when BOTH `oldName` and `newName` were favorited, the rewrite
+        // would otherwise leave two favorites sharing the new key. They MERGE into
+        // one — the earliest participating slot survives, keeping its `addedAt`;
+        // every other participant is dropped, so `Favorites.json` never holds a
+        // duplicate `(kind, id)`. The normal no-collision path is the single-
+        // participant case: the renamed favorite keeps its slot and `addedAt`
+        // exactly.
         if let favorites, let orgUUID = organization.contactID.guessWhoID {
             let canonicalOrg = orgUUID.lowercased()
             do {
-                var stored = try favorites.loadAll()
-                var didRewrite = false
-                for index in stored.indices where stored[index].kind == .department {
-                    guard let key = DepartmentFavoriteKey(favoriteID: stored[index].id),
-                          key.organizationGuessWhoID == canonicalOrg,
-                          key.matches(department: oldName)
-                    else { continue }
-                    let newKey = DepartmentFavoriteKey(
-                        organizationGuessWhoID: canonicalOrg, department: trimmedNew)
-                    stored[index] = Favorite(
-                        kind: .department, id: newKey.favoriteID, addedAt: stored[index].addedAt)
-                    didRewrite = true
+                let stored = try favorites.loadAll()
+                // Canonical (lowercased) id the survivor will carry, as the store
+                // persists it.
+                let targetID = Favorite(
+                    kind: .department,
+                    id: DepartmentFavoriteKey(
+                        organizationGuessWhoID: canonicalOrg, department: trimmedNew).favoriteID,
+                    addedAt: Date()).id
+
+                func thisOrgDepartmentKey(_ favorite: Favorite) -> DepartmentFavoriteKey? {
+                    guard favorite.kind == .department,
+                          let key = DepartmentFavoriteKey(favoriteID: favorite.id),
+                          key.organizationGuessWhoID == canonicalOrg
+                    else { return nil }
+                    return key
                 }
-                if didRewrite { try favorites.setAll(stored) }
+
+                // Only re-key when the OLD department was actually favorited; a
+                // rename onto an already-favorited sibling must not disturb that
+                // sibling on its own.
+                let renamesAnOldFavorite = stored.contains {
+                    thisOrgDepartmentKey($0)?.matches(department: oldName) ?? false
+                }
+                if renamesAnOldFavorite {
+                    // Every slot that would carry `targetID` after the rewrite: the
+                    // old-name favorites being renamed, plus any favorite already
+                    // at the target id.
+                    let mergeIndices = stored.indices.filter { index in
+                        guard let key = thisOrgDepartmentKey(stored[index]) else { return false }
+                        return key.matches(department: oldName) || stored[index].id == targetID
+                    }
+                    let survivor = mergeIndices.first
+                    let removals = Set(mergeIndices.dropFirst())
+                    var rebuilt: [Favorite] = []
+                    rebuilt.reserveCapacity(stored.count - removals.count)
+                    for (index, favorite) in stored.enumerated() {
+                        if index == survivor {
+                            rebuilt.append(Favorite(
+                                kind: .department, id: targetID, addedAt: favorite.addedAt))
+                        } else if removals.contains(index) {
+                            continue
+                        } else {
+                            rebuilt.append(favorite)
+                        }
+                    }
+                    if rebuilt != stored { try favorites.setAll(rebuilt) }
+                }
             } catch {
                 lastError = "department favorite re-key failed: \(error.localizedDescription)"
             }

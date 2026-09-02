@@ -172,6 +172,23 @@ final class WireFramingTests: XCTestCase {
         XCTAssertEqual(decodedPage.items.first?.isAvailable, false)
     }
 
+    func testFavoritesSetSchemaDocumentsDepartmentKindAndCompositeID() throws {
+        let metadata = MCPTool.favoritesSet.metadata
+        // The tool description names department alongside the other kinds.
+        XCTAssertTrue(
+            metadata.description.lowercased().contains("department"),
+            "favorites_set description must mention department: \(metadata.description)")
+        // The full schema teaches the fixed 36-character org contact id + "/" +
+        // department syntax (and that a department name may contain "/").
+        let schema = try JSONEncoder().encode(metadata)
+        let text = String(decoding: schema, as: UTF8.self)
+        XCTAssertTrue(text.contains("36-character"), "id doc must teach the fixed 36-character prefix")
+        XCTAssertTrue(text.contains("department name"), "id doc must name the department part")
+        XCTAssertTrue(
+            text.contains("may itself contain"),
+            "id doc must note a department name may contain a slash")
+    }
+
     func testGroupResponsesRoundTripIntact() throws {
         let group = WireResponse.group(
             helperId: "mcp-test", messageId: "group",

@@ -13,6 +13,7 @@ struct ContactsRepositoryDepartmentFavoritesTests {
     private static let deviceID = "device-A"
     private static let orgLocalID = "org-rice"
     private static let personLocalID = "person-liana"
+    private static let researcherLocalID = "person-rhea"
 
     // MARK: - Write path
 
@@ -165,6 +166,135 @@ struct ContactsRepositoryDepartmentFavoritesTests {
         #expect(!reKeyed.matches(department: "Lilie"))
     }
 
+    @Test @MainActor
+    func renameOntoAFavoritedSiblingMergesToOneRowKeepingTheEarliestSlot() async throws {
+        // Both the renamed (source) department and its rename target are
+        // favorited. After the rename they MUST merge to one row — never a
+        // duplicate — and the EARLIEST participating slot survives, keeping its
+        // `addedAt`.
+
+        // Case A: the source (Lilie) is the earlier slot, so it survives.
+        do {
+            let fixture = try await makeLoadedFixture()
+            defer { cleanup(fixture.root) }
+            let org = try #require(fixture.repository.contact(localID: Self.orgLocalID))
+            _ = try await fixture.repository.setDepartmentFavorite(true, department: "Lilie", in: org)
+            let minted = try #require(fixture.repository.contact(localID: Self.orgLocalID))
+            let orgUUID = try #require(minted.contactID.guessWhoID)
+            let sourceAddedAt = Date(timeIntervalSince1970: 100)
+            let targetAddedAt = Date(timeIntervalSince1970: 200)
+            try fixture.favorites.setAll([
+                Favorite(kind: .department,
+                         id: DepartmentFavoriteKey(organizationGuessWhoID: orgUUID, department: "Lilie").favoriteID,
+                         addedAt: sourceAddedAt),
+                Favorite(kind: .department,
+                         id: DepartmentFavoriteKey(organizationGuessWhoID: orgUUID, department: "Research").favoriteID,
+                         addedAt: targetAddedAt),
+            ])
+
+            _ = try await fixture.repository.renameDepartment(from: "Lilie", to: "Research", in: minted)
+
+            let reloaded = try fixture.favorites.loadAll()
+            #expect(reloaded.count == 1)
+            #expect(Set(reloaded.map(\.stableID)).count == reloaded.count)
+            let survivor = try #require(reloaded.first)
+            #expect(survivor.kind == .department)
+            #expect(try #require(DepartmentFavoriteKey(favoriteID: survivor.id)).matches(department: "Research"))
+            // Earliest slot (the source's) survives, keeping its addedAt.
+            #expect(survivor.addedAt == sourceAddedAt)
+        }
+
+        // Case B: the pre-existing target (Research) is the earlier slot, so it
+        // survives (the renamed source merges into it).
+        do {
+            let fixture = try await makeLoadedFixture()
+            defer { cleanup(fixture.root) }
+            let org = try #require(fixture.repository.contact(localID: Self.orgLocalID))
+            _ = try await fixture.repository.setDepartmentFavorite(true, department: "Lilie", in: org)
+            let minted = try #require(fixture.repository.contact(localID: Self.orgLocalID))
+            let orgUUID = try #require(minted.contactID.guessWhoID)
+            let targetAddedAt = Date(timeIntervalSince1970: 300)
+            let sourceAddedAt = Date(timeIntervalSince1970: 400)
+            try fixture.favorites.setAll([
+                Favorite(kind: .department,
+                         id: DepartmentFavoriteKey(organizationGuessWhoID: orgUUID, department: "Research").favoriteID,
+                         addedAt: targetAddedAt),
+                Favorite(kind: .department,
+                         id: DepartmentFavoriteKey(organizationGuessWhoID: orgUUID, department: "Lilie").favoriteID,
+                         addedAt: sourceAddedAt),
+            ])
+
+            _ = try await fixture.repository.renameDepartment(from: "Lilie", to: "Research", in: minted)
+
+            let reloaded = try fixture.favorites.loadAll()
+            #expect(reloaded.count == 1)
+            #expect(Set(reloaded.map(\.stableID)).count == reloaded.count)
+            let survivor = try #require(reloaded.first)
+            #expect(try #require(DepartmentFavoriteKey(favoriteID: survivor.id)).matches(department: "Research"))
+            // Earliest slot (the target's) survives, keeping its addedAt.
+            #expect(survivor.addedAt == targetAddedAt)
+        }
+    }
+
+    // MARK: - Dependency guards
+
+    @Test @MainActor
+    func blankDepartmentIsANoOpEvenWithNoStorageDependencies() async throws {
+        // Neither the favorites store nor the engine is present. A blank
+        // department still returns false and throws nothing — the blank check
+        // comes BEFORE the availability guard.
+        let store = InMemoryContactStore()
+        let repository = ContactsRepository(
+            contacts: store, sync: nil, favorites: nil, notificationCenter: NotificationCenter())
+        let org = Contact(
+            localID: Self.orgLocalID, contactType: .organization, organizationName: "Rice University")
+        let result = try await repository.setDepartmentFavorite(true, department: "   ", in: org)
+        #expect(result == false)
+    }
+
+    @Test @MainActor
+    func validDepartmentThrowsWhenTheFavoritesStoreIsMissing() async throws {
+        let store = InMemoryContactStore()
+        let sync = GuessWhoSync(
+            contacts: store, events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(), deviceID: Self.deviceID)
+        let repository = ContactsRepository(
+            contacts: store, sync: sync, favorites: nil, notificationCenter: NotificationCenter())
+        let org = Contact(
+            localID: Self.orgLocalID, contactType: .organization, organizationName: "Rice University")
+        await #expect(throws: SidecarUnavailableError.self) {
+            _ = try await repository.setDepartmentFavorite(true, department: "Lilie", in: org)
+        }
+    }
+
+    @Test @MainActor
+    func validDepartmentThrowsWhenTheEngineIsMissingEvenForAReconciledOrg() async throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/TestTemp", isDirectory: true)
+            .appendingPathComponent("guesswho-repo-deptfav-noengine-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { cleanup(root) }
+        let favorites = FavoritesStore(root: root)
+        let store = InMemoryContactStore()
+        // Engine (sync) absent; favorites store present.
+        let repository = ContactsRepository(
+            contacts: store, sync: nil, favorites: favorites, notificationCenter: NotificationCenter())
+        // A RECONCILED org (already carries a GuessWho id): resolveOrMintGuessWhoID's
+        // fast path would NOT touch the engine, so the explicit sync guard is what
+        // makes this throw.
+        let reconciledOrg = Contact(
+            localID: Self.orgLocalID, contactType: .organization, organizationName: "Rice University",
+            urlAddresses: [LabeledValue(
+                label: "GuessWho",
+                value: SidecarKey.guessWhoContactURLPrefix + "aaaaaaaa-2222-4333-8444-555566667777")])
+        #expect(reconciledOrg.contactID.guessWhoID != nil)
+        await #expect(throws: SidecarUnavailableError.self) {
+            _ = try await repository.setDepartmentFavorite(true, department: "Lilie", in: reconciledOrg)
+        }
+        // The rejected write touched nothing.
+        #expect(try favorites.loadAll().isEmpty)
+    }
+
     // MARK: - Fixture
 
     private struct Fixture {
@@ -191,7 +321,14 @@ struct ContactsRepositoryDepartmentFavoritesTests {
             givenName: "Liana",
             departmentName: "Lilie",
             organizationName: "Rice University")
-        let contacts = InMemoryContactStore(contacts: [org, person])
+        // A second department under the same org, so a rename can collide one
+        // favorited department onto another favorited one.
+        let researcher = Contact(
+            localID: Self.researcherLocalID,
+            givenName: "Rhea",
+            departmentName: "Research",
+            organizationName: "Rice University")
+        let contacts = InMemoryContactStore(contacts: [org, person, researcher])
         let sidecars = InMemorySidecarStore()
         let sync = GuessWhoSync(
             contacts: contacts,
