@@ -444,6 +444,24 @@ function extractProfile(doc = (typeof document !== "undefined" ? document : null
 
 // --- Rice University profiles ----------------------------------------------
 //
+// Rice's directory pages describe a person's title and unit but never name
+// the university itself as their employer, so a Rice import would otherwise
+// leave the contact's Organization empty. Any page on rice.edu or one of its
+// subdomains (profiles., business., …) therefore defaults the organization to
+// "Rice University". Neither extractor reads an organization off the page
+// today (there is none to read), so this default is currently the ONLY org
+// source; an extractor that someday does find one should prefer it
+// (`parsed || gwDefaultOrganization(hostname)`) rather than let the default
+// overrule the page.
+// The match is on whole DNS labels: a host that merely ENDS in the letters
+// "rice.edu" (say "notrice.edu") is not Rice, and a Rice label buried inside
+// another domain ("rice.edu.example.com") isn't either. Off-campus hosts get
+// null so the app never invents an employer.
+function gwDefaultOrganization(hostname) {
+  const host = String(hostname || "").trim().toLowerCase().replace(/\.$/, "");
+  return host === "rice.edu" || host.endsWith(".rice.edu") ? "Rice University" : null;
+}
+
 // profiles.rice.edu is server-rendered Drupal and exposes stable, descriptive
 // class names. Unlike LinkedIn, none of these fields are lazy or hidden behind
 // an overlay, so one synchronous DOM pass captures the complete profile.
@@ -545,6 +563,9 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
     }),
     fullName,
     title: roles[0] || null,
+    // The bio page names no employer of its own, so the host default is the
+    // only organization source (see gwDefaultOrganization).
+    org: gwDefaultOrganization(safe(() => doc.location.hostname)),
     department,
     about: bio,
     contactInfo: { emails, phones, websites },
@@ -702,6 +723,10 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
     }),
     fullName,
     title,
+    // Neither the Schema.org Person record nor the visible components name
+    // the school as employer, so the host default is the only organization
+    // source (see gwDefaultOrganization).
+    org: gwDefaultOrganization(safe(() => doc.location.hostname)),
     department,
     about,
     contactInfo: { emails, phones, websites },
@@ -1352,5 +1377,6 @@ if (typeof module !== "undefined" && module.exports) {
     extractExperience, extractContactInfo,
     compactTLSPhotoForHandoff, fitTLSBatchToHandoffCap, tlsHandoffEnvelopeByteSize,
     profileReadiness, findInPageContactSection, gwContactFieldsFrom, gwPhotoAssetID,
+    gwDefaultOrganization,
   };
 }

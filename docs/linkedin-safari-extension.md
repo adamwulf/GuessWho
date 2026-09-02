@@ -48,12 +48,22 @@ manifests match `profiles.rice.edu/faculty/*`, `profiles.rice.edu/staff/*`, and
 directory's server-rendered fields; `extractRiceBusinessProfile` reads the
 business school's Schema.org Person data plus its visible department and bio
 components. Both produce the same Rice payload: name, first title,
-department/office units, bio, email, phone, listed websites, and profile image
-when present. Rice pages do not need the LinkedIn lazy-scroll or contact-overlay
-steps. The content script still fetches the image bytes in-page and attaches
-the same `photo` payload. On save, title/email/phone/websites/photo use normal
-Contacts fields, the Rice profile URL is added as a website labeled `Rice`, and
-department/bio upsert the named `Rice Department` and `Rice Bio` fields.
+organization, department/office units, bio, email, phone, listed websites, and
+profile image when present. Neither page shape names the university as the
+person's employer, so `org` is defaulted to `Rice University` for any page on
+`rice.edu` or one of its subdomains (`gwDefaultOrganization`). Today that
+default is the only organization source for Rice pages; an extractor that
+later reads one off the page should prefer it. A non-Rice host gets no
+default. Rice pages do not need the LinkedIn lazy-scroll or
+contact-overlay steps. The content script still fetches the image bytes
+in-page and attaches the same `photo` payload. On save,
+title/organization/email/phone/websites/photo use normal Contacts fields, the
+Rice profile URL is added as a website labeled `Rice`, and department/bio
+upsert the named `Rice Department` and `Rice Bio` fields. The organization
+shows up in the confirm sheet like any other field: a checked change row the
+user can untick when the contact has no organization or names a different
+one, and an unchanged (de-emphasized) row when it already says
+`Rice University`.
 
 The same extension also supports the TLS 2026 Session 2 roster at
 `https://tls26-s2-people.netlify.app/`. Unlike LinkedIn and Rice, one page
