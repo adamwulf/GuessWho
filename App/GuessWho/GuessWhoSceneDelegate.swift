@@ -319,9 +319,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         switch selection {
         case .section(let tab):
             showSection(tab, in: split, appDelegate: appDelegate)
+        case .organization(let id):
+            showOrganizationChild(id, in: split, appDelegate: appDelegate)
         case .favorite(let item, let tab):
             showFavoriteChild(item, in: tab, split: split, appDelegate: appDelegate)
         }
+    }
+
+    /// An inferred organization row behaves exactly like a favorited
+    /// organization row even though it has no `FavoriteListItem` payload.
+    private func showOrganizationChild(
+        _ id: ContactID,
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        mountedSection = .organizations
+        noteSectionShown(.organizations)
+        let list = installOrganizationsList(in: split, appDelegate: appDelegate)
+        guard let organization = appDelegate.contactsRepository.contact(id: id) else { return }
+        list.select(contactID: id)
+        showContactDetail(contact: organization, appDelegate: appDelegate)
     }
 
     /// Mount a section's list in the supplementary column and reset the detail
@@ -430,14 +447,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .organizations:
             let list = installOrganizationsList(in: split, appDelegate: appDelegate)
             if let department = item.department {
-                // A department favorite lands on its organization: mount the
-                // Organizations list, select the org row, and show the org
-                // detail — then stop. (Step 1: a plain child under Organizations;
-                // the org detail already carries the department drill-in. Deeper
-                // department nesting/routing is Step 3.)
+                // A department favorite performs the same two-level navigation
+                // as tapping that department on the organization page.
                 let organization = department.organization
                 list.select(contactID: organization.contactID)
-                showContactDetail(contact: organization, appDelegate: appDelegate)
+                let nav = showContactDetail(contact: organization, appDelegate: appDelegate)
+                pushCatalystDepartmentMembers(
+                    ref: DepartmentReference(
+                        organizationID: organization.contactID,
+                        department: department.department
+                    ),
+                    on: nav,
+                    appDelegate: appDelegate
+                )
                 return
             }
             guard let contact = item.contact else { return }
@@ -753,12 +775,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
+    @discardableResult
     private func showContactDetail(
         contact: Contact,
         appDelegate: GuessWhoAppDelegate,
         startsInEditMode: Bool = false
-    ) {
-        guard let split else { return }
+    ) -> UINavigationController? {
+        guard let split else { return nil }
         // No `.id(...)` needed: `setViewController(_:for: .secondary)` replaces
         // the whole hosting controller per selection, so a fresh
         // ContactDetailView + @State tree is built automatically.
@@ -785,6 +808,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // closures.
         split.setViewController(nav, for: .secondary)
         noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
+        return nav
     }
 
     private func showContactDetailStack(
