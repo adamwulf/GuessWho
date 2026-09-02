@@ -44,7 +44,6 @@ enum LinkedInDiff {
     static let headlineFieldName = "LinkedIn Headline"
     static let aboutFieldName = "LinkedIn About"
     static let locationFieldName = "LinkedIn Location"
-    static let riceDepartmentFieldName = "Rice Department"
     static let riceBioFieldName = "Rice Bio"
 
     /// - Parameter existingSidecar: the contact's current sidecar field values
@@ -102,11 +101,19 @@ enum LinkedInDiff {
         let locationField = profile.isTLSProfile
             ? LinkedInProfile.dschoolLocationFieldName
             : locationFieldName
-        let departmentField = profile.isTLSProfile
-            ? LinkedInProfile.dschoolDepartmentFieldName
-            : riceDepartmentFieldName
         add(.location, "Location", existingSidecar[locationField], profile.location)
-        add(.department, "Department", existingSidecar[departmentField], profile.department)
+        if profile.isTLSProfile {
+            // TLS keeps its unit(s) in a custom sidecar field.
+            add(.department, "Department",
+                existingSidecar[LinkedInProfile.dschoolDepartmentFieldName],
+                profile.department)
+        } else {
+            // Rice maps the unit onto the real Contacts Department field, so
+            // show the contact's current departmentName and only the primary
+            // unit we actually save (see ContactsRepository.applyLinkedIn). A
+            // plain LinkedIn profile has no department, so this row is skipped.
+            add(.department, "Department", contact.departmentName, profile.primaryDepartment)
+        }
         add(.role, "Role", existingSidecar[LinkedInProfile.dschoolRoleFieldName], profile.role)
         add(
             .ama,

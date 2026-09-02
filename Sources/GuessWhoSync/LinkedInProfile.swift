@@ -141,6 +141,17 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     public var isTLSProfile: Bool { source?.caseInsensitiveCompare("tls") == .orderedSame }
     public var isLinkedInProfile: Bool { !isRiceProfile && !isTLSProfile }
 
+    /// The primary organizational unit, for a directory profile whose unit maps
+    /// onto the Contacts Department field. A Rice page can list several units,
+    /// one per line; the Contacts Department field holds one value, so this is
+    /// the first non-empty line of `department`. Nil when no department parsed.
+    public var primaryDepartment: String? {
+        department?
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
     public var sourceDisplayName: String {
         if isRiceProfile { return "Rice" }
         if isTLSProfile { return "TLS" }

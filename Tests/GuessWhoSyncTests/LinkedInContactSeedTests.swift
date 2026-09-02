@@ -83,6 +83,7 @@ struct LinkedInContactSeedTests {
             slug: "lydia-e-kavraki",
             fullName: "Lydia E. Kavraki",
             title: "Noah Harding Professor of Computer Science",
+            department: "Computer Science\nKen Kennedy Institute",
             contactInfo: .init(
                 emails: ["kavraki@rice.edu"],
                 phones: ["713-348-5737"],
@@ -97,6 +98,9 @@ struct LinkedInContactSeedTests {
         })
         #expect(seed.urlAddresses.contains { $0.value == "https://www.kavrakilab.org/" })
         #expect(seed.socialProfiles.isEmpty)
+        // Rice unit seeds the real Department field (primary unit) so the editor
+        // shows it like the organization; a multi-unit page keeps the first.
+        #expect(seed.departmentName == "Computer Science")
     }
 
     @Test("TLS profile seeds nickname without treating the roster URL as LinkedIn")
@@ -107,7 +111,8 @@ struct LinkedInContactSeedTests {
             fullName: "Amanda Roberts",
             nickname: "Mandy",
             title: "Professor",
-            org: "Stanford University"
+            org: "Stanford University",
+            department: "Design"
         )
 
         let seed = LinkedInContactSeed.contact(from: profile)
@@ -116,6 +121,9 @@ struct LinkedInContactSeedTests {
         #expect(seed.organizationName == "Stanford University")
         #expect(seed.socialProfiles.isEmpty)
         #expect(seed.urlAddresses.isEmpty)
+        // TLS keeps its unit in a custom field (no editor row), so it is NOT
+        // seeded into the real Department field.
+        #expect(seed.departmentName == "")
     }
 
     @Test("Whitespace-only full name is treated as missing")

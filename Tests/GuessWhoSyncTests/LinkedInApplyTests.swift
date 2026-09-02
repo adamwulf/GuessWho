@@ -255,10 +255,39 @@ struct LinkedInApplyTests {
 
         let reconciledID = repo.contact(localID: "T")!.contactID
         let byName = Dictionary(uniqueKeysWithValues: repo.fields(for: reconciledID).map { ($0.field, $0) })
-        #expect(byName["Rice Department"]?.value == .string("Jones Graduate School of Business\nOffice of Innovation"))
-        #expect(byName["Rice Department"]?.type == .multilineNote)
+        // The Rice unit lands in the real Contacts Department field (feeding the
+        // organization → department hierarchy), not a custom note. A multi-unit
+        // page keeps only the first (primary) unit, since Department holds one.
+        #expect(result.departmentName == "Jones Graduate School of Business")
+        #expect(byName["Rice Department"] == nil)
         #expect(byName["Rice Bio"]?.value == .string("Brad supports new technologies created by Rice faculty."))
         #expect(byName["LinkedIn About"] == nil)
+    }
+
+    @Test func riceProfile_migratesLegacyRiceDepartmentNoteToRealField() async throws {
+        let (repo, id, _) = await setup(Contact(localID: "T", givenName: "Torey"))
+        // Simulate a contact imported before the unit moved to the real Contacts
+        // Department field: it still carries the old "Rice Department" note.
+        _ = try await repo.upsertField(
+            for: id, field: "Rice Department", value: "Old Unit", type: .multilineNote
+        )
+        let reconciledID = repo.contact(localID: "T")!.contactID
+        #expect(repo.fields(for: reconciledID).contains { $0.field == "Rice Department" })
+
+        let rice = LinkedInProfile(
+            source: "rice",
+            sourceUrl: "https://business.rice.edu/person/torey-brown",
+            fullName: "Torey Brown",
+            department: "Rice Alliance"
+        )
+        let result = try await repo.applyLinkedIn(
+            profile: rice, to: reconciledID, fields: [.department]
+        )
+
+        // The unit now lives in the real Department field, and the stale note is
+        // gone (soft-deleted) so the value is not shown in two places.
+        #expect(result.departmentName == "Rice Alliance")
+        #expect(!repo.fields(for: reconciledID).contains { $0.field == "Rice Department" })
     }
 
     @Test func tlsProfile_appliesNicknameAndDschoolFields() async throws {

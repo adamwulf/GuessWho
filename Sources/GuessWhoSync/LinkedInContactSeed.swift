@@ -76,6 +76,14 @@ public enum LinkedInContactSeed {
         contact.nickname = (profile.nickname ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         contact.jobTitle = (profile.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         contact.organizationName = (profile.org ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Rice maps the person's unit onto the real Department field, so seed it
+        // like the organization above — the new-contact editor shows and saves
+        // it with the card. Other sources carry no Department-field unit
+        // (LinkedIn has none; TLS keeps its unit in a custom field with no
+        // editor row), so their department stays out of the card.
+        if profile.isRiceProfile, let primary = profile.primaryDepartment {
+            contact.departmentName = primary
+        }
         // CNContact multi-values — default label (empty -> the adapter passes
         // nil, so Contacts assigns its own default). The Rice source URL is
         // the sole exception and carries its explicit "Rice" label.

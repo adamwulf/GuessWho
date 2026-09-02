@@ -1383,6 +1383,18 @@ public final class ContactsRepository: NSObject {
         if fields.contains(.organization), let v = profile.org?.trimmed, !v.isEmpty {
             edited.organizationName = v
         }
+        // Rice directory pages carry the person's unit(s) but never name the
+        // school as employer, so we treat the primary unit as the contact's
+        // Department — the real CNContact field. That lets the unit join the
+        // organization → department hierarchy and become a favorite, mirroring
+        // the auto-set "Rice University" organization. A page can list several
+        // units (one per line); the Contacts Department field holds one, so we
+        // take the first. TLS keeps its own custom "<dschool department>" field
+        // below (that source has no organization/department hierarchy).
+        if fields.contains(.department), profile.isRiceProfile,
+           let primary = profile.primaryDepartment {
+            edited.departmentName = primary
+        }
         if fields.contains(.emails) {
             let additions = Self.newValues(
                 profile.contactInfo?.emails ?? [],
@@ -1472,13 +1484,31 @@ public final class ContactsRepository: NSObject {
                 : "LinkedIn Location"
             _ = try await upsertField(for: id, field: fieldName, value: loc, type: .note)
         }
-        if fields.contains(.department), let department = profile.department?.trimmed, !department.isEmpty {
-            // A person can belong to several units; parsers preserve those
-            // units one per line, so keep the custom field multiline too.
-            let fieldName = profile.isTLSProfile
-                ? LinkedInProfile.dschoolDepartmentFieldName
-                : "Rice Department"
-            _ = try await upsertField(for: id, field: fieldName, value: department, type: .multilineNote)
+        // TLS only. Rice routes its department into the real Contacts Department
+        // field above (before the save), so it feeds the organization →
+        // department hierarchy. The TLS source has no such hierarchy, so its
+        // unit(s) stay in a custom field — kept multiline because a person can
+        // belong to several units, one per line.
+        if fields.contains(.department), profile.isTLSProfile,
+           let department = profile.department?.trimmed, !department.isEmpty {
+            _ = try await upsertField(
+                for: id,
+                field: LinkedInProfile.dschoolDepartmentFieldName,
+                value: department,
+                type: .multilineNote
+            )
+        }
+        // Migrate away from the pre-hierarchy "Rice Department" custom note: the
+        // unit now lives in the real Department field (set above, before the
+        // save), so drop any stale note an earlier import left, to avoid showing
+        // the value in two places. No-op when none exists (a brand-new contact,
+        // or one imported after this change). Best-effort (soft-delete, so it is
+        // recoverable): the card write already succeeded, so a cleanup hiccup
+        // must not fail the whole import.
+        if fields.contains(.department), profile.isRiceProfile, profile.primaryDepartment != nil {
+            for stale in self.fields(for: id) where stale.field == "Rice Department" {
+                try? await deleteField(for: id, id: stale.id)
+            }
         }
         if fields.contains(.role), let role = profile.role?.trimmed, !role.isEmpty {
             _ = try await upsertField(
