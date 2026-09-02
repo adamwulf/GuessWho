@@ -22,6 +22,7 @@ import GuessWhoLogging
 @MainActor
 struct PhantomOrganizationDetailView: View {
     @Environment(ContactsRepository.self) private var repository
+    @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.pushContactReference) private var pushContactReference
 
     /// Normalized identity of the phantom (see `PhantomOrganization.key`). Used
@@ -96,7 +97,7 @@ struct PhantomOrganizationDetailView: View {
             if !departments.isEmpty {
                 Section {
                     ForEach(departments, id: \.self) { department in
-                        Text(department)
+                        phantomDepartmentRow(department, organizationName: name)
                             .centeredRowContent()
                     }
                 } header: {
@@ -173,20 +174,62 @@ struct PhantomOrganizationDetailView: View {
         count == 1 ? "1 contact" : "\(count) contacts"
     }
 
+    /// A phantom department remains plain, non-navigating text. Its only action
+    /// creates the real organization and favorites this department on that new
+    /// record; a phantom can never offer Unfavorite because it has no durable
+    /// organization identity yet.
+    private func phantomDepartmentRow(_ department: String, organizationName: String) -> some View {
+        Text(department)
+            .contextMenu {
+                Button {
+                    createOrganization(name: organizationName, favoriteDepartment: department)
+                } label: {
+                    Label("Favorite", systemImage: "star")
+                }
+                .disabled(isCreating)
+            }
+    }
+
     /// Create a real organization record carrying this company's name. No
     /// navigation: once the record exists the people who named it associate with
     /// it automatically, and `body` re-renders this page AS the real card in
     /// place (see the type doc). The `@Observable` repository drives that swap.
     private func createCard(name: String) {
+        createOrganization(name: name, favoriteDepartment: nil)
+    }
+
+    /// Shared, single-flight creation path for the explicit create-card button
+    /// and a phantom department's Favorite action. The latter continues in the
+    /// same main-actor task to persist the department favorite, then reloads the
+    /// shared favorites projection. If that second write fails, the successfully
+    /// created organization intentionally remains in place.
+    private func createOrganization(name: String, favoriteDepartment: String?) {
         guard !isCreating else { return }
         isCreating = true
         Task { @MainActor in
             defer { isCreating = false }
             do {
-                _ = try await repository.createContact(
+                let created = try await repository.createContact(
                     Contact(contactType: .organization, organizationName: name)
                 )
                 Self.log.notice("phantom-org: created organization card for \(name)")
+
+                guard let favoriteDepartment else { return }
+                do {
+                    _ = try await repository.setDepartmentFavorite(
+                        true,
+                        department: favoriteDepartment,
+                        in: created
+                    )
+                    Self.log.notice(
+                        "phantom-org: favorited department \(favoriteDepartment) for \(name)"
+                    )
+                } catch {
+                    Self.log.error(
+                        "phantom-org: department favorite failed: \(error.localizedDescription)"
+                    )
+                }
+                favoritesStore.reload()
             } catch {
                 Self.log.error("phantom-org: create failed: \(error.localizedDescription)")
             }

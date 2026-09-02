@@ -48,13 +48,13 @@ public struct FavoritesSet: CLIToolCommand {
 
     public static let configuration = CommandConfiguration(
         commandName: "set",
-        abstract: "Set whether one contact, event, group, guide, or place is a favorite."
+        abstract: "Set whether one contact, event, group, guide, place, or department is a favorite."
     )
 
-    @Argument(help: "\"contact\", \"event\", \"group\", \"guide\", or \"place\".")
+    @Argument(help: "\"contact\", \"event\", \"group\", \"guide\", \"place\", or \"department\".")
     public var kind: String
 
-    @Argument(help: "The item's id, from the matching list command or favorites list.")
+    @Argument(help: "The item's id, from the matching list command or favorites list. A department id is the organization's contact id, then \"/\", then the department name (e.g. \"<org-id>/Lilie\").")
     public var id: String
 
     @Flag(inversion: .prefixedNo, help: "Whether the item is a favorite. Required: pass --favorite or --no-favorite.")

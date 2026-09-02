@@ -27,7 +27,7 @@ public struct MCPAuditEntry: Codable, Equatable, Sendable {
     }
 
     public enum SubjectKind: String, Codable, Sendable {
-        case contact, event, group, guide, place, link, favorites
+        case contact, event, group, guide, place, link, favorites, department
     }
 
     /// When the entry was appended (immediately after the engine write

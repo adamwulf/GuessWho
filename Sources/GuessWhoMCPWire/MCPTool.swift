@@ -226,7 +226,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     private static let linkKindDoc =
         "\"person\", \"organization\", \"event\", or \"place\" — what kind of record the id refers to. For a contact, use the kind value that contacts_search / contacts_list reported for it (person or organization) — they share one id space but the kind must match."
     private static let favoriteKindDoc =
-        "\"contact\", \"event\", \"group\", \"guide\", or \"place\" — the entity kind the id refers to. Use the kind and id together exactly as returned by favorites_list. For an id from contacts_search or contacts_list, use \"contact\" here even though that row's contact-card kind is \"person\" or \"organization\"."
+        "\"contact\", \"event\", \"group\", \"guide\", \"place\", or \"department\" — the entity kind the id refers to. Use the kind and id together exactly as returned by favorites_list. For an id from contacts_search or contacts_list, use \"contact\" here even though that row's contact-card kind is \"person\" or \"organization\". For \"department\", the id is the organization's contact id, then \"/\", then the department name (see the id description)."
 
     private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         var object: [String: Value] = [
@@ -845,10 +845,10 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .favoritesSet:
             return ToolMetadata(
                 name: rawValue,
-                description: "Set whether one contact, event, group, guide, or place is a favorite. This assigns the requested state: repeating the same call does not toggle it back.",
+                description: "Set whether one contact, event, group, guide, place, or department is a favorite. This assigns the requested state: repeating the same call does not toggle it back.",
                 inputSchema: Self.schema([
                     "kind": Self.string(Self.favoriteKindDoc),
-                    "id": Self.string("The entity id returned by the matching list tool or favorites_list."),
+                    "id": Self.string("The entity id returned by the matching list tool or favorites_list. A department id is the organization's contact id (a 36-character id), then \"/\", then the department name, for example \"<org-id>/Lilie\"; the department name may itself contain \"/\", so the id is read as the fixed 36-character organization id followed by \"/\" and then everything after it as the department name."),
                     "favorite": [
                         "type": "boolean",
                         "description": .string("true to make it a favorite, false to remove it from favorites."),

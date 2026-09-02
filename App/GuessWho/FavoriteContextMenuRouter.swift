@@ -8,10 +8,11 @@ import GuessWhoSync
 ///
 /// The routing is the whole point of the abstraction: a favorited person or
 /// organization gets the "Add to Group" menu (both can hold group membership); a
-/// favorited group gets Email All Members / Rename / Delete; events, guides, and
-/// places have no row menu today and so get none here — the same nil that gates a
-/// non-contact row in `AddToGroupMenu`. When a kind gains a menu in its own list,
-/// teaching this one switch surfaces it in every favorites surface at once.
+/// favorited group gets Email All Members / Rename / Delete; events, guides,
+/// places, and departments have no row menu today and so get none here — the
+/// same nil that gates a non-contact row in `AddToGroupMenu`. When a kind gains
+/// a menu in its own list, teaching this one switch surfaces it in every
+/// favorites surface at once.
 ///
 /// Both owned menus present their own alerts against `host` and are unguarded
 /// (no "＋" button to disable), which is why neither takes the Groups list's
@@ -21,14 +22,20 @@ final class FavoriteContextMenuRouter {
     private let addToGroupMenu: AddToGroupMenu
     private let groupContextMenu: GroupContextMenu
     private let itemForRow: (IndexPath) -> FavoriteListItem?
+    /// A non-favorite contact row hosted by a favorites surface. The Catalyst
+    /// sidebar uses this for inferred organization parents so menu policy still
+    /// lives here rather than being duplicated in the view controller.
+    private let contactForRow: (IndexPath) -> Contact?
 
     init(
         repository: ContactsRepository,
         favoritesStore: FavoritesListStore,
         host: UIViewController,
-        itemForRow: @escaping (IndexPath) -> FavoriteListItem?
+        itemForRow: @escaping (IndexPath) -> FavoriteListItem?,
+        contactForRow: @escaping (IndexPath) -> Contact? = { _ in nil }
     ) {
         self.itemForRow = itemForRow
+        self.contactForRow = contactForRow
         self.addToGroupMenu = AddToGroupMenu(repository: repository, host: host)
         self.groupContextMenu = GroupContextMenu(
             repository: repository,
@@ -41,6 +48,9 @@ final class FavoriteContextMenuRouter {
     /// method. Nil for a row that resolves to no item (a stale index path
     /// mid-apply) or to a kind with no menu.
     func configuration(forRowAt indexPath: IndexPath) -> UIContextMenuConfiguration? {
+        if let contact = contactForRow(indexPath) {
+            return addToGroupMenu.configuration(for: [contact])
+        }
         guard let item = itemForRow(indexPath) else { return nil }
         switch item.kind {
         case .contact:
@@ -49,7 +59,7 @@ final class FavoriteContextMenuRouter {
         case .group:
             guard let group = item.group else { return nil }
             return groupContextMenu.configuration(for: group)
-        case .event, .guide, .place:
+        case .event, .guide, .place, .department:
             return nil
         }
     }

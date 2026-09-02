@@ -7,6 +7,9 @@ import GuessWhoSync
 /// indented child under the section it belongs to.
 enum SidebarSelection {
     case section(SidebarTab)
+    /// An inferred organization parent has no favorite payload of its own, so
+    /// route it by the same opaque contact identity the Organizations list uses.
+    case organization(ContactID)
     /// The resolved favorite plus the section it hangs under, so the scene can
     /// mount that section's list and select the record's row in it.
     case favorite(FavoriteListItem, in: SidebarTab)
@@ -57,7 +60,15 @@ final class SidebarViewController: UIViewController {
     private enum Item: Hashable {
         case section(SidebarTab)
         case favorite(FavoriteListItem.ID)
+        /// A non-favorited organization inferred from department favorites.
+        case organization(ContactID)
     }
+
+    private typealias FavoriteHierarchy = SidebarFavoriteHierarchy<
+        SidebarTab,
+        FavoriteListItem.ID,
+        ContactID
+    >
 
     private var collectionView: UICollectionView!
 
@@ -67,12 +78,13 @@ final class SidebarViewController: UIViewController {
     private weak var expansionToggle: UITapGestureRecognizer?
     private var dataSource: UICollectionViewDiffableDataSource<Section, Item>!
 
-    /// The favorites hanging under each section, in the global favorites order.
-    /// Rebuilt on every apply; also the source of truth for "does this section
-    /// get a chevron" and for the drag-reorder's sibling list.
-    private var favoriteChildren: [SidebarTab: [FavoriteListItem]] = [:]
+    /// The visible roots and nested department rows projected from global
+    /// favorites order. Rebuilt on every apply and shared by snapshot building,
+    /// badges, selection, and drag reorder.
+    private var favoriteHierarchy = FavoriteHierarchy(entries: [])
     private var favoriteItemsByID: [FavoriteListItem.ID: FavoriteListItem] = [:]
     private var favoriteSections: [FavoriteListItem.ID: SidebarTab] = [:]
+    private var organizationsByID: [ContactID: Contact] = [:]
 
     /// Sections the user has open. A section the user has never closed starts
     /// expanded, so a freshly starred record is visible where it landed; an
@@ -120,6 +132,12 @@ final class SidebarViewController: UIViewController {
                   let item = self.dataSource.itemIdentifier(for: indexPath),
                   case .favorite(let id) = item else { return nil }
             return self.favoriteItemsByID[id]
+        },
+        contactForRow: { [weak self] indexPath in
+            guard let self,
+                  let item = self.dataSource.itemIdentifier(for: indexPath),
+                  case .organization(let id) = item else { return nil }
+            return self.organizationsByID[id] ?? self.repository.contact(id: id)
         }
     )
 
@@ -230,6 +248,11 @@ final class SidebarViewController: UIViewController {
             self?.configure(cell, for: .favorite(id))
         }
 
+        let organizationRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, ContactID> {
+            [weak self] cell, _, id in
+            self?.configure(cell, for: .organization(id))
+        }
+
         dataSource = UICollectionViewDiffableDataSource<Section, Item>(
             collectionView: collectionView
         ) { collectionView, indexPath, item in
@@ -243,6 +266,12 @@ final class SidebarViewController: UIViewController {
             case .favorite(let id):
                 return collectionView.dequeueConfiguredReusableCell(
                     using: favoriteRegistration,
+                    for: indexPath,
+                    item: id
+                )
+            case .organization(let id):
+                return collectionView.dequeueConfiguredReusableCell(
+                    using: organizationRegistration,
                     for: indexPath,
                     item: id
                 )
@@ -263,7 +292,7 @@ final class SidebarViewController: UIViewController {
             // A closed section says how many favorites it is hiding; an open one
             // is already showing them, so it says nothing. A section with no
             // favorites has nothing to count and nothing to open.
-            let count = favoriteChildren[tab]?.count ?? 0
+            let count = favoriteHierarchy.favoriteCount(in: tab)
             let isClosed = !expandedSections.contains(tab)
             cell.accessories = (count > 0 && isClosed) ? [favoritesCountAccessory(count: count)] : []
 
@@ -315,6 +344,12 @@ final class SidebarViewController: UIViewController {
             // asymmetric is a trap if they are ever merged.
             cell.accessibilityCustomActions = nil
             cell.accessibilityValue = nil
+        case .organization(let id):
+            let organization = organizationsByID[id] ?? repository.contact(id: id)
+            cell.contentConfiguration = contactContentConfiguration(for: organization, in: cell)
+            cell.accessories = []
+            cell.accessibilityCustomActions = nil
+            cell.accessibilityValue = nil
         }
     }
 
@@ -363,23 +398,7 @@ final class SidebarViewController: UIViewController {
 
         switch item.kind {
         case .contact:
-            guard let contact = item.contact else {
-                content.text = Self.unavailableTitle
-                content.image = UIImage(systemName: "person.crop.circle.badge.questionmark")
-                return content
-            }
-            // The nickname form every other contact row shows, but as plain
-            // text: `nameAttributedString` carries the nickname AND pins the
-            // body font, which would fight the sidebar's own row typography.
-            content.text = contact.displayNameWithNickname
-            content.imageProperties.cornerRadius = Self.childIconSize / 2
-            let id = contact.contactID
-            if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
-                content.image = cached
-            } else {
-                content.image = ContactAvatarImage.placeholder(for: contact, diameter: Self.childIconSize)
-                loadPhotoIfNeeded(for: id)
-            }
+            applyContact(item.contact, to: &content)
 
         case .event:
             guard let event = item.event else {
@@ -421,8 +440,57 @@ final class SidebarViewController: UIViewController {
             }
             content.text = Self.placeTitle(place)
             content.image = UIImage(systemName: SidebarTab.places.systemImage)
+
+        case .department:
+            // The department row's icon on the organization page — one icon per
+            // kind, never branched on where the data comes from.
+            content.image = UIImage(systemName: "person.2")
+            guard let department = item.department else {
+                content.text = Self.unavailableTitle
+                return content
+            }
+            content.text = department.department
         }
         return content
+    }
+
+    /// The shared organization/person row appearance. Structural organization
+    /// parents deliberately use this exact path so an inferred row is visually
+    /// indistinguishable from a favorited organization row.
+    private func contactContentConfiguration(
+        for contact: Contact?,
+        in cell: UICollectionViewListCell
+    ) -> UIListContentConfiguration {
+        var content = cell.defaultContentConfiguration()
+        content.imageProperties.maximumSize = CGSize(
+            width: Self.childIconSize,
+            height: Self.childIconSize
+        )
+        applyContact(contact, to: &content)
+        return content
+    }
+
+    private func applyContact(
+        _ contact: Contact?,
+        to content: inout UIListContentConfiguration
+    ) {
+        guard let contact else {
+            content.text = Self.unavailableTitle
+            content.image = UIImage(systemName: "person.crop.circle.badge.questionmark")
+            return
+        }
+        // The nickname form every other contact row shows, but as plain text:
+        // `nameAttributedString` carries the nickname AND pins the body font,
+        // which would fight the sidebar's own row typography.
+        content.text = contact.displayNameWithNickname
+        content.imageProperties.cornerRadius = Self.childIconSize / 2
+        let id = contact.contactID
+        if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
+            content.image = cached
+        } else {
+            content.image = ContactAvatarImage.placeholder(for: contact, diameter: Self.childIconSize)
+            loadPhotoIfNeeded(for: id)
+        }
     }
 
     /// One line for a place child: its name, or its address when the entry
@@ -586,15 +654,26 @@ final class SidebarViewController: UIViewController {
         rememberExpansionState()
         rebuildFavoriteChildren()
 
-        // ONE section snapshot holds the whole outline: the parent rows at the
-        // root and each section's favorites beneath their own parent.
+        // ONE section snapshot holds the whole outline: section rows at the
+        // root, ordinary favorites below them, and department favorites one
+        // level deeper beneath their organization.
         var snapshot = NSDiffableDataSourceSectionSnapshot<Item>()
         for tab in sidebarTabs {
             let parent = Item.section(tab)
             snapshot.append([parent])
-            let children = (favoriteChildren[tab] ?? []).map { Item.favorite($0.id) }
-            guard !children.isEmpty else { continue }
-            snapshot.append(children, to: parent)
+            let roots = favoriteHierarchy.roots(in: tab)
+            guard !roots.isEmpty else { continue }
+            snapshot.append(roots.map(item(for:)), to: parent)
+
+            for root in roots {
+                let rootItem = item(for: root)
+                let children = favoriteHierarchy.children(of: root).map(item(for:))
+                guard !children.isEmpty else { continue }
+                snapshot.append(children, to: rootItem)
+                // Organization rows are not user-controlled outline sections:
+                // they always start expanded and every rebuild reasserts that.
+                snapshot.expand([rootItem])
+            }
             if expandedSections.contains(tab) {
                 snapshot.expand([parent])
             }
@@ -606,7 +685,7 @@ final class SidebarViewController: UIViewController {
         //   RESOLVED content changed (the cold-launch empty→populated cache, a
         //   renamed group, an edited display name) produces an empty diff; and
         // * a PARENT's identity never changes at all, yet its badge is built
-        //   from `favoriteChildren[tab]` inside `configure(_:for:)`. Starring a
+        //   from `favoriteHierarchy` inside `configure(_:for:)`. Starring a
         //   record in a closed section would otherwise leave the old count on
         //   screen, and unstarring the last one would leave a badge over a
         //   section that no longer hides anything. A parent that stays on screen
@@ -631,7 +710,7 @@ final class SidebarViewController: UIViewController {
     /// its (always false) expansion as a user choice would leave it collapsed
     /// when its next favorite arrives.
     ///
-    /// MUST run BEFORE `rebuildFavoriteChildren`, so that `favoriteChildren`
+    /// MUST run BEFORE `rebuildFavoriteChildren`, so that `favoriteHierarchy`
     /// still describes what is on screen — the same thing the snapshot it reads
     /// describes. Run it after, and it would ask `isExpanded` about parents that
     /// have no children in the CURRENT snapshot and get false for each one,
@@ -643,7 +722,7 @@ final class SidebarViewController: UIViewController {
     private func rememberExpansionState() {
         guard dataSource != nil else { return }
         let current = dataSource.snapshot(for: .tabs)
-        for (tab, children) in favoriteChildren where !children.isEmpty {
+        for tab in sidebarTabs where favoriteHierarchy.favoriteCount(in: tab) > 0 {
             let parent = Item.section(tab)
             guard current.contains(parent) else { continue }
             if current.isExpanded(parent) {
@@ -671,18 +750,51 @@ final class SidebarViewController: UIViewController {
             }
         )
 
-        var children: [SidebarTab: [FavoriteListItem]] = [:]
         var byID: [FavoriteListItem.ID: FavoriteListItem] = [:]
         var sections: [FavoriteListItem.ID: SidebarTab] = [:]
+        var organizations: [ContactID: Contact] = [:]
+        var entries: [FavoriteHierarchy.Entry] = []
         for item in items {
             let tab = Self.section(for: item)
             byID[item.id] = item
             sections[item.id] = tab
-            children[tab, default: []].append(item)
+            let role: FavoriteHierarchy.Role
+            switch item.kind {
+            case .contact:
+                if let contact = item.contact, contact.contactType == .organization {
+                    let id = contact.contactID
+                    organizations[id] = contact
+                    role = .organization(id)
+                } else {
+                    role = .regular
+                }
+            case .department:
+                if let department = item.department {
+                    let organization = department.organization
+                    let id = organization.contactID
+                    organizations[id] = organization
+                    role = .department(id)
+                } else {
+                    role = .department(nil)
+                }
+            case .event, .group, .guide, .place:
+                role = .regular
+            }
+            entries.append(.init(id: item.id, section: tab, role: role))
         }
-        favoriteChildren = children
+        favoriteHierarchy = FavoriteHierarchy(entries: entries)
         favoriteItemsByID = byID
         favoriteSections = sections
+        organizationsByID = organizations
+    }
+
+    private func item(for row: FavoriteHierarchy.Row) -> Item {
+        switch row {
+        case .favorite(let id):
+            return .favorite(id)
+        case .organization(let id):
+            return .organization(id)
+        }
     }
 
     /// Which section a favorite hangs under. A contact splits by `contactType`
@@ -701,6 +813,8 @@ final class SidebarViewController: UIViewController {
             return .guides
         case .place:
             return .places
+        case .department:
+            return .organizations
         }
     }
 
@@ -765,7 +879,7 @@ final class SidebarViewController: UIViewController {
     /// snapshot we have not written yet — so it would overwrite the new value
     /// with the old one before applying.
     private func toggleExpansion(of tab: SidebarTab) {
-        guard !(favoriteChildren[tab] ?? []).isEmpty else { return }
+        guard favoriteHierarchy.favoriteCount(in: tab) > 0 else { return }
         let parent = Item.section(tab)
         var snapshot = dataSource.snapshot(for: .tabs)
         guard snapshot.contains(parent) else { return }
@@ -851,6 +965,8 @@ extension SidebarViewController: UICollectionViewDelegate {
         case .favorite(let id):
             guard let favorite = favoriteItemsByID[id], let tab = favoriteSections[id] else { return }
             didSelect(.favorite(favorite, in: tab))
+        case .organization(let id):
+            didSelect(.organization(id))
         }
     }
 
@@ -897,7 +1013,8 @@ extension SidebarViewController: UICollectionViewDragDelegate {
         at indexPath: IndexPath
     ) -> [UIDragItem] {
         guard let item = dataSource.itemIdentifier(for: indexPath),
-              case .favorite(let id) = item else { return [] }
+              case .favorite(let id) = item,
+              isDraggableFavorite(id) else { return [] }
         // Empty provider — nothing about a favorite should be exportable to an
         // outside drop target (see `FavoritesListViewController`). The id rides
         // along as `localObject`, which never leaves the process and tells the
@@ -915,12 +1032,12 @@ extension SidebarViewController: UICollectionViewDropDelegate {
         withDestinationIndexPath destinationIndexPath: IndexPath?
     ) -> UICollectionViewDropProposal {
         guard let id = draggedFavorite(in: session),
-              let tab = favoriteSections[id],
-              let range = insertionRange(for: tab),
-              range.contains(resolvedDestination(destinationIndexPath).item)
+              let context = reorderContext(for: id),
+              context.range.contains(resolvedDestination(destinationIndexPath).item)
         else {
-            // Outside the row's own section (or a drag from another app):
-            // refuse it rather than move a person under Events.
+            // Outside the row's own sibling list (or a drag from another app):
+            // refuse it rather than move a person under Events or a department
+            // beneath a different organization.
             return UICollectionViewDropProposal(operation: .cancel)
         }
         return UICollectionViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
@@ -929,23 +1046,31 @@ extension SidebarViewController: UICollectionViewDropDelegate {
     func collectionView(_ collectionView: UICollectionView, performDropWith coordinator: UICollectionViewDropCoordinator) {
         let destinationIndexPath = resolvedDestination(coordinator.destinationIndexPath)
         guard let id = draggedFavorite(in: coordinator.session),
-              let tab = favoriteSections[id],
-              let siblings = favoriteChildren[tab],
-              let source = siblings.firstIndex(where: { $0.id == id }),
-              let range = insertionRange(for: tab),
-              range.contains(destinationIndexPath.item)
+              let context = reorderContext(for: id),
+              context.range.contains(destinationIndexPath.item)
         else { return }
 
-        // Translate the visible-row insertion point into a position among this
-        // section's own children. UIKit reports a PRE-removal index (the dragged
-        // row is still in place), so a downward move lands one slot earlier once
-        // it is pulled out.
-        let destination = destinationIndexPath.item - range.lowerBound
-        var order = siblings.map(\.id)
-        let moved = order.remove(at: source)
-        order.insert(moved, at: destination > source ? destination - 1 : destination)
+        // Translate the flat visible-row insertion point into this hierarchy
+        // level. Nested department rows make root sibling indices noncontiguous:
+        // any destination inside a root's subtree counts as after that root.
+        // UIKit reports a pre-removal index, so a downward move lands one slot
+        // earlier once the source block is out (the pure index math is unit
+        // tested on `SidebarFavoriteHierarchy`).
+        let rows = FavoriteHierarchy.rowsAfterMoving(
+            context.rows,
+            from: context.source,
+            rowStarts: context.rowStarts,
+            toVisibleIndex: destinationIndexPath.item)
 
-        // Rewrite only this section's slots in the global array, then repaint.
+        // A root row is a block: a favorited organization contributes its own
+        // favorite id plus its departments, while a structural organization
+        // contributes only its departments. Flattening the reordered blocks
+        // lets the unchanged package primitive refill precisely those global
+        // slots. A department-level reorder has one id per block and therefore
+        // rewrites only that organization's department slots.
+        let order = favoriteHierarchy.flattenedFavoriteIDs(in: rows)
+
+        // Rewrite only this sibling scope's slots in the global array, then repaint.
         // `setOrder` reloads the store and posts `.favoritesDidChange`; the
         // explicit apply here doesn't wait for that round trip, so the row is
         // already in its new place when the drop animation finishes.
@@ -965,28 +1090,71 @@ extension SidebarViewController: UICollectionViewDropDelegate {
         session.items.lazy.compactMap { $0.localObject as? FavoriteListItem.ID }.first
     }
 
+    /// Structural organizations are never favorites and already vend no drag
+    /// item. An unresolved department also has no same-organization sibling
+    /// scope, so it stays visible/removable but does not begin a misleading drag.
+    private func isDraggableFavorite(_ id: FavoriteListItem.ID) -> Bool {
+        guard let item = favoriteItemsByID[id] else { return false }
+        guard item.kind == .department else { return true }
+        guard case .row = favoriteHierarchy.parent(of: id) else { return false }
+        return true
+    }
+
     /// UIKit reports no destination when the pointer is in the empty space below
     /// the last row. Read that as the end of the list, so a child of the LAST
     /// section can be dropped there instead of meeting a "no drop" cursor (the
     /// same end-of-list fallback `FavoritesListViewController` uses). Every
-    /// other section still refuses it — `insertionRange` doesn't reach.
+    /// other sibling scope still refuses it — its `reorderContext` range
+    /// doesn't reach.
     private func resolvedDestination(_ destinationIndexPath: IndexPath?) -> IndexPath {
         destinationIndexPath
             ?? IndexPath(item: collectionView.numberOfItems(inSection: 0), section: 0)
     }
 
-    /// Visible-row indices a child of `tab` may be dropped at: from its first
-    /// child's row through one past its last. The upper bound is the row the
-    /// next section header currently occupies — UIKit reports the same index
-    /// for "after the last child" and "before the next header", and since the
-    /// drag can only have started inside this section, it reads as the
-    /// section's own last slot. Nil when the section shows no children (a
-    /// collapsed section can't be a drag source in the first place).
-    private func insertionRange(for tab: SidebarTab) -> ClosedRange<Int>? {
-        let rows = (favoriteChildren[tab] ?? []).compactMap {
-            dataSource.indexPath(for: .favorite($0.id))?.item
+    private typealias ReorderContext = (
+        rows: [FavoriteHierarchy.Row],
+        source: Int,
+        rowStarts: [Int],
+        range: ClosedRange<Int>
+    )
+
+    /// The direct sibling list containing `id`, plus its visible insertion
+    /// range. Root rows may have department descendants between their visible
+    /// indices, so the range ends after the last sibling's whole subtree rather
+    /// than one row after the last sibling itself.
+    private func reorderContext(for id: FavoriteListItem.ID) -> ReorderContext? {
+        guard isDraggableFavorite(id),
+              let parent = favoriteHierarchy.parent(of: id)
+        else { return nil }
+
+        let rows: [FavoriteHierarchy.Row]
+        switch parent {
+        case .section(let tab):
+            rows = favoriteHierarchy.roots(in: tab)
+        case .row(let row):
+            rows = favoriteHierarchy.children(of: row)
         }
-        guard let first = rows.min(), let last = rows.max() else { return nil }
-        return first...(last + 1)
+
+        let sourceRow = FavoriteHierarchy.Row.favorite(id)
+        guard let source = rows.firstIndex(of: sourceRow) else { return nil }
+        let rowStarts = rows.compactMap {
+            dataSource.indexPath(for: item(for: $0))?.item
+        }
+        guard rowStarts.count == rows.count,
+              let first = rowStarts.first,
+              let lastRow = rows.last,
+              let last = lastVisibleIndex(includingDescendantsOf: lastRow)
+        else { return nil }
+        return (rows, source, rowStarts, first...(last + 1))
+    }
+
+    private func lastVisibleIndex(
+        includingDescendantsOf row: FavoriteHierarchy.Row
+    ) -> Int? {
+        var indices = [dataSource.indexPath(for: item(for: row))?.item].compactMap { $0 }
+        indices.append(contentsOf: favoriteHierarchy.children(of: row).compactMap {
+            dataSource.indexPath(for: item(for: $0))?.item
+        })
+        return indices.max()
     }
 }

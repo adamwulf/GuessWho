@@ -993,6 +993,9 @@ struct ContactDetailView: View {
     /// core became usable and when every footer-tracked branch was done.
     private static let loadLog = GuessWhoLog.logger("app.contact-load")
 
+    /// Best-effort favorite mutations initiated from rows on this card.
+    private static let favoriteLog = GuessWhoLog.logger("app.contact-favorites")
+
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
     /// size, and writes them to the CNContact itself (not a sidecar), so the new
     /// photo shows in Contacts.app too. Resets the picker selection so picking
@@ -1762,19 +1765,52 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func departmentRow(_ department: String, organization: Contact) -> some View {
+        let isFavorited = repository.isDepartmentFavorite(department, in: organization)
         Button {
             pushDepartmentReference(
                 DepartmentReference(organizationID: organization.contactID, department: department)
             )
         } label: {
             ActivityRowLayout(systemImage: "person.2") {
-                Text(department)
-                    .foregroundStyle(.tint)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(spacing: 6) {
+                    Text(department)
+                        .foregroundStyle(.tint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isFavorited {
+                        Image(systemName: "star.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.yellow)
+                            .accessibilityLabel("Favorited")
+                    }
+                }
+                .contentShape(Rectangle())
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                Task { @MainActor in
+                    do {
+                        _ = try await repository.setDepartmentFavorite(
+                            !isFavorited,
+                            department: department,
+                            in: organization
+                        )
+                    } catch {
+                        Self.favoriteLog.error(
+                            "department favorite toggle failed: \(error.localizedDescription)"
+                        )
+                    }
+                    favoritesStore.reload()
+                }
+            } label: {
+                if isFavorited {
+                    Label("Unfavorite", systemImage: "star.slash")
+                } else {
+                    Label("Favorite", systemImage: "star")
+                }
+            }
+        }
     }
 
     /// Contacts.app groups this record belongs to. Shown for BOTH people and

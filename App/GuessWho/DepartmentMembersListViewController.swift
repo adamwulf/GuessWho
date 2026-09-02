@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import GuessWhoSync
+import GuessWhoLogging
 
 /// UIKit list of the people in one department of one organization. Pushed when a
 /// department row is tapped in an organization's `ContactDetailView` — on iPhone
@@ -42,6 +43,10 @@ final class DepartmentMembersListViewController: UIViewController {
     private var tableView: UITableView!
     private var dataSource: SectionedDataSource!
 
+    /// Nav-bar star that favorites/unfavorites this department within its
+    /// organization, mirroring the group members list's own favorite button.
+    private var favoriteBarButton: UIBarButtonItem!
+
     private var sectionLetters: [String] = []
 
     /// The current members keyed by `ContactID` — the SOLE source the cell
@@ -65,6 +70,8 @@ final class DepartmentMembersListViewController: UIViewController {
 
     /// Selection ORDER only — see `ContactsListViewController.selectionRecency`.
     private let selectionRecency = ContactMultiSelectionSupport.RecencyTracker()
+
+    private static let log = GuessWhoLog.logger("app.department-members")
 
     init(
         organizationID: ContactID,
@@ -141,19 +148,26 @@ final class DepartmentMembersListViewController: UIViewController {
     // MARK: - Nav bar items
 
     /// Install the nav bar's right items: "Edit" (rename this department,
-    /// rightmost) and the global sort pull-down. The sort item is held in
-    /// `sortBarButtonItem` because `navigationItem.rightBarButtonItem` now
-    /// resolves to the first of the array — mirrors
-    /// `OrganizationsListViewController.configureNavigationItems`.
+    /// rightmost), this department's favorite star, and the global sort
+    /// pull-down. The sort item is held in `sortBarButtonItem` because
+    /// `navigationItem.rightBarButtonItem` now resolves to the first of the
+    /// array — mirrors `OrganizationsListViewController.configureNavigationItems`.
     private func configureNavigationItems() {
         let editItem = UIBarButtonItem(
             title: "Edit",
             primaryAction: UIAction { [weak self] _ in self?.presentRename() }
         )
         editItem.accessibilityLabel = "Rename Department"
+        favoriteBarButton = UIBarButtonItem(
+            image: nil,
+            style: .plain,
+            target: self,
+            action: #selector(toggleDepartmentFavorite)
+        )
         let sortItem = makeSortBarButtonItem(repository: repository)
         sortBarButtonItem = sortItem
-        navigationItem.rightBarButtonItems = [editItem, sortItem]
+        navigationItem.rightBarButtonItems = [editItem, favoriteBarButton, sortItem]
+        updateFavoriteButton()
     }
 
     private var sortBarButtonItem: UIBarButtonItem?
@@ -197,6 +211,33 @@ final class DepartmentMembersListViewController: UIViewController {
         sortBarButtonItem?.menu = makeSortMenu(repository: repository)
     }
 
+    /// Repaint the star to reflect this department's current favorite state.
+    private func updateFavoriteButton() {
+        let isFavorited = repository.isDepartmentFavorite(department, in: currentOrganization)
+        favoriteBarButton.image = UIImage(systemName: isFavorited ? "star.fill" : "star")
+        favoriteBarButton.accessibilityLabel = isFavorited ? "Unfavorite" : "Favorite"
+    }
+
+    /// Toggle this department's favorite, then reload the shared favorites
+    /// projection so every surface mirrors the authoritative stored state.
+    @objc private func toggleDepartmentFavorite() {
+        let desired = !repository.isDepartmentFavorite(department, in: currentOrganization)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.repository.setDepartmentFavorite(
+                    desired,
+                    department: self.department,
+                    in: self.currentOrganization
+                )
+            } catch {
+                Self.log.error("department favorite toggle failed: \(error.localizedDescription)")
+            }
+            self.favoritesStore.reload()
+            self.updateFavoriteButton()
+        }
+    }
+
     // MARK: - Rename
 
     /// Present the one-field rename form as a sheet, seeded with the current
@@ -236,6 +277,7 @@ final class DepartmentMembersListViewController: UIViewController {
                 title = Self.title(for: trimmed)
                 recomputeMembers()
                 applySnapshot(animated: true)
+                updateFavoriteButton()
             } catch {
                 presentRenameError(error)
             }
@@ -280,6 +322,7 @@ final class DepartmentMembersListViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.reconfigureAllRows()
+                self?.updateFavoriteButton()
             }
         }
     }

@@ -319,9 +319,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         switch selection {
         case .section(let tab):
             showSection(tab, in: split, appDelegate: appDelegate)
+        case .organization(let id):
+            showOrganizationChild(id, in: split, appDelegate: appDelegate)
         case .favorite(let item, let tab):
             showFavoriteChild(item, in: tab, split: split, appDelegate: appDelegate)
         }
+    }
+
+    /// An inferred organization row behaves exactly like a favorited
+    /// organization row even though it has no `FavoriteListItem` payload.
+    private func showOrganizationChild(
+        _ id: ContactID,
+        in split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        mountedSection = .organizations
+        noteSectionShown(.organizations)
+        let list = installOrganizationsList(in: split, appDelegate: appDelegate)
+        guard let organization = appDelegate.contactsRepository.contact(id: id) else { return }
+        list.select(contactID: id)
+        showContactDetail(contact: organization, appDelegate: appDelegate)
     }
 
     /// Mount a section's list in the supplementary column and reset the detail
@@ -429,6 +446,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         case .organizations:
             let list = installOrganizationsList(in: split, appDelegate: appDelegate)
+            if let department = item.department {
+                // A department favorite performs the same two-level navigation
+                // as tapping that department on the organization page.
+                let organization = department.organization
+                list.select(contactID: organization.contactID)
+                let nav = showContactDetail(contact: organization, appDelegate: appDelegate)
+                pushCatalystDepartmentMembers(
+                    ref: DepartmentReference(
+                        organizationID: organization.contactID,
+                        department: department.department
+                    ),
+                    on: nav,
+                    appDelegate: appDelegate
+                )
+                return
+            }
             guard let contact = item.contact else { return }
             list.select(contactID: contact.contactID)
             showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -651,6 +684,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectPlace = { [weak self] place in
             self?.showPlaceDetail(place: place, appDelegate: appDelegate)
         }
+        // A department drills into its members list on this supplementary
+        // column, exactly as a favorited group does: member selection then
+        // REPLACES the secondary/detail column (via `showContactDetail`).
+        list.didSelectDepartment = { [weak self, weak nav] department in
+            self?.showDepartmentMembers(
+                ref: DepartmentReference(
+                    organizationID: department.organization.contactID,
+                    department: department.department),
+                on: nav, appDelegate: appDelegate)
+        }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .favorites)
     }
@@ -701,12 +744,44 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.pushViewController(members, animated: true)
     }
 
+    /// Push a `DepartmentMembersListViewController` for `ref` onto the
+    /// SUPPLEMENTARY column's `nav`, mirroring `showGroupMembers`: member
+    /// selection REPLACES the secondary/detail column via `showContactDetail`
+    /// (and `showContactDetailStack` for a multi-select). This is the Favorites
+    /// section's department drill-in — distinct from `pushCatalystDepartmentMembers`,
+    /// which pushes onto the SECONDARY nav for an in-detail drill-down.
+    private func showDepartmentMembers(
+        ref: DepartmentReference,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        guard let nav,
+              let organization = appDelegate.contactsRepository.contact(id: ref.organizationID)
+        else { return }
+        let members = DepartmentMembersListViewController(
+            organizationID: ref.organizationID,
+            organization: organization,
+            department: ref.department,
+            repository: appDelegate.contactsRepository,
+            photoLoader: appDelegate.contactPhotoLoader,
+            favoritesStore: appDelegate.favoritesStore
+        )
+        members.didSelectContact = { [weak self] contact in
+            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
+        members.didSelectContacts = { [weak self] contacts in
+            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+        }
+        nav.pushViewController(members, animated: true)
+    }
+
+    @discardableResult
     private func showContactDetail(
         contact: Contact,
         appDelegate: GuessWhoAppDelegate,
         startsInEditMode: Bool = false
-    ) {
-        guard let split else { return }
+    ) -> UINavigationController? {
+        guard let split else { return nil }
         // No `.id(...)` needed: `setViewController(_:for: .secondary)` replaces
         // the whole hosting controller per selection, so a fresh
         // ContactDetailView + @State tree is built automatically.
@@ -733,6 +808,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // closures.
         split.setViewController(nav, for: .secondary)
         noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
+        return nav
     }
 
     private func showContactDetailStack(
@@ -1453,6 +1529,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectPlace = { [weak self] place in
             self?.pushGuidePlaceDetail(
                 place: place,
+                on: list.navigationController,
+                appDelegate: appDelegate
+            )
+        }
+        // A department pushes its members list onto this tab's own stack, like a
+        // group, and like the department row on the organization page.
+        list.didSelectDepartment = { [weak self] department in
+            self?.pushDepartmentMembers(
+                ref: DepartmentReference(
+                    organizationID: department.organization.contactID,
+                    department: department.department),
                 on: list.navigationController,
                 appDelegate: appDelegate
             )

@@ -49,6 +49,24 @@ final class FavoritesWriteCommandTests: CLICommandTestCase {
         XCTAssertEqual(try canonicalEncoding(built), try canonicalEncoding(expected))
     }
 
+    func testSetBuildsExpectedRequestForDepartmentCompositeID() throws {
+        // A department id is the organization's contact id, then "/", then the
+        // department name — passed straight through as the favorite id and
+        // validated by the wire builder as WireFavoriteKind.department.
+        let departmentID = "11111111-2222-4333-8444-555566667777/Lilie"
+        let command = try FavoritesSet.parse(["department", departmentID, "--favorite"])
+        XCTAssertEqual(command.kind, "department")
+        XCTAssertEqual(command.id, departmentID)
+        let built = try WireRequest.create(
+            helperId: "cli-test", messageId: "m1",
+            parameters: MCP.CallTool.Parameters(
+                name: MCPTool.favoritesSet.rawValue, arguments: command.argumentBag()))
+        let expected = WireRequest.favoritesSet(
+            helperId: "cli-test", messageId: "m1", kind: .department, id: departmentID,
+            favorite: true, idempotencyToken: nil)
+        XCTAssertEqual(try canonicalEncoding(built), try canonicalEncoding(expected))
+    }
+
     // MARK: favorites reorder — parse + request build (--json)
 
     func testReorderParsesJSONFlags() throws {
