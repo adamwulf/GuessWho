@@ -232,6 +232,7 @@ struct LinkedInApplyTests {
             title: "Associate Vice President for Industry and New Ventures",
             about: "Brad supports new technologies created by Rice faculty.",
             department: "Jones Graduate School of Business\nOffice of Innovation",
+            office: "O'Connor Engineering and Science Building 236",
             contactInfo: .init(
                 emails: ["bburke@rice.edu"],
                 phones: ["713-348-6136"],
@@ -242,7 +243,7 @@ struct LinkedInApplyTests {
         let result = try await repo.applyLinkedIn(
             profile: rice,
             to: id,
-            fields: [.jobTitle, .emails, .phones, .websites, .about, .department]
+            fields: [.jobTitle, .emails, .phones, .websites, .about, .department, .office]
         )
 
         #expect(result.jobTitle == "Associate Vice President for Industry and New Ventures")
@@ -262,6 +263,9 @@ struct LinkedInApplyTests {
         #expect(byName["Rice Department"] == nil)
         #expect(byName["Rice Bio"]?.value == .string("Brad supports new technologies created by Rice faculty."))
         #expect(byName["LinkedIn About"] == nil)
+        // The office/building line is a single-line "Rice Office" sidecar note.
+        #expect(byName["Rice Office"]?.value == .string("O'Connor Engineering and Science Building 236"))
+        #expect(byName["Rice Office"]?.type == .note)
     }
 
     @Test func riceProfile_migratesLegacyRiceDepartmentNoteToRealField() async throws {

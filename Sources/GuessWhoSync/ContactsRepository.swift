@@ -1484,6 +1484,12 @@ public final class ContactsRepository: NSObject {
                 : "LinkedIn Location"
             _ = try await upsertField(for: id, field: fieldName, value: loc, type: .note)
         }
+        // Office/building is a single line. Only the profiles.rice.edu directory
+        // parser produces one, so it always reads as "Rice Office". UPSERT by
+        // name so a re-import updates the value in place.
+        if fields.contains(.office), let office = profile.office?.trimmed, !office.isEmpty {
+            _ = try await upsertField(for: id, field: "Rice Office", value: office, type: .note)
+        }
         // TLS only. Rice routes its department into the real Contacts Department
         // field above (before the save), so it feeds the organization →
         // department hierarchy. The TLS source has no such hierarchy, so its

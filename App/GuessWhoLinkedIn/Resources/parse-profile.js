@@ -539,6 +539,36 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
     (v) => v.toLowerCase().replace(/\/$/, "")
   )) || [];
 
+  // Office/building line. The CONTACT block renders the office, phone, and
+  // email as inline, "|"-separated spans inside a single paragraph:
+  //   <span>O'Connor Engineering and Science Building 236</span>
+  //   <span class="hide@xs"> | </span>
+  //   <span class="block@xs"><span>713-348-3511</span> | <a href="mailto:…">…</a></span>
+  // The office is the only plain-text span — the phone sits in a nested span
+  // and the email in a mailto link — so take the first direct-child span that
+  // is not a separator, a phone number, or the wrapper that holds the email.
+  // A page without an office (staff with contact info only) yields null: the
+  // phone/email wrapper is the first span and it is skipped.
+  const office = safe(() => {
+    if (!contact) return null;
+    const valueBlock = [...contact.querySelectorAll("p")]
+      .find((p) => p.querySelector("span")) || contact;
+    // Same North-American phone shape the phones extraction above accepts, so a
+    // bare phone span is never mistaken for an office when the office is absent.
+    const phoneLike =
+      /(?<!\d)(?:\+\d{1,3}[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[.-])\d{3}[ .-]?\d{4}(?!\d)/;
+    for (const node of [...valueBlock.children]) {
+      if (node.tagName !== "SPAN") continue;
+      if (node.querySelector('a[href^="mailto:"]')) continue; // wrapper w/ email
+      const value = text(node);
+      if (!value || /^[|\s]*$/.test(value)) continue;         // separator
+      if (phoneLike.test(value)) continue;                    // phone
+      if (value.includes("@")) continue;                      // stray email text
+      return value;
+    }
+    return null;
+  });
+
   const bio = text(root.querySelector(".article__body.profileBody"));
   const photoImg = root.querySelector(".article__image img");
   const photoSrcset = safe(() => {
@@ -567,6 +597,7 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
     // only organization source (see gwDefaultOrganization).
     org: gwDefaultOrganization(safe(() => doc.location.hostname)),
     department,
+    office,
     about: bio,
     contactInfo: { emails, phones, websites },
     photoSrcset,
@@ -728,6 +759,10 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
     // source (see gwDefaultOrganization).
     org: gwDefaultOrganization(safe(() => doc.location.hostname)),
     department,
+    // business.rice.edu's contact block carries only email/phone/website —
+    // there is no office/building line to read (unlike the profiles.rice.edu
+    // faculty/staff directory), so office is always absent here.
+    office: null,
     about,
     contactInfo: { emails, phones, websites },
     photoSrcset,

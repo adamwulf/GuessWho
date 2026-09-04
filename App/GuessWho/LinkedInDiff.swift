@@ -18,7 +18,7 @@ enum LinkedInImport {
 struct LinkedInDiffRow: Identifiable {
     enum Field: String {
         case name, nickname, jobTitle, organization, headline, location, about
-        case emails, phones, websites, linkedInURL, department, role, ama, photo
+        case emails, phones, websites, linkedInURL, department, office, role, ama, photo
     }
 
     let id: Field
@@ -45,6 +45,7 @@ enum LinkedInDiff {
     static let aboutFieldName = "LinkedIn About"
     static let locationFieldName = "LinkedIn Location"
     static let riceBioFieldName = "Rice Bio"
+    static let officeFieldName = "Rice Office"
 
     /// - Parameter existingSidecar: the contact's current sidecar field values
     ///   keyed by field name (e.g. `["LinkedIn Headline": "…", "LinkedIn
@@ -114,6 +115,9 @@ enum LinkedInDiff {
             // plain LinkedIn profile has no department, so this row is skipped.
             add(.department, "Department", contact.departmentName, profile.primaryDepartment)
         }
+        // Office/building is a Rice-only single-line sidecar field. Absent on
+        // other sources (profile.office is nil), so the row is skipped.
+        add(.office, "Office", existingSidecar[officeFieldName], profile.office)
         add(.role, "Role", existingSidecar[LinkedInProfile.dschoolRoleFieldName], profile.role)
         add(
             .ama,

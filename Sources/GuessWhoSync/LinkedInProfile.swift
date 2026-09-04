@@ -85,6 +85,11 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     public var location: String?
     public var about: String?
     public var department: String?
+    /// Office/building line from a directory profile (e.g. "O'Connor
+    /// Engineering and Science Building 236"). Only the profiles.rice.edu
+    /// faculty/staff parser produces this today; stored as the "Rice Office"
+    /// sidecar field. Nil for sources with no office line.
+    public var office: String?
     public var role: String?
     public var ama: [String]?
     public var contactInfo: ContactInfo?
@@ -103,6 +108,7 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         location: String? = nil,
         about: String? = nil,
         department: String? = nil,
+        office: String? = nil,
         role: String? = nil,
         ama: [String]? = nil,
         contactInfo: ContactInfo? = nil,
@@ -120,6 +126,7 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
         self.location = location
         self.about = about
         self.department = department
+        self.office = office
         self.role = role
         self.ama = ama
         self.contactInfo = contactInfo
@@ -134,7 +141,7 @@ public struct LinkedInProfile: Codable, Sendable, Equatable {
     // position into `title`/`org`, so nothing app-side needs the raw array.
     private enum CodingKeys: String, CodingKey {
         case source, sourceUrl, slug, fullName, nickname, headline, title, org, location, about, department
-        case role, ama, contactInfo, photo, photoError
+        case office, role, ama, contactInfo, photo, photoError
     }
 
     public var isRiceProfile: Bool { source?.caseInsensitiveCompare("rice") == .orderedSame }
@@ -207,6 +214,7 @@ public enum LinkedInField: String, Sendable, CaseIterable {
     case emails, phones, websites, linkedInURL
     case headline, location, about   // sidecar (stored as "LinkedIn …"-prefixed notes)
     case department
+    case office   // sidecar ("Rice Office" note; profiles.rice.edu only)
     case role, ama
     case photo
 }

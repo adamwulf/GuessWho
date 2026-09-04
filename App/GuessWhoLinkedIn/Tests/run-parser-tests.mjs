@@ -121,6 +121,13 @@ const riceMarkup = `
     <div class="article__author-role profile">Professor</div>
     <div class="article__author-contact">
       <div class="article__author-role profile top-border">Computer Science</div>
+      <div class="article__author-address col top-border">
+        <p>CONTACT</p>
+        <p class="body body-mediumSmall">
+          <span>O&#039;Connor Engineering and Science Building 236</span><span class="hide@xs">   |   </span>
+          <span class="block@xs"><span>   713-348-3511</span><span>   |   </span><a href="mailto:hopper@rice.edu" class="link link--small">hopper@rice.edu</a></span>
+        </p>
+      </div>
     </div>
   </article>
 `;
@@ -128,6 +135,29 @@ const rice = extractRiceProfile(documentFor(riceMarkup, "https://profiles.rice.e
 equal(rice.fullName, "Grace Hopper", "Rice name regression");
 equal(rice.department, "Computer Science", "Rice department regression");
 equal(rice.org, "Rice University", "Rice profile defaults the organization");
+// The office/building is the only plain-text span in the CONTACT block; the
+// phone (nested span) and email (mailto link) are not mistaken for it, and the
+// same block still yields the phone and email.
+equal(rice.office, "O'Connor Engineering and Science Building 236", "Rice office/building line");
+equal(rice.contactInfo.phones.join(","), "713-348-3511", "Rice CONTACT block still yields the phone");
+equal(rice.contactInfo.emails.join(","), "hopper@rice.edu", "Rice CONTACT block still yields the email");
+
+// A profile whose CONTACT block carries only a phone/email (no office line)
+// leaves office null: the phone/email wrapper is the first span and is skipped.
+const riceNoOffice = extractRiceProfile(documentFor(`
+  <article class="article--bio">
+    <h1 class="article__author-name profile">Ada Byron</h1>
+    <div class="article__author-contact">
+      <div class="article__author-address col top-border">
+        <p>CONTACT</p>
+        <p class="body body-mediumSmall">
+          <span class="block@xs"><span>   713-555-0000</span><span>   |   </span><a href="mailto:ada@rice.edu">ada@rice.edu</a></span>
+        </p>
+      </div>
+    </div>
+  </article>
+`, "https://profiles.rice.edu/faculty/ada-byron"));
+equal(riceNoOffice.office, null, "Rice profile with no office line yields null office");
 
 // The organization default is a property of the rice.edu HOST, not of the
 // parser: the same markup served off-campus must not claim Rice as employer,
