@@ -47,9 +47,12 @@ manifests match `profiles.rice.edu/faculty/*`, `profiles.rice.edu/staff/*`, and
 `business.rice.edu/person/*`. `extractRiceProfile` reads the main Rice
 directory's server-rendered fields; `extractRiceBusinessProfile` reads the
 business school's Schema.org Person data plus its visible department and bio
-components. Both produce the same Rice payload: name, first title,
-organization, department/office units, bio, email, phone, listed websites, and
-profile image when present. Neither page shape names the university as the
+components. Both produce the same Rice payload shape: name, first title,
+organization, department unit(s), bio, email, phone, listed websites, and
+profile image when present; the `profiles.rice.edu` faculty/staff pages
+additionally carry an office/building line (e.g. `O'Connor Engineering and
+Science Building 236`) that `business.rice.edu` pages do not. Neither page
+shape names the university as the
 person's employer, so `org` is defaulted to `Rice University` for any page on
 `rice.edu` or one of its subdomains (`gwDefaultOrganization`). Today that
 default is the only organization source for Rice pages; an extractor that
@@ -58,8 +61,11 @@ default. Rice pages do not need the LinkedIn lazy-scroll or
 contact-overlay steps. The content script still fetches the image bytes
 in-page and attaches the same `photo` payload. On save,
 title/organization/email/phone/websites/photo use normal Contacts fields, the
-Rice profile URL is added as a website labeled `Rice`, and department/bio
-upsert the named `Rice Department` and `Rice Bio` fields. The organization
+Rice profile URL is added as a website labeled `Rice`, the primary department
+unit is written to the real Contacts Department field (like the organization,
+feeding the organization → department hierarchy), and the bio and — for
+`profiles.rice.edu` — the office/building line upsert the named `Rice Bio` and
+`Rice Office` sidecar fields. The organization
 shows up in the confirm sheet like any other field: a checked change row the
 user can untick when the contact has no organization or names a different
 one, and an unchanged (de-emphasized) row when it already says
