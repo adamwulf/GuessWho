@@ -65,6 +65,55 @@ struct ContactsRepositoryStampTests {
     }
 
     @Test
+    func stampViewedAndInteracted_writesBothCellsAtOneInstant() async throws {
+        // The combined verb the browser import uses. One sidecar write sets
+        // BOTH lastViewed and lastInteracted to the same instant, and leaves
+        // the other two cells untouched.
+        let target = Contact(
+            localID: "PAIR",
+            givenName: "Ada",
+            urlAddresses: [LabeledValue(label: "g", value: "\(SidecarKey.guessWhoContactURLPrefix)40000000-0000-0000-0000-000000000001")]
+        )
+        let store = InMemoryContactStore(contacts: [target])
+        let sync = makeSync(store)
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+
+        let id = try #require(repo.contact(localID: "PAIR")).contactID
+        try await repo.stampViewedAndInteracted(id)
+
+        let guessWhoID = try #require(id.guessWhoID)
+        let ts = try sync.contactTimestamps(at: SidecarKey(kind: .contact, id: guessWhoID))
+        let viewed = try #require(ts.lastViewed)
+        let interacted = try #require(ts.lastInteracted)
+        #expect(viewed == interacted)
+        #expect(ts.lastModified == nil)
+        #expect(ts.createdAt == nil)
+    }
+
+    @Test
+    func stampViewedAndInteracted_onUnreconciledContact_mints() async throws {
+        // Like the single-cell verbs, the FIRST combined stamp to an
+        // unreconciled contact mints its GuessWho URL as part of the write.
+        let target = Contact(localID: "TARGET", givenName: "Grace")
+        let store = InMemoryContactStore(contacts: [target])
+        let sync = makeSync(store)
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+
+        let id = try #require(repo.contact(localID: "TARGET")).contactID
+        #expect(id.guessWhoID == nil)
+
+        try await repo.stampViewedAndInteracted(id)
+
+        let saved = try #require(try await store.fetch(localID: "TARGET"))
+        let guessWhoID = try #require(saved.contactID.guessWhoID)
+        let ts = try sync.contactTimestamps(at: SidecarKey(kind: .contact, id: guessWhoID))
+        #expect(ts.lastViewed != nil)
+        #expect(ts.lastInteracted != nil)
+    }
+
+    @Test
     func stamp_refreshesTimestampCache_soTimeSortSeesIt() async throws {
         // Two reconciled contacts. Stamp ONLY 'stamped' — under .lastViewed it
         // must jump ahead of the never-viewed 'unstamped' (nil → last) WITHOUT
