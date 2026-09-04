@@ -2439,7 +2439,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     let contact = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
                     await Self.stampImportEngagement(contact.contactID, repo: repo)
                     let extras = fields.intersection(Set<LinkedInField>([
-                        .headline, .location, .about, .department, .role, .ama, .photo,
+                        .headline, .location, .about, .department, .office, .role, .ama, .photo,
                     ]))
                     if !extras.isEmpty {
                         do {
@@ -2492,6 +2492,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         if !fields.contains(.location) { result.location = nil }
         if !fields.contains(.about) { result.about = nil }
         if !fields.contains(.department) { result.department = nil }
+        if !fields.contains(.office) { result.office = nil }
         if !fields.contains(.role) { result.role = nil }
         if !fields.contains(.ama) { result.ama = nil }
         if !fields.contains(.photo) { result.photo = nil }
@@ -2532,6 +2533,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         if profile.isTLSProfile,
            profile.department?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             extras.insert(.department)
+        }
+        // Rice office/building is a single-line sidecar field with no editor
+        // row, so like role/ama it attaches after the card is saved.
+        if profile.office?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            extras.insert(.office)
         }
         if profile.role?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             extras.insert(.role)
@@ -2589,6 +2595,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             LinkedInDiff.aboutFieldName,
             LinkedInDiff.locationFieldName,
             LinkedInDiff.riceBioFieldName,
+            LinkedInDiff.officeFieldName,
             LinkedInProfile.dschoolAMAFieldName,
             LinkedInProfile.dschoolRoleFieldName,
             LinkedInProfile.dschoolDepartmentFieldName,
@@ -2619,6 +2626,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             case .websites: out.insert(.websites)
             case .linkedInURL: out.insert(.linkedInURL)
             case .department: out.insert(.department)
+            case .office: out.insert(.office)
             case .role: out.insert(.role)
             case .ama: out.insert(.ama)
             case .photo: out.insert(.photo)

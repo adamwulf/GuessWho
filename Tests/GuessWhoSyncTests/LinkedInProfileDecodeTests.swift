@@ -79,6 +79,23 @@ struct LinkedInProfileDecodeTests {
         #expect(LinkedInContactSeed.contact(from: profile).organizationName == "Rice University")
     }
 
+    // The profiles.rice.edu parser adds an `office` key (building/room line).
+    // It rides the ordinary handoff shape and decodes into `profile.office`,
+    // which applyLinkedIn stores as the "Rice Office" sidecar field. An older
+    // payload without the key decodes to nil (decodeIfPresent).
+    @Test func ricePayloadDecodesOffice() throws {
+        let profile = try decode(#"""
+        {
+          "source": "rice",
+          "sourceUrl": "https://profiles.rice.edu/faculty/michael-s-wong",
+          "fullName": "Michael S. Wong",
+          "office": "O'Connor Engineering and Science Building 236"
+        }
+        """#)
+        #expect(profile.office == "O'Connor Engineering and Science Building 236")
+        #expect(try decode(#"{"source": "rice", "fullName": "No Office"}"#).office == nil)
+    }
+
     // The Rice department maps onto the single-valued Contacts Department field,
     // so `primaryDepartment` is the first non-empty unit. A page can list several
     // units, one per line; applyLinkedIn saves this one.
