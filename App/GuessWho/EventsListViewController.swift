@@ -3,9 +3,8 @@ import SwiftUI
 import GuessWhoSync
 import GuessWhoLogging
 
-/// UIKit Events list for the Catalyst 3-column shell. Single-section
-/// diffable data source keyed on `Event.id` (UUID). Mirrors the
-/// SwiftUI `EventsListView` behaviour: search bound to
+/// UIKit Events list shared by the Catalyst 3-column and iOS tab-bar shells.
+/// Single-section diffable data source keyed on `Event.id` (UUID), with search bound to
 /// `EventsRepository.searchText`, swipe-to-delete with a confirmation
 /// alert, and a "+" toolbar that hosts the existing SwiftUI
 /// `EventLinkSheet` via `UIHostingController`.
