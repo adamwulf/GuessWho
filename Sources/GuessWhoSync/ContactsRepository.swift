@@ -2515,6 +2515,17 @@ public final class ContactsRepository: NSObject {
         try await stampTimestamp(.viewed, for: id)
     }
 
+    /// Stamp BOTH `lastViewed` and `lastInteracted = now` on the contact
+    /// identified by `id`, in ONE sidecar write at a single instant. The
+    /// browser-plugin import uses this: pulling in a profile the user just
+    /// looked at is both a view of and a real-world interaction with the
+    /// person, and one write keeps the two cells at the same time and posts a
+    /// single reload. Like the single-cell verbs it resolves-or-mints first,
+    /// writes the cells, and refreshes the cache on mint.
+    public func stampViewedAndInteracted(_ id: ContactID) async throws {
+        try await stampTimestamps([.viewed, .interacted], for: id)
+    }
+
     /// Persists the two timestamps intrinsic to creating a record in one
     /// sidecar write. Contacts has no creation-date API, so `createdAt` is only
     /// known for contacts Guess Who creates. Best-effort by design: once the
@@ -2574,24 +2585,35 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// Shared body of the three stamp verbs. Throws `SidecarUnavailableError`
-    /// when the engine is unavailable; otherwise resolves-or-mints the GuessWho
-    /// UUID (reconciling an unreconciled contact), writes the one timestamp
-    /// cell at `now`, and refreshes the cache if the resolve minted.
+    /// Single-cell convenience over `stampTimestamps` — the body every
+    /// single-kind stamp verb (`stampModified`/`stampInteracted`/`stampViewed`)
+    /// funnels through.
     private func stampTimestamp(_ which: ContactTimestampKind, for id: ContactID) async throws {
+        try await stampTimestamps([which], for: id)
+    }
+
+    /// Shared body of the stamp verbs, generalized to write one OR MORE
+    /// timestamp cells in a single sidecar write at the same `now` (`stampViewed`
+    /// passes one kind; `stampViewedAndInteracted` passes two). Throws
+    /// `SidecarUnavailableError` when the engine is unavailable; otherwise
+    /// resolves-or-mints the GuessWho UUID (reconciling an unreconciled
+    /// contact), writes the named timestamp cells at `now`, and refreshes the
+    /// cache if the resolve minted.
+    private func stampTimestamps(_ kinds: [ContactTimestampKind], for id: ContactID) async throws {
         guard let sync else { throw SidecarUnavailableError() }
+        guard !kinds.isEmpty else { return }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let now = Date()
-        try sync.stampContactTimestamp(which, at: key, now: now)
-        // The write touched exactly ONE cell and `now` IS its new value, so
-        // update that one cache entry in place. A wholesale
+        try sync.stampContactTimestamps(kinds, at: key, now: now)
+        // The write touched exactly the named cells and `now` IS their new
+        // value, so update those cache entries in place. A wholesale
         // `refreshTimestampCache(generation:)` here would re-read every contact sidecar
         // off disk on the main actor — on every contact open (stampViewed) —
         // which is the I/O stall this in-place update exists to avoid.
         // External edits still land via the change-notification reload path.
-        updateTimestampCache(which, at: key, to: now)
+        for which in kinds { updateTimestampCache(which, at: key, to: now) }
         await refreshCacheIfMinted(minted, localID: id.localID)
         // On mint, `refreshCacheIfMinted` posts its own reload; on the common
         // non-mint path, post so a time-ordered list re-renders. A stamp only
@@ -2600,9 +2622,10 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Upsert the single `which` timestamp on the cache entry for `key`,
-    /// leaving the other two timestamps untouched — the in-memory mirror of
-    /// what `stampContactTimestamp` just wrote to disk. Keyed on `key.id`, the
-    /// same canonical-lowercase UUID `allContactTimestamps()` keys on.
+    /// leaving the other timestamps untouched — the in-memory mirror of a cell
+    /// `stampContactTimestamps` just wrote to disk (called once per written
+    /// kind). Keyed on `key.id`, the same canonical-lowercase UUID
+    /// `allContactTimestamps()` keys on.
     private func updateTimestampCache(_ which: ContactTimestampKind, at key: SidecarKey, to now: Date) {
         var stamps = contactTimestampsByID[key.id] ?? ContactTimestamps()
         switch which {

@@ -2152,6 +2152,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     do {
                         let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
                         Self.handoffLog.notice("confirm: saved \(updated.givenName) \(updated.familyName)")
+                        await Self.stampImportEngagement(matchID, repo: repo)
                     } catch {
                         // Tell the user, not just the log — a silent failure
                         // here reads as "saved" (the sheet is already gone).
@@ -2287,6 +2288,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                         Self.handoffLog.error("new-contact: saved with no identity — extras not attached")
                         return
                     }
+                    // The card was created, so the import counts as engagement
+                    // regardless of the extras outcome below — stamp before
+                    // attaching extras, matching the TLS batch's created path.
+                    await Self.stampImportEngagement(contactID, repo: repo)
                     let failure = await Self.attachLinkedInExtras(
                         profile: profile, to: contactID, repo: repo
                     )
@@ -2429,8 +2434,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                         )
                         continue
                     }
+                    await Self.stampImportEngagement(matched, repo: repo)
                 } else {
                     let contact = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
+                    await Self.stampImportEngagement(contact.contactID, repo: repo)
                     let extras = fields.intersection(Set<LinkedInField>([
                         .headline, .location, .about, .department, .role, .ama, .photo,
                     ]))
@@ -2549,6 +2556,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         } catch {
             Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
             return error
+        }
+    }
+
+    /// A browser-plugin import is both a view of and an interaction with the
+    /// person: the user just looked at their live profile page and pulled it
+    /// in. Stamp both `lastViewed` and `lastInteracted` so the record surfaces
+    /// in the Recently Viewed / Recently Interacted orders, exactly as opening
+    /// the detail would. Best-effort — the Contacts/sidecar writes of the
+    /// import itself have already landed, so a timestamp failure must not turn
+    /// a saved import into a reported failure (mirrors the package's
+    /// `stampModifiedBestEffort`).
+    @MainActor
+    private static func stampImportEngagement(
+        _ id: ContactID,
+        repo: ContactsRepository
+    ) async {
+        do {
+            try await repo.stampViewedAndInteracted(id)
+        } catch {
+            Self.handoffLog.error("import engagement stamp failed: \(error.localizedDescription)")
         }
     }
 
