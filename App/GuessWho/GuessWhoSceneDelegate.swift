@@ -2288,12 +2288,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                         Self.handoffLog.error("new-contact: saved with no identity — extras not attached")
                         return
                     }
+                    // The card was created, so the import counts as engagement
+                    // regardless of the extras outcome below — stamp before
+                    // attaching extras, matching the TLS batch's created path.
+                    await Self.stampImportEngagement(contactID, repo: repo)
                     let failure = await Self.attachLinkedInExtras(
                         profile: profile, to: contactID, repo: repo
                     )
-                    // The card was created, so the import counts as engagement
-                    // regardless of an extras failure above.
-                    await Self.stampImportEngagement(contactID, repo: repo)
                     // Posted once, after every write lands — including a
                     // partial apply that then threw, which an open card should
                     // re-read either way.

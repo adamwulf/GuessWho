@@ -2622,9 +2622,10 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Upsert the single `which` timestamp on the cache entry for `key`,
-    /// leaving the other two timestamps untouched — the in-memory mirror of
-    /// what `stampContactTimestamp` just wrote to disk. Keyed on `key.id`, the
-    /// same canonical-lowercase UUID `allContactTimestamps()` keys on.
+    /// leaving the other timestamps untouched — the in-memory mirror of a cell
+    /// `stampContactTimestamps` just wrote to disk (called once per written
+    /// kind). Keyed on `key.id`, the same canonical-lowercase UUID
+    /// `allContactTimestamps()` keys on.
     private func updateTimestampCache(_ which: ContactTimestampKind, at key: SidecarKey, to now: Date) {
         var stamps = contactTimestampsByID[key.id] ?? ContactTimestamps()
         switch which {
