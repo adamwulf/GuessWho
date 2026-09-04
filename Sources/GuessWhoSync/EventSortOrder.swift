@@ -8,7 +8,7 @@ import Foundation
 /// Unlike the contact orders there is no sectioning — the events list is a
 /// single flat section — so this enum carries the comparator itself.
 public enum EventSortOrder: String, CaseIterable, Sendable {
-    /// By start date, soonest first — the list's original behavior.
+    /// By start date, newest first.
     case chronological
     /// By `Event.createdAt`, newest first. Manual events use their sidecar
     /// create time; calendar events use `EKEvent.creationDate`.
@@ -34,7 +34,7 @@ public enum EventSortOrder: String, CaseIterable, Sendable {
         events.sorted { lhs, rhs in
             switch self {
             case .chronological:
-                break
+                if lhs.startDate != rhs.startDate { return lhs.startDate > rhs.startDate }
             case .recentlyAdded:
                 let l = lhs.createdAt ?? .distantPast
                 let r = rhs.createdAt ?? .distantPast

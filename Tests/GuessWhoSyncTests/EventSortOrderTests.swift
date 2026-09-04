@@ -26,14 +26,14 @@ struct EventSortOrderTests {
     }
 
     @Test
-    func chronologicalSortsByStartDateAscending() {
+    func chronologicalSortsByStartDateDescending() {
         let events = [
             event(id: idA, start: 300),
             event(id: idB, start: 100),
             event(id: idC, start: 200),
         ]
         let sorted = EventSortOrder.chronological.sorted(events)
-        #expect(sorted.map(\.id) == [idB, idC, idA])
+        #expect(sorted.map(\.id) == [idA, idC, idB])
     }
 
     @Test

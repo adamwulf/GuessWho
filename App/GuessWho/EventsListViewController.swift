@@ -27,9 +27,9 @@ final class EventsListViewController: UIViewController {
     /// sort while not searching — the same visibility rule as the link
     /// sheet's "Load older events" / "Show more" rows.
     private enum Section: Int {
-        case olderPager
-        case events
         case laterPager
+        case events
+        case olderPager
     }
 
     /// Sentinel item identifiers for the two paging rows. Fixed UUIDs so the
@@ -250,15 +250,16 @@ final class EventsListViewController: UIViewController {
     }
 
     /// Style a paging row like the link sheet's Label rows: tinted text +
-    /// chevron pointing the direction the window will grow, naming the month
-    /// the tap reveals.
+    /// chevron pointing toward where the revealed events will appear, naming
+    /// the month the tap reveals. Chronological events run newest-to-oldest,
+    /// so later events appear above the list and older events below it.
     private func configurePagerCell(_ cell: UITableViewCell, older: Bool) {
         var content = UIListContentConfiguration.cell()
         content.text = older
             ? "Load older events (\(pagerMonthTitle(older: true)))"
             : "Load later events (\(pagerMonthTitle(older: false)))"
         content.textProperties.color = .tintColor
-        content.image = UIImage(systemName: older ? "chevron.up" : "chevron.down")
+        content.image = UIImage(systemName: older ? "chevron.down" : "chevron.up")
         content.imageProperties.tintColor = .tintColor
         cell.contentConfiguration = content
     }
@@ -488,10 +489,10 @@ final class EventsListViewController: UIViewController {
 
         var snapshot = NSDiffableDataSourceSnapshot<Section, UUID>()
         if showsPagingRows {
-            snapshot.appendSections([.olderPager, .events, .laterPager])
-            snapshot.appendItems([Self.loadOlderItemID], toSection: .olderPager)
-            snapshot.appendItems(events.map { $0.id }, toSection: .events)
+            snapshot.appendSections([.laterPager, .events, .olderPager])
             snapshot.appendItems([Self.loadLaterItemID], toSection: .laterPager)
+            snapshot.appendItems(events.map { $0.id }, toSection: .events)
+            snapshot.appendItems([Self.loadOlderItemID], toSection: .olderPager)
             // The pager identifiers are stable but their month labels move
             // with the window — reconfigure the ones surviving from the
             // previous snapshot so a post-paging apply re-runs the provider.
