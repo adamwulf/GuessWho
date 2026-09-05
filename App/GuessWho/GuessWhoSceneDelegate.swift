@@ -2797,8 +2797,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 /// Deterministic navigation driver for detail-load profiling. Launch the app
 /// with the `--nav-benchmark` argument or `GUESSWHO_NAV_BENCHMARK=1`
-/// environment variable (xctrace's `--env` option supports bundle launches
-/// where LaunchServices drops argv). After the startup cache tasks finish it drives: contact A →
+/// environment variable. Prefer the argument when recording with xctrace;
+/// environment forwarding depends on the launcher. After startup it drives: contact A →
 /// contact B → organization → event → phantom organization, replacing the
 /// secondary column exactly as a list-row click does. A `nav_open` signpost
 /// marker precedes each navigation so a Time Profiler + os_signpost trace can
