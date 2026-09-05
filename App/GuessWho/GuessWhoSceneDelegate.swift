@@ -114,9 +114,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         #if DEBUG && targetEnvironment(macCatalyst)
-        // Profiling driver — inert without the `--nav-benchmark` launch
-        // argument, compiled out of Release. See the extension at the bottom
-        // of this file.
+        // Profiling driver — opt-in via argument or environment, compiled out
+        // of Release. See the extension at the bottom of this file.
         startNavBenchmarkIfRequested(appDelegate: appDelegate)
         #endif
     }
@@ -2797,18 +2796,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 // MARK: - Headless navigation benchmark (DEBUG only)
 
 /// Deterministic navigation driver for detail-load profiling. Launch the app
-/// with the `--nav-benchmark` argument (e.g. under `xctrace record --launch …
-/// -- --nav-benchmark`), and after the startup cache tasks finish it drives: contact A →
+/// with the `--nav-benchmark` argument or `GUESSWHO_NAV_BENCHMARK=1`
+/// environment variable (xctrace's `--env` option supports bundle launches
+/// where LaunchServices drops argv). After the startup cache tasks finish it drives: contact A →
 /// contact B → organization → event → phantom organization, replacing the
 /// secondary column exactly as a list-row click does. A `nav_open` signpost
 /// marker precedes each navigation so a Time Profiler + os_signpost trace can
 /// slice per-navigation windows without any UI scripting. Compiled out of
-/// Release builds entirely; without the launch argument it never runs.
+/// Release builds entirely; without either explicit trigger it never runs.
 extension GuessWhoSceneDelegate {
     private static let navBenchmarkLog = GuessWhoLog.logger("app.nav-benchmark")
 
     func startNavBenchmarkIfRequested(appDelegate: GuessWhoAppDelegate) {
-        guard ProcessInfo.processInfo.arguments.contains("--nav-benchmark") else { return }
+        let process = ProcessInfo.processInfo
+        let requested = process.arguments.contains("--nav-benchmark")
+            || process.environment["GUESSWHO_NAV_BENCHMARK"] == "1"
+        guard requested else { return }
         guard navBenchmarkTask == nil else { return }
         Self.navBenchmarkLog.notice("nav benchmark armed; waiting for startup caches")
         navBenchmarkTask = Task { @MainActor [weak self] in
