@@ -2825,6 +2825,8 @@ extension GuessWhoSceneDelegate {
     private func runNavBenchmark(appDelegate: GuessWhoAppDelegate) async throws {
         let repository = appDelegate.contactsRepository
         let clock = ContinuousClock()
+        // Overall budget includes the settling interval; a cache that becomes
+        // ready at the deadline is intentionally an incomplete measurement.
         let deadline = clock.now.advanced(by: .seconds(90))
         let waitID = DetailLoadSignpost.begin("nav_wait_for_startup")
         var waitEnded = false
@@ -2834,7 +2836,7 @@ extension GuessWhoSceneDelegate {
             }
         }
         // Wait for all three independent launch tasks, then require two seconds
-        // without a repository reload. This is a cache-readiness boundary, not
+        // of observed settled repositories. This is a cache-readiness boundary, not
         // a claim that every background subsystem in the process is idle.
         var readySince: ContinuousClock.Instant?
         while true {
@@ -2843,16 +2845,31 @@ extension GuessWhoSceneDelegate {
             let events = appDelegate.benchmarkEventsLoadStatus
             let attendees = appDelegate.benchmarkAttendeeLoadStatus
             if let contacts, let events, let attendees {
-                guard contacts == "ready", events == "ready", attendees == "ready" else {
-                    DetailLoadSignpost.end("nav_wait_for_startup", waitID, "unsuccessful-cache-load")
+                // Launch reads can legitimately be superseded by a watcher.
+                // Judge the winning repository publication, not the original
+                // caller's outcome. An empty successful cache is still ready.
+                let contactsSucceeded: Bool?
+                switch repository.lastReloadOutcome {
+                case .published: contactsSucceeded = true
+                case .failed: contactsSucceeded = false
+                case .superseded, nil: contactsSucceeded = nil
+                }
+                let eventsSucceeded = appDelegate.eventsRepository.benchmarkLoadSucceeded
+                let settled = !repository.isLoading && !appDelegate.eventsRepository.isLoading
+                let attendeeLoadFinished = attendees == "ready" || attendees == "skipped"
+                if !attendeeLoadFinished || (settled && (contactsSucceeded == false || eventsSucceeded == false)) {
+                    let reason = "contacts=\(String(describing: contactsSucceeded)) events=\(String(describing: eventsSucceeded)) attendees=\(attendees)"
+                    DetailLoadSignpost.end("nav_wait_for_startup", waitID, reason)
                     waitEnded = true
                     Self.navBenchmarkLog.error("nav benchmark aborted: startup cache unavailable", [
-                        "contacts": contacts, "events": events, "attendees": attendees
+                        "launchContacts": contacts, "launchEvents": events, "attendees": attendees,
+                        "winningContactsSucceeded": "\(String(describing: contactsSucceeded))",
+                        "winningEventsSucceeded": "\(String(describing: eventsSucceeded))"
                     ])
-                    DetailLoadSignpost.event("nav_benchmark_aborted", "unsuccessful-cache-load")
+                    DetailLoadSignpost.event("nav_benchmark_aborted", reason)
                     return
                 }
-                if !repository.isLoading && !appDelegate.eventsRepository.isLoading {
+                if settled && contactsSucceeded == true && eventsSucceeded == true {
                     if readySince == nil { readySince = clock.now }
                     if let readySince, readySince.duration(to: clock.now) >= .seconds(2) { break }
                 } else {
@@ -2868,11 +2885,15 @@ extension GuessWhoSceneDelegate {
             }
             try await Task.sleep(for: .milliseconds(250))
         }
-        DetailLoadSignpost.end("nav_wait_for_startup", waitID, "ready")
+        // A skipped attendee warm-up permits contact-only profiling, but must
+        // remain visible in the trace so it is not compared to a full-data run.
+        let readiness = "contacts=\(repository.contacts.count) events=\(appDelegate.eventsRepository.events.count) attendees=\(appDelegate.benchmarkAttendeeLoadStatus ?? "unknown")"
+        DetailLoadSignpost.end("nav_wait_for_startup", waitID, readiness)
         waitEnded = true
         Self.navBenchmarkLog.notice("nav benchmark: startup caches ready", [
             "contacts": "\(repository.contacts.count)",
-            "events": "\(appDelegate.eventsRepository.events.count)"
+            "events": "\(appDelegate.eventsRepository.events.count)",
+            "attendees": appDelegate.benchmarkAttendeeLoadStatus ?? "unknown"
         ])
         // Deterministic picks: alphabetical people WITH an email address, so
         // the recent-events attendee scan — the suspected hot path — actually
