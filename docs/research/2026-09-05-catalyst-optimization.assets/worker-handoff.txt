@@ -1,0 +1,85 @@
+Worker handoff provenance — 2026-09-05
+
+Source: messages from profiling worker agent-edc537f7 delivered to manager
+optimization in this session, plus its terminal transcript retrieved with
+ib look. The excerpts below are copied from those messages. They are analyst
+statements, NOT verbatim application log lines or independent raw trace data.
+Ellipses between excerpts mean omitted message text; no personal contact data
+is included. Later report corrections take precedence over the worker's
+interpretations (including CPU attribution and claims about first paint).
+
+1. Verified Debug startup (worker message, before completed navigation)
+
+"BONUS: debug-verify2.trace is a VALID MY-DEBUG STARTUP capture (UUID 86DE3F5E confirmed; no nav — it had state-restored detail). My app symbols resolve. Findings (Debug, 30s, coexistence):
+- Sampled CPU 10409ms/30s; main thread 2541ms (24%); TWO bg threads (3333+2593ms) dominate -> startup work is off-main.
+- App-attributed hotspots (stack presence, all threads, in GuessWhoSync) are the EventKit adapter on bg threads: fetchEventsDirectly 3553ms(34%), eventsWithAttendee 3099ms(30%), buildAttendeeIndex 3098ms(30%), toEvent [converting 15760 EK events] 2560ms(25%); plus CNContactStoreAdapter.runOnWorkQueue 2836ms(27%). App LEAF self-weight is tiny -> CPU is inside EventKit/Contacts framework calls the app makes.
+- Main-thread self CPU by binary: libobjc 17.2%, swiftCore 14%, CoreFoundation 11.6%, UIKit 10.8%; app's OWN main-thread code only ~3.7% (GuessWhoSync 75ms + GuessWho 18ms). Notable framework leaf on main: CUIStructuredThemeStore lookupAssetForKey: (asset/theme lookups).
+- 5s buckets: 5-10s peak 2534ms (Contacts fetch), second 20-30s peak ~2.5s/bucket (state-restored detail + EventKit toEvent). Log: full contact fetch 14834ms items=1685; attendee index events=15760.
+CAVEATS: state restoration reopened a contact detail during "startup"; Debug (unoptimized); installed app 84763 coexisting."
+
+2. Aborted navigation and the correct timestamp hour (worker message)
+
+"NAV RUN captured my build (UUID 2E41162C confirmed) but ABORTED at the readiness gate: "startup cache wait timed out" at 90s. NO per-navigation windows (aborted before any nav_open).
+
+EXACT CAUSE (log): contacts ready 19:49:54 (1685) and events ready 19:49:46 (1243) — both fine. The blocker is the ATTENDEE-INDEX warm-up: prepareRecentEventsIndex/buildAttendeeIndex over 15760 occurrences started 19:49:46 and finished 19:51:25 = ~99s, just 9s PAST the harness's hardcoded 90s deadline (abort 19:51:14). So benchmarkAttendeeLoadStatus never reached ready/skipped in time."
+
+Manager note: the 99 seconds is warm-up-start to warm-up-finish. The timeout
+is measured by the separate driver deadline; the quoted nine-second comparison
+is approximate and does not use an identical start point.
+
+3. Completed-run start (worker message)
+
+"240s nav capture running (ecdd424 build, UUID 85EADC20): armed 20:01:23 with the 180s readiness deadline. Should clear the ~99s attendee warm-up this time, then run the nav_open sequence. Restore of /Applications will follow (success or abort). Letting it record undisturbed (clean sample)."
+
+4. Completed-run outcome (worker terminal transcript, retrieved by ib look)
+
+"SUCCESS — the nav benchmark completed the full sequence: readiness ready at 20:02:12 (attendees=ready, contacts=1685, events=1242), then contact A → B → organization → event → phantom org → complete at 20:02:47. I now have per-navigation windows. First, the critical housekeeping — restore /Applications."
+
+5. Original report delivery (worker message at commit 477e887)
+
+"COMMITTED. Evidence report + sanitized bundle on agent/agent-edc537f7 @ 477e887."
+
+"MEASURED (verified capture):
+- Attendee-index warm-up (buildAttendeeIndex->toEvent over full 15760 corpus) = ~44-50% of sampled CPU, ~99s .background wall; aborted nav-1 at old 90s gate.
+- Contacts fetch ~11-15s (Debug,1685) gates cache publication; first frame = empty list.
+- Per-open wall (log-derived, Debug warm index): A 743ms, B 424ms, Org 1009ms (core-ready <40ms; distinct from full completion). Per-open CPU (clock-aligned +/-0.5s): Org heaviest (1717ms all/831 main), event 974/680, phantom control 373/261; readiness+attendee window 10924ms.
+- Per-open app hot paths: A/B/Org = CNContactStoreAdapter.fetchGroupMemberships; Org += sidecar reads; Event = GuideAddressMatcher (~260ms); phantom = one sidecar read.
+- Main-thread CPU ~framework/runtime; app main-thread code ~2-4%.
+- Release Catalyst compile SUCCEEDED -> DEBUG-Catalyst-only harness exclusion validated."
+
+"LIMITATIONS: custom app signposts missing from final trace (per-nav wall log-derived, per-nav CPU clock-aligned, NOT signpost-derived); Debug+coverage inflation (verified -profile-generate x69); coexistence with installed app (confound, not measured); App Launch template blew to 7.5GB (used Time Profiler).
+
+IDENTITY: nav-2 UUID 85EADC20 + toc path=.../Debug-maccatalyst/GuessWho.app + arguments=--nav-benchmark + exit(0). Prior "my build" claims before /Applications unregister RETRACTED (were installed C7B114CE).
+
+REGISTRATION: /Applications RESTORED + verified (lsregister -dump present, front-ranked); installed pid 84763 never killed."
+
+Manager corrections to excerpt 5: 44.1% preparation and 49.6% broader fetch
+are overlapping frames, not a range of independent preparation estimates;
+first-frame contents were not established; +/-0.5s was not calibrated;
+leaf weight is not total app-caused framework cost; registration presence
+does not prove future launch precedence. These corrections are reflected in
+the final research report, while the original statement remains here for
+provenance.
+
+6. Launch argument correction (worker message)
+
+"CORRECTION to my earlier claim: the --nav-benchmark ARGV was NOT dropped. verify2 actually armed via argv at 19:36:56 — I misread a truncated `tail` earlier and wrongly concluded arg-drop. The real blocker throughout was LaunchServices SUBSTITUTION (installed app launching); once /Applications is unregistered, argv forwards fine."
+
+7. Final manager verification scope
+
+After merging 477e887, the manager checked the numerical CPU statements against
+the committed aggregation outputs and corrected report/README/slicer labels.
+Original XML, application logs and trace bundles were not transferred into the
+manager worktree; their availability after worker closure was not verified.
+Do not interpret these excerpts as reconstruction of a process-tagged raw log.
+
+8. Installed-Release timing observations (original worker messages)
+
+"INSTALLED-RELEASE v169 phase reference (from the substituted trace, Time Profiler template incl. life-cycle): Process start->Foreground 7.14s; Initial Frame->Foreground 326ms. IMPORTANT: that 7.14s first frame is the EMPTY list; populated-list (cache publication) is ~16.8s (contacts) — first painted frame != populated list, exactly your distinction."
+
+"INSTALLED v169 evidence so far (labeled separate from our build; also carries state-restoration detail-load): Contacts fetch ~14.3s (Fetching Contacts) / startup_contacts_cache ~14.4s; EKPredicateSearch attendee index up to 14.4s; startup_events_cache ~2.6s. All-thread: 2 bg GuessWho threads (2702+1957 samples) > main (2128) of 8036 total."
+
+Manager note: first-frame content was not established and is not claimed by
+the corrected report. The later committed time-profile aggregation gives
+8024 ms total / 2121 ms main; it is used instead of these preliminary sample
+counts. Phase/signpost durations remain worker-reported, not re-extracted.

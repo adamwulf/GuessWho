@@ -72,6 +72,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// the raw store fetch.
     private static let startupLoadLog = GuessWhoLog.logger("app.startup-load")
 
+    #if DEBUG && targetEnvironment(macCatalyst)
+    /// Profiling-only completion state. A nonempty contacts array does not
+    /// imply that the independent calendar warm-up has finished.
+    private(set) var benchmarkContactsLoadStatus: String?
+    private(set) var benchmarkEventsLoadStatus: String?
+    private(set) var benchmarkAttendeeLoadStatus: String?
+    #endif
+
     override init() {
         // Bootstrap file logging FIRST — before UserDefaults.register and before
         // SyncService() — so the logging backend is live before any logger in the
@@ -166,6 +174,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
                 itemCount = contactsRepository.contacts.count
             }
             StartupLoadSignpost.end("startup_contacts_cache", signpostID, status)
+            #if DEBUG && targetEnvironment(macCatalyst)
+            benchmarkContactsLoadStatus = status
+            #endif
             Self.startupLoadLog.info("startup cache load finished", [
                 "cache": "contacts",
                 "status": status,
@@ -201,6 +212,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
                 itemCount = eventsRepository.events.count
             }
             StartupLoadSignpost.end("startup_events_cache", signpostID, status)
+            #if DEBUG && targetEnvironment(macCatalyst)
+            benchmarkEventsLoadStatus = status
+            #endif
             Self.startupLoadLog.info("startup cache load finished", [
                 "cache": "events",
                 "status": status,
@@ -222,6 +236,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
                 let result = await service.prepareRecentEventsIndex()
                 let status = result.rawValue
                 StartupLoadSignpost.end("startup_event_attendee_cache", signpostID, status)
+                #if DEBUG && targetEnvironment(macCatalyst)
+                self.benchmarkAttendeeLoadStatus = status
+                #endif
                 Self.startupLoadLog.info("startup cache load finished", [
                     "cache": "event-attendee-index",
                     "status": status,

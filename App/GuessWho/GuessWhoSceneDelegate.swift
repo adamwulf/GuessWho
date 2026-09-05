@@ -42,6 +42,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// stored `NSObjectProtocol` token never crosses an actor boundary.
     private var restorationReloadObserver: NSObjectProtocol?
 
+    #if DEBUG && targetEnvironment(macCatalyst)
+    private var navBenchmarkTask: Task<Void, Never>?
+    #endif
+
     #if targetEnvironment(macCatalyst)
     /// Strong references to the Catalyst columns so the sidebar callback can
     /// swap supplementary/secondary view controllers on each tab switch without
@@ -110,9 +114,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         #if DEBUG && targetEnvironment(macCatalyst)
-        // Profiling driver — inert without the `--nav-benchmark` launch
-        // argument, compiled out of Release. See the extension at the bottom
-        // of this file.
+        // Profiling driver — opt-in via argument or environment, compiled out
+        // of Release. See the extension at the bottom of this file.
         startNavBenchmarkIfRequested(appDelegate: appDelegate)
         #endif
     }
@@ -171,6 +174,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidDisconnect(_ scene: UIScene) {
         Self.lifecycleLog.notice("scene didDisconnect", ["scene": Self.sceneTag(scene)])
+        #if DEBUG && targetEnvironment(macCatalyst)
+        navBenchmarkTask?.cancel()
+        navBenchmarkTask = nil
+        #endif
         // Tear down the one-shot restoration reload observer if it never fired
         // (scene discarded before the first contacts reload) so it can't leak per
         // discarded scene in a multi-window session. UIKit guarantees
@@ -2789,39 +2796,111 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 // MARK: - Headless navigation benchmark (DEBUG only)
 
 /// Deterministic navigation driver for detail-load profiling. Launch the app
-/// with the `--nav-benchmark` argument (e.g. under `xctrace record --launch …
-/// -- --nav-benchmark`), and after startup idles it drives: contact A →
+/// with the `--nav-benchmark` argument or `GUESSWHO_NAV_BENCHMARK=1`
+/// environment variable. Prefer the argument when recording with xctrace;
+/// environment forwarding depends on the launcher. After startup it drives: contact A →
 /// contact B → organization → event → phantom organization, replacing the
 /// secondary column exactly as a list-row click does. A `nav_open` signpost
 /// marker precedes each navigation so a Time Profiler + os_signpost trace can
 /// slice per-navigation windows without any UI scripting. Compiled out of
-/// Release builds entirely; without the launch argument it never runs.
+/// Release builds entirely; without either explicit trigger it never runs.
 extension GuessWhoSceneDelegate {
     private static let navBenchmarkLog = GuessWhoLog.logger("app.nav-benchmark")
 
-    /// Idle wait before the first navigation. Startup goes idle at ~8 s after
-    /// batch 2; 15 s leaves margin for the slower DEBUG build.
-    private static let navBenchmarkStartupDelay: Duration = .seconds(15)
-
     func startNavBenchmarkIfRequested(appDelegate: GuessWhoAppDelegate) {
-        guard ProcessInfo.processInfo.arguments.contains("--nav-benchmark") else { return }
-        Self.navBenchmarkLog.notice("nav benchmark armed; waiting for startup idle")
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.navBenchmarkStartupDelay)
-            await self?.runNavBenchmark(appDelegate: appDelegate)
+        let process = ProcessInfo.processInfo
+        let requested = process.arguments.contains("--nav-benchmark")
+            || process.environment["GUESSWHO_NAV_BENCHMARK"] == "1"
+        guard requested else { return }
+        guard navBenchmarkTask == nil else { return }
+        Self.navBenchmarkLog.notice("nav benchmark armed; waiting for startup caches")
+        navBenchmarkTask = Task { @MainActor [weak self] in
+            do {
+                try await self?.runNavBenchmark(appDelegate: appDelegate)
+            } catch {
+                Self.navBenchmarkLog.notice("nav benchmark cancelled")
+                DetailLoadSignpost.event("nav_benchmark_aborted", "cancelled")
+            }
         }
     }
 
     @MainActor
-    private func runNavBenchmark(appDelegate: GuessWhoAppDelegate) async {
+    private func runNavBenchmark(appDelegate: GuessWhoAppDelegate) async throws {
         let repository = appDelegate.contactsRepository
-        // The picks below need the contacts cache; wait (bounded) for the
-        // launch load in case the idle delay wasn't enough.
-        var waitedSeconds = 0.0
-        while repository.contacts.isEmpty && waitedSeconds < 30 {
-            try? await Task.sleep(for: .milliseconds(500))
-            waitedSeconds += 0.5
+        let clock = ContinuousClock()
+        // Overall budget includes the settling interval; a cache that becomes
+        // ready at the deadline is intentionally an incomplete measurement.
+        // The background attendee-index warm-up has exceeded 90 seconds in
+        // measured Debug runs with a large calendar. Allow that work to finish
+        // before measuring navigation while retaining a finite overall bound.
+        let deadline = clock.now.advanced(by: .seconds(180))
+        let waitID = DetailLoadSignpost.begin("nav_wait_for_startup")
+        var waitEnded = false
+        defer {
+            if !waitEnded {
+                DetailLoadSignpost.end("nav_wait_for_startup", waitID, "cancelled")
+            }
         }
+        // Wait for all three independent launch tasks, then require two seconds
+        // of observed settled repositories. This is a cache-readiness boundary, not
+        // a claim that every background subsystem in the process is idle.
+        var readySince: ContinuousClock.Instant?
+        while true {
+            try Task.checkCancellation()
+            let contacts = appDelegate.benchmarkContactsLoadStatus
+            let events = appDelegate.benchmarkEventsLoadStatus
+            let attendees = appDelegate.benchmarkAttendeeLoadStatus
+            if let contacts, let events, let attendees {
+                // Launch reads can legitimately be superseded by a watcher.
+                // Judge the winning repository publication, not the original
+                // caller's outcome. An empty successful cache is still ready.
+                let contactsSucceeded: Bool?
+                switch repository.lastReloadOutcome {
+                case .published: contactsSucceeded = true
+                case .failed: contactsSucceeded = false
+                case .superseded, nil: contactsSucceeded = nil
+                }
+                let eventsSucceeded = appDelegate.eventsRepository.benchmarkLoadSucceeded
+                let settled = !repository.isLoading && !appDelegate.eventsRepository.isLoading
+                let attendeeLoadFinished = attendees == "ready" || attendees == "skipped"
+                if !attendeeLoadFinished || (settled && (contactsSucceeded == false || eventsSucceeded == false)) {
+                    let reason = "contacts=\(String(describing: contactsSucceeded)) events=\(String(describing: eventsSucceeded)) attendees=\(attendees)"
+                    DetailLoadSignpost.end("nav_wait_for_startup", waitID, reason)
+                    waitEnded = true
+                    Self.navBenchmarkLog.error("nav benchmark aborted: startup cache unavailable", [
+                        "launchContacts": contacts, "launchEvents": events, "attendees": attendees,
+                        "winningContactsSucceeded": "\(String(describing: contactsSucceeded))",
+                        "winningEventsSucceeded": "\(String(describing: eventsSucceeded))"
+                    ])
+                    DetailLoadSignpost.event("nav_benchmark_aborted", reason)
+                    return
+                }
+                if settled && contactsSucceeded == true && eventsSucceeded == true {
+                    if readySince == nil { readySince = clock.now }
+                    if let readySince, readySince.duration(to: clock.now) >= .seconds(2) { break }
+                } else {
+                    readySince = nil
+                }
+            }
+            guard clock.now < deadline else {
+                DetailLoadSignpost.end("nav_wait_for_startup", waitID, "timeout")
+                waitEnded = true
+                Self.navBenchmarkLog.error("nav benchmark aborted: startup cache wait timed out")
+                DetailLoadSignpost.event("nav_benchmark_aborted", "startup-timeout")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        // A skipped attendee warm-up permits contact-only profiling, but must
+        // remain visible in the trace so it is not compared to a full-data run.
+        let readiness = "contacts=\(repository.contacts.count) events=\(appDelegate.eventsRepository.events.count) attendees=\(appDelegate.benchmarkAttendeeLoadStatus ?? "unknown")"
+        DetailLoadSignpost.end("nav_wait_for_startup", waitID, readiness)
+        waitEnded = true
+        Self.navBenchmarkLog.notice("nav benchmark: startup caches ready", [
+            "contacts": "\(repository.contacts.count)",
+            "events": "\(appDelegate.eventsRepository.events.count)",
+            "attendees": appDelegate.benchmarkAttendeeLoadStatus ?? "unknown"
+        ])
         // Deterministic picks: alphabetical people WITH an email address, so
         // the recent-events attendee scan — the suspected hot path — actually
         // runs (it early-returns for a contact with no email and no street).
@@ -2832,18 +2911,19 @@ extension GuessWhoSceneDelegate {
             }
         guard people.count >= 2 else {
             Self.navBenchmarkLog.error("nav benchmark: need ≥2 people with emails; aborting")
+            DetailLoadSignpost.event("nav_benchmark_aborted", "insufficient-contacts")
             return
         }
 
         Self.navBenchmarkLog.notice("nav benchmark: opening contact A")
         DetailLoadSignpost.event("nav_open", "contact-A")
         showContactDetail(contact: people[0], appDelegate: appDelegate)
-        try? await Task.sleep(for: .seconds(8))
+        try await Task.sleep(for: .seconds(8))
 
         Self.navBenchmarkLog.notice("nav benchmark: opening contact B")
         DetailLoadSignpost.event("nav_open", "contact-B")
         showContactDetail(contact: people[1], appDelegate: appDelegate)
-        try? await Task.sleep(for: .seconds(8))
+        try await Task.sleep(for: .seconds(8))
 
         // Organization card — same ContactDetailView, org-specific sections
         // (associated contacts + departments scans).
@@ -2856,16 +2936,13 @@ extension GuessWhoSceneDelegate {
             Self.navBenchmarkLog.notice("nav benchmark: opening organization")
             DetailLoadSignpost.event("nav_open", "organization")
             showContactDetail(contact: organization, appDelegate: appDelegate)
-            try? await Task.sleep(for: .seconds(6))
+            try await Task.sleep(for: .seconds(6))
         }
 
         // Event detail — prefer an event with attendees so invitee matching
         // renders. (Opening an EventKit-only row adopts a sidecar, exactly as
         // a user open does.)
         let eventsRepository = appDelegate.eventsRepository
-        if eventsRepository.events.isEmpty {
-            await eventsRepository.reload()
-        }
         let events = eventsRepository.events
         if let event = events.last(where: { !$0.attendees.isEmpty }) ?? events.last {
             Self.navBenchmarkLog.notice("nav benchmark: opening event")
@@ -2875,7 +2952,7 @@ extension GuessWhoSceneDelegate {
                 eventKitID: event.eventKitID,
                 appDelegate: appDelegate
             )
-            try? await Task.sleep(for: .seconds(6))
+            try await Task.sleep(for: .seconds(6))
         }
 
         // Phantom organization — no async loads of its own; the control case.
@@ -2883,7 +2960,7 @@ extension GuessWhoSceneDelegate {
             Self.navBenchmarkLog.notice("nav benchmark: opening phantom organization")
             DetailLoadSignpost.event("nav_open", "phantom-org")
             showPhantomOrganizationDetail(phantom: phantom, appDelegate: appDelegate)
-            try? await Task.sleep(for: .seconds(5))
+            try await Task.sleep(for: .seconds(5))
         }
 
         Self.navBenchmarkLog.notice("nav benchmark: complete")

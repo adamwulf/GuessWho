@@ -50,6 +50,17 @@ final class EventsRepository: NSObject {
     private(set) var events: [Event] = []
     private(set) var isLoading: Bool = false
 
+    #if DEBUG && targetEnvironment(macCatalyst)
+    private var benchmarkLastReloadSucceeded: Bool?
+
+    /// Outcome of the winning window read, including one that superseded the
+    /// app-launch caller. A cleared or still-loading projection is not ready.
+    var benchmarkLoadSucceeded: Bool? {
+        guard hasLoadedOnce, !isLoading else { return nil }
+        return benchmarkLastReloadSucceeded
+    }
+    #endif
+
     /// Per-event link COUNT keyed by lowercased event UUID string. Powers the
     /// "N links" list badge; refreshed in `reload()` (the single funnel for
     /// every reload path). An event with no entry has zero links and shows no
@@ -499,6 +510,9 @@ final class EventsRepository: NSObject {
         case .success: status = "published"
         case .failure: status = "failed"
         }
+        #if DEBUG && targetEnvironment(macCatalyst)
+        benchmarkLastReloadSucceeded = status == "published"
+        #endif
         Self.reloadLog.info(
             "events window reload finished",
             metadata: [
