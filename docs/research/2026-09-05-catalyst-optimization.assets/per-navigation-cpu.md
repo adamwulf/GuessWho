@@ -1,6 +1,13 @@
+Manager interpretation note: these are the worker's original sampled totals
+for debug-nav-2. The first window starts at trace time zero, not benchmark arm.
+Full windows include settling and unrelated background work. Load windows start
+at the opening breadcrumb, not core-ready. Clock alignment has no calibrated
+error bound; especially the subsecond rows are exploratory, not precise
+per-loader CPU measurements. Only labels were corrected after merge.
+
 | Window | wall s | all-thread CPU ms | main-thread CPU ms |
 |---|---|---|---|
-| readiness+attendee (arm->A) | 53.90 | 10924 | 1885 |
+| trace start->A (launch+warm-up) | 53.90 | 10924 | 1885 |
 | A full | 8.55 | 691 | 451 |
 | B full | 8.56 | 489 | 337 |
 | org full | 6.42 | 1717 | 831 |
@@ -10,7 +17,7 @@
 | B load | 0.51 | 403 | 271 |
 | org load | 1.14 | 907 | 490 |
 
-### readiness+attendee (arm->A) — top app-binary stack presence
+### trace start->A (launch+warm-up) — top app-binary stack presence
 - 8329 ms  `thunk for @escaping @callee_guaranteed @Sendable () -> ()`  (GuessWhoSync)
 - 4759 ms  `Result<>.init(catching:)`  (GuessWhoSync)
 - 4415 ms  `static EKEventStoreAdapter.fetchEventsDirectly(store:interval:)`  (GuessWhoSync)

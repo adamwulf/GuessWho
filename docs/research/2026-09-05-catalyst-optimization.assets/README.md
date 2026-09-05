@@ -9,13 +9,15 @@ All aggregate/sanitized (no contact/event names, emails, or record ids).
 |---|---|
 | `nav_slice.py` | Slices a `time-profile` XML into per-navigation CPU windows by log→trace clock alignment (window offsets are inline; edit if re-aligning). |
 | `machouuid.py` | Mach-O `LC_UUID` extractor (used for build-vs-trace identity checks; `dwarfdump`/`otool`/`lipo` were not allow-listed). |
+| `worker-handoff.txt` | Original worker message excerpts; analyst observations rather than raw application logs. |
 | `per-navigation-cpu.md` | Output of `nav_slice.py` on the completed nav trace: per-window all/main CPU + per-open app hot paths. |
 | `timeprofile-nav-completed.md` | Aggregated `time-profile` of `debug-nav-2` (completed nav, `85EADC20`). |
 | `timeprofile-nav-aborted.md` | Aggregated `time-profile` of `debug-nav-1` (aborted nav, `2E41162C`) — isolates the attendee warm-up. |
 | `timeprofile-debug-startup.md` | Aggregated `time-profile` of `debug-verify2` (this-tree startup, `86DE3F5E`). |
 | `timeprofile-installed-v169.md` | Aggregated `time-profile` of `debug-launch-tp-1` (installed Release v169, `C7B114CE`). |
 
-Bulky `.trace` bundles live in `.build/profiling/` (worktree-local, not committed).
+Bulky `.trace` bundles were last reported in the worker's `.build/profiling/`.
+They are not part of this merged bundle; post-closure availability is unverified.
 
 ## Environment
 
@@ -34,10 +36,14 @@ xcodebuild -project App/GuessWho.xcodeproj -scheme GuessWho \
   -derivedDataPath .build/DerivedData -configuration Release build   # exclusion validation
 ```
 
-Debug scheme compiles with coverage instrumentation (`-profile-generate` /
-`-profile-coverage-mapping`, 69 invocations) — inflates absolute CPU.
+The worker reported coverage instrumentation (`-profile-generate` /
+`-profile-coverage-mapping`, 69 invocations). Its overhead was not quantified.
+Release was compiled at `a420e04`; no later Release rebuild is claimed.
 
-## Capture commands (representative)
+## Capture commands (representative, from the repository root)
+
+These reproduce the procedure, not an exact transcript of every attempt.
+Confirm recovery of raw artifacts before attempting the analysis commands.
 
 ```sh
 # per capture: prune stale DerivedData registrations, unregister installed, prefer this build
@@ -59,8 +65,8 @@ lsregister -f /Applications/GuessWho.app
 # analysis
 xcrun xctrace export --input <trace> \
   --xpath '/trace-toc/run/data/table[@schema="time-profile"]' --output tp.xml
-python3 ../catalyst-startup-cpu-baseline.assets/time_profile_report.py tp.xml
-python3 nav_slice.py tp.xml
+python3 docs/research/catalyst-startup-cpu-baseline.assets/time_profile_report.py tp.xml
+python3 docs/research/2026-09-05-catalyst-optimization.assets/nav_slice.py tp.xml
 ```
 
 Note: `xctrace --launch` routes through LaunchServices (even the inner exec
@@ -80,34 +86,62 @@ unregistered. `xctrace --env GUESSWHO_NAV_BENCHMARK=1` stalled the launch twice
 Debug stub `GuessWho` UUID `38A28841-9F6C-31FA-BC06-C950C9DCBAB3` (stable).
 Installed universal binary also has x86_64 UUID `19E3B61C-5DF6-31A6-9CDC-F716DEC336CC`.
 
-## Registration restoration — VERIFIED
+## Registration restoration — worker-verified
 
 After the captures: `lsregister -f /Applications/GuessWho.app` was run;
-`lsregister -dump` shows `/Applications/GuessWho.app` registered (front-ranked,
-last `-f`). Installed process pid 84763 never killed. 25 stale sibling-worktree
-DerivedData registrations were pruned (they re-register on next build).
+the worker reported `lsregister -dump` showed `/Applications/GuessWho.app`
+registered. Presence does not prove launch precedence for future requests.
+Installed process pid 84763 was not killed by the worker. 25 stale
+sibling-worktree DerivedData registrations were pruned; future launches/builds
+may register those apps again.
 
-## Key log excerpts (sanitized; counts/durations only)
+## Reported log observations — reconstructed, not verbatim
 
-App log: `~/Library/Group Containers/T68Z94627S.com.milestonemade.guesswho/Logs/app-2026-09-05.log`.
+The worker read the shared app log at
+`~/Library/Group Containers/T68Z94627S.com.milestonemade.guesswho/Logs/app-2026-09-05.log`.
+The full log and process-tagged excerpts were not committed. These are
+reconstructed observations from the [original worker handoff](worker-handoff.txt),
+not a raw log export.
 
-```
-# permissions/data
-startup cache load finished cache=contacts durationMs=11117 items=1685 status=ready
-EventKit window fetch finished durationMs=... events=1517
-EventKit attendee index built events=15760
+| Run | UTC time reported | Observation |
+| --- | ----------------- | ----------- |
+| Aborted nav | 19:49:46 | Attendee warm-up started; visible events count 1243. |
+| Aborted nav | 19:49:54 | Contacts ready, 1685 records. |
+| Aborted nav | 19:51:14 | Driver timed out at its 90-second readiness limit. |
+| Aborted nav | 19:51:25 | Index built, 15760 occurrences; about 99 seconds since warm-up start. |
+| Completed nav | 20:01:23 | Driver armed. |
+| Completed nav | 20:02:12 | Readiness: attendees ready, contacts 1685, events 1242; contact A opened. |
+| Completed nav | 20:02:20 | Contact B opened. |
+| Completed nav | 20:02:29 | Organization opened. |
+| Completed nav | 20:02:35 | Event opened. |
+| Completed nav | 20:02:42 | Phantom organization opened. |
+| Completed nav | 20:02:47 | Driver completed. |
 
-# aborted nav (debug-nav-1): attendee warm-up finished ~99 s, 9 s past the 90 s gate
-20:49:43 nav benchmark armed; waiting for startup caches
-20:51:14 nav benchmark aborted: startup cache wait timed out
-20:51:25 EventKit attendee index built events=15760
+Times above are rounded to seconds. The slicer used finer offsets recorded by
+the worker, but the exact source log lines and synchronization evidence are
+not retained. Its window boundaries therefore remain approximate.
 
-# completed nav (debug-nav-2): readiness then full sequence
-20:02:12 nav benchmark: startup caches ready attendees=ready contacts=1685 events=1242
-20:02:12 opening contact A   -> contact load finished durationMs=743 (core ready 37 ms)
-20:02:20 opening contact B   -> contact load finished durationMs=424 (core ready 28 ms)
-20:02:29 opening organization-> contact load finished durationMs=1009 (core ready 27 ms)
-20:02:35 opening event       -> (no trustworthy load-finished breadcrumb)
-20:02:42 opening phantom organization
-20:02:47 nav benchmark: complete
-```
+Worker-reported loader durations: A 743 ms (core-ready 37 ms), B 424 ms
+(core-ready 28 ms), organization 1009 ms (core-ready 27 ms). These are logical
+loader milestones, not screen-paint timings. No reliable event/phantom
+load-completion duration was retained.
+
+**Timestamp correction:** the original README mistakenly used 20:49/20:51 for
+the aborted run. The worker's original message records 19:49/19:51, used above.
+The timeout and attendee warm-up use different start points; do not equate their
+durations.
+
+### Verification and retention limits
+
+Committed: computation outputs, scripts, reconstructed metadata, and original
+worker handoff excerpts. Not committed/copied into the manager worktree:
+`.trace` bundles, source XML, build logs, raw app logs, or matching binaries/dSYMs.
+Their last reported location was the worker's
+`/Users/adamwulf/Developer/swift/GuessWho/.ittybitty/agents/agent-edc537f7/repo/.build/`.
+After worker closure, path isolation prevented checking retention. Raw-artifact
+availability is **unverified**; the commands above require recovering those
+artifacts or making a new capture.
+
+Manager corrections changed interpretation/labels, not sampled totals. No new
+runtime measurement was made. The report distinguishes computation-backed
+figures from worker-reported observations and proposed experiments.

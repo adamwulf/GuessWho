@@ -4,6 +4,13 @@ Windows are given in seconds relative to the trace recording start-date
 (log wall-clock minus start-date). Sample-time in the export is nanoseconds
 from recording start. We sum sampled weight (ms) per window, split all-thread
 vs main-thread, and collect top app-binary (GuessWho*) stack-presence frames.
+
+These offsets apply ONLY to debug-nav-2 (UUID 85EADC20) and its exported XML.
+The log-to-trace alignment has no calibrated error bound. The subsecond load
+windows are exploratory and must not be treated as precise per-loader CPU.
+The first window starts at trace time zero, before the driver armed. Full
+windows include unrelated/background work. No measured weights were changed
+by the manager's label corrections.
 """
 import sys
 import xml.etree.ElementTree as ET
@@ -13,7 +20,7 @@ XML = sys.argv[1]
 
 # (label, start_s, end_s, kind) kind: "full" or "load" (load = nav_open->load-finished)
 WINDOWS = [
-    ("readiness+attendee (arm->A)", 0.0, 53.895, "full"),
+    ("trace start->A (launch+warm-up)", 0.0, 53.895, "full"),
     ("A full",   53.895, 62.443, "full"),
     ("B full",   62.443, 71.004, "full"),
     ("org full", 71.004, 77.429, "full"),
