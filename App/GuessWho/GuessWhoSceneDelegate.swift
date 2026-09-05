@@ -2830,7 +2830,10 @@ extension GuessWhoSceneDelegate {
         let clock = ContinuousClock()
         // Overall budget includes the settling interval; a cache that becomes
         // ready at the deadline is intentionally an incomplete measurement.
-        let deadline = clock.now.advanced(by: .seconds(90))
+        // The background attendee-index warm-up has exceeded 90 seconds in
+        // measured Debug runs with a large calendar. Allow that work to finish
+        // before measuring navigation while retaining a finite overall bound.
+        let deadline = clock.now.advanced(by: .seconds(180))
         let waitID = DetailLoadSignpost.begin("nav_wait_for_startup")
         var waitEnded = false
         defer {
