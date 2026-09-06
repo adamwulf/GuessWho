@@ -128,8 +128,9 @@ final class EventsRepository: NSObject {
         // events load by default. With the newest-first list, that puts today's
         // events at the very top, which is the first thing the user sees; the
         // rest of the window trails off into the recent past below. Paging
-        // (`loadLaterMonth`) reveals the future on demand. Both bounds anchor to
-        // start-of-day so the window is a whole number of calendar days.
+        // (`loadLaterMonth`) reveals the future on demand. The bounds cover
+        // whole calendar days: the start is midnight 30 days back, the end is
+        // the last instant of today (defined just below).
         let today = Calendar.current.startOfDay(for: now)
         let startOfTomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today) ?? now
         self.windowStart = Calendar.current.date(byAdding: .day, value: -30, to: today) ?? today
