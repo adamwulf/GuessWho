@@ -105,8 +105,8 @@ final class EventsRepository: NSObject {
     /// Absolute bounds of the loaded window. `reload()` always fetches
     /// exactly this range, so the debounced external-change reloads keep a
     /// user-extended window instead of snapping back to the default. Seeded
-    /// at launch with the list's original −30d/+90d window; the paging
-    /// methods below are the only writers.
+    /// at launch with the list's default window — the past 30 days through the
+    /// end of today; the paging methods below are the only writers.
     private(set) var windowStart: Date
     private(set) var windowEnd: Date
 
@@ -124,8 +124,19 @@ final class EventsRepository: NSObject {
         self.service = service
         self.notificationCenter = notificationCenter
         let now = Date()
-        self.windowStart = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
-        self.windowEnd = Calendar.current.date(byAdding: .day, value: 90, to: now) ?? now
+        // Default window: the past 30 days through the end of today — no future
+        // events load by default. With the newest-first list, that puts today's
+        // events at the very top, which is the first thing the user sees; the
+        // rest of the window trails off into the recent past below. Paging
+        // (`loadLaterMonth`) reveals the future on demand. Both bounds anchor to
+        // start-of-day so the window is a whole number of calendar days.
+        let today = Calendar.current.startOfDay(for: now)
+        let startOfTomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today) ?? now
+        self.windowStart = Calendar.current.date(byAdding: .day, value: -30, to: today) ?? today
+        // End of today: the last instant before tomorrow begins, so every event
+        // that starts today falls inside the inclusive `from ... to` membership
+        // rule while tomorrow's midnight events stay out.
+        self.windowEnd = startOfTomorrow.addingTimeInterval(-1)
         super.init()
         // Refresh on any external store change that can affect the events list:
         // a Calendar.app edit (`.EKEventStoreChanged`), a contact edit that can
