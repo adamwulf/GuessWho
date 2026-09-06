@@ -77,6 +77,20 @@ struct RepositoryRefreshGenerationTests {
         )
     }
 
+    /// Time base for the event fixtures below, which seed a short cluster at
+    /// `base + 0…240s`. It must stay inside `EventsRepository`'s default window
+    /// — the past 30 days through the END OF TODAY — at every wall-clock time of
+    /// day. Seeding at `Date()` directly would push the `+120s`/`+240s` rows
+    /// past today's end bound whenever a run lands in the last few minutes
+    /// before local midnight, silently dropping them from the sidecar-only
+    /// window read and failing the membership assertions. Anchoring an hour into
+    /// the recent past keeps the whole cluster well inside `[windowStart,
+    /// windowEnd]` regardless of the hour, with no effect on the reentrancy
+    /// behavior under test (nothing here compares against wall-clock time).
+    private func eventFixtureBase() -> Date {
+        Date().addingTimeInterval(-3600)
+    }
+
     // MARK: - EventsRepository
 
     /// Contact-store changes must continue to refresh event rows because
@@ -142,7 +156,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         let a = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -173,7 +187,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         _ = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -270,7 +284,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         _ = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -346,7 +360,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         _ = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -433,7 +447,7 @@ struct RepositoryRefreshGenerationTests {
         let repository = EventsRepository(service: service, notificationCenter: center)
         await repository.reload() // establish a complete, empty base
 
-        let now = Date()
+        let now = eventFixtureBase()
         let a = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -506,7 +520,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         _ = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -603,7 +617,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         _ = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
@@ -691,7 +705,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         // A is present when the base is first established.
         _ = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
@@ -795,7 +809,7 @@ struct RepositoryRefreshGenerationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root)
 
-        let now = Date()
+        let now = eventFixtureBase()
         let a = try service.createManualEvent(
             title: "A", startDate: now, endDate: now.addingTimeInterval(60), isAllDay: false, location: nil
         )
