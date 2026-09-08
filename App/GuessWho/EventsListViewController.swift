@@ -503,10 +503,9 @@ final class EventsListViewController: UIViewController {
             snapshot.appendSections([.events])
             snapshot.appendItems(events.map { $0.id }, toSection: .events)
         }
-        dataSource.apply(snapshot, animatingDifferences: animated)
-
-        // A pending sidebar selection waits here for its row to exist.
-        applyPendingSelection()
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.applyPendingSelection()
+        }
 
         updateEmptyState()
     }
@@ -548,6 +547,7 @@ final class EventsListViewController: UIViewController {
         // itself is what nudges UITableView to relayout — just setting
         // the frame is not enough).
         sizeHeaderBannerIfNeeded()
+        applyPendingSelection()
     }
 
     private func sizeHeaderBannerIfNeeded() {

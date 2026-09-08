@@ -5,7 +5,7 @@ import UIKit
 /// The Catalyst sidebar's favorite children ask a section list to select a row
 /// in the same turn they build it — long before the list's first reload lands,
 /// so the row usually doesn't exist yet. The request is held here and retried
-/// after every snapshot apply, so the row is selected when its data arrives
+/// after snapshot completion and layout, so the row is selected when its data arrives
 /// rather than dropped. It is retired the moment the user takes over.
 ///
 /// Selecting programmatically sends no delegate callback, so the caller stays
@@ -35,7 +35,7 @@ final class PendingRowSelection<ID: Hashable> {
     }
 
     /// Select the requested row if it exists in `tableView` now, scrolling it
-    /// into view, and return the id that was consumed.
+    /// to the middle of the laid-out viewport, and return the id that was consumed.
     ///
     /// Returns nil when there is no request, or when its row hasn't arrived yet
     /// — in which case the request stays pending for the next apply. The table's
@@ -47,12 +47,19 @@ final class PendingRowSelection<ID: Hashable> {
         in tableView: UITableView,
         indexPath: (ID) -> IndexPath?
     ) -> ID? {
-        guard let id = pending,
+        // Newly installed lists can already have rows while their table still
+        // has a zero-sized viewport. Consuming the request then makes `.middle`
+        // land at the top once the split column lays out, under its header.
+        guard tableView.window != nil,
+              tableView.bounds.width > 0,
+              tableView.bounds.height > tableView.adjustedContentInset.top + tableView.adjustedContentInset.bottom,
+              let id = pending,
               let target = indexPath(id),
               target.section < tableView.numberOfSections,
               target.row < tableView.numberOfRows(inSection: target.section)
         else { return nil }
         pending = nil
+        tableView.layoutIfNeeded()
         tableView.selectRow(at: target, animated: false, scrollPosition: .middle)
         return id
     }

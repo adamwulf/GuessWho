@@ -139,6 +139,11 @@ final class GroupsListViewController: UIViewController {
         loadGroups(animated: true)
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyPendingSelection()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
@@ -323,11 +328,9 @@ final class GroupsListViewController: UIViewController {
         }
         renderedNames = rendered
 
-        dataSource.apply(snapshot, animatingDifferences: animated)
-
-        // A pending sidebar selection waits here for its row to exist — the
-        // usual case for groups, whose first rows arrive with `loadGroups()`.
-        applyPendingSelection()
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.applyPendingSelection()
+        }
 
         updateEmptyState()
     }
