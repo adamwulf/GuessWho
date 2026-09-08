@@ -106,6 +106,11 @@ final class OrganizationsListViewController: UIViewController {
         applySnapshot(animated: false)
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyPendingSelection()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
@@ -405,10 +410,9 @@ final class OrganizationsListViewController: UIViewController {
         }
         renderedContacts = rendered
 
-        dataSource.apply(snapshot, animatingDifferences: animated)
-
-        // A pending sidebar selection waits here for its row to exist.
-        applyPendingSelection()
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.applyPendingSelection()
+        }
 
         updateEmptyState()
     }

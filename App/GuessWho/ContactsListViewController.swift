@@ -118,6 +118,11 @@ final class ContactsListViewController: UIViewController {
         applySnapshot(animated: false)
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyPendingSelection()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
@@ -133,15 +138,15 @@ final class ContactsListViewController: UIViewController {
     ///
     /// Safe to call before the first snapshot lands (the sidebar selects in the
     /// same turn it builds the list, long before the repository's reload): the
-    /// request is held and retried after every apply, so the row is highlighted
-    /// when the data arrives rather than dropped.
+    /// request is retried after snapshot completion and layout, so the row is
+    /// centered once both its data and the viewport are ready.
     func select(contactID id: ContactID) {
         pendingSelection.request(id)
         applyPendingSelection()
     }
 
-    /// Try to consume the request. Called after every apply, so a row that only
-    /// appears with a later reload still gets selected.
+    /// Try to consume the request after snapshot completion or layout, so a row
+    /// that appears with a later reload still gets selected and centered.
     private func applyPendingSelection() {
         guard isViewLoaded else { return }
         let selected = pendingSelection.applyIfPossible(in: tableView) { [self] id in
@@ -472,10 +477,9 @@ final class ContactsListViewController: UIViewController {
         }
         renderedContacts = rendered
 
-        dataSource.apply(snapshot, animatingDifferences: animated)
-
-        // A pending sidebar selection waits here for its row to exist.
-        applyPendingSelection()
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.applyPendingSelection()
+        }
 
         updateEmptyState()
     }

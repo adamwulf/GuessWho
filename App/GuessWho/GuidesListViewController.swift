@@ -96,6 +96,11 @@ final class GuidesListViewController: UIViewController {
         }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyPendingSelection()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
@@ -334,12 +339,9 @@ final class GuidesListViewController: UIViewController {
         if !surviving.isEmpty {
             snapshot.reconfigureItems(surviving)
         }
-        dataSource.apply(snapshot, animatingDifferences: animated)
-
-        // A pending sidebar selection waits here for its row to exist — the
-        // usual case, since a guide favorite is clicked before this list's own
-        // first fetch has landed.
-        applyPendingSelection()
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.applyPendingSelection()
+        }
 
         updateEmptyState()
     }

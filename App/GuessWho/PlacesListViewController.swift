@@ -121,6 +121,11 @@ final class PlacesListViewController: UIViewController {
         }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyPendingSelection()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
@@ -375,9 +380,9 @@ final class PlacesListViewController: UIViewController {
         if !surviving.isEmpty {
             snapshot.reconfigureItems(surviving)
         }
-        dataSource.apply(snapshot, animatingDifferences: animated)
-
-        applyPendingSelection()
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.applyPendingSelection()
+        }
 
         // Name the query when one is in force: the stock copy invites the user
         // to share a guide link, which is the wrong advice for someone whose
