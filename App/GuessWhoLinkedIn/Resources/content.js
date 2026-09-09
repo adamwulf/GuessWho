@@ -256,9 +256,17 @@ function gwSendDiagnostic(probeId, event, detail) {
 
 function minimalProbe() {
   const slug = (location.pathname.match(/\/(?:in|faculty|staff|person)\/([^/]+)/) || [])[1] || null;
-  const source = (location.hostname === "profiles.rice.edu" || location.hostname === "business.rice.edu")
+  const source = /(^|\.)rice\.edu$/i.test(location.hostname)
     ? "rice"
     : (location.hostname === "tls26-s2-people.netlify.app" ? "tls" : "linkedin");
+  if (source === "rice") {
+    return {
+      source,
+      sourceUrl: location.href,
+      importError: "No supported person profile was found on this Rice page. Open an individual staff or faculty profile and try again.",
+      _fallback: true,
+    };
+  }
   if (source === "tls") {
     // TLS is always a batch wire format. Returning a legacy single-profile
     // fallback here would decode as one blank TLS person in the app.
@@ -663,20 +671,17 @@ async function probe(probeId) {
   // Rice profiles are fully server-rendered: no lazy-section scroll and no
   // contact overlay are needed. Parse once, then use the exact same in-page
   // photo-byte fetch and native handoff as LinkedIn.
-  const isRiceProfile = location.hostname === "profiles.rice.edu" ||
-    location.hostname === "business.rice.edu";
-  const riceParser = location.hostname === "business.rice.edu"
-    ? (typeof extractRiceBusinessProfile === "function" ? extractRiceBusinessProfile : null)
-    : (typeof extractRiceProfile === "function" ? extractRiceProfile : null);
-  if (isRiceProfile && riceParser) {
+  const isRiceProfile = /(^|\.)rice\.edu$/i.test(location.hostname);
+  if (isRiceProfile) {
     let rice;
     try {
-      rice = riceParser() || minimalProbe();
+      rice = (typeof extractRicePage === "function" ? extractRicePage() : null) || minimalProbe();
     }
     catch (e) {
       console.log("[GuessWho] Rice parser threw:", e);
       rice = minimalProbe();
     }
+    if (rice.importError) return rice;
     try {
       const photo = await fetchPhotoBytes(rice.photoSrcset);
       if (photo && photo.dataURL) rice.photo = photo;

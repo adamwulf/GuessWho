@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import vm from "node:vm";
 import { createRequire } from "node:module";
 
 const { parseHTML } = await import("linkedom");
@@ -10,6 +11,7 @@ const {
   extractProfile,
   extractRiceBusinessProfile,
   extractRiceProfile,
+  extractRicePage,
   extractTLSProfiles,
   fitTLSBatchToHandoffCap,
   gwDefaultOrganization,
@@ -216,36 +218,108 @@ const safariManifest = JSON.parse(fs.readFileSync(
   new URL("../Resources/manifest.json", import.meta.url), "utf8"
 ));
 equal(
-  safariManifest.host_permissions.includes("https://business.rice.edu/*"),
+  safariManifest.host_permissions.includes("https://*.rice.edu/*"),
   true,
-  "Safari manifest grants Rice Business access"
+  "Safari manifest grants all Rice subdomains access"
 );
 equal(
   safariManifest.content_scripts.some((script) =>
-    script.matches.includes("https://business.rice.edu/person/*")),
+    script.matches.includes("https://*.rice.edu/*")),
   true,
-  "Safari manifest injects on Rice Business people"
+  "Safari manifest injects across Rice paths"
 );
 const chromeManifest = JSON.parse(fs.readFileSync(
   new URL("../../GuessWhoChrome/Sources/manifest.template.json", import.meta.url), "utf8"
 ));
 equal(
-  chromeManifest.host_permissions.includes("https://business.rice.edu/*"),
+  chromeManifest.host_permissions.includes("https://*.rice.edu/*"),
   true,
-  "Chrome manifest grants Rice Business access"
+  "Chrome manifest grants all Rice subdomains access"
 );
 equal(
   chromeManifest.content_scripts.some((script) =>
-    script.matches.includes("https://business.rice.edu/person/*")),
+    script.matches.includes("https://*.rice.edu/*")),
   true,
-  "Chrome manifest injects on Rice Business people"
+  "Chrome manifest injects across Rice paths"
 );
 const popupSource = fs.readFileSync(new URL("../Resources/popup.js", import.meta.url), "utf8");
-equal(
-  popupSource.includes("business\\.rice\\.edu\\/person"),
-  true,
-  "popup accepts Rice Business person URLs"
-);
+const popupElements = new Map();
+const popupHandoffs = [];
+let popupProbe = null;
+let popupTabURL = "https://glasscock.rice.edu/glasscock-leadership/alex-example";
+const popupContext = vm.createContext({
+  URL, console: { log() {} },
+  document: {
+    readyState: "loading", addEventListener() {},
+    getElementById(id) {
+      if (!popupElements.has(id)) popupElements.set(id, {
+        textContent: "", classList: { add() {}, remove() {}, toggle() {} }, addEventListener() {},
+      });
+      return popupElements.get(id);
+    },
+  },
+  browser: {
+    tabs: { query: async () => [{ id: 1, url: popupTabURL }], sendMessage: async () => popupProbe },
+    runtime: {
+      onMessage: { addListener() {} },
+      sendMessage: async (message) => {
+        popupHandoffs.push(message);
+        return { ok: true, native: { received: true } };
+      },
+    },
+  },
+});
+vm.runInContext(popupSource, popupContext);
+for (const url of [
+  "https://rice.edu/some-person", "https://glasscock.rice.edu/glasscock-leadership/alex",
+  "https://new.school.rice.edu/team/alex", "https://business.rice.edu/person/alex",
+]) equal(popupContext.isSupportedProfileURL(url), true, `popup allows Rice URL: ${url}`);
+for (const url of [
+  "https://notrice.edu/person/alex", "https://rice.edu.example.com/person/alex",
+  "https://example.com/?url=https://profiles.rice.edu/staff/alex",
+  "https://rice.edu@evil.example/person/alex", "http://glasscock.rice.edu/person/alex", "invalid",
+]) equal(popupContext.isSupportedProfileURL(url), false, `popup rejects URL: ${url}`);
+
+const glasscockMarkup = fs.readFileSync(new URL("./fixtures/rice-glasscock-person-sanitized.html", import.meta.url), "utf8");
+for (const host of ["glasscock.rice.edu", "new.school.rice.edu", "rice.edu"]) {
+  const profile = extractRicePage(documentFor(glasscockMarkup, `https://${host}/leadership/alex-example`));
+  equal(profile?.fullName, "Alex Example", `shared div profile name on ${host}`);
+  equal(profile.title, "Executive Director", `shared profile title on ${host}`);
+  equal(profile.org, "Rice University", `shared profile employer on ${host}`);
+  equal(profile.contactInfo.emails.length, 0, "does not import footer email");
+  equal(profile.contactInfo.phones.length, 0, "does not import footer phone");
+  equal(profile.photoSrcset, `https://${host}/sites/g/files/example/alex.png`, "relative profile photo");
+}
+equal(extractRicePage(documentFor(riceMarkup, "https://new.rice.edu/team/grace"))?.fullName,
+  "Grace Hopper", "directory layout works on new subdomain and path");
+equal(extractRicePage(documentFor(fs.readFileSync(riceBusinessFixtureURL, "utf8"),
+  "https://new.rice.edu/team/elena"))?.fullName, "Elena Naids", "Business layout works on new subdomain");
+equal(extractRicePage(documentFor(fs.readFileSync(riceBusinessFixtureURL, "utf8"),
+  "https://new.rice.edu/team/elena"))?.contactInfo.emails.join(","), "elena.naids@rice.edu",
+  "new subdomain never mixes related-person metadata into visible profile");
+equal(extractRicePage(documentFor(`
+  <div class="t--profile"><div class="title-hero"><h1>Alex Example</h1></div></div>
+  <script type="application/ld+json">{"@type":"Person","name":"Someone Else","email":"wrong@example.edu"}</script>
+`, "https://new.rice.edu/team/alex"))?.contactInfo.emails.length, 0, "unrelated JSON-LD is ignored");
+for (const markup of [
+  "<title>Rice University</title><main><h1>Our People</h1></main>",
+  '<article><h1>News about Alex</h1></article>',
+  '<main id="main-content"><div class="title-hero"><h1>Our School</h1></div></main>',
+  '<script type="application/ld+json">{"@type":"Person","name":"Article Author"}</script><article>News</article>',
+  glasscockMarkup + glasscockMarkup,
+  '<div class="article--bio"><h2 class="article__author-name profile"> </h2></div>',
+]) equal(extractRicePage(documentFor(markup, "https://glasscock.rice.edu/")), null, "reject unsupported or ambiguous Rice page");
+equal(extractRicePage(documentFor(glasscockMarkup, "https://notrice.edu/person")), null, "dispatcher rejects lookalike host");
+popupProbe = { source: "rice", importError: "No supported person profile was found." };
+await popupContext.runHandoff();
+equal(popupHandoffs.length, 0, "unsupported Rice page never hands off to app");
+equal(popupElements.get("out").textContent, popupProbe.importError, "popup explains unsupported Rice page");
+popupProbe = { source: "rice", title: "A homepage", _fallback: true };
+await popupContext.runHandoff();
+equal(popupHandoffs.length, 0, "nameless Rice fallback never hands off");
+popupProbe = extractRicePage(documentFor(glasscockMarkup, popupTabURL));
+await popupContext.runHandoff();
+equal(popupHandoffs.length, 1, "recognized Rice profile hands off normally");
 
 // The checked-in fixture is a privacy-safe structural derivative of the saved
 // rendered TLS page. Keep it mandatory so a clean checkout always exercises
@@ -474,6 +548,22 @@ equal(riceBusinessProbe.source, "rice", "content routes Rice Business source");
 equal(riceBusinessProbe.slug, "elena-naids", "content routes Rice Business person slug");
 equal(riceBusinessProbe.fullName, "Elena Naids", "Rice Business content result");
 equal(riceBusinessProbe.org, "Rice University", "Rice Business content result carries the default organization");
+
+globalThis.document = documentFor(glasscockMarkup, "https://glasscock.rice.edu/leadership/alex");
+globalThis.location = document.location;
+const glasscockProbe = await sendProbe("glasscock-route");
+equal(glasscockProbe.fullName, "Alex Example", "content detects Glasscock shared layout");
+equal(glasscockProbe.source, "rice", "Glasscock routes through Rice handoff");
+globalThis.document = documentFor("<title>Our School</title><main><h1>Welcome</h1></main>", "https://new.rice.edu/");
+globalThis.location = document.location;
+const unsupportedRiceProbe = await sendProbe("rice-unsupported");
+equal(!!unsupportedRiceProbe.importError, true, "unrecognized Rice page returns an actionable error");
+equal(unsupportedRiceProbe.title, undefined, "Rice error never treats page title as contact data");
+globalThis.extractRicePage = undefined;
+equal(!!(await sendProbe("rice-parser-missing")).importError, true, "missing Rice parser stops safely");
+globalThis.extractRicePage = () => { throw new Error("fixture failure"); };
+equal(!!(await sendProbe("rice-parser-throws")).importError, true, "throwing Rice parser stops safely");
+globalThis.extractRicePage = extractRicePage;
 
 globalThis.extractProfile = () => ({
   source: "linkedin",

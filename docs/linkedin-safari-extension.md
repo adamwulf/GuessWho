@@ -43,11 +43,23 @@ The extension is bundled inside the GuessWho app as a single
 | App receiver | `App/GuessWho/GuessWhoSceneDelegate.swift` | Runs in the **app process**. Receives the wake URL, drains the parked payload, then **matches** the profile, builds a **per-field before/after diff**, and presents a **confirm sheet** that saves the checked fields (see [Match → diff → confirm → save](#match--diff--confirm--save-app-side)). |
 
 Rice profile support uses the same transport and confirmation pipeline. The
-manifests match `profiles.rice.edu/faculty/*`, `profiles.rice.edu/staff/*`, and
-`business.rice.edu/person/*`. `extractRiceProfile` reads the main Rice
+manifests grant HTTPS access to `rice.edu` and all its subdomains using
+`https://*.rice.edu/*`. The popup accepts those hosts on any path, and
+`extractRicePage` selects a parser from the rendered HTML, so another school
+using an existing layout needs no subdomain or path allowlist update. It
+requires a single recognizable person component: the directory's
+`.article__author-name.profile` inside a bio component, or the business
+theme's `.t--profile` with a single `.title-hero h1`. Homepages, news pages,
+multi-person directories, and unknown layouts stop with a message in the
+popup without handing off to the app. A new HTML layout still needs parser
+support. Browser approval of the expanded Rice site access may be needed
+after an extension update; imports still start only when the popup opens.
+
+`extractRiceProfile` reads the main Rice
 directory's server-rendered fields; `extractRiceBusinessProfile` reads the
 business school's Schema.org Person data plus its visible department and bio
-components. Both produce the same Rice payload shape: name, first title,
+components. The shared directory component can be an `article` or a `div`,
+as on Glasscock leadership profiles. Both produce the same Rice payload shape: name, first title,
 organization, department unit(s), bio, email, phone, listed websites, and
 profile image when present; the `profiles.rice.edu` faculty/staff pages
 additionally carry an office/building line (e.g. `O'Connor Engineering and

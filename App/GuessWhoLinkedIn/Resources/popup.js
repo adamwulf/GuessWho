@@ -103,6 +103,16 @@ async function activeTab() {
   return tab;
 }
 
+function isSupportedProfileURL(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "https:" && /(^|\.)rice\.edu$/i.test(url.hostname)) return true;
+    if (["http:", "https:"].includes(url.protocol) &&
+        /(^|\.)linkedin\.com$/i.test(url.hostname) && /^\/in\/[^/]+/.test(url.pathname)) return true;
+    return url.protocol === "https:" && url.hostname === "tls26-s2-people.netlify.app";
+  } catch { return false; }
+}
+
 // Probe the content script. A tab that was already open BEFORE the extension
 // was enabled has no content script injected (manifest content_scripts only
 // run on navigation after enable), so `tabs.sendMessage` throws "no receiver".
@@ -158,10 +168,7 @@ async function runHandoff() {
   goBtn.disabled = true;
   try {
     const tab = await activeTab();
-    const supportedProfile = /linkedin\.com\/in\//.test(tab?.url || "") ||
-      /profiles\.rice\.edu\/(faculty|staff)\//.test(tab?.url || "") ||
-      /^https:\/\/business\.rice\.edu\/person\/[^/?#]+/.test(tab?.url || "") ||
-      /^https:\/\/tls26-s2-people\.netlify\.app(?:\/|$)/.test(tab?.url || "");
+    const supportedProfile = isSupportedProfileURL(tab?.url);
     if (!tab || !supportedProfile) {
       log("abort: not a supported profile tab", { url: tab?.url ?? null });
       show("Open a LinkedIn profile, a Rice person profile, or the TLS people page first.", true);
@@ -191,6 +198,10 @@ async function runHandoff() {
     if (!probe) {
       log("probe: failed (no data)");
       show({ step: "probe failed", detail: "content script returned no data" }, true);
+      return;
+    }
+    if (probe.source === "rice" && (probe.importError || !probe.fullName)) {
+      show(probe.importError || "No supported person profile was found on this Rice page.", true);
       return;
     }
     const readiness = probe.readiness || null;
