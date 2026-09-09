@@ -301,9 +301,37 @@ equal(extractRicePage(documentFor(`
   <div class="t--profile"><div class="title-hero"><h1>Alex Example</h1></div></div>
   <script type="application/ld+json">{"@type":"Person","name":"Someone Else","email":"wrong@example.edu"}</script>
 `, "https://new.rice.edu/team/alex"))?.contactInfo.emails.length, 0, "unrelated JSON-LD is ignored");
+const schemaPerson = {
+  "@type": "Person", "@id": "https://new.rice.edu/team/alex/#person",
+  name: "Alex Example", jobTitle: "Director", email: "alex@example.edu", image: "/alex.jpg",
+};
+function businessSchemaMarkup(people, name = "Alex Example, Ph.D.") {
+  return `<div class="t--profile"><div class="title-hero"><h1>${name}</h1></div></div>
+    <script type="application/ld+json">${JSON.stringify(people)}</script>`;
+}
+const canonicalPerson = extractRicePage(documentFor(businessSchemaMarkup([
+  { "@type": "Person", name: "Unrelated Person", email: "wrong@example.edu" }, schemaPerson,
+]), "https://new.rice.edu/team/alex?ref=directory"));
+equal(canonicalPerson.fullName, "Alex Example, Ph.D.", "visible credentials remain in name");
+equal(canonicalPerson.title, "Director", "canonical identity preserves schema title despite name difference");
+equal(canonicalPerson.contactInfo.emails.join(","), "alex@example.edu", "canonical identity preserves schema email");
+equal(canonicalPerson.photoSrcset, "https://new.rice.edu/alex.jpg", "canonical identity preserves schema photo");
+for (const [people, name] of [
+  [[schemaPerson, { ...schemaPerson, email: "conflict@example.edu" }], "Alex Example, Ph.D."],
+  [[{ ...schemaPerson, "@id": "/other" }, { ...schemaPerson, "@id": "/another" }], "Alex Example"],
+]) {
+  const ambiguous = extractRicePage(documentFor(businessSchemaMarkup(people, name), "https://new.rice.edu/team/alex"));
+  equal(ambiguous.contactInfo.emails.length, 0, "ambiguous schema identities never choose an arbitrary email");
+  equal(ambiguous.title, null, "ambiguous schema identities never choose an arbitrary title");
+}
+const newsBylineMarkup = '<article><h1>Campus news</h1><p class="article__author-name profile">Alex Example</p></article>';
+equal(extractRiceProfile(documentFor(newsBylineMarkup, "https://new.rice.edu/news")), null, "directory extractor requires a bio component");
 for (const markup of [
   "<title>Rice University</title><main><h1>Our People</h1></main>",
   '<article><h1>News about Alex</h1></article>',
+  newsBylineMarkup,
+  '<div class="article--bio"></div>' + newsBylineMarkup,
+  glasscockMarkup + '<div class="article--bio"></div>',
   '<main id="main-content"><div class="title-hero"><h1>Our School</h1></div></main>',
   '<script type="application/ld+json">{"@type":"Person","name":"Article Author"}</script><article>News</article>',
   glasscockMarkup + glasscockMarkup,
@@ -559,6 +587,17 @@ globalThis.location = document.location;
 const unsupportedRiceProbe = await sendProbe("rice-unsupported");
 equal(!!unsupportedRiceProbe.importError, true, "unrecognized Rice page returns an actionable error");
 equal(unsupportedRiceProbe.title, undefined, "Rice error never treats page title as contact data");
+equal(unsupportedRiceProbe.importError,
+  "No supported person profile was found on this Rice page. Open an individual Rice person profile and try again.",
+  "Rice error copy includes leadership and business profiles");
+globalThis.document = documentFor(newsBylineMarkup, "https://new.rice.edu/news");
+globalThis.location = document.location;
+popupTabURL = location.href;
+popupProbe = await sendProbe("rice-news-byline");
+const priorHandoffs = popupHandoffs.length;
+await popupContext.runHandoff();
+equal(popupHandoffs.length, priorHandoffs, "news byline is rejected through content and popup without handoff");
+equal(popupElements.get("out").textContent, popupProbe.importError, "news page displays unsupported-profile message");
 globalThis.extractRicePage = undefined;
 equal(!!(await sendProbe("rice-parser-missing")).importError, true, "missing Rice parser stops safely");
 globalThis.extractRicePage = () => { throw new Error("fixture failure"); };

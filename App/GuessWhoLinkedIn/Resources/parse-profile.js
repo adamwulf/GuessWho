@@ -468,9 +468,11 @@ function gwDefaultOrganization(hostname) {
 function extractRicePage(doc = (typeof document !== "undefined" ? document : null)) {
   if (!doc || !gwDefaultOrganization(doc.location?.hostname)) return null;
   const directoryNames = doc.querySelectorAll(".article__author-name.profile");
+  const directoryProfiles = doc.querySelectorAll(".article--bio");
   const businessProfiles = doc.querySelectorAll(".t--profile");
   let result = null;
-  if (directoryNames.length === 1 && businessProfiles.length === 0) {
+  if (directoryNames.length === 1 && directoryProfiles.length === 1 &&
+      directoryProfiles[0].contains(directoryNames[0]) && businessProfiles.length === 0) {
     result = extractRiceProfile(doc);
   } else if (directoryNames.length === 0 && businessProfiles.length === 1 &&
              businessProfiles[0].querySelectorAll(".title-hero h1").length === 1) {
@@ -502,8 +504,10 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
   const absoluteURL = (raw) => safe(() => new URL(raw, doc.location.href).href);
 
   // Glasscock uses a div for the same bio component; the tag is not semantic.
-  const root = doc.querySelector(".article--bio") || doc.querySelector("article");
-  if (!root) return null;
+  const roots = doc.querySelectorAll(".article--bio");
+  if (roots.length !== 1) return null;
+  const root = roots[0];
+  if (root.querySelectorAll(".article__author-name.profile").length !== 1) return null;
 
   const fullName = text(root.querySelector(".article__author-name.profile"));
   const roleText = text(root.querySelector(".article__author-role.profile:not(.top-border)"));
@@ -693,15 +697,20 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
       const types = Array.isArray(record && record["@type"])
         ? record["@type"]
         : [record && record["@type"]];
-      // Pages can also describe related people in their JSON-LD. Only merge
-      // metadata belonging to the visible person, even on a new Rice host.
-      return types.includes("Person") && (!visibleName ||
-        text({ textContent: record.name })?.toLowerCase() === visibleName.toLowerCase());
+      return types.includes("Person");
     });
     const pageURL = identityURL(doc.location.href);
-    return people.find((record) =>
+    // The page URL identifies its person even when the heading adds credentials.
+    // On a new host, use an unambiguous name match as a fallback. Never choose
+    // the first related person or arbitrarily resolve conflicting records.
+    const pagePeople = people.filter((record) =>
       [record.url, record["@id"]].some((value) => identityURL(value) === pageURL)
-    ) || (visibleName && people.length === 1 ? people[0] : null);
+    );
+    if (pagePeople.length) return pagePeople.length === 1 ? pagePeople[0] : null;
+    const namedPeople = visibleName ? people.filter((record) =>
+      text({ textContent: record.name })?.toLowerCase() === visibleName.toLowerCase()
+    ) : [];
+    return namedPeople.length === 1 ? namedPeople[0] : null;
   });
 
   if (!root && !person) return null;

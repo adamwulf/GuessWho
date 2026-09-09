@@ -263,7 +263,7 @@ function minimalProbe() {
     return {
       source,
       sourceUrl: location.href,
-      importError: "No supported person profile was found on this Rice page. Open an individual staff or faculty profile and try again.",
+      importError: "No supported person profile was found on this Rice page. Open an individual Rice person profile and try again.",
       _fallback: true,
     };
   }
