@@ -462,6 +462,25 @@ function gwDefaultOrganization(hostname) {
   return host === "rice.edu" || host.endsWith(".rice.edu") ? "Rice University" : null;
 }
 
+// Permission to read a Rice host does not imply that the page is a person.
+// Select a known profile layout by structure, independent of subdomain/path.
+// Reject lists and generic headings instead of guessing from the page title.
+function extractRicePage(doc = (typeof document !== "undefined" ? document : null)) {
+  if (!doc || !gwDefaultOrganization(doc.location?.hostname)) return null;
+  const directoryNames = doc.querySelectorAll(".article__author-name.profile");
+  const directoryProfiles = doc.querySelectorAll(".article--bio");
+  const businessProfiles = doc.querySelectorAll(".t--profile");
+  let result = null;
+  if (directoryNames.length === 1 && directoryProfiles.length === 1 &&
+      directoryProfiles[0].contains(directoryNames[0]) && businessProfiles.length === 0) {
+    result = extractRiceProfile(doc);
+  } else if (directoryNames.length === 0 && businessProfiles.length === 1 &&
+             businessProfiles[0].querySelectorAll(".title-hero h1").length === 1) {
+    result = extractRiceBusinessProfile(doc);
+  }
+  return result?.fullName ? result : null;
+}
+
 // profiles.rice.edu is server-rendered Drupal and exposes stable, descriptive
 // class names. Unlike LinkedIn, none of these fields are lazy or hidden behind
 // an overlay, so one synchronous DOM pass captures the complete profile.
@@ -484,8 +503,11 @@ function extractRiceProfile(doc = (typeof document !== "undefined" ? document : 
   };
   const absoluteURL = (raw) => safe(() => new URL(raw, doc.location.href).href);
 
-  const root = doc.querySelector("article.article--bio") || doc.querySelector("article");
-  if (!root) return null;
+  // Glasscock uses a div for the same bio component; the tag is not semantic.
+  const roots = doc.querySelectorAll(".article--bio");
+  if (roots.length !== 1) return null;
+  const root = roots[0];
+  if (root.querySelectorAll(".article__author-name.profile").length !== 1) return null;
 
   const fullName = text(root.querySelector(".article__author-name.profile"));
   const roleText = text(root.querySelector(".article__author-role.profile:not(.top-border)"));
@@ -657,6 +679,8 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
   };
   const meta = (selector) => safe(() => doc.querySelector(selector)?.getAttribute("content")) || null;
 
+  const root = doc.querySelector(".t--profile") || doc.querySelector("#main-content");
+  const visibleName = text(root?.querySelector(".title-hero h1"));
   const person = safe(() => {
     const records = [];
     for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
@@ -676,15 +700,22 @@ function extractRiceBusinessProfile(doc = (typeof document !== "undefined" ? doc
       return types.includes("Person");
     });
     const pageURL = identityURL(doc.location.href);
-    return people.find((record) =>
+    // The page URL identifies its person even when the heading adds credentials.
+    // On a new host, use an unambiguous name match as a fallback. Never choose
+    // the first related person or arbitrarily resolve conflicting records.
+    const pagePeople = people.filter((record) =>
       [record.url, record["@id"]].some((value) => identityURL(value) === pageURL)
-    ) || people[0] || null;
+    );
+    if (pagePeople.length) return pagePeople.length === 1 ? pagePeople[0] : null;
+    const namedPeople = visibleName ? people.filter((record) =>
+      text({ textContent: record.name })?.toLowerCase() === visibleName.toLowerCase()
+    ) : [];
+    return namedPeople.length === 1 ? namedPeople[0] : null;
   });
 
-  const root = doc.querySelector(".t--profile") || doc.querySelector("#main-content");
   if (!root && !person) return null;
 
-  const fullName = text(root?.querySelector(".title-hero h1")) ||
+  const fullName = visibleName ||
     (person && text({ textContent: person.name }));
   const title = text(root?.querySelector(".title-hero p")) ||
     (person && text({ textContent: person.jobTitle }));
@@ -1408,7 +1439,7 @@ function profileReadiness(result) {
 // `module` is undefined and the function is just a global in the page context.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    extractProfile, extractRiceProfile, extractRiceBusinessProfile, extractTLSProfiles,
+    extractProfile, extractRiceProfile, extractRiceBusinessProfile, extractRicePage, extractTLSProfiles,
     extractExperience, extractContactInfo,
     compactTLSPhotoForHandoff, fitTLSBatchToHandoffCap, tlsHandoffEnvelopeByteSize,
     profileReadiness, findInPageContactSection, gwContactFieldsFrom, gwPhotoAssetID,

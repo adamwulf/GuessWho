@@ -24,8 +24,7 @@
   "host_permissions": [
     "*://*.linkedin.com/*",
     "*://*.licdn.com/*",
-    "https://profiles.rice.edu/*",
-    "https://business.rice.edu/*",
+    "https://*.rice.edu/*",
     "https://tls26-s2-people.netlify.app/*",
     "http://127.0.0.1/*"
   ],
@@ -37,7 +36,7 @@
 
   "content_scripts": [
     {
-      "matches": ["*://*.linkedin.com/in/*", "https://profiles.rice.edu/faculty/*", "https://profiles.rice.edu/staff/*", "https://business.rice.edu/person/*", "https://tls26-s2-people.netlify.app/*"],
+      "matches": ["*://*.linkedin.com/in/*", "https://*.rice.edu/*", "https://tls26-s2-people.netlify.app/*"],
       "js": ["parse-profile.js", "content.js"]
     }
   ],
