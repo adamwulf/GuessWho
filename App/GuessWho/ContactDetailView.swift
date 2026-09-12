@@ -202,6 +202,7 @@ struct ContactDetailView: View {
     // read-only activity list. Reset to .inactive on every exit.
     @State private var editMode: EditMode = .inactive
     @State private var showDeleteConfirm = false
+    @State private var showDiscardEditConfirm = false
 
     // Focus identity covers the bottom new-note editor and any row being edited.
     // Hoisted here so one nav-bar checkmark can commit whichever edit is active
@@ -388,6 +389,14 @@ struct ContactDetailView: View {
                 Task { await performInlineDelete() }
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Discard changes?",
+            isPresented: $showDiscardEditConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Changes", role: .destructive) { cancelEdit() }
+            Button("Keep Editing", role: .cancel) {}
         }
         .alert(
             "Couldn't save",
@@ -716,10 +725,13 @@ struct ContactDetailView: View {
         // A red X "Cancel" mirrors the accent checkmark "Done". Cancel discards
         // any pending CNContact-model edits and dismisses — it does NOT undo
         // sidecar edits (custom fields, notes), which commit live as they're
-        // made. Escape triggers Cancel via .cancelAction.
+        // made. Escape triggers Cancel via .cancelAction; an autocompleting
+        // field (Company, Department, Related) takes the first Escape to
+        // close its menu and leaves the next one to this shortcut, so
+        // unsaved work is guarded by a "Discard changes?" confirmation.
         ToolbarItem(placement: .cancellationAction) {
             Button(role: .cancel) {
-                cancelEdit()
+                requestCancelEdit()
             } label: {
                 Image(systemName: "xmark")
                     .font(.subheadline.weight(.bold))
@@ -881,6 +893,19 @@ struct ContactDetailView: View {
             editMode = .active
         } catch {
             editFetchErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Cancel from the toolbar X or Escape: confirm first when the user has
+    /// unsaved field changes, else leave edit mode straight away. `edited`
+    /// against `original` (not `isDirty`, which stays set after a change is
+    /// typed and reverted) so a no-op edit cancels without a prompt — the
+    /// same gate the new-contact sheet uses.
+    private func requestCancelEdit() {
+        if let model = editModel, model.edited != model.original {
+            showDiscardEditConfirm = true
+        } else {
+            cancelEdit()
         }
     }
 

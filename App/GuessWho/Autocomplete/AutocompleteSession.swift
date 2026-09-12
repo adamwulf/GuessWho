@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The one text field currently offering suggestions.
 ///
-/// An `.autocomplete(text:candidates:)` field publishes its suggestion state
+/// An `.autocomplete(text:onSubmit:candidates:)` field publishes its suggestion state
 /// here; the enclosing `.autocompleteMenuHost()` overlay reads it and draws the
 /// floating menu. Splitting the two lets the menu render in the HOST's
 /// overlay — above every list row — instead of inside the field's own row,

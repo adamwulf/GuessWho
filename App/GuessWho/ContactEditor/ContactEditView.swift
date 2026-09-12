@@ -132,6 +132,10 @@ struct ContactEditView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Escape drives Cancel too. An autocompleting field (Company,
+        // Department, Related) takes the first Escape to close its menu and
+        // leaves the next one to this shortcut, so a stray Escape can't lose
+        // the user's work without the "Discard changes?" confirmation.
         ToolbarItem(placement: .cancellationAction) {
             Button("Cancel") {
                 if hasUnsavedChanges {
@@ -141,6 +145,7 @@ struct ContactEditView: View {
                 }
             }
             .disabled(isSaving)
+            .keyboardShortcut(.cancelAction)
         }
         // EditButton flips the Form into edit mode so .onMove drag handles
         // appear on the multi-value rows. Placed on .primaryAction (trailing)
