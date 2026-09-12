@@ -294,7 +294,24 @@ final class SidebarViewController: UIViewController {
             // favorites has nothing to count and nothing to open.
             let count = favoriteHierarchy.favoriteCount(in: tab)
             let isClosed = !expandedSections.contains(tab)
-            cell.accessories = (count > 0 && isClosed) ? [favoritesCountAccessory(count: count)] : []
+            let showsFavoritesCount = count > 0 && isClosed
+            cell.accessories = showsFavoritesCount
+                ? [favoritesCountAccessory(
+                    count: count,
+                    isHighlighted: cell.isSelected || cell.isHighlighted
+                )]
+                : []
+            // A custom accessory does not receive the list cell's automatic
+            // selected colors, so repaint its label and symbol as state changes.
+            cell.configurationUpdateHandler = { [weak self] cell, state in
+                guard let self, let cell = cell as? UICollectionViewListCell else { return }
+                cell.accessories = showsFavoritesCount
+                    ? [self.favoritesCountAccessory(
+                        count: count,
+                        isHighlighted: state.isSelected || state.isHighlighted
+                    )]
+                    : []
+            }
 
             // A double click is a mouse-only affordance, so it can't be the ONLY
             // way to open a section — the outline chevron this replaced was a
@@ -335,6 +352,7 @@ final class SidebarViewController: UIViewController {
             cell.accessibilityValue = count > 0 ? (isClosed ? "Collapsed" : "Expanded") : nil
         case .favorite(let id):
             guard let favorite = favoriteItemsByID[id] else { return }
+            cell.configurationUpdateHandler = nil
             cell.contentConfiguration = contentConfiguration(for: favorite, in: cell)
             cell.accessories = []
             // Cleared for the same reason as `accessories`: a child has no
@@ -346,6 +364,7 @@ final class SidebarViewController: UIViewController {
             cell.accessibilityValue = nil
         case .organization(let id):
             let organization = organizationsByID[id] ?? repository.contact(id: id)
+            cell.configurationUpdateHandler = nil
             cell.contentConfiguration = contactContentConfiguration(for: organization, in: cell)
             cell.accessories = []
             cell.accessibilityCustomActions = nil
@@ -357,11 +376,11 @@ final class SidebarViewController: UIViewController {
     /// under it, beside a star. Built as a custom view rather than
     /// `.label(text:)` so the star is the same SF Symbol the rest of the app
     /// uses for a favorite, at the label's own text size.
-    private func favoritesCountAccessory(count: Int) -> UICellAccessory {
+    private func favoritesCountAccessory(count: Int, isHighlighted: Bool) -> UICellAccessory {
         let label = UILabel()
         label.text = "\(count)"
         label.font = .preferredFont(forTextStyle: .subheadline)
-        label.textColor = .secondaryLabel
+        label.textColor = isHighlighted ? .white : .secondaryLabel
         label.adjustsFontForContentSizeCategory = true
         // Read as "2 favorites", not a bare "2" — the star carries that meaning
         // visually and says nothing out loud.
@@ -373,7 +392,7 @@ final class SidebarViewController: UIViewController {
                 withConfiguration: UIImage.SymbolConfiguration(textStyle: .caption1)
             )
         )
-        star.tintColor = .secondaryLabel
+        star.tintColor = isHighlighted ? .white : .secondaryLabel
         star.isAccessibilityElement = false
 
         let badge = UIStackView(arrangedSubviews: [label, star])
