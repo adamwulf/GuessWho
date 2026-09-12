@@ -588,7 +588,7 @@ private final class FavoriteCell: UITableViewCell {
         if state.isSelected || state.isHighlighted {
             background.backgroundColor = .tintColor
             background.cornerRadius = 8
-            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 8)
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10)
         }
         backgroundConfiguration = background
 
