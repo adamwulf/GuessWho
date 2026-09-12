@@ -29,7 +29,8 @@ Form { … }
 Filtering and ranking are shared (`TextSuggestionFilter` in `GuessWhoSync`),
 so every field matches the same way: prefix hits first, then word-prefix
 (`"wulf"` → `"Adam Wulf"`), then substring; case- and diacritic-insensitive;
-blanks, duplicates, and the exact typed value dropped; at most eight.
+blanks, duplicates, and the exact typed value dropped; at most eight typed
+matches (the whole-pool list a field opens on is uncapped).
 
 Candidate lists for the contact editor live in
 `Sources/GuessWhoSync/ContactsRepository+Suggestions.swift`:
