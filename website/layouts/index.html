@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Site.Title }} — Remember how you met</title>
+  <meta name="description" content="{{ .Site.Params.description }}">
+  <meta name="theme-color" content="#0b1b34" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)">
+  <link rel="icon" type="image/svg+xml" href="{{ "images/app-icon.svg" | relURL }}">
+  <link rel="apple-touch-icon" href="{{ "images/app-icon.svg" | relURL }}">
+  <link rel="stylesheet" href="{{ "css/site.css" | relURL }}">
+  <meta property="og:title" content="{{ .Site.Title }} — Remember how you met">
+  <meta property="og:description" content="{{ .Site.Params.description }}">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="{{ "images/app-icon.svg" | relURL }}">
+  <meta name="twitter:card" content="summary">
+  <script src="{{ "js/memories.js" | relURL }}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="#main">
+        <img class="brand-icon" src="{{ "images/app-icon.svg" | relURL }}" width="36" height="36" alt="" decoding="async">
+        <span class="brand-name">{{ .Site.Title }}</span>
+      </a>
+      <a class="btn btn-ghost header-cta" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- HERO -------------------------------------------------------------->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">A contact book with a memory</p>
+          <h1 id="hero-title">Remember <em>how</em> you met.</h1>
+          <p class="lead">
+            Your phone already knows everyone&rsquo;s number. GuessWho remembers
+            the part that matters &mdash; who introduced you, where and when you
+            met, and what you talked about &mdash; by linking your contacts,
+            events, and notes together.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
+            <span class="cta-note">iPhone &middot; iPad &middot; Mac</span>
+          </div>
+
+          <!-- The rotating "how you met" recall card. -->
+          <figure class="memory-card" aria-label="Examples of memories GuessWho helps you keep">
+            <figcaption class="memory-label">You&rsquo;ll remember&hellip;</figcaption>
+            <div class="memory-stack" data-memory-stack aria-live="off">
+              <p class="memory is-active" data-memory>
+                Met <strong>Sarah Chen</strong> at <strong>WWDC</strong> &mdash;
+                introduced by <strong>Dave Kim</strong>. Talked about her indie
+                weather app.
+              </p>
+              <p class="memory" data-memory>
+                Met <strong>Priya Patel</strong> at the <strong>Austin Swift
+                meetup</strong>. She runs the sync team &mdash; follow up in the
+                spring.
+              </p>
+              <p class="memory" data-memory>
+                Met <strong>Marco Rossi</strong> at <strong>Sarah&rsquo;s dinner
+                party</strong>. Recommended a great espresso spot in Rome.
+              </p>
+              <p class="memory" data-memory>
+                Met <strong>Lena Fischer</strong> at <strong>Config</strong>
+                &mdash; introduced by <strong>Priya</strong>. Design systems and
+                dark mode.
+              </p>
+            </div>
+          </figure>
+        </div>
+
+        <div class="hero-device">
+          <div class="phone" role="img" aria-label="GuessWho showing a contact with linked people, events, and notes">
+            <div class="phone-screen">
+              {{/* Real screenshot goes here once captured; placeholder until then. */}}
+              <div class="shot-placeholder shot-portrait">
+                <span class="shot-tag">Screenshot</span>
+                <span class="shot-name">Contact detail &mdash; relations, events &amp; notes</span>
+                <span class="shot-size">1206 &times; 2622</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CORE STORY -------------------------------------------------------->
+    <section class="story" aria-labelledby="story-title">
+      <div class="wrap">
+        <h2 id="story-title">The Contacts app forgets. GuessWho doesn&rsquo;t.</h2>
+        <p class="section-lead">
+          A phone number is easy. The story behind it &mdash; the part you
+          actually want when you see a name again &mdash; usually lives only in
+          your head. GuessWho keeps that story, by letting every contact point
+          to the people, events, and notes around it.
+        </p>
+        <div class="story-cards">
+          <article class="story-cell">
+            <div class="ico" aria-hidden="true">&#128101;</div>
+            <h3>Who introduced you</h3>
+            <p>
+              Link one contact to another and note the connection. Open anyone
+              and see the people who brought you together.
+            </p>
+          </article>
+          <article class="story-cell">
+            <div class="ico" aria-hidden="true">&#128197;</div>
+            <h3>Where &amp; when you met</h3>
+            <p>
+              Contacts connect to the events you shared, so you can see the
+              meetup, dinner, or conference where your paths first crossed
+              &mdash; and who else was there.
+            </p>
+          </article>
+          <article class="story-cell">
+            <div class="ico" aria-hidden="true">&#128221;</div>
+            <h3>What you talked about</h3>
+            <p>
+              Jot a private note on the person or the event. Next time their
+              name comes up, the details come back with it.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- LINKEDIN IMPORT --------------------------------------------------->
+    <section class="feature-split" aria-labelledby="linkedin-title">
+      <div class="wrap split-grid">
+        <div class="split-copy">
+          <p class="eyebrow">Browser extension</p>
+          <h2 id="linkedin-title">Save a LinkedIn profile in one click.</h2>
+          <p class="section-lead">
+            When you&rsquo;re looking at someone&rsquo;s profile in Safari,
+            Chrome, or Brave, click the GuessWho extension. It reads the page
+            you&rsquo;re already viewing &mdash; name, title, company, links, and
+            photo &mdash; and hands it to the app.
+          </p>
+          <ul class="check-list">
+            <li>You see a clear before-and-after of exactly what will change.</li>
+            <li>Check off the fields you want; leave the rest untouched.</li>
+            <li>Save creates a new contact or updates an existing one.</li>
+            <li>Nothing is captured or saved without your click and your review.</li>
+          </ul>
+        </div>
+        <div class="split-media">
+          <div class="phone phone-sm" role="img" aria-label="GuessWho confirming a LinkedIn profile import with a field-by-field review">
+            <div class="phone-screen">
+              <div class="shot-placeholder shot-portrait">
+                <span class="shot-tag">Screenshot</span>
+                <span class="shot-name">LinkedIn import &mdash; review &amp; confirm</span>
+                <span class="shot-size">1206 &times; 2622</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURE GRID ------------------------------------------------------>
+    <section class="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <h2 id="features-title">Everything a contact can carry</h2>
+        <p class="section-lead">
+          GuessWho sits on top of the Contacts and Calendar you already use, and
+          adds the layers that make a name memorable.
+        </p>
+        <div class="feature-grid">
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#128279;</div>
+            <h3>Relationships</h3>
+            <p>Link a person to other people, their company, or an event &mdash; each with a note on how you know them.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#128197;</div>
+            <h3>Events</h3>
+            <p>See the events you shared with a contact, when and where they happened, and who else attended.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#128221;</div>
+            <h3>Private notes</h3>
+            <p>Keep notes on any person or event. They&rsquo;re yours alone, right where you&rsquo;ll look for them.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#127991;</div>
+            <h3>Tags</h3>
+            <p>Tag your events to group and find them fast &mdash; by trip, project, or occasion.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#9881;</div>
+            <h3>Custom fields</h3>
+            <p>Add fields of your own for the details that matter to you and no one else.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#128101;</div>
+            <h3>Groups</h3>
+            <p>Gather contacts into groups &mdash; and email everyone in one at once.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#127970;</div>
+            <h3>Organizations</h3>
+            <p>Contacts roll up by company and department, so you can see everyone you know at a place.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#128506;</div>
+            <h3>Maps guides &amp; places</h3>
+            <p>Import an Apple Maps guide and keep the places you love, tied to the people and events around them.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#11088;</div>
+            <h3>Favorites</h3>
+            <p>Star the people, organizations, and places you reach for most, so they&rsquo;re one tap away.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- PRIVACY ----------------------------------------------------------->
+    <section class="privacy" aria-labelledby="privacy-title">
+      <div class="wrap privacy-inner">
+        <div class="ico ico-lg" aria-hidden="true">&#128274;</div>
+        <h2 id="privacy-title">Your data stays on your device.</h2>
+        <p class="section-lead">
+          GuessWho reads the Contacts and Calendar already on your device, and
+          stores your notes, tags, links, and favorites as plain files that sync
+          only through <strong>your own iCloud</strong>. There&rsquo;s no account
+          to create and no company server &mdash; nobody but you can see any of
+          it.
+        </p>
+      </div>
+    </section>
+
+    <!-- CLOSING CTA ------------------------------------------------------->
+    <section class="closing" aria-labelledby="closing-title">
+      <div class="wrap closing-inner">
+        <h2 id="closing-title">Never ask &ldquo;wait, how do I know this person?&rdquo; again.</h2>
+        <div class="cta-row cta-center">
+          <a class="btn btn-primary btn-lg" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
+          <span class="cta-note">Available for iPhone, iPad, and Mac.</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <p>&copy; {{ now.Year }} Milestone Made, LLC. GuessWho.</p>
+      <p class="footer-note">All your data stays on your device.</p>
+    </div>
+  </footer>
+</body>
+</html>
