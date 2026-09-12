@@ -23,6 +23,11 @@ final class ContactsListViewController: UIViewController {
     /// vends the tap, same pattern as `didSelectContact`.
     var didRequestAddContact: () -> Void = {}
 
+    /// A row's trailing swipe just deleted this contact from Contacts. The
+    /// Catalyst shell uses it to retire a detail column still showing the
+    /// record; the iPhone shell has no such column and leaves the default.
+    var didDeleteContact: (ContactID) -> Void = { _ in }
+
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
     private let favoritesStore: FavoritesListStore
@@ -299,6 +304,15 @@ final class ContactsListViewController: UIViewController {
         selection: { [weak self] in self?.selectedContacts() ?? [] }
     )
 
+    /// The row's trailing swipe ("Delete"). Lazy for the same reason as
+    /// `addToGroupMenu`. The reload the delete triggers is what removes the
+    /// row; `didDeleteContact` then lets the shell retire a stale detail.
+    private lazy var rowDeletion = ContactRowDeletion(
+        repository: repository,
+        host: self,
+        didDelete: { [weak self] id in self?.didDeleteContact(id) }
+    )
+
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
         let contacts = contacts ?? selectedContacts()
         if contacts.count == 1, let contact = contacts.first {
@@ -552,6 +566,23 @@ extension ContactsListViewController: UITableViewDelegate {
     ) -> UIContextMenuConfiguration? {
         addToGroupMenu.configuration(forRowAt: indexPath)
     }
+
+    /// Trailing swipe: Delete. Confirms, then removes the record from
+    /// Contacts — the same write as "Delete Contact" in the detail view's edit
+    /// mode (see `ContactRowDeletion`). On Catalyst the gesture is a two-finger
+    /// trackpad swipe across the row. A row that no longer resolves gets an
+    /// actionless configuration rather than nil: nil would hand it to UIKit's
+    /// default delete, which the diffable base never carries out.
+    func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard let id = dataSource.itemIdentifier(for: indexPath),
+              let contact = repository.contact(id: id) else {
+            return ContactRowDeletion.noActions
+        }
+        return rowDeletion.swipeConfiguration(for: contact)
+    }
 }
 
 // MARK: - UITableViewDataSourcePrefetching
@@ -599,8 +630,15 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, C
     /// meaningless, so it's hidden.
     var showsSectionIndex = true
 
+    /// Editable in both modes. In Select mode this is what draws the
+    /// multi-select circles; while browsing it is what lets UIKit begin the
+    /// trailing swipe (a row that cannot be edited never swipes). Unlocking
+    /// the swipe is safe only because the delegate supplies its own trailing
+    /// configuration for every row: with none, UIKit falls back to the
+    /// diffable base's built-in Delete, whose commit never touches the
+    /// snapshot.
     override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        tableView.isEditing
+        true
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
