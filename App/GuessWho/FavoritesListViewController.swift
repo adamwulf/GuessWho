@@ -588,9 +588,16 @@ private final class FavoriteCell: UITableViewCell {
         if state.isSelected || state.isHighlighted {
             background.backgroundColor = .tintColor
             background.cornerRadius = 8
-            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12)
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 8)
         }
         backgroundConfiguration = background
+
+        // Set attributed names directly; highlightedTextColor is for plain labels.
+        titleLabel.textColor = state.isSelected || state.isHighlighted ? .white : .label
+        for label in [captionLabel, calendarLabel] {
+            label.highlightedTextColor = .white
+            label.isHighlighted = state.isSelected || state.isHighlighted
+        }
     }
 
     private func configureSubviews() {
@@ -691,6 +698,7 @@ private final class FavoriteCell: UITableViewCell {
                     }
                 }
                 titleLabel.attributedText = contact.nameAttributedString
+                setNeedsUpdateConfiguration()
                 // Same "jobTitle, organizationName" caption the People list
                 // shows. The helper returns "" for organizations (and people
                 // with no job/org), so those rows stay name-only with the

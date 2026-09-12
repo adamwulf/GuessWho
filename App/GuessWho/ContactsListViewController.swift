@@ -691,9 +691,16 @@ private final class ContactCell: UITableViewCell {
         if state.isSelected || state.isHighlighted {
             background.backgroundColor = .tintColor
             background.cornerRadius = 8
-            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 20)
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 16)
         }
         backgroundConfiguration = background
+
+        // Set attributed names directly; highlightedTextColor is for plain labels.
+        nameLabel.textColor = state.isSelected || state.isHighlighted ? .white : .label
+        for label in [subtitleLabel, linkCountLabel] {
+            label.highlightedTextColor = .white
+            label.isHighlighted = state.isSelected || state.isHighlighted
+        }
     }
 
     private func configureSubviews() {
@@ -787,6 +794,7 @@ private final class ContactCell: UITableViewCell {
             }
         }
         nameLabel.attributedText = contact.nameAttributedString
+        setNeedsUpdateConfiguration()
         // Non-breaking space when there's no jobTitle/organizationName — an empty
         // string would collapse the second line and shrink the row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)

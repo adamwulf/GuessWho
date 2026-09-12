@@ -65,9 +65,15 @@ final class PlaceCell: UITableViewCell {
         if state.isSelected || state.isHighlighted {
             background.backgroundColor = .tintColor
             background.cornerRadius = 8
-            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12)
+            background.backgroundInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 8)
         }
         backgroundConfiguration = background
+
+        // Preserve normal label colors while keeping text readable on the selection.
+        for label in [nameLabel, addressLabel, guideLabel, linkCountLabel] {
+            label.highlightedTextColor = .white
+            label.isHighlighted = state.isSelected || state.isHighlighted
+        }
     }
 
     private func configureSubviews() {
