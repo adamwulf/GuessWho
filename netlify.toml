@@ -1,0 +1,29 @@
+# Netlify configuration for the GuessWho marketing site.
+# Mirrors the Mantra Moment website: the site lives in the `website/`
+# subfolder and is built by Hugo. Netlify runs a build on every push to the
+# connected git repository (no GitHub Actions, no manual deploy script).
+#
+# The custom domain is set in the Netlify dashboard, NOT in this repo — there
+# is intentionally no CNAME file, and hugo.toml uses relative URLs (baseURL "/").
+
+[build]
+  base = "website"
+  command = "hugo --gc --minify"
+  publish = "public"
+
+[build.environment]
+  HUGO_VERSION = "0.165.0"
+  HUGO_ENV = "production"
+
+# Netlify builds a preview for each pull request, served from a temporary URL.
+# --buildFuture publishes not-yet-dated content; --baseURL points assets at
+# the preview host.
+[context.deploy-preview]
+  command = "hugo --gc --minify --buildFuture --baseURL $DEPLOY_PRIME_URL"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"

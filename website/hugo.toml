@@ -1,0 +1,20 @@
+# GuessWho marketing site — Hugo configuration.
+# Mirrors the Mantra Moment website setup: a single-page, hand-written static
+# site with no build step beyond Hugo itself.
+
+baseURL = "/"
+languageCode = "en-us"
+title = "GuessWho"
+
+# Single page only — no content section, no taxonomies, no RSS.
+disableKinds = ["taxonomy", "term", "RSS", "sitemap"]
+
+[params]
+  description = "GuessWho is a personal contact book that remembers how you met. Link contacts, events, and notes to recall who introduced you, where and when you met, and what you talked about. Your data stays on your device."
+  # Call-to-action link. PLACEHOLDER — Adam: replace with the real
+  # TestFlight or App Store URL when it is ready.
+  ctaURL = "#"
+  ctaLabel = "Coming soon"
+
+[minify]
+  disableXML = true
