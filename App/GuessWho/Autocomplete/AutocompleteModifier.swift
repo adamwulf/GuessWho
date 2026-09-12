@@ -15,9 +15,13 @@ extension View {
     /// - Escape hides the menu until the text changes again.
     /// - Tapping a suggestion accepts it. Typing refilters.
     ///
-    /// `candidates` is re-read on every keystroke, so it may depend on other
-    /// fields (the Department field's candidates depend on the Company
-    /// field). It supplies the whole pool; filtering and ranking are shared.
+    /// `candidates` supplies the whole pool; filtering and ranking are
+    /// shared. It is read once per focus session — on the first keystroke
+    /// after the field gains focus — and reused until focus leaves, so a
+    /// pool that walks and sorts every contact isn't rebuilt per keystroke.
+    /// It may still depend on other fields (the Department field's candidates
+    /// depend on the Company field): those can only change while THIS field
+    /// is unfocused, and the next focus reads them fresh.
     ///
     /// The menu is drawn by the nearest ancestor `.autocompleteMenuHost()`
     /// (put one on the enclosing `Form` / `List`). Without a host the field
@@ -45,6 +49,9 @@ struct AutocompleteModifier: ViewModifier {
     @State private var dismissedText: String?
     /// The field's frame in `.global` space, kept current as the list scrolls.
     @State private var anchor: CGRect = .zero
+    /// The candidate pool for the current focus session (see `autocomplete`'s
+    /// note on `candidates`). Cleared whenever focus changes.
+    @State private var cachedCandidates: [String]?
 
     private var isMenuVisible: Bool { isFocused && !suggestions.isEmpty }
 
@@ -63,6 +70,7 @@ struct AutocompleteModifier: ViewModifier {
                 refilter()
             }
             .onChange(of: isFocused) { _, focused in
+                cachedCandidates = nil
                 if !focused { hide() }
             }
             .onKeyPress(.downArrow) { moveHighlight(by: 1) }
@@ -85,7 +93,14 @@ struct AutocompleteModifier: ViewModifier {
             publish()
             return
         }
-        suggestions = TextSuggestionFilter.suggestions(matching: text, in: candidates())
+        let pool: [String]
+        if let cachedCandidates {
+            pool = cachedCandidates
+        } else {
+            pool = candidates()
+            cachedCandidates = pool
+        }
+        suggestions = TextSuggestionFilter.suggestions(matching: text, in: pool)
         highlightedIndex = nil
         publish()
     }

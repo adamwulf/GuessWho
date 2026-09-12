@@ -9,8 +9,9 @@ Two lines: one on the field, one on the container.
 
 ```swift
 // The field: pass the same binding the TextField edits, plus a closure that
-// returns the WHOLE candidate pool. It is re-read on every keystroke, so it
-// may depend on other fields.
+// returns the WHOLE candidate pool. It is read once per focus session (on
+// the first keystroke after focus), so it may depend on other fields that
+// can only change while this one is unfocused.
 TextField("Company", text: $model.edited.organizationName)
     .focused($focus, equals: .organization)
     .onSubmit { focus = .department }
