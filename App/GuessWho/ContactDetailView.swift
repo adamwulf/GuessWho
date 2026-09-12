@@ -552,6 +552,11 @@ struct ContactDetailView: View {
         // keep that already-maxed modifier chain within the type-checker's
         // budget; covers both platform branches below, which reuse `list`.
         .background { noteCommitShortcut }
+        // Draws the suggestion menu for the inline editor's autocompleting rows
+        // (Company, Department, Related) above the list's rows. Same
+        // type-checker reasoning as the shortcut above: attached to `list`,
+        // not `body`, and shared by both platform branches.
+        .autocompleteMenuHost()
         // Inject the owned editMode binding so EditButton drives this view's own
         // .editMode state, not an ambient one we can't tear down. Reset to
         // .inactive on every contact-edit exit path.

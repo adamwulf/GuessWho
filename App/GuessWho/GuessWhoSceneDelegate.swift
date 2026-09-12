@@ -2313,6 +2313,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         )
         .environment(appDelegate.service)
+        // The editor's Company / Department / Related rows read their
+        // autocomplete candidates from the repository; without it they are
+        // plain fields.
+        .environment(appDelegate.contactsRepository)
 
         presentHandoffSheet(
             editor,

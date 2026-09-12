@@ -73,6 +73,9 @@ struct ContactEditView: View {
                 ContactNotesRow(model: $model)
             }
             .formStyle(.grouped)
+            // Draws the suggestion menu for the autocompleting rows (Company,
+            // Department, Related) above the form's rows.
+            .autocompleteMenuHost()
             .navigationTitle(navigationTitle)
             #if !targetEnvironment(macCatalyst)
             .navigationBarTitleDisplayMode(.inline)
