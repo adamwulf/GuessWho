@@ -80,7 +80,7 @@ struct TextSuggestionFilterTests {
         #expect(TextSuggestionFilter.suggestions(matching: "xyz", in: companies).isEmpty)
     }
 
-    // MARK: - Browsing the whole pool (Escape on a closed menu)
+    // MARK: - Browsing the whole pool (a field on focus, or left blank)
 
     @Test
     func browsingKeepsEveryCandidateInIncomingOrder() {

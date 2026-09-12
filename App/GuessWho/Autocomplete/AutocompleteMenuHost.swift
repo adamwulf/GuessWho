@@ -133,9 +133,9 @@ private struct AutocompleteMenuView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // Lazy: Escape opens the menu on the WHOLE pool — every
-                // organization, or every contact for the Related field — and
-                // only the six visible rows need building.
+                // Lazy: a field opens on the WHOLE pool — every organization,
+                // or every contact for the Related field — and only the six
+                // visible rows need building.
                 LazyVStack(spacing: 0) {
                     ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
                         let isHighlighted = index == highlightedIndex

@@ -24,8 +24,8 @@ public enum TextSuggestionFilter {
     public static let defaultLimit = 8
 
     /// The candidates that match `query`, best first, at most `limit` of them.
-    /// A blank query yields nothing — suggestions appear as the user types,
-    /// not on focus (to browse the whole pool on demand, see `all(in:excluding:)`).
+    /// A blank query matches nothing here; a field with nothing typed offers
+    /// the whole pool through `all(in:excluding:)` instead.
     public static func suggestions(
         matching query: String,
         in candidates: [String],
@@ -50,12 +50,12 @@ public enum TextSuggestionFilter {
         return Array((prefix + wordPrefix + substring).prefix(limit))
     }
 
-    /// Every candidate, for browsing the whole pool on demand (an
-    /// autocompleting field opens its closed menu this way on Escape). The
-    /// same cleanup as `suggestions(matching:in:limit:)` — blanks dropped,
-    /// duplicates collapsed to the first spelling, the field's current
-    /// `value` left out since the user already has it — but no matching and
-    /// no cap, in the candidates' incoming order.
+    /// Every candidate, for browsing the whole pool (an autocompleting field
+    /// opens on this when it gains focus, and again whenever it is blank).
+    /// The same cleanup as `suggestions(matching:in:limit:)` — blanks
+    /// dropped, duplicates collapsed to the first spelling, the field's
+    /// current `value` left out since the user already has it — but no
+    /// matching and no cap, in the candidates' incoming order.
     public static func all(in candidates: [String], excluding value: String) -> [String] {
         distinctCandidates(in: candidates, excluding: normalize(value)).map(\.candidate)
     }

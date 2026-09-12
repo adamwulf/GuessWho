@@ -9,11 +9,11 @@ Two lines: one on the field, one on the container.
 
 ```swift
 // The field: pass the same binding the TextField edits, plus a closure that
-// returns the WHOLE candidate pool. It is read once per focus session (on
-// the first keystroke or Escape after focus), so it may depend on other
-// fields that can only change while this one is unfocused. The field's
-// submit action goes in `onSubmit:` — NOT in `.onSubmit`, which the
-// modifier scopes out (see Interaction, Return).
+// returns the WHOLE candidate pool. It is read once per focus session (when
+// the field gains focus), so it may depend on other fields that can only
+// change while this one is unfocused. The field's submit action goes in
+// `onSubmit:` — NOT in `.onSubmit`, which the modifier scopes out (see
+// Interaction, Return).
 TextField("Company", text: $model.edited.organizationName)
     .focused($focus, equals: .organization)
     .autocomplete(text: $model.edited.organizationName, onSubmit: { focus = .department }) {
@@ -46,9 +46,12 @@ Both editor surfaces host the menu: the new-contact sheet's `Form`
 
 ## Interaction
 
-- Suggestions appear in response to typing in a focused field — never on
-  focus alone, so tabbing through a filled-in form pops no menus — or on
-  demand with Escape (below).
+- Focus opens the menu on the whole pool — every candidate but the field's
+  current value, in the pool's order, uncapped — so tabbing into Company
+  lists every organization, and tabbing on into Department lists that
+  company's departments. Typing narrows it to the ranked matches; clearing
+  the field lists everything again. A field with an empty pool (Department
+  before Company is filled in) opens nothing.
 - ↓ / ↑ move the highlight; ↑ past the first suggestion clears it.
 - Return or Tab accepts the highlighted suggestion and keeps focus in the
   field. With nothing highlighted, Return runs the field's `onSubmit:` and
@@ -57,13 +60,13 @@ Both editor surfaces host the menu: the new-contact sheet's `Form`
   into a submit, so the modifier owns the submit (`onSubmit` + `submitScope`)
   and the caller's action moves into the `onSubmit:` parameter. An
   `.onSubmit` attached outside the modifier never fires.
-- Escape toggles the menu. Open, it hides until the text changes again (or
-  Escape again). Closed, it opens on the whole pool — every candidate but
-  the field's current value, in the pool's order, uncapped — so tabbing
-  into Company and pressing Escape lists every organization, and tabbing
-  on into Department lists that company's departments. Typing then narrows
-  as usual. When the pool has nothing to offer, Escape is left alone.
-- Tapping a row accepts it. Losing focus hides the menu.
+- Escape closes the menu until the text changes again (or focus returns).
+  With the menu already closed, Escape is left alone, so the editor's own
+  Escape binding gets it: both editors bind Escape to Cancel
+  (`.keyboardShortcut(.cancelAction)`), which asks "Discard changes?" when
+  there is unsaved work. So one Escape closes the menu, a second cancels
+  the edit behind that confirmation.
+- Tapping a row accepts it. Losing focus closes the menu.
 - The menu opens just below the field, or above it when the keyboard, a bar,
   or the host's bottom edge leaves no room. It follows the field as the list
   scrolls and is pinned inside the host's visible band, so a field right
@@ -79,10 +82,10 @@ Both editor surfaces host the menu: the new-contact sheet's `Form`
   the field's frame in `.global` space (kept fresh through
   `onGeometryChange`). ↓ / ↑ / Tab / Escape arrive through `onKeyPress`,
   which fires for a focused `TextField` on iOS, iPadOS, and Mac Catalyst; a
-  handler returns `.ignored` whenever it has nothing to do (the menu isn't
-  showing, or — for Escape — there is nothing to show), so the field's
-  normal key behavior is untouched. Return arrives as the submit action.
-  The whole-pool list on Escape comes from `TextSuggestionFilter.all`, the
+  handler returns `.ignored` whenever the menu isn't showing, so the
+  field's normal key behavior — and the editor's Escape → Cancel — is
+  untouched. Return arrives as the submit action. The whole-pool list (on
+  focus, or for a blank field) comes from `TextSuggestionFilter.all`, the
   typed-narrowing list from `TextSuggestionFilter.suggestions`; the menu's
   rows are lazy so a pool of every contact costs only its visible rows.
 - `AutocompleteSession` (an `@Observable` the host puts in the environment)
