@@ -592,8 +592,9 @@ private final class FavoriteCell: UITableViewCell {
         }
         backgroundConfiguration = background
 
-        // Preserve normal label colors while keeping text readable on the selection.
-        for label in [titleLabel, captionLabel, calendarLabel] {
+        // Set attributed names directly; highlightedTextColor is for plain labels.
+        titleLabel.textColor = state.isSelected || state.isHighlighted ? .white : .label
+        for label in [captionLabel, calendarLabel] {
             label.highlightedTextColor = .white
             label.isHighlighted = state.isSelected || state.isHighlighted
         }
@@ -697,6 +698,7 @@ private final class FavoriteCell: UITableViewCell {
                     }
                 }
                 titleLabel.attributedText = contact.nameAttributedString
+                setNeedsUpdateConfiguration()
                 // Same "jobTitle, organizationName" caption the People list
                 // shows. The helper returns "" for organizations (and people
                 // with no job/org), so those rows stay name-only with the

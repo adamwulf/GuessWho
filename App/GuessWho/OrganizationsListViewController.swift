@@ -611,8 +611,9 @@ private final class OrganizationCell: UITableViewCell {
         }
         backgroundConfiguration = background
 
-        // Preserve normal label colors while keeping text readable on the selection.
-        for label in [nameLabel, linkCountLabel] {
+        // Set attributed names directly; highlightedTextColor is for plain labels.
+        nameLabel.textColor = state.isSelected || state.isHighlighted ? .white : .label
+        for label in [linkCountLabel] {
             label.highlightedTextColor = .white
             label.isHighlighted = state.isSelected || state.isHighlighted
         }
@@ -697,6 +698,7 @@ private final class OrganizationCell: UITableViewCell {
             }
         }
         nameLabel.attributedText = contact.nameAttributedString
+        setNeedsUpdateConfiguration()
         // Reset every configure so a recycled cell never shows a stale count.
         // The spacing constraint flips with visibility so a hidden label
         // collapses flush and the name reclaims the full width (see property).
@@ -727,6 +729,7 @@ private final class OrganizationCell: UITableViewCell {
         iconView.contentMode = .scaleAspectFill
         iconView.image = ContactAvatarImage.placeholder(for: synthetic, diameter: 28)
         nameLabel.attributedText = synthetic.nameAttributedString
+        setNeedsUpdateConfiguration()
         linkCountLabel.text = nil
         linkCountLabel.isHidden = true
         textToLinkCountSpacing?.constant = 0

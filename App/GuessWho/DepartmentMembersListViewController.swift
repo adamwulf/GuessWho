@@ -583,8 +583,9 @@ private final class ContactCell: UITableViewCell {
         }
         backgroundConfiguration = background
 
-        // Preserve normal label colors while keeping text readable on the selection.
-        for label in [nameLabel, subtitleLabel, linkCountLabel] {
+        // Set attributed names directly; highlightedTextColor is for plain labels.
+        nameLabel.textColor = state.isSelected || state.isHighlighted ? .white : .label
+        for label in [subtitleLabel, linkCountLabel] {
             label.highlightedTextColor = .white
             label.isHighlighted = state.isSelected || state.isHighlighted
         }
@@ -680,6 +681,7 @@ private final class ContactCell: UITableViewCell {
             }
         }
         nameLabel.attributedText = contact.nameAttributedString
+        setNeedsUpdateConfiguration()
         // Non-breaking space keeps the row's two-line height stable when the
         // contact has no jobTitle/organizationName — matches the People row.
         subtitleLabel.text = Self.subtitle(for: contact).isEmpty ? "\u{00A0}" : Self.subtitle(for: contact)
