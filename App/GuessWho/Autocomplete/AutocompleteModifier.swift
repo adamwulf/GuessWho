@@ -78,6 +78,11 @@ struct AutocompleteModifier: ViewModifier {
             .onKeyPress(.return) { acceptHighlighted() }
             .onKeyPress(.tab) { acceptHighlighted() }
             .onKeyPress(.escape) { dismissMenu() }
+            // A List reports a row as gone once it scrolls out of the safe
+            // area, and back once it returns — while the field's focus and
+            // this state live on. Take the menu down with the row and put it
+            // back when the row is back.
+            .onAppear { if isMenuVisible { publish() } }
             .onDisappear { session?.dismiss(fieldID: fieldID) }
     }
 

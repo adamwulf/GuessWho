@@ -31,22 +31,26 @@ private struct AutocompleteMenuOverlay: View {
     var body: some View {
         GeometryReader { geometry in
             // The field reports its frame in `.global`; bring it into this
-            // overlay's own space before placing the menu. `compute` returns
-            // nil while the field itself is scrolled under a bar or out of
-            // view — a menu for a field the user can't see is noise.
+            // overlay's own space before placing the menu.
+            //
+            // This overlay's frame is ALREADY the visible band: a List/Form
+            // lays its overlay out inside its safe-area-inset frame (measured
+            // on iPhone: 660pt tall starting under the navigation bar, ending
+            // above the tab bar, and the keyboard shrinks it the same way),
+            // while the list's scroll content keeps running under the bars.
+            // So the band to place within is simply `0...geometry.size`.
+            // `geometry.safeAreaInsets` still reports the bars OUTSIDE this
+            // frame (101 top / 83 bottom on that iPhone); subtracting them
+            // here would count the bars twice and hide the menu for a field
+            // sitting fully visible just above the tab bar — which is exactly
+            // the bug an earlier version shipped. Don't use them.
             let container = geometry.frame(in: .global)
-            if let presentation = session.presentation,
-               !presentation.suggestions.isEmpty,
-               let placement = AutocompleteMenuPlacement.compute(
-                   anchor: presentation.anchor.offsetBy(dx: -container.minX, dy: -container.minY),
-                   containerSize: geometry.size,
-                   // Bars, the home indicator, and the keyboard all arrive as
-                   // safe-area insets; the menu flips above the field rather
-                   // than opening under them.
-                   topInset: geometry.safeAreaInsets.top,
-                   bottomInset: geometry.safeAreaInsets.bottom,
-                   rowCount: presentation.suggestions.count
-               ) {
+            if let presentation = session.presentation, !presentation.suggestions.isEmpty {
+                let placement = AutocompleteMenuPlacement.compute(
+                    anchor: presentation.anchor.offsetBy(dx: -container.minX, dy: -container.minY),
+                    containerSize: geometry.size,
+                    rowCount: presentation.suggestions.count
+                )
                 AutocompleteMenuView(
                     suggestions: presentation.suggestions,
                     highlightedIndex: presentation.highlightedIndex,
@@ -78,24 +82,25 @@ enum AutocompleteMenuPlacement {
         var opensUpward: Bool
     }
 
-    /// `anchor` is the field's frame in the host's coordinate space;
-    /// `topInset` / `bottomInset` are the host's safe-area insets (bars, home
-    /// indicator, keyboard). Returns nil when the field has scrolled out of
-    /// the host at the top, or its midline sits under the bottom inset — the
-    /// tab bar or the keyboard covers it — so no menu is drawn for a field
-    /// the user can't see. The top inset is NOT a visibility cutoff: the
-    /// navigation bar is transparent, so a field scrolled up under it is
-    /// still readable and still deserves its menu.
+    /// `anchor` is the field's frame in the host's coordinate space, and
+    /// `containerSize` is the host's visible band — the overlay's own frame,
+    /// which already stops at the bars and the keyboard (see the overlay).
+    ///
+    /// The menu opens below the field when it fits, else above it (so a
+    /// field sitting right above the tab bar gets its menu flipped up), and
+    /// below anyway when neither fits. It is then PINNED inside the band:
+    /// never hidden on account of where the field is. A List stops updating
+    /// a row's geometry once the row leaves the safe area, so a field that a
+    /// scroll bounce has just brought back into view can still report a
+    /// frame a few points beyond the band — hiding on that lag is what made
+    /// the menu vanish for a fully visible field. Pinning keeps it right next
+    /// to the field instead. A field that has actually left the list takes
+    /// its menu with it through the row's `onDisappear`, not through geometry.
     static func compute(
         anchor: CGRect,
         containerSize: CGSize,
-        topInset: CGFloat,
-        bottomInset: CGFloat,
         rowCount: Int
-    ) -> Placement? {
-        let visibleBottom = containerSize.height - bottomInset
-        guard anchor.maxY > 0, anchor.midY <= visibleBottom else { return nil }
-
+    ) -> Placement {
         let visibleRows = max(1, min(rowCount, maxVisibleRows))
         let height = CGFloat(visibleRows) * rowHeight + verticalPadding * 2
 
@@ -106,12 +111,14 @@ enum AutocompleteMenuPlacement {
 
         let belowY = anchor.maxY + gap
         let aboveY = anchor.minY - gap - height
-        let fitsBelow = belowY + height <= visibleBottom
-        let fitsAbove = aboveY >= topInset
+        let fitsBelow = belowY + height <= containerSize.height
+        let fitsAbove = aboveY >= 0
         let opensUpward = !fitsBelow && fitsAbove
+        let wantedY = opensUpward ? aboveY : belowY
+        let y = min(max(wantedY, 0), max(0, containerSize.height - height))
 
         return Placement(
-            frame: CGRect(x: x, y: opensUpward ? aboveY : belowY, width: width, height: height),
+            frame: CGRect(x: x, y: y, width: width, height: height),
             opensUpward: opensUpward
         )
     }

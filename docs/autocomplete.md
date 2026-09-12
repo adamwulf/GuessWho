@@ -55,7 +55,9 @@ Both editor surfaces host the menu: the new-contact sheet's `Form`
 - Tapping a row accepts it. Losing focus hides the menu.
 - The menu opens just below the field, or above it when the keyboard, a bar,
   or the host's bottom edge leaves no room. It follows the field as the list
-  scrolls and disappears while the field is scrolled under a bar.
+  scrolls and is pinned inside the host's visible band, so a field right
+  above the tab bar keeps its menu flipped up. It goes away only when the
+  row leaves the list (its `onDisappear`), and comes back with it.
 
 ## How it works
 
