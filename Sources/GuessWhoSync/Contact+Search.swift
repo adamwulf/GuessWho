@@ -1,13 +1,18 @@
 import Foundation
 
 extension Contact {
+    /// The `displayName` of a contact with no name at all. Exposed so callers
+    /// that build lists of names (autocomplete candidates) can skip it instead
+    /// of matching the literal.
+    public static let unnamedDisplayName = "(Unnamed)"
+
     /// Stable display label shared by package queries and app presentation.
     public var displayName: String {
         let personName = "\(givenName) \(familyName)".trimmingCharacters(in: .whitespaces)
         if !personName.isEmpty { return personName }
         if !organizationName.isEmpty { return organizationName }
         if !nickname.isEmpty { return nickname }
-        return "(Unnamed)"
+        return Self.unnamedDisplayName
     }
 
     public var lastNameSortKey: String {
