@@ -30,20 +30,23 @@ private struct AutocompleteMenuOverlay: View {
 
     var body: some View {
         GeometryReader { geometry in
-            if let presentation = session.presentation, !presentation.suggestions.isEmpty {
-                // The field reports its frame in `.global`; bring it into
-                // this overlay's own space before placing the menu.
-                let container = geometry.frame(in: .global)
-                let anchor = presentation.anchor.offsetBy(dx: -container.minX, dy: -container.minY)
-                let placement = AutocompleteMenuPlacement.compute(
-                    anchor: anchor,
-                    containerSize: geometry.size,
-                    // The keyboard (and the home indicator) arrive as a bottom
-                    // safe-area inset; the menu flips above the field rather
-                    // than opening under them.
-                    bottomInset: geometry.safeAreaInsets.bottom,
-                    rowCount: presentation.suggestions.count
-                )
+            // The field reports its frame in `.global`; bring it into this
+            // overlay's own space before placing the menu. `compute` returns
+            // nil while the field itself is scrolled under a bar or out of
+            // view — a menu for a field the user can't see is noise.
+            let container = geometry.frame(in: .global)
+            if let presentation = session.presentation,
+               !presentation.suggestions.isEmpty,
+               let placement = AutocompleteMenuPlacement.compute(
+                   anchor: presentation.anchor.offsetBy(dx: -container.minX, dy: -container.minY),
+                   containerSize: geometry.size,
+                   // Bars, the home indicator, and the keyboard all arrive as
+                   // safe-area insets; the menu flips above the field rather
+                   // than opening under them.
+                   topInset: geometry.safeAreaInsets.top,
+                   bottomInset: geometry.safeAreaInsets.bottom,
+                   rowCount: presentation.suggestions.count
+               ) {
                 AutocompleteMenuView(
                     suggestions: presentation.suggestions,
                     highlightedIndex: presentation.highlightedIndex,
@@ -75,13 +78,24 @@ enum AutocompleteMenuPlacement {
         var opensUpward: Bool
     }
 
-    /// `anchor` is the field's frame in the host's coordinate space.
+    /// `anchor` is the field's frame in the host's coordinate space;
+    /// `topInset` / `bottomInset` are the host's safe-area insets (bars, home
+    /// indicator, keyboard). Returns nil when the field has scrolled out of
+    /// the host at the top, or its midline sits under the bottom inset — the
+    /// tab bar or the keyboard covers it — so no menu is drawn for a field
+    /// the user can't see. The top inset is NOT a visibility cutoff: the
+    /// navigation bar is transparent, so a field scrolled up under it is
+    /// still readable and still deserves its menu.
     static func compute(
         anchor: CGRect,
         containerSize: CGSize,
+        topInset: CGFloat,
         bottomInset: CGFloat,
         rowCount: Int
-    ) -> Placement {
+    ) -> Placement? {
+        let visibleBottom = containerSize.height - bottomInset
+        guard anchor.maxY > 0, anchor.midY <= visibleBottom else { return nil }
+
         let visibleRows = max(1, min(rowCount, maxVisibleRows))
         let height = CGFloat(visibleRows) * rowHeight + verticalPadding * 2
 
@@ -90,11 +104,10 @@ enum AutocompleteMenuPlacement {
         let maxX = max(sideMargin, containerSize.width - sideMargin - width)
         let x = min(max(anchor.minX, sideMargin), maxX)
 
-        let visibleBottom = containerSize.height - bottomInset
         let belowY = anchor.maxY + gap
         let aboveY = anchor.minY - gap - height
         let fitsBelow = belowY + height <= visibleBottom
-        let fitsAbove = aboveY >= 0
+        let fitsAbove = aboveY >= topInset
         let opensUpward = !fitsBelow && fitsAbove
 
         return Placement(
