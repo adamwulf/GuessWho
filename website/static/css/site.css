@@ -265,6 +265,7 @@ p { margin: 0 0 1rem; }
   overflow: hidden;
   background: linear-gradient(160deg, var(--bg2), var(--bg));
 }
+.phone-screen picture { display: block; width: 100%; height: 100%; }
 .phone-screen img { width: 100%; height: 100%; object-fit: cover; }
 
 /* Clearly-marked placeholder until real screenshots land */
@@ -326,6 +327,8 @@ p { margin: 0 0 1rem; }
 }
 .split-grid h2 { font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.8rem); }
 .split-media { display: flex; justify-content: center; }
+/* Reversed rhythm: phone/media on the left, copy on the right (desktop). */
+.split-grid.reverse .split-media { order: -1; }
 .check-list {
   list-style: none;
   margin: 1.2rem 0 0;
@@ -370,6 +373,28 @@ p { margin: 0 0 1rem; }
 }
 .feature h3 { font-size: 1.15rem; margin-bottom: 0.3rem; }
 .feature p { color: var(--muted); margin: 0; font-size: 0.98rem; }
+
+/* ---- Gallery ------------------------------------------------------------- */
+.gallery-section { padding-block: clamp(2.5rem, 6vw, 4.5rem); }
+.gallery-section h2 {
+  font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.8rem);
+  text-align: center;
+}
+.gallery {
+  margin-top: 2rem;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.6rem;
+  justify-items: center;
+}
+.gallery figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+}
+.gallery figcaption { color: var(--muted); text-align: center; font-size: 0.98rem; }
 
 /* ---- Privacy ------------------------------------------------------------- */
 .privacy { padding-block: clamp(2.5rem, 6vw, 4.5rem); }
@@ -417,7 +442,8 @@ p { margin: 0 0 1rem; }
   .split-grid { grid-template-columns: 1fr; }
   .hero-device { order: -1; }
   .story-cards,
-  .feature-grid { grid-template-columns: 1fr; }
+  .feature-grid,
+  .gallery { grid-template-columns: 1fr; }
   .header-cta { display: none; }
   .footer-inner { flex-direction: column; align-items: flex-start; }
 }

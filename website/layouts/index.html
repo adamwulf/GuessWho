@@ -77,14 +77,14 @@
         </div>
 
         <div class="hero-device">
-          <div class="phone" role="img" aria-label="GuessWho showing a contact with linked people, events, and notes">
+          <div class="phone">
             <div class="phone-screen">
-              {{/* Real screenshot goes here once captured; placeholder until then. */}}
-              <div class="shot-placeholder shot-portrait">
-                <span class="shot-tag">Screenshot</span>
-                <span class="shot-name">Contact detail &mdash; relations, events &amp; notes</span>
-                <span class="shot-size">1206 &times; 2622</span>
-              </div>
+              <picture>
+                <source srcset="{{ "images/contact-detail-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                <img src="{{ "images/contact-detail-light.png" | relURL }}" width="1206" height="2622"
+                     alt="A contact in GuessWho showing the person's organization, phone, email, and a private dated note."
+                     fetchpriority="high" decoding="async">
+              </picture>
             </div>
           </div>
         </div>
@@ -131,33 +131,65 @@
       </div>
     </section>
 
+    <!-- SHOWCASE: the linked view ---------------------------------------->
+    <section class="feature-split" aria-labelledby="showcase-title">
+      <div class="wrap split-grid reverse">
+        <div class="split-media">
+          <div class="phone">
+            <div class="phone-screen">
+              <picture>
+                <source srcset="{{ "images/notes-view-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                <img src="{{ "images/notes-view-light.png" | relURL }}" width="1206" height="2622"
+                     alt="A contact's linked view in GuessWho: dated notes, linked people, and a linked event."
+                     loading="lazy" decoding="async">
+              </picture>
+            </div>
+          </div>
+        </div>
+        <div class="split-copy">
+          <p class="eyebrow">One screen, the whole story</p>
+          <h2 id="showcase-title">A name, and everything around it.</h2>
+          <p class="section-lead">
+            Open a contact and the context is right there: your dated notes from
+            each time you talked, the people they&rsquo;re linked to, and the
+            events you shared. No more staring at a name trying to place it.
+          </p>
+          <ul class="check-list">
+            <li>Dated notes that read like a running memory.</li>
+            <li>Linked people &mdash; who introduced you, who they work with.</li>
+            <li>Linked events &mdash; where and when your paths crossed.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
     <!-- LINKEDIN IMPORT --------------------------------------------------->
-    <section class="feature-split" aria-labelledby="linkedin-title">
+    <section class="feature-split alt" aria-labelledby="linkedin-title">
       <div class="wrap split-grid">
         <div class="split-copy">
           <p class="eyebrow">Browser extension</p>
           <h2 id="linkedin-title">Save a LinkedIn profile in one click.</h2>
           <p class="section-lead">
             When you&rsquo;re looking at someone&rsquo;s profile in Safari,
-            Chrome, or Brave, click the GuessWho extension. It reads the page
-            you&rsquo;re already viewing &mdash; name, title, company, links, and
-            photo &mdash; and hands it to the app.
+            Chrome, or Brave, the GuessWho extension reads the page you&rsquo;re
+            already viewing &mdash; name, title, company, links, and photo
+            &mdash; and hands it to the app.
           </p>
           <ul class="check-list">
-            <li>You see a clear before-and-after of exactly what will change.</li>
-            <li>Check off the fields you want; leave the rest untouched.</li>
-            <li>Save creates a new contact or updates an existing one.</li>
+            <li>Check off exactly which fields to save; leave the rest untouched.</li>
+            <li>Creates a new contact or updates one you already have.</li>
             <li>Nothing is captured or saved without your click and your review.</li>
           </ul>
         </div>
         <div class="split-media">
-          <div class="phone phone-sm" role="img" aria-label="GuessWho confirming a LinkedIn profile import with a field-by-field review">
+          <div class="phone">
             <div class="phone-screen">
-              <div class="shot-placeholder shot-portrait">
-                <span class="shot-tag">Screenshot</span>
-                <span class="shot-name">LinkedIn import &mdash; review &amp; confirm</span>
-                <span class="shot-size">1206 &times; 2622</span>
-              </div>
+              <picture>
+                <source srcset="{{ "images/linkedin-import-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                <img src="{{ "images/linkedin-import-light.png" | relURL }}" width="1206" height="2622"
+                     alt="GuessWho's import review sheet: existing values on the left, LinkedIn values on the right, with a checkbox on each field."
+                     loading="lazy" decoding="async">
+              </picture>
             </div>
           </div>
         </div>
@@ -218,6 +250,54 @@
             <h3>Favorites</h3>
             <p>Star the people, organizations, and places you reach for most, so they&rsquo;re one tap away.</p>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- GALLERY ----------------------------------------------------------->
+    <section class="gallery-section" aria-labelledby="gallery-title">
+      <div class="wrap">
+        <h2 id="gallery-title">See it in action</h2>
+        <div class="gallery">
+          <figure>
+            <div class="phone phone-sm">
+              <div class="phone-screen">
+                <picture>
+                  <source srcset="{{ "images/people-list-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                  <img src="{{ "images/people-list-light.png" | relURL }}" width="1206" height="2622"
+                       alt="The People list in GuessWho, contacts grouped alphabetically with roles and companies."
+                       loading="lazy" decoding="async">
+                </picture>
+              </div>
+            </div>
+            <figcaption>Everyone you know, at a glance.</figcaption>
+          </figure>
+          <figure>
+            <div class="phone phone-sm">
+              <div class="phone-screen">
+                <picture>
+                  <source srcset="{{ "images/event-detail-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                  <img src="{{ "images/event-detail-light.png" | relURL }}" width="1206" height="2622"
+                       alt="An event in GuessWho with its date, venue, notes, and a tag."
+                       loading="lazy" decoding="async">
+                </picture>
+              </div>
+            </div>
+            <figcaption>Events with notes and tags.</figcaption>
+          </figure>
+          <figure>
+            <div class="phone phone-sm">
+              <div class="phone-screen">
+                <picture>
+                  <source srcset="{{ "images/add-contact-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                  <img src="{{ "images/add-contact-light.png" | relURL }}" width="1206" height="2622"
+                       alt="Creating a new contact in GuessWho."
+                       loading="lazy" decoding="async">
+                </picture>
+              </div>
+            </div>
+            <figcaption>Add a contact in seconds.</figcaption>
+          </figure>
         </div>
       </div>
     </section>
