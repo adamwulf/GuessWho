@@ -544,7 +544,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         }
         list.didDeleteContact = { [weak self] id in
-            self?.retireDetail(ifShowing: id, tab: .people)
+            self?.retireDetail(ifShowing: id, tab: .people, appDelegate: appDelegate)
         }
         let nav = UINavigationController(rootViewController: list)
         split.setViewController(nav, for: .supplementary)
@@ -580,7 +580,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         }
         list.didDeleteContact = { [weak self] id in
-            self?.retireDetail(ifShowing: id, tab: .organizations)
+            self?.retireDetail(ifShowing: id, tab: .organizations, appDelegate: appDelegate)
         }
         split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
         installDetailPlaceholder(in: split, for: .organizations)
@@ -821,6 +821,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // closures.
         split.setViewController(nav, for: .secondary)
         noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
+        hosting.gwShownContactIDs = [contact.contactID]
         return nav
     }
 
@@ -849,6 +850,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Multi-selection is intentionally not persisted as one arbitrary
         // contact. Reopening the scene returns to the current list section.
         syncSelectionToTop(hosting)
+        hosting.gwShownContactIDs = contacts.map(\.contactID)
     }
 
     private func showEventDetail(eventUUID: String, eventKitID: String?, appDelegate: GuessWhoAppDelegate) {
@@ -971,6 +973,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // what they were looking at, re-rooted — not the full breadcrumb). Stamp
         // the pushed VC so a later Back re-syncs to the shallower detail.
         noteSelectionShown(.contact(ref.id.restorationToken), stampedOn: hosting)
+        hosting.gwShownContactIDs = [ref.id]
     }
 
     private func pushCatalystEventDetail(
@@ -1065,6 +1068,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         nav.pushViewController(hosting, animated: true)
         syncSelectionToTop(hosting)
+        hosting.gwShownContactIDs = contacts.map(\.contactID)
     }
 
     /// Bind the SwiftUI env push closures to the supplied secondary-column nav.
@@ -1107,23 +1111,36 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
     }
 
-    /// A list row's swipe just deleted `id` from Contacts. When that record is
-    /// the one open in the detail column, the card there is now stale (the
-    /// detail view re-reads on its own writes, not on a list's), so swap it
-    /// for the section placeholder and clear the restorable selection. Any
-    /// other detail is left alone — deleting row B must not disturb the card
-    /// for A.
+    /// A list row's swipe just deleted `id` from Contacts. A detail view
+    /// re-reads on its own writes, not on a list's, so any card for that
+    /// record still in the secondary column is now stale. Walk the column's
+    /// nav stack — every contact hosting on it carries `gwShownContactIDs` —
+    /// and leave the column alone unless one of them shows `id`: deleting row
+    /// B must not disturb the card for A.
     ///
-    /// "Open in the detail column" is read from `restorationState.selection`,
-    /// which every mount and pop keeps pointed at the top of the secondary
-    /// column (`noteSelectionShown` / `syncSelectionToTop`). Both tokens are
-    /// minted from the same cached record's `ContactID`, so equality here is
-    /// the record's sealed identity pair, nothing the app compares by hand.
-    /// A multi-selection stack records no selection, so a deleted card inside
-    /// a stack stays until the next selection replaces the column.
-    private func retireDetail(ifShowing id: ContactID, tab: SidebarTab) {
+    /// When it does: a lone multi-selection stack re-forms from its surviving
+    /// records (the list's remaining selection), which `showContactDetailStack`
+    /// collapses to a single card or, with nothing left, declines — and then,
+    /// as for a single card or any drill-down whose history includes the
+    /// record, the column returns to the section placeholder and the
+    /// restorable selection clears. Dropping a drill-down history is
+    /// deliberate: popping back through a deleted record would land on a
+    /// stale card.
+    private func retireDetail(ifShowing id: ContactID, tab: SidebarTab, appDelegate: GuessWhoAppDelegate) {
         guard let split,
-              restorationState?.selection == .contact(id.restorationToken) else { return }
+              let nav = split.viewController(for: .secondary) as? UINavigationController,
+              nav.viewControllers.contains(where: { $0.gwShownContactIDs.contains(id) }) else { return }
+        if nav.viewControllers.count == 1,
+           let root = nav.viewControllers.first,
+           root.gwShownContactIDs.count > 1 {
+            let remaining = root.gwShownContactIDs
+                .filter { $0 != id }
+                .compactMap { appDelegate.contactsRepository.contact(id: $0) }
+            if !remaining.isEmpty {
+                showContactDetailStack(contacts: remaining, appDelegate: appDelegate)
+                return
+            }
+        }
         installDetailPlaceholder(in: split, for: tab)
         syncSelectionToTop(nil)
     }
@@ -3097,8 +3114,36 @@ private final class RestorationSelectionBox {
     init(_ selection: RestorationState.Selection) { self.selection = selection }
 }
 
+private final class ShownContactIDsBox {
+    let ids: [ContactID]
+    init(_ ids: [ContactID]) { self.ids = ids }
+}
+
 private extension UIViewController {
     private static var gwRestorationSelectionKey: UInt8 = 0
+    private static var gwShownContactIDsKey: UInt8 = 0
+
+    /// The contact records this view controller shows: one for a hosted
+    /// `ContactDetailView`, several for a `ContactDetailStackView`, none for
+    /// anything else. Stamped on the Catalyst secondary column's hostings so a
+    /// list-row delete can tell whether the column still shows the record
+    /// (`retireDetail(ifShowing:tab:appDelegate:)`). Distinct from
+    /// `gwRestorationSelection`, which names at most ONE restorable record and
+    /// is deliberately nil for a stack.
+    var gwShownContactIDs: [ContactID] {
+        get {
+            (objc_getAssociatedObject(self, &Self.gwShownContactIDsKey)
+                as? ShownContactIDsBox)?.ids ?? []
+        }
+        set {
+            objc_setAssociatedObject(
+                self,
+                &Self.gwShownContactIDsKey,
+                newValue.isEmpty ? nil : ShownContactIDsBox(newValue),
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+        }
+    }
 
     /// The restoration selection this view controller represents, if it hosts a
     /// contact/event detail. Stamped when the detail is pushed/replaced so the

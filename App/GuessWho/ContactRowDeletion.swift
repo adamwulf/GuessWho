@@ -6,9 +6,9 @@ import GuessWhoSync
 /// failure the same way.
 ///
 /// The swipe is a shortcut to the same write as "Delete Contact" in the
-/// detail view's edit mode: the record is removed from Contacts on every
-/// device. So it always confirms first, names the record it is about to
-/// delete, and never deletes on a full swipe.
+/// detail view's edit mode: the record is removed from Contacts. So it always
+/// confirms first, names the record it is about to delete, and never deletes
+/// on a full swipe.
 ///
 /// Row removal is not done here. A successful delete makes the repository
 /// post `.contactsRepositoryDidReload`, and the list's observer re-applies
@@ -25,8 +25,8 @@ final class ContactRowDeletion {
 
     /// - Parameters:
     ///   - host: the list controller; alerts present from it.
-    ///   - didDelete: runs after the record is gone (or was found already
-    ///     gone), so the shell can retire a detail that showed it.
+    ///   - didDelete: runs once the record is gone — deleted here, or found
+    ///     already gone — so the shell can retire a detail that showed it.
     init(
         repository: ContactsRepository,
         host: UIViewController,
@@ -62,18 +62,17 @@ final class ContactRowDeletion {
     // MARK: - Confirm
 
     private func confirmDelete(_ contact: Contact) {
-        guard let host else { return }
         let noun = contact.contactType == .organization ? "organization" : "contact"
         let alert = UIAlertController(
             title: "Delete “\(contact.displayName)”?",
-            message: "This removes the \(noun) from Contacts on all your devices.",
+            message: "This removes the \(noun) from Contacts.",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
             Task { await self?.performDelete(contact) }
         })
-        host.present(alert, animated: true)
+        present(alert)
     }
 
     // MARK: - Delete
@@ -81,10 +80,10 @@ final class ContactRowDeletion {
     private func performDelete(_ contact: Contact) async {
         let id = contact.contactID
         do {
-            // `false` means the id no longer resolves in the cache — the row
-            // is on its way out with the reload that dropped it, so there is
-            // nothing to delete and nothing to report.
-            guard try await repository.deleteContact(id: id) else { return }
+            // `false` means the id no longer resolved in the cache, so there
+            // was nothing to delete — the record is gone either way, and a
+            // detail still showing it is just as stale.
+            _ = try await repository.deleteContact(id: id)
             didDelete(id)
         } catch {
             let category = ContactEditModel.saveErrorCategory(error)
@@ -101,7 +100,6 @@ final class ContactRowDeletion {
     }
 
     private func presentFailure(_ category: ContactEditModel.SaveErrorCategory) {
-        guard let host else { return }
         let alert = UIAlertController(
             title: "Couldn't delete",
             message: category.deleteFailureMessage,
@@ -113,6 +111,23 @@ final class ContactRowDeletion {
                 ContactsSettingsLink.open()
             })
         }
-        host.present(alert, animated: true)
+        present(alert)
+    }
+
+    /// Present on the host once any dismissal already running on it has
+    /// finished. The Delete action's handler runs while the confirmation is
+    /// still animating out; a delete that fails before that animation ends
+    /// would otherwise present into a host mid-transition, and UIKit drops
+    /// such a presentation silently (see the scene delegate's
+    /// `presentAfterAnyDismissal`).
+    private func present(_ alert: UIAlertController) {
+        guard let host else { return }
+        if let coordinator = host.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { _ in
+                host.present(alert, animated: true)
+            }
+        } else {
+            host.present(alert, animated: true)
+        }
     }
 }
