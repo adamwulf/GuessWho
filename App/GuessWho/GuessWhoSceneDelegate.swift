@@ -543,6 +543,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
             }
         }
+        list.didDeleteContact = { [weak self] id in
+            self?.retireDetail(ifShowing: id, tab: .people)
+        }
         let nav = UINavigationController(rootViewController: list)
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .people)
@@ -575,6 +578,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             ) { [weak self] created in
                 self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
             }
+        }
+        list.didDeleteContact = { [weak self] id in
+            self?.retireDetail(ifShowing: id, tab: .organizations)
         }
         split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
         installDetailPlaceholder(in: split, for: .organizations)
@@ -1099,6 +1105,27 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             message: tab.detailPlaceholderMessage
         )
         split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
+    }
+
+    /// A list row's swipe just deleted `id` from Contacts. When that record is
+    /// the one open in the detail column, the card there is now stale (the
+    /// detail view re-reads on its own writes, not on a list's), so swap it
+    /// for the section placeholder and clear the restorable selection. Any
+    /// other detail is left alone — deleting row B must not disturb the card
+    /// for A.
+    ///
+    /// "Open in the detail column" is read from `restorationState.selection`,
+    /// which every mount and pop keeps pointed at the top of the secondary
+    /// column (`noteSelectionShown` / `syncSelectionToTop`). Both tokens are
+    /// minted from the same cached record's `ContactID`, so equality here is
+    /// the record's sealed identity pair, nothing the app compares by hand.
+    /// A multi-selection stack records no selection, so a deleted card inside
+    /// a stack stays until the next selection replaces the column.
+    private func retireDetail(ifShowing id: ContactID, tab: SidebarTab) {
+        guard let split,
+              restorationState?.selection == .contact(id.restorationToken) else { return }
+        installDetailPlaceholder(in: split, for: tab)
+        syncSelectionToTop(nil)
     }
 
     /// Neutral placeholder shown only at scene-connection time, before the

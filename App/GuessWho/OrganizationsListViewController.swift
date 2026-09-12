@@ -19,6 +19,10 @@ final class OrganizationsListViewController: UIViewController {
     /// `ContactsListViewController.didRequestAddContact` for the same pattern.
     var didRequestAddOrganization: () -> Void = {}
 
+    /// A row's trailing swipe just deleted this organization record. See
+    /// `ContactsListViewController.didDeleteContact`.
+    var didDeleteContact: (ContactID) -> Void = { _ in }
+
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
     private let favoritesStore: FavoritesListStore
@@ -237,6 +241,14 @@ final class OrganizationsListViewController: UIViewController {
             return self.repository.contact(id: id)
         },
         selection: { [weak self] in self?.selectedContacts() ?? [] }
+    )
+
+    /// The row's trailing swipe ("Delete") — see
+    /// `ContactsListViewController.rowDeletion`.
+    private lazy var rowDeletion = ContactRowDeletion(
+        repository: repository,
+        host: self,
+        didDelete: { [weak self] id in self?.didDeleteContact(id) }
     )
 
     private func notifySelectionChanged(_ contacts: [Contact]? = nil) {
@@ -489,6 +501,22 @@ extension OrganizationsListViewController: UITableViewDelegate {
     ) -> UIContextMenuConfiguration? {
         addToGroupMenu.configuration(forRowAt: indexPath)
     }
+
+    /// Trailing swipe: Delete, for a real record only — see
+    /// `ContactsListViewController.tableView(_:trailingSwipeActionsConfigurationForRowAt:)`.
+    /// A phantom row has no record to delete (it is a company name people's
+    /// cards carry), so it gets an actionless configuration; the data source
+    /// already refuses to edit it while browsing, this is the second lock.
+    func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard let id = recordID(at: indexPath),
+              let contact = repository.contact(id: id) else {
+            return ContactRowDeletion.noActions
+        }
+        return rowDeletion.swipeConfiguration(for: contact)
+    }
 }
 
 // MARK: - UITableViewDataSourcePrefetching
@@ -533,8 +561,15 @@ private final class SectionedDataSource: UITableViewDiffableDataSource<String, O
     /// `ContactsListViewController.SectionedDataSource.showsSectionIndex`.
     var showsSectionIndex = true
 
+    /// Select mode edits every row (that is what draws the circles). While
+    /// browsing, only a real record is editable — which is what lets UIKit
+    /// begin its delete swipe — and a phantom stays inert: it has no record
+    /// to delete. See `ContactsListViewController.SectionedDataSource` for
+    /// why unlocking the swipe is safe.
     override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        tableView.isEditing
+        if tableView.isEditing { return true }
+        if case .record? = itemIdentifier(for: indexPath) { return true }
+        return false
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
