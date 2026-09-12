@@ -15,22 +15,23 @@ struct OrgFieldsRow: View {
 
     var body: some View {
         Section {
+            // Return moves to the next field through the autocomplete's
+            // `onSubmit`, not `.onSubmit`: the modifier takes Return first so
+            // a highlighted suggestion is accepted instead.
             TextField("Company", text: $model.edited.organizationName)
                 .focused($focus, equals: .organization)
-                .onSubmit { focus = .department }
                 // Every organization name already in the contact book —
                 // records and the company strings people carry.
-                .autocomplete(text: $model.edited.organizationName) {
+                .autocomplete(text: $model.edited.organizationName, onSubmit: { focus = .department }) {
                     repository?.organizationNameSuggestionCandidates() ?? []
                 }
                 .onChange(of: model.edited.organizationName) { _, _ in model.isDirty = true }
                 .centeredRowContent()
             TextField("Department", text: $model.edited.departmentName)
                 .focused($focus, equals: .department)
-                .onSubmit { focus = .jobTitle }
                 // Departments already used inside the Company named above;
                 // nothing until that field is filled in.
-                .autocomplete(text: $model.edited.departmentName) {
+                .autocomplete(text: $model.edited.departmentName, onSubmit: { focus = .jobTitle }) {
                     repository?.departmentNameSuggestionCandidates(
                         inOrganizationNamed: model.edited.organizationName
                     ) ?? []

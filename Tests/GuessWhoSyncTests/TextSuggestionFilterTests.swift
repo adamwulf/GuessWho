@@ -79,4 +79,38 @@ struct TextSuggestionFilterTests {
     func noMatchYieldsNothing() {
         #expect(TextSuggestionFilter.suggestions(matching: "xyz", in: companies).isEmpty)
     }
+
+    // MARK: - Browsing the whole pool (Escape on a closed menu)
+
+    @Test
+    func browsingKeepsEveryCandidateInIncomingOrder() {
+        // No matching and no ranking: an empty field sees the pool as given.
+        #expect(TextSuggestionFilter.all(in: companies, excluding: "") == companies)
+        #expect(TextSuggestionFilter.all(in: companies, excluding: "   ") == companies)
+    }
+
+    @Test
+    func browsingLeavesOutTheFieldsCurrentValue() {
+        #expect(
+            TextSuggestionFilter.all(in: companies, excluding: "Acme")
+                == ["Acme Labs", "Bletchley Park", "Zeta Corp", "Pacme Holdings"]
+        )
+        // Case, surrounding whitespace, and diacritics don't rescue it.
+        #expect(TextSuggestionFilter.all(in: ["Zoë Café"], excluding: "  zoe cafe ").isEmpty)
+        // A value not in the pool leaves the pool untouched.
+        #expect(TextSuggestionFilter.all(in: companies, excluding: "Nowhere Inc") == companies)
+    }
+
+    @Test
+    func browsingCollapsesBlankAndDuplicateCandidatesAndTrims() {
+        let candidates = ["", "  ", "Acme", "acme", "ACME  ", "  Acme Labs \n"]
+        #expect(TextSuggestionFilter.all(in: candidates, excluding: "") == ["Acme", "Acme Labs"])
+    }
+
+    @Test
+    func browsingIsNotCapped() {
+        let many = (1...20).map { "Candidate \($0)" }
+        #expect(TextSuggestionFilter.all(in: many, excluding: "").count == many.count)
+        #expect(TextSuggestionFilter.all(in: [], excluding: "").isEmpty)
+    }
 }

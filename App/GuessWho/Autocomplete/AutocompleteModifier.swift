@@ -4,21 +4,32 @@ import GuessWhoSync
 extension View {
     /// Make a text field autocomplete.
     ///
-    /// Attach to any `TextField` (after its own `.focused` / `.onSubmit`, if
-    /// any). While the field has focus and the user types, matches from
-    /// `candidates` — narrowed by `TextSuggestionFilter` — appear in a
-    /// floating menu just below (or, when there's no room, above) the field:
+    /// Attach to any `TextField` (after its own `.focused`, if any). While
+    /// the field has focus and the user types, matches from `candidates` —
+    /// narrowed by `TextSuggestionFilter` — appear in a floating menu just
+    /// below (or, when there's no room, above) the field:
     ///
     /// - ↓ / ↑ move the highlight (↑ past the first clears it).
-    /// - Return or Tab accepts the highlighted suggestion; with nothing
-    ///   highlighted they keep their usual meaning (submit / next field).
-    /// - Escape hides the menu until the text changes again.
+    /// - Return or Tab accepts the highlighted suggestion and keeps focus in
+    ///   the field. With nothing highlighted, Return runs `onSubmit` and Tab
+    ///   keeps its usual meaning (next field).
+    /// - Escape toggles the menu. Open, it hides until the text changes (or
+    ///   Escape again). Closed, it opens on the WHOLE pool — every candidate
+    ///   but the field's current value, in the pool's order — so the user can
+    ///   tab into an empty Company field and browse every organization.
     /// - Tapping a suggestion accepts it. Typing refilters.
     ///
+    /// `onSubmit` stands in for `.onSubmit` on the field. A `TextField` turns
+    /// the Return key into its submit action, and that is where a highlighted
+    /// suggestion has to be accepted instead of submitting — so this modifier
+    /// owns the field's submit (scoped with `submitScope`, so an `.onSubmit`
+    /// attached outside it never fires) and runs `onSubmit` only when no
+    /// suggestion is highlighted.
+    ///
     /// `candidates` supplies the whole pool; filtering and ranking are
-    /// shared. It is read once per focus session — on the first keystroke
-    /// after the field gains focus — and reused until focus leaves, so a
-    /// pool that walks and sorts every contact isn't rebuilt per keystroke.
+    /// shared. It is read once per focus session — on the first keystroke or
+    /// Escape after the field gains focus — and reused until focus leaves, so
+    /// a pool that walks and sorts every contact isn't rebuilt per keystroke.
     /// It may still depend on other fields (the Department field's candidates
     /// depend on the Company field): those can only change while THIS field
     /// is unfocused, and the next focus reads them fresh.
@@ -28,14 +39,16 @@ extension View {
     /// is an ordinary text field.
     func autocomplete(
         text: Binding<String>,
+        onSubmit: (() -> Void)? = nil,
         candidates: @escaping () -> [String]
     ) -> some View {
-        modifier(AutocompleteModifier(text: text, candidates: candidates))
+        modifier(AutocompleteModifier(text: text, onSubmit: onSubmit, candidates: candidates))
     }
 }
 
 struct AutocompleteModifier: ViewModifier {
     @Binding var text: String
+    let onSubmit: (() -> Void)?
     let candidates: () -> [String]
 
     @Environment(AutocompleteSession.self) private var session: AutocompleteSession?
@@ -45,7 +58,8 @@ struct AutocompleteModifier: ViewModifier {
     @State private var highlightedIndex: Int?
     /// The text suggestions were dismissed for — by Escape, or by accepting
     /// one (the accepted value is then the text). The menu stays hidden while
-    /// the text still equals this, and comes back on the next edit.
+    /// the text still equals this, and comes back on the next edit (or when
+    /// Escape reopens it on the whole pool).
     @State private var dismissedText: String?
     /// The field's frame in `.global` space, kept current as the list scrolls.
     @State private var anchor: CGRect = .zero
@@ -54,6 +68,14 @@ struct AutocompleteModifier: ViewModifier {
     @State private var cachedCandidates: [String]?
 
     private var isMenuVisible: Bool { isFocused && !suggestions.isEmpty }
+
+    /// The highlighted row, when there is one to accept.
+    private var highlightedSuggestionIndex: Int? {
+        guard isMenuVisible, let index = highlightedIndex, suggestions.indices.contains(index) else {
+            return nil
+        }
+        return index
+    }
 
     func body(content: Content) -> some View {
         content
@@ -75,9 +97,13 @@ struct AutocompleteModifier: ViewModifier {
             }
             .onKeyPress(.downArrow) { moveHighlight(by: 1) }
             .onKeyPress(.upArrow) { moveHighlight(by: -1) }
-            .onKeyPress(.return) { acceptHighlighted() }
             .onKeyPress(.tab) { acceptHighlighted() }
-            .onKeyPress(.escape) { dismissMenu() }
+            .onKeyPress(.escape) { toggleMenu() }
+            // Return reaches the field as its submit action, not as a key
+            // press (see `autocomplete`'s note on `onSubmit`): take it here,
+            // and stop it short of any `.onSubmit` outside this modifier.
+            .onSubmit { submit() }
+            .submitScope()
             // A List reports a row as gone once it scrolls out of the safe
             // area, and back once it returns — while the field's focus and
             // this state live on. Take the menu down with the row and put it
@@ -93,21 +119,45 @@ struct AutocompleteModifier: ViewModifier {
     /// so tabbing through a filled-in form doesn't pop menus.
     private func refilter() {
         guard isFocused, text != dismissedText else {
-            suggestions = []
-            highlightedIndex = nil
-            publish()
+            hide()
             return
         }
-        let pool: [String]
-        if let cachedCandidates {
-            pool = cachedCandidates
-        } else {
-            pool = candidates()
-            cachedCandidates = pool
-        }
-        suggestions = TextSuggestionFilter.suggestions(matching: text, in: pool)
+        suggestions = TextSuggestionFilter.suggestions(matching: text, in: pool())
         highlightedIndex = nil
         publish()
+    }
+
+    /// Escape: hide an open menu (until the text changes, or Escape again),
+    /// or open a closed one on the whole pool.
+    private func toggleMenu() -> KeyPress.Result {
+        if isMenuVisible {
+            dismissedText = text
+            hide()
+            return .handled
+        }
+        return showAll()
+    }
+
+    /// Open the menu on every candidate but the current text, in the pool's
+    /// order. Ignored when the pool has nothing to offer, so Escape keeps its
+    /// usual meaning there.
+    private func showAll() -> KeyPress.Result {
+        guard isFocused else { return .ignored }
+        let all = TextSuggestionFilter.all(in: pool(), excluding: text)
+        guard !all.isEmpty else { return .ignored }
+        dismissedText = nil
+        suggestions = all
+        highlightedIndex = nil
+        publish()
+        return .handled
+    }
+
+    /// The candidate pool for this focus session, read on first use.
+    private func pool() -> [String] {
+        if let cachedCandidates { return cachedCandidates }
+        let pool = candidates()
+        cachedCandidates = pool
+        return pool
     }
 
     private func hide() {
@@ -134,19 +184,21 @@ struct AutocompleteModifier: ViewModifier {
         return .handled
     }
 
+    /// Tab: accept the highlighted suggestion, else let Tab move focus.
     private func acceptHighlighted() -> KeyPress.Result {
-        guard isMenuVisible, let index = highlightedIndex, suggestions.indices.contains(index) else {
-            return .ignored
-        }
+        guard let index = highlightedSuggestionIndex else { return .ignored }
         accept(index)
         return .handled
     }
 
-    private func dismissMenu() -> KeyPress.Result {
-        guard isMenuVisible else { return .ignored }
-        dismissedText = text
-        hide()
-        return .handled
+    /// Return, as the field's submit action: accept the highlighted
+    /// suggestion, else hand the submit to the caller.
+    private func submit() {
+        if let index = highlightedSuggestionIndex {
+            accept(index)
+        } else {
+            onSubmit?()
+        }
     }
 
     /// Write the suggestion at `index` into the field and close the menu.
