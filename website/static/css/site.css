@@ -468,11 +468,6 @@ a:focus-visible {
     var(--bg2);
 }
 .mac-placeholder strong { color: var(--ink); font-size: 1.2rem; }
-.mac-placeholder code {
-  color: var(--accent-2);
-  font-size: 0.85rem;
-  overflow-wrap: anywhere;
-}
 .mac-placeholder span:last-child { font-size: 0.82rem; }
 
 /* ---- Privacy ------------------------------------------------------------- */

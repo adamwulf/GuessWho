@@ -6,7 +6,7 @@ baseURL = "/"
 languageCode = "en-us"
 title = "GuessWho"
 
-# Single page only — no content section, no taxonomies, no RSS.
+# Landing page plus a form-success page; no taxonomies, feeds, or sitemap.
 disableKinds = ["taxonomy", "term", "RSS", "sitemap"]
 
 [params]

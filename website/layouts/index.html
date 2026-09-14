@@ -13,7 +13,6 @@
   <meta property="og:title" content="{{ .Site.Title }} — Never forget a name again">
   <meta property="og:description" content="{{ .Site.Params.description }}">
   <meta property="og:type" content="website">
-  <meta property="og:image" content="{{ "images/app-icon.svg" | relURL }}">
   <meta name="twitter:card" content="summary">
   <script src="{{ "js/memories.js" | relURL }}" defer></script>
 </head>
@@ -248,7 +247,7 @@
             <p>Star the people, organizations, and places you reach for most, so they&rsquo;re one tap away.</p>
           </article>
           <article class="feature">
-            <div class="ico" aria-hidden="true">&#8645;</div>
+            <div class="ico" aria-hidden="true">&#8597;&#65039;</div>
             <h3>Useful sorting</h3>
             <p>Sort people by name, when you last viewed them, or when you last interacted.</p>
           </article>
@@ -325,10 +324,9 @@
                      loading="lazy" decoding="async">
               {{ else }}
                 <div class="mac-placeholder" role="img" aria-label="Reserved space for a GuessWho Mac people and organizations screenshot">
-                  <span class="shot-tag">Mac screenshot slot</span>
+                  <span class="shot-tag">Mac preview</span>
                   <strong>People &amp; organizations</strong>
-                  <code>static/images/mac-people.png</code>
-                  <span>Recommended crop: 1600 &times; 1000</span>
+                  <span>Preview coming soon</span>
                 </div>
               {{ end }}
             </div>
@@ -345,10 +343,9 @@
                      loading="lazy" decoding="async">
               {{ else }}
                 <div class="mac-placeholder" role="img" aria-label="Reserved space for a GuessWho Mac contact screenshot">
-                  <span class="shot-tag">Mac screenshot slot</span>
+                  <span class="shot-tag">Mac preview</span>
                   <strong>A contact in context</strong>
-                  <code>static/images/mac-contact.png</code>
-                  <span>Recommended crop: 1600 &times; 1000</span>
+                  <span>Preview coming soon</span>
                 </div>
               {{ end }}
             </div>
