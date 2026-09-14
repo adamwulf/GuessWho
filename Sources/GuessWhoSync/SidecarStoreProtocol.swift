@@ -19,6 +19,15 @@ public protocol SidecarStoreProtocol {
     // backends that always have bytes locally.
     func requestDownload(_ key: SidecarKey) throws
 
+    // Best-effort: initiate a fetch of EVERY not-yet-downloaded sidecar file
+    // (envelopes and blob payloads) onto local storage in one pass. Unlike
+    // `requestDownload(_:)`, the caller needs no key list — the store
+    // enumerates its own directories. No-op for backends that always have
+    // bytes locally. Never throws: an unlistable directory or a failed
+    // request is skipped, and the per-key on-demand download paths remain the
+    // backstop.
+    func prefetchAllDownloads()
+
     // MARK: - Binary blob payloads (`.blob` field type)
     //
     // A `.blob` sidecar field is a pointer to a separate binary file that
@@ -147,6 +156,9 @@ public extension SidecarStoreProtocol {
 
     // Default: backends with no remote tier do nothing.
     func requestDownload(_ key: SidecarKey) throws {}
+
+    // Default: backends with no remote tier have nothing to prefetch.
+    func prefetchAllDownloads() {}
 
     // Default blob I/O: a backend with no binary storage stores nothing, has
     // nothing to read or delete, and lists no blobIds. The two shipping stores

@@ -981,6 +981,18 @@ final class SyncService {
         sidecarFileWatcher?.start()
     }
 
+    /// Best-effort launch warm-up: ask iCloud to download every sidecar file
+    /// that is still a not-yet-downloaded placeholder, so a cold container fills
+    /// all records at once instead of one at a time as each is first opened.
+    /// This is why a freshly-signed-in device could show empty Guides/Places
+    /// while the files trickled down. A no-op unless storage resolved to
+    /// `.iCloud` — a local-fallback root has no cloudd tier to pull from, and
+    /// `.unavailable` has no engine. Runs off the main actor inside the engine.
+    func prefetchSidecarDownloads() async {
+        guard case .iCloud = sidecarLocation, let sync else { return }
+        await sync.prefetchAllSidecarDownloads()
+    }
+
     // SyncService performs no contact-identity translation: the app keys every
     // contact-sidecar operation on a `ContactID` through `ContactsRepository`,
     // and reconcile is a package-INTERNAL, WRITE-ONLY side effect of a
