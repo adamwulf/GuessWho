@@ -15,10 +15,10 @@ import GuessWhoLogging
 /// `UICommand`s target the AppDelegate (always in the chain), and the
 /// AppDelegate just forwards into these statics.
 ///
-/// Both items are intentionally NOT gated behind debug mode: the whole point
+/// These items are intentionally NOT gated behind debug mode: the whole point
 /// is diagnosing a silent failure, so they must be reachable exactly when
-/// something is broken. We guard the (nullable) App Group container URL and
-/// surface a plain-copy alert rather than hide the item or no-op silently.
+/// something is broken. We guard each (nullable) container URL and surface a
+/// plain-copy alert rather than hide the item or no-op silently.
 @MainActor
 enum DebugMenuActions {
 
