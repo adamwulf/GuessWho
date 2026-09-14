@@ -141,12 +141,6 @@ p { margin: 0 0 1rem; }
 }
 .btn-primary:hover { transform: translateY(-1px); }
 .btn-lg { padding: 0.95rem 2rem; font-size: 1.1rem; }
-.btn-ghost {
-  background: transparent;
-  color: var(--ink);
-  border-color: var(--line);
-}
-.btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 .btn:focus-visible,
 input:focus-visible,
 a:focus-visible {
@@ -162,7 +156,6 @@ a:focus-visible {
   margin-top: 1.4rem;
 }
 .cta-center { justify-content: center; }
-.cta-note { color: var(--muted); font-size: 0.95rem; }
 
 /* ---- Header -------------------------------------------------------------- */
 .site-header {
@@ -279,7 +272,7 @@ a:focus-visible {
 .hero-shot {
   grid-area: 1 / 1;
   opacity: 0;
-  transition: opacity 0.8s ease;
+  transition: opacity 0.6s ease;
 }
 .hero-shot.is-active { opacity: 1; }
 
@@ -506,8 +499,7 @@ a:focus-visible {
   margin: 1.75rem 0 0;
   scroll-margin-top: 5rem;
 }
-.sr-only,
-.form-trap {
+.sr-only {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -518,8 +510,10 @@ a:focus-visible {
   white-space: nowrap;
   border: 0;
 }
+.form-trap { display: none; }
 .signup-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.625rem;
 }
 .signup-controls input {

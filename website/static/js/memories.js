@@ -49,6 +49,7 @@
 
     function start() {
       if (timer !== null) return;
+      if (document.hidden) return;
       if (reduceMotion && reduceMotion.matches) return;
       timer = window.setInterval(advance, INTERVAL_MS);
     }
