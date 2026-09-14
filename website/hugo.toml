@@ -10,7 +10,7 @@ title = "GuessWho"
 disableKinds = ["taxonomy", "term", "RSS", "sitemap"]
 
 [params]
-  description = "Never forget a name again. GuessWho connects people to organizations, departments, events, notes, and each other so the context comes back when you need it."
+  description = "Never forget a name. GuessWho connects people to organizations, departments, events, notes, and each other so the context comes back when you need it."
   ctaURL = "#testflight"
   ctaLabel = "Join the TestFlight"
 
