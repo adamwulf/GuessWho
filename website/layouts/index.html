@@ -7,8 +7,8 @@
   <meta name="description" content="{{ .Site.Params.description }}">
   <meta name="theme-color" content="#0b1b34" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)">
-  <link rel="icon" type="image/svg+xml" href="{{ "images/app-icon.svg" | relURL }}">
-  <link rel="apple-touch-icon" href="{{ "images/app-icon.svg" | relURL }}">
+  <link rel="icon" type="image/png" href="{{ "images/app-icon.png" | relURL }}">
+  <link rel="apple-touch-icon" href="{{ "images/app-icon.png" | relURL }}">
   <link rel="stylesheet" href="{{ "css/site.css" | relURL }}">
   <meta property="og:title" content="{{ .Site.Title }} — Never forget a name">
   <meta property="og:description" content="{{ .Site.Params.description }}">
@@ -22,7 +22,7 @@
   <header class="site-header">
     <div class="wrap header-inner">
       <a class="brand" href="#main">
-        <img class="brand-icon" src="{{ "images/app-icon.svg" | relURL }}" width="36" height="36" alt="" decoding="async">
+        <img class="brand-icon" src="{{ "images/app-icon.png" | relURL }}" width="36" height="36" alt="" decoding="async">
         <span class="brand-name">{{ .Site.Title }}</span>
       </a>
       <a class="btn btn-ghost header-cta" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>

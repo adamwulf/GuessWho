@@ -15,7 +15,7 @@ website/
   content/thanks.md         success-page copy
   static/css/site.css       all styles (light + dark)
   static/js/memories.js     the one JS file (hero "how you met" rotator)
-  static/images/            app-icon.svg (site icon + brand mark) and screenshots
+  static/images/            app-icon.png (site icon + brand mark) and screenshots
   public/                   Hugo output — gitignored, never committed
 netlify.toml                (at the REPO ROOT) build + deploy config for Netlify
 ```
@@ -71,11 +71,20 @@ is intentionally no `CNAME` file, and `hugo.toml` uses relative URLs
 ## Images
 
 - Put image assets in `static/images/` and reference them with Hugo `relURL`, e.g.
-  `{{ "images/app-icon.svg" | relURL }}`.
+  `{{ "images/app-icon.png" | relURL }}`.
 - Give every `<img>` an explicit `width`/`height` to avoid layout shift.
-- The checked-in SVG is a website rendering of the Icon Composer source. To
-  replace it with a pixel-perfect PNG, export from Xcode with the same tool
-  Mantra uses, then update the `app-icon.svg` references in both layouts:
+- The site icon and brand mark is `app-icon.png`, a 512 × 512 export of the
+  shipping iOS app icon (the OS applies its own corner mask; the site rounds
+  the square PNG with CSS `border-radius` on `.brand-icon` / `.thanks-icon`).
+  To refresh it, drop in a new square PNG export and resize to 512 × 512, e.g.
+  from the `1024` app-icon export:
+
+  ```sh
+  sips -z 512 512 -s format png AppIcon-iOS-Default-1024@1x.png \
+    --out website/static/images/app-icon.png
+  ```
+
+  Or export straight from the Icon Composer source with the tool Mantra uses:
 
   ```sh
   "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
