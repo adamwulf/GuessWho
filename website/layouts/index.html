@@ -25,7 +25,6 @@
         <img class="brand-icon" src="{{ "images/app-icon.png" | relURL }}" width="36" height="36" alt="" decoding="async">
         <span class="brand-name">{{ .Site.Title }}</span>
       </a>
-      <a class="btn btn-ghost header-cta" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
     </div>
   </header>
 
@@ -42,10 +41,22 @@
             events, notes, and each other. When a name comes up, the whole
             story comes back with it.
           </p>
-          <div class="cta-row">
-            <a class="btn btn-primary" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
-            <span class="cta-note">iPhone &middot; iPad &middot; Mac</span>
-          </div>
+          <form class="signup-form" id="testflight" name="testflight-signup" method="POST"
+                action="{{ "thanks/" | relURL }}" data-netlify="true"
+                netlify-honeypot="company">
+            <input type="hidden" name="form-name" value="testflight-signup">
+            <p class="form-trap" aria-hidden="true">
+              <label>Leave this field empty <input name="company" tabindex="-1" autocomplete="off"></label>
+            </p>
+            <label class="sr-only" for="signup-email">Email address</label>
+            <div class="signup-controls">
+              <input id="signup-email" name="email" type="email" autocomplete="email"
+                     inputmode="email" placeholder="Email address" required
+                     aria-describedby="signup-note">
+              <button class="btn btn-primary" type="submit">Join the TestFlight</button>
+            </div>
+            <p class="form-note" id="signup-note">Only beta invitations and important GuessWho updates. Unsubscribe anytime.</p>
+          </form>
 
           <!-- The rotating "how you met" recall card. -->
           <figure class="memory-card" aria-label="Examples of memories GuessWho helps you keep">
@@ -76,12 +87,30 @@
 
         <div class="hero-device">
           <div class="phone">
-            <div class="phone-screen">
-              <picture>
+            <div class="phone-screen hero-slideshow" data-hero-slideshow aria-live="off">
+              <picture class="hero-shot is-active" data-hero-shot>
                 <source srcset="{{ "images/contact-detail-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
                 <img src="{{ "images/contact-detail-light.png" | relURL }}" width="1206" height="2622"
                      alt="A contact in GuessWho showing the person's organization, phone, email, and a private dated note."
                      fetchpriority="high" decoding="async">
+              </picture>
+              <picture class="hero-shot" data-hero-shot aria-hidden="true">
+                <source srcset="{{ "images/notes-view-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                <img src="{{ "images/notes-view-light.png" | relURL }}" width="1206" height="2622"
+                     alt="A contact's dated notes, linked people, and linked events in GuessWho."
+                     loading="lazy" decoding="async">
+              </picture>
+              <picture class="hero-shot" data-hero-shot aria-hidden="true">
+                <source srcset="{{ "images/event-detail-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                <img src="{{ "images/event-detail-light.png" | relURL }}" width="1206" height="2622"
+                     alt="An event in GuessWho with its date, venue, notes, and tag."
+                     loading="lazy" decoding="async">
+              </picture>
+              <picture class="hero-shot" data-hero-shot aria-hidden="true">
+                <source srcset="{{ "images/people-list-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                <img src="{{ "images/people-list-light.png" | relURL }}" width="1206" height="2622"
+                     alt="The GuessWho people list grouped alphabetically with roles and companies."
+                     loading="lazy" decoding="async">
               </picture>
             </div>
           </div>
@@ -371,26 +400,14 @@
     </section>
 
     <!-- TESTFLIGHT SIGNUP ------------------------------------------------->
-    <section class="closing" id="testflight" aria-labelledby="closing-title">
+    <section class="closing" aria-labelledby="closing-title">
       <div class="wrap closing-inner">
         <p class="eyebrow">Private beta</p>
         <h2 id="closing-title">Never forget a name.</h2>
         <p class="section-lead">Join the TestFlight list for early access on iPhone, iPad, and Mac.</p>
-        <form class="signup-form" name="testflight-signup" method="POST" action="{{ "thanks/" | relURL }}"
-              data-netlify="true" netlify-honeypot="company">
-          <input type="hidden" name="form-name" value="testflight-signup">
-          <p class="form-trap" aria-hidden="true">
-            <label>Leave this field empty <input name="company" tabindex="-1" autocomplete="off"></label>
-          </p>
-          <label class="form-label" for="signup-email">Email address</label>
-          <div class="signup-controls">
-            <input id="signup-email" name="email" type="email" autocomplete="email"
-                   inputmode="email" placeholder="you@example.com" required
-                   aria-describedby="signup-note">
-            <button class="btn btn-primary btn-lg" type="submit">Join the TestFlight</button>
-          </div>
-          <p class="form-note" id="signup-note">Only beta invitations and important GuessWho updates. Unsubscribe anytime.</p>
-        </form>
+        <div class="cta-row cta-center">
+          <a class="btn btn-primary btn-lg" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
+        </div>
       </div>
     </section>
 
