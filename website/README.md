@@ -10,6 +10,9 @@ file, no bundler, no npm, no framework, no web fonts, no analytics.
 website/
   hugo.toml                 Hugo config (single page; taxonomies/RSS/sitemap disabled)
   layouts/index.html        the entire page (Hugo template)
+  layouts/_default/thanks.html
+                            Netlify form success page
+  content/thanks.md         success-page copy
   static/css/site.css       all styles (light + dark)
   static/js/memories.js     the one JS file (hero "how you met" rotator)
   static/images/            app-icon.png (favicon + hero) and screenshots
@@ -79,11 +82,22 @@ is intentionally no `CNAME` file, and `hugo.toml` uses relative URLs
     --platform macOS --rendition Default --width 512 --height 512 --scale 1
   ```
 
-- The app screenshots are captured from the iOS Simulator. Drop the PNGs in
-  `static/images/` and replace the `.shot-placeholder` blocks in
-  `layouts/index.html` with `<img>` tags (portrait shots are 1206 × 2622).
+- The iOS app screenshots are real iPhone 17 Simulator captures made with AXe.
+  Each screen has a 1206 × 2622 light and dark image; `<picture>` selects the
+  one that matches the visitor's system appearance.
+- Two Mac screenshot slots are already laid out in the page. Export 1600 × 1000
+  crops to `static/images/mac-people.png` and
+  `static/images/mac-contact.png`. Hugo detects each file automatically and
+  replaces that slot's labeled placeholder on the next build.
+
+## TestFlight signup
+
+The `testflight-signup` form in `layouts/index.html` uses Netlify Forms. It
+collects a required email address, includes a honeypot field, and redirects to
+the no-index `/thanks/` page after submission. Netlify detects the form from
+the generated HTML during deploy; there is no function or server to configure.
 
 ## Still needed from Adam
 
-- Real TestFlight / App Store link (set `ctaURL` / `ctaLabel` in `hugo.toml`).
+- The two Mac screenshots described above.
 - The custom domain (set in the Netlify dashboard).

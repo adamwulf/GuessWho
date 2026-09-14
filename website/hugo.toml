@@ -10,11 +10,9 @@ title = "GuessWho"
 disableKinds = ["taxonomy", "term", "RSS", "sitemap"]
 
 [params]
-  description = "GuessWho is a personal contact book that remembers how you met. Link contacts, events, and notes to recall who introduced you, where and when you met, and what you talked about. Your data stays on your device."
-  # Call-to-action link. PLACEHOLDER — Adam: replace with the real
-  # TestFlight or App Store URL when it is ready.
-  ctaURL = "#"
-  ctaLabel = "Coming soon"
+  description = "Never forget a name again. GuessWho connects people to organizations, departments, events, notes, and each other so the context comes back when you need it."
+  ctaURL = "#testflight"
+  ctaLabel = "Join the TestFlight"
 
 [minify]
   disableXML = true
