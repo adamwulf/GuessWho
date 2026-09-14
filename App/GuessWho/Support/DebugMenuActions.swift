@@ -2,9 +2,9 @@ import UIKit
 import GuessWhoLogging
 
 /// Self-presenting actions for developer-facing **Help** menu items
-/// ("Export Debug Logs", "Open Container Folder", and Catalyst-only
-/// "Open Resources Folder"). These run from `UICommand` actions installed by
-/// `GuessWhoAppDelegate.buildMenu(with:)`.
+/// ("Export Debug Logs", "Open Container Folder", "Open iCloud Folder", and
+/// Catalyst-only "Open Resources Folder"). These run from `UICommand` actions
+/// installed by `GuessWhoAppDelegate.buildMenu(with:)`.
 ///
 /// Why a self-presenting `@MainActor` enum rather than responder-chain
 /// routing: a `UICommand`'s `action:` selector has to be implemented somewhere
@@ -15,10 +15,10 @@ import GuessWhoLogging
 /// `UICommand`s target the AppDelegate (always in the chain), and the
 /// AppDelegate just forwards into these statics.
 ///
-/// Both items are intentionally NOT gated behind debug mode: the whole point
+/// These items are intentionally NOT gated behind debug mode: the whole point
 /// is diagnosing a silent failure, so they must be reachable exactly when
-/// something is broken. We guard the (nullable) App Group container URL and
-/// surface a plain-copy alert rather than hide the item or no-op silently.
+/// something is broken. We guard each (nullable) container URL and surface a
+/// plain-copy alert rather than hide the item or no-op silently.
 @MainActor
 enum DebugMenuActions {
 
@@ -105,6 +105,56 @@ enum DebugMenuActions {
                         title: "Couldn't Open Folder",
                         message: "Couldn't open the folder. It may not exist on this device yet."
                     )
+                }
+            }
+        }
+    }
+
+    // MARK: - Open iCloud Folder
+
+    /// Reveal the iCloud ubiquity container's `Documents` folder — the real
+    /// sidecar storage root that syncs across devices — in Finder (Catalyst) /
+    /// Files (iOS). This is distinct from "Open Container Folder", which reveals
+    /// the App Group container; the synced records live here, so this is the
+    /// folder to inspect when data isn't showing up on a device.
+    ///
+    /// It targets the iCloud container directly (via `ICloudContainer.id`),
+    /// regardless of whether the app is currently using it or has fallen back to
+    /// local storage — the point is to see whether iCloud actually has the files
+    /// (and whether they've downloaded) on this device.
+    ///
+    /// `url(forUbiquityContainerIdentifier:)` can block, so resolve it off the
+    /// main thread, then present / open back on the main actor. The URL is
+    /// nullable (iCloud Drive signed out / disabled), so guard and alert rather
+    /// than force-unwrap. A folder that hasn't materialized on this device comes
+    /// back as `success == false` in the completion handler, which we surface.
+    static func openICloudFolder() {
+        let containerID = ICloudContainer.id
+        DispatchQueue.global(qos: .userInitiated).async {
+            let containerURL = FileManager.default
+                .url(forUbiquityContainerIdentifier: containerID)
+            Task { @MainActor in
+                guard let containerURL else {
+                    presentFailure(
+                        title: "Couldn't Open iCloud Folder",
+                        message: "iCloud Drive isn't available on this device. Sign in to iCloud and turn on iCloud Drive to sync your data across devices."
+                    )
+                    return
+                }
+                let documents = containerURL
+                    .appendingPathComponent("Documents", isDirectory: true)
+                UIApplication.shared.open(documents, options: [:]) { success in
+                    if !success {
+                        // The completion handler is not guaranteed to run on the
+                        // main thread — hop back to the main actor before
+                        // resolving the top VC and presenting.
+                        Task { @MainActor in
+                            presentFailure(
+                                title: "Couldn't Open iCloud Folder",
+                                message: "Couldn't open the iCloud folder. Your data may not have downloaded to this device yet."
+                            )
+                        }
+                    }
                 }
             }
         }

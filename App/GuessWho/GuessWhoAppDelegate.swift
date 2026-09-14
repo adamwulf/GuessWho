@@ -385,13 +385,14 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     // MARK: - Help menu (developer-facing debug actions)
 
     /// Append developer-facing items to the **Help** menu:
-    /// "Export Debug Logs" (zip + save panel / share sheet) and
-    /// "Open Container Folder" (reveal the App Group container — in Finder on
-    /// Mac Catalyst). Mac Catalyst also gets "Open Resources Folder" to reveal
-    /// the app bundle's resources directory in Finder. These are sanctioned
-    /// debug-mode surfaces per the project's product principle: they exist to
-    /// diagnose silent failures, so they are intentionally always visible rather
-    /// than gated on app state.
+    /// "Export Debug Logs" (zip + save panel / share sheet), "Open Container
+    /// Folder" (reveal the App Group container — in Finder on Mac Catalyst), and
+    /// "Open iCloud Folder" (reveal the iCloud ubiquity container's Documents
+    /// folder — the synced sidecar storage root). Mac Catalyst also gets "Open
+    /// Resources Folder" to reveal the app bundle's resources directory in
+    /// Finder. These are sanctioned debug-mode surfaces per the project's
+    /// product principle: they exist to diagnose silent failures, so they are
+    /// intentionally always visible rather than gated on app state.
     ///
     /// The commands target this AppDelegate (always live in the responder
     /// chain), and each `@objc` action just forwards into the self-presenting
@@ -413,14 +414,18 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             title: "Open Container Folder",
             action: #selector(openContainerFolderMenuAction)
         )
+        let openICloud = UICommand(
+            title: "Open iCloud Folder",
+            action: #selector(openICloudFolderMenuAction)
+        )
         #if targetEnvironment(macCatalyst)
         let openResources = UICommand(
             title: "Open Resources Folder",
             action: #selector(openResourcesFolderMenuAction)
         )
-        let children = [exportLogs, openContainer, openResources]
+        let children = [exportLogs, openContainer, openICloud, openResources]
         #else
-        let children = [exportLogs, openContainer]
+        let children = [exportLogs, openContainer, openICloud]
         #endif
 
         let menu = UIMenu(
@@ -463,6 +468,10 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
 
     @objc private func openContainerFolderMenuAction() {
         DebugMenuActions.openContainerFolder()
+    }
+
+    @objc private func openICloudFolderMenuAction() {
+        DebugMenuActions.openICloudFolder()
     }
 
     #if targetEnvironment(macCatalyst)
