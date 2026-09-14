@@ -586,6 +586,26 @@ a:focus-visible {
 }
 .footer-inner p { margin: 0; }
 .footer-note { font-size: 0.9rem; }
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.github-link:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-2) 8%, transparent);
+}
+.github-link svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
 
 /* ---- Responsive ---------------------------------------------------------- */
 @media (max-width: 42rem) {
