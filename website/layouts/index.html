@@ -3,17 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ .Site.Title }} — Remember how you met</title>
+  <title>{{ .Site.Title }} — Never forget a name</title>
   <meta name="description" content="{{ .Site.Params.description }}">
   <meta name="theme-color" content="#0b1b34" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)">
   <link rel="icon" type="image/svg+xml" href="{{ "images/app-icon.svg" | relURL }}">
   <link rel="apple-touch-icon" href="{{ "images/app-icon.svg" | relURL }}">
   <link rel="stylesheet" href="{{ "css/site.css" | relURL }}">
-  <meta property="og:title" content="{{ .Site.Title }} — Remember how you met">
+  <meta property="og:title" content="{{ .Site.Title }} — Never forget a name">
   <meta property="og:description" content="{{ .Site.Params.description }}">
   <meta property="og:type" content="website">
-  <meta property="og:image" content="{{ "images/app-icon.svg" | relURL }}">
   <meta name="twitter:card" content="summary">
   <script src="{{ "js/memories.js" | relURL }}" defer></script>
 </head>
@@ -36,13 +35,12 @@
     <section class="hero" aria-labelledby="hero-title">
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">A contact book with a memory</p>
-          <h1 id="hero-title">Remember <em>how</em> you met.</h1>
+          <p class="eyebrow">A contact book with context</p>
+          <h1 id="hero-title">Never forget a <em>name</em>.</h1>
           <p class="lead">
-            Your phone already knows everyone&rsquo;s number. GuessWho remembers
-            the part that matters &mdash; who introduced you, where and when you
-            met, and what you talked about &mdash; by linking your contacts,
-            events, and notes together.
+            GuessWho connects people to their organizations, departments,
+            events, notes, and each other. When a name comes up, the whole
+            story comes back with it.
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
@@ -51,7 +49,7 @@
 
           <!-- The rotating "how you met" recall card. -->
           <figure class="memory-card" aria-label="Examples of memories GuessWho helps you keep">
-            <figcaption class="memory-label">You&rsquo;ll remember&hellip;</figcaption>
+            <figcaption class="memory-label">Open a name and remember&hellip;</figcaption>
             <div class="memory-stack" data-memory-stack aria-live="off">
               <p class="memory is-active" data-memory>
                 Met <strong>Sarah Chen</strong> at <strong>WWDC</strong> &mdash;
@@ -94,37 +92,35 @@
     <!-- CORE STORY -------------------------------------------------------->
     <section class="story" aria-labelledby="story-title">
       <div class="wrap">
-        <h2 id="story-title">The Contacts app forgets. GuessWho doesn&rsquo;t.</h2>
+        <h2 id="story-title">Every name makes more sense in context.</h2>
         <p class="section-lead">
-          A phone number is easy. The story behind it &mdash; the part you
-          actually want when you see a name again &mdash; usually lives only in
-          your head. GuessWho keeps that story, by letting every contact point
-          to the people, events, and notes around it.
+          A phone number is easy. Remembering the person behind it is harder.
+          GuessWho turns a flat contact list into a connected view of the
+          people and places in your life.
         </p>
         <div class="story-cards">
           <article class="story-cell">
-            <div class="ico" aria-hidden="true">&#128101;</div>
-            <h3>Who introduced you</h3>
+            <div class="ico" aria-hidden="true">&#127970;</div>
+            <h3>Organizations &amp; departments</h3>
             <p>
-              Link one contact to another and note the connection. Open anyone
-              and see the people who brought you together.
+              Add a company and department once. GuessWho automatically groups
+              the people who work together, so their colleagues are easy to find.
+            </p>
+          </article>
+          <article class="story-cell">
+            <div class="ico" aria-hidden="true">&#128101;</div>
+            <h3>People</h3>
+            <p>
+              Connect the person who introduced you, their manager, a friend,
+              or anyone else who helps you remember where they fit.
             </p>
           </article>
           <article class="story-cell">
             <div class="ico" aria-hidden="true">&#128197;</div>
-            <h3>Where &amp; when you met</h3>
+            <h3>Events</h3>
             <p>
-              Contacts connect to the events you shared, so you can see the
-              meetup, dinner, or conference where your paths first crossed
-              &mdash; and who else was there.
-            </p>
-          </article>
-          <article class="story-cell">
-            <div class="ico" aria-hidden="true">&#128221;</div>
-            <h3>What you talked about</h3>
-            <p>
-              Jot a private note on the person or the event. Next time their
-              name comes up, the details come back with it.
+              Connect contacts to the meetup, dinner, or conference where you
+              met, then see everyone who was there together.
             </p>
           </article>
         </div>
@@ -147,12 +143,12 @@
           </div>
         </div>
         <div class="split-copy">
-          <p class="eyebrow">One screen, the whole story</p>
-          <h2 id="showcase-title">A name, and everything around it.</h2>
+          <p class="eyebrow">Dated notes</p>
+          <h2 id="showcase-title">Pick up every conversation where you left off.</h2>
           <p class="section-lead">
-            Open a contact and the context is right there: your dated notes from
-            each time you talked, the people they&rsquo;re linked to, and the
-            events you shared. No more staring at a name trying to place it.
+            Add a private, dated note after each conversation. Open a contact
+            later and you&rsquo;ll see what you discussed, who connects you, and the
+            events you shared &mdash; all on one screen.
           </p>
           <ul class="check-list">
             <li>Dated notes that read like a running memory.</li>
@@ -238,7 +234,7 @@
           <article class="feature">
             <div class="ico" aria-hidden="true">&#127970;</div>
             <h3>Organizations</h3>
-            <p>Contacts roll up by company and department, so you can see everyone you know at a place.</p>
+            <p>Company and department details automatically organize the people who work together.</p>
           </article>
           <article class="feature">
             <div class="ico" aria-hidden="true">&#128506;</div>
@@ -249,6 +245,11 @@
             <div class="ico" aria-hidden="true">&#11088;</div>
             <h3>Favorites</h3>
             <p>Star the people, organizations, and places you reach for most, so they&rsquo;re one tap away.</p>
+          </article>
+          <article class="feature">
+            <div class="ico" aria-hidden="true">&#8597;&#65039;</div>
+            <h3>Useful sorting</h3>
+            <p>Sort people by name, when you last viewed them, or when you last interacted.</p>
           </article>
         </div>
       </div>
@@ -302,6 +303,58 @@
       </div>
     </section>
 
+    <!-- MAC APP ----------------------------------------------------------->
+    <section class="mac-showcase" aria-labelledby="mac-title">
+      <div class="wrap">
+        <p class="eyebrow">GuessWho for Mac</p>
+        <h2 id="mac-title">The same context, with room to see it all.</h2>
+        <p class="section-lead">
+          Browse people, organizations, and details side by side on your Mac.
+          Everything stays in sync through your own iCloud.
+        </p>
+        <div class="mac-gallery">
+          <figure>
+            <div class="mac-window">
+              <div class="mac-titlebar" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </div>
+              {{ if fileExists "static/images/mac-people.png" }}
+                <img src="{{ "images/mac-people.png" | relURL }}" width="1600" height="1000"
+                     alt="GuessWho for Mac showing people and organizations side by side."
+                     loading="lazy" decoding="async">
+              {{ else }}
+                <div class="mac-placeholder" role="img" aria-label="Reserved space for a GuessWho Mac people and organizations screenshot">
+                  <span class="shot-tag">Mac preview</span>
+                  <strong>People &amp; organizations</strong>
+                  <span>Preview coming soon</span>
+                </div>
+              {{ end }}
+            </div>
+            <figcaption>Browse your network by person, company, or department.</figcaption>
+          </figure>
+          <figure>
+            <div class="mac-window">
+              <div class="mac-titlebar" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </div>
+              {{ if fileExists "static/images/mac-contact.png" }}
+                <img src="{{ "images/mac-contact.png" | relURL }}" width="1600" height="1000"
+                     alt="GuessWho for Mac showing a contact and the context connected to them."
+                     loading="lazy" decoding="async">
+              {{ else }}
+                <div class="mac-placeholder" role="img" aria-label="Reserved space for a GuessWho Mac contact screenshot">
+                  <span class="shot-tag">Mac preview</span>
+                  <strong>A contact in context</strong>
+                  <span>Preview coming soon</span>
+                </div>
+              {{ end }}
+            </div>
+            <figcaption>See notes, relationships, and shared events in one place.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
     <!-- PRIVACY ----------------------------------------------------------->
     <section class="privacy" aria-labelledby="privacy-title">
       <div class="wrap privacy-inner">
@@ -317,14 +370,27 @@
       </div>
     </section>
 
-    <!-- CLOSING CTA ------------------------------------------------------->
-    <section class="closing" aria-labelledby="closing-title">
+    <!-- TESTFLIGHT SIGNUP ------------------------------------------------->
+    <section class="closing" id="testflight" aria-labelledby="closing-title">
       <div class="wrap closing-inner">
-        <h2 id="closing-title">Never ask &ldquo;wait, how do I know this person?&rdquo; again.</h2>
-        <div class="cta-row cta-center">
-          <a class="btn btn-primary btn-lg" href="{{ .Site.Params.ctaURL }}">{{ .Site.Params.ctaLabel }}</a>
-          <span class="cta-note">Available for iPhone, iPad, and Mac.</span>
-        </div>
+        <p class="eyebrow">Private beta</p>
+        <h2 id="closing-title">Never forget a name.</h2>
+        <p class="section-lead">Join the TestFlight list for early access on iPhone, iPad, and Mac.</p>
+        <form class="signup-form" name="testflight-signup" method="POST" action="{{ "thanks/" | relURL }}"
+              data-netlify="true" netlify-honeypot="company">
+          <input type="hidden" name="form-name" value="testflight-signup">
+          <p class="form-trap" aria-hidden="true">
+            <label>Leave this field empty <input name="company" tabindex="-1" autocomplete="off"></label>
+          </p>
+          <label class="form-label" for="signup-email">Email address</label>
+          <div class="signup-controls">
+            <input id="signup-email" name="email" type="email" autocomplete="email"
+                   inputmode="email" placeholder="you@example.com" required
+                   aria-describedby="signup-note">
+            <button class="btn btn-primary btn-lg" type="submit">Join the TestFlight</button>
+          </div>
+          <p class="form-note" id="signup-note">Only beta invitations and important GuessWho updates. Unsubscribe anytime.</p>
+        </form>
       </div>
     </section>
 

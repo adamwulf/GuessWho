@@ -131,6 +131,8 @@ p { margin: 0 0 1rem; }
   border: 1px solid transparent;
   transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
   white-space: nowrap;
+  font: inherit;
+  cursor: pointer;
 }
 .btn-primary {
   background: var(--accent);
@@ -145,6 +147,12 @@ p { margin: 0 0 1rem; }
   border-color: var(--line);
 }
 .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+.btn:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent-2) 72%, transparent);
+  outline-offset: 3px;
+}
 
 .cta-row {
   display: flex;
@@ -396,6 +404,72 @@ p { margin: 0 0 1rem; }
 }
 .gallery figcaption { color: var(--muted); text-align: center; font-size: 0.98rem; }
 
+/* ---- Mac screenshots ---------------------------------------------------- */
+.mac-showcase { padding-block: clamp(2.5rem, 6vw, 4.5rem); }
+.mac-showcase h2 { font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.8rem); }
+.mac-gallery {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(1.2rem, 3vw, 2rem);
+  margin-top: 2rem;
+}
+.mac-gallery figure { margin: 0; min-width: 0; }
+.mac-gallery figcaption {
+  color: var(--muted);
+  text-align: center;
+  margin-top: 0.8rem;
+  font-size: 0.98rem;
+}
+.mac-window {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 1rem;
+  background: var(--bezel);
+  box-shadow: var(--shadow);
+}
+.mac-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  height: 2rem;
+  padding-inline: 0.8rem;
+  background: color-mix(in srgb, var(--bezel) 88%, white);
+}
+.mac-titlebar span {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+}
+.mac-window > img {
+  width: 100%;
+  aspect-ratio: 8 / 5;
+  object-fit: cover;
+  background: var(--bg2);
+}
+.mac-placeholder {
+  min-height: clamp(14rem, 28vw, 21rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--muted);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-2) 11%, transparent), transparent 55%),
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--accent) 6%, transparent) 0,
+      color-mix(in srgb, var(--accent) 6%, transparent) 12px,
+      transparent 12px,
+      transparent 24px),
+    var(--bg2);
+}
+.mac-placeholder strong { color: var(--ink); font-size: 1.2rem; }
+.mac-placeholder span:last-child { font-size: 0.82rem; }
+
 /* ---- Privacy ------------------------------------------------------------- */
 .privacy { padding-block: clamp(2.5rem, 6vw, 4.5rem); }
 .privacy-inner {
@@ -413,11 +487,81 @@ p { margin: 0 0 1rem; }
 
 /* ---- Closing ------------------------------------------------------------- */
 .closing { padding-block: clamp(3rem, 7vw, 5rem); }
+.closing { scroll-margin-top: 5rem; }
 .closing-inner { text-align: center; }
 .closing h2 {
   font-size: clamp(1.9rem, 1.3rem + 2.6vw, 3rem);
   max-width: 32rem;
   margin-inline: auto;
+}
+.closing .section-lead { margin-inline: auto; }
+.signup-form {
+  max-width: 40rem;
+  margin: 1.6rem auto 0;
+  padding: clamp(1.2rem, 3vw, 1.8rem);
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 1.2rem;
+  box-shadow: var(--shadow);
+}
+.form-trap { display: none; }
+.form-label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+.signup-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+}
+.signup-controls input {
+  width: 100%;
+  min-height: 3.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.75rem 1.15rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+}
+.signup-controls input::placeholder { color: var(--muted); opacity: 0.85; }
+.form-note {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+/* ---- Thank-you page ----------------------------------------------------- */
+.thanks-page {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+.thanks-main {
+  display: grid;
+  place-items: center;
+  padding-block: clamp(4rem, 12vw, 8rem);
+}
+.thanks-card {
+  width: min(36rem, 100%);
+  text-align: center;
+  padding: clamp(1.8rem, 5vw, 3rem);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 1.4rem;
+  box-shadow: var(--shadow);
+}
+.thanks-card h1 { font-size: clamp(2rem, 1.3rem + 3vw, 3.2rem); }
+.thanks-card .section-lead { margin-inline: auto; }
+.thanks-icon {
+  width: 5rem;
+  height: 5rem;
+  margin: 0 auto 1.3rem;
+  border-radius: 1.2rem;
+  box-shadow: var(--shadow-sm);
 }
 
 /* ---- Footer -------------------------------------------------------------- */
@@ -443,7 +587,10 @@ p { margin: 0 0 1rem; }
   .hero-device { order: -1; }
   .story-cards,
   .feature-grid,
-  .gallery { grid-template-columns: 1fr; }
+  .gallery,
+  .mac-gallery { grid-template-columns: 1fr; }
+  .signup-controls { grid-template-columns: 1fr; }
+  .signup-controls .btn { width: 100%; }
   .header-cta { display: none; }
   .footer-inner { flex-direction: column; align-items: flex-start; }
 }
