@@ -1,10 +1,10 @@
-// Hero "how you met" rotator.
+// Hero memory and screenshot rotator.
 //
 // Mirrors the Mantra Moment site's rotating-phrase demo: several memory
-// cards are stacked in one grid cell (see .memory-stack in site.css) and this
-// script cross-fades one in at a time. It pauses while the tab is hidden and
-// stays put entirely when the visitor prefers reduced motion. The CSS reserves
-// the height of the tallest card, so nothing shifts as cards swap.
+// cards and phone screenshots are stacked in grid cells and cross-fade in
+// sync. The rotation pauses while the tab is hidden and stays put entirely
+// when the visitor prefers reduced motion. CSS reserves the full dimensions,
+// so nothing shifts as items swap.
 (function () {
   "use strict";
 
@@ -15,25 +15,35 @@
     : null;
 
   document.addEventListener("DOMContentLoaded", function () {
-    var stack = document.querySelector("[data-memory-stack]");
-    if (!stack) return;
+    var memoryStack = document.querySelector("[data-memory-stack]");
+    var screenshotStack = document.querySelector("[data-hero-slideshow]");
+    if (!memoryStack && !screenshotStack) return;
 
-    var cards = Array.prototype.slice.call(
-      stack.querySelectorAll("[data-memory]")
-    );
-    if (cards.length < 2) return;
+    var cards = memoryStack
+      ? Array.prototype.slice.call(memoryStack.querySelectorAll("[data-memory]"))
+      : [];
+    var screenshots = screenshotStack
+      ? Array.prototype.slice.call(screenshotStack.querySelectorAll("[data-hero-shot]"))
+      : [];
+    var itemCount = Math.max(cards.length, screenshots.length);
+    if (itemCount < 2) return;
 
     var index = 0;
     var timer = null;
 
     function show(i) {
       for (var c = 0; c < cards.length; c++) {
-        cards[c].classList.toggle("is-active", c === i);
+        cards[c].classList.toggle("is-active", c === i % cards.length);
+      }
+      for (var s = 0; s < screenshots.length; s++) {
+        var isActive = s === i % screenshots.length;
+        screenshots[s].classList.toggle("is-active", isActive);
+        screenshots[s].setAttribute("aria-hidden", isActive ? "false" : "true");
       }
     }
 
     function advance() {
-      index = (index + 1) % cards.length;
+      index = (index + 1) % itemCount;
       show(index);
     }
 
