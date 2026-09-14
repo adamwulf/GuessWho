@@ -15,7 +15,7 @@ website/
   content/thanks.md         success-page copy
   static/css/site.css       all styles (light + dark)
   static/js/memories.js     the one JS file (hero "how you met" rotator)
-  static/images/            app-icon.svg (favicon + hero) and screenshots
+  static/images/            app-icon.svg (site icon + brand mark) and screenshots
   public/                   Hugo output — gitignored, never committed
 netlify.toml                (at the REPO ROOT) build + deploy config for Netlify
 ```
@@ -70,7 +70,7 @@ is intentionally no `CNAME` file, and `hugo.toml` uses relative URLs
 
 ## Images
 
-- Put PNGs in `static/images/` and reference them with Hugo `relURL`, e.g.
+- Put image assets in `static/images/` and reference them with Hugo `relURL`, e.g.
   `{{ "images/app-icon.svg" | relURL }}`.
 - Give every `<img>` an explicit `width`/`height` to avoid layout shift.
 - The checked-in SVG is a website rendering of the Icon Composer source. To
