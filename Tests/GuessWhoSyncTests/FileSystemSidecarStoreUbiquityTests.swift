@@ -570,6 +570,87 @@ struct FileSystemSidecarStoreUbiquityTests {
         #expect(fake.startDownloadingCalls.contains(fileURL(in: root, kindDir: "contacts", basename: uuid)))
     }
 
+    // MARK: - prefetchAllDownloads
+
+    @Test
+    func prefetchAllDownloadsRequestsEveryPlaceholderAcrossKinds() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
+
+        let guideID = "11111111-1111-1111-1111-111111111111"
+        let placeID = "22222222-2222-2222-2222-222222222222"
+        let contactID = "33333333-3333-3333-3333-333333333333"
+        try plantPlaceholder(in: root, kindDir: "guides", basename: guideID)
+        try plantPlaceholder(in: root, kindDir: "places", basename: placeID)
+        try plantPlaceholder(in: root, kindDir: "contacts", basename: contactID)
+
+        store.prefetchAllDownloads()
+
+        // Each planted placeholder's REAL file URL was requested (the store
+        // recovers `<id>.json` from the `.<id>.json.icloud` stub).
+        #expect(fake.startDownloadingCalls.contains(fileURL(in: root, kindDir: "guides", basename: guideID)))
+        #expect(fake.startDownloadingCalls.contains(fileURL(in: root, kindDir: "places", basename: placeID)))
+        #expect(fake.startDownloadingCalls.contains(fileURL(in: root, kindDir: "contacts", basename: contactID)))
+    }
+
+    @Test
+    func prefetchAllDownloadsSkipsMaterializedFiles() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
+
+        // A materialized place (real .json) sits beside a not-yet-downloaded one.
+        let materializedID = "44444444-4444-4444-4444-444444444444"
+        let placeholderID = "55555555-5555-5555-5555-555555555555"
+        try store.write(envelope(id: materializedID), at: SidecarKey(kind: .place, id: materializedID))
+        try plantPlaceholder(in: root, kindDir: "places", basename: placeholderID)
+
+        store.prefetchAllDownloads()
+
+        // Only the placeholder is fetched; the local file is already resident.
+        #expect(fake.startDownloadingCalls.contains(fileURL(in: root, kindDir: "places", basename: placeholderID)))
+        #expect(!fake.startDownloadingCalls.contains(fileURL(in: root, kindDir: "places", basename: materializedID)))
+    }
+
+    @Test
+    func prefetchAllDownloadsRequestsBlobPlaceholders() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
+
+        // A `.dat` blob payload present only as a `.<id>.<blobId>.dat.icloud` stub.
+        let ownerID = "66666666-6666-6666-6666-666666666666"
+        let blobId = "photo"
+        try plantBlobPlaceholder(in: root, kindDir: "contacts", ownerID: ownerID, blobId: blobId)
+
+        store.prefetchAllDownloads()
+
+        let realBlobURL = root
+            .appendingPathComponent("contacts")
+            .appendingPathComponent("\(ownerID).\(blobId).dat")
+        #expect(fake.startDownloadingCalls.contains(realBlobURL))
+    }
+
+    @Test
+    func prefetchAllDownloadsIsSilentWhenNothingIsPending() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let fake = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: fake, coordinatesUbiquitousAccess: false)
+
+        // Empty corpus (no directories) and one materialized record: no fetches.
+        try store.write(envelope(id: "77777777-7777-7777-7777-777777777777"),
+                        at: SidecarKey(kind: .guide, id: "77777777-7777-7777-7777-777777777777"))
+
+        store.prefetchAllDownloads()
+
+        #expect(fake.startDownloadingCalls.isEmpty)
+    }
+
     // MARK: - Test helpers
 
     private func makeProviderForPlaceholderTest(
@@ -590,5 +671,18 @@ struct FileSystemSidecarStoreUbiquityTests {
         let placeholderName = ".\(basename).json.icloud"
         let url = dir.appendingPathComponent(placeholderName)
         try Data().write(to: url)
+    }
+
+    // A not-yet-downloaded `.dat` blob payload: `.<ownerID>.<blobId>.dat.icloud`.
+    private func plantBlobPlaceholder(
+        in root: URL,
+        kindDir: String,
+        ownerID: String,
+        blobId: String
+    ) throws {
+        let dir = root.appendingPathComponent(kindDir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let placeholderName = ".\(ownerID).\(blobId).dat.icloud"
+        try Data().write(to: dir.appendingPathComponent(placeholderName))
     }
 }

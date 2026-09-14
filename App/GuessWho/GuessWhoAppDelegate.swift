@@ -272,6 +272,23 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // the refresh paths are idempotent reads.
         service.startSidecarFileWatcher()
 
+        // Best-effort eager prefetch of the whole sidecar corpus (iCloud storage
+        // only; a no-op otherwise). On a cold container the file watcher would
+        // otherwise materialize files one-by-one as each record is first opened,
+        // so Guides/Places (and the rest) can read empty until every file
+        // trickles down. This asks cloudd to fetch all not-yet-downloaded files
+        // at once. Low priority and off launch's critical path — the watcher's
+        // debounced refreshes fold each arrival into the lists as it lands.
+        Task(priority: .background) { [service] in
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            Self.startupLoadLog.info("sidecar prefetch started", ["scope": "all-kinds"])
+            await service.prefetchSidecarDownloads()
+            Self.startupLoadLog.info("sidecar prefetch finished", [
+                "scope": "all-kinds",
+                "durationMs": "\(LoadTiming.milliseconds(since: startedAt))"
+            ])
+        }
+
         #if targetEnvironment(macCatalyst)
         startChromeHandoffReceiver()
 

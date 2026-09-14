@@ -372,6 +372,43 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         try ubiquity.startDownloading(at: url)
     }
 
+    /// Best-effort eager prefetch: ask iCloud to download every sidecar file
+    /// that is present only as a not-yet-downloaded placeholder, across all six
+    /// kind directories — envelopes (`.<id>.json.icloud`) and blob payloads
+    /// (`.<id>.<blobId>.dat.icloud`). Lets a launch-time caller pull the whole
+    /// corpus local in one pass instead of waiting for each record to be opened
+    /// (a cold container otherwise materializes files one-by-one as the file
+    /// watcher touches them, so guides/places can read empty until each lands).
+    /// Only placeholders are requested; a materialized `.json`/`.dat` is already
+    /// local. Never throws: an unreadable directory or a failed request is
+    /// skipped, and the on-demand download paths in `read()`/`listKeys` remain
+    /// the backstop. Uncoordinated by design — `startDownloadingUbiquitousItem`
+    /// is a hint to cloudd, not a byte read, and the enumeration mirrors the
+    /// uncoordinated directory walk in `listKeys(in:kind:)`.
+    public func prefetchAllDownloads() {
+        let fm = FileManager.default
+        let kinds: [SidecarKind] = [.contact, .event, .link, .guide, .place, .group]
+        for kind in kinds {
+            let directory = root.appendingPathComponent(directoryName(for: kind))
+            guard fm.fileExists(atPath: directory.path) else { continue }
+            guard let entries = try? fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ) else { continue }
+            for entry in entries {
+                let fullName = entry.lastPathComponent
+                // Recover the real filename from either placeholder shape; a
+                // non-placeholder entry (a real `.json`/`.dat`) needs no fetch.
+                let realName = realNameFromPlaceholder(fullName)
+                    ?? realBlobNameFromPlaceholder(fullName)
+                guard let realName else { continue }
+                try? ubiquity.startDownloading(
+                    at: directory.appendingPathComponent(realName)
+                )
+            }
+        }
+    }
+
     // MARK: - Blob payload I/O
 
     // Encrypt `data` and write it to `<key.id>.<blobId>.dat` in the same

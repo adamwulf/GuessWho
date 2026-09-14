@@ -358,6 +358,22 @@ public final class GuessWhoSync: @unchecked Sendable {
         contactChangeWatcher?.start()
     }
 
+    /// Eagerly prefetch every not-yet-downloaded sidecar file onto local
+    /// storage, off the caller's actor. Best-effort launch warm-up: with a cold
+    /// iCloud container the file watcher otherwise only pulls each record down
+    /// when it is first read, so guides/places/etc. can appear empty until every
+    /// file lands. This kicks all of them at once. The directory walk is
+    /// filesystem I/O over a possibly-syncing iCloud root, so it hops to a
+    /// background queue rather than running on the caller. Never throws.
+    public func prefetchAllSidecarDownloads() async {
+        await withCheckedContinuation { [self] continuation in
+            DispatchQueue.global(qos: .utility).async {
+                self.sidecars.prefetchAllDownloads()
+                continuation.resume()
+            }
+        }
+    }
+
     public func sidecar(at key: SidecarKey) throws -> SidecarEnvelope? {
         try sidecars.read(key)
     }
